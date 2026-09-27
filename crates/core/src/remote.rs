@@ -328,6 +328,13 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // whoever asked -- a phone is where a webhook is tried from as often
         // as the window is
         Ev::FarPorts { .. } => true,
+        // Trusting a server's new key, or putting the question away. The
+        // person who reaches that server is as often on the phone as at the
+        // window, and a key changed by a reinstall is exactly what they are
+        // told about there. It trusts only the fingerprint the question showed
+        // (ssh::answer_key_change), and from the phone the same question with
+        // the same two fingerprints is what was read
+        Ev::HostKey { .. } => true,
         // Opening one of them in a browser tab here: a tab like any other the
         // phone adds, on an address this app worked out itself
         Ev::FarPage { .. } => true,

@@ -2154,6 +2154,10 @@ pub struct UiState {
     /// The public addresses of a folder on a MicroVM, last asked for
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub far_ports: Option<FarPortsState>,
+    /// Servers over SSH whose key changed, waiting for the person to say
+    /// whether to trust the new one
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub key_changes: Vec<crate::ssh::KeyChange>,
     /// The sign-in step of a project just cloned onto a MicroVM, while it
     /// is open
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -194,6 +194,72 @@ fn known_hosts() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// A server that answered with a key other than the one remembered for it,
+/// held until a person says whether to trust the new one.
+///
+/// Asked, never decided here. At the moment a key changes there is no telling
+/// a reinstalled server from somebody standing in the middle, and only the
+/// person knows whether the server was reinstalled. What they are shown is
+/// both fingerprints; what they trust is the one they were shown, and nothing
+/// that answered after it
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeyChange {
+    /// The server, as its key is filed ([`Spec::machine`])
+    pub machine: String,
+    /// The fingerprint remembered from before
+    pub before: String,
+    /// The fingerprint that answered this time
+    pub now: String,
+}
+
+fn key_change_list() -> &'static Mutex<Vec<KeyChange>> {
+    static CHANGED: OnceLock<Mutex<Vec<KeyChange>>> = OnceLock::new();
+    CHANGED.get_or_init(Default::default)
+}
+
+/// The servers whose key changed and nobody has answered for yet, in the
+/// order they were met
+pub fn key_changes() -> Vec<KeyChange> {
+    key_change_list().lock().map(|l| l.clone()).unwrap_or_default()
+}
+
+fn key_changed(change: KeyChange) {
+    if let Ok(mut l) = key_change_list().lock() {
+        match l.iter_mut().find(|c| c.machine == change.machine) {
+            Some(was) => *was = change,
+            None => l.push(change),
+        }
+    }
+}
+
+fn key_settled(machine: &str) {
+    if let Ok(mut l) = key_change_list().lock() {
+        l.retain(|c| c.machine != machine);
+    }
+}
+
+/// A person's answer about a changed key. `trust` remembers `fingerprint` as
+/// the server's key from now on -- only when it is the one that answered, the
+/// one they were shown; a key that changed again since is refused, and asked
+/// about afresh the next time. Not trusting puts the question away until the
+/// server is next reached. Answers whether a key was trusted
+pub fn answer_key_change(machine: &str, fingerprint: &str, trust: bool) -> Result<bool> {
+    let Some(change) = key_changes().into_iter().find(|c| c.machine == machine) else {
+        return Ok(false);
+    };
+    if !trust {
+        key_settled(machine);
+        return Ok(false);
+    }
+    if change.now != fingerprint {
+        bail!(crate::i18n::tp("err.ssh.key_moved", &[("host", machine)]));
+    }
+    remember_host(machine, fingerprint)?;
+    key_settled(machine);
+    crate::append_hook_log(&format!("ssh: the new key at {machine} was trusted: {} -> {fingerprint}", change.before));
+    Ok(true)
+}
+
 fn remember_host(addr: &str, fingerprint: &str) -> Result<()> {
     // Read, changed and written whole: two servers met at the same moment
     // must not each write the file without the other
@@ -703,7 +769,8 @@ async fn connect(spec: &Spec) -> Result<Open> {
                     crate::append_hook_log(&format!(
                         "ssh: the key at {name} changed: {before} -> {now}"
                     ));
-                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr), ("line", &name)]));
+                    key_changed(KeyChange { machine: name.clone(), before: before.clone(), now: now.clone() });
+                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr)]));
                 }
             bail!(crate::i18n::tp(
                 "err.ssh.connect",
@@ -724,6 +791,8 @@ async fn connect(spec: &Spec) -> Result<Open> {
             crate::append_hook_log(&format!("ssh: first time at {name}, key {fp}"));
         }
     }
+    // It answered with the key we know, so any question about it is over
+    key_settled(&name);
 
     // A key if one is named, and the stored password otherwise. Asked for now
     // rather than kept: this is the only moment it is needed
@@ -1771,6 +1840,42 @@ mod tests {
         let first = conn_key(&through);
         set_secret("ssh/ws/key/gate", "changed");
         assert_ne!(conn_key(&through), first, "the bastion's new password was not asked for");
+    }
+
+    /// A server whose key is not the one remembered is refused, and asked
+    /// about: both fingerprints are there to be read, and trusting takes only
+    /// the one that answered. Afterwards it connects with it
+    #[test]
+    fn a_changed_key_is_asked_about_and_trusted_only_as_shown() {
+        let port = fake_server();
+        set_secret("ssh/ws/rekey/password", "hunter2");
+        let spec = fake_spec(port, "ssh/ws/rekey/password");
+        remember_host(&spec.machine(), "SHA256:the-old-one").expect("written");
+        let refused = exec(&spec, "true", 15_000).expect_err("a server with another key was let in");
+        assert_eq!(refused.to_string(), crate::i18n::tp("err.ssh.host_changed", &[("host", &spec.address())]));
+        let change = key_changes().into_iter().find(|c| c.machine == spec.machine()).expect("nobody was asked");
+        assert_eq!(change.before, "SHA256:the-old-one");
+        assert_ne!(change.now, change.before);
+
+        assert!(answer_key_change(&spec.machine(), "SHA256:another", true).is_err(), "a key nobody was shown was trusted");
+        assert_eq!(remembered(&spec).as_deref(), Some("SHA256:the-old-one"));
+        assert_eq!(answer_key_change(&spec.machine(), &change.now, true).expect("trusted"), true);
+        assert!(key_changes().iter().all(|c| c.machine != spec.machine()), "the question stayed up");
+        assert!(exec(&spec, "true", 15_000).expect("it did not connect with the trusted key").ok());
+    }
+
+    /// Not trusting it puts the question away and remembers nothing
+    #[test]
+    fn a_changed_key_not_trusted_is_left_as_it_was() {
+        let port = fake_server();
+        set_secret("ssh/ws/nokey/password", "hunter2");
+        let spec = fake_spec(port, "ssh/ws/nokey/password");
+        remember_host(&spec.machine(), "SHA256:kept").expect("written");
+        assert!(exec(&spec, "true", 15_000).is_err());
+        let change = key_changes().into_iter().find(|c| c.machine == spec.machine()).expect("nobody was asked");
+        assert_eq!(answer_key_change(&spec.machine(), &change.now, false).expect("answered"), false);
+        assert!(key_changes().iter().all(|c| c.machine != spec.machine()));
+        assert_eq!(remembered(&spec).as_deref(), Some("SHA256:kept"));
     }
 
     /// The far side of that conversation. It asks for a password, insists on

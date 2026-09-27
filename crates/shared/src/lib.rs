@@ -299,6 +299,12 @@ pub enum Ev {
     /// ports something listens on in there, each with its public URL. Asked
     /// once when it is asked, since asking starts a paused machine
     FarPorts { folder: String },
+    /// A server over SSH answered with a key other than the one remembered
+    /// for it, and the person answered the question about it: `trust` takes
+    /// `fingerprint` -- the new key they were shown -- as the server's from
+    /// now on, and not trusting puts the question away. `machine` is the
+    /// server as its key is filed
+    HostKey { machine: String, fingerprint: String, trust: bool },
     /// One of those addresses, opened in a browser tab of this app. Named by
     /// its port; which address that is, is the app's own answer to `FarPorts`
     /// and not something a page gets to say
@@ -1030,6 +1036,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("farports") => Ev::FarPorts {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("hostkey") => Ev::HostKey {
+            machine: v.get("machine").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            fingerprint: v.get("fingerprint").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            trust: v.get("trust").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("farpage") => Ev::FarPage {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

@@ -9894,6 +9894,36 @@ function pickIntoPane(anchor, pane) {
 // Opened once per asking, and put away when the app stops asking -- whoever
 // answered it, here or on another screen
 let closeAskSeen = 0, closeAskOpen = false;
+// A server over SSH that answered with a key other than the one remembered
+// for it: both fingerprints, and whether to trust the new one. The same
+// question on the window and on a phone, and answered on either it goes from
+// both. What is trusted is the fingerprint this question showed
+let keyAsking = "";
+const keyAskKey = c => c.machine + " " + c.now;
+function drawKeyChanges() {
+  const waiting = (S && S.key_changes) || [];
+  if (keyAsking && !waiting.some(c => keyAskKey(c) === keyAsking)) { keyAsking = ""; closeAsk(true); }
+  if (keyAsking) return;
+  const c = waiting[0];
+  if (!c) return;
+  keyAsking = keyAskKey(c);
+  // Label above, and the fingerprint under it across the whole width, as it
+  // is written: it is read against what the server's owner says it is
+  const put = (tag, what) => el("div", {class:"brow2 stacked"},
+    el("span", {class:"tag"}, tag), el("span", {class:"nm asis"}, what));
+  const answer = trust => send({kind:"hostkey", machine:c.machine, fingerprint:c.now, trust});
+  askQuestion({
+    title: T["tui.hostkey.title"] || "",
+    say: T["tui.hostkey.say"] || "",
+    what: c.machine,
+    rows: [put(T["tui.hostkey.before"] || "", c.before), put(T["tui.hostkey.now"] || "", c.now)],
+    label: T["tui.hostkey.go"] || "",
+    danger: true,
+    go: () => { keyAsking = ""; answer(true); },
+    back: () => { keyAsking = ""; answer(false); },
+  });
+}
+
 function drawCloseAsk() {
   const a = S && S.close_ask;
   if (!a) {
@@ -10832,6 +10862,7 @@ window.__state = function (json) {
   drawTabs();
   drawStrip();
   drawCloseAsk();
+  drawKeyChanges();
   drawStatus();
   drawNav();
   drawAsks();

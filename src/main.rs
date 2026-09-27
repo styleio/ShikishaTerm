@@ -777,6 +777,7 @@ impl WinSurface {
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
                 Ev::FolderDiscard { folder, unasked } => self.mail.folder_discards.push((folder, unasked)),
                 Ev::FarPorts { folder } => self.mail.far_ports.push(folder),
+                Ev::HostKey { machine, fingerprint, trust } => self.mail.host_keys.push((machine, fingerprint, trust)),
                 Ev::FarPage { folder, port } => self.mail.far_pages.push((folder, port)),
                 Ev::Login { folder, act } => self.mail.logins.push((folder, act)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),

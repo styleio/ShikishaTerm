@@ -4164,6 +4164,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
                         shell.mail().far_ports.push(folder);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::HostKey { machine, fingerprint, trust }) => {
+                        shell.mail().host_keys.push((machine, fingerprint, trust));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
                         shell.mail().far_pages.push((folder, port));
                     }
@@ -4582,6 +4585,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             ssh_aliases: ssh_aliases.clone(),
             remote_list: remote_view.clone(),
             far_ports: far_ports_view.clone(),
+            key_changes: crate::ssh::key_changes(),
             login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
             project_home: project_home.clone(),
@@ -7692,6 +7696,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         gone: false,
                     });
                 }
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
+        }
+        // A server's changed key, answered from the window or a phone
+        for (machine, fingerprint, trust) in shell.mail().take_host_keys() {
+            match crate::ssh::answer_key_change(&machine, &fingerprint, trust) {
+                Ok(true) => flash = Some(i18n::tp("msg.ssh.key_trusted", &[("host", &machine)])),
+                Ok(false) => {}
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }

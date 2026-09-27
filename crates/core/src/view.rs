@@ -601,6 +601,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
         far_ports: ui.far_ports.clone(),
+        key_changes: ui.key_changes.clone(),
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
         git_accounts: ui.git_accounts.clone(),
@@ -1745,6 +1746,8 @@ pub struct Ui {
     pub remote_list: Option<crate::uistate::RemoteListState>,
     /// The public addresses of a folder on a MicroVM, last asked for
     pub far_ports: Option<crate::uistate::FarPortsState>,
+    /// Servers over SSH whose key changed, waiting to be answered
+    pub key_changes: Vec<crate::ssh::KeyChange>,
     /// The sign-in step of a project just cloned onto a MicroVM, while open
     pub login_step: Option<crate::uistate::LoginStepState>,
     /// The AIs a MicroVM can be given
