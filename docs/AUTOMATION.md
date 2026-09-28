@@ -504,12 +504,13 @@ itself in its own answer.
 
 **On replay and portability**: `{ ref = N }` is an ordinary selector with the same
 meaning in every execution mode (automation scripts, the composer's ▶ Lua run mode,
-an operate rally). But the numbers refer to "the latest `browser_digest` listing" —
+a page's 🗣 run). But the numbers refer to "the latest `browser_digest` listing" —
 they are not what you carry around.
 
-That is why **execution and recording are independent**. During an operate rally,
-every executed op is **rewritten in a durable form** and appended to the run's
-`replay.lua`: a `{ ref = N }` becomes an anchor derived from the element it actually
+That is why **execution and recording are independent**. Every executed op is
+**rewritten in a durable form** into the replay journal: during a 🗣 run it lands on
+that page's 📼 sheet, and a script of your own drains it with `shikisha.take_replay()`
+into its run's `replay.lua`. In it a `{ ref = N }` becomes an anchor derived from the element it actually
 touched (a human-made `#id`, else a unique text/attribute XPath — same hygiene as the
 📼 recorder, machine-minted ids refused), and `browser_digest` never appears. So:
 
@@ -518,9 +519,8 @@ touched (a human-made `#id`, else a unique text/attribute XPath — same hygiene
 - **the currency of portability = replay.lua** (plain css / xpath only; paste it into
   the ▶ run mode, wire it into an automation, or run it on another PC's SHIKISHA as-is)
 
-Download replay.lua from the "⬇ Replay Lua" button beside the 🎯 target dropdown, or
-from the same button at the top right of the result view that opens when an operation
-finishes. An op with no derivable durable anchor is never silently dropped — it stays
+A run's replay.lua is downloaded from the button at the top right of the result view
+that opens when the run finishes. An op with no derivable durable anchor is never silently dropped — it stays
 as a `-- click (…): what was clicked` comment.
 
 Looking for an element answers with three states — `visible`, `off_screen`,

@@ -8,6 +8,26 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **@ in the input bar hands work to another tab.** The @ button (or an @ typed at
+  the start of a word) lists this desk's other tabs, nearest first, and a pick
+  becomes a chip in the text; what is sent names the tab as `<@id>`, the way
+  Slack does. The AI in front hands it on with the `shikisha` command every tab
+  now has on its PATH: `shikisha ask` another AI and read its reply,
+  `shikisha run` a command in a terminal and read its output, `shikisha do` a
+  goal on a web page through that page's own 🗣 run. A terminal or a page is only
+  driven when the person named it with @. The first @ asks before writing the
+  skill that teaches the AI this (Settings > AI agents takes it out again).
+
+### Changed
+- On a phone, Backspace is the first key of the key row, and the input row no
+  longer has a ⌫ button of its own.
+
+### Removed
+- **The 🎯 target panel.** Aiming an AI at another tab and having it write Lua
+  every turn is replaced by @ and `shikisha ask / run / do`. Its limits stay, as
+  Settings > "Limits on handing work".
+
 ## [0.20.0] - 2026-09-27
 
 ### Added

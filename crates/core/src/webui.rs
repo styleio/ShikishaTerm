@@ -9913,10 +9913,11 @@ function defaultActions() {
   ].map(a => ({ label: a.label || "", body: a.body || "", lua: false }));
 }
 
-// Operate (🎯) runaway limits + stall policy, saved into config.operate. The three
-// limits are a safety net (0 = no limit); on_limit picks "stop" (halt and hand back
-// to the human) or "continue" (reset the budget and keep going, trusting the
-// operator to judge DONE — so it never stops on the user mid-task).
+// The limits on handing work -- rounds of ask_tab, and a page's 🗣 run -- plus the
+// stall policy, saved into config.operate. The three limits are a safety net
+// (0 = no limit); on_limit picks "stop" (halt and hand back to the human) or
+// "continue" (reset the budget and keep going, trusting the AI to judge DONE --
+// so it never stops on the user mid-task).
 function operateCard() {
   const o = current.operate = current.operate || {};
   const num = (key, def) => {
@@ -13885,14 +13886,13 @@ function deskDiscussCard(desk) {
   const agentsIn = txt((d.agents||[]).join(", "), T["settings.discuss.agents_ph"],
     v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
   // Participant-candidate chips: one click appends an existing tab id to the end of the turn order.
-  // A tab aimed at another tab (🎯) already has a turn to keep, so it can't also be a discussion participant
   const chipBox = el("div", {class:"hint", style:"display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-top:var(--s1)"});
   const drawChips = () => {
     chipBox.textContent = "";
     const cur = (desk.discuss && desk.discuss.agents) || [];
-    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant, and not aimed at anything
+    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant
     const cand = (desk.tabs || [])
-      .filter(t => isDiscussable(t) && !(t.drives||"").trim())
+      .filter(t => isDiscussable(t))
       .map(t => (t.id || "").trim())
       .filter(id => id && !cur.includes(id));
     if (!cand.length) { chipBox.append(document.createTextNode(T["settings.discuss.no_candidates"])); return; }
@@ -13905,8 +13905,8 @@ function deskDiscussCard(desk) {
   const orderSel = self(d.order || "round-robin",
     [["round-robin",T["settings.discuss.order.round_robin"]],["moderated",T["settings.discuss.order.moderated"]]], v => ensure().order = v);
   const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  // Judge and moderator are likewise restricted to discussable AIs (aimed tabs, shells, and Aider are excluded)
-  const notDiscuss = t => (t.drives||"").trim() || !isDiscussable(t);
+  // Judge and moderator are likewise restricted to discussable AIs (shells and Aider are excluded)
+  const notDiscuss = t => !isDiscussable(t);
   const judgeIn = idSelect(desk, d.judge, T["wizard.discuss.judge_none"],
     v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
   const modIn = idSelect(desk, d.moderator, T["wizard.discuss.judge_none"],
@@ -15643,7 +15643,6 @@ function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
-               drives: t.drives || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
                choose_model: t.choose_model || "", words_model: t.words_model || "",
@@ -15666,7 +15665,6 @@ function nest(flat) {
     if (f.id) node.id = f.id;
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
-    if (f.drives) node.drives = f.drives;
     if ((f.git_account || "").trim()) node.git_account = f.git_account.trim();
     if (f.browser_profile) node.browser_profile = f.browser_profile;
     if (f.private) node.private = true;

@@ -67,7 +67,8 @@ What was on its screen does not.
 **The bar above the input box** is the convenience bar: one press sends a stock
 instruction to the AI in view (continue, explain, review, fix). The small picker at
 its left chooses what the bar holds: the stock replies, your own quick actions, the
-macro recorder, git, an AI's command suggestion, or the target another tab drives.
+macro recorder, git, or an AI's command suggestion. To hand work to another tab, name it
+with @ in the input box.
 
 **The input box** at the bottom is where you type to the tab in view. On a phone
 it is the only way in.
@@ -276,7 +277,7 @@ settings screen, so it cannot fall behind.
 - **Quick actions** — One-tap buttons in the input bar
 - **Where it runs** — Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 - **Server names** — Tell production from staging at a glance
-- **Operate a tab** — Limits for 🎯 driving another tab
+- **Limits on handing work** — How far an AI may go when it hands work to other tabs or drives a page
 - **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart

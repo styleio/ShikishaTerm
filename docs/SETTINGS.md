@@ -145,16 +145,14 @@ Tell production from staging at a glance
 - **Ask for this name to be typed before anything that cannot be undone** — Deleting, renaming or replacing files on this server waits until the name is typed.
 - **Name for this server** — Shown beside every tab that reaches this server, and in every question about something that cannot be undone there:
 
-### Operate a tab
+### Limits on handing work
 
-Limits for 🎯 driving another tab
-
-**Operate a tab (🎯)**
+How far an AI may go when it hands work to other tabs or drives a page
 
 - **Max turns**
 - **Max seconds**
 - **Max output size**
-- **When a limit is reached** — "Keep going" resets the budget and trusts the operator to finish on its own — pick it if the operate stops on you too often.
+- **When a limit is reached** — "Keep going" resets the limits and trusts the AI to finish on its own. Pick it if the work stops on you too often.
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.
 

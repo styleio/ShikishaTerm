@@ -573,7 +573,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         split_open: ui.split_open.clone(),
         remote_conn: ui.remote_conn,
         remote_sticky: ui.remote_sticky,
-        aim: ui.aim,
         first_run: ui.first_run,
         settings_gen: ui.settings_gen,
         push_wanted: ui.push_wanted,
@@ -1634,8 +1633,6 @@ pub struct Ui {
     /// Whether the pairing token is the fixed one from settings (it decides
     /// what the disconnect button promises, not what it does)
     pub remote_sticky: bool,
-    /// What the focused tab is aimed at (🎯), as a screen number
-    pub aim: Option<usize>,
     /// Where the auto-chain currently is (the invisible ball, made visible)
     pub ball: ball::Ball,
     /// The chain cap. Represents how close the ball's color is to that cap.

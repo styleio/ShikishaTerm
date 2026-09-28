@@ -365,8 +365,6 @@ pub enum Ev {
         /// the board it was pressed on is still there around it
         sheet: bool,
     },
-    /// Save the newest run's replay.lua to the user's Downloads folder
-    ReplaySave,
     /// ✨ natural language in, one suggested shell command out (assistant AI)
     Suggest { text: String },
     /// 🔍 run the environment survey in the active terminal (deterministic
@@ -523,10 +521,6 @@ pub enum Ev {
     /// is looked up and run server-side (the page never holds Lua source).
     /// Allowed from afar -- it runs the user's own action.
     RunAction { path: Vec<usize> },
-    /// Operate a target tab (🎯): attach the active AI as the operator of tab
-    /// `target` (0 = detach) and, if `goal` is non-empty, hand it that goal. The
-    /// AI then writes Lua to drive the target (reuses the browser-agent loop).
-    Operate { target: usize, goal: String },
     /// 🗣 drive this page from a goal written in ordinary words. `on` starts
     /// or stops the run; `goal` is what was typed, and may also arrive while a
     /// run is going, as a correction. Which page is driven is the one being
@@ -1350,17 +1344,6 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 .unwrap_or_default()
                 .to_string(),
         },
-        // "Operate a target tab" (🎯): make the active AI drive tab `target`.
-        // target 0 detaches. An optional `goal` (natural language) is handed to
-        // the AI, which then writes Lua to operate the target.
-        Some("operate") => Ev::Operate {
-            target: v.get("target").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
-            goal: v
-                .get("goal")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string(),
-        },
         // 🗣 "carry this out on the page in front of me": the goal as typed,
         // and whether the run is to be going at all
         Some("words") => Ev::Words {
@@ -1572,7 +1555,6 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         // Save the latest run's replay.lua where the user can grab it
         // (the window board can't download over HTTP, so it asks the app)
-        Some("replaysave") => Ev::ReplaySave,
         // ✨ ask the assistant AI to turn natural language into one shell
         // command for the active terminal tab
         Some("suggest") => Ev::Suggest {

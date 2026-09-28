@@ -689,7 +689,7 @@ ALPHA-42"
 
     #[test]
     fn a_tab_is_named_by_its_id_as_a_mention_or_bare() {
-        let (t, x, w) = parse(&[json!("<@codex>"), json!("hi")]).unwrap();
+        let (t, _, _) = parse(&[json!("<@codex>"), json!("hi")]).unwrap();
         assert_eq!(t, "codex");
         let (t, x, w) = parse(&[json!("@codex"), json!("hi")]).unwrap();
         assert_eq!((t.as_str(), x.as_str(), w), ("codex", "hi", DEFAULT_WAIT));
