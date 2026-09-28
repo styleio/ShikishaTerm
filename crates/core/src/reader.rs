@@ -114,6 +114,30 @@ pub fn read_back(path: &Path, before: u64, want: usize) -> std::io::Result<Page>
     })
 }
 
+/// The last thing the AI said in what was written to `path` after byte `from`.
+///
+/// `from` is how long the record was when a turn began, so what is read is
+/// that turn and nothing before it: an answer the record has not caught up
+/// with yet reads as `None`, never as the previous turn's answer. The file
+/// written from its start again (a new conversation, a rewrite) is read whole
+pub fn said_after(path: &Path, from: u64) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let from = if from > len { 0 } else { from };
+    let page = read_back_by(len - from, u64::MAX, 1, &mut |start, n| {
+        let mut buf = vec![0u8; n];
+        file.seek(SeekFrom::Start(from + start))?;
+        file.read_exact(&mut buf)?;
+        Ok(buf)
+    })
+    .ok()?;
+    page.turns
+        .into_iter()
+        .last()
+        .filter(|t| t.who == Who::Ai)
+        .map(|t| t.text)
+}
+
 /// The same walk over a record read a piece at a time by `read_at` (from, how
 /// many bytes): a file here, or one on the machine a folder is on, fetched a
 /// piece at a time as the walk needs it
@@ -619,6 +643,31 @@ mod tests {
         format!(
             "{{\"message\":{{\"role\":\"{who}\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}"
         )
+    }
+
+    /// A turn's answer is only ever what was written after the turn began. The
+    /// record catches up a moment after the screen, and in that moment the
+    /// last answer in it is the previous turn's
+    #[test]
+    fn a_turn_s_answer_is_only_what_came_after_it_began() {
+        let path = tmp("after");
+        let before = format!("{}\n{}\n", record("user", "first"), record("assistant", "old answer"));
+        std::fs::write(&path, &before).unwrap();
+        let began = before.len() as u64;
+        assert_eq!(said_after(&path, began), None, "nothing said yet this turn");
+
+        let asked = format!("{before}{}\n", record("user", "second"));
+        std::fs::write(&path, &asked).unwrap();
+        assert_eq!(said_after(&path, began), None, "asked, not yet answered");
+
+        let tool = r#"{"message":{"role":"assistant","content":[{"type":"text","text":"Let me look."},{"type":"tool_use","name":"Read"}]}}"#;
+        let answered = format!("{asked}{tool}\n{}\n", record("assistant", "new answer"));
+        std::fs::write(&path, &answered).unwrap();
+        assert_eq!(said_after(&path, began).as_deref(), Some("new answer"));
+
+        // Written again from its start: all of it is new
+        std::fs::write(&path, format!("{}\n", record("assistant", "fresh"))).unwrap();
+        assert_eq!(said_after(&path, began).as_deref(), Some("fresh"));
     }
 
     /// What `want` counts. A CLI writes one answer as a run of records with the

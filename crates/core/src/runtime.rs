@@ -3657,8 +3657,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     // Fire only the ones that stayed quiet as truly done
-                    let (ready, waiting): (Vec<_>, Vec<_>) =
-                        pending_done.iter().partition(|&&(_, at)| now_ms >= at);
+                    // ...and whose answer is in hand: one still being looked
+                    // for in the CLI's own record waits for it, a few seconds
+                    // at most, so the hook is handed the words and not the
+                    // screen they were drawn on
+                    let (ready, waiting): (Vec<_>, Vec<_>) = pending_done.iter().partition(|&&(idx, at)| {
+                        now_ms >= at && !tabs.get(idx.wrapping_sub(1)).is_some_and(|t| t.reply_settling())
+                    });
                     pending_done = waiting;
                     for (idx, _) in ready {
                         if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {

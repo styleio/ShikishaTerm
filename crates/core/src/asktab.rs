@@ -236,17 +236,6 @@ pub fn reply_in(path: &Path, sent: &str) -> Option<String> {
         .map(|t| t.text.trim().to_string())
 }
 
-/// Where a tab's record is, when its profile says how to find one and the
-/// conversation it is on is known
-pub fn record_of(t: &Tab) -> Option<std::path::PathBuf> {
-    let id = t.session.as_ref()?.id.clone();
-    let glob = t.resume.as_ref()?.verify.clone()?;
-    if t.remote().is_some() || t.cloud().is_some() {
-        return None;
-    }
-    crate::sessionfind::locate(&glob, &id)
-}
-
 /// The turn is over and nothing it started is still running. `Background` is
 /// not quiet: an AI that put a long command in the background has ended its
 /// turn without the answer, and asking it now gets "still waiting". The app's
@@ -354,7 +343,7 @@ pub fn step(
             a.quiet_since = None;
             let since = *a.background_since.get_or_insert(now);
             if since.elapsed() >= BACKGROUND_GRACE {
-                if let Some(reply) = record_of(t).and_then(|path| reply_in(&path, &a.text)) {
+                if let Some(reply) = t.record().and_then(|path| reply_in(&path, &a.text)) {
                     return Step::Answer(answer(
                         a,
                         "DONE",
@@ -440,7 +429,7 @@ pub fn step(
                 Step::Nothing
             };
         }
-        match record_of(t) {
+        match t.record() {
             Some(path) => {
                 if since.elapsed() >= SETTLE {
                     if let Some(reply) = reply_in(&path, &a.text) {

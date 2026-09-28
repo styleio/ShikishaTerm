@@ -2806,6 +2806,34 @@ impl Session {
 /// The next number a tab is handed. See [`Tab::serial`]
 static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
 
+/// How long a finished turn's answer is looked for in the CLI's own record
+/// before the copy read off the screen is left standing. A CLI writes the
+/// record as it shows the answer or a moment after; this is that moment
+const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often the record is looked at meanwhile
+const RECORD_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// A turn's answer, followed into the CLI's own record.
+///
+/// The screen is a picture of the answer cut to the window's width and
+/// wrapped in the CLI's own frame, and where the answer ends and the frame
+/// begins is a guess that goes wrong differently for every CLI. The record
+/// holds the words as they were said. So the screen's copy is taken the
+/// moment a turn ends, and replaced by the record's as soon as the record
+/// has it
+struct RecordReply {
+    /// The record, once it exists
+    path: Option<std::path::PathBuf>,
+    /// How long the record was when the turn began: only what was written
+    /// after that can be this turn's answer
+    from: u64,
+    /// Set when the turn ends: until when to keep looking
+    until: Option<Instant>,
+    /// When to look next
+    next: Instant,
+}
+
 pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
@@ -3044,6 +3072,9 @@ pub struct Tab {
     last_change_ms: u64,
     /// Capture of the latest response (DESIGN 7.3: submit-boundary marker scheme)
     pub last_response: Option<String>,
+    /// This turn's answer, looked for in the CLI's own record (see
+    /// [`RecordReply`]). `None` for a tab whose record cannot be read here
+    record_reply: Option<RecordReply>,
     /// When the state last changed, for saying how long ago a tab finished
     pub state_since: std::time::SystemTime,
     /// Start position of the response (scrollback accumulation amount). u64::MAX = unset.
@@ -3144,6 +3175,77 @@ impl Tab {
     /// not sftp
     pub fn cloud(&self) -> Option<&crate::config::HostSpec> {
         self.opts.cloud.as_ref()
+    }
+
+    /// Where this tab's CLI keeps its own record of the conversation, when
+    /// its profile says how to find one, the conversation it is on is known,
+    /// and the record is on this PC
+    pub fn record(&self) -> Option<std::path::PathBuf> {
+        let (glob, id) = self.record_named()?;
+        crate::sessionfind::locate(glob, id)
+    }
+
+    /// The pattern the record is found by and the conversation's id, whether
+    /// or not the CLI has written the record yet
+    fn record_named(&self) -> Option<(&str, &str)> {
+        if self.remote().is_some() || self.cloud().is_some() {
+            return None;
+        }
+        let id = &self.session.as_ref()?.id;
+        let glob = self.resume.as_ref()?.verify.as_deref()?;
+        Some((glob, id))
+    }
+
+    /// The turn has ended and its answer is still being looked for in the
+    /// record. What is in `last_response` meanwhile is the screen's copy
+    pub fn reply_settling(&self) -> bool {
+        self.record_reply.as_ref().is_some_and(|r| r.until.is_some())
+    }
+
+    /// Follow this turn's answer into the record: note where the record ends
+    /// as a turn begins, and once it has ended, take the answer from what was
+    /// written after that
+    fn follow_record(&mut self, (old, new): (TabState, TabState)) {
+        let now = Instant::now();
+        if new == TabState::Busy && old != TabState::Busy {
+            let path = self.record();
+            self.record_reply = self.record_named().is_some().then(|| RecordReply {
+                // Not written yet: the whole of it will be this turn
+                from: path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map_or(0, |m| m.len()),
+                path,
+                until: None,
+                next: now,
+            });
+            return;
+        }
+        if old == TabState::Busy
+            && new.turn_ended()
+            && let Some(r) = self.record_reply.as_mut()
+        {
+            r.until = Some(now + RECORD_WAIT);
+        }
+        let Some(r) = self.record_reply.as_mut() else { return };
+        let Some(until) = r.until else { return };
+        if now < r.next {
+            return;
+        }
+        r.next = now + RECORD_EVERY;
+        if r.path.is_none() {
+            let found = self.record();
+            if let Some(r) = self.record_reply.as_mut() {
+                r.path = found;
+            }
+        }
+        let Some(r) = self.record_reply.as_ref() else { return };
+        match r.path.as_deref().and_then(|p| crate::reader::said_after(p, r.from)) {
+            Some(said) => {
+                self.last_response = Some(said);
+                self.record_reply = None;
+            }
+            // The record never caught up: the screen's copy stands
+            None if now >= until => self.record_reply = None,
+            None => {}
+        }
     }
 
     /// The machine its folder is on, by the name the settings give it
@@ -3678,6 +3780,7 @@ impl Tab {
             last_change_ms: 0,
             state_since: std::time::SystemTime::now(),
             last_response: None,
+            record_reply: None,
             response_marker: AtomicU64::new(u64::MAX),
             resized_while_waiting: AtomicBool::new(false),
             submitted_rows: Mutex::new(Vec::new()),
@@ -4216,6 +4319,7 @@ impl Tab {
         if turned.0 != turned.1 {
             self.state_since = std::time::SystemTime::now();
         }
+        self.follow_record(turned);
         turned
     }
 
