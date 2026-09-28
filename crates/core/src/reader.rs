@@ -517,6 +517,506 @@ fn human_part(text: &str) -> String {
     kept.trim().to_string()
 }
 
+// -- The whole conversation --------------------------------------------------
+//
+// The walk above reads back from the end, a page at a time, because what a
+// phone opens a reader for is the last thing said. A conversation found by a
+// search is read the other way: all of it, from its first word, with the place
+// the search found open in front of whoever is reading. Only the words are
+// handed over whole. Everything the AI did in between -- the tools it reached
+// for, what they gave back, what it said on the way -- is where nearly all of
+// a record's bytes are (a 70 MB record held 325 KB of words, measured), so it
+// is counted and named by where it lies in the file, and read when somebody
+// opens it.
+
+/// How many characters of one piece of the work are shown. Past that it is a
+/// command's output or a file's contents, and the reader says how much was
+/// left out rather than handing over megabytes nobody asked for
+const PIECE_CAP: usize = 4_000;
+
+/// How many pieces of one stretch of work are handed over at once. A long
+/// job reaches for hundreds of tools between two things said
+const PIECES_CAP: usize = 200;
+
+/// What a piece of the work is: something the AI said on the way, a tool it
+/// reached for, or what came back from one
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PieceKind {
+    Say,
+    Call,
+    Out,
+}
+
+/// One piece of the work, as text. Nothing here knows any tool: what a call
+/// asked for and what a result held are read the same way, as the words in
+/// them (`leaves`)
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Piece {
+    pub kind: PieceKind,
+    /// The tool's name, for a call
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub text: String,
+    /// Characters left out in front of what is shown, and after it
+    #[serde(skip_serializing_if = "is_none_left")]
+    pub before: usize,
+    #[serde(skip_serializing_if = "is_none_left")]
+    pub after: usize,
+    /// Whether it holds what was searched for
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hit: bool,
+}
+
+fn is_none_left(n: &usize) -> bool {
+    *n == 0
+}
+
+/// A stretch of work, opened: its pieces in the order they happened, and how
+/// many more there were than are handed over
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct Work {
+    pub pieces: Vec<Piece>,
+    #[serde(skip_serializing_if = "is_none_left")]
+    pub more: usize,
+}
+
+/// One stretch of a whole conversation, in the order it happened.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(tag = "k", rename_all = "lowercase")]
+pub enum Item {
+    /// Somebody speaking. What one person said in a row is one of these
+    Say {
+        who: Who,
+        text: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        hit: bool,
+    },
+    /// The work between a question and its answer. `from` and `to` are where
+    /// it lies in the record, which is how it is asked for when somebody opens
+    /// it (`work_at`). Opened already when it holds what was searched for
+    Work {
+        calls: usize,
+        from: u64,
+        to: u64,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        hit: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        work: Option<Work>,
+    },
+}
+
+/// What one line of a record is, read forwards
+enum Line {
+    Said(Turn),
+    /// The AI reaching for tools, with what it said in the same breath
+    Reaching(Vec<Piece>),
+    /// What came back from a tool
+    Out(Vec<Piece>),
+    Nothing,
+}
+
+/// One line of a record, read for the whole conversation. The same reading
+/// as `look_at`, and one thing more: what came back from a tool, which the
+/// walk from the end has no use for and the whole conversation shows
+fn read_line(line: &[u8]) -> Line {
+    let Ok(text) = std::str::from_utf8(line) else {
+        return Line::Nothing;
+    };
+    let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
+    let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
+    let tooling = text.contains("_use\"")
+        || text.contains("_call\"")
+        || text.contains("\"toolCalls\"")
+        || text.contains("_result\"")
+        || text.contains("_output\"");
+    if !spoken && !tooling {
+        return Line::Nothing;
+    }
+    let Ok(record) = serde_json::from_str::<Value>(text) else {
+        return Line::Nothing;
+    };
+    if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return Line::Nothing;
+    }
+    if reaching_for_a_tool(&record) {
+        return Line::Reaching(calls_of(&record));
+    }
+    let out = outputs_of(&record);
+    if !out.is_empty() {
+        return Line::Out(out);
+    }
+    match turn_of(&record) {
+        Some(turn) => Line::Said(turn),
+        None => Line::Nothing,
+    }
+}
+
+/// The places a record keeps what it is: the record itself, and the one
+/// field a message is wrapped in
+fn layers(record: &Value) -> impl Iterator<Item = &Value> {
+    std::iter::once(record).chain(["message", "payload"].into_iter().filter_map(|k| record.get(k)))
+}
+
+/// Whether a block's type names it as what its name ends in
+fn typed(v: &Value, ends: &[&str]) -> bool {
+    v.get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|t| ends.iter().any(|e| t.ends_with(e)))
+}
+
+/// The tools a record reaches for, each as a piece, after whatever was said
+/// with them. Found where `reaching_for_a_tool` finds them
+fn calls_of(record: &Value) -> Vec<Piece> {
+    let mut out = Vec::new();
+    if let Some(message) = message_of(record)
+        && let Some(content) = message.get("content")
+    {
+        let said = words_of(content);
+        if !said.trim().is_empty() {
+            out.push(piece(PieceKind::Say, String::new(), said.trim().to_string()));
+        }
+    }
+    let call = |v: &Value| {
+        let name = v.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        piece(PieceKind::Call, name, leaves(v))
+    };
+    for layer in layers(record) {
+        if typed(layer, &["_use", "_call"]) {
+            out.push(call(layer));
+        }
+        for block in layer.get("content").and_then(Value::as_array).into_iter().flatten() {
+            if typed(block, &["_use", "_call"]) {
+                out.push(call(block));
+            }
+        }
+    }
+    for c in record.get("toolCalls").and_then(Value::as_array).into_iter().flatten() {
+        out.push(call(c));
+    }
+    out
+}
+
+/// What came back from tools in a record, each as a piece. Told by the shape
+/// of the name, as a call is: a result's type ends in `_result`
+/// (`tool_result`) or `_output` (`function_call_output`)
+fn outputs_of(record: &Value) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for layer in layers(record) {
+        if typed(layer, &["_result", "_output"]) {
+            out.push(piece(PieceKind::Out, String::new(), leaves(layer)));
+        }
+        for block in layer.get("content").and_then(Value::as_array).into_iter().flatten() {
+            if typed(block, &["_result", "_output"]) {
+                out.push(piece(PieceKind::Out, String::new(), leaves(block)));
+            }
+        }
+    }
+    out
+}
+
+fn piece(kind: PieceKind, name: String, text: String) -> Piece {
+    Piece { kind, name, text, before: 0, after: 0, hit: false }
+}
+
+/// The words in a value: every string in it, in order, one to a line.
+///
+/// Format-blind, like the rest of this module. What is left out is what no
+/// reader reads -- a block's own `type`, and the ids that tie a call to its
+/// result (any key ending in "id"). A picture a tool handed back is left out
+/// whole: its bytes are text, but not words. An argument list a CLI files as a
+/// JSON string is read as the JSON it is
+fn leaves(v: &Value) -> String {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => {
+                let t = s.trim();
+                if t.is_empty() {
+                    return;
+                }
+                if t.starts_with('{')
+                    && let Ok(inner @ Value::Object(_)) = serde_json::from_str::<Value>(t)
+                {
+                    walk(&inner, out);
+                    return;
+                }
+                out.push(t.to_string());
+            }
+            Value::Array(list) => list.iter().for_each(|x| walk(x, out)),
+            Value::Object(map) => {
+                if map.contains_key("media_type") || map.get("type").and_then(Value::as_str) == Some("image") {
+                    return;
+                }
+                for (k, x) in map {
+                    let lower = k.to_ascii_lowercase();
+                    if lower == "type" || lower == "name" || lower.ends_with("id") || lower == "signature" {
+                        continue;
+                    }
+                    walk(x, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(v, &mut out);
+    out.join("\n")
+}
+
+/// Where `needle` (already lowercase) first is in `text`, as a byte offset
+/// into `text` itself. Lowercasing can change how long a character is, so the
+/// search runs on a lowercased copy and the answer is carried back
+pub fn find_in(text: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let mut low = String::with_capacity(text.len());
+    let mut back: Vec<usize> = Vec::with_capacity(text.len());
+    for (i, c) in text.char_indices() {
+        for l in c.to_lowercase() {
+            let before = low.len();
+            low.push(l);
+            back.extend(std::iter::repeat_n(i, low.len() - before));
+        }
+    }
+    low.find(needle).map(|at| back[at])
+}
+
+/// A piece cut down to what is shown: its start, or the stretch around what was
+/// searched for when that lies further in
+fn clip(mut p: Piece, needle: &str) -> Piece {
+    let at = find_in(&p.text, needle);
+    p.hit = at.is_some();
+    let count = p.text.chars().count();
+    if count <= PIECE_CAP {
+        return p;
+    }
+    // From the start, unless what was searched for lies past what the start
+    // shows: then a quarter of the window in front of it, so it is read in
+    // its sentence rather than at the top edge
+    let hit_char = at.map(|b| p.text[..b].chars().count()).unwrap_or(0);
+    let start = match hit_char < PIECE_CAP {
+        true => 0,
+        false => (hit_char - PIECE_CAP / 4).min(count - PIECE_CAP),
+    };
+    let shown: String = p.text.chars().skip(start).take(PIECE_CAP).collect();
+    p.before = start;
+    p.after = count - start - shown.chars().count();
+    p.text = shown;
+    p
+}
+
+/// One step of the AI's side, between two things a person said
+enum Step {
+    Said(String),
+    Call(Vec<Piece>),
+    Out(Vec<Piece>),
+}
+
+/// Where each line of `bytes` starts and ends, the newline left out
+fn lines_of(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if at >= bytes.len() {
+            return None;
+        }
+        let start = at;
+        let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
+        at = end + 1;
+        Some((start, end))
+    })
+}
+
+/// The AI's side of one exchange, split into the work and the answer.
+///
+/// The rule `read_back` keeps, read forwards: whatever the AI said before the
+/// last tool it reached for was said on the way to that tool, and belongs to
+/// the work. What it said after is the answer
+fn split_side(steps: Vec<(usize, usize, Step)>, needle: &str) -> (Option<Item>, Option<String>) {
+    let last_call = steps.iter().rposition(|(_, _, s)| matches!(s, Step::Call(_)));
+    let mut answer: Vec<String> = Vec::new();
+    let mut pieces: Vec<Piece> = Vec::new();
+    let (mut from, mut to) = (usize::MAX, 0usize);
+    let mut calls = 0;
+    let mut worked = false;
+    for (i, (start, end, step)) in steps.into_iter().enumerate() {
+        let in_work = match (&step, last_call) {
+            (Step::Said(_), Some(k)) => i < k,
+            (Step::Said(_), None) => false,
+            _ => true,
+        };
+        if !in_work {
+            if let Step::Said(text) = step {
+                answer.push(text);
+            }
+            continue;
+        }
+        worked = true;
+        from = from.min(start);
+        to = to.max(end);
+        match step {
+            Step::Said(text) => pieces.push(piece(PieceKind::Say, String::new(), text)),
+            Step::Call(ps) => {
+                calls += ps.iter().filter(|p| p.kind == PieceKind::Call).count();
+                pieces.extend(ps);
+            }
+            Step::Out(ps) => pieces.extend(ps),
+        }
+    }
+    let work = worked.then(|| {
+        let pieces: Vec<Piece> = pieces.into_iter().map(|p| clip(p, needle)).collect();
+        let hit = pieces.iter().any(|p| p.hit);
+        let total = pieces.len();
+        Item::Work {
+            calls,
+            from: from as u64,
+            to: to as u64,
+            hit,
+            work: hit.then(|| Work {
+                more: total.saturating_sub(PIECES_CAP),
+                pieces: pieces.into_iter().take(PIECES_CAP).collect(),
+            }),
+        }
+    });
+    let answer = answer.join("\n\n");
+    (work, (!answer.trim().is_empty()).then_some(answer))
+}
+
+/// Something said, joined to what the same speaker said just before it
+fn say(items: &mut Vec<Item>, who: Who, text: String, needle: &str) {
+    let hit = find_in(&text, needle).is_some();
+    if let Some(Item::Say { who: w, text: t, hit: h }) = items.last_mut()
+        && *w == who
+    {
+        t.push_str("\n\n");
+        t.push_str(&text);
+        *h |= hit;
+        return;
+    }
+    items.push(Item::Say { who, text, hit });
+}
+
+/// The whole conversation in `bytes` (a record, or a stretch of one), in the
+/// order it happened. `needle` marks what holds it; empty marks nothing
+pub fn read_whole(bytes: &[u8], needle: &str) -> Vec<Item> {
+    let needle = needle.trim().to_lowercase();
+    let mut items = Vec::new();
+    let mut side: Vec<(usize, usize, Step)> = Vec::new();
+    let settle = |items: &mut Vec<Item>, side: &mut Vec<(usize, usize, Step)>| {
+        let (work, answer) = split_side(std::mem::take(side), &needle);
+        if let Some(w) = work {
+            items.push(w);
+        }
+        if let Some(a) = answer {
+            say(items, Who::Ai, a, &needle);
+        }
+    };
+    for (start, end) in lines_of(bytes) {
+        match read_line(&bytes[start..end]) {
+            Line::Said(t) if t.who == Who::You => {
+                settle(&mut items, &mut side);
+                say(&mut items, Who::You, t.text, &needle);
+            }
+            Line::Said(t) => side.push((start, end, Step::Said(t.text))),
+            Line::Reaching(ps) => side.push((start, end, Step::Call(ps))),
+            Line::Out(ps) => side.push((start, end, Step::Out(ps))),
+            Line::Nothing => {}
+        }
+    }
+    settle(&mut items, &mut side);
+    items
+}
+
+/// One stretch of work, opened: the lines between `from` and `to` of a record.
+/// The same reading as `read_whole`, so what opens is what was counted
+pub fn work_at(bytes: &[u8], from: u64, to: u64, needle: &str) -> Work {
+    let from = (from as usize).min(bytes.len());
+    let to = (to as usize).clamp(from, bytes.len());
+    let needle = needle.trim().to_lowercase();
+    let mut pieces = Vec::new();
+    for (start, end) in lines_of(&bytes[from..to]) {
+        match read_line(&bytes[from + start..from + end]) {
+            Line::Said(t) if t.who == Who::Ai => pieces.push(piece(PieceKind::Say, String::new(), t.text)),
+            Line::Reaching(ps) | Line::Out(ps) => pieces.extend(ps),
+            _ => {}
+        }
+    }
+    let total = pieces.len();
+    Work {
+        more: total.saturating_sub(PIECES_CAP),
+        pieces: pieces.into_iter().take(PIECES_CAP).map(|p| clip(p, &needle)).collect(),
+    }
+}
+
+/// The words of one line of a record that a reader would see: what was said,
+/// or what a tool was asked and gave back. What a search is matched against,
+/// so a word that only appears in a record's bookkeeping -- the folder it ran
+/// in, the branch, an id -- does not make a conversation a match
+fn words_seen(line: &[u8]) -> Vec<String> {
+    match read_line(line) {
+        Line::Said(t) => vec![t.text],
+        Line::Reaching(ps) | Line::Out(ps) => ps.into_iter().map(|p| p.text).collect(),
+        Line::Nothing => Vec::new(),
+    }
+}
+
+/// `needle`, lowercase, found in `bytes` where a reader would see it: the
+/// words it was found in, and where in them. `None` when it is nowhere but in
+/// the record's bookkeeping.
+///
+/// Found first as bytes, which is what makes reading every record on a
+/// machine affordable: only the lines the bytes turn up are parsed. JSON keeps
+/// a quote or a backslash escaped, so the bytes looked for are the needle as
+/// JSON writes it. A needle with letters whose case lies outside ASCII cannot
+/// be found that way -- the bytes of "É" are not the bytes of "é" -- and is
+/// looked for line by line instead
+pub fn mention(bytes: &[u8], needle: &str) -> Option<(String, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    let seen = |line: &[u8]| {
+        words_seen(line).into_iter().find_map(|w| find_in(&w, needle).map(|at| (w, at)))
+    };
+    let caseful = needle.chars().any(|c| !c.is_ascii() && c.to_uppercase().ne(c.to_lowercase()));
+    if caseful {
+        return lines_of(bytes).find_map(|(s, e)| seen(&bytes[s..e]));
+    }
+    let raw = serde_json::to_string(needle).unwrap_or_default();
+    let raw = raw.get(1..raw.len().saturating_sub(1)).unwrap_or(needle).as_bytes();
+    let mut from = 0;
+    while let Some(at) = find_ascii_blind(bytes, raw, from) {
+        let start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
+        let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
+        if let Some(found) = seen(&bytes[start..end]) {
+            return Some(found);
+        }
+        from = end;
+    }
+    None
+}
+
+/// Where `needle` first is in `hay` at or after `from`, ASCII letters matched
+/// whatever their case. `needle` is lowercase
+pub fn find_ascii_blind(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    let n = needle.len();
+    if n == 0 || hay.len() < n {
+        return None;
+    }
+    let first = needle[0];
+    let upper = first.to_ascii_uppercase();
+    let last = hay.len() - n;
+    let mut i = from;
+    while i <= last {
+        let rel = hay[i..=last].iter().position(|b| *b == first || *b == upper)?;
+        i += rel;
+        if hay[i..i + n].iter().zip(needle).all(|(a, b)| a.to_ascii_lowercase() == *b) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,5 +1377,133 @@ mod tests {
         let said: Vec<&str> = page.turns.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(said, vec!["先頭の発言\n\n最後の発言"], "turns beyond a huge line are kept too");
         assert!(!page.more, "it has read all the way to the start");
+    }
+
+    // -- The whole conversation --
+
+    fn call(name: &str, input: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_1","name":"{name}","input":{{"command":"{input}"}}}}]}}}}"#
+        )
+    }
+
+    fn result(text: &str) -> String {
+        format!(
+            r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"{text}"}}]}}}}"#
+        )
+    }
+
+    fn conversation() -> String {
+        [
+            record("user", "ログインが落ちます"),
+            record("assistant", "Now the logs:"),
+            call("Bash", "tail app.log"),
+            result("panic at auth.rs:42 token expired"),
+            record("assistant", "トークンの期限切れが原因でした。"),
+            record("user", "直して"),
+            record("assistant", "直しました。"),
+        ]
+        .join("\n")
+    }
+
+    /// All of it, from its first word, in the order it happened: what each
+    /// side said, and the work between a question and its answer counted in
+    /// one line. What the AI said on its way to a tool is part of the work,
+    /// not the answer -- the same rule the walk from the end keeps
+    #[test]
+    fn a_conversation_is_read_whole_with_the_work_between_counted() {
+        let bytes = conversation();
+        let items = read_whole(bytes.as_bytes(), "");
+        let shape: Vec<String> = items
+            .iter()
+            .map(|i| match i {
+                Item::Say { who, text, .. } => format!("{who:?}: {text}"),
+                Item::Work { calls, work, .. } => format!("work {calls} opened={}", work.is_some()),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                "You: ログインが落ちます",
+                "work 1 opened=false",
+                "Ai: トークンの期限切れが原因でした。",
+                "You: 直して",
+                "Ai: 直しました。",
+            ]
+        );
+        // The work opens to what was said on the way, the call, and what came back
+        let Item::Work { from, to, .. } = items[1] else { panic!("{items:?}") };
+        let work = work_at(bytes.as_bytes(), from, to, "");
+        let kinds: Vec<(PieceKind, &str)> = work.pieces.iter().map(|p| (p.kind, p.text.as_str())).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (PieceKind::Say, "Now the logs:"),
+                (PieceKind::Call, "tail app.log"),
+                (PieceKind::Out, "panic at auth.rs:42 token expired"),
+            ]
+        );
+        assert_eq!(work.pieces[1].name, "Bash");
+    }
+
+    /// What was searched for is marked where it was said, and a stretch of
+    /// work that holds it comes already open, so the page opens on it
+    #[test]
+    fn what_was_searched_for_is_marked_and_its_work_comes_open() {
+        let bytes = conversation();
+        let items = read_whole(bytes.as_bytes(), "TOKEN EXPIRED");
+        let Item::Work { hit, work: Some(work), .. } = &items[1] else { panic!("{items:?}") };
+        assert!(hit);
+        assert!(work.pieces.iter().any(|p| p.hit && p.kind == PieceKind::Out));
+        let said_hits: Vec<bool> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Say { hit, .. } => Some(*hit),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said_hits, vec![false, false, false, false]);
+
+        let items = read_whole(bytes.as_bytes(), "直して");
+        assert!(matches!(&items[3], Item::Say { hit: true, .. }), "{items:?}");
+    }
+
+    /// A tool's output of megabytes is shown as its start -- or the stretch
+    /// around what was searched for, when that lies further in -- with how
+    /// much was left out on each side
+    #[test]
+    fn a_long_piece_is_cut_around_what_was_looked_for() {
+        let text = format!("{}NEEDLE{}", "a".repeat(10_000), "b".repeat(10_000));
+        let p = clip(piece(PieceKind::Out, String::new(), text), "needle");
+        assert!(p.hit);
+        assert!(p.text.contains("NEEDLE"), "the cut left out what was looked for");
+        assert_eq!(p.before + p.text.chars().count() + p.after, 20_006);
+        assert!(p.before > 0 && p.after > 0);
+        let q = clip(piece(PieceKind::Out, String::new(), "c".repeat(9_000)), "");
+        assert_eq!((q.before, q.text.chars().count(), q.after), (0, PIECE_CAP, 9_000 - PIECE_CAP));
+    }
+
+    /// Found where a reader would see it, and not in the bookkeeping around it
+    #[test]
+    fn a_mention_is_in_the_words_not_the_bookkeeping() {
+        let line = r#"{"type":"user","cwd":"D:/work/Refund","message":{"role":"user","content":"hello"}}"#;
+        assert!(mention(line.as_bytes(), "refund").is_none(), "the folder's name counted as a mention");
+        let (words, at) = mention(conversation().as_bytes(), "期限切れ").expect("said");
+        assert_eq!(&words[at..at + "期限切れ".len()], "期限切れ");
+        // A quote is escaped in the record, and still found
+        let quoted = record("assistant", r#"say \"yes\" now"#);
+        assert!(mention(quoted.as_bytes(), "\"yes\"").is_some());
+        // A letter whose case lies outside ASCII is found whatever its case
+        let accent = record("assistant", "Élan vital");
+        assert!(mention(accent.as_bytes(), "élan").is_some());
+    }
+
+    #[test]
+    fn a_place_in_lowercase_is_carried_back_to_the_text() {
+        assert_eq!(find_in("Hello World", "world"), Some(6));
+        assert_eq!(find_in("İstanbul x", "x"), Some("İstanbul ".len()));
+        assert_eq!(find_in("abc", ""), None);
+        assert_eq!(find_ascii_blind(b"xxABCxx", b"abc", 0), Some(2));
+        assert_eq!(find_ascii_blind(b"xxABCxx", b"abc", 3), None);
     }
 }

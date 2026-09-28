@@ -583,6 +583,11 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__issues && window.__issues({json});"));
     }
 
+    /// Hand a past conversation, read, to the Vault (already JSON-encoded)
+    fn push_vault_read(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__vaultRead && window.__vaultRead({json});"));
+    }
+
     /// Hand one answer back to the ideas window (already JSON-encoded)
     fn push_ideas(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__ideas && window.__ideas({json});"));
@@ -608,13 +613,7 @@ impl WinSurface {
     /// Route a Vault intent that arrived from the phone into the same queues a
     /// window-origin one uses, so both are drained in one place
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) {
-        match ev {
-            shikisha_shared::Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
-            ev @ shikisha_shared::Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
-            shikisha_shared::Ev::PastList { tab, wake } => self.mail.past_lists.push((tab, wake)),
-            shikisha_shared::Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
-            _ => {}
-        }
+        self.mail.queue_ui(ev);
     }
 
     /// Deliver a finished ✨ suggestion (JSON: {ok, cmd?/error?}) to the composer.
@@ -763,10 +762,11 @@ impl WinSurface {
                         sheet,
                     })
                 }
-                Ev::VaultSearch { query, wake } => self.mail.vault_queries.push((query, wake)),
-                ev @ Ev::VaultOpen { .. } => self.mail.vault_opens.push(ev),
-                Ev::PastList { tab, wake } => self.mail.past_lists.push((tab, wake)),
-                Ev::PastResume { tab, id } => self.mail.past_resumes.push((tab, id)),
+                ev @ (Ev::VaultSearch { .. }
+                | Ev::VaultOpen { .. }
+                | Ev::VaultRead { .. }
+                | Ev::PastList { .. }
+                | Ev::PastResume { .. }) => self.mail.queue_ui(ev),
                 ev @ Ev::Branch { .. } => {
                     self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
@@ -2060,6 +2060,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
+    fn push_vault_read(&self, json: &str) { WinSurface::push_vault_read(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }

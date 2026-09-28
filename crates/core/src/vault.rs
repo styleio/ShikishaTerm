@@ -5,12 +5,15 @@
 //! already; what is missing is a way to ask "which of these was the one about
 //! the payments bug" without opening dozens of files by hand.
 //!
-//! Nothing is indexed ahead of time. The search reads the records when asked,
-//! newest first, and stops once it has enough — because the thing a person
-//! wants is almost always recent, and building an index to keep in step with
-//! files another program writes would be a second source of truth that drifts.
-//! When the search has to stop before the end, it says so, rather than letting
-//! a bounded look read as a complete one.
+//! Nothing is indexed ahead of time. The search reads the records when asked --
+//! every one of them, all the way through, newest first -- and stops once it
+//! has enough, because the thing a person wants is almost always recent, and
+//! building an index to keep in step with files another program writes would
+//! be a second source of truth that drifts. Reading all of it is affordable:
+//! 348 records, 814 MB, took a quarter to half a second to look through
+//! (2026-09-29, measured), because only the lines the bytes turn up are ever
+//! parsed (`reader::mention`). When it stops at enough, it says so, rather than
+//! letting the page read as the whole of the past.
 //!
 //! What makes a record findable is deliberately format-blind. These files are
 //! JSON, one object per line, and every CLI arranges that JSON differently and
@@ -28,14 +31,8 @@ use std::time::SystemTime;
 
 use crate::profile::{ProfileFile, ResumeSpec};
 
-/// How many records to open before stopping, newest first. A person looking
-/// for a conversation is looking for a recent one; reading every record a
-/// machine has ever written, on every keystroke, is not the way to help them
-const SCAN_CAP: usize = 400;
-
-/// How much of one record to read. The part that says what a conversation was
-/// about is near the front — the opening messages — and a log that has grown
-/// to tens of megabytes is not made more findable by reading all of it
+/// How much of a record's start is read for what it says about itself -- its
+/// id and folder -- when a blank search only lists the recent ones
 const READ_CAP: usize = 512 * 1024;
 
 /// How many records to open when asking what was said in one folder. A folder
@@ -103,14 +100,27 @@ pub struct Found {
 ///
 /// A blank query is a valid ask: it means "show me the recent ones", the way
 /// an empty search box lists everything. A query is matched case-blind, as a
-/// run of characters anywhere in the record
+/// run of characters in what was said or in what a tool was asked and gave
+/// back -- not in a record's bookkeeping, where the folder a conversation ran
+/// in would make every conversation in it a match
 pub fn search(query: &str, limit: usize) -> Found {
+    search_until(query, limit, &|| false)
+}
+
+/// The same, given up as soon as `stop` says so: a search typed over by a
+/// newer one is nobody's any more, and reading on would only hold the newer
+/// one up
+pub fn search_until(query: &str, limit: usize, stop: &dyn Fn() -> bool) -> Found {
+    search_in(&sources(), query, limit, stop)
+}
+
+/// The same search over the records of these CLIs, so a test can supply its own
+fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> bool) -> Found {
     let needle = query.trim().to_lowercase();
-    let sources = sources();
     // Every record across every CLI, newest first, so the cap falls on the
     // oldest rather than on whichever CLI happens to be listed last
     let mut files: Vec<(SystemTime, &Source, PathBuf)> = Vec::new();
-    for src in &sources {
+    for src in sources {
         for path in list(&src.verify) {
             let when = path
                 .metadata()
@@ -120,37 +130,42 @@ pub fn search(query: &str, limit: usize) -> Found {
         }
     }
     files.sort_by_key(|(when, ..)| std::cmp::Reverse(*when));
-    let capped = files.len() > SCAN_CAP;
-    files.truncate(SCAN_CAP);
 
     let mut hits = Vec::new();
-    for (when, src, path) in files {
-        if hits.len() >= limit {
+    let mut read = 0;
+    for (when, src, path) in &files {
+        if hits.len() >= limit || stop() {
             break;
         }
-        let Some(text) = read_head(&path) else { continue };
-        let low = text.to_lowercase();
-        let at = match needle.is_empty() {
-            true => Some(0),
-            false => low.find(&needle),
+        read += 1;
+        // A blank search lists; it has nothing to read the records through for
+        let (head, snip) = match needle.is_empty() {
+            true => match read_head(path) {
+                Some(head) => (head, String::new()),
+                None => continue,
+            },
+            false => {
+                let Ok(bytes) = std::fs::read(path) else { continue };
+                let Some((words, at)) = crate::reader::mention(&bytes, &needle) else { continue };
+                let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
+                (head, snippet(&words, at, needle.len()))
+            }
         };
-        let Some(at) = at else { continue };
-        let Some(id) = id_of(&path, &text, src) else { continue };
-        let cwd = cwd_of(&text, src);
+        let Some(id) = id_of(path, &head, src) else { continue };
+        let cwd = cwd_of(&head, src);
         hits.push(Hit {
             program: src.program.clone(),
             id,
             title: title_of(cwd.as_deref(), &src.program),
-            snippet: if needle.is_empty() { String::new() } else { snippet(&text, at, needle.len()) },
+            snippet: snip,
             cwd,
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
             host: None,
         });
     }
-    // A capped scan that still filled the page is honestly complete for the
-    // page; only say "more" when the cap actually hid matches we cannot see
-    Found { capped: capped && hits.len() < limit, hits }
+    // Stopped at enough with records left unread: there may be older ones
+    Found { capped: hits.len() >= limit && read < files.len(), hits }
 }
 
 /// The same search over the records on another machine: every CLI's, newest
@@ -191,7 +206,7 @@ fn far_search_script(sources: &[Source], query: &str) -> String {
             continue;
         }
         script.push_str(&format!(
-            "ls -t {rest} 2>/dev/null | head -n {SCAN_CAP} | while IFS= read -r f; do \
+            "ls -t {rest} 2>/dev/null | while IFS= read -r f; do \
 if [ -z \"$q\" ]; then m=''; else m=$(grep -i -F -m1 -e \"$q\" \"$f\" 2>/dev/null | head -c 65536); [ -z \"$m\" ] && continue; fi; \
 printf '@@F {i} %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; \
 head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; done; "
@@ -495,13 +510,7 @@ fn cwd_of(text: &str, src: &Source) -> Option<String> {
     // Format-blind fallback: the first cwd anywhere in the head. Every one of
     // these tools writes the folder into its records; they just disagree on
     // where, so this finds it without being told
-    let key = "\"cwd\":";
-    let at = text.find(key)? + key.len();
-    let rest = text[at..].trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    let raw = &rest[..end];
-    (!raw.is_empty()).then(|| raw.replace("\\\\", "\\").replace("\\/", "/"))
+    first_string(text, "\"cwd\":")
 }
 
 /// One dotted field out of the first line's JSON (`payload.session_id`).
@@ -548,6 +557,195 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
     let lead = if start > 0 { "…" } else { "" };
     let tail = if end < text.len() { "…" } else { "" };
     format!("{lead}{trimmed}{tail}")
+}
+
+// -- Reading one conversation whole ------------------------------------------
+
+/// The most of a record on another machine that is brought over to be read.
+/// Far past any conversation's words, which is what it is for; a record that
+/// is bigger is cut, and its end is what is lost
+const FAR_CAP: usize = 256 * 1024 * 1024;
+
+/// A line longer than this, in a record on another machine, is left there and
+/// a blank record brought in its place. Nobody says a megabyte: a line that
+/// long is a tool's output or a file's contents, and it is most of what would
+/// otherwise cross the network. Replaced rather than dropped, so every line
+/// still lies where the reading counted it
+const FAR_LINE_CAP: usize = 1024 * 1024;
+
+/// The record last brought over from another machine, by where it was
+static FAR_LAST: std::sync::Mutex<Option<(String, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(None);
+
+/// One conversation, read whole: what the reader shows, and what the
+/// conversation says about where it was had
+pub struct Opened {
+    pub items: Vec<crate::reader::Item>,
+    /// The folder it was had in, when the record says
+    pub folder: Option<String>,
+    /// The branch that folder was on, when the record says
+    pub branch: Option<String>,
+}
+
+/// Whether an id is one a record will be looked up by: the characters ids are
+/// made of, and nothing that climbs out of the folder. What names a
+/// conversation can come from a phone, and it is this side that decides which
+/// file that is
+fn plain_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
+
+/// The bytes of one conversation's record, here or on the machine `at`, by
+/// the CLI and id a search hit carries. `fresh` fetches a record on another
+/// machine again rather than using the copy last brought over.
+///
+/// A record here is read again every time: it only ever grows at its end, so
+/// where a stretch of it lies does not move. One on another machine is kept
+/// once brought over, because opening a stretch of its work asks for bytes by
+/// where they lie, and fetching the whole record over the network for every
+/// stretch opened would be the slow way to the same bytes
+fn record_bytes(
+    program: &str,
+    id: &str,
+    at: Option<&crate::elsewhere::Elsewhere>,
+    fresh: bool,
+) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    use crate::i18n::t;
+    let src = sources()
+        .into_iter()
+        .find(|s| s.program == program)
+        .ok_or_else(|| t("err.vault.no_program"))?;
+    if !plain_id(id) {
+        return Err(t("err.vault.no_record"));
+    }
+    let Some(at) = at else {
+        let path = crate::sessionfind::locate(&src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
+        return std::fs::read(&path)
+            .map(std::sync::Arc::new)
+            .map_err(|e| format!("{}: {e}", t("err.vault.unreadable")));
+    };
+    let path = crate::reader::locate_far(at, &src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
+    let key = format!("{}\u{1f}{path}", at.address());
+    if !fresh
+        && let Some((k, bytes)) = FAR_LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        && *k == key
+    {
+        return Ok(bytes.clone());
+    }
+    use base64::Engine as _;
+    let quoted = crate::worktree::for_a_shell(std::slice::from_ref(&path));
+    let line = format!(
+        "LC_ALL=C awk -v m={FAR_LINE_CAP} 'length($0) > m {{ print \"{{}}\"; next }} {{ print }}' {quoted} | head -c {FAR_CAP} | base64 -w0"
+    );
+    let ran = crate::elsewhere::exec(at, &line, 180_000).map_err(|e| format!("{}: {e:#}", t("err.vault.unreadable")))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(ran.out.trim())
+        .map_err(|e| format!("{}: {e}", t("err.vault.unreadable")))?;
+    let bytes = std::sync::Arc::new(bytes);
+    *FAR_LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, bytes.clone()));
+    Ok(bytes)
+}
+
+/// One conversation read whole, with what `needle` was found in marked (see
+/// `reader::read_whole`). Waits on the disk, or on the machine it is on
+pub fn open(
+    program: &str,
+    id: &str,
+    at: Option<&crate::elsewhere::Elsewhere>,
+    needle: &str,
+) -> Result<Opened, String> {
+    let bytes = record_bytes(program, id, at, true)?;
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
+    let src = sources().into_iter().find(|s| s.program == program);
+    Ok(Opened {
+        items: crate::reader::read_whole(&bytes, needle),
+        folder: src.as_ref().and_then(|s| cwd_of(&head, s)),
+        branch: branch_of(&head),
+    })
+}
+
+/// One stretch of a conversation's work, opened (see `reader::work_at`)
+pub fn open_work(
+    program: &str,
+    id: &str,
+    at: Option<&crate::elsewhere::Elsewhere>,
+    from: u64,
+    to: u64,
+    needle: &str,
+) -> Result<crate::reader::Work, String> {
+    let bytes = record_bytes(program, id, at, false)?;
+    Ok(crate::reader::work_at(&bytes, from, to, needle))
+}
+
+/// Whether the folder a conversation was had in is still there, on the
+/// machine it was had on. `None` when that could not be asked
+pub fn folder_there(at: Option<&crate::elsewhere::Elsewhere>, folder: &str) -> Option<bool> {
+    let Some(at) = at else {
+        return Some(Path::new(folder).is_dir());
+    };
+    let quoted = crate::worktree::for_a_shell(&[folder.to_string()]);
+    let ran = crate::elsewhere::exec(at, &format!("[ -d {quoted} ] && echo yes || echo no"), 30_000).ok()?;
+    match ran.out.trim() {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// Where a branch could be cut into a folder again, among the folders of a
+/// desk on this PC: each project's checkout that still has the branch, and
+/// whether it has it itself (`true`) or only its remote does, as `origin/…`.
+///
+/// Asked when the folder a conversation was had in is gone. Removing a
+/// worktree takes its folder and leaves its branch, so the work that was
+/// committed there is still there to be picked back up
+pub fn branch_homes(branch: &str, folders: &[PathBuf]) -> Vec<serde_json::Value> {
+    // A name git would take as an option, or that is not one name, is not asked
+    if branch.starts_with('-') || branch.contains("..") || branch.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Vec::new();
+    }
+    let has = |main: &Path, r: &str| {
+        let mut asking = std::process::Command::new("git");
+        asking.arg("-C").arg(main).args(["rev-parse", "--verify", "--quiet", r]);
+        crate::detach_console(&mut asking).output().is_ok_and(|o| o.status.success())
+    };
+    let mut seen: Vec<PathBuf> = Vec::new();
+    let mut out = Vec::new();
+    for folder in folders {
+        let Some(main) = crate::repo::main_checkout(folder) else { continue };
+        if seen.iter().any(|s| crate::uistate::same_folder(s, &main)) {
+            continue;
+        }
+        seen.push(main.clone());
+        let local = has(&main, &format!("refs/heads/{branch}^{{commit}}"));
+        if local || has(&main, &format!("refs/remotes/origin/{branch}^{{commit}}")) {
+            out.push(serde_json::json!({"dir": main.display().to_string(), "local": local}));
+        }
+    }
+    out
+}
+
+/// The branch the folder was on, from the first place a record writes it
+/// down: `gitBranch` on Claude's lines, `branch` in what Codex notes about
+/// the repository when it starts. A detached checkout says `HEAD`, which names
+/// no branch
+fn branch_of(head: &str) -> Option<String> {
+    ["\"gitBranch\":", "\"branch\":"]
+        .iter()
+        .find_map(|key| first_string(head, key))
+        .filter(|b| b != "HEAD")
+}
+
+/// The string value after the first `key` in some JSON text, unescaped the
+/// little a path or a name needs
+fn first_string(text: &str, key: &str) -> Option<String> {
+    let at = text.find(key)? + key.len();
+    let rest = text[at..].trim_start().strip_prefix('"')?;
+    let end = rest.find('"')?;
+    let raw = &rest[..end];
+    (!raw.is_empty()).then(|| raw.replace("\\\\", "\\").replace("\\/", "/"))
 }
 
 /// The first part of a file, capped.
@@ -957,5 +1155,134 @@ mod far_search_tests {
         assert!(hits[0].title.starts_with("vm: "), "{}", hits[0].title);
         assert!(hits[0].snippet.contains("login bug"), "{}", hits[0].snippet);
         assert_eq!(hits[0].cwd.as_deref(), Some("/home/user/site"));
+    }
+}
+
+#[cfg(test)]
+mod whole_tests {
+    use super::*;
+
+    fn source(root: &Path) -> Source {
+        Source {
+            program: "claude".into(),
+            with_id: vec!["--resume".into(), "{id}".into()],
+            verify: format!("{}/*/{{id}}.jsonl", root.display()).replace('/', std::path::MAIN_SEPARATOR_STR),
+            id_path: None,
+            cwd_path: None,
+            asks: None,
+        }
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("shikisha-vault-whole-{name}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("proj")).unwrap();
+        d
+    }
+
+    fn said(who: &str, cwd: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"{who}","cwd":"{cwd}","gitBranch":"fix/login","message":{{"role":"{who}","content":[{{"type":"text","text":"{text}"}}]}}}}"#
+        )
+    }
+
+    /// The whole of every record is searched, not its start: a word said after
+    /// megabytes of tool output is found. And only what a reader would see is
+    /// matched -- the folder a conversation ran in is in every one of its
+    /// lines, and a search for the folder's name is not a search for every
+    /// conversation had there
+    #[test]
+    fn every_record_is_searched_all_the_way_through_and_only_where_words_are() {
+        let root = tmp("through");
+        let big = "x".repeat(3 * 1024 * 1024);
+        let result = format!(
+            r#"{{"type":"user","cwd":"D:/work/paymentsvc","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"{big}"}}]}}}}"#
+        );
+        let late = [
+            said("user", "D:/work/paymentsvc", "look at the logs"),
+            result,
+            said("assistant", "D:/work/paymentsvc", "The Refund handler double-counts"),
+        ]
+        .join("\n");
+        std::fs::write(root.join("proj").join("aaaa-late.jsonl"), late).unwrap();
+        std::fs::write(
+            root.join("proj").join("bbbb-other.jsonl"),
+            said("user", "D:/work/paymentsvc", "something else entirely"),
+        )
+        .unwrap();
+
+        let src = [source(&root)];
+        let found = search_in(&src, "refund HANDLER", 10, &|| false);
+        let ids: Vec<&str> = found.hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, vec!["aaaa-late"], "a word past the first megabytes was not found");
+        assert!(found.hits[0].snippet.contains("Refund handler"), "{}", found.hits[0].snippet);
+        assert_eq!(found.hits[0].cwd.as_deref(), Some("D:/work/paymentsvc"));
+
+        let folder = search_in(&src, "paymentsvc", 10, &|| false);
+        assert!(folder.hits.is_empty(), "the folder's name matched every conversation had in it: {:?}", folder.hits);
+
+        // A search typed over by a newer one stops reading
+        let stopped = search_in(&src, "refund", 10, &|| true);
+        assert!(stopped.hits.is_empty());
+    }
+
+    /// Stopping at enough says there may be more; reading everything does not
+    #[test]
+    fn stopping_at_enough_says_so() {
+        let root = tmp("enough");
+        for i in 0..3 {
+            std::fs::write(root.join("proj").join(format!("c{i}.jsonl")), said("user", "D:/w", "the same words")).unwrap();
+        }
+        let src = [source(&root)];
+        assert!(search_in(&src, "same words", 2, &|| false).capped);
+        assert!(!search_in(&src, "same words", 5, &|| false).capped);
+    }
+
+    /// The branch a conversation's folder was on, from the record, and a
+    /// detached checkout names none
+    #[test]
+    fn the_branch_is_read_from_the_record() {
+        assert_eq!(branch_of(&said("user", "D:/w", "hi")).as_deref(), Some("fix/login"));
+        let codex = r#"{"type":"session_meta","payload":{"cwd":"/w","git":{"commit_hash":"abc","branch":"main"}}}"#;
+        assert_eq!(branch_of(codex).as_deref(), Some("main"));
+        assert_eq!(branch_of(r#"{"gitBranch":"HEAD"}"#), None);
+    }
+
+    /// What names a conversation can come from a phone. It is looked up as a
+    /// file only when it is the characters an id is made of
+    #[test]
+    fn an_id_that_climbs_out_is_not_looked_up() {
+        assert!(plain_id("0f44d745-174b-40ec-8181-4c932961e2c8"));
+        assert!(plain_id("rollout-2026-04-28T10-54-47-019dd1cb"));
+        assert!(!plain_id("../../secrets"));
+        assert!(!plain_id("a/b"));
+        assert!(!plain_id(""));
+    }
+
+    /// A folder gone from the disk is said to be gone
+    #[test]
+    fn a_folder_gone_is_said_to_be_gone() {
+        let root = tmp("gone");
+        assert_eq!(folder_there(None, &root.display().to_string()), Some(true));
+        assert_eq!(folder_there(None, &root.join("removed").display().to_string()), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod probe {
+    /// How long a search of this machine's own records takes, and what it
+    /// finds. Ignored by default because it reads the real records:
+    ///
+    ///   SHIKISHA_VAULT_PROBE=word cargo test --release -p shikisha-core vault::probe -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe() {
+        let q = std::env::var("SHIKISHA_VAULT_PROBE").unwrap_or_else(|_| "worktree".into());
+        let began = std::time::Instant::now();
+        let found = super::search(&q, 40);
+        println!("{} hits (capped={}) in {:?}", found.hits.len(), found.capped, began.elapsed());
+        for h in found.hits.iter().take(5) {
+            println!("  {} {}", h.title, h.snippet.chars().take(100).collect::<String>());
+        }
     }
 }

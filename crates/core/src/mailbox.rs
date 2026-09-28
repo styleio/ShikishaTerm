@@ -207,6 +207,8 @@ pub struct Mailbox {
     pub vault_queries: Vec<(String, bool)>,
     /// Past conversations asked to be reopened as resuming tabs
     pub vault_opens: Vec<shikisha_shared::Ev>,
+    /// Past conversations asked to be read, or a stretch of one's work opened
+    pub vault_reads: Vec<shikisha_shared::Ev>,
     /// Tabs asked what was said in their folder before, by the number a person
     /// presses. The loop reads the records and puts the list into state
     /// (the tab, whether a paused MicroVM may be started to read it)
@@ -533,11 +535,29 @@ impl Mailbox {
     pub fn take_recorded(&mut self) -> Vec<RecordedStep> {
         std::mem::take(&mut self.recorded)
     }
+    /// Put a Vault or earlier-conversations intent into its queue. One place
+    /// for all of them, whichever way they arrived -- the window's own
+    /// channel, or a phone -- and whichever shell is draining them: a runtime
+    /// with no window of its own is asked the same things by the phone
+    pub fn queue_ui(&mut self, ev: shikisha_shared::Ev) {
+        use shikisha_shared::Ev;
+        match ev {
+            Ev::VaultSearch { query, wake } => self.vault_queries.push((query, wake)),
+            ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
+            ev @ Ev::VaultRead { .. } => self.vault_reads.push(ev),
+            Ev::PastList { tab, wake } => self.past_lists.push((tab, wake)),
+            Ev::PastResume { tab, id } => self.past_resumes.push((tab, id)),
+            _ => {}
+        }
+    }
     pub fn take_vault_queries(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.vault_queries)
     }
     pub fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_opens)
+    }
+    pub fn take_vault_reads(&mut self) -> Vec<shikisha_shared::Ev> {
+        std::mem::take(&mut self.vault_reads)
     }
     pub fn take_past_lists(&mut self) -> Vec<(u32, bool)> {
         std::mem::take(&mut self.past_lists)

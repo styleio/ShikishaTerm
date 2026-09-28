@@ -279,6 +279,9 @@ pub struct VaultState {
     /// True when the search stopped before the end -- so the overlay can say
     /// "more than these" rather than implying it is the whole of the past
     pub capped: bool,
+    /// This PC's records still being read through: their hits join when done
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub searching: bool,
     /// Machines elsewhere still being searched: their hits join as they come
     #[serde(default, skip_serializing_if = "is_zero")]
     pub asking: usize,

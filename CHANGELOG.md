@@ -9,12 +9,25 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Find opens a past conversation to read before anything is reopened.** A
+  result opens the whole conversation in the same box, first word to last, with
+  the words looked for marked and brought into view (the arrows at the foot walk
+  them), long answers and long code folded, and the tools the AI ran between a
+  question and its answer one line that opens when pressed. Back returns to the
+  same list. Resume reopens it where it was had; when that worktree was removed,
+  it offers the branch made into a worktree again or one of the desk's folders,
+  and writes nothing into the settings until one is chosen.
 - **`shikisha.tab_conversation` reads another tab's conversation the way the
   phone's reader does**: from the CLI's own record, on this PC or on the server
   or MicroVM the tab runs on, so a long answer comes back whole. Through the
   pipe or MCP, paged with `want` and `before`.
 
 ### Changed
+- **Find reads every record all the way through**, not the first 512 KB of the
+  newest 400, and matches only what was said or run: a word that appears only
+  in the folder a conversation ran in no longer matches every conversation had
+  there. This PC's records are searched away from the window, and a search
+  gives way to the next one typed.
 - **The `shikisha` command in every tab takes the commands' own names.**
   `shikisha ask_tab ID "..."` is `shikisha.ask_tab("ID", "...")`: the first word
   names any command Lua has, the rest are its arguments (JSON where written as

@@ -401,6 +401,22 @@ pub enum Ev {
         /// The machine it was had on, by its settings entry: none is this PC
         host: Option<String>,
     },
+    /// Read one past conversation, to show it rather than reopen it. Named by
+    /// the values a hit carries, like `VaultOpen`. With `from` and `to`, one
+    /// stretch of its work, by where it lies in the record. The answer comes
+    /// back once, with `req` in it, so a page reading two conversations in a
+    /// row knows which answer is the one it is still waiting for
+    VaultRead {
+        program: String,
+        id: String,
+        /// The machine it was had on, by its settings entry: none is this PC
+        host: Option<String>,
+        /// What was searched for, to be marked where it was said
+        query: String,
+        from: Option<u64>,
+        to: Option<u64>,
+        req: u64,
+    },
     /// What has been said in one tab's folder before. Asked when a tab came up
     /// on a conversation of nobody's although that folder has been worked in:
     /// the answer is the list the person chooses from
@@ -1178,6 +1194,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("vaultsearch") => Ev::VaultSearch {
             query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             wake: v.get("wake").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("vaultread") => Ev::VaultRead {
+            program: v.get("program").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            host: v.get("host").and_then(|x| x.as_str()).map(str::to_string).filter(|h| !h.is_empty()),
+            query: v.get("query").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            from: v.get("from").and_then(|x| x.as_u64()),
+            to: v.get("to").and_then(|x| x.as_u64()),
+            req: v.get("req").and_then(|x| x.as_u64()).unwrap_or(0),
         },
         Some("pastlist") => Ev::PastList {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,

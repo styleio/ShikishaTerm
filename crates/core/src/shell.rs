@@ -3355,6 +3355,80 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault .vrow .vwhen, #past .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
   #vault .vrow .vsnip, #past .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* One conversation found, read whole: the same box grown to a page, the
+     search and its list put away (not emptied) until the way back is pressed,
+     so the list comes back as it was left */
+  #vault .vread { display:none; }
+  #vault.reading .vbox { width:min(900px,100%); height:86vh; max-height:86vh; padding:0; gap:0; }
+  #vault.reading .vbox > .vhead, #vault.reading .vbox > #vq, #vault.reading .vbox > .vhint,
+  #vault.reading .vbox > .vlist { display:none; }
+  #vault.reading .vread { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
+  #vault .vrhead { flex:none; display:flex; align-items:center; gap:var(--s3);
+    padding:var(--s3) var(--s4); border-bottom:1px solid var(--line); }
+  /* Back is quiet, picking it up again an ordinary button: neither is the
+     one thing this page is for, which is reading (5, buttons) */
+  #vault .vrback, #vault .vrgo { flex:none; height:32px; padding:0 var(--s3); border-radius:var(--r-ctl);
+    font:inherit; font-size:12.5px; color:var(--text); cursor:pointer; white-space:nowrap; }
+  #vault .vrback { border:0; background:transparent; }
+  #vault .vrback:hover { background:var(--hover); }
+  #vault .vrgo { border:1px solid var(--edge); background:var(--panel2); }
+  #vault .vrgo:hover { border-color:var(--edge-hi); }
+  #vault .vrgo[hidden] { display:none; }
+  #vault .vrtitle { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+  #vault .vrname { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #vault .vrwhere { font-family:var(--mono); font-size:10px; color:var(--dim);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #vault .vrbody { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+    padding:var(--s4) var(--s5); font-size:14px; line-height:1.75; user-select:text; -webkit-user-select:text; }
+  /* Where the conversation begins and ends, so all of it is known to be here */
+  #vault .vredge { text-align:center; font-size:11px; color:var(--faint); margin:0 0 var(--s5); }
+  #vault .vredge.end { margin:var(--s2) 0 0; }
+  #vault .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
+  #vault .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
+    border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius:var(--r-ctl);
+    padding:var(--s2) var(--s3); }
+  /* A long thing said, folded to its first twelve lines */
+  #vault .vrtext.vfold { max-height:calc(var(--vlh) * 12); overflow:hidden;
+    -webkit-mask-image:linear-gradient(to bottom, #000 75%, transparent);
+    mask-image:linear-gradient(to bottom, #000 75%, transparent); }
+  #vault .vmore { display:block; border:0; background:transparent; padding:var(--s1) 0; font:inherit;
+    font-size:12px; color:var(--dim); cursor:pointer; }
+  #vault .vmore:hover { color:var(--text); }
+  #vault .vmore.code { font-family:var(--mono); margin:0 0 var(--s4); }
+  /* The work between a question and its answer: one quiet line until opened */
+  #vault .vwork { margin:0 0 var(--s6); }
+  #vault .vwbody { border-left:2px solid var(--line); padding-left:var(--s3); margin-top:var(--s2); }
+  #vault .vwbody[hidden] { display:none; }
+  #vault .vpiece { margin:0 0 var(--s3); }
+  #vault .vpname { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:var(--s1); }
+  #vault .vpiece pre { margin:0; padding:var(--s2) var(--s3); background:var(--sunk); border:1px solid var(--line);
+    border-radius:var(--r-ctl); font-family:var(--mono); font-size:12px; line-height:1.5;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  #vault .vpcut { font-size:11px; color:var(--faint); }
+  /* What was searched for, where it was said: the face drawn toward the
+     brand, and the one being looked at ringed in it (2, faces; 5, attention) */
+  #vault mark.vmark { background:var(--tint); color:inherit; border-radius:var(--r-chip); padding:0 1px; }
+  #vault mark.vmark.cur { box-shadow:0 0 0 1px var(--brand); }
+  #vault .vrnav { flex:none; display:flex; align-items:center; justify-content:flex-end; gap:var(--s2);
+    padding:var(--s2) var(--s4); border-top:1px solid var(--line); }
+  #vault .vrnav[hidden] { display:none; }
+  #vault .vrnav button { width:32px; height:32px; border:1px solid var(--edge); background:var(--panel2);
+    border-radius:var(--r-ctl); color:var(--text); cursor:pointer; font:inherit; font-size:12px; }
+  #vault .vrnav button:hover { border-color:var(--edge-hi); }
+  #vault .vrcount { font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  /* Where a conversation can be picked back up instead: a folder's name, and
+     its path to the right, the way the list of machines says its addresses */
+  .fmenu .vwhere { display:flex; align-items:center; gap:var(--s2); min-width:240px; max-width:min(560px, calc(100vw - 16px)); }
+  .fmenu .vwhere .nm { flex:none; }
+  .fmenu .vwhere .at { margin-left:auto; padding-left:var(--s3); min-width:0; font-family:var(--mono); font-size:11px;
+    color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* On a phone the page is the whole screen, as the other reader is */
+  @media (max-width:640px) {
+    #vault.reading { padding:0; }
+    #vault.reading .vbox { width:100%; height:100%; max-height:none; border-radius:0; border:0;
+      padding-top:env(safe-area-inset-top); }
+    #vault .vrbody { padding:var(--s4) var(--s4) calc(var(--s4) + env(safe-area-inset-bottom)); font-size:16px; }
+  }
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:var(--r-card); padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
@@ -3468,7 +3542,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     user-select:text; -webkit-user-select:text; }
   /* The one place in this app where text is NOT monospace: this is prose to be
      read, and a proportional face fits more of it on a phone's width */
-  #rbody, #rhead { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  #rbody, #rhead, #vault .vrbody { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
   .rturn { margin:0 0 var(--s6); }
   .rwho { font-size:11px; font-weight:700; letter-spacing:.09em; color:var(--dim);
     margin-bottom:6px; }
@@ -3800,6 +3874,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <input id="vq" type="text" autocomplete="off" spellcheck="false">
       <div class="vhint"></div>
       <div class="vlist"></div>
+      <!-- One of the conversations found, read whole in the same box: back to
+           the list at the left, picking it back up at the right -->
+      <div class="vread">
+        <div class="vrhead">
+          <button type="button" class="vrback"></button>
+          <div class="vrtitle"><span class="vrname"></span><span class="vrwhere"></span></div>
+          <button type="button" class="vrgo"></button>
+        </div>
+        <div class="vrbody"></div>
+        <div class="vrnav">
+          <button type="button" class="vrprev"></button>
+          <span class="vrcount"></span>
+          <button type="button" class="vrnext"></button>
+        </div>
+      </div>
     </div>
   </div>
   <!-- Another branch of a project already open. One thing to type; everything
@@ -14003,6 +14092,7 @@ if (REMOTE) {
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
+    if (d.vaultread) window.__vaultRead(d.vaultread);
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
@@ -14758,6 +14848,7 @@ let vaultTimer = 0;
 window.__openVault = function () {
   const v = document.getElementById("vault");
   if (!v) return;
+  endVaultRead();
   v.hidden = false;
   const q = document.getElementById("vq");
   q.placeholder = T["vault.placeholder"] || "Search past conversations…";
@@ -14770,6 +14861,7 @@ window.__openVault = function () {
 function closeVault() {
   const v = document.getElementById("vault");
   if (v) v.hidden = true;
+  endVaultRead();
 }
 // What was said in one tab's folder before. Asked for as the list opens, so
 // what it holds is what is on the disk now rather than what was there when the
@@ -14841,18 +14933,23 @@ function renderVault() {
   const list = v.querySelector(".vlist");
   const hint = v.querySelector(".vhint");
   const vs = S && S.vault;
+  // A conversation is being read over the list: the list stays as it was
+  // left, and is drawn again on the way back
+  if (vaultReading) return;
   list.textContent = "";
   const hits = (vs && vs.hits) || [];
-  // Other machines: still being searched, and the paused ones left out,
-  // with the press that searches them too (and starts them)
+  // This PC's records still being read through, other machines still being
+  // searched, and the paused ones left out, with the press that searches them
+  // too (and starts them)
   const far = [];
+  if (vs && vs.searching) far.push(el("div", {class:"vhint"}, T["vault.searching"] || "Searching…"));
   if (vs && vs.asking) far.push(el("div", {class:"vhint"}, (T["vault.asking"] || "").replaceAll("{n}", vs.asking)));
   if (vs && vs.sleeping) {
     far.push(el("button", {class:"quiet", onclick:() => send({kind:"vaultsearch", query: vs.query || "", wake:true})},
       (T["vault.wake"] || "").replaceAll("{n}", vs.sleeping)));
   }
   if (!hits.length) {
-    hint.textContent = vs && vs.asking ? "" : (T["vault.none"] || "Nothing found.");
+    hint.textContent = vs && (vs.asking || vs.searching) ? "" : (T["vault.none"] || "Nothing found.");
     for (const f of far) list.append(f);
     return;
   }
@@ -14862,20 +14959,335 @@ function renderVault() {
   for (const f of far) list.append(f);
   for (const h of hits) {
     // A live hit is a line in an open tab: selecting it goes to that tab. A
-    // past hit is a record: selecting it reopens the conversation
+    // past hit is a record: selecting it opens the conversation to be read,
+    // and picking it back up is a press from there
     const live = (h.tab !== undefined && h.tab !== null);
     const row = el("div", {class:"vrow", onclick:() => {
-      closeVault();
-      if (live) send({kind:"select", tab:h.tab});
-      else send({kind:"vaultopen", program:h.program, id:h.id, cwd:h.cwd || "", title:h.title, host:h.host || ""});
+      if (live) { closeVault(); send({kind:"select", tab:h.tab}); }
+      else openVaultRead(h, vs.query || "");
     }});
     row.append(el("div", {class:"vr1"},
       el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),
       el("span", {class:"vname"}, h.title),
       el("span", {class:"vwhen"}, live ? (T["vault.here"] || "on screen") : ago(h.when))));
-    if (h.snippet) row.append(el("div", {class:"vsnip"}, h.snippet));
+    if (h.snippet) {
+      const snip = el("div", {class:"vsnip"}, h.snippet);
+      markWords(snip, vs.query || "");
+      row.append(snip);
+    }
     list.append(row);
   }
+}
+
+// -- One conversation found, read whole ---------------------------------------
+//
+// Opened from the list in the same box, the list put away rather than thrown
+// out, so the way back finds it where it was left. All of the conversation is
+// drawn at once, from its first word -- only the words, which are small; the
+// work between them is one line each, opened when pressed. What was searched
+// for is marked and brought into view, and the arrows at the foot walk it.
+// Long things said, and long code, are folded to their start, unless they
+// hold what was searched for.
+let vaultReading = null;
+let vaultReq = 0;
+// How many lines of something said, and of a block of code, are shown before
+// the rest is folded away
+const VAULT_FOLD_LINES = 12, VAULT_FOLD_CODE = 15;
+
+function openVaultRead(h, query) {
+  const v = document.getElementById("vault");
+  if (!v) return;
+  const list = v.querySelector(".vlist");
+  vaultReq += 1;
+  vaultReading = {hit: h, query, req: vaultReq, answer: null, marks: [], at: -1, listTop: list.scrollTop};
+  v.classList.add("reading");
+  v.querySelector(".vrback").textContent = "← " + (T["vault.back"] || "Back");
+  v.querySelector(".vrname").textContent = h.title || h.program;
+  v.querySelector(".vrwhere").textContent = h.cwd || "";
+  const go = v.querySelector(".vrgo");
+  go.hidden = true;
+  const prev = v.querySelector(".vrprev"), next = v.querySelector(".vrnext");
+  prev.textContent = "↑"; next.textContent = "↓";
+  prev.title = T["vault.prev"] || "Previous match";
+  next.title = T["vault.next"] || "Next match";
+  prev.setAttribute("aria-label", prev.title);
+  next.setAttribute("aria-label", next.title);
+  v.querySelector(".vrnav").hidden = true;
+  const body = v.querySelector(".vrbody");
+  body.textContent = "";
+  body.append(el("div", {class:"vrnote"}, T["vault.loading"] || "Reading the conversation…"));
+  send({kind:"vaultread", program:h.program, id:h.id, host:h.host || "", query, req:vaultReading.req});
+  setTimeout(() => v.querySelector(".vrback").focus(), 0);
+}
+
+// Back to the list, where it was left
+function leaveVaultRead() {
+  const v = document.getElementById("vault");
+  if (!v || !vaultReading) return;
+  const top = vaultReading.listTop;
+  endVaultRead();
+  renderVault();
+  v.querySelector(".vlist").scrollTop = top;
+  setTimeout(() => document.getElementById("vq").focus(), 0);
+}
+function endVaultRead() {
+  const v = document.getElementById("vault");
+  vaultReading = null;
+  if (!v) return;
+  v.classList.remove("reading");
+  v.querySelector(".vrbody").textContent = "";
+}
+
+// The answer to a read: the whole conversation, or one stretch of its work.
+// An answer to an earlier read -- a conversation left before it came -- is
+// nobody's any more
+window.__vaultRead = function (d) {
+  const r = vaultReading;
+  if (!r || !d || d.req !== r.req) return;
+  const v = document.getElementById("vault");
+  if (d.from !== undefined && d.from !== null) {
+    const w = v.querySelector('.vwork[data-from="' + d.from + '"]');
+    if (w) fillWork(w, d.ok ? d.work : null, d.error);
+    return;
+  }
+  const body = v.querySelector(".vrbody");
+  body.textContent = "";
+  if (!d.ok) {
+    body.append(el("div", {class:"vrnote bad"}, d.error || ""));
+    return;
+  }
+  r.answer = d;
+  drawResume(d);
+  drawVaultRead(body, d, r.query);
+};
+
+function drawVaultRead(body, d, query) {
+  const items = d.items || [];
+  body.append(el("div", {class:"vredge"}, T["vault.start"] || "Start of the conversation"));
+  for (const it of items) {
+    if (it.k === "say") {
+      const box = rdTurn({who: it.who, text: it.text});
+      // Everything but the name, in one box, so it can be measured and folded
+      const text = el("div", {class:"vrtext"});
+      for (const n of [...box.childNodes]) if (!(n.classList && n.classList.contains("rwho"))) text.append(n);
+      box.append(text);
+      if (it.hit) { box.dataset.hit = "1"; markWords(text, query); }
+      body.append(box);
+    } else if (it.k === "work") {
+      const w = el("div", {class:"vwork", "data-from": String(it.from), "data-to": String(it.to)});
+      const toggle = el("button", {type:"button", class:"vmore"});
+      const inside = el("div", {class:"vwbody"});
+      inside.hidden = true;
+      w.append(toggle, inside);
+      const say = () => {
+        const n = it.calls || 0;
+        const label = n ? (T["vault.work"] || "Tool runs ({n})").replaceAll("{n}", n) : (T["vault.work.none"] || "Work");
+        toggle.textContent = (inside.hidden ? "▸ " : "▾ ") + label;
+      };
+      toggle.onclick = () => {
+        inside.hidden = !inside.hidden;
+        say();
+        if (!inside.hidden && !w.dataset.filled) {
+          inside.textContent = "";
+          inside.append(el("div", {class:"vrnote"}, T["vault.work.loading"] || "Loading…"));
+          const r = vaultReading;
+          send({kind:"vaultread", program:r.hit.program, id:r.hit.id, host:r.hit.host || "", query:r.query,
+                from:it.from, to:it.to, req:r.req});
+        }
+      };
+      if (it.work) { fillWork(w, it.work); inside.hidden = false; }
+      say();
+      body.append(w);
+    }
+  }
+  body.append(el("div", {class:"vredge end"}, T["vault.end"] || "End of the conversation"));
+  foldLong(body);
+  const marks = [...body.querySelectorAll("mark.vmark")];
+  vaultReading.marks = marks;
+  const nav = document.querySelector("#vault .vrnav");
+  nav.hidden = !marks.length;
+  if (marks.length) {
+    showMark(0);
+    return;
+  }
+  // Looked for, and not in anything that was said or run: it was only in
+  // what the record notes about itself. Said, rather than showing a page with
+  // nothing marked on it and leaving the person to wonder
+  if (query.trim()) body.prepend(el("div", {class:"vrnote"}, T["vault.nohit"] || ""));
+  // Nothing looked for: the conversation opens where it ended, the way the
+  // other reader does -- the last thing said is what a list of recent ones
+  // is opened for
+  else body.scrollTop = body.scrollHeight;
+}
+
+// A stretch of work, opened: what the AI said on the way, each tool it
+// reached for, and what came back
+function fillWork(w, work, error) {
+  const inside = w.querySelector(".vwbody");
+  inside.textContent = "";
+  if (!work) {
+    inside.append(el("div", {class:"vrnote bad"}, error || ""));
+    return;
+  }
+  w.dataset.filled = "1";
+  const query = vaultReading ? vaultReading.query : "";
+  for (const p of work.pieces || []) {
+    const box = el("div", {class:"vpiece " + p.kind});
+    if (p.kind === "say") box.append(rdMarkup(p.text));
+    else {
+      if (p.name) box.append(el("div", {class:"vpname"}, p.name));
+      box.append(el("pre", {}, p.text));
+    }
+    const cut = (k, n) => n ? el("div", {class:"vpcut"}, (T[k] || "{n}").replaceAll("{n}", n.toLocaleString())) : null;
+    const before = cut("vault.cut.before", p.before);
+    if (before) box.prepend(before);
+    const after = cut("vault.cut.after", p.after);
+    if (after) box.append(after);
+    if (p.hit) markWords(box, query);
+    inside.append(box);
+  }
+  if (work.more) inside.append(el("div", {class:"vpcut"}, (T["vault.work.more"] || "{n}").replaceAll("{n}", work.more)));
+  // Opened by a press after the page was drawn: its marks join the walk
+  if (vaultReading && vaultReading.answer) {
+    const all = [...document.querySelectorAll("#vault .vrbody mark.vmark")];
+    vaultReading.marks = all;
+    document.querySelector("#vault .vrnav").hidden = !all.length;
+    countMarks();
+  }
+}
+
+// Every place `query` appears in the text under `root`, wrapped in a mark.
+// Matched the way the search matched it, whatever the case
+function markWords(root, query) {
+  const want = (query || "").trim().toLowerCase();
+  if (!want) return;
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walk.nextNode()) nodes.push(walk.currentNode);
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const low = text.toLowerCase();
+    // Lowercasing that changes a text's length would put the marks in the
+    // wrong place; such a text is left unmarked rather than marked wrongly
+    if (low.length !== text.length || !low.includes(want)) continue;
+    const frag = document.createDocumentFragment();
+    let at = 0, i;
+    while ((i = low.indexOf(want, at)) >= 0) {
+      if (i > at) frag.append(text.slice(at, i));
+      frag.append(el("mark", {class:"vmark"}, text.slice(i, i + want.length)));
+      at = i + want.length;
+    }
+    if (at < text.length) frag.append(text.slice(at));
+    node.replaceWith(frag);
+  }
+}
+
+// Long things folded to their start: a block of code over its line count,
+// and then anything said that is still taller than twelve lines. What holds
+// a mark stays open -- it is what the page was opened to show
+function foldLong(body) {
+  for (const pre of body.querySelectorAll(".rturn pre")) {
+    const lines = pre.textContent.split("\n").length;
+    if (lines <= VAULT_FOLD_CODE || pre.querySelector("mark.vmark")) continue;
+    const say = (open) => (open ? "▾ " : "▸ ") + (T["vault.code"] || "Code ({n} lines)").replaceAll("{n}", lines);
+    const toggle = el("button", {type:"button", class:"vmore code"}, say(false));
+    pre.hidden = true;
+    toggle.onclick = () => { pre.hidden = !pre.hidden; toggle.textContent = say(!pre.hidden); };
+    pre.before(toggle);
+  }
+  // Every height read first, then every fold written: reading one after
+  // writing another would lay the whole page out again each time
+  const lh = parseFloat(getComputedStyle(body).lineHeight) || 24;
+  body.style.setProperty("--vlh", lh + "px");
+  const texts = [...body.querySelectorAll(".rturn:not([data-hit]) > .vrtext")];
+  const tall = texts.map(t => t.scrollHeight);
+  texts.forEach((t, i) => {
+    const rest = Math.round((tall[i] - lh * VAULT_FOLD_LINES) / lh);
+    if (rest < 2) return;
+    t.classList.add("vfold");
+    const more = el("button", {type:"button", class:"vmore"},
+      (T["vault.more.lines"] || "Show more ({n} more lines)").replaceAll("{n}", rest));
+    more.onclick = () => {
+      const open = t.classList.toggle("vfold");
+      more.textContent = open
+        ? (T["vault.more.lines"] || "Show more ({n} more lines)").replaceAll("{n}", rest)
+        : (T["vault.less"] || "Show less");
+    };
+    t.after(more);
+  });
+}
+
+// Bring the `i`th mark into view, and ring it
+function showMark(i) {
+  const r = vaultReading;
+  if (!r || !r.marks.length) return;
+  const n = r.marks.length;
+  if (r.at >= 0 && r.marks[r.at]) r.marks[r.at].classList.remove("cur");
+  r.at = ((i % n) + n) % n;
+  const m = r.marks[r.at];
+  m.classList.add("cur");
+  m.scrollIntoView({block:"center"});
+  countMarks();
+}
+function countMarks() {
+  const r = vaultReading;
+  const c = document.querySelector("#vault .vrcount");
+  if (!r || !c) return;
+  c.textContent = (T["vault.hits"] || "{i} / {n}").replaceAll("{i}", r.at + 1).replaceAll("{n}", r.marks.length);
+}
+
+// Picking it back up. Where the conversation was had is still there: one
+// press reopens it there. Gone -- a worktree removed since -- and the press
+// lists where it can go instead, each said by name and path: its branch
+// made into a folder again, or one of this desk's folders
+function drawResume(d) {
+  const r = vaultReading;
+  const go = document.querySelector("#vault .vrgo");
+  const h = r.hit;
+  const gone = d.exists === false;
+  go.hidden = false;
+  go.textContent = (T["vault.resume"] || "Resume") + (gone ? " ▾" : "");
+  go.onclick = () => {
+    if (!gone) {
+      closeVault();
+      send({kind:"vaultopen", program:h.program, id:h.id, cwd:d.folder || h.cwd || "", title:h.title, host:h.host || ""});
+      return;
+    }
+    openList(go, resumeRows(d, h), true);
+  };
+}
+function resumeRows(d, h) {
+  const rows = [el("div", {class:"fabout"},
+    el("span", {class:"ttl"}, T["vault.gone"] || "The folder this conversation was had in is gone"),
+    el("span", {class:"sum"}, d.folder || ""))];
+  const name = dir => { const g = (S && S.groups || []).find(g => !g.host && sameDir(g.folder, dir)); return (g && (g.project || g.name)) || dir; };
+  for (const home of d.homes || []) {
+    const say = home.local ? (T["vault.remake"] || "") : (T["vault.remake.remote"] || "");
+    rows.push(el("div", {onclick:() => {
+      closeFolderMenu();
+      closeVault();
+      openBranch({folder: home.dir}, {name: d.branch, base: home.local ? "" : "origin/" + d.branch});
+    }}, say.replaceAll("{branch}", d.branch || "").replaceAll("{project}", name(home.dir))));
+  }
+  if ((d.homes || []).length) rows.push(el("div", {class:"fsay"}, T["vault.remake.say"] || ""));
+  // This desk's folders on the machine it was had on, each by name and path
+  const here = (S && S.groups || []).filter(g => g.folder && (g.host || "") === (h.host || "") && !ailing(g));
+  if (here.length) rows.push(el("div", {class:"fsay"}, T["vault.elsewhere"] || "Resume in another folder:"));
+  for (const g of here) {
+    rows.push(el("div", {class:"vwhere", onclick:() => {
+      closeFolderMenu();
+      closeVault();
+      send({kind:"vaultopen", program:h.program, id:h.id, cwd:g.folder, title:h.title, host:h.host || ""});
+    }}, el("span", {class:"nm"}, g.name || g.folder), el("span", {class:"at"}, g.folder)));
+  }
+  if (!here.length && !(d.homes || []).length) rows.push(el("div", {class:"fsay bad"}, T["vault.nowhere"] || ""));
+  return rows;
+}
+// Two spellings of one folder: slashes either way, a long-path prefix, and
+// Windows not minding the case
+function sameDir(a, b) {
+  const norm = p => String(p || "").replace(/^\\\\\?\\/, "").replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return norm(a) === norm(b);
 }
 // The input and the overlay's own keys, wired once
 (function () {
@@ -14896,7 +15308,15 @@ function renderVault() {
   const v = document.getElementById("vault");
   if (v) {
     v.querySelector(".vclose").addEventListener("click", closeVault);
-    v.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeVault(); } });
+    v.querySelector(".vrback").addEventListener("click", leaveVaultRead);
+    v.querySelector(".vrprev").addEventListener("click", () => showMark(vaultReading ? vaultReading.at - 1 : 0));
+    v.querySelector(".vrnext").addEventListener("click", () => showMark(vaultReading ? vaultReading.at + 1 : 0));
+    // Esc steps back one place: out of a conversation to the list, then out
+    v.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (vaultReading) leaveVaultRead(); else closeVault();
+    });
     // A click on the dark surround (not the box) closes it
     v.addEventListener("mousedown", (e) => { if (e.target === v) closeVault(); });
   }
