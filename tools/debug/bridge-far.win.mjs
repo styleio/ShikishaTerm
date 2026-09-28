@@ -340,10 +340,12 @@ try {
   stopApp();
   // Over SSH the line ends with the app; on a MicroVM the bridge stops
   // hearing it and exits a minute later
+  // Counted by state: a program that has ended but whose parent has not yet
+  // collected it (Z) is not running
+  const live = async () => (await there('ps -eo stat=,args= | grep "[s]hikisha-bridge-[0-9]" | grep -v "^Z"')).trim();
   let running = '';
-  await until(async () => (running = (await there('ps -eo args | grep -c "[s]hikisha-bridge"')).trim()) === '0',
-    'the bridge to exit', WHERE === 'ssh' ? 15000 : 120000).catch(() => {});
-  check(running === '0', 'no bridge process is left: ' + running);
+  await until(async () => (running = await live()) === '', 'the bridge to exit', WHERE === 'ssh' ? 15000 : 120000).catch(() => {});
+  check(running === '', 'no bridge process is left' + (running ? ': ' + running : ''));
 
   console.log('6. unticked, the bridge comes off the next time the machine is in use');
   writeConfig([]);
