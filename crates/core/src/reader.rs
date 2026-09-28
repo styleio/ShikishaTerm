@@ -19,11 +19,15 @@
 //! hold across all of them instead:
 //!
 //!   - the message is the object carrying a `role` — the record itself, or the
-//!     single field it is wrapped in (`message` for Claude, `payload` for Codex)
+//!     single field it is wrapped in (`message` for Claude, `payload` for Codex).
+//!     A record with no role anywhere names its speaker in its own `type`
+//!     instead (`user` / `gemini` for Gemini)
 //!   - the words are the blocks whose type ENDS in "text" (`text` for Claude,
-//!     `output_text` / `input_text` for Codex). Everything else in a content
-//!     list is machinery — a tool call, its result, the model's own thinking —
-//!     and machinery is not what a person opens a reader to read
+//!     `output_text` / `input_text` for Codex), or blocks with no type at all
+//!     that carry a `text` and are not marked as a thought (Gemini's parts).
+//!     Everything else in a content list is machinery — a tool call, its
+//!     result, the model's own thinking — and machinery is not what a person
+//!     opens a reader to read
 //!
 //! And not everything said was said to anybody. An AI working its way through
 //! a job writes a line before each tool it reaches for ("Now the reload
@@ -224,7 +228,7 @@ pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Opt
     if !safe(id) {
         return None;
     }
-    let rest = glob.strip_prefix("{home}/")?.replace("{id}", id);
+    let rest = crate::sessionfind::fill_id(glob.strip_prefix("{home}/")?, id);
     if !safe(&rest) {
         return None;
     }
@@ -283,9 +287,9 @@ fn look_at(line: &[u8]) -> Seen {
     let Ok(text) = std::str::from_utf8(line) else {
         return Seen::Nothing;
     };
-    let spoken =
-        text.contains("\"role\"") && (text.contains("\"text\"") || text.contains("\"content\":\""));
-    if !spoken && !text.contains("_use\"") && !text.contains("_call\"") {
+    let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
+    let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
+    if !spoken && !text.contains("_use\"") && !text.contains("_call\"") && !text.contains("\"toolCalls\"") {
         return Seen::Nothing;
     }
     let Ok(record) = serde_json::from_str::<Value>(text) else {
@@ -309,12 +313,10 @@ fn look_at(line: &[u8]) -> Seen {
 /// One record, if it is somebody speaking.
 fn turn_of(record: &Value) -> Option<Turn> {
     let message = message_of(record)?;
-    let who = match message.get("role").and_then(Value::as_str)? {
-        "assistant" => Who::Ai,
-        "user" => Who::You,
-        // "developer", "system", "tool" — written by machinery, for machinery
-        _ => return None,
-    };
+    let named = message.get("role").or_else(|| message.get("type")).and_then(Value::as_str)?;
+    // "developer", "system", "tool", "info", "error" — written by machinery,
+    // for machinery
+    let who = SPEAKERS.iter().find(|(s, _)| *s == named)?.1;
     let said = words_of(message.get("content")?);
     let said = match who {
         Who::You => human_part(&said),
@@ -340,11 +342,26 @@ fn reaching_for_a_tool(record: &Value) -> bool {
     let here = |v: &Value| {
         named(v) || v.get("content").and_then(Value::as_array).is_some_and(|bs| bs.iter().any(named))
     };
-    here(record) || ["message", "payload"].iter().any(|k| record.get(*k).is_some_and(here))
+    // A record that files its calls beside what it said, in a list of their own
+    let listed = record
+        .get("toolCalls")
+        .and_then(Value::as_array)
+        .is_some_and(|calls| !calls.is_empty());
+    listed || here(record) || ["message", "payload"].iter().any(|k| record.get(*k).is_some_and(here))
 }
 
+/// The names a speaker goes by, where a record says who is speaking: `role`
+/// for Claude and Codex, the record's own `type` for Gemini
+const SPEAKERS: [(&str, Who); 4] = [
+    ("assistant", Who::Ai),
+    ("gemini", Who::Ai),
+    ("model", Who::Ai),
+    ("user", Who::You),
+];
+
 /// The object carrying `role`: the record itself, or the one field it is
-/// wrapped in.
+/// wrapped in. With no role anywhere, the record itself when its `type` names
+/// a speaker.
 fn message_of(record: &Value) -> Option<&Value> {
     if record.get("role").is_some() {
         return Some(record);
@@ -352,10 +369,14 @@ fn message_of(record: &Value) -> Option<&Value> {
     ["message", "payload"]
         .iter()
         .find_map(|key| record.get(*key).filter(|m| m.get("role").is_some()))
+        .or_else(|| {
+            let kind = record.get("type").and_then(Value::as_str)?;
+            (record.get("content").is_some() && SPEAKERS.iter().any(|(s, _)| *s == kind)).then_some(record)
+        })
 }
 
 /// The words out of a `content`: a bare string, or every block whose type ends
-/// in "text". Blocks are joined with a blank line because that is what they
+/// in "text" -- or that has no type and is not a thought. Blocks are joined with a blank line because that is what they
 /// are — separate paragraphs of one answer, split by the tool calls between them
 fn words_of(content: &Value) -> String {
     if let Some(one) = content.as_str() {
@@ -366,8 +387,11 @@ fn words_of(content: &Value) -> String {
     };
     let mut said: Vec<&str> = Vec::new();
     for block in blocks {
-        let kind = block.get("type").and_then(Value::as_str).unwrap_or("");
-        if !kind.ends_with("text") {
+        let words = match block.get("type").and_then(Value::as_str) {
+            Some(kind) => kind.ends_with("text"),
+            None => block.get("thought").and_then(Value::as_bool) != Some(true),
+        };
+        if !words {
             continue;
         }
         if let Some(words) = block.get("text").and_then(Value::as_str) {
@@ -462,6 +486,39 @@ mod tests {
         let turn = said(line).expect("the assistant's turn");
         assert_eq!(turn.who, Who::Ai);
         assert_eq!(turn.text, "原因が確定しました");
+    }
+
+    /// Gemini's shape: no role anywhere, the speaker in the record's own
+    /// `type`, the person's words in parts with no type, the answer a bare
+    /// string. What it notes for itself (`info`) and its thoughts are not speech
+    #[test]
+    fn gemini_records_are_read() {
+        let asked = r#"{"id":"da60","timestamp":"2026-09-28T02:12:30.055Z","type":"user","content":[{"text":"ping"}]}"#;
+        let turn = said(asked).expect("the person's turn");
+        assert_eq!((turn.who, turn.text.as_str()), (Who::You, "ping"));
+
+        let answered = r#"{"id":"7810","type":"gemini","content":"pong","thoughts":[{"subject":"s","description":"d"}],"model":"gemini-3.5-flash"}"#;
+        let turn = said(answered).expect("the AI's turn");
+        assert_eq!((turn.who, turn.text.as_str()), (Who::Ai, "pong"));
+
+        let parts = r#"{"type":"gemini","content":[{"text":"thinking it over","thought":true},{"text":"done"}]}"#;
+        assert_eq!(said(parts).expect("the AI's turn").text, "done");
+
+        let note = r#"{"id":"c693","type":"info","content":"Update successful!"}"#;
+        assert!(said(note).is_none(), "the CLI's own note is not a turn");
+        // The whole history written again in one line is not one thing said
+        let rewrite = r#"{"$set":{"messages":[{"type":"user","content":[{"text":"<session_context>…</session_context>"}]}]}}"#;
+        assert!(said(rewrite).is_none());
+    }
+
+    /// Gemini files the tools it called beside what it said with them, so the
+    /// line said in that breath is an aside about the work, as with the others
+    #[test]
+    fn a_gemini_turn_that_calls_tools_is_reaching() {
+        let line = r#"{"type":"gemini","content":"Let me look.","toolCalls":[{"id":"1","name":"read_file","args":{}}]}"#;
+        assert!(matches!(look_at(line.as_bytes()), Seen::Reaching));
+        let quiet = r#"{"type":"gemini","content":"pong","toolCalls":[]}"#;
+        assert!(matches!(look_at(quiet.as_bytes()), Seen::Said(_)));
     }
 
     /// What a person typed is filed differently from what the AI answered: a

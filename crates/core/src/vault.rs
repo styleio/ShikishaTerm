@@ -186,7 +186,7 @@ fn far_search_script(sources: &[Source], query: &str) -> String {
     let q = base64::engine::general_purpose::STANDARD.encode(query.trim());
     let mut script = format!("cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); n=0; ");
     for (i, src) in sources.iter().enumerate() {
-        let Some(rest) = src.verify.strip_prefix("{home}/").map(|r| r.replace("{id}", "*")) else { continue };
+        let Some(rest) = src.verify.strip_prefix("{home}/").map(crate::sessionfind::any_id) else { continue };
         if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
             continue;
         }
@@ -368,7 +368,7 @@ pub fn here_far(program: &str, at: &crate::elsewhere::Elsewhere, cwd: &Path, mos
 /// first, each as `@@F <mtime> <path>` and then the start of it in base64.
 /// `None` for a pattern that does not start at the home folder
 fn far_listing(verify: &str) -> Option<String> {
-    let rest = verify.strip_prefix("{home}/")?.replace("{id}", "*");
+    let rest = crate::sessionfind::any_id(verify.strip_prefix("{home}/")?);
     // Only what a glob is made of: the pattern is a profile's, and anything
     // else in it would be words for the shell
     if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
@@ -578,7 +578,7 @@ fn list(pattern: &str) -> Vec<PathBuf> {
     // to one there; everywhere else a backslash is an ordinary character in
     // a name and folding it would cut a path in the wrong place.
     let sep = std::path::MAIN_SEPARATOR;
-    let expanded = expand(&pattern.replace("{id}", "*"));
+    let expanded = expand(&crate::sessionfind::any_id(pattern));
     let full = match cfg!(windows) {
         true => expanded.to_string_lossy().replace('/', "\\"),
         false => expanded.to_string_lossy().to_string(),

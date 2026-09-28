@@ -35,6 +35,7 @@
       "--resume",
       "latest"
     ],
+    "verify": "{home}/.gemini/tmp/*/chats/session-*-{id:8}.jsonl",
     "hook": {
       "file": "{home}/.gemini/settings.json",
       "format": "bare",

@@ -2519,7 +2519,7 @@ pub fn far_launch(
             .replace(AT, &if plain { s.id.clone() } else { crate::ssh::sh_quote(&s.id) });
         return match (&spec.verify, spec.new_id.is_empty(), plain) {
             (Some(verify), false, true) => {
-                let record = verify.replace("{home}", "$HOME").replace("{id}", &s.id);
+                let record = crate::sessionfind::fill_id(&verify.replace("{home}", "$HOME"), &s.id);
                 let fresh = shell(&with_args(argv, &spec.new_id, &s.id));
                 (format!("if ls {record} >/dev/null 2>&1; then {resume}; else {fresh}; fi"), Some(s.clone()))
             }

@@ -124,11 +124,61 @@ pub fn exists(pattern: &str, id: &str) -> bool {
     locate(pattern, id).is_some()
 }
 
+/// A record's pattern with one conversation's id put in.
+///
+/// `{id}` is the whole id. `{id:8}` is its first eight characters: a CLI that
+/// names the file by the head of the id (`session-…-e1e8d040.jsonl`) still
+/// names one conversation, and the pattern says how much of the id to look for
+/// rather than every reader of it knowing that CLI's habit
+pub fn fill_id(pattern: &str, id: &str) -> String {
+    fill(pattern, |n| match n {
+        Some(n) => id.chars().take(n).collect(),
+        None => id.to_string(),
+    })
+}
+
+/// The same pattern with any id in it: `*`, for listing every record it names
+pub fn any_id(pattern: &str) -> String {
+    fill(pattern, |_| "*".to_string())
+}
+
+/// Every `{id}` and `{id:N}` in `pattern`, replaced by what `with` makes of N
+fn fill(pattern: &str, with: impl Fn(Option<usize>) -> String) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    let mut rest = pattern;
+    while let Some(at) = rest.find("{id") {
+        let after = &rest[at + 3..];
+        let taken = match after.find('}') {
+            Some(0) => Some((None, 1)),
+            Some(end) => after[..end]
+                .strip_prefix(':')
+                .and_then(|n| n.parse::<usize>().ok())
+                .map(|n| (Some(n), end + 1)),
+            None => None,
+        };
+        match taken {
+            Some((n, len)) => {
+                out.push_str(&rest[..at]);
+                out.push_str(&with(n));
+                rest = &after[len..];
+            }
+            // Not a placeholder, only a name that happens to start the same way
+            None => {
+                out.push_str(&rest[..at + 3]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Where that record actually is.
 ///
-/// `pattern` is a path with `{id}` in it and `*` standing for any run of
-/// characters within one name — `{home}/.claude/projects/*/{id}.jsonl`, or
-/// `…/rollout-*-{id}.jsonl` where the id is only part of the file name.
+/// `pattern` is a path with `{id}` (or `{id:N}`, see [`fill_id`]) in it and
+/// `*` standing for any run of characters within one name —
+/// `{home}/.claude/projects/*/{id}.jsonl`, or `…/rollout-*-{id}.jsonl` where
+/// the id is only part of the file name.
 ///
 /// The walk that answers "is it still there" already held the path and threw
 /// it away. It is handed back now because reading a conversation means opening
@@ -143,7 +193,7 @@ pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
     // else a backslash is an ordinary character in a name and folding it would
     // cut the path in the wrong place
     let sep = std::path::MAIN_SEPARATOR;
-    let named = expand(&pattern.replace("{id}", id)).display().to_string();
+    let named = expand(&fill_id(pattern, id)).display().to_string();
     let full = match cfg!(windows) {
         true => named.replace('/', "\\"),
         false => named,
@@ -388,6 +438,25 @@ mod tests {
         let two = format!("{}/*/*/*/rollout-*-{{id}}.jsonl", root.display());
         assert!(exists(&two, "abc123"));
         assert!(!exists(&two, "abc999"));
+
+        // Named by the head of the id only
+        let chats = root.join("proj/chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(chats.join("session-2026-09-28T02-10-e1e8d040.jsonl"), "{}").unwrap();
+        let three = format!("{}/*/chats/session-*-{{id:8}}.jsonl", root.display());
+        assert!(exists(&three, "e1e8d040-0e00-4caf-b275-ab21c423b4cf"));
+        assert!(!exists(&three, "e1e8d041-0e00-4caf-b275-ab21c423b4cf"));
+    }
+
+    #[test]
+    fn an_id_goes_in_whole_or_by_its_head() {
+        let id = "e1e8d040-0e00-4caf";
+        assert_eq!(fill_id("a/{id}.jsonl", id), "a/e1e8d040-0e00-4caf.jsonl");
+        assert_eq!(fill_id("s-*-{id:8}.jsonl", id), "s-*-e1e8d040.jsonl");
+        assert_eq!(fill_id("{id:99}", id), id, "a head longer than the id is the id");
+        assert_eq!(any_id("x/{id}/s-{id:8}.jsonl"), "x/*/s-*.jsonl");
+        // Only the placeholder is replaced, not what merely looks like one
+        assert_eq!(fill_id("{idea}/{id:x}/{id", id), "{idea}/{id:x}/{id");
     }
 
     #[test]

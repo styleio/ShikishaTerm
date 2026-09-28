@@ -275,7 +275,8 @@ pub struct ResumeSpec {
     /// it. Checked before resuming, so a conversation that has been deleted
     /// produces a sentence a person can act on instead of whatever the CLI
     /// says when handed an id it has never heard of. `*` stands for one
-    /// folder name
+    /// folder name, and `{id:8}` for the id's first eight characters, for a
+    /// CLI that names the file by the head of the id
     #[serde(default)]
     pub verify: Option<String>,
     /// How to ask this CLI to report its conversation as it starts
