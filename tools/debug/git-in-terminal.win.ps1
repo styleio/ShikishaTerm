@@ -107,7 +107,7 @@ $proc = $null
 try {
     foreach ($k in @($aside.Keys)) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }
     $env:LOCALAPPDATA = Join-Path $At 'localappdata'
-    $proc = Start-Process -FilePath (Join-Path $app 'SHIKISHA-TERM.exe') -WorkingDirectory $app -PassThru
+    $proc = Start-Process -FilePath (Join-Path $app 'SHIKISHA-TERM.exe') -ArgumentList '--behind' -WorkingDirectory $app -PassThru
 } finally {
     foreach ($k in @($aside.Keys)) {
         if ([string]::IsNullOrEmpty($aside[$k])) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }

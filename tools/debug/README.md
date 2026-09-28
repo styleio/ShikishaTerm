@@ -107,6 +107,22 @@ in a name is there so the folder can be read at a glance.
 | `live_sftp` tests in `crates/core/src/hooks.rs` | anywhere | The file commands, Lua, the panel's folder template and Compare, all through the code the app runs, against the server above. Ignored unless `SHIKISHA_LIVE_SFTP` names a server | See the top of `sftp-server.wsl.sh` |
 | `tools/sandbox.ps1` | Windows | The package on a Windows that has never seen this project (Windows Sandbox): a new install, the Store package, or an upgrade over the version before. It stays in `tools/`, where it was written, so that what already points at it still finds it | `tools/sandbox.ps1 [-App <folder> \| -Msix <path> [-From <old>]]` |
 
+## Starting a copy: always `--behind`
+
+**Every copy a tool here starts is started with `--behind`.** The terminal an
+agent runs in is often the window the person is typing into, and Windows lets
+a program started from the window in front take the front for itself: the
+copy's window came up over what they were doing, and the rest of their typing
+went into it. Started `--behind`, the window opens at the bottom of the pile,
+without being made active, and none of its pages takes the keyboard on its own.
+It is still on the taskbar, for anyone who wants to watch; clicked, it is an
+ordinary window again.
+
+A tool that starts the app by some other way than `instance.win.ps1` passes the
+flag itself. A check that needs the window in front (a global hotkey, the
+snipping tool, IME) is declared as one before it runs; the flag does not stand
+in its way, because what a person or a hotkey asks for still comes forward.
+
 ## Pointing a client at a copy
 
 `instance.win.ps1` writes the settings itself, because the door's name carries

@@ -95,7 +95,7 @@ function Lay([object[]]$folders) {
 }
 
 function Start-Lab {
-    Start-Process "$HOME_\SHIKISHA-TERM.exe"
+    Start-Process "$HOME_\SHIKISHA-TERM.exe" -ArgumentList '--behind'
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 1
         try {

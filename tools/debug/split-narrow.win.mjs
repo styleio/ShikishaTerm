@@ -85,7 +85,7 @@ function lay() {
 
 let cookie = '';
 async function start() {
-  spawn(EXE, [], { cwd: LAB, detached: true, stdio: 'ignore' }).unref();
+  spawn(EXE, ['--behind'], { cwd: LAB, detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     try {

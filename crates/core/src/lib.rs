@@ -154,6 +154,23 @@ pub fn append_hook_log(msg: &str) {
     }
 }
 
+/// Said on the command line for a copy that somebody else is working beside:
+/// the window opens at the bottom of the pile and never puts itself in front.
+pub const BEHIND: &str = "--behind";
+
+/// Whether this process was started `--behind`.
+///
+/// A copy started to be driven through its pipe and its DevTools port is
+/// started from a terminal the person at the machine is typing into, and
+/// Windows lets the child of the window in front take the front for itself:
+/// the typing went into the copy. Started this way, the window never asks for
+/// the front and never takes the keyboard on its own. A person who clicks it
+/// has it like any other window, and while they do, it behaves like one.
+pub fn stays_behind() -> bool {
+    static AT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AT.get_or_init(|| std::env::args().skip(1).any(|a| a == BEHIND))
+}
+
 /// Keeps a child process from popping up a window.
 ///
 /// Console apps like cmd.exe show a black window if launched quietly.

@@ -77,7 +77,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 // The relay writes its token as it opens: its arrival is what says the copy is up
 const tokenFile = path.join(APP, 'data', 'remote-token');

@@ -101,7 +101,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
 env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${PORT}`;
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 // The board's page, found again whenever it is made again: a window put away
 // drops its page, and the one it comes back with is a new DevTools target

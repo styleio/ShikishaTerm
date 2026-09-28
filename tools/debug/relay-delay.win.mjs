@@ -117,7 +117,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 // The app is up once its own door answers
 for (let i = 0; i < 160; i++) {

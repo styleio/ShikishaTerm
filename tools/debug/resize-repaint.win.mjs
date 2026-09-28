@@ -79,7 +79,7 @@ function lay() {
 
 let cookie = '';
 async function start() {
-  spawn(path.join(LAB, 'SHIKISHA-TERM.exe'), [], { cwd: LAB, detached: true, stdio: 'ignore' }).unref();
+  spawn(path.join(LAB, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: LAB, detached: true, stdio: 'ignore' }).unref();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     try {
