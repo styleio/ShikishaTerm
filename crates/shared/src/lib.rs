@@ -321,6 +321,10 @@ pub enum Ev {
     /// one CLI (`claude`, `codex`, `gemini`): `install` writes it, `remove`
     /// takes it out again
     Skill { ai: String, act: String },
+    /// A job handed out between AI tabs, acted on from its card: `stop`
+    /// stops every tab working on run `run`; `decide` answers the decision
+    /// `gate` with `choice`
+    Orch { act: String, run: i64, gate: i64, choice: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
     /// it, and the next launch shows it again. `hide` false with an empty
@@ -1064,6 +1068,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("farpage") => Ev::FarPage {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             port: v.get("port").and_then(|x| x.as_u64()).and_then(|p| u16::try_from(p).ok()).unwrap_or(0),
+        },
+        Some("orch") => Ev::Orch {
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            run: v.get("run").and_then(|x| x.as_i64()).unwrap_or_default(),
+            gate: v.get("gate").and_then(|x| x.as_i64()).unwrap_or_default(),
+            choice: v.get("choice").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("skill") => Ev::Skill {
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

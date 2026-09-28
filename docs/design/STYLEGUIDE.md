@@ -256,6 +256,7 @@ not on its page. A name changed is a name changed here too.
 | Fields few people need, folded | `foldMore(label, open, ...kids)` (the label says what is inside; open when a field inside already has a value) | settings (`webui.rs`) |
 | Picking a folder or a file | `choosePath(kind, title, now)` (the system's own dialog on this PC, a walk through the folders on a phone). With a field beside it, `pathField(obj, key, ph, kind, title)` | settings (`webui.rs`) |
 | A question about something that cannot be undone (board) | `askQuestion({title, say, what, label, go})` | board (`shell.rs`) |
+| A job handed out between AI tabs (`.job`) | `jobRow(j)`, placed under the row of the tab that leads it (`jobsOf(t)`): the job, each task's state and the tab on it (a press goes there), the person's decisions as buttons, and Stop (asked first with `askQuestion`) | board (`shell.rs`) |
 | Dialog (choosing, `.picker`) | `openBrowse(at, handBack)` | board (`shell.rs`) |
 | Settings stood over the board | `openSettings(section, ret, folder)` (window and phone alike; on a phone `openCfgLayer(params, size)` makes the frame inside it) | board (`shell.rs`) |
 | Line-drawn mark | `pickIcon(name)` | board (`shell.rs`) |

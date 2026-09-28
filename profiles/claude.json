@@ -33,6 +33,7 @@
   ],
   "silence_ms": 2000,
   "skills": "{home}/.claude/skills",
+  "paste_needs_typed_request": true,
   "interrupt": ["esc"],
   "resume": {
     "new_id": [

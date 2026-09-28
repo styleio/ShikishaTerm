@@ -348,6 +348,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // The skill the @ list asks about: the same card is on the phone's
         // list, and what it writes is on this PC, which is where it is read
         Ev::Skill { .. } => true,
+        // A job's card: stopping its workers, answering a decision it asked
+        // the person for. The person away from the desk is who it asks
+        Ev::Orch { .. } => true,
         // The add-a-project dialog: a project looked at, cloned or made, a
         // MicroVM's clone asked about and started, the folders of a server
         // listed, a server written into the settings. Each reaches no

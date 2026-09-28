@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -58,8 +58,9 @@ them, with their kind):
 Each waits for the tab to finish and prints the result. Read the last line:
 
 - `[shikisha] DONE` -- the result is above it. Act on it.
-- `[shikisha] STILL WORKING` -- it has not finished. End your turn now; the
-  result will be typed into this tab when it is done, and you carry on then.
+- `[shikisha] STILL WORKING` -- it has not finished. End your turn now; when it
+  is done you are told so in this tab, `shikisha inbox` gives you the result,
+  and you carry on then.
 - `[shikisha] WAITING` -- that tab is waiting for a person to approve or
   choose something. Tell the person.
 - `[shikisha] NOT DONE` -- the reason is above it.
@@ -81,6 +82,13 @@ the page to report anything: what it shows at the end comes back to you.
 To repeat (for example "until the review finds nothing"): ask, act on the
 result, ask again. Stop when it reports nothing significant, or when the round
 shown in the output reaches its limit.
+
+To see a whole job through with other tabs -- "have <@claude> implement it and
+<@codex> review it until nothing is left", several tasks, reports, several
+rounds -- run `shikisha skill orchestration` and follow it. It keeps the tasks
+and the reports for you, and every answer says which command to run next.
+
+Merge or push only when the person asked for it.
 
 To read what was said in another tab without asking it anything -- its last
 answer in full, or further back -- use

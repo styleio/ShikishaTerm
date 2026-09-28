@@ -604,6 +604,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
         skills: ui.skills.clone(),
+        jobs: ui.jobs.clone(),
         git_accounts: ui.git_accounts.clone(),
         project_home: ui.project_home.clone(),
         // Held by the settings server, which is where the page says it
@@ -1717,6 +1718,8 @@ pub struct Ui {
     pub machine_ais: Vec<crate::uistate::MachineAiChoice>,
     /// How each CLI stands with the skill for asking another tab
     pub skills: std::collections::BTreeMap<String, crate::uistate::SkillView>,
+    /// The open jobs handed out between AI tabs (`orch::Orchestra::board`)
+    pub jobs: serde_json::Value,
     /// The app's own git accounts, for the dialog that asks which one a
     /// MicroVM signs in as
     pub git_accounts: Vec<crate::uistate::GitAccountChoice>,

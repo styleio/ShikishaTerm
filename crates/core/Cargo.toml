@@ -86,6 +86,9 @@ rusty-opus = "0.9"
 zune-jpeg = "0.5.15"
 qrcode = { version = "0.14.1", default-features = false }
 rand = "0.10.2"
+# The record of work handed between AI tabs (`orch`). Bundled, so the program
+# carries its own SQLite and needs nothing installed on any machine
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }

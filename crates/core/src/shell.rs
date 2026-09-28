@@ -933,6 +933,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .nm:has(input.rename), .nm .who:has(> input.rename) { flex:1 1 auto; min-width:0; max-width:none;
     display:flex; align-items:center; gap:var(--s1); overflow:visible; }
   input.rename { min-width:96px; }
+  /* A job one AI tab hands out to others, under the tab that leads it: what
+     each task is doing and who is on it, and a decision waiting for the person */
+  .job { margin:2px var(--s2) 4px 14px; padding:6px 6px 6px 10px; border:1px solid var(--line);
+    border-radius:var(--r-ctl); display:flex; flex-direction:column; gap:2px; }
+  .job .jhead { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  .job .jhead > .dot { flex:none; }
+  .job .jlabel { flex:none; font-size:10px; color:var(--dim); }
+  .job .jt { flex:1 1 0; min-width:0; font-size:13px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .job .jtask { display:flex; align-items:center; gap:var(--s2); min-width:0; min-height:24px; padding-left:18px; font-size:11px; }
+  .job .jst { flex:none; min-width:4.5em; color:var(--dim); }
+  .job .jst.failed { color:var(--stop); }
+  .job .jst.blocked { color:var(--warn); }
+  .job .jn { flex:1 1 0; min-width:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .job .jtry { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .job button { font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
+    border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; flex:none; }
+  .job button:hover { border-color:var(--edge-hi); }
+  .job .jwho { max-width:7em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); }
+  .job .jgate { margin:2px 0 0 18px; padding:var(--s1) var(--s2); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+    border-radius:var(--r-ctl); display:flex; flex-direction:column; gap:var(--s1); }
+  .job .jq { font-size:12px; color:var(--text); overflow-wrap:anywhere; }
+  .job .jbtns { display:flex; flex-wrap:wrap; gap:var(--s2); }
   .making { margin:2px var(--s2) 2px 14px; padding:6px 4px 6px 10px; border:1px solid var(--line);
     border-radius:var(--r-ctl); display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); row-gap:2px; }
   .making > .dot { flex:none; }
@@ -4545,12 +4567,18 @@ function drawTabs() {
         const bundle = bundleRow(g, mine, away, false);
         bundle.classList.add("wcard");
         card.append(bundle);
-        if (away) continue;
+        // A job is drawn even with its lead's row put away: a decision
+        // waiting for the person must not be folded out of sight
+        if (away) {
+          for (const t of mine) for (const j of jobsOf(t)) card.append(jobRow(j));
+          continue;
+        }
       }
       for (const t of mine) {
         const tr = tabRow(t, g, false, false);
         tr.classList.add("wcard");
         card.append(tr);
+        for (const j of jobsOf(t)) card.append(jobRow(j));
       }
       continue;
     }
@@ -4567,11 +4595,20 @@ function drawTabs() {
     if (mine.length) {
       const away = tabsPutAway(g);
       nav.append(bundleRow(g, mine, away, false));
-      if (away) continue;
+      if (away) {
+        for (const t of mine) for (const j of jobsOf(t)) nav.append(jobRow(j));
+        continue;
+      }
     }
-    for (const t of mine) nav.append(tabRow(t, g, false, false));
+    for (const t of mine) {
+      nav.append(tabRow(t, g, false, false));
+      for (const j of jobsOf(t)) nav.append(jobRow(j));
+    }
   }
-  for (const t of loose) nav.append(tabRow(t, null, false, false));
+  for (const t of loose) {
+    nav.append(tabRow(t, null, false, false));
+    for (const j of jobsOf(t)) nav.append(jobRow(j));
+  }
   // Once, after the first answer an AI has finished here: a star, if you
   // like it. On the window only -- the page it opens is this PC's
   if (S.thanks && OURS) {
@@ -7245,6 +7282,56 @@ function emptyRow(g, card) {
 // folder is a branch standing inside its project's household, so the tab
 // stands where its heading does; `head` when the folder is the project
 // itself and its heading already wears the branch it is on
+// The open jobs a tab leads (see `orch`): drawn under its row, here and on
+// the phone, since the phone draws this same list
+function jobsOf(t) {
+  return (S.jobs || []).filter(j => j.lead === (t.id || t.name));
+}
+// One job: what it is, each task with what it is doing and the tab on it (a
+// press goes to that tab), the decisions waiting for the person, and the one
+// way to stop it all. Stopping cuts AIs off mid-work, so it is asked first
+function jobRow(j) {
+  const tabOf = id => (S.tabs || []).find(t => (t.id || t.name) === id);
+  const waiting = (j.decisions || []).some(g => g.who === "person");
+  const box = el("div", {class:"job"});
+  box.append(el("div", {class:"jhead"},
+    el("span", {class:"dot " + (waiting ? "QUESTION" : j.working ? "BUSY" : "DONE")}),
+    el("span", {class:"jlabel"}, T["tui.job.label"] || ""),
+    el("span", {class:"jt", title:j.objective}, j.objective),
+    j.working
+      ? el("button", {onclick:e => {
+          e.stopPropagation();
+          askQuestion({
+            title:T["tui.job.stop.title"] || "",
+            say:T["tui.job.stop.say"] || "",
+            what:j.objective,
+            label:T["tui.job.stop"] || "",
+            danger:true,
+            go:() => send({kind:"orch", act:"stop", run:j.id}),
+          });
+        }}, T["tui.job.stop"] || "")
+      : null));
+  for (const task of j.tasks || []) {
+    const w = task.tab ? tabOf(task.tab) : null;
+    box.append(el("div", {class:"jtask"},
+      el("span", {class:"jst " + task.state}, T["tui.job.state." + task.state] || task.state),
+      el("span", {class:"jn", title:task.note ? task.title + " · " + task.note : task.title}, task.title),
+      task.tries > 1 ? el("span", {class:"jtry"}, (T["tui.job.tries"] || "{n}").replaceAll("{n}", String(task.tries))) : null,
+      w ? el("button", {class:"jwho", title:T["tui.job.go"] || "",
+            onclick:e => { e.stopPropagation(); send({kind:"select", tab:w.index}); }}, tabName(w, "tabs", "")) : null));
+  }
+  for (const g of j.decisions || []) {
+    if (g.who !== "person") continue;
+    const choices = g.options && g.options.length ? g.options : [T["tui.job.ok"] || "OK"];
+    box.append(el("div", {class:"jgate"},
+      el("div", {class:"jq"}, g.question),
+      el("div", {class:"jbtns"}, ...choices.map(c => el("button", {onclick:e => {
+        e.stopPropagation();
+        send({kind:"orch", act:"decide", gate:g.id, choice:c});
+      }}, c)))));
+  }
+  return box;
+}
 function tabRow(t, g, deep, head) {
   // Running several AIs side by side is the headline feature, so brand each
   // AI tab in its own colour (a left bar + a tinted name). The status dot
@@ -23045,7 +23132,10 @@ mod tests {
         // Tabs are numbered on their rows, so moving a heading never moves a number
         assert!(PAGE.contains(r#"el("span", {class:"num"}, String(t.index))"#));
         // A browser belongs to no folder and comes after every folder
-        assert!(PAGE.contains("for (const t of loose) nav.append(tabRow(t, null, false, false));"));
+        assert!(PAGE.contains("for (const t of loose) {\n    nav.append(tabRow(t, null, false, false));"));
+        // A job is drawn under the tab that leads it, however the list is grouped
+        assert!(PAGE.contains("card.append(tr);\n        for (const j of jobsOf(t)) card.append(jobRow(j));"));
+        assert!(PAGE.contains("nav.append(tabRow(t, g, false, false));\n      for (const j of jobsOf(t)) nav.append(jobRow(j));"));
         // The head's own branch is said once, on the head, not again under each tab
         assert!(PAGE.contains("const worn = g && p.branch === g.branch;"));
     }

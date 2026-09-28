@@ -30,7 +30,7 @@ use std::collections::HashMap;
 #[cfg(windows)]
 use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -84,6 +84,11 @@ pub struct ApiCall {
     /// came from outside every tab, which counts as a person: what it sends
     /// starts a fresh chain instead of inheriting one
     pub caller: Option<String>,
+    /// Which run of that tab's program the key was minted for. A restarted tab
+    /// is the same tab with a new process and a new key, and this tells the
+    /// two apart: work handed to the old process is not reported done by the
+    /// new one (see `orch`)
+    pub incarnation: Option<u64>,
     pub method: String,
     pub params: Vec<serde_json::Value>,
     /// Where the answer goes. The connection is holding the line for it
@@ -139,7 +144,38 @@ fn mint_into(tokens: &Tokens, tab: &str) -> String {
     if let Ok(mut t) = tokens.lock() {
         t.insert(token.clone(), Some(tab.to_string()));
     }
+    let n = NEXT_INCARNATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Ok(mut g) = INCARNATIONS.lock() {
+        let g = g.get_or_insert_with(HashMap::new);
+        g.retain(|_, (owner, _)| owner != tab);
+        g.insert(token.clone(), (tab.to_string(), n));
+    }
     token
+}
+
+/// Counted across the whole run, so no two processes of any tab share one
+static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(0);
+
+/// key -> (the tab, which run of its program). Kept beside the keys rather
+/// than in them: every other reader of the keys wants only the owner
+static INCARNATIONS: Mutex<Option<HashMap<String, (String, u64)>>> = Mutex::new(None);
+
+fn incarnation_of_token(token: &str) -> Option<u64> {
+    INCARNATIONS.lock().ok().and_then(|g| {
+        g.as_ref()?
+            .iter()
+            .find(|(known, _)| crate::crypto::token_eq(known, token))
+            .map(|(_, (_, n))| *n)
+    })
+}
+
+/// Which run of `tab`'s program holds a key now. `None`: it holds none (the
+/// API is off, or the tab's program was not started under it)
+pub fn incarnation_of(tab: &str) -> Option<u64> {
+    INCARNATIONS
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref()?.values().find(|(owner, _)| owner == tab).map(|(_, n)| *n))
 }
 
 fn forget_in(tokens: &Tokens, tab: &str) {
@@ -425,6 +461,7 @@ fn serve<R: Read + Send + 'static, W: Write>(
             caller.as_deref().unwrap_or("outside the tabs")
         ));
     }
+    let incarnation = incarnation_of_token(&supplied);
     let _ = writeln!(out, r#"{{"ok":true,"result":"hello"}}"#);
 
     for line in lines {
@@ -432,7 +469,7 @@ fn serve<R: Read + Send + 'static, W: Write>(
         if line.trim().is_empty() {
             continue;
         }
-        let answer = handle_line(&line, caller.as_deref(), &tx);
+        let answer = handle_line(&line, caller.as_deref(), incarnation, &tx);
         if writeln!(out, "{answer}").is_err() {
             break;
         }
@@ -440,7 +477,7 @@ fn serve<R: Read + Send + 'static, W: Write>(
 }
 
 /// Turn one request line into one answer line
-fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String {
+fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &Sender<ApiCall>) -> String {
     let req: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => return error_line(&serde_json::Value::Null, &format!("bad JSON: {e}")),
@@ -457,7 +494,7 @@ fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String
     };
     // ask_tab is answered when another tab has finished, which can be an hour
     // of work; the loop decides when to answer it, not this line
-    let hold = if crate::asktab::HELD.contains(&method) {
+    let hold = if crate::asktab::HELD.contains(&method) || crate::orch::HELD.contains(&method) {
         crate::asktab::LINE_HOLD
     } else {
         std::time::Duration::from_secs(300)
@@ -465,6 +502,7 @@ fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String
     let (reply, wait) = channel();
     let call = ApiCall {
         caller: caller.map(str::to_string),
+        incarnation,
         method: method.to_string(),
         params,
         reply,

@@ -789,6 +789,7 @@ impl WinSurface {
                 Ev::FarServe { folder } => self.mail.far_serves.push(folder),
                 Ev::Login { folder, act } => self.mail.logins.push((folder, act)),
                 Ev::Skill { ai, act } => self.mail.skills.push((ai, act)),
+                Ev::Orch { act, run, gate, choice } => self.mail.orch.push((act, run, gate, choice)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,

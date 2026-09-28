@@ -132,6 +132,14 @@ pub struct ProfileFile {
     /// this CLI has none, and the @ list says so instead of offering it
     #[serde(default)]
     pub skills: Option<String>,
+    /// This CLI follows pasted text only when words typed at its prompt ask it
+    /// to: what arrives as a paste it holds at arm's length, as something the
+    /// person may not have written. So work handed to it (`orch`) is asked for
+    /// in one typed line before the brief is pasted. Measured, not assumed:
+    /// Claude Code does this; Codex drops typed words that share a write with
+    /// a paste, so it must not be given one
+    #[serde(default)]
+    pub paste_needs_typed_request: bool,
     /// Where the person reads how to install this CLI, for a tab that could
     /// not start because it is not on this PC. The maker's own page: this app
     /// does not install anybody's program on this PC for them
@@ -451,6 +459,8 @@ pub struct Profile {
     pub helpers: Vec<String>,
     /// Where this CLI reads skills from (see `ProfileFile::skills`)
     pub skills: Option<String>,
+    /// Typed words go before a paste (see `ProfileFile::paste_needs_typed_request`)
+    pub typed_request: bool,
 }
 
 impl Profile {
@@ -470,6 +480,7 @@ impl Profile {
             interrupt: Vec::new(),
             helpers: Vec::new(),
             skills: None,
+            typed_request: false,
         }
     }
 
@@ -496,6 +507,7 @@ impl Profile {
             interrupt: key_bytes(&f.interrupt)?,
             helpers: f.helpers,
             skills: f.skills,
+            typed_request: f.paste_needs_typed_request,
             name: f.name,
         })
     }

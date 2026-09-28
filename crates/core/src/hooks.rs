@@ -556,6 +556,65 @@ fn plain_lua_error(said: &str) -> String {
         .to_string()
 }
 
+/// A tab line put on the desk, as `open_tab` and `open_ai_tab` both do: in the
+/// folder it names, or the caller's own, through the same door the tab bar's
+/// + uses. Answers the id it went in under, the folder, and the machine
+fn open_line(
+    lua: &mlua::Lua,
+    mut line: serde_json::Map<String, serde_json::Value>,
+    c: &Rc<RefCell<Vec<Command>>>,
+    o: &Rc<Cell<usize>>,
+    pl: &Rc<RefCell<Vec<TabPlace>>>,
+    dk: &Rc<RefCell<Option<String>>>,
+) -> mlua::Result<Table> {
+    let fail = |key: &str, vars: &[(&str, &str)]| mlua::Error::runtime(crate::i18n::tp(key, vars));
+    // Where it works is said beside the line, not in it: the settings file
+    // says it by which folder the line is in, and by which machine that
+    // folder is on
+    let text = |v: Option<serde_json::Value>, key: &str| match v {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(f)) if !f.trim().is_empty() => Ok(Some(f.trim().to_string())),
+        Some(_) => Err(fail(key, &[])),
+    };
+    let folder = text(line.shift_remove("folder"), "err.tab_add.folder_type")?
+        .map(|f| crate::config::resolve_folder_cwd(&f));
+    let host = text(line.shift_remove("host"), "err.tab_add.host_type")?;
+    let line = serde_json::Value::Object(line);
+    let cfg = serde_json::from_value::<crate::config::TabConfig>(line.clone())
+        .map_err(|e| fail("err.tab_add.bad_line", &[("why", &e.to_string())]))?;
+    if cfg.command.argv().is_empty() {
+        return Err(fail("err.tab_add.no_command", &[]));
+    }
+    // Left unsaid, it is the caller's own folder -- and the answer says which
+    // that was, so nothing is decided out of sight. A caller in no folder has
+    // to say one
+    let (folder, host) = match folder {
+        Some(f) => (f, host),
+        None => o
+            .get()
+            .checked_sub(1)
+            .and_then(|i| pl.borrow().get(i).map(|p| (p.dir.clone(), p.host.clone())))
+            .filter(|(d, _)| !d.as_os_str().is_empty())
+            .ok_or_else(|| fail("err.tab_add.which_folder", &[]))?,
+    };
+    let desk = dk.borrow().clone().ok_or_else(|| fail("err.tab_add.no_desk_yet", &[]))?;
+    let id = crate::config::add_tab_at(
+        &crate::config::config_file_path(),
+        &desk,
+        line,
+        Some(&folder),
+        host.as_deref(),
+        crate::config::NewFolder::Refused,
+    )
+    .map_err(mlua::Error::runtime)?;
+    c.borrow_mut().push(Command::OpenedTab { id: id.clone() });
+    let out = lua.create_table()?;
+    out.set("id", id)?;
+    out.set("folder", folder.display().to_string())?;
+    out.set("host", host)?;
+    Ok(out)
+}
+
 /// The one place a refusal is decided, said, and written down.
 ///
 /// Said: the caller gets a sentence naming the command and who it was closed
@@ -1562,6 +1621,28 @@ end
 function shikisha.tab_list()
   error("tab_list is answered by the app through the pipe or MCP")
 end
+-- Orchestration: a job one AI tab hands out to others and sees through (see
+-- orch/mod.rs). Answered by the app loop when they come through the pipe or
+-- MCP, where the record of the job is kept; what runs here is only the check,
+-- under the permission table, that the call may be made
+function shikisha.run_open(objective, opts) return { accepted = true } end
+function shikisha.run_status(opts) return { accepted = true } end
+function shikisha.run_close(summary, opts) return { accepted = true } end
+function shikisha.task_add(spec, opts) return { accepted = true } end
+function shikisha.task_list(opts) return { accepted = true } end
+function shikisha.dispatch(task, tab, opts) return { accepted = true } end
+function shikisha.report(outcome, summary, opts) return { accepted = true } end
+function shikisha.ask_lead(question, opts) return { accepted = true } end
+function shikisha.answer(question, text) return { accepted = true } end
+function shikisha.tell(to, text, opts) return { accepted = true } end
+function shikisha.inbox(opts) return { accepted = true } end
+function shikisha.gate_open(task, question, opts) return { accepted = true } end
+function shikisha.gate_answer(gate, choice) return { accepted = true } end
+function shikisha.release(assignment) return { accepted = true } end
+function shikisha.retain(assignment) return { accepted = true } end
+function shikisha.stop(assignment) return { accepted = true } end
+-- A working folder for a branch, made the way the worktree dialog makes one
+function shikisha.worktree_add(branch, opts) return { accepted = true } end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end
@@ -2838,59 +2919,38 @@ impl HookEngine {
                 .set(
                     "open_tab",
                     lua.create_function(move |lua, spec: Value| {
-                        let fail = |key: &str, vars: &[(&str, &str)]| {
-                            mlua::Error::runtime(crate::i18n::tp(key, vars))
+                        let serde_json::Value::Object(line) = lua_to_json(&spec) else {
+                            return Err(mlua::Error::runtime(crate::i18n::t("err.tab_add.not_a_table")));
                         };
-                        let serde_json::Value::Object(mut line) = lua_to_json(&spec) else {
-                            return Err(fail("err.tab_add.not_a_table", &[]));
-                        };
-                        // Where it works is said beside the line, not in it: the
-                        // settings file says it by which folder the line is in,
-                        // and by which machine that folder is on
-                        let text = |v: Option<serde_json::Value>, key: &str| match v {
-                            None | Some(serde_json::Value::Null) => Ok(None),
-                            Some(serde_json::Value::String(f)) if !f.trim().is_empty() => {
-                                Ok(Some(f.trim().to_string()))
+                        open_line(lua, line, &c, &o, &pl, &dk)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            // A new tab running one of the AI CLIs, and nothing else. Open to
+            // an AI where `open_tab` is not: what starts is an AI that asks
+            // before it acts (or does not, exactly as the person's Yolo setting
+            // says for any new AI tab), never a command the caller wrote --
+            // which is how one AI opens a tab for another to work in (`orch`)
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            let pl = Rc::clone(&places);
+            let dk = Rc::clone(&desk);
+            shikisha
+                .set(
+                    "open_ai_tab",
+                    lua.create_function(move |lua, (ai, opts): (String, Option<Value>)| {
+                        let command = crate::orch::ai_command(&ai).map_err(mlua::Error::runtime)?;
+                        let mut line = serde_json::Map::new();
+                        line.insert("command".into(), serde_json::json!(command));
+                        if let Some(serde_json::Value::Object(given)) = opts.as_ref().map(lua_to_json) {
+                            for key in ["folder", "host", "name"] {
+                                if let Some(v) = given.get(key) {
+                                    line.insert(key.into(), v.clone());
+                                }
                             }
-                            Some(_) => Err(fail(key, &[])),
-                        };
-                        let folder = text(line.shift_remove("folder"), "err.tab_add.folder_type")?
-                            .map(|f| crate::config::resolve_folder_cwd(&f));
-                        let host = text(line.shift_remove("host"), "err.tab_add.host_type")?;
-                        let line = serde_json::Value::Object(line);
-                        let cfg = serde_json::from_value::<crate::config::TabConfig>(line.clone())
-                            .map_err(|e| fail("err.tab_add.bad_line", &[("why", &e.to_string())]))?;
-                        if cfg.command.argv().is_empty() {
-                            return Err(fail("err.tab_add.no_command", &[]));
                         }
-                        // Left unsaid, it is the caller's own folder -- and the
-                        // answer says which that was, so nothing is decided
-                        // out of sight. A caller in no folder has to say one
-                        let (folder, host) = match folder {
-                            Some(f) => (f, host),
-                            None => o
-                                .get()
-                                .checked_sub(1)
-                                .and_then(|i| pl.borrow().get(i).map(|p| (p.dir.clone(), p.host.clone())))
-                                .filter(|(d, _)| !d.as_os_str().is_empty())
-                                .ok_or_else(|| fail("err.tab_add.which_folder", &[]))?,
-                        };
-                        let desk = dk.borrow().clone().ok_or_else(|| fail("err.tab_add.no_desk_yet", &[]))?;
-                        let id = crate::config::add_tab_at(
-                            &crate::config::config_file_path(),
-                            &desk,
-                            line,
-                            Some(&folder),
-                            host.as_deref(),
-                            crate::config::NewFolder::Refused,
-                        )
-                        .map_err(mlua::Error::runtime)?;
-                        c.borrow_mut().push(Command::OpenedTab { id: id.clone() });
-                        let out = lua.create_table()?;
-                        out.set("id", id)?;
-                        out.set("folder", folder.display().to_string())?;
-                        out.set("host", host)?;
-                        Ok(out)
+                        open_line(lua, line, &c, &o, &pl, &dk)
                     })
                     .map_err(lerr)?,
                 )

@@ -798,6 +798,45 @@ This is what `@` in the input bar is for: choosing a tab puts `<@ID>` in what is
 the skill tells the AI to run `shikisha ask_tab` with that ID. The first `@` asks before the
 skill is written (Settings > AI agents puts it in or takes it out).
 
+### Orchestration: one AI sees a job through with others
+
+`ask_tab` is one question and one answer. For a job with several steps and several tabs --
+"have <@claude> implement it and <@codex> review it until nothing is left, then merge" --
+the AI you asked becomes the job's **lead** and hands out **tasks** with the orchestration
+commands (the list is in chapter 9). The steps are not a mode of this app; the lead strings
+the commands together as your request asks, and the app keeps the record:
+
+```
+shikisha run_open "fix the parser and get it reviewed"
+shikisha task_add "Implement the fix in src/parser.rs. Done when cargo test passes."
+shikisha dispatch t1 claude          # the task goes to <@claude>, with how to report
+shikisha inbox wait                  # the lead waits; the report arrives here
+shikisha task_add "Review the fix on branch fix-parser." '{"deps":["t1"]}'
+shikisha dispatch t2 codex
+shikisha run_close "fixed, reviewed, merged"
+```
+
+What keeps it going without a person in the loop:
+
+- **A report that says how it went.** A worker ends with `shikisha report succeeded "..."` or
+  `failed`, once. A worker that stops without reporting, waits for your approval, hits its
+  usage limit or whose program ends is raised in the lead's inbox, and you are notified when
+  it waits for you.
+- **Questions go to the lead, not to you.** `shikisha ask_lead` waits for the lead's
+  `shikisha answer`.
+- **Nothing is lost.** The inbox hands the same batch out until it is acknowledged, and a tab
+  that is not waiting for its mail is told in one typed line when it is free to read it.
+- **The next step is always given.** Every answer carries `next`: the exact command to run.
+  `run_close` refuses while anything is left open and lists what, with the command for each.
+- **Bounded.** Work goes only to tabs you named with `@` or that the job opened itself
+  (`open_ai_tab`), the number of assignments per job and how deep jobs may nest are set under
+  Settings > Limits on handing work, and a report counts only from the tab and the run of its
+  program that was given the work.
+
+A decision you should make yourself (merging to main, say) is asked with `gate_open ... to
+person`: you are notified, and you answer on the job's panel. The lead reads the full guide
+with `shikisha skill orchestration`.
+
 ### The same door, as MCP tools
 
 An AI client that speaks the Model Context Protocol -- Claude Code, and the others -- can be
@@ -1158,6 +1197,33 @@ machine is, so it is a tab the file commands can be told: `sftp_put("that
 name", "dist/a.txt", "public/a.txt")` sends to the server the screen is
 showing. A terminal tab written to the same address shares the connection with
 it; nobody has to say so.
+
+### Orchestration: handing work between AI tabs
+
+A job one AI tab (the lead) hands out to others and sees through (see "Orchestration" in
+chapter 7). Answered through the pipe or MCP only; each answer carries `next`, the command to
+run next. Tasks are `t1`, assignments `d1`, questions `q1`, decisions `g1`, jobs `r1`.
+
+| Command | Description |
+|---|---|
+| `shikisha.run_open("the whole job")` | **Start a job** led by the calling tab. Refused to a worker already as deep as Settings > Limits on handing work allows |
+| `shikisha.run_status({run="r1"})` | **Where a job stands**: its tasks, who is on them, questions and decisions waiting, loose ends, and `next` |
+| `shikisha.run_close("what was done", {run="r1"})` | **Close a job.** Refused while anything is left open (an assignment at work, a tab not released or kept, an unanswered question, an undecided decision, unread messages); the refusal lists each with its command |
+| `shikisha.task_add("the task", {deps={"t1"}, title=…})` | **Add a task.** Ready at once, or once every task in `deps` has succeeded. Write it to be read alone: target, change, constraints, what the worker may edit, and how done is proven |
+| `shikisha.task_list({ready=true, brief=true})` | **A job's tasks.** `ready` keeps only those that can be handed out; `brief` cuts each to 160 characters |
+| `shikisha.dispatch("t1", "tab_id")` | **Hand a task to an AI tab.** Only a tab the person named with `@` or that this job opened. Waits while the tab is busy (up to a minute), types the brief in (after one typed line, for a CLI that needs it), and answers once the tab has started on it |
+| `shikisha.report("succeeded" or "failed", "three sentences", {files={…}, report_path=…})` | **A worker reports its assignment**, once. Only from the tab, and the run of its program, that was given it |
+| `shikisha.ask_lead("question", {options={…}, resume="q1"})` | **A worker asks its lead** and waits for the answer. If the wait runs out the question stays asked; `resume` waits for the same one again |
+| `shikisha.answer("q1", "answer")` | **The lead answers a question** |
+| `shikisha.tell("d1" or "workers" or "workers:idle" or "workers:codex", "text")` | **Say something** to one worker, all of them, the idle ones or one CLI's; a worker's goes to its lead. Read at the next `inbox` |
+| `shikisha.inbox({wait=true, ack=12, types={…}, peek=true})` | **Read the mail**: the lead its job's, a worker its assignment's, any other tab its own. Returns the oldest batch not yet acknowledged (up to 50), the same batch until `ack` names it. `wait` waits for one (95 s unless `wait_ms`); `types` names which kinds wake it |
+| `shikisha.gate_open("t1", "question", {options={…}, to="person"})` | **Hold a task for a decision.** `to="person"` notifies the person and shows the choices on the job's panel; the answer arrives in the lead's inbox |
+| `shikisha.gate_answer("g1", "choice")` | **The lead makes one of its own decisions** |
+| `shikisha.release("d1")` | **Tidy a worker's tab once its assignment is over**: closed if this job opened it and nobody has typed into it, kept otherwise (the answer says why) |
+| `shikisha.retain("d1")` | **Keep a worker's tab** once its assignment is over |
+| `shikisha.stop("d1" or "all")` | **Stop a worker**: Esc now, and a tab the job opened is closed if it has not stopped 15 seconds later. The task waits for the lead (blocked) |
+| `shikisha.open_ai_tab("claude" or "codex" or "gemini", {folder=…, name=…})` | **Open a new AI tab** running that CLI, set up the way every new AI tab is (Yolo only if the person's setting says so). Open to an AI where `open_tab` is not: what starts is never a command the caller wrote |
+| `shikisha.worktree_add("branch", {base=…})` | **Make a working folder (git worktree)** for a branch, placed by the project's worktree rules, and put it on the desk. Answers the folder |
 
 ### Handing a run between participants
 

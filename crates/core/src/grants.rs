@@ -60,6 +60,7 @@ pub enum Group {
     Basics,
     Git,
     GitHub,
+    Orch,
     Advanced,
 }
 
@@ -75,14 +76,16 @@ impl Group {
             Group::Basics => "basics",
             Group::Git => "git",
             Group::GitHub => "github",
+            Group::Orch => "orch",
             Group::Advanced => "advanced",
         }
     }
 
     /// The order they appear on screen: what automation touches most first,
     /// what can hurt last
-    pub const ORDER: [Group; 10] = [
+    pub const ORDER: [Group; 11] = [
         Group::Tabs,
+        Group::Orch,
         Group::Report,
         Group::Browser,
         Group::Handoff,
@@ -137,6 +140,9 @@ pub const CATALOG: &[Entry] = &[
     e("tab_run", Group::Tabs, true, true, false),
     e("browser_do", Group::Tabs, true, true, false),
     e("tab_list", Group::Tabs, true, true, false),
+    // A tab running one of the AI CLIs as the person set new AI tabs up, and
+    // nothing the caller wrote: open to an AI where `open_tab` is not
+    e("open_ai_tab", Group::Tabs, true, true, false),
     e("draft_to_tab", Group::Tabs, true, true, false),
     e("send", Group::Tabs, true, true, false),
     e("show", Group::Tabs, true, true, false),
@@ -291,6 +297,28 @@ pub const CATALOG: &[Entry] = &[
     e("github_issue_state", Group::GitHub, true, false, false),
     e("github_pr_state", Group::GitHub, true, false, false),
     e("github_pr_merge", Group::GitHub, true, false, false),
+    // -- Orchestration: a job handed out between AI tabs (`orch`) -------------
+    // Open to an AI: they are how one AI sees work through with others, and
+    // every one of them is bounded by the record (a tab named or opened for
+    // the job, a report only from the tab given the work, the depth and the
+    // number of assignments in the settings)
+    e("run_open", Group::Orch, true, true, false),
+    e("run_status", Group::Orch, true, true, false),
+    e("run_close", Group::Orch, true, true, false),
+    e("task_add", Group::Orch, true, true, false),
+    e("task_list", Group::Orch, true, true, false),
+    e("dispatch", Group::Orch, true, true, false),
+    e("report", Group::Orch, true, true, false),
+    e("ask_lead", Group::Orch, true, true, false),
+    e("answer", Group::Orch, true, true, false),
+    e("tell", Group::Orch, true, true, false),
+    e("inbox", Group::Orch, true, true, false),
+    e("gate_open", Group::Orch, true, true, false),
+    e("gate_answer", Group::Orch, true, true, false),
+    e("release", Group::Orch, true, true, false),
+    e("retain", Group::Orch, true, true, false),
+    e("stop", Group::Orch, true, true, false),
+    e("worktree_add", Group::Orch, true, true, false),
     // -- Files and the network ------------------------------------------------
     // Through a registered gateway: the destination was chosen by a person
     e("read_file", Group::Files, true, true, false),

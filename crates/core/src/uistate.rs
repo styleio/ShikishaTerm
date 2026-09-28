@@ -2018,6 +2018,12 @@ pub struct SkillView {
     pub name: String,
 }
 
+/// Nothing to draw: no open jobs (see `UiState::jobs`)
+fn is_empty_list(v: &serde_json::Value) -> bool {
+    v.as_array().is_none_or(|a| a.is_empty())
+}
+
+
 /// Everything shown on screen, all in one place.
 ///
 /// Words about appearance (color, width, symbols) don't belong here.
@@ -2172,6 +2178,11 @@ pub struct UiState {
     /// reads to decide whether to ask first
     #[serde(default)]
     pub skills: std::collections::BTreeMap<String, SkillView>,
+    /// The open jobs one AI tab has handed out to others: each with its
+    /// tasks, who is on them, and the decisions waiting for the person
+    /// (`orch::Orchestra::board`). Drawn under the tab that leads each
+    #[serde(default, skip_serializing_if = "is_empty_list")]
+    pub jobs: serde_json::Value,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

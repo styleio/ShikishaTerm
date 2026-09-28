@@ -65,6 +65,7 @@ pub mod mcp;
 pub mod migrate;
 pub mod netaddr;
 pub mod notify;
+pub mod orch;
 pub mod pagejs;
 pub mod pagelint;
 pub mod pageops;

@@ -262,6 +262,8 @@ pub struct Mailbox {
     /// The skill for asking another tab, answered: (the CLI, `install`,
     /// `later` or `remove`)
     pub skills: Vec<(String, String)>,
+    /// A job's card acted on: (act, run, decision, choice) -- see `Ev::Orch`
+    pub orch: Vec<(String, i64, i64, String)>,
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
@@ -619,6 +621,9 @@ impl Mailbox {
     }
     pub fn take_skills(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.skills)
+    }
+    pub fn take_orch(&mut self) -> Vec<(String, i64, i64, String)> {
+        std::mem::take(&mut self.orch)
     }
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)
