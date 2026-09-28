@@ -14744,7 +14744,7 @@ function refreshMods() {
 function buildCastKeys() {
   const row = el("div", {id:"castkeys"});
   const keys = (CAST_KEYS && CAST_KEYS.length) ? CAST_KEYS
-    : ["esc","tab","left","up","down","right","space","enter","backspace"];
+    : ["backspace","esc","tab","left","up","down","right","space","enter"];
   keys.forEach(name => {
     const isMod = (name === "ctrl" || name === "alt");
     const b = el("button", {class:"castkey" + (isMod ? " mod" : ""), "data-k":name}, castKeyLabel(name));
@@ -19526,7 +19526,6 @@ function ensureBar() {
     autocapitalize:"off", autocorrect:"off", spellcheck:"false",
     placeholder: T["tui.cast.type.ph"] || "Type here to send"});
   castSendEl = el("button", {class:"castsend", onclick:sendBar}, T["tui.cast.send"] || "Send");
-  const bs = el("button", {class:"castbtn", onclick:() => sendCastKey("backspace")}, "⌫");
   // ✕ only dismisses the keyboard (the sub-input bar itself stays visible throughout control mode)
   // In browser control mode ✕ only drops the keyboard (the bar stays — the relay
   // cursor is still in control). Over a terminal it closes the bar entirely, back
@@ -19559,15 +19558,16 @@ function ensureBar() {
   });
   castMirror = el("div", {id:"castmirror", "aria-hidden":"true"});
   const castField = el("div", {class:"castfield"}, castMirror, castInput);
-  // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
-  // the default pointerdown action weren't prevented, focus would shift to
-  // the button, the keyboard would close, and typing couldn't continue.
+  // Send keeps the input field's focus (= the keyboard) in place. If the
+  // default pointerdown action weren't prevented, focus would shift to the
+  // button, the keyboard would close, and typing couldn't continue.
   // ✕ is deliberately excluded since closing it is the whole point
-  [bs, castSendEl].forEach(b => b.addEventListener("pointerdown", (e) => e.preventDefault()));
-  // Attach works on both now (phone over HTTP, window over ipc). The backspace
-  // key is only useful on the phone, whose on-screen keyboard the composer
-  // sometimes covers; the window has a real keyboard. el() skips nulls.
-  castBar = el("div", {id:"castbar"}, castAttEl, castMentionEl, fileIn, (OURS ? null : bs), castField, castSendEl, close);
+  castSendEl.addEventListener("pointerdown", (e) => e.preventDefault());
+  // Attach works on both (phone over HTTP, window over ipc).
+  // Backspace is the first key of the phone's key row (config::cast_keys), not a
+  // button here: this row is the field's, and on a phone every button in it is
+  // width taken from what is being written
+  castBar = el("div", {id:"castbar"}, castAttEl, castMentionEl, fileIn, castField, castSendEl, close);
   // One switchable panel above the input row (keys / actions / target), chosen by
   // a fixed switcher, instead of stacking every row at once. Default: keys on the
   // phone, actions on the desktop.

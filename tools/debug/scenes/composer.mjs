@@ -4,10 +4,11 @@
  *
  *     node tools/debug/shoot.mjs tools/debug/scenes/composer.mjs
  *
- * This row is the phone's one door: an attachment, a backspace, the field
- * itself, Send, the ⌨ that hands typing to the screen instead, and the ✕. Six
- * things on a 390-pixel screen, and the field is the one that must keep its
- * room -- a row that grows a button at a time is how it stops being usable.
+ * This row is the phone's one door: an attachment, the @, the field itself,
+ * Send, the ⌨ that hands typing to the screen instead, and the ✕. Backspace
+ * is the first key of the row above it rather than a button here. Six things
+ * on a 390-pixel screen, and the field is the one that must keep its room --
+ * a row that grows a button at a time is how it stops being usable.
  *
  * What is judged: the buttons are one family (same size, same weight, same
  * quiet), the field is still the widest thing in the row, and nothing wraps or
