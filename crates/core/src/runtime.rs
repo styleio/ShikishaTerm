@@ -17292,6 +17292,15 @@ mod tests {
         // list and the tool that writes those files, and a rename in one
         // without the other is exactly the silent loss this test exists for.
         let fetcher = include_str!("../../../tools/conpty.ps1");
+        // The same for the bridge for other machines: built on Linux by the
+        // release, never committed. What must agree is this list and the step
+        // that names the files it builds
+        let builder = include_str!("../../../.github/workflows/release.yml");
+        let built = |pat: &str| {
+            pat.split_once('*').is_some_and(|(head, tail)| {
+                builder.lines().any(|l| l.contains(head) && l.trim_end().ends_with(&format!("{tail}\"")))
+            })
+        };
         for p in &patterns {
             let rel = p.trim_end_matches("/**");
             let (dir, file_pat) = rel.rsplit_once('/').unwrap_or((".", rel));
@@ -17308,7 +17317,7 @@ mod tests {
                     })
                 })
             });
-            if hit {
+            if hit || built(file_pat) {
                 continue;
             }
             assert!(
