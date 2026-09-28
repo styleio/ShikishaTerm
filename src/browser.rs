@@ -1263,6 +1263,7 @@ fn adopt_windows(
         let built = b
             .with_environment(features.opener.environment.clone())
             .with_bounds(to_rect(seat.get()))
+            .with_focused(may_take_focus(&window))
             .with_initialization_script(format!("{}{PLACED_JS}{POPUP_JS}", *INIT_JS))
             // Reported as the pane, not as itself: what the bar above the pane
             // should say is loading is whatever the pane is showing
@@ -1399,6 +1400,16 @@ fn wear_our_own_icon(hwnd: isize) {
     }
 }
 
+/// Whether a page in this window may take the keyboard now.
+///
+/// Always, unless the program was started `--behind`: then only while a person
+/// has the window in front. Giving a page the keyboard makes its window the
+/// active one, and a window of a program started from the terminal in front
+/// is let through to the front by Windows (see `shikisha_core::stays_behind`)
+fn may_take_focus(window: &tao::window::Window) -> bool {
+    !shikisha_core::stays_behind() || window.is_focused()
+}
+
 // `wears_the_icon`: whether this window carries the program's icon in the
 // notification area. The one window whose process outlives it does; a client,
 // a probe and a self-check do not (see `Browser::spawn_resident`)
@@ -1444,7 +1455,10 @@ fn run_window(
         let b = WindowBuilder::new()
             .with_title(title)
             .with_decorations(false)
-            .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0));
+            .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
+            // Shown without being made the active window (tao shows it with
+            // SW_SHOWNOACTIVATE), which is only the first half: see below
+            .with_focused(!shikisha_core::stays_behind());
         #[cfg(windows)]
         let b = {
             use tao::platform::windows::WindowBuilderExtWindows;
@@ -1452,6 +1466,27 @@ fn run_window(
         };
         b.build(&ev_loop)?
     });
+    // The second half: a new window lands on top of the pile even when it is
+    // not the active one, and there it covers whatever the person is reading.
+    // At the bottom it is still on the taskbar, for anyone who wants to watch
+    #[cfg(windows)]
+    if shikisha_core::stays_behind() {
+        use tao::platform::windows::WindowExtWindows;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+        };
+        unsafe {
+            SetWindowPos(
+                window.hwnd() as _,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
     // Whether the screen is down and waiting to be asked for. Read by the
     // icon's handler, which Windows calls from wherever it likes
     let display_down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1544,6 +1579,7 @@ fn run_window(
             let view = WebViewBuilder::new_with_web_context(&mut ctx)
                 .with_url(&url)
                 .with_initialization_script(&*INIT_JS)
+                .with_focused(may_take_focus(&window))
                 .with_ipc_handler(move |req| {
                     let at = req.uri().to_string();
                     let body: &str = req.body();
@@ -1918,6 +1954,7 @@ fn run_window(
                     match b
                         .with_url(&url)
                         .with_bounds(bounds)
+                        .with_focused(may_take_focus(&window))
                         .with_initialization_script(format!("{}{PLACED_JS}", *INIT_JS))
                         .with_navigation_handler(move |_url| {
                             let _ = nav_tx.send(Ev::Loading { from: Some(nav_who.clone()), busy: true });
@@ -2076,6 +2113,7 @@ fn run_window(
                     // touched a tab while the PC was minimized -- an error
                     // where nothing was wrong, next to the ones that matter
                     if !window.is_minimized()
+                        && may_take_focus(&window)
                         && let Some(v) = target(main_view(&shell), &children, &overlays, &to)
                         && let Err(e) = v.focus() {
                             shikisha_core::append_hook_log(&shikisha_core::i18n::tp(

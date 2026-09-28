@@ -105,7 +105,7 @@ env.LOCALAPPDATA = path.join(RUN, 'localappdata');
 env.USERPROFILE = HOME;
 env.PATH = STUB + ';' + env.PATH;
 env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${PORT}`;
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 const until = async (test, what, ms = 60000) => {
   const end = Date.now() + ms;

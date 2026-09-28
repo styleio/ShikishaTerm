@@ -173,7 +173,7 @@ const stateOf = async () => (await service('GET', '/sandboxes/' + box.sandboxId)
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
 env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0';
-const start = () => spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+const start = () => spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 
 try {
   await box.files.write('/tmp/claude', STAND_IN);

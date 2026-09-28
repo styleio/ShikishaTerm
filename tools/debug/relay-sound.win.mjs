@@ -97,7 +97,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/i.test(k)));
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), [], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
 for (let i = 0; i < 160; i++) {
   try { if ((await fetch(`http://127.0.0.1:${RELAY_PORT}/?t=${TOKEN}`)).ok) break; } catch { /* not yet */ }
   await sleep(250);

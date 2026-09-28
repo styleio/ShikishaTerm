@@ -130,7 +130,14 @@ impl Split {
         }
         self.resting.set(false);
         let program = window_program();
-        match std::process::Command::new(&program).arg("--connect").arg(&board).spawn() {
+        let mut window = std::process::Command::new(&program);
+        window.arg("--connect").arg(&board);
+        // The window is the half that would take the front, so it is the half
+        // that has to be told
+        if crate::stays_behind() {
+            window.arg(crate::BEHIND);
+        }
+        match window.spawn() {
             Ok(child) => {
                 crate::append_hook_log(&format!("split: a window started (pid {})", child.id()));
                 *self.window.borrow_mut() = Some(child);

@@ -1493,7 +1493,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Forgetting to filter it out would send us looking for a program named `--window`.
     let cmd_args: Vec<String> = std::env::args()
         .skip(1)
-        .filter(|a| !matches!(a.as_str(), "--settings"))
+        .filter(|a| !matches!(a.as_str(), "--settings" | crate::BEHIND))
         .collect();
     let start = Instant::now();
     // Width comes from config if given; otherwise it's auto-computed from tab names

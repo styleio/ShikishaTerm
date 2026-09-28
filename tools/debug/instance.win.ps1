@@ -215,7 +215,7 @@ try {
     foreach ($k in @($aside.Keys)) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }
     $env:LOCALAPPDATA = Join-Path $At 'localappdata'
     if ($Cdp -gt 0) { $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$Cdp" }
-    $proc = Start-Process -FilePath (Join-Path $app 'SHIKISHA-TERM.exe') -WorkingDirectory $app -PassThru
+    $proc = Start-Process -FilePath (Join-Path $app 'SHIKISHA-TERM.exe') -ArgumentList '--behind' -WorkingDirectory $app -PassThru
 } finally {
     foreach ($k in @($aside.Keys)) {
         if ([string]::IsNullOrEmpty($aside[$k])) { Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue }

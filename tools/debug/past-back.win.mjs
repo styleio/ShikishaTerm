@@ -127,7 +127,7 @@ fs.writeFileSync(starter, [
   `$env:PATH = "${STUB};" + $env:PATH`,
   `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=${PORT}"`,
   'foreach ($e in @(Get-ChildItem env: | Where-Object { $_.Name -match "^(CLAUDE|ANTHROPIC)" })) { Remove-Item ("env:" + $e.Name) }',
-  `Start-Process -FilePath "${path.join(APP, 'SHIKISHA-TERM.exe')}" -WorkingDirectory "${APP}"`,
+  `Start-Process -FilePath "${path.join(APP, 'SHIKISHA-TERM.exe')}" -ArgumentList '--behind' -WorkingDirectory "${APP}"`,
 ].join('\r\n') + '\r\n');
 // Started and talked to more than once: this check watches a tab come up
 // twice, once knowing nothing and once having lost something, and the second
