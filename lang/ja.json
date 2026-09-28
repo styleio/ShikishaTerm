@@ -2760,6 +2760,7 @@
   "grant.tab_output": "タブの最新の返答",
   "grant.tab_screen": "タブの画面に出ているもの",
   "grant.tab_read": "タブの記録を、前回の続きから読む",
+  "grant.tab_conversation": "タブの会話を、スマホのリーディングモードと同じ形で読む",
   "grant.send_to_tab": "タブに指示を渡して実行させる",
   "grant.ask_tab": "タブに頼んで返答を待つ",
   "grant.tab_run": "人が名指ししたターミナルでコマンドを実行する",

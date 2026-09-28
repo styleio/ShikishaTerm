@@ -17,7 +17,10 @@
 //! **Where the reply comes from.** The CLI's own record of the conversation,
 //! read the way the phone's reader reads it -- not the screen, which is a
 //! picture of the reply cut to the window's width and wrapped in the tool's
-//! own frame. A tab whose profile names no record falls back to the screen.
+//! own frame. A tab on another machine is read from the record kept there,
+//! a look at a time on a thread of its own ([`FarRead`]). A tab whose profile
+//! names no record, or whose machine has none by that name, falls back to the
+//! screen.
 //!
 //! **What is never lost.** The caller may stop holding the line: its client
 //! has a timeout of its own, or a person pressed Esc. The other tab goes on
@@ -101,6 +104,8 @@ pub struct Ask {
     /// what comes back is what the terminal printed, from where its session
     /// log stood when the command went in
     pub run: Option<RunFrom>,
+    /// The reply being looked for on the machine the tab runs on
+    pub far: FarRead,
 }
 
 /// Where a shell's output starts, for `tab_run`
@@ -148,6 +153,103 @@ fn run_output(t: &Tab, from: &RunFrom) -> (String, &'static str) {
     (tail(&t.last_screen, 60), "screen")
 }
 
+/// The reply looked for in a record on the machine the tab runs on.
+///
+/// Reading it there is a round trip or several, and this is asked on the main
+/// loop, a tick at a time: so a look is sent off on a thread of its own and
+/// its answer picked up on a later tick, the way the phone's reader answers
+/// from a thread of its own.
+#[derive(Default)]
+pub struct FarRead {
+    pending: Option<std::sync::mpsc::Receiver<Found>>,
+    /// When the last look went out, so a record that has not caught up yet is
+    /// looked at again every few seconds rather than every tick
+    last: Option<Instant>,
+    /// The machine keeps no record there by that name: the screen is what
+    /// there is, as for a tab here with no record
+    missing: bool,
+}
+
+/// What one look at a far record found
+enum Found {
+    Missing,
+    NotYet,
+    Reply(String),
+}
+
+/// How long after one look at a far record the next may go out
+const FAR_AGAIN: Duration = Duration::from_secs(3);
+
+impl FarRead {
+    /// The reply to `sent` in `record`, once a look has come back with it.
+    /// `None` while one is out or the record has not caught up
+    fn reply(&mut self, record: &crate::reader::Record, sent: &str) -> Option<String> {
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(Found::Reply(reply)) => {
+                    self.pending = None;
+                    return Some(reply);
+                }
+                Ok(Found::Missing) => {
+                    self.pending = None;
+                    self.missing = true;
+                }
+                Ok(Found::NotYet) | Err(std::sync::mpsc::TryRecvError::Disconnected) => self.pending = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            return None;
+        }
+        if self.missing || self.last.is_some_and(|at| at.elapsed() < FAR_AGAIN) {
+            return None;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (record, sent) = (record.clone(), sent.to_string());
+        std::thread::spawn(move || {
+            let found = match record.page(u64::MAX, REPLY_TURNS) {
+                None => Found::Missing,
+                Some(Ok(page)) => reply_of(&page, &sent).map_or(Found::NotYet, Found::Reply),
+                Some(Err(_)) => Found::NotYet,
+            };
+            let _ = tx.send(found);
+        });
+        self.pending = Some(rx);
+        self.last = Some(Instant::now());
+        None
+    }
+}
+
+/// Where the reply to an ask is read from: the record here, the record on the
+/// machine the tab runs on, or -- with neither -- the screen
+enum Source {
+    Here(std::path::PathBuf),
+    Far(crate::reader::Record),
+    Screen,
+}
+
+impl Ask {
+    fn source(&self, t: &Tab) -> Source {
+        match t.record_at() {
+            Some(record) if record.is_far() => {
+                if self.far.missing { Source::Screen } else { Source::Far(record) }
+            }
+            _ => t.record().map_or(Source::Screen, Source::Here),
+        }
+    }
+
+    /// The reply in the record, from wherever it is kept. `None` while it has
+    /// not been found (yet)
+    fn recorded(&mut self, t: &Tab) -> Option<String> {
+        match self.source(t) {
+            Source::Here(path) => reply_in(&path, &self.text),
+            Source::Far(record) => {
+                let text = self.text.clone();
+                self.far.reply(&record, &text)
+            }
+            Source::Screen => None,
+        }
+    }
+}
+
 /// An answer that outlived the line it was asked on, waiting to be typed into
 /// the caller's tab once that tab is free (a browser run, see `browser_do`)
 pub fn handing(caller: String, target: String, text: String) -> Ask {
@@ -167,6 +269,7 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         round: 0,
         max_rounds: 0,
         run: None,
+        far: FarRead::default(),
     }
 }
 
@@ -223,7 +326,14 @@ fn flat(s: &str) -> String {
 /// after the turn in which it was given `sent`. `None` while that turn has not
 /// been written, or the AI has not said anything since
 pub fn reply_in(path: &Path, sent: &str) -> Option<String> {
-    let page = crate::reader::read_back(path, u64::MAX, 16).ok()?;
+    reply_of(&crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?, sent)
+}
+
+/// How many things said are read back to find the turn a reply belongs to
+const REPLY_TURNS: usize = 16;
+
+/// The reply to `sent` in a page of the record (see [`reply_in`])
+fn reply_of(page: &crate::reader::Page, sent: &str) -> Option<String> {
     let want: String = flat(sent).chars().take(MATCH_CHARS).collect();
     let asked = page
         .turns
@@ -343,7 +453,7 @@ pub fn step(
             a.quiet_since = None;
             let since = *a.background_since.get_or_insert(now);
             if since.elapsed() >= BACKGROUND_GRACE {
-                if let Some(reply) = t.record().and_then(|path| reply_in(&path, &a.text)) {
+                if let Some(reply) = a.recorded(t) {
                     return Step::Answer(answer(
                         a,
                         "DONE",
@@ -429,10 +539,10 @@ pub fn step(
                 Step::Nothing
             };
         }
-        match t.record() {
-            Some(path) => {
+        match a.source(t) {
+            Source::Here(_) | Source::Far(_) => {
                 if since.elapsed() >= SETTLE {
-                    if let Some(reply) = reply_in(&path, &a.text) {
+                    if let Some(reply) = a.recorded(t) {
                         return Step::Answer(answer(
                             a,
                             "DONE",
@@ -444,7 +554,7 @@ pub fn step(
                     }
                 }
             }
-            None => {
+            Source::Screen => {
                 if since.elapsed() >= SCREEN_SETTLE {
                     let reply = t
                         .last_response

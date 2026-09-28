@@ -2785,6 +2785,7 @@
   "grant.tab_output": "A tab's latest reply",
   "grant.tab_screen": "What is on a tab's screen",
   "grant.tab_read": "A tab's recording, read on from where it left off",
+  "grant.tab_conversation": "A tab's conversation, as the phone's reader shows it",
   "grant.send_to_tab": "Give a tab an instruction and let it run",
   "grant.ask_tab": "Ask a tab and wait for its reply",
   "grant.tab_run": "Run a command in a terminal the person named",

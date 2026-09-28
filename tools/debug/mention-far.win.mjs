@@ -8,14 +8,19 @@
  *
  *   far    a tab with no command: that machine's shell, in the folder
  *   farai  a stand-in `claude` there, which answers each line with GOT:<line>
+ *          on its screen, and with eighty lines in its record, where Claude
+ *          Code keeps one -- more than a screen holds
  *
  * Checked:
  *   0. what the @ list offers from the Claude tab, and how each far tab is
  *      counted (an AI or a terminal)
  *   1. run   "run `cat value.txt` in <@far>": the value only that machine
  *            has comes back through the real Claude
- *   2. ask   ask_tab to <@farai>, straight through the pipe: whether it is
- *            taken as an AI, and what comes back
+ *   2. ask   ask_tab to <@farai>, straight through the pipe: taken as an AI,
+ *            and its whole answer read from the record on that machine
+ *   3. tab_conversation, as the phone's reader reads it: the far AI's
+ *      question and answer, the Claude tab's here, a shell told it keeps
+ *      none, and a tab that is not there
  *
  *     cargo build
  *     node tools/debug/mention-far.win.mjs --where=ssh
@@ -68,10 +73,22 @@ const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
-// A stand-in claude: one line in, GOT:<line> out
+// A stand-in claude: one line in, GOT:<line> out on the screen -- and in its
+// record, where Claude Code keeps one, an answer of eighty lines, more than a
+// screen holds, so an answer read whole can only have come from the record
 const STAND_IN = `#!/bin/sh
+id=""
+while [ $# -gt 0 ]; do case "$1" in --session-id|--resume) id="$2"; shift;; esac; shift; done
+rec="$HOME/.claude/projects/${MARK}/$id.jsonl"
+mkdir -p "$(dirname "$rec")"
 echo "stand-in claude"
-while read -r line; do echo "GOT:$line"; done
+while read -r line; do
+  printf '{"type":"user","message":{"role":"user","content":"%s"}}\\n' "$line" >> "$rec"
+  ans=""; i=1
+  while [ $i -le 80 ]; do ans="\${ans}answer line $i of $line\\\\n"; i=$((i+1)); done
+  printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\\n' "$ans" >> "$rec"
+  echo "GOT:$line"
+done
 `;
 
 // ── The other machine ─────────────────────────
@@ -278,14 +295,33 @@ try {
     .then((r) => ({ ok: true, r })).catch((e) => ({ ok: false, r: e.message }));
   note('answer: ' + JSON.stringify(asked).slice(0, 600));
   check(asked.ok, 'ask_tab is taken');
-  check(asked.ok && JSON.stringify(asked.r).includes('GOT:ping ' + VALUE), 'the stand-in\'s answer comes back');
+  const reply = asked.ok ? String(asked.r.reply || '') : '';
+  check(asked.ok && asked.r.source === 'record', 'read from the record on that machine, not the screen: ' + (asked.ok ? asked.r.source : '-'));
+  check(reply.includes('answer line 1 of ping ' + VALUE) && reply.includes('answer line 80 of ping ' + VALUE),
+    'the whole eighty-line answer came back (' + reply.split('\n').length + ' lines)');
   note('farai screen: ' + (await screen('farai')).split('\n').filter(Boolean).slice(-4).join(' | '));
+
+  console.log('3. tab_conversation: the conversations, as the phone\'s reader reads them');
+  const far = await door('tab_conversation', 'farai', { want: 2 }).catch((e) => ({ error: e.message }));
+  const farTurns = far.turns || [];
+  note('farai: ' + JSON.stringify({ source: far.source, turns: farTurns.map((t) => [t.who, t.text.slice(0, 40)]), more: far.more, error: far.error }));
+  check(farTurns.length === 2 && farTurns[0].who === 'you' && farTurns[0].text === 'ping ' + VALUE
+    && farTurns[1].who === 'ai' && farTurns[1].text.includes('answer line 80'), 'the far AI\'s question and whole answer');
+  const here = await door('tab_conversation', 'claude', { want: 2 }).catch((e) => ({ error: e.message }));
+  const hereTurns = here.turns || [];
+  note('claude: ' + JSON.stringify({ source: here.source, turns: hereTurns.map((t) => [t.who, t.text.slice(0, 60)]), error: here.error }));
+  check(hereTurns.some((t) => t.who === 'you' && t.text.includes('cat value.txt'))
+    && hereTurns.some((t) => t.who === 'ai' && t.text.includes(VALUE)), 'the Claude tab here: what the person asked, and its answer');
+  const shell = await door('tab_conversation', 'far', {}).catch((e) => ({ error: e.message }));
+  check(shell.source === 'none' && /tab_screen/.test(shell.note || ''), 'a shell keeps no conversation, and is told where to look: ' + (shell.note || shell.error));
+  const gone = await door('tab_conversation', 'nobody', {}).then(() => '').catch((e) => e.message);
+  check(/no tab <@nobody>/.test(gone), 'a tab that is not there is said to be not there: ' + gone);
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + (e.stack || e));
 } finally {
   stopApp();
-  await there(`rm -rf ${DIR}; pkill -f "${DIR}/bin/claude" 2>/dev/null; true`).catch(() => {});
+  await there(`rm -rf ${DIR} "$HOME/.claude/projects/${MARK}"; pkill -f "${DIR}/bin/claude" 2>/dev/null; true`).catch(() => {});
   await cleanup();
   await sleep(500);
   fs.rmSync(RUN, { recursive: true, force: true });

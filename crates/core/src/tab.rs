@@ -3210,6 +3210,23 @@ impl Tab {
         crate::sessionfind::locate(glob, id)
     }
 
+    /// Where this tab's CLI keeps its record of the conversation, on this PC
+    /// or on the machine the tab runs on -- the record the phone's reader reads
+    pub fn record_at(&self) -> Option<crate::reader::Record> {
+        let id = &self.session.as_ref()?.id;
+        let glob = self.resume.as_ref()?.verify.as_deref()?;
+        crate::reader::Record::named(glob, id, self.machine())
+    }
+
+    /// The machine this tab runs on, when it is not this PC
+    pub fn machine(&self) -> Option<crate::elsewhere::Elsewhere> {
+        match (self.remote(), self.cloud()) {
+            (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+            (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+            (None, None) => None,
+        }
+    }
+
     /// The pattern the record is found by and the conversation's id, whether
     /// or not the CLI has written the record yet
     fn record_named(&self) -> Option<(&str, &str)> {
