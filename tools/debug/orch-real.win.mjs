@@ -9,7 +9,7 @@
  * which sits in the folder as a project skill.
  *
  *     cargo build
- *     node tools/debug/orch-real.win.mjs [--trials=2] [--keep]
+ *     node tools/debug/orch-real.win.mjs [--trials=2] [--kind=once|loop] [--exe=<path>] [--keep]
  *
  * A trial passes when: tests the AIs never see pass, the lead handed the work
  * out with dispatch (the fix and at least one review), every assignment was
@@ -34,6 +34,10 @@ const arg = (name, dflt) => {
   return a ? a.slice(name.length + 3) : dflt;
 };
 const TRIALS = Number(arg('trials', 2));
+// once: the fix is asked for whole, and one review usually finds nothing.
+// loop: the first fix is asked for one function only, so the review finds the
+// rest and the job has to go round again -- fix, review, fix, review
+const KIND = arg('kind', 'once');
 const RUN = path.join(os.tmpdir(), 'sk-orch-real');
 const APP = path.join(RUN, 'app');
 const REPO = path.join(RUN, 'repo');
@@ -55,7 +59,9 @@ const git = (...args) => {
 };
 const nonce = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// --exe=<path> runs another build instead of this checkout's: the one
+// installed, say, to try exactly what people will run
+const exe = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6) || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 for (const cli of ['claude', 'codex']) {
   if (spawnSync('where.exe', [cli], { encoding: 'utf8' }).status !== 0) die(`${cli} is not on PATH`);
@@ -199,7 +205,10 @@ const trial = async (n) => {
   git('clean', '-qfd');
   const mark = `JOB${nonce()}`;
   const said = new RegExp(`${mark}-\\d`);
-  const ask = `Have <@coder> fix the bugs in calc.js in this folder, and have <@reviewer> review the fix. ` +
+  const first = KIND === 'loop'
+    ? `Have <@coder> fix only the bug in sum() in calc.js in this folder (nothing else yet), and have <@reviewer> review the whole of calc.js. `
+    : `Have <@coder> fix the bugs in calc.js in this folder, and have <@reviewer> review the fix. `;
+  const ask = first +
     `If the review finds anything, have <@coder> fix it and <@reviewer> review again, until the review finds nothing. ` +
     `See the whole job through. When it is done, reply to me with only ${mark}- followed by how many reviews there were, like ${mark}-N.`;
   const from = logLines().length;
@@ -228,15 +237,15 @@ const trial = async (n) => {
   const reviews = events.filter((l) => / -> reviewer/.test(l)).length;
   const tests = spawnSync('node', [HIDDEN], { encoding: 'utf8' });
   const fixed = tests.status === 0;
-  const pass = fixed && dispatched >= 2 && reviews >= 1 && reported >= dispatched && closed && said.test(out);
+  const pass = fixed && dispatched >= 2 && reviews >= (KIND === 'loop' ? 2 : 1) && reported >= dispatched && closed && said.test(out);
   const why = pass ? '' : [ended !== 'DONE' && `lead ended ${ended}`, !fixed && 'hidden tests fail',
-    dispatched < 2 && `only ${dispatched} dispatch(es)`, reviews < 1 && 'no review dispatched',
+    dispatched < 2 && `only ${dispatched} dispatch(es)`, reviews < (KIND === 'loop' ? 2 : 1) && `only ${reviews} review(s)`,
     reported < dispatched && `${dispatched - reported} unreported`, !closed && 'job not closed', !said.test(out) && 'no final mark']
     .filter(Boolean).join('; ');
-  const r = { n, pass, why, ms: Date.now() - t0, dispatched, reviews, reported, closed, events };
+  const r = { kind: KIND, n, pass, why, ms: Date.now() - t0, dispatched, reviews, reported, closed, events };
   results.push(r);
-  fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 2));
-  fs.writeFileSync(path.join(OUT, `lead-${n}.txt`), out);
+  fs.writeFileSync(path.join(OUT, `results-${KIND}.json`), JSON.stringify(results, null, 2));
+  fs.writeFileSync(path.join(OUT, `lead-${KIND}-${n}.txt`), out);
   console.log(`${pass ? 'PASS' : 'FAIL'} #${n} ${Math.round(r.ms / 1000)}s dispatched=${dispatched} reviews=${reviews} reported=${reported} closed=${closed}` + (pass ? '' : ` -- ${why}`));
   for (const e of events) console.log('    ' + e.replace(/^.*orchestration: /, ''));
 };

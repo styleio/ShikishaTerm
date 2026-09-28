@@ -68,7 +68,9 @@ const MAIN = path.dirname(spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-for
 const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.env'), 'utf8')
   .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && l.includes('='))
   .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim().replace(/^"|"$/g, '')]));
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// --exe=<path> runs another build instead of this checkout's: the one
+// installed, say, to try exactly what people will run
+const exe = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6) || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 if (!fs.existsSync(path.join(ROOT, 'bridge', 'shikisha-bridge-x86_64-linux'))) die('no Linux bridge in bridge/ -- build one first');
 
