@@ -15223,7 +15223,9 @@ function fillWork(w, work, error) {
     if (p.kind === "say") box.append(rdMarkup(p.text));
     else {
       if (p.name) box.append(el("div", {class:"vpname"}, p.name));
-      box.append(el("pre", {}, p.text));
+      // All of it left out -- too long to bring over from another machine --
+      // is said by the line under it alone, not by an empty well
+      if (p.text) box.append(el("pre", {}, p.text));
     }
     const cut = (k, n) => n ? el("div", {class:"vpcut"}, (T[k] || "{n}").replaceAll("{n}", n.toLocaleString())) : null;
     const before = cut("vault.cut.before", p.before);

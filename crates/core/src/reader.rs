@@ -617,6 +617,12 @@ pub enum Item {
     },
 }
 
+/// The line put in place of one that was too long to bring over from another
+/// machine: `{"<this>": <how many bytes>}`. Read as what came back from a
+/// tool, all of it left out, so the reader says so rather than showing a
+/// call with nothing after it
+pub const LEFT_OUT: &str = "shikisha_left_out";
+
 /// What one line of a record is, read forwards
 enum Line {
     Said(Turn),
@@ -634,6 +640,15 @@ fn read_line(line: &[u8]) -> Line {
     let Ok(text) = std::str::from_utf8(line) else {
         return Line::Nothing;
     };
+    if let Some(n) = text
+        .strip_prefix(&format!("{{\"{LEFT_OUT}\":"))
+        .and_then(|rest| rest.trim_end().strip_suffix('}'))
+        .and_then(|n| n.trim().parse::<usize>().ok())
+    {
+        let mut p = piece(PieceKind::Out, String::new(), String::new());
+        p.after = n;
+        return Line::Out(vec![p]);
+    }
     let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
     let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
     let tooling = text.contains("_use\"")
@@ -1507,6 +1522,25 @@ mod tests {
         // A letter whose case lies outside ASCII is found whatever its case
         let accent = record("assistant", "Élan vital");
         assert!(mention(accent.as_bytes(), "élan").is_some());
+    }
+
+    /// A line too long to bring over from another machine is said to be
+    /// left out, with how long it was -- not dropped without a word
+    #[test]
+    fn a_line_left_on_the_other_machine_is_said_to_be_left_out() {
+        let bytes = [
+            record("user", "look"),
+            call("Bash", "cat big.log"),
+            format!("{{\"{LEFT_OUT}\":2000123}}"),
+            record("assistant", "done"),
+        ]
+        .join("\n");
+        let items = read_whole(bytes.as_bytes(), "");
+        let Item::Work { from, to, calls, .. } = items[1] else { panic!("{items:?}") };
+        assert_eq!(calls, 1);
+        let work = work_at(bytes.as_bytes(), from, to, "");
+        let out = work.pieces.iter().find(|p| p.kind == PieceKind::Out).expect("the left-out output is a piece");
+        assert_eq!((out.text.as_str(), out.after), ("", 2_000_123));
     }
 
     #[test]

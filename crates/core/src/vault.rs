@@ -627,10 +627,11 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
 const FAR_CAP: usize = 256 * 1024 * 1024;
 
 /// A line longer than this, in a record on another machine, is left there and
-/// a blank record brought in its place. Nobody says a megabyte: a line that
-/// long is a tool's output or a file's contents, and it is most of what would
-/// otherwise cross the network. Replaced rather than dropped, so every line
-/// still lies where the reading counted it
+/// a line saying how long it was brought in its place (`reader::LEFT_OUT`).
+/// Nobody says a megabyte: a line that long is a tool's output or a file's
+/// contents, and it is most of what would otherwise cross the network.
+/// Replaced rather than dropped, so every line still lies where the reading
+/// counted it, and the reader can say what it is not showing
 const FAR_LINE_CAP: usize = 1024 * 1024;
 
 /// The record last brought over from another machine, by where it was
@@ -701,7 +702,8 @@ fn record_bytes(
     use base64::Engine as _;
     let quoted = crate::worktree::for_a_shell(std::slice::from_ref(&path));
     let line = format!(
-        "LC_ALL=C awk -v m={FAR_LINE_CAP} 'length($0) > m {{ print \"{{}}\"; next }} {{ print }}' {quoted} | head -c {FAR_CAP} | base64 -w0"
+        "LC_ALL=C awk -v m={FAR_LINE_CAP} 'length($0) > m {{ printf \"{{\\\"{}\\\":%d}}\\n\", length($0); next }} {{ print }}' {quoted} | head -c {FAR_CAP} | base64 -w0",
+        crate::reader::LEFT_OUT
     );
     let ran = crate::elsewhere::exec(at, &line, 180_000).map_err(|e| format!("{}: {e:#}", t("err.vault.unreadable")))?;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -789,7 +791,12 @@ fn by_bridge<T: serde::de::DeserializeOwned>(at: &crate::elsewhere::Elsewhere, o
         return None;
     }
     match crate::farlink::call(at, op, p).map(serde_json::from_value::<T>) {
-        Ok(Ok(v)) => Some(v),
+        Ok(Ok(v)) => {
+            // Said once per request, so which way a far record was read can
+            // be told afterwards -- and a check can tell it
+            crate::append_hook_log(&format!("vault: {op} answered by the bridge on {}", at.address()));
+            Some(v)
+        }
         Ok(Err(e)) => {
             crate::append_hook_log(&format!("vault: the bridge's answer to {op} could not be read ({e}); asking the long way"));
             None
