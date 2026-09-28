@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM の動作 — 複数AIの並走、AI同士の討論、そしてダウンロードできる結果" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM の動作 — @メンションでAI同士がレビューを往復、4体の並走、MicroVM のクラウドエージェント、スマホからの返信" width="820">
 </p>
 
 ---

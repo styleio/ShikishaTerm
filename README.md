@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — several AIs side by side, an AI-vs-AI debate, and a downloadable result" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/demo.gif" alt="SHIKISHA-TERM in action — one AI @mentions another for a review loop, four AIs side by side, a cloud agent on a MicroVM, and an answer from a phone" width="820">
 </p>
 
 <p align="center">
