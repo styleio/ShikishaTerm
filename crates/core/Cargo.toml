@@ -175,3 +175,6 @@ windows = { version = "0.61.3", features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# The Store's download and install says how far it is through a handler of
+# this crate's type (update.rs). The same version the windows crate brings in
+windows-future = "0.2.1"

@@ -5193,6 +5193,10 @@ const PAGE: &str = r##"<!doctype html>
  .useai { margin-top:var(--s3); }
  .useai .row { font-weight:600; }
 
+ /* An update under way: the bar is how far, the line under it the words, at
+    every width. It moves only when the number does (STYLEGUIDE §6) */
+ .ubar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin:var(--s1) 0 var(--s1); }
+ .ubar i { display:block; height:100%; background:var(--live); }
  /* ── Narrow screens (a phone reaching the settings over the remote proxy) ──
     The desktop layout is a fixed 260px sidebar next to the content. A phone has
     room for exactly one of the two, so below 760px the sidebar becomes a drawer
@@ -5251,9 +5255,6 @@ const PAGE: &str = r##"<!doctype html>
       the end of the previous field's line, reading as if it named that one.
       A checkbox's own label is the exception: it belongs beside its box. */
    .row { flex-wrap:wrap; gap:var(--s2) var(--s3); }
-   /* A fetch under way: the bar is the number, the line under it the words */
-   .ubar { height:6px; border-radius:3px; background:var(--line); overflow:hidden; margin:var(--s1) 0 var(--s1); }
-   .ubar i { display:block; height:100%; background:var(--live); transition:width .3s; }
    .row > label:not(.check), .row > label.beside { width:100%; }
    .hint { flex-basis:100%; }
    /* Fixed pixel widths on inputs/selects overflow a phone; cap them all, and
@@ -8242,9 +8243,11 @@ const DESK_LINKS = {permissions:"permissions", caps:"caps"};
 // The one place a newer version is fetched, checked and put in place. The
 // sidebar's card and a person who came here on their own press the same
 // button, so one road carries everyone -- and a broken road is noticed.
-// Draws from /api/update; polls once a second only while something is under
+// Draws from /api/update; polls twice a second only while something is under
 // way, and stops the moment the card leaves the screen.
 let updateTimer = null;
+let updatePhase = "";
+const UPDATE_BUSY = ["checking", "downloading", "verifying", "unpacking", "applying", "restarting"];
 function updateCard() {
   const box = el("div", {id:"updatebox"}, el("div", {class:"hint"}, "…"));
   const auto = row(T["settings.update.auto"], checkDefaultOn(current, "update_check", T["settings.update.auto.label"]),
@@ -8261,17 +8264,28 @@ async function refreshUpdate() {
   if (!box) { if (updateTimer) { clearInterval(updateTimer); updateTimer = null; } return; }
   let u = null;
   try { u = await updateApi(""); } catch (e) {
+    // A program that said it is restarting is expected to be away for a
+    // moment; what it said stays until the new one answers
+    if (updatePhase === "restarting") return;
     box.textContent = ""; box.append(el("div", {class:"hint"}, T["settings.update.unreachable"])); return;
   }
+  updatePhase = u.phase;
   drawUpdate(box, u);
-  const busy = ["checking", "downloading", "verifying", "applying"].includes(u.phase);
-  if (busy && !updateTimer) updateTimer = setInterval(refreshUpdate, 1000);
+  const busy = UPDATE_BUSY.includes(u.phase);
+  if (busy && !updateTimer) updateTimer = setInterval(refreshUpdate, 500);
   if (!busy && updateTimer) { clearInterval(updateTimer); updateTimer = null; }
 }
 // Megabytes with one decimal, for a person: "12.3 MB"
 function mb(n) { return (n / 1048576).toFixed(1) + " MB"; }
+// A bar, and under it what is being done: how far is `done` of `total`
+function updateProgress(done, total, words) {
+  const pct = total ? Math.min(100, Math.round(done * 100 / total)) : 0;
+  return el("div", {style:"flex:1 1 100%"}, el("div", {class:"ubar"}, el("i", {style:"width:" + pct + "%"})),
+    el("div", {class:"hint"}, words));
+}
 function drawUpdate(box, u) {
   box.textContent = "";
+  const busy = UPDATE_BUSY.includes(u.phase);
   const act = async (path) => { try { await updateApi(path, true); } catch (e) {} refreshUpdate(); };
   // Line 1: this version, and when the newest was last looked for
   const when = u.checked_at ? fill(T["settings.update.checked"], {when: new Date(u.checked_at * 1000).toLocaleString()})
@@ -8280,7 +8294,7 @@ function drawUpdate(box, u) {
     el("span", {}, fill(T["settings.update.current"], {version: u.current})),
     el("span", {class:"hint", style:"flex-basis:auto"}, when),
     // (an attribute, so absent rather than "false": disabled="false" still disables)
-    el("button", {class:"quiet", disabled: u.phase === "checking" ? "" : null, onclick: () => act("/check")},
+    el("button", {class:"quiet", disabled: busy ? "" : null, onclick: () => act("/check")},
       u.phase === "checking" ? T["settings.update.checking"] : T["settings.update.check"])));
   // Line 2: where things stand, and the one button
   const v = u.version || "";
@@ -8289,7 +8303,7 @@ function drawUpdate(box, u) {
   const text = (k, args) => el("span", {}, fill(T[k] || k, args || {}));
   const notes = () => u.notes ? el("a", {href: REMOTE ? u.notes : "#", target: REMOTE ? "_blank" : null, rel:"noopener",
       onclick: REMOTE ? null : (e) => { e.preventDefault(); fetch("/api/open?dest=update-notes", {headers:{"X-Token":TOKEN}}); }},
-      T["settings.update.notes"]) : null;
+      T["settings.update.notes"]) : "";
   const primary = (label, path) => el("button", {class:"primary", onclick: () => act(path)}, label);
   const quiet = (label, path) => el("button", {class:"quiet", onclick: () => act(path)}, label);
   switch (u.phase) {
@@ -8304,16 +8318,16 @@ function drawUpdate(box, u) {
       main.append(primary(u.packaged ? T["settings.update.install.store"] : T["settings.update.install"], "/install"),
                   quiet(T["settings.update.skip"], "/skip"));
       break;
-    case "downloading": {
-      const pct = u.total ? Math.min(100, Math.round(u.got * 100 / u.total)) : 0;
-      const bar = el("div", {class:"ubar"}, el("i", {style:"width:" + pct + "%"}));
-      state.append(el("div", {style:"flex:1 1 100%"}, bar,
-        el("div", {class:"hint"}, u.total ? fill(T["settings.update.downloading"], {got: mb(u.got), total: mb(u.total)})
-                                          : fill(T["settings.update.downloading.some"], {got: mb(u.got)}))));
+    case "downloading":
+      state.append(updateProgress(u.got, u.total || 0,
+        u.total ? fill(T["settings.update.downloading"], {got: mb(u.got), total: mb(u.total)})
+                : fill(T["settings.update.downloading.some"], {got: mb(u.got)})));
       break;
-    }
     case "verifying":
       state.append(text("settings.update.verifying"));
+      break;
+    case "unpacking":
+      state.append(updateProgress(u.done, u.total, fill(T["settings.update.unpacking"], {done: mb(u.done), total: mb(u.total)})));
       break;
     case "staged":
       state.append(text("settings.update.staged", {version: v}), notes());
@@ -8322,7 +8336,17 @@ function drawUpdate(box, u) {
                   quiet(T["settings.update.discard"], "/discard"));
       break;
     case "applying":
-      state.append(text("settings.update.applying"));
+      // The Store's is a percent of its download and install; ours, bytes
+      if (u.packaged) {
+        state.append(u.total ? updateProgress(u.done, u.total, fill(T["settings.update.applying.store"], {pct: u.done}))
+                             : text("settings.update.applying.store.wait"));
+      } else {
+        state.append(u.total ? updateProgress(u.done, u.total, fill(T["settings.update.applying"], {done: mb(u.done), total: mb(u.total)}))
+                             : text("settings.update.applying.wait"));
+      }
+      break;
+    case "restarting":
+      state.append(text("settings.update.restarting", {version: v}));
       break;
     case "check_failed":
       state.append(el("span", {style:"color:var(--danger)"}, fill(T["settings.update.failed.check"], {message: u.message || ""})));
@@ -8349,7 +8373,7 @@ function drawUpdate(box, u) {
     box.append(el("div", {class:"hint"}, fill(T["settings.update.carried"], {version: u.migrated_from})));
   }
   if (u.backup) box.append(el("div", {class:"hint"}, fill(T["settings.update.backup"], {path: u.backup})));
-  if (u.prev && !u.packaged) {
+  if (u.prev && !u.packaged && !busy) {
     box.append(el("div", {class:"row", style:"margin-top:var(--s2)"},
       quiet(fill(T["settings.update.rollback"], {version: u.prev}), "/rollback"),
       el("span", {class:"hint"}, T["settings.update.rollback.hint"])));

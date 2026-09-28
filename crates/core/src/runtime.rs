@@ -10857,24 +10857,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // first when an AI is at work
         // The settings' Update button was pressed on a version that is ready.
         // Putting it in place ends this program, so the same question quitting
-        // asks is asked first; the swap itself is update::apply, and the new
-        // copy is started from there. The Store copy hands the job to the
-        // Store instead, which ends the program itself when it is done
+        // asks is asked first. The swap itself is update::apply, on the update
+        // thread rather than this one: the window goes on answering and saying
+        // how far it is, and this loop ends once the new copy is started and
+        // that has been said. The Store copy hands the job to the Store
+        // instead, which ends the program itself when it is done
         if let Some(what) = update::take_apply() {
             if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
-                match what {
-                    update::Apply::Store => {
-                        let _ = shell.install_store_update();
-                    }
-                    other => {
-                        if update::apply(&other).is_ok() {
-                            break;
-                        }
-                    }
+                let store = what == update::Apply::Store;
+                update::begin_apply(what);
+                if store {
+                    let _ = shell.install_store_update();
                 }
             } else {
                 update::apply_declined();
             }
+        }
+        if update::ready_to_restart() {
+            break;
         }
         let close_pressed = std::mem::take(&mut shell.mail().close_requested);
         let quit_chosen = std::mem::take(&mut shell.mail().tray_quit);

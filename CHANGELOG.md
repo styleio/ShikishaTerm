@@ -8,6 +8,17 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **Installing an update says how far it is, and the window keeps answering.**
+  The press on "Install and restart" is answered at once; the files are replaced
+  away from the window, under a bar that moves by the megabyte, and "Starting
+  version …" is said before the window closes and opens again. Unpacking a
+  download has a bar too, and the Store copy shows the Store's own percent.
+
+### Fixed
+- The update's progress bar was drawn only at phone width; at window width it
+  had no height.
+
 ## [0.21.0] - 2026-09-28
 
 ### Added

@@ -31,11 +31,14 @@
 //!
 //! All state lives behind one mutex that the drawing, the settings server
 //! and the fetching thread each glance at. Nothing here may stop the program:
-//! every failure is a phase on the card, never an error dialog.
+//! every failure is a phase on the card, never an error dialog. Nothing here
+//! runs on the thread that draws either: the swap is the fetching thread's
+//! too, so the window keeps answering -- and keeps saying how far it got --
+//! until the moment the program ends.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
@@ -63,6 +66,10 @@ const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long the new copy waits for the old one to leave before claiming the layout
 #[cfg(windows)]
 const HANDOFF_WAIT: Duration = Duration::from_secs(15);
+/// How long "restarting" stays on screen before this copy ends. The settings
+/// page reads the state twice a second, so this is long enough for it to be
+/// read there and short against the new copy's wait above
+const RESTART_SAY: Duration = Duration::from_millis(1500);
 
 /// What is known about the newest published version
 #[derive(Debug, Clone, PartialEq, Serialize, Default)]
@@ -89,10 +96,18 @@ pub enum Phase {
     Available { version: Option<String> },
     Downloading { version: String, got: u64, total: Option<u64> },
     Verifying { version: String },
+    /// Checked; `done` of the `total` bytes the zip holds are out of it
+    Unpacking { version: String, done: u64, total: u64 },
     /// Fetched, checked and unpacked; waiting to be put in place
     Staged { version: String },
-    /// The swap is under way; the program is about to end. `None` is the Store's
-    Applying { version: Option<String> },
+    /// Pressed, and under way; the program ends when it is done. `done` of
+    /// `total` is how far: the bytes put in place, or for the Store's
+    /// (`version` is `None`) the percent of its download and install. A
+    /// `total` of 0 is the moment before the first byte, or before the Store
+    /// has said anything
+    Applying { version: Option<String>, done: u64, total: u64 },
+    /// Put in place and the new copy started; this one is ending
+    Restarting { version: String },
     /// The look itself did not get an answer
     CheckFailed { message: String },
     /// A newer version is known and could not be put in place. `None` is the Store's
@@ -124,10 +139,23 @@ impl Offer {
 fn offer_in(phase: &Phase) -> Option<Offer> {
     let version = match phase {
         Phase::Available { version } => version.clone(),
-        Phase::Staged { version } | Phase::Downloading { version, .. } | Phase::Verifying { version } => Some(version.clone()),
+        Phase::Staged { version }
+        | Phase::Downloading { version, .. }
+        | Phase::Verifying { version }
+        | Phase::Unpacking { version, .. } => Some(version.clone()),
         _ => return None,
     };
     Some(Offer { version })
+}
+
+impl Phase {
+    /// Something is under way that nothing else may start over
+    fn busy(&self) -> bool {
+        matches!(
+            self,
+            Phase::Downloading { .. } | Phase::Verifying { .. } | Phase::Unpacking { .. } | Phase::Applying { .. } | Phase::Restarting { .. }
+        )
+    }
 }
 
 /// What the main loop has been asked to do, once it has asked its question
@@ -141,11 +169,23 @@ pub enum Apply {
     Store,
 }
 
-/// A request from the settings server for the fetching thread
-#[derive(Debug, Clone, Copy, PartialEq)]
+impl Apply {
+    /// The version it puts in place; the Store does not say its number
+    fn version(&self) -> Option<String> {
+        match self {
+            Apply::Fresh { version } | Apply::Rollback { version } => Some(version.clone()),
+            Apply::Store => None,
+        }
+    }
+}
+
+/// A request from the settings server or the main loop for the fetching thread
+#[derive(Debug, Clone, PartialEq)]
 enum Want {
     Check,
     Download,
+    /// Put a version in place (never the Store's: the Store puts its own)
+    Apply(Apply),
 }
 
 struct State {
@@ -163,6 +203,11 @@ struct State {
     auto: bool,
     want: Option<Want>,
     apply: Option<Apply>,
+    /// Where things stood when the button was pressed, for the answer "no"
+    /// to the quit question to go back to
+    before_apply: Option<Phase>,
+    /// When the new copy was started, so this one ends once that has been said
+    restart_at: Option<Instant>,
     /// Whether this copy is an installed one, whose updates the Store holds
     packaged: bool,
     /// What the first start of this version did to the files (migrate.rs)
@@ -196,6 +241,8 @@ impl State {
             auto: true,
             want: None,
             apply: None,
+            before_apply: None,
+            restart_at: None,
             packaged,
             outcome: None,
             carry_said: false,
@@ -328,9 +375,7 @@ pub fn start(auto: bool) {
                     let due = s.auto && s.checked_at.is_none_or(|t| now_secs().saturating_sub(t) >= EVERY.as_secs());
                     match s.want.take() {
                         Some(w) => Some(w),
-                        None if due && !matches!(s.phase, Phase::Downloading { .. } | Phase::Verifying { .. } | Phase::Applying { .. }) => {
-                            Some(Want::Check)
-                        }
+                        None if due && !s.phase.busy() => Some(Want::Check),
                         None => None,
                     }
                 };
@@ -340,6 +385,16 @@ pub fn start(auto: bool) {
                     }
                     Some(Want::Download) => {
                         let _ = std::panic::catch_unwind(download);
+                    }
+                    Some(Want::Apply(what)) => {
+                        if std::panic::catch_unwind(|| apply(&what)).is_err() {
+                            // Put back only a swap that had not started the new copy
+                            if read_journal().is_some_and(|j| j.step == "swap") {
+                                restore_aside(&crate::config::root_dir());
+                                let _ = std::fs::remove_file(journal_path());
+                            }
+                            set_phase(Phase::Failed { version: what.version(), message: "the swap stopped".into() });
+                        }
                     }
                     None => {}
                 }
@@ -375,7 +430,7 @@ pub fn card_answered() {
 /// Look now, whatever the setting says
 pub fn request_check() {
     let mut s = lock();
-    if !matches!(s.phase, Phase::Downloading { .. } | Phase::Verifying { .. } | Phase::Applying { .. }) {
+    if !s.phase.busy() {
         // Said to be looking from this moment, so a page that polls only
         // while something is under way keeps polling until the answer
         s.phase = Phase::Checking;
@@ -385,12 +440,14 @@ pub fn request_check() {
 
 /// The one button. What it does depends on where things stand: a version
 /// that is known is fetched; one that is staged is put in place; the Store's
-/// is handed to the Store
+/// is handed to the Store. Whatever it does is said from the moment it is
+/// pressed: the page that pressed it reads the answer straight back, and a
+/// press that changed nothing on screen is a press nobody can tell happened
 pub fn request_install() -> Result<()> {
     let mut s = lock();
     match s.phase.clone() {
         Phase::Available { .. } | Phase::Failed { .. } if s.packaged => {
-            s.apply = Some(Apply::Store);
+            press_apply(&mut s, Apply::Store);
         }
         Phase::Available { version: Some(version) } | Phase::Failed { version: Some(version), .. } => {
             if s.release.as_ref().is_none_or(|r| r.zip.is_none()) {
@@ -400,11 +457,19 @@ pub fn request_install() -> Result<()> {
             s.want = Some(Want::Download);
         }
         Phase::Staged { version } => {
-            s.apply = Some(Apply::Fresh { version });
+            press_apply(&mut s, Apply::Fresh { version });
         }
         _ => bail!("nothing to install"),
     }
     Ok(())
+}
+
+/// Hands a swap to the main loop, which asks the quit question first, and
+/// says it is under way meanwhile
+fn press_apply(s: &mut State, what: Apply) {
+    s.before_apply = Some(s.phase.clone());
+    s.phase = Phase::Applying { version: what.version(), done: 0, total: 0 };
+    s.apply = Some(what);
 }
 
 /// This version is not wanted. It is not offered again; the next one is
@@ -446,8 +511,11 @@ fn remove_version_dir(version: &str) {
 /// Put the previous version back
 pub fn request_rollback() -> Result<()> {
     let mut s = lock();
+    if s.phase.busy() {
+        bail!("an update is under way");
+    }
     let Some(v) = s.prev.clone() else { bail!("no previous version kept") };
-    s.apply = Some(Apply::Rollback { version: v });
+    press_apply(&mut s, Apply::Rollback { version: v });
     Ok(())
 }
 
@@ -456,15 +524,34 @@ pub fn take_apply() -> Option<Apply> {
     lock().apply.take()
 }
 
-/// The main loop declined (the person answered no to the quit question)
+/// The main loop declined (the person answered no to the quit question):
+/// things stand where they stood before the press
 pub fn apply_declined() {
-    let mut s = lock();
-    if let Phase::Applying { version } = s.phase.clone() {
-        s.phase = match version {
-            Some(version) if !s.packaged => Phase::Staged { version },
-            version => Phase::Available { version },
-        };
+    declined(&mut lock());
+}
+
+fn declined(s: &mut State) {
+    s.apply = None;
+    if let Some(before) = s.before_apply.take() {
+        s.phase = before;
     }
+}
+
+/// The main loop was answered yes. A swap goes to the fetching thread, so
+/// the window goes on drawing how far it is; the Store's is the Store's, and
+/// the main loop hands it over itself (it needs the window to do it)
+pub fn begin_apply(what: Apply) {
+    let mut s = lock();
+    s.before_apply = None;
+    if what != Apply::Store {
+        s.want = Some(Want::Apply(what));
+    }
+}
+
+/// Whether this copy should end now: the new one is started, and "restarting"
+/// has been on screen long enough to be read
+pub fn ready_to_restart() -> bool {
+    lock().restart_at.is_some_and(|t| t.elapsed() >= RESTART_SAY)
 }
 
 /// Everything the settings card draws, as JSON
@@ -676,7 +763,9 @@ fn download_into(rel: &Release, dir: &Path) -> Result<()> {
         verify_signature(&bytes, &sig, PUBLIC_KEY_HEX)?;
     }
     let stage = dir.join("stage");
-    unpack(&zip_path, &stage)?;
+    unpack_counting(&zip_path, &stage, &mut |done, total| {
+        set_phase(Phase::Unpacking { version: rel.version.clone(), done, total });
+    })?;
     if find_exe_root(&stage).is_none() {
         bail!("the zip holds no {EXE}");
     }
@@ -743,10 +832,20 @@ pub fn verify_signature(bytes: &[u8], sig_hex: &str, key_hex: &str) -> Result<()
 /// that has lost its executable bit is a program that will not start -- and
 /// the reason is invisible from anywhere except a directory listing
 pub(crate) fn unpack(zip_path: &Path, into: &Path) -> Result<()> {
+    unpack_counting(zip_path, into, &mut |_, _| {})
+}
+
+/// [`unpack`], saying as it goes how many of all the bytes are out
+fn unpack_counting(zip_path: &Path, into: &Path, said: &mut dyn FnMut(u64, u64)) -> Result<()> {
     let _ = std::fs::remove_dir_all(into);
     std::fs::create_dir_all(into)?;
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
+    let mut total = 0;
+    for i in 0..archive.len() {
+        total += archive.by_index_raw(i)?.size();
+    }
+    let mut done = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let Some(rel) = entry.enclosed_name() else { bail!("the zip names a path outside itself") };
@@ -759,7 +858,10 @@ pub(crate) fn unpack(zip_path: &Path, into: &Path) -> Result<()> {
             std::fs::create_dir_all(p)?;
         }
         let mut f = std::fs::File::create(&out)?;
-        std::io::copy(&mut entry, &mut f)?;
+        copy_counting(&mut entry, &mut f, &mut |n| {
+            done += n;
+            said(done, total);
+        })?;
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
             use std::os::unix::fs::PermissionsExt as _;
@@ -833,21 +935,21 @@ fn aside(path: &Path) -> PathBuf {
 /// under `.old` and the new one renamed in. The new file is written whole
 /// beside the old one first, so the moment in which neither exists is two
 /// renames long
-fn place(src: &Path, dest: &Path, held: bool) -> Result<()> {
+fn place(src: &Path, dest: &Path, held: bool, said: &mut dyn FnMut(u64)) -> Result<()> {
     if let Some(d) = dest.parent() {
         std::fs::create_dir_all(d)?;
     }
     if !dest.exists() {
-        std::fs::copy(src, dest).with_context(|| format!("copy to {}", dest.display()))?;
+        copy_file(src, dest, said).with_context(|| format!("copy to {}", dest.display()))?;
         return Ok(());
     }
-    if !held && std::fs::copy(src, dest).is_ok() {
+    if !held && copy_file(src, dest, said).is_ok() {
         return Ok(());
     }
     let mut fresh = dest.as_os_str().to_os_string();
     fresh.push(".new");
     let fresh = PathBuf::from(fresh);
-    std::fs::copy(src, &fresh).with_context(|| format!("copy to {}", fresh.display()))?;
+    copy_file(src, &fresh, said).with_context(|| format!("copy to {}", fresh.display()))?;
     let old = aside(dest);
     let _ = std::fs::remove_file(&old);
     std::fs::rename(dest, &old).with_context(|| format!("set aside {}", dest.display()))?;
@@ -859,28 +961,69 @@ fn place(src: &Path, dest: &Path, held: bool) -> Result<()> {
 }
 
 /// Copies a version's files over this layout. What a person owns is placed
-/// only where nothing is. Files held open are set aside, not overwritten
-fn swap_files(source: &Path, root: &Path) -> Result<()> {
+/// only where nothing is. Files held open are set aside, not overwritten.
+/// `said` hears, as it goes, how many of the bytes to be written are written:
+/// what is left alone is not counted, and the time goes by the bytes -- the
+/// executable alone is most of them
+fn swap_files(source: &Path, root: &Path, said: &mut dyn FnMut(u64, u64)) -> Result<()> {
     let exe_dest = std::env::current_exe().unwrap_or_else(|_| root.join(EXE));
     // The executable last: everything else can be half done and the program
     // still starts; the executable is the one file that cannot
     let mut files = walk(source)?;
     files.retain(|f| f.file_name().is_none_or(|n| n != "stage.ok"));
     files.sort_by_key(|f| f.as_os_str() == EXE);
+    let mut todo = Vec::new();
     for rel in files {
         let src = source.join(&rel);
         let dest = if rel.as_os_str() == EXE { exe_dest.clone() } else { root.join(&rel) };
         if is_owned(&rel) && dest.exists() {
             continue;
         }
+        let held = HELD_OPEN.iter().any(|h| rel.as_os_str() == *h);
         // A file that is the same already is left alone -- and so is its
         // date, which is what tells "this one was updated" apart later
-        if !HELD_OPEN.iter().any(|h| rel.as_os_str() == *h) && same_bytes(&src, &dest) {
+        if !held && same_bytes(&src, &dest) {
             continue;
         }
-        place(&src, &dest, HELD_OPEN.iter().any(|h| rel.as_os_str() == *h))?;
+        todo.push((src, dest, held));
+    }
+    let total: u64 = todo.iter().map(|(src, ..)| std::fs::metadata(src).map(|m| m.len()).unwrap_or(0)).sum();
+    let mut done = 0;
+    said(done, total);
+    for (src, dest, held) in todo {
+        place(&src, &dest, held, &mut |n| {
+            done += n;
+            said(done.min(total), total);
+        })?;
     }
     Ok(())
+}
+
+/// Copies one file whole, saying how many bytes each piece was
+fn copy_file(src: &Path, dest: &Path, said: &mut dyn FnMut(u64)) -> Result<()> {
+    let mut from = std::fs::File::open(src)?;
+    let mut to = std::fs::File::create(dest)?;
+    copy_counting(&mut from, &mut to, said)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dest, std::fs::metadata(src)?.permissions())?;
+    Ok(())
+}
+
+/// Copies a reader into a writer in pieces, saying how many bytes each was.
+/// A piece is small enough that a slow disk still moves the bar every second
+fn copy_counting(from: &mut dyn std::io::Read, to: &mut dyn std::io::Write, said: &mut dyn FnMut(u64)) -> std::io::Result<()> {
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        to.write_all(&buf[..n])?;
+        said(n as u64);
+    }
+    to.flush()
 }
 
 fn same_bytes(a: &Path, b: &Path) -> bool {
@@ -906,9 +1049,22 @@ fn keep_previous(root: &Path, from: &str) {
     }
 }
 
-/// Does the swap and starts the new copy. The caller ends the program
-/// afterwards; this copy's files are already the old ones, set aside
+/// Does the swap and starts the new copy, saying how far it is as it goes.
+/// The main loop ends the program once [`ready_to_restart`] says so; this
+/// copy's files are already the old ones, set aside. Whatever stops it
+/// leaves the card saying why, never "under way" for good
 pub fn apply(what: &Apply) -> Result<()> {
+    let r = put_in_place(what);
+    if let Err(e) = &r {
+        let mut s = lock();
+        if matches!(s.phase, Phase::Applying { .. }) {
+            s.phase = Phase::Failed { version: what.version(), message: format!("{e:#}") };
+        }
+    }
+    r
+}
+
+fn put_in_place(what: &Apply) -> Result<()> {
     let root = crate::config::root_dir();
     let (version, source, rollback) = match what {
         Apply::Fresh { version } => (version.clone(), find_exe_root(&stage_dir(version)).ok_or_else(|| anyhow!("nothing staged for {version}"))?, false),
@@ -918,11 +1074,12 @@ pub fn apply(what: &Apply) -> Result<()> {
     if !source.join(EXE).is_file() {
         bail!("{} holds no {EXE}", source.display());
     }
-    set_phase(Phase::Applying { version: Some(version.clone()) });
+    set_phase(Phase::Applying { version: Some(version.clone()), done: 0, total: 0 });
     let from = current_version().to_string();
     let mut j = Journal { version: version.clone(), from: from.clone(), step: "swap".into(), rollback };
     write_journal(&j)?;
-    if let Err(e) = swap_files(&source, &root) {
+    let said = &mut |done, total| set_phase(Phase::Applying { version: Some(version.clone()), done, total });
+    if let Err(e) = swap_files(&source, &root, said) {
         // Put back whatever was set aside, and say so
         restore_aside(&root);
         let _ = std::fs::remove_file(journal_path());
@@ -949,6 +1106,9 @@ pub fn apply(what: &Apply) -> Result<()> {
     j.step = "launched".into();
     write_journal(&j)?;
     crate::append_hook_log(&format!("Update: {from} -> {version} put in place; the new copy is starting"));
+    let mut s = lock();
+    s.phase = Phase::Restarting { version };
+    s.restart_at = Some(Instant::now());
     Ok(())
 }
 
@@ -1077,7 +1237,7 @@ pub mod store {
         std::thread::Builder::new()
             .name("store-update".into())
             .spawn(move || {
-                set_phase(Phase::Applying { version: None });
+                set_phase(Phase::Applying { version: None, done: 0, total: 0 });
                 let helper = relaunch_after_exit();
                 let ok = std::panic::catch_unwind(|| run(hwnd)).unwrap_or_else(|_| Err(anyhow!("the Store's update stopped")));
                 match ok {
@@ -1102,7 +1262,8 @@ pub mod store {
     }
 
     fn run(hwnd: isize) -> Result<()> {
-        use windows::Services::Store::{StoreContext, StorePackageUpdateState};
+        use windows::Services::Store::{StoreContext, StorePackageUpdateState, StorePackageUpdateStatus};
+        use windows_future::AsyncOperationProgressHandler;
         use windows::Win32::UI::Shell::IInitializeWithWindow;
         use windows::core::Interface;
         let ctx = StoreContext::GetDefault()?;
@@ -1112,7 +1273,14 @@ pub mod store {
         if updates.Size()? == 0 {
             bail!("the Store holds no update now");
         }
-        let result = ctx.RequestDownloadAndInstallStorePackageUpdatesAsync(&updates)?.get()?;
+        let op = ctx.RequestDownloadAndInstallStorePackageUpdatesAsync(&updates)?;
+        // Its download and its install, as one fraction of all the packages
+        op.SetProgress(&AsyncOperationProgressHandler::new(|_, status: windows_core::Ref<'_, StorePackageUpdateStatus>| {
+            let done = (status.TotalDownloadProgress.clamp(0.0, 1.0) * 100.0).round() as u64;
+            set_phase(Phase::Applying { version: None, done, total: 100 });
+            Ok(())
+        }))?;
+        let result = op.get()?;
         match result.OverallState()? {
             StorePackageUpdateState::Completed => Ok(()),
             StorePackageUpdateState::Canceled => bail!("cancelled"),
@@ -1213,6 +1381,54 @@ mod tests {
     /// answers is drawn as itself: waiting is on offer (with no number, since
     /// the Store gives none), an empty list is up to date, and a question
     /// that could not be put is said as that -- never as either of the others
+    /// A press says it is under way before anything else happens -- the
+    /// page that pressed reads it straight back -- and "no" to the quit
+    /// question puts things back where they stood, a going back included
+    #[test]
+    fn a_press_is_said_at_once_and_no_puts_it_back() {
+        let mut s = State::new(false);
+        s.phase = Phase::Staged { version: "0.12.0".into() };
+        press_apply(&mut s, Apply::Fresh { version: "0.12.0".into() });
+        assert_eq!(s.phase, Phase::Applying { version: Some("0.12.0".into()), done: 0, total: 0 });
+        assert!(s.phase.busy(), "a check could start over the swap");
+        declined(&mut s);
+        assert_eq!(s.phase, Phase::Staged { version: "0.12.0".into() });
+        assert_eq!(s.apply, None);
+
+        s.phase = Phase::UpToDate;
+        press_apply(&mut s, Apply::Rollback { version: "0.11.0".into() });
+        assert_eq!(s.phase, Phase::Applying { version: Some("0.11.0".into()), done: 0, total: 0 });
+        declined(&mut s);
+        assert_eq!(s.phase, Phase::UpToDate, "no to going back is not an offer of the version gone back to");
+
+        let mut s = State::new(true);
+        s.phase = Phase::Available { version: None };
+        press_apply(&mut s, Apply::Store);
+        assert_eq!(s.phase, Phase::Applying { version: None, done: 0, total: 0 });
+        declined(&mut s);
+        assert_eq!(s.phase, Phase::Available { version: None });
+    }
+
+    /// Every step that takes a while says how far it is, and none of them
+    /// can be started over by a check
+    #[test]
+    fn the_long_steps_are_busy() {
+        for p in [
+            Phase::Downloading { version: "1.0.0".into(), got: 1, total: Some(2) },
+            Phase::Verifying { version: "1.0.0".into() },
+            Phase::Unpacking { version: "1.0.0".into(), done: 1, total: 2 },
+            Phase::Applying { version: Some("1.0.0".into()), done: 1, total: 2 },
+            Phase::Restarting { version: "1.0.0".into() },
+        ] {
+            assert!(p.busy(), "{p:?}");
+        }
+        for p in [Phase::Idle, Phase::UpToDate, Phase::Staged { version: "1.0.0".into() }] {
+            assert!(!p.busy(), "{p:?}");
+        }
+        let v = serde_json::to_value(Phase::Unpacking { version: "1.0.0".into(), done: 3, total: 9 }).unwrap();
+        assert_eq!(v, serde_json::json!({"phase": "unpacking", "version": "1.0.0", "done": 3, "total": 9}));
+    }
+
     #[test]
     fn the_stores_three_answers_are_not_confused() {
         let mut s = State::new(true);
@@ -1350,7 +1566,14 @@ mod tests {
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
             std::fs::write(f, body).unwrap();
         }
-        swap_files(&src, &root).unwrap();
+        let mut said = Vec::new();
+        swap_files(&src, &root, &mut |done, total| said.push((done, total))).unwrap();
+        // Written: lang, the example, the desk example and the dll (the
+        // settings and the script are the person's, and stay)
+        let total = ["new lang", "new example", "new desk example", "new dll"].iter().map(|b| b.len() as u64).sum::<u64>();
+        assert_eq!(said.first(), Some(&(0, total)), "the start was not said");
+        assert_eq!(said.last(), Some(&(total, total)), "the end was not said");
+        assert!(said.windows(2).all(|w| w[0].0 <= w[1].0), "the swap went backwards: {said:?}");
         let read = |p: &str| std::fs::read_to_string(root.join(p)).unwrap();
         assert_eq!(read("lang/ja.json"), "new lang");
         assert_eq!(read("config.example.json"), "new example");
