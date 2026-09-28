@@ -838,7 +838,7 @@ person`: you are notified, and you answer on the job's panel. The lead reads the
 with `shikisha skill orchestration`.
 
 **Tabs on a server or a MicroVM.** An AI there has no `shikisha` command of its own, so it
-cannot report or ask its lead. Put the bridge on that machine (Settings > Hosts > the machine >
+cannot report or ask its lead. Put the bridge on that machine (Settings > Where it runs > the machine >
 "Put the bridge on this machine"): a small program (about 1 MB, in
 `~/.local/share/shikisha/bridge/`) that carries the `shikisha` command of the AI tabs there to
 this app and reads their conversation records there. It is put there only when you tick that
