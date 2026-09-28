@@ -58,3 +58,5 @@ Window.cmd
 
 # MSIX build output (target/ is already ignored; this is the unpacked staging)
 /packaging/**/*.msix
+# Built bridges for other machines, placed here to be carried beside the exe (dist.list)
+/bridge/

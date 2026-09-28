@@ -148,12 +148,40 @@ pub fn named_for(
     let (Some(file), Some(spec)) = (t.record(), t.resume.as_ref().and_then(|r| r.asks.as_ref())) else {
         return from_bar();
     };
-    let (asked, _) = crate::asks::read_from(&file, spec, crate::asks::begin_at(&file));
     let id = tab_id(t);
-    match asked.iter().rev().find(|a| !typed_here(&id, a)) {
-        Some(last) => crate::asktab::named_in(last),
+    match last_asked(&file, spec, |a| !typed_here(&id, a)) {
+        Some(last) => crate::asktab::named_in(&last),
         None => from_bar(),
     }
+}
+
+/// The last request in a record that `is_persons` accepts, read from the end
+/// back. Not from a fixed stretch at the end: a job's lead reads files and runs
+/// tests for an hour, and the person's request falls behind megabytes of what
+/// the tools said -- read only from the end, it was lost, and with it every tab
+/// the person had named
+fn last_asked(file: &std::path::Path, spec: &crate::profile::AskSpec, is_persons: impl Fn(&str) -> bool) -> Option<String> {
+    /// A stretch a time, overlapping so a line cut at a boundary is read whole
+    /// in the stretch before it
+    const STEP: u64 = 1 << 20;
+    const OVERLAP: u64 = 256 * 1024;
+    /// Far enough back for any conversation a person is still in
+    const MOST: u64 = 512 << 20;
+    let len = std::fs::metadata(file).ok()?.len();
+    let mut end = len;
+    while end > 0 && len - end < MOST {
+        let start = end.saturating_sub(STEP);
+        let (asked, _) = crate::asks::read_from(file, spec, start);
+        if let Some(last) = asked.into_iter().rev().find(|a| is_persons(a)) {
+            return Some(last);
+        }
+        if start == 0 {
+            break;
+        }
+        // STEP is longer than OVERLAP, so every stretch starts further back
+        end = start + OVERLAP;
+    }
+    None
 }
 
 /// The surface position a tab is shown at (what the send queue addresses)
@@ -228,6 +256,33 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_persons_request_is_found_behind_megabytes_of_tool_output() {
+        let spec = crate::profile::AskSpec {
+            role_at: "/message/role".into(),
+            role: "user".into(),
+            text_at: "/message/content".into(),
+            parts: Vec::new(),
+            skip_when: vec!["/isMeta".into()],
+        };
+        let file = std::env::temp_dir().join(format!("glue-asked-{}.jsonl", std::process::id()));
+        let mut body = String::new();
+        body.push_str(r#"{"type":"user","message":{"role":"user","content":"have <@coder> fix it and <@reviewer> review it"}}"#);
+        body.push('\n');
+        // Three megabytes of what tools said and the model answered
+        let filler = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "x".repeat(4000));
+        for _ in 0..800 {
+            body.push_str(&filler);
+            body.push('\n');
+        }
+        body.push_str(r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"skill text naming <@otter>"}}"#);
+        body.push('\n');
+        std::fs::write(&file, body).unwrap();
+        let got = last_asked(&file, &spec, |_| true).unwrap();
+        assert!(got.contains("<@reviewer>"), "{got}");
+        let _ = std::fs::remove_file(&file);
+    }
 
     #[test]
     fn what_the_app_typed_is_not_taken_for_the_person() {

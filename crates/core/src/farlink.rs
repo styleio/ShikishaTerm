@@ -134,9 +134,11 @@ pub fn serve_far(home: std::path::PathBuf, input: impl Read, output: impl Write 
         });
     }
 
+    let mut asked: Vec<std::thread::JoinHandle<()>> = Vec::new();
     for line in BufReader::new(input).lines() {
         let Ok(line) = line else { break };
         let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
+        asked.retain(|h| !h.is_finished());
         match frame {
             Frame::Line { c, l } => {
                 if let Some(conn) = conns.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&c) {
@@ -150,18 +152,22 @@ pub fn serve_far(home: std::path::PathBuf, input: impl Read, output: impl Write 
             }
             Frame::Op { id, op, p } => {
                 let say = say.clone();
-                std::thread::spawn(move || {
+                asked.push(std::thread::spawn(move || {
                     let (r, e) = match crate::farops::run(&op, &p) {
                         Ok(r) => (r, None),
                         Err(e) => (Value::Null, Some(e)),
                     };
                     say(&Frame::Re { id, r, e });
-                });
+                }));
             }
             _ => {}
         }
     }
-    // The line from this PC ended: nothing is left for the bridge to do
+    // The line from this PC ended: what was asked before it did is answered
+    // (the answer may still be read), and nothing else is left to do
+    for h in asked {
+        let _ = h.join();
+    }
     let _ = std::fs::remove_file(&sock);
     Ok(())
 }

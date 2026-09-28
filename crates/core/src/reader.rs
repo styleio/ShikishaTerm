@@ -42,7 +42,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// How much of the record to pull in one step. Small enough that a reader
@@ -56,7 +56,7 @@ const BUDGET: usize = 8 * 1024 * 1024;
 
 /// Who said it. Named for the reader, not for the API underneath: the person
 /// holding the phone is "you", and everything the CLI produced is the AI
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Who {
     You,
@@ -66,14 +66,14 @@ pub enum Who {
 /// One thing said, as text. No markup is applied here — the reading side
 /// decides how a fenced code block or a heading should look, and it is the
 /// only side that knows how wide the screen is
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Turn {
     pub who: Who,
     pub text: String,
 }
 
 /// A stretch of the conversation, oldest turn first.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Page {
     pub turns: Vec<Turn>,
     /// Where in the file this page starts. Handed back so the next request can
@@ -283,6 +283,17 @@ impl Record {
                 crate::sessionfind::locate(glob, id).map(|path| read_back(&path, before, want))
             }
             Record::Far { at, glob, id } => {
+                // Read over there by the bridge, when the person put one there
+                // and its line is up: one request instead of a remote command
+                // for every piece. Otherwise as before
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id, "before": before, "want": want});
+                    match crate::farlink::call(at, "read_page", asked) {
+                        Ok(serde_json::Value::Null) => return None,
+                        Ok(v) => return Some(serde_json::from_value::<Page>(v).map_err(std::io::Error::other)),
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not read it ({e}); reading it the long way")),
+                    }
+                }
                 locate_far(at, glob, id).map(|path| read_back_far(at, &path, before, want))
             }
         }
