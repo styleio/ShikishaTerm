@@ -58,6 +58,10 @@ pub enum Frame {
     Close { c: u64 },
     /// An operation this PC asks for ([`crate::farops`])
     Op { id: u64, op: String, p: Value },
+    /// This PC is still there. Said every [`TICK`] while the line is up:
+    /// on a MicroVM the program's input stays open after this PC is gone, so
+    /// the end of the input cannot be the only sign
+    Tick,
     /// Its answer
     Re {
         id: u64,
@@ -75,6 +79,14 @@ impl Frame {
         s
     }
 }
+
+/// How often this PC says it is still there
+const TICK: Duration = Duration::from_secs(15);
+
+/// How long the bridge waits without hearing anything before it takes this PC
+/// to be gone and exits
+#[cfg(unix)]
+const SILENCE: Duration = Duration::from_secs(60);
 
 /// The folder the bridge lives in on its machine, below the account's home.
 /// Everything of it is here, so taking it off is one folder
@@ -108,6 +120,21 @@ pub fn serve_far(home: std::path::PathBuf, input: impl Read, output: impl Write 
     };
     say(&Frame::Hello { version: env!("CARGO_PKG_VERSION").into(), rev: crate::build_rev().into() });
 
+    // Nothing heard for a while: this PC is gone, whatever the input says.
+    // The socket goes with the program, so no command finds a dead end
+    let heard = Arc::new(Mutex::new(Instant::now()));
+    {
+        let (heard, sock) = (Arc::clone(&heard), sock.clone());
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                if heard.lock().map(|h| h.elapsed() > SILENCE).unwrap_or(true) {
+                    let _ = std::fs::remove_file(&sock);
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
     let conns: Arc<Mutex<HashMap<u64, UnixStream>>> = Arc::default();
     {
         let (conns, say) = (Arc::clone(&conns), say.clone());
@@ -137,6 +164,9 @@ pub fn serve_far(home: std::path::PathBuf, input: impl Read, output: impl Write 
     let mut asked: Vec<std::thread::JoinHandle<()>> = Vec::new();
     for line in BufReader::new(input).lines() {
         let Ok(line) = line else { break };
+        if let Ok(mut h) = heard.lock() {
+            *h = Instant::now();
+        }
         let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
         asked.retain(|h| !h.is_finished());
         match frame {
@@ -272,7 +302,7 @@ impl Link {
                         });
                     }
                 }
-                Frame::Op { .. } => {}
+                Frame::Op { .. } | Frame::Tick => {}
             }
         }
         self.up.store(false, Ordering::SeqCst);
@@ -405,6 +435,18 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
         std::thread::Builder::new()
             .name(format!("bridge {}", at.address()))
             .spawn(move || l.listen(input))?;
+    }
+    // Said until the line goes down; the bridge exits once it stops hearing it
+    {
+        let l = Arc::clone(&link);
+        std::thread::Builder::new().name(format!("bridge tick {}", at.address())).spawn(move || {
+            loop {
+                std::thread::sleep(TICK);
+                if !l.is_up() || !l.say(&Frame::Tick) {
+                    break;
+                }
+            }
+        })?;
     }
     let end = Instant::now() + Duration::from_secs(20);
     while !link.is_up() && Instant::now() < end {
@@ -591,6 +633,14 @@ pub fn give_key(at: &crate::elsewhere::Elsewhere, tab: &str, key: &str) -> Resul
 
 // ── Keeping the lines ─────────────────────────────────────────────────────
 
+/// The machines the person agreed to, as last read from the settings
+static AGREED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Whether the person agreed to the bridge on the machine this entry names
+pub fn agreed(host: &str) -> bool {
+    AGREED.lock().is_ok_and(|a| a.iter().any(|h| h == host))
+}
+
 /// A machine this app wants a line to right now: a tab on it runs an AI, the
 /// person agreed to the bridge there, and (a MicroVM) it is awake anyway
 pub struct Want {
@@ -611,6 +661,8 @@ pub struct Keeper {
     tried: HashMap<String, Instant>,
     held: HashMap<String, crate::elsewhere::Elsewhere>,
     agreed: Option<Vec<String>>,
+    /// Machines already looked over for a bridge nobody agreed to (this run)
+    swept: std::collections::HashSet<String>,
 }
 
 /// How long after a failed try a machine is tried again
@@ -677,10 +729,36 @@ impl Keeper {
         }
     }
 
+    /// Machines this app is using anyway whose entry the person has not agreed
+    /// to (any more): a bridge left there -- unticked while the machine was
+    /// paused, or before this app last started -- is taken off. Looked at once
+    /// per machine per run, and never by waking anything
+    pub fn sweep(&mut self, awake_not_agreed: Vec<crate::elsewhere::Elsewhere>) {
+        for at in awake_not_agreed {
+            if !self.swept.insert(at.machine_key()) {
+                continue;
+            }
+            let _ = std::thread::Builder::new().name("bridge sweep".into()).spawn(move || {
+                match installed(&at) {
+                    Ok(Installed::No) => {}
+                    Ok(_) => {
+                        if let Err(e) = remove(&at) {
+                            crate::append_hook_log(&format!("bridge: taking it off {} failed: {e:#}", at.address()));
+                        }
+                    }
+                    Err(e) => crate::append_hook_log(&format!("bridge: could not look at {}: {e:#}", at.address())),
+                }
+            });
+        }
+    }
+
     /// The machines the person agreed to, as the settings say now. One taken
     /// off the list has the bridge taken off it, wherever this app can reach
     /// without waking anything: servers, and MicroVMs that are awake
     pub fn agreed_now(&mut self, agreed: &[String], hosts: &[crate::config::HostSpec], awake: &[crate::elsewhere::Elsewhere]) {
+        if let Ok(mut a) = AGREED.lock() {
+            *a = agreed.to_vec();
+        }
         let before = self.agreed.replace(agreed.to_vec());
         let Some(before) = before else { return };
         for name in before.iter().filter(|b| !agreed.contains(b)) {
@@ -718,6 +796,7 @@ mod tests {
             Frame::Line { c: 3, l: "{\"id\":\"1\"}".into() },
             Frame::Close { c: 3 },
             Frame::Op { id: 9, op: "ping".into(), p: json!({}) },
+            Frame::Tick,
             Frame::Re { id: 9, r: json!({"a": 1}), e: None },
             Frame::Re { id: 9, r: Value::Null, e: Some("no".into()) },
         ] {

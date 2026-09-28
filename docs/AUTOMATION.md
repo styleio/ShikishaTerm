@@ -837,6 +837,14 @@ A decision you should make yourself (merging to main, say) is asked with `gate_o
 person`: you are notified, and you answer on the job's panel. The lead reads the full guide
 with `shikisha skill orchestration`.
 
+**Tabs on a server or a MicroVM.** An AI there has no `shikisha` command of its own, so it
+cannot report or ask its lead. Put the bridge on that machine (Settings > Hosts > the machine >
+"Put the bridge on this machine"): a small program (about 1 MB, in
+`~/.local/share/shikisha/bridge/`) that carries the `shikisha` command of the AI tabs there to
+this app and reads their conversation records there. It is put there only when you tick that
+box, runs only while this app is using a tab on that machine, and is deleted when you untick it.
+Until then, a task cannot be dispatched to a tab there; `ask_tab` still works.
+
 ### The same door, as MCP tools
 
 An AI client that speaks the Model Context Protocol -- Claude Code, and the others -- can be

@@ -9963,6 +9963,12 @@ function operateCard() {
     row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_seconds"], num("max_seconds", 900), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
+    // How deep handed-out work may nest. Never unlimited: 1 at least
+    row(T["settings.operate.max_depth"], (() => {
+      const e = num("max_depth", 1);
+      e.min = "1";
+      return e;
+    })(), el("span", {class:"hint"}, T["settings.operate.max_depth.hint"])),
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
     row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
@@ -15858,17 +15864,19 @@ function payload() {
   // it still matches the defaults (keeps config tidy). 0 = "no limit" is kept.
   if (out.operate) {
     const o = Object.assign({}, out.operate);
-    ["max_rounds","max_seconds","max_tokens","settle_ms"].forEach(k => {
+    ["max_rounds","max_seconds","max_tokens","settle_ms","max_depth"].forEach(k => {
       o[k] = (o[k] === "" || o[k] === null || o[k] === undefined) ? undefined : Number(o[k]);
     });
     const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
       && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop"
-      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off";
+      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off"
+      && (o.max_depth ?? 1) === 1;
     if (isDefault) delete out.operate;
     else {
       out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
                       max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
-                      settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
+                      settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off"),
+                      max_depth:Math.max(1, o.max_depth ?? 1) };
     }
   }
   // Quick commands, written in one shape whatever state the editor left them

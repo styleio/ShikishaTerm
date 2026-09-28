@@ -152,6 +152,7 @@ How far an AI may go when it hands work to other tabs or drives a page
 - **Max turns**
 - **Max seconds**
 - **Max output size**
+- **Nesting depth** — 1: a tab given a task by another tab does the task itself. 2: it may hand parts of it to other tabs in turn. Less than 1 counts as 1.
 - **When a limit is reached** — "Keep going" resets the limits and trusts the AI to finish on its own. Pick it if the work stops on you too often.
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.

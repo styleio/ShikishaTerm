@@ -291,8 +291,18 @@ try {
   const child = spawn(appExe, ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' });
   child.unref();
   await openDoor(child.pid);
-  await until(async () => (await screen('farai')).includes('stand-in claude'), 'the far AI to start', 120000)
-    .catch(async () => note('farai: ' + (await screen('farai')).slice(-300)));
+  // A server's terminal opens at once; a MicroVM's waits until something needs
+  // it -- here, the task handed to it
+  if (WHERE === 'ssh') {
+    await until(async () => (await screen('farai')).includes('stand-in claude'), 'the far AI to start', 120000)
+      .catch(async () => note('farai: ' + (await screen('farai')).slice(-300)));
+  }
+  // The person's words, through the input bar: the lead may hand work to farai
+  const board = await boardOf();
+  await until(() => board('!!(S && S.tabs && S.tabs.some(t => t.id === "lead"))'), 'the tabs on the page', 30000);
+  const idx = await board('S.tabs.find(t => t.id === "lead").index');
+  const from = logLen();
+  await board(`(send({kind:"say", tab:${idx}, text:"GO <@farai>"}), true)`);
 
   console.log('1. agreed to, the bridge is put there and connected');
   await until(() => logSince(0).some((l) => l.includes('bridge: connected to')), 'the bridge to connect', 180000)
@@ -303,18 +313,12 @@ try {
   if (failures) note(listing);
 
   console.log('2. the far AI was started with the command on its PATH');
-  const farSaid = await there(`cat ${DIR}/said.txt 2>&1`);
+  let farSaid = '';
+  await until(async () => (farSaid = await there(`cat ${DIR}/said.txt 2>&1`)).includes('SOCK='), 'the far AI to start', 120000).catch(() => {});
   check(farSaid.includes(`${BRIDGE_DIR}/bin`) && /SOCK=.*shikisha\.sock/.test(farSaid), 'PATH and the socket were given: ' + farSaid.split('\n').slice(0, 3).join(' | '));
 
   console.log('3. the task goes there, and the far AI\'s report comes back');
-  const lead = await door('tab_list').then((l) => l.find((t) => t.id === 'lead'));
-  check(!!lead, 'the lead is on the desk');
-  const from = logLen();
-  // The person's words, through the input bar: the lead may hand work to farai
-  const board = await boardOf();
-  await until(() => board('!!(S && S.tabs && S.tabs.some(t => t.id === "lead"))'), 'the tabs on the page', 30000);
-  const idx = await board('S.tabs.find(t => t.id === "lead").index');
-  await board(`(send({kind:"say", tab:${idx}, text:"GO <@farai>"}), true)`);
+  if (WHERE === 'vm') check(logSince(from).some((l) => l.includes('opened farai')), 'the MicroVM was opened for its task');
   await until(() => leadSaid().some((s) => s.args[0] === 'run_close'), 'the lead to close the job', 240000)
     .catch(() => note('lead said: ' + JSON.stringify(leadSaid()).slice(0, 1500)));
   const dispatched = leadSaid().filter((s) => s.args[0] === 'dispatch');
@@ -334,21 +338,25 @@ try {
 
   console.log('5. once the app lets go, nothing of the bridge runs there');
   stopApp();
-  await sleep(4000);
-  const running = await there('ps -eo args | grep -c "[s]hikisha-bridge"');
-  check(running.trim() === '0', 'no bridge process is left: ' + running.trim());
+  // Over SSH the line ends with the app; on a MicroVM the bridge stops
+  // hearing it and exits a minute later
+  let running = '';
+  await until(async () => (running = (await there('ps -eo args | grep -c "[s]hikisha-bridge"')).trim()) === '0',
+    'the bridge to exit', WHERE === 'ssh' ? 15000 : 120000).catch(() => {});
+  check(running === '0', 'no bridge process is left: ' + running);
 
-  console.log('6. unticked, the bridge comes off');
+  console.log('6. unticked, the bridge comes off the next time the machine is in use');
   writeConfig([]);
   const again = spawn(appExe, ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' });
   again.unref();
-  await sleep(5000);
-  // The app learns the agreement at its first look and acts on a change, so
-  // agree and then take it back while it runs
-  writeConfig([farHost.name]);
-  await until(() => logSince(0).filter((l) => l.includes('bridge: connected to')).length >= 2, 'the bridge to connect again', 180000).catch(() => {});
-  writeConfig([]);
-  await until(async () => !(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the folder to go', 120000)
+  if (WHERE === 'vm') {
+    // A person looks at the MicroVM's tab: the machine is in use again
+    const b2 = await boardOf();
+    await until(() => b2('!!(S && S.tabs && S.tabs.some(t => t.id === "farai"))'), 'the tabs again', 60000);
+    const fi = await b2('S.tabs.find(t => t.id === "farai").index');
+    await b2(`(send({kind:"select", tab:${fi}}), true)`);
+  }
+  await until(async () => !(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the folder to go', 180000)
     .catch(() => {});
   check(!(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the bridge\'s folder is deleted');
 } catch (e) {

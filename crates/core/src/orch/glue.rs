@@ -70,6 +70,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
             folder: t.cwd().map(|p| p.display().to_string()),
             far,
             reachable: !far || reachable(t),
+            bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
             incarnation: crate::api::incarnation_of(t.called()),
             typed_request,
         });
@@ -240,6 +241,14 @@ pub fn apply(
                     && let Err(e) = eng.call_primitive_as(None, crate::grants::Subject::Human, "close_tab", &[serde_json::json!(tab)])
                 {
                     crate::append_hook_log(&format!("orchestration: could not close {tab}: {e}"));
+                }
+            }
+            Effect::Wake { tab } => {
+                if let Some((_, i)) = position(tabs, surfaces, &tab)
+                    && let Some(id) = tabs[i].cloud().and_then(|h| h.instance.as_deref())
+                {
+                    crate::e2b::shown(id);
+                    crate::append_hook_log(&format!("orchestration: opened {tab}'s machine for its task"));
                 }
             }
             Effect::Person { text } => {

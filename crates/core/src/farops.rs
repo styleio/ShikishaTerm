@@ -41,7 +41,7 @@ pub fn set_home(dir: PathBuf) {
     let _ = HOME.set(dir);
 }
 
-fn home() -> Result<&'static PathBuf, String> {
+pub fn home() -> Result<&'static PathBuf, String> {
     HOME.get().ok_or_else(|| "the bridge has no folder".to_string())
 }
 
