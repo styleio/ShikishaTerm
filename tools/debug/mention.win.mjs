@@ -12,10 +12,17 @@
  *     cargo build
  *     node tools/debug/mention.win.mjs
  *
- * Checked: the @ button is there over an AI tab; typing "@" offers the other
- * AI tab and not the shell or the tab in front; Enter takes it and a badge is
- * painted under it; Backspace takes the whole badge back out; and what the
- * tab in front receives says `<@helper>`, not the name on the badge.
+ * Checked: every tab finds `shikisha` on its PATH; the @ button is there over
+ * an AI tab; the first time, the list asks about the skill before anything is
+ * written, "Not now" leaves one line and writes nothing, and "Install" writes
+ * the skill and says so; typing "@" offers the other AI tab and not the shell
+ * or the tab in front; Enter takes it and a badge is painted under it;
+ * Backspace takes the whole badge back out; and what the tab in front
+ * receives says `<@helper>`, not the name on the badge.
+ *
+ * The copy's Claude profile is pointed at a skills folder of its own (the
+ * profiles are files beside the copy), so the skill is written there and
+ * nothing in the real home is touched.
  *
  * Needs Windows and Node. No account is used and nothing leaves the machine.
  * Nothing of a copy somebody is using is read, written or stopped; the app is
@@ -34,6 +41,9 @@ const WORK = path.join(RUN, 'work');
 const STUB = path.join(RUN, 'stub');
 const CONFIG = path.join(APP, 'config', 'config.json');
 const HEARD = path.join(RUN, 'heard-front.txt');
+const HOME = path.join(RUN, 'home');
+const SKILL = path.join(HOME, '.claude', 'skills', 'shikisha', 'SKILL.md');
+const PATHS = path.join(RUN, 'path-front.txt');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -52,7 +62,7 @@ console.log('starting this checkout\'s build, isolated');
 stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, WORK, STUB, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
+for (const d of [APP, WORK, STUB, HOME, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
 
 // The stand-in AI: shows a prompt, and writes down everything it is sent.
 // A `claude.cmd` the way npm installs the real one, so the arguments the app
@@ -62,6 +72,8 @@ for (const d of [APP, WORK, STUB, path.join(RUN, 'localappdata')]) fs.mkdirSync(
 fs.writeFileSync(path.join(STUB, 'listen.js'), [
   "const fs = require('fs');",
   'const out = process.argv[2];',
+  // The PATH it was started with, for the check that `shikisha` is on it
+  "fs.writeFileSync(out.replace(/heard-/, 'path-'), process.env.PATH || process.env.Path || '');",
   "if (process.stdin.isTTY) process.stdin.setRawMode(true);",
   "process.stdout.write('stand-in ready\\r\\n> ');",
   "process.stdin.on('data', (d) => { fs.appendFileSync(out, d); process.stdout.write('.'); });",
@@ -76,6 +88,11 @@ const standIn = (name, heard) => {
 
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
+// Its Claude keeps skills here, not in the real home
+const claudeProfile = path.join(APP, 'profiles', 'claude.json');
+const prof = JSON.parse(fs.readFileSync(claudeProfile, 'utf8'));
+prof.skills = path.join(HOME, '.claude', 'skills');
+fs.writeFileSync(claudeProfile, JSON.stringify(prof, null, 2));
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'en',
@@ -141,9 +158,35 @@ try {
   await until(() => run(`S.active === ${front}`), 'the stand-in in front');
   await sleep(1500);
 
+  console.log('0. every tab finds shikisha on its PATH');
+  await until(async () => fs.existsSync(PATHS), 'the stand-in to write down its PATH', 15000);
+  const bin = fs.readFileSync(PATHS, 'utf8').split(';')[0];
+  check(fs.existsSync(path.join(bin, 'shikisha.cmd')) && fs.existsSync(path.join(bin, 'shikisha')),
+    'the first folder on the PATH holds shikisha.cmd and shikisha: ' + bin);
+
   console.log('1. the @ button, over an AI tab');
   await run(`showDock(); castInput.focus(); true`);
   check(await run(`castMentionEl && castMentionEl.style.display !== "none"`), 'the @ button is shown');
+
+  console.log('1a. the first time, the skill is asked about before anything is written');
+  await run(`castMentionEl.click(); true`);
+  await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill .go")`), 'the card', 5000);
+  check(await run(`document.querySelector(".fmenu.mentions .mskill code").textContent`) === SKILL,
+    'the card says where it would write: ' + SKILL);
+  check(await run(`document.querySelectorAll(".fmenu.mentions .mrow").length`) === 1, 'the tabs are still offered under it');
+  check(!fs.existsSync(SKILL), 'nothing is written yet');
+  await run(`[...document.querySelectorAll(".fmenu.mentions .mskill button")].find(b => b.classList.contains("quiet")).click(); true`);
+  await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill.line")`), 'the one line', 5000);
+  check(!fs.existsSync(SKILL), '"Not now" writes nothing');
+  await sleep(6000);   // the app reads the skill again every few seconds
+  check(await run(`S.skills.claude.state`) === 'later', '"Not now" is remembered');
+  await run(`document.querySelector(".fmenu.mentions .mskill.line button").click(); true`);
+  await until(async () => fs.existsSync(SKILL), 'the skill to be written', 10000);
+  check(fs.readFileSync(SKILL, 'utf8').startsWith('---\nname: shikisha'), '"Install" writes the skill');
+  await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill.done")`), 'the line saying it is in', 10000);
+  check(true, 'the list says it is in');
+  await run(`closeMentions(); castInput.value = ""; growCastInput(); castInput.focus(); true`);
+  await sleep(300);
 
   console.log('2. typing @ offers the other AI tab, and only that');
   await type('Ask ');

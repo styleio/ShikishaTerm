@@ -3378,8 +3378,21 @@ impl Tab {
         // Where the external API is, the key to it, and which tab this is.
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home
-        for (k, v) in crate::api::child_env(opts.called(&title)) {
+        let api_env = crate::api::child_env(opts.called(&title));
+        let api_on = !api_env.is_empty();
+        for (k, v) in api_env {
             cmd.env(k, v);
+        }
+        // ...and `shikisha`, the command that hands work to another tab, in
+        // front of whatever PATH the tab would have had. Only with the API on:
+        // without it the command has nothing to talk to
+        if api_on && let Some(dir) = crate::cli::shim_dir() {
+            let was = cmd.get_env("PATH").map(|p| p.to_os_string()).unwrap_or_default();
+            let mut paths = vec![dir];
+            paths.extend(std::env::split_paths(&was));
+            if let Ok(joined) = std::env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
         }
         // ...and who a git typed in here signs in as. Read at this moment
         // rather than carried in the settings: the token is looked up now, so
@@ -4348,7 +4361,15 @@ impl Tab {
         // its say. Both only ever refine a resting state: a tab that is
         // working, or that has a person to answer, is already saying the more
         // urgent thing and must not be talked over
-        let busy = self.state == TabState::Busy;
+        // A CLI is still starting its own processes for a moment after it is
+        // launched -- a `.cmd` shim, then `node`, then the program itself --
+        // and the quietest moment of that is not its resting size. Learned
+        // then, the program itself was counted as background work for the rest
+        // of the session (measured with Codex, whose `codex.exe` comes up
+        // under `node` after the first quiet tick). So nothing is learned or
+        // claimed until it has had the time to come up
+        const STARTING: std::time::Duration = std::time::Duration::from_secs(10);
+        let busy = self.state == TabState::Busy || self.created.elapsed() < STARTING;
         let population = self.job_population(busy);
         let (background, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;

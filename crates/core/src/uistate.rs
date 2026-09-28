@@ -2010,6 +2010,17 @@ pub struct NavState {
     pub loading: bool,
 }
 
+/// One CLI and the skill that teaches it to ask another tab (see `skill`)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SkillView {
+    /// `in` / `old` / `missing` / `later` / `none`
+    pub state: String,
+    /// Where it is written, or would be: what the @ list shows before asking
+    pub file: String,
+    /// The CLI by its own name ("Claude Code")
+    pub name: String,
+}
+
 /// Everything shown on screen, all in one place.
 ///
 /// Words about appearance (color, width, symbols) don't belong here.
@@ -2165,6 +2176,11 @@ pub struct UiState {
     /// The AIs a MicroVM can be given, by command and name
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machine_ais: Vec<MachineAiChoice>,
+    /// How each CLI stands with the skill that teaches it to ask another tab
+    /// (`claude` -> `in` / `old` / `missing` / `later` / `none`): what the @ list
+    /// reads to decide whether to ask first
+    #[serde(default)]
+    pub skills: std::collections::BTreeMap<String, SkillView>,
     /// Where a cloned or new project goes until somebody picks elsewhere
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_home: String,

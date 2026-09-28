@@ -51,6 +51,9 @@ Assistant AI, deciding AI, connections, agreements
 
 - **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one.
 - **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
+
+**Asking other tabs (skill)**
+
 - **Model**
 
 ### Git accounts

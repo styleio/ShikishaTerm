@@ -1296,6 +1296,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div.mrow .at { margin-left:auto; padding-left:var(--s3); font-size:11px; color:var(--dim); }
   .fmenu div.mnone { cursor:default; font-size:12px; color:var(--dim); max-width:280px; }
   .fmenu div.mnone:hover { background:transparent; }
+  /* The skill the @ list asks about, above the tabs (§5 Mention). Not a row:
+     nothing happens on a press of the card itself, only its buttons */
+  .fmenu div.mskill { cursor:default; display:flex; flex-direction:column; gap:var(--s1);
+    padding:var(--s3); max-width:360px; border-bottom:1px solid var(--line); border-radius:0;
+    margin-bottom:var(--s1); }
+  .fmenu div.mskill:hover { background:transparent; }
+  .fmenu div.mskill .t { font-size:13px; font-weight:600; color:var(--text); }
+  .fmenu div.mskill .say { font-size:12px; color:var(--text); white-space:normal; line-height:1.5; }
+  .fmenu div.mskill .kv { font-size:11px; color:var(--dim); white-space:normal; }
+  .fmenu div.mskill .kv code { font-family:var(--mono); color:var(--text); word-break:break-all; }
+  .fmenu div.mskill .kv .v { color:var(--text); }
+  .fmenu div.mskill .go { display:flex; justify-content:flex-end; gap:var(--s2); margin-top:var(--s2); }
+  .fmenu div.mskill button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px;
+    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer;
+    white-space:nowrap; flex:none; }
+  .fmenu div.mskill button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600; }
+  .fmenu div.mskill button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  .fmenu div.mskill button.quiet:hover { color:var(--text); }
+  .fmenu div.mskill.line { flex-direction:row; align-items:center; justify-content:space-between;
+    gap:var(--s3); border-bottom:0; border-top:1px solid var(--line); margin:var(--s1) 0 0; }
+  .fmenu div.mskill.line.done { border-top:0; border-bottom:1px solid var(--line); margin:0 0 var(--s1); }
+  .fmenu div.mskill.line.done .say { color:var(--dim); }
   /* Held shut while the AI writes into it. A box that still looks writable and
      is not is worse than one that plainly is not, so the whole row goes flat:
      the field takes the panel's own colour, loses its caret, and the buttons
@@ -10906,6 +10928,7 @@ window.__state = function (json) {
   microvmArrived();
   drawFarPorts();
   drawLogin();
+  mentionsArrived();
   // The settings were read in again while the worktree dialog is open: what
   // it shows was worked out from the ones before, so it is asked again
   if (before && S && S.settings_gen !== before.settings_gen) {
@@ -19231,7 +19254,71 @@ let mentionPick = null;
 // is not asking anybody anything
 function mentionHere() {
   const t = activeTab();
-  return !!(t && t.ai && t.kind !== "browser" && !t.settings && !drivingBrowser() && !gitSurfaceTab());
+  return !!(t && t.ai && !t.model && t.kind !== "browser" && !t.settings && !drivingBrowser() && !gitSurfaceTab()
+    && skillOf(t.ai) && skillOf(t.ai).state !== "none");
+}
+// How the AI in front stands with the skill that teaches it what `<@ID>`
+// means (see skill.rs): `in` / `old` / `missing` / `later` / `none`, with
+// the file it is (or would be) written to and the CLI's own name
+function skillOf(ai) {
+  return (S && S.skills && ai && S.skills[ai]) || null;
+}
+// The CLI the person just agreed for, so the list can say it was done
+let skillJustIn = null;
+// The skill, in the list: asked about in full the first time, one line once
+// "not now" was chosen, and a line saying it is in right after it went in.
+// Never a refusal -- the tabs stay under it, choosable, either way
+function mentionSkillRows() {
+  const me = activeTab();
+  const sk = me && skillOf(me.ai);
+  if (!sk) return { top: [], bottom: [] };
+  const name = sk.name || me.ai;
+  const fill = (k, d) => (T[k] || d).replaceAll("{name}", name);
+  const keep = e => e.preventDefault();
+  const act = (a) => (e) => {
+    e.stopPropagation();
+    if (a === "install") skillJustIn = me.ai;
+    send({kind:"skill", ai: me.ai, act: a});
+    if (a === "later") { S.skills[me.ai] = Object.assign({}, sk, {state: "later"}); drawMentions(); }
+  };
+  const btn = (cls, a, label) => {
+    const b = el("button", {type:"button", class: cls, onclick: act(a)}, label);
+    b.addEventListener("pointerdown", keep);
+    return b;
+  };
+  if (sk.state === "missing") {
+    return { top: [el("div", {class:"mskill"},
+      el("span", {class:"t"}, T["tui.mention.skill.title"] || "Getting ready to ask other tabs (once)"),
+      el("span", {class:"say"}, fill("tui.mention.skill.say", "Teach {name} how to hand work to a SHIKISHA tab (a skill).")),
+      el("span", {class:"kv"}, (T["tui.mention.skill.where"] || "Written to") + " ", el("code", {}, sk.file)),
+      el("span", {class:"kv"}, (T["tui.mention.skill.undo"] || "To take it out") + " ",
+        el("span", {class:"v"}, T["tui.mention.skill.undo.where"] || "Settings > AI agents")),
+      el("span", {class:"go"},
+        btn("quiet", "later", T["tui.mention.skill.later"] || "Not now"),
+        btn("primary", "install", T["tui.mention.skill.install"] || "Install and continue")))], bottom: [] };
+  }
+  if (sk.state === "later") {
+    return { top: [], bottom: [el("div", {class:"mskill line"},
+      el("span", {class:"say"}, fill("tui.mention.skill.short", "{name} is not ready to ask other tabs yet.")),
+      btn("", "install", T["tui.mention.skill.install.short"] || "Install"))] };
+  }
+  if (skillJustIn === me.ai && (sk.state === "in" || sk.state === "old")) {
+    return { top: [el("div", {class:"mskill line done"},
+      el("span", {class:"say"}, fill("tui.mention.skill.done", "Done: {name} can ask other tabs now.")))], bottom: [] };
+  }
+  return { top: [], bottom: [] };
+}
+// A new state: the button follows the tab in front, and an open list follows
+// the skill changing under it (installed here, or from the phone)
+let skillSaid = "";
+function mentionsArrived() {
+  syncMention();
+  const me = activeTab();
+  const now = JSON.stringify(me && skillOf(me.ai));
+  if (now !== skillSaid) {
+    skillSaid = now;
+    if (mentionPick) drawMentions();
+  }
 }
 function syncMention() {
   if (castMentionEl) castMentionEl.style.display = mentionHere() ? "" : "none";
@@ -19319,6 +19406,7 @@ function openMentions(at) {
   drawMentions();
 }
 function closeMentions() {
+  skillJustIn = null;
   if (!mentionPick) return;
   mentionPick = null;
   closeFolderMenu();
@@ -19344,13 +19432,14 @@ function drawMentions() {
     return row;
   });
   // Nothing to name is said, with what would make something appear
+  const skill = mentionSkillRows();
   if (!rows.length) {
     rows.push(el("div", {class:"mnone"}, q
       ? (T["tui.mention.nomatch"] || "No AI tab here matches")
       : (T["tui.mention.none"] || "No other AI tab on this desk. Open one and it appears here.")));
   }
   closeFolderMenu();
-  const m = openList(castMentionEl, rows, rows.length > 8, null, "mentions");
+  const m = openList(castMentionEl, [...skill.top, ...rows, ...skill.bottom], rows.length > 8, null, "mentions");
   // Over the bar rather than under it: the bar stands on the bottom edge, and
   // a list clamped into the window from below would lie on the words being typed
   const r = castBar.getBoundingClientRect();

@@ -24,6 +24,7 @@
   "silence_ms": 2000,
   "interrupt": ["esc"],
   "helpers": ["codex-code-mode-host.exe"],
+  "skills": "{home}/.agents/skills",
   "resume": {
     "with_id": [
       "resume",

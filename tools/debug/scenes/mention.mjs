@@ -8,7 +8,9 @@
  * What is judged: the list opens over the bar, never on the words being
  * typed; it is ordered nearest first (the same folder, then the same project,
  * then the rest) and says where each tab is; two tabs with one name are told
- * apart; a shell tab and the tab in front are not offered. A badge sits
+ * apart; a shell tab and the tab in front are not offered. The first time,
+ * the skill is asked about above the tabs (what is written and where, and how
+ * to take it out), and after "Not now" only one line stays at the foot. A badge sits
  * exactly under its own letters, is a chip rather than a state colour, and
  * the row keeps the field as its widest thing on a phone.
  */
@@ -29,7 +31,14 @@ const groups = [
     family: 'D:/work/docs/.git', branch: 'main', health: { as: 'fine' }, drift: { behind: 0, ahead: 0 } },
 ];
 
-const state = JSON.stringify(JSON.stringify({
+// How the AI in front stands with the skill (see skill.rs); `in` unless a
+// scene says otherwise
+const skills = (claude) => ({
+  claude: { state: claude, file: String.raw`C:\Users\you\.claude\skills\shikisha\SKILL.md`, name: 'Claude Code' },
+  codex: { state: 'in', file: String.raw`C:\Users\you\.agents\skills\shikisha\SKILL.md`, name: 'Codex CLI' },
+});
+const stateOf = (claude) => JSON.stringify(JSON.stringify({
+  skills: skills(claude),
   desk: 'work', desk_id: 'work', desks: ['work'], desk_index: 0, active: 1,
   hotkeys: {}, quick: { cols: 0, rows: 0, pages: 0, items: [], dests: [] }, quick_to: {},
   groups,
@@ -45,9 +54,10 @@ const state = JSON.stringify(JSON.stringify({
   auto_enabled: true, remote_on: true, restartable: true, build: '',
   help_rows: [], ais: [],
 }));
+const state = stateOf('in');
 
 // The bar is opened (the window summons it; a phone has it), and the @ pressed
-const opened = (then) => `window.__state(${state});
+const opened = (then, st = state) => `window.__state(${st});
   new Promise((r, j) => setTimeout(() => {
     try {
       showDock();
@@ -68,6 +78,11 @@ export default {
       castInput.value = "Ask @co";
       castInput.setSelectionRange(7, 7);
       openMentions(4);`),
+    // The first time: the list asks before the skill is written, and the
+    // tabs stay under it, choosable
+    ask: opened(`castInput.focus(); openMentions(-1);`, stateOf('missing')),
+    // After "Not now": one line at the foot of the list, not the whole card
+    later: opened(`castInput.focus(); openMentions(-1);`, stateOf('later')),
     // What a pick leaves behind: two badges in a sentence
     badges: opened(`castInput.focus();
       mentions.set("@codex", "otter");
