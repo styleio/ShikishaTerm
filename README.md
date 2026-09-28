@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>Run many AI agents at once — on your PC or in the cloud — and steer them from your phone.</b><br>
+  <b>Run many AI agents at once and let them @mention each other for help — on your PC, in the cloud, or from your phone.</b><br>
   For Windows, from the Microsoft Store or as a portable zip. Uses the AI subscriptions you already have.
 </p>
 
@@ -36,6 +36,10 @@
 
 ---
 
+> **@mention one agent from another, like in a chat app.**
+> “Build this feature, ask @codex to review it, and loop until there is nothing left to fix.”
+> That one line starts the write-and-review loop. No more being the copy-paste courier.
+
 > **Check on your AI from your phone — and tell it to carry on.**
 > Scan a QR code and you can see what every tab is doing and send instructions,
 > from the train, from a café, from bed.
@@ -46,8 +50,9 @@ Running one terminal AI is easy. Running **four** is not.
 
 You end up with a window per agent, no idea which one is waiting for you, and a lot of
 copy-pasting between them. SHIKISHA-TERM puts them in one window and knows the difference
-between *working*, *finished* and *waiting for a human*. The agents can run on your PC or on a
-cloud MicroVM, and you can steer them from your phone.
+between *working*, *finished* and *waiting for a human*. Agents hand work to each other with an
+`@` mention and read the answer back. They can run on your PC or on a cloud MicroVM, and you can
+steer them from your phone.
 
 It talks to whatever runs in a terminal, so it is not tied to one vendor: Claude Code,
 Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
@@ -56,6 +61,7 @@ Codex CLI, Gemini CLI, DeepSeek, Ollama, Aider, or a plain shell over SSH.
 
 For example:
 
+- **“Ask @codex to review it, and loop until it is clean”** — one line, and two agents go back and forth.
 - **Four agents on four branches**, each in a worktree of its own, all in one window.
 - An agent in **YOLO mode on a cloud MicroVM**, sealed off from your PC.
 - An AI that opens your dev server in the **built-in browser** and debugs it on its own.
@@ -160,12 +166,15 @@ from the internet is the right instinct:
 
 ## Quick start
 
-On the first run the screen tells you to press `[e]`, which opens the settings screen
-inside the same window. There you pick which AI runs in which folder — no JSON editing
-required.
+The first run opens **Getting set up**. Pick your main AI from the ones installed on this PC and
+check GitHub CLI; an AI you do not have yet opens its install page right there.
+
+Then the screen points you to **add a project**: pick a folder or clone from a Git URL (onto a
+MicroVM or an SSH server too). Press where it points next, and the AI starts in that folder —
+no JSON editing required.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/settings.png" alt="SHIKISHA-TERM settings — configure each tab (name, command or SSH host, working folder, automation) in a form, with no JSON editing" width="880">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/setup.png" alt="Getting set up — choose your main AI from the ones installed on this PC" width="880">
 </p>
 
 To open just the settings (also the way back in if a broken config stops the app from
@@ -177,7 +186,18 @@ starting), double-click **`Settings.cmd`**.
   <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/desktop.png" alt="SHIKISHA-TERM desktop — a mission-control dashboard of several AI agents, each showing whether it is working, waiting or done" width="880">
 </p>
 
-### 1. Run many at once
+### 1. @mention: agents that ask each other
+
+- **Call one with `@`, like in chat** — type `@` in the input bar to list this desk's tabs; a pick
+  becomes a chip. The agent in front hands the work over, reads the answer and carries on
+- **Review loops** — “ask @codex to review it, and loop until there is nothing left to fix” runs
+  the back-and-forth. The app counts the rounds, up to the limit under Settings > “Limits on
+  handing work”
+- **Terminals and pages too** — run a command in a named terminal, or give a named web page a goal
+  in plain words. Only the tabs a person named with `@` can be driven
+- **Nobody waits on a long job** — its answer comes back to the tab that asked when it is done
+
+### 2. Run many at once
 
 - **Tabs with real status** — every tab shows whether it is working, done, or waiting for
   you, detected from the screen itself rather than from any vendor API
@@ -187,7 +207,7 @@ starting), double-click **`Settings.cmd`**.
 - **Pick up where you left off** — close the app and resume the conversation (Claude Code, Codex)
 - **Notifications** — Slack / Discord / Telegram, this PC, or your phone when a job finishes
 
-### 2. Cloud agents (MicroVM)
+### 3. Cloud agents (MicroVM)
 
 - **A machine of its own** — clone the project onto a cloud MicroVM (E2B) and run the agents
   there. Whatever they do never reaches your PC, which makes it the place for YOLO mode
@@ -199,7 +219,7 @@ starting), double-click **`Settings.cmd`**.
   inside can read it
 - **Previews by URL** — open what the machine serves by URL, unlisted or private
 
-### 3. Built in
+### 4. Built in
 
 - **Browser** — open pages inside the app and let an AI drive and check them. A dev server's
   port opens in a browser tab too
@@ -209,7 +229,7 @@ starting), double-click **`Settings.cmd`**.
 - **A real terminal** — SSH, Docker, WSL, jump hosts, key files, port forwarding, session
   logs, legacy encodings, IME input and mouse support
 
-### 4. Answer from your phone
+### 5. Answer from your phone
 
 - Scan a QR code to see every tab and send instructions. Everything you can do at the PC, you
   can do from the phone (see below)
