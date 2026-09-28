@@ -1005,7 +1005,15 @@ fn tend_asks(
         match crate::asktab::step(a, target, caller_free, same_folder) {
             Step::Nothing => true,
             Step::Drop => false,
-            Step::Send => match send(a.caller.as_deref(), &a.target, &a.text) {
+            Step::Send => match {
+                // Where the terminal's output starts is taken as the command goes in
+                if a.run.is_some()
+                    && let Some(t) = target
+                {
+                    a.run = Some(crate::asktab::RunFrom::now(t));
+                }
+                send(a.caller.as_deref(), &a.target, &a.text)
+            } {
                 Ok(_) => {
                     append_hook_log(&format!("ask_tab: sent to {}", a.target));
                     a.phase = Phase::Waiting;
@@ -1744,12 +1752,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut driving: Option<(usize, String)> = None;
     // Asks from one tab to another that are waiting for a reply (ask_tab), and
     // how many each caller has made in its current turn
-    let mut asks: Vec<crate::asktab::Ask> = Vec::new();
+    let mut tab_asks: Vec<crate::asktab::Ask> = Vec::new();
     // How each CLI stands with the skill for asking another tab (see `skill`)
     let mut skill_view = crate::skill::statuses();
     let mut skill_seen = std::time::Instant::now();
     let mut skills_refreshed = false;
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    // Which tabs each AI tab may drive -- type into a shell, operate a page --
+    // because the person named them in what they last sent it (<@ID>)
+    let mut mention_grants: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    // Pages to be driven toward a goal for another tab, and the one being driven
+    let mut words_calls: Vec<crate::asktab::WordsCall> = Vec::new();
+    let mut words_waiter: Option<crate::asktab::WordsCall> = None;
     // A words run taken out of an engine that was built again, waiting to be
     // taken up by the new one (HookEngine::words_carry)
     let mut words_carried: Option<serde_json::Value> = None;
@@ -3937,9 +3952,88 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                 }
+                // The tabs of this desk, as another tab's AI can address them
+                if call.method == "tab_list" {
+                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
+                    let mut list = Vec::new();
+                    for s in surfaces.iter() {
+                        match s {
+                            Surface::Session(i) => {
+                                let Some(t) = tabs.get(*i) else { continue };
+                                let id = t.id.clone().unwrap_or_else(|| t.called().to_string());
+                                let kind = if t.is_ai() { "ai" } else { "terminal" };
+                                list.push(serde_json::json!({
+                                    "id": id, "name": t.title, "kind": kind,
+                                    "folder": t.cwd().map(|p| p.display().to_string()).unwrap_or_default(),
+                                    "you": call.caller.as_deref() == Some(t.called()),
+                                    "named": granted.contains(&id),
+                                }));
+                            }
+                            Surface::Browser { key, name, .. } => list.push(serde_json::json!({
+                                "id": key, "name": name, "kind": "page", "folder": "",
+                                "you": false, "named": granted.contains(key),
+                            })),
+                            _ => {}
+                        }
+                    }
+                    let _ = call.reply.send(Ok(serde_json::json!(list)));
+                    continue;
+                }
+                // A page driven toward a goal by its 🗣 run, for another tab:
+                // checked here, started where the 🗣 runs are started, and
+                // answered when it ends
+                if call.method == "browser_do" {
+                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
+                    let refused = match (engine.as_ref(), crate::asktab::parse(&call.params)) {
+                        (_, Err(e)) => Some(e),
+                        (None, _) => Some("no engine".to_string()),
+                        (Some(eng), Ok((target, goal, wait))) => {
+                            brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                            let who = subject_of(call.caller.as_deref(), &tabs);
+                            let kind = crate::asktab::kind_of(&target, &surfaces, &tabs);
+                            if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "browser_do",
+                                &[serde_json::json!(target), serde_json::json!(goal)]) {
+                                Some(e)
+                            } else if let Some(why) = crate::asktab::wrong_verb("do", &target, kind) {
+                                Some(why)
+                            } else if kind == crate::asktab::Kind::Missing {
+                                Some(format!("There is no tab <@{target}> on this desk"))
+                            } else if call.caller.is_some() && !granted.contains(&target) {
+                                Some(format!("Not done: the person has not named <@{target}> in what they asked you. \
+                                    A page is only driven when the person names it with @; ask them to."))
+                            } else if driving.is_some() || words_waiter.is_some() || !words_calls.is_empty() {
+                                Some("Not started: another page is being driven right now. Try again when it has finished.".to_string())
+                            } else {
+                                let crate::asktab::Kind::Browser(pane) = kind else { unreachable!() };
+                                let now = std::time::Instant::now();
+                                append_hook_log(&format!("browser_do: {} drives {target}",
+                                    call.caller.as_deref().unwrap_or("outside")));
+                                words_calls.push(crate::asktab::WordsCall {
+                                    reply: None, caller: call.caller.clone(), target, pane, goal,
+                                    asked_at: now, deadline: now + wait,
+                                });
+                                None
+                            }
+                        }
+                    };
+                    match refused {
+                        Some(e) => {
+                            let _ = call.reply.send(Err(e));
+                        }
+                        None => {
+                            if let Some(w) = words_calls.last_mut() {
+                                w.reply = Some(call.reply);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 // ask_tab is answered later, when the other tab has finished:
-                // checked here, then kept (see asktab.rs)
-                if call.method == "ask_tab" {
+                // checked here, then kept (see asktab.rs). tab_run is the same
+                // wait for a command typed into a terminal
+                if call.method == "ask_tab" || call.method == "tab_run" {
+                    let verb = if call.method == "ask_tab" { "ask" } else { "run" };
+                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
                     if let Some(eng) = engine.as_ref() {
                         brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                         let who = subject_of(call.caller.as_deref(), &tabs);
@@ -3947,10 +4041,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             eng.call_primitive_as(
                                 call.caller.as_deref(),
                                 who,
-                                "ask_tab",
+                                &call.method,
                                 &[serde_json::json!(target), serde_json::json!(text)],
-                            )
-                            .map(|_| (target, text, wait))
+                            )?;
+                            // The verb for this kind of tab, or the one that is
+                            // -- said, not merely refused
+                            if let Some(why) = crate::asktab::wrong_verb(verb, &target, crate::asktab::kind_of(&target, &surfaces, &tabs)) {
+                                return Err(why);
+                            }
+                            // A terminal can be a server somewhere: only one the
+                            // person named is typed into
+                            if verb == "run" && call.caller.is_some() && !granted.contains(&target) {
+                                return Err(format!("Not run: the person has not named <@{target}> in what they asked you. \
+                                    A terminal is only typed into when the person names it with @; ask them to."));
+                            }
+                            Ok((target, text, wait))
                         });
                         match taken {
                             Err(e) => {
@@ -3970,7 +4075,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         call.caller.as_deref().unwrap_or("outside")
                                     ));
                                     let now = std::time::Instant::now();
-                                    asks.push(crate::asktab::Ask {
+                                    tab_asks.push(crate::asktab::Ask {
                                         reply: Some(call.reply),
                                         caller: call.caller,
                                         target,
@@ -3984,6 +4089,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         deadline: now + wait,
                                         round: *round,
                                         max_rounds,
+                                        run: (verb == "run").then(crate::asktab::RunFrom::default),
                                     });
                                 }
                             }
@@ -4020,9 +4126,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
 
         // Asks waiting on another tab: a look at each, every turn of the loop
-        if !asks.is_empty() {
+        if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                tend_asks(&mut asks, eng, desks.get(desk_index), &surfaces, &tabs);
+                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs);
             }
         }
         if !ask_rounds.is_empty() {
@@ -4030,7 +4136,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // with nothing out, the next request from the person starts again
             let keys: Vec<hooks::TabKey> = tab_states(&tabs).into_iter().map(|(k, _)| k).collect();
             ask_rounds.retain(|caller, _| {
-                asks.iter().any(|a| a.caller.as_deref() == Some(caller.as_str()))
+                tab_asks.iter().any(|a| a.caller.as_deref() == Some(caller.as_str()))
                     || hooks::TabRef::Name(caller.clone())
                         .resolve(&keys)
                         .and_then(|i| tabs.get(i - 1))
@@ -5631,6 +5737,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for (tab, line) in shell.mail().take_says() {
             let now_ms = start.elapsed().as_millis() as u64;
             let to = if tab == 0 { active } else { tab };
+            // What the person sent names the tabs this one may drive, until
+            // they send it something else (see asktab::named_in)
+            if let Some(Surface::Session(i)) = surfaces.get(to.wrapping_sub(1))
+                && let Some(t) = tabs.get(*i)
+            {
+                mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&line));
+            }
             if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
@@ -7325,6 +7438,61 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
+        // Pages another tab asked to have driven (browser_do): the same gate a
+        // person's 🗣 passes, the same start, and the run marked to report
+        for mut w in std::mem::take(&mut words_calls) {
+            let refuse = |w: &mut crate::asktab::WordsCall, e: String| {
+                if let Some(line) = w.reply.take() {
+                    let _ = line.send(Err(e));
+                }
+            };
+            let Some(Surface::Browser { key, .. }) = surfaces.get(w.pane.wrapping_sub(1)) else {
+                let why = format!("<@{}> is no longer a page on this desk", w.target);
+                refuse(&mut w, why);
+                continue;
+            };
+            let key = key.clone();
+            let gate = config::pages_gate(cfg.as_ref(), desks.get(desk_index), Some(&key));
+            if !matches!(gate, config::PageGate::Ready { .. }) {
+                refuse(&mut w, format!("Not started: {}. The person can agree on the 🗣 line of that page, then ask again.", gate.why()));
+                continue;
+            }
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else {
+                refuse(&mut w, "no engine".to_string());
+                continue;
+            };
+            let ctx = browser_ctx(w.pane, &key);
+            let stops = desks.get(desk_index).map(|d| config::stops_to_lua(&d.stops)).unwrap_or_else(|| "{}".to_string());
+            let models = desks.get(desk_index).map(|d| d.words_models(cfg.as_ref(), Some(&key))).unwrap_or_default();
+            match eng.start_words(w.pane, &key, &stops, &w.goal, &models, &ctx) {
+                Ok(()) => {
+                    eng.report_words();
+                    driving = Some((w.pane, key));
+                    flash = Some(i18n::tp("msg.words.driven_for", &[
+                        ("page", &w.target),
+                        ("tab", w.caller.as_deref().unwrap_or("")),
+                    ]));
+                    words_waiter = Some(w);
+                }
+                Err(e) => refuse(&mut w, format!("Not started: {e}")),
+            }
+        }
+        // Held long enough: the caller is told the page is still being driven,
+        // and gets what it found typed into its tab when the run ends
+        if let Some(w) = words_waiter.as_mut()
+            && std::time::Instant::now() >= w.deadline
+            && let Some(line) = w.reply.take()
+        {
+            let _ = line.send(Ok(serde_json::json!({
+                "tab": w.target, "state": "PENDING", "reply": null, "source": "none",
+                "seconds": w.asked_at.elapsed().as_secs(),
+                "note": "the page is still being driven; what it finds will be typed into your tab when it finishes",
+            })));
+        }
+
         // One move per pass while a words-driven run is going. Written as a
         // step rather than a loop on purpose: each move waits on a page, and a
         // loop that waited here would hold everything else in the program
@@ -7352,6 +7520,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None => false,
             };
             if !still {
+                // A run another tab asked for is answered with how it ended
+                if let Some(w) = words_waiter.take_if(|w| w.pane == pane) {
+                    let (code, why, found) = engine.as_ref().map(|e| e.words_outcome()).unwrap_or((-1, String::new(), String::new()));
+                    let v = crate::asktab::words_answer(&w, code, &why, &found);
+                    append_hook_log(&format!("browser_do: {} -> {} ({}s)", w.target, v["state"], v["seconds"]));
+                    let unheard = match w.reply {
+                        Some(line) => line.send(Ok(v.clone())).is_err(),
+                        None => true,
+                    };
+                    if unheard && let Some(caller) = w.caller.clone() {
+                        let said = v["reply"].as_str().unwrap_or_default();
+                        let text = format!("[shikisha] <@{}> finished what you asked ({}):\n{said}", w.target, v["state"].as_str().unwrap_or_default());
+                        tab_asks.push(crate::asktab::handing(caller, w.target.clone(), text));
+                    }
+                }
                 if let Some(eng) = engine.as_mut() {
                     eng.stop_words(pane);
                 }

@@ -16,7 +16,7 @@
  * an AI tab; the first time, the list asks about the skill before anything is
  * written, "Not now" leaves one line and writes nothing, and "Install" writes
  * the skill and says so; typing "@" offers the other AI tab and not the shell
- * or the tab in front; Enter takes it and a badge is painted under it;
+ * (and the terminal, which is given commands) and not the tab in front; Enter takes it and a badge is painted under it;
  * Backspace takes the whole badge back out; and what the tab in front
  * receives says `<@helper>`, not the name on the badge.
  *
@@ -173,7 +173,7 @@ try {
   await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill .go")`), 'the card', 5000);
   check(await run(`document.querySelector(".fmenu.mentions .mskill code").textContent`) === SKILL,
     'the card says where it would write: ' + SKILL);
-  check(await run(`document.querySelectorAll(".fmenu.mentions .mrow").length`) === 1, 'the tabs are still offered under it');
+  check(await run(`document.querySelectorAll(".fmenu.mentions .mrow").length`) === 2, 'the tabs are still offered under it');
   check(!fs.existsSync(SKILL), 'nothing is written yet');
   await run(`[...document.querySelectorAll(".fmenu.mentions .mskill button")].find(b => b.classList.contains("quiet")).click(); true`);
   await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill.line")`), 'the one line', 5000);
@@ -188,12 +188,12 @@ try {
   await run(`closeMentions(); castInput.value = ""; growCastInput(); castInput.focus(); true`);
   await sleep(300);
 
-  console.log('2. typing @ offers the other AI tab, and only that');
+  console.log('2. typing @ offers the other tabs, and not the tab in front');
   await type('Ask ');
   await type('@');
   await until(() => run(`!!document.querySelector(".fmenu.mentions")`), 'the list', 5000);
   const offered = await run(`[...document.querySelectorAll(".fmenu.mentions .mrow .nm")].map(e => e.textContent)`);
-  check(JSON.stringify(offered) === JSON.stringify(['helper']), 'offered: ' + JSON.stringify(offered));
+  check(JSON.stringify(offered) === JSON.stringify(['helper', 'shell']), 'offered: ' + JSON.stringify(offered));
 
   console.log('3. Enter takes it, and a badge is painted under it');
   await key('Enter', 'Enter', 13);
@@ -210,7 +210,7 @@ try {
   check(await run(`castMirror.querySelectorAll("mark").length`) === 0, 'no badge is left');
 
   console.log('5. sent, it names the tab by its id');
-  await type('@hel');
+  await type('@help');   // not @hel: "shell" has that in it too
   await until(() => run(`document.querySelectorAll(".fmenu.mentions .mrow").length === 1`), 'the narrowed list', 5000);
   await key('Enter', 'Enter', 13);
   await type('to review this');

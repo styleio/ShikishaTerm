@@ -32,7 +32,10 @@ pub fn run(args: &[String]) -> i32 {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
     match args.first().map(String::as_str) {
-        Some("ask") => ask(&args[1..], &mut out, &mut err),
+        Some("ask") => held("ask_tab", &args[1..], &mut out, &mut err),
+        Some("run") => held("tab_run", &args[1..], &mut out, &mut err),
+        Some("do") => held("browser_do", &args[1..], &mut out, &mut err),
+        Some("tabs") => tabs(&mut out, &mut err),
         // The skill this app teaches an AI, as it would be written: for a
         // person to read before agreeing, and for a check to put in a folder
         Some("skill") => {
@@ -50,12 +53,69 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-fn usage() -> &'static str {
-    "Usage: shikisha ask ID \"what you want it to do\"  -- hand work to the tab <@ID> on this desk and print its reply
-       shikisha skill                              -- print the skill that explains this to an AI"
+/// The tabs of this desk as the AI addresses them, one to a line
+fn tabs(out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
+    let answer = ApiClient::from_env()
+        .map_err(|e| e.to_string())
+        .and_then(|mut c| c.call("tab_list", Vec::new()).map_err(|e| e.to_string()));
+    let answer = match answer {
+        Ok(a) if a.get("ok").and_then(Value::as_bool) == Some(true) => {
+            a.get("result").cloned().unwrap_or(Value::Null)
+        }
+        Ok(a) => {
+            let _ = writeln!(
+                err,
+                "[shikisha] {}",
+                a.get("error").and_then(Value::as_str).unwrap_or("refused")
+            );
+            return 1;
+        }
+        Err(e) => {
+            let _ = writeln!(
+                err,
+                "[shikisha] Not in a SHIKISHA-TERM tab, or its API is off ({e})."
+            );
+            return 1;
+        }
+    };
+    for t in answer.as_array().cloned().unwrap_or_default() {
+        let s = |k: &str| {
+            t.get(k)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let flag = |k: &str| t.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let mut line = format!("<@{}>  {}  \"{}\"", s("id"), s("kind"), s("name"));
+        if !s("folder").is_empty() {
+            line.push_str(&format!("  {}", s("folder")));
+        }
+        if flag("you") {
+            line.push_str("  (this tab)");
+        } else if flag("named") {
+            line.push_str("  (named by the person: you may drive it)");
+        }
+        let _ = writeln!(out, "{line}");
+    }
+    0
 }
 
-fn ask(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
+fn usage() -> &'static str {
+    "Usage: shikisha ask ID \"what you want it to do\"   -- hand work to the AI in the tab <@ID> and print its reply
+       shikisha run ID \"a command\"                -- run a command in the terminal <@ID> and print its output
+       shikisha do ID \"what to get done\"          -- have the web page <@ID> driven toward a goal, and print what it found
+       shikisha tabs                                -- list the tabs of this desk
+       shikisha skill                               -- print the skill that explains this to an AI"
+}
+
+/// One held call to the app: `ask` an AI, `run` a command in a terminal, or
+/// `do` something on a page -- the tab first, then what to say to it
+fn held(
+    method: &str,
+    args: &[String],
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> i32 {
     let Some(tab) = args.first() else {
         let _ = writeln!(err, "[shikisha] Which tab? {}", usage());
         return 2;
@@ -75,8 +135,12 @@ fn ask(args: &[String], out: &mut impl std::io::Write, err: &mut impl std::io::W
             return 1;
         }
     };
+    let tab = tab
+        .trim_start_matches('<')
+        .trim_start_matches('@')
+        .trim_end_matches('>');
     let answer = match client.call(
-        "ask_tab",
+        method,
         vec![json!(tab), json!(text), json!({"timeout_ms": WAIT_MS})],
     ) {
         Ok(a) => a,
@@ -136,6 +200,12 @@ fn said(r: &Value) -> String {
         }
         "PENDING" => format!(
             "[shikisha] STILL WORKING: <@{tab}> has not finished. End your turn now; its reply will be typed into this tab when it is done{facts}"
+        ),
+        "STUCK" => format!(
+            "{reply}\n\n[shikisha] NOT DONE: <@{tab}> could not get it done (the reason is above){facts}"
+        ),
+        "STOPPED" => format!(
+            "[shikisha] NOT DONE: the run on <@{tab}> was stopped before it finished{facts}"
         ),
         "QUESTION" => format!(
             "{reply}\n\n[shikisha] WAITING: <@{tab}> is waiting for a person to approve or choose (its screen is above). Tell the person{facts}"
@@ -228,7 +298,7 @@ mod tests {
     fn nothing_to_ask_is_said_rather_than_sent() {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        assert_eq!(ask(&["otter".into()], &mut out, &mut err), 2);
+        assert_eq!(held("ask_tab", &["otter".into()], &mut out, &mut err), 2);
         assert!(String::from_utf8_lossy(&err).contains("What should it do?"));
     }
 }

@@ -97,6 +97,77 @@ pub struct Ask {
     pub deadline: Instant,
     pub round: u32,
     pub max_rounds: u32,
+    /// A command typed into a shell (`tab_run`) rather than words to an AI:
+    /// what comes back is what the terminal printed, from where its session
+    /// log stood when the command went in
+    pub run: Option<RunFrom>,
+}
+
+/// Where a shell's output starts, for `tab_run`
+#[derive(Debug, Clone, Default)]
+pub struct RunFrom {
+    /// The tab's session log, when it keeps one
+    pub log: Option<std::path::PathBuf>,
+    /// How far the log went before the command was typed
+    pub from: u64,
+}
+
+impl RunFrom {
+    /// Where the log of `t` stands now
+    pub fn now(t: &Tab) -> Self {
+        let log = t.log_path.clone();
+        let from = log
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        RunFrom { log, from }
+    }
+}
+
+/// Most of a command's output handed back: the end of it, where the result
+/// and the error usually are
+const RUN_KEEP: usize = 8000;
+
+/// What a command printed since it was typed, from the session log, or the
+/// bottom of the screen when the tab keeps no log
+fn run_output(t: &Tab, from: &RunFrom) -> (String, &'static str) {
+    if let Some(log) = from.log.as_ref() {
+        let (text, _) = crate::session_log::read_from(log, from.from);
+        if !text.trim().is_empty() {
+            let text = text.trim_end();
+            let cut = text
+                .char_indices()
+                .rev()
+                .nth(RUN_KEEP)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            return (text[cut..].to_string(), "log");
+        }
+    }
+    (tail(&t.last_screen, 60), "screen")
+}
+
+/// An answer that outlived the line it was asked on, waiting to be typed into
+/// the caller's tab once that tab is free (a browser run, see `browser_do`)
+pub fn handing(caller: String, target: String, text: String) -> Ask {
+    let now = Instant::now();
+    Ask {
+        reply: None,
+        caller: Some(caller),
+        target,
+        text: String::new(),
+        phase: Phase::Handing(text),
+        asked_at: now,
+        sent_at: Some(now),
+        seen_busy: true,
+        quiet_since: None,
+        background_since: None,
+        deadline: now,
+        round: 0,
+        max_rounds: 0,
+        run: None,
+    }
 }
 
 /// What the loop should do for an ask this tick.
@@ -349,6 +420,26 @@ pub fn step(
         }
     }
     if let Some(since) = a.quiet_since {
+        // A command: done once the shell has been quiet a moment, and its
+        // answer is what it printed
+        if let Some(from) = a.run.as_ref() {
+            if since.elapsed() >= SCREEN_SETTLE {
+                let (out, source) = run_output(t, from);
+                return Step::Answer(answer(a, "DONE", Some(&out), source, same_folder, None));
+            }
+            return if a.phase == Phase::Waiting && now >= a.deadline {
+                Step::Answer(answer(
+                    a,
+                    "PENDING",
+                    None,
+                    "none",
+                    same_folder,
+                    Some("still running; its output will be typed into your tab when it finishes"),
+                ))
+            } else {
+                Step::Nothing
+            };
+        }
         match record_of(t) {
             Some(path) => {
                 if since.elapsed() >= SETTLE {
@@ -404,6 +495,114 @@ fn tail(screen: &str, n: usize) -> String {
         .map(|i| i + 1)
         .unwrap_or(0);
     lines[end.saturating_sub(n)..end].join("\n")
+}
+
+/// What a named tab is, for deciding which verb reaches it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// An AI in a terminal, or a model tab: asked in words (`ask_tab`)
+    Ai,
+    /// A terminal running anything else: given a command (`tab_run`)
+    Shell,
+    /// A page: driven toward a goal (`browser_do`), with its pane
+    Browser(usize),
+    /// Nothing on this desk answers to it
+    Missing,
+}
+
+/// What the tab `id` is on this desk. A page is found among the screens,
+/// where its key is its id; everything else among the terminal tabs
+pub fn kind_of(id: &str, surfaces: &[crate::view::Surface], tabs: &[Tab]) -> Kind {
+    if let Some(pane) = surfaces
+        .iter()
+        .position(|s| matches!(s, crate::view::Surface::Browser { key, .. } if key == id))
+    {
+        return Kind::Browser(pane + 1);
+    }
+    match tabs
+        .iter()
+        .find(|t| t.id.as_deref() == Some(id) || t.called() == id)
+    {
+        Some(t) if t.is_ai() => Kind::Ai,
+        Some(_) => Kind::Shell,
+        None => Kind::Missing,
+    }
+}
+
+/// The ids a person named in what they sent (`<@finch>`). Only these tabs may
+/// be driven -- a shell typed into, a page operated -- by the AI that was
+/// sent it, until the person sends that AI something else
+pub fn named_in(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("<@") {
+        rest = &rest[at + 2..];
+        let Some(end) = rest.find('>') else { break };
+        let id = &rest[..end];
+        if !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            out.insert(id.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+/// Why a verb does not reach a tab of the other kind, with the one that does
+pub fn wrong_verb(verb: &str, id: &str, kind: Kind) -> Option<String> {
+    let right = match kind {
+        Kind::Ai => "ask",
+        Kind::Shell => "run",
+        Kind::Browser(_) => "do",
+        Kind::Missing => return None,
+    };
+    if right == verb {
+        return None;
+    }
+    let what = match kind {
+        Kind::Ai => format!("<@{id}> is an AI: use `shikisha ask {id} \"what you want it to do\"`"),
+        Kind::Shell => {
+            format!("<@{id}> is a terminal, not an AI: use `shikisha run {id} \"a command\"`")
+        }
+        Kind::Browser(_) => {
+            format!("<@{id}> is a web page: use `shikisha do {id} \"what to get done on it\"`")
+        }
+        Kind::Missing => unreachable!(),
+    };
+    Some(what)
+}
+
+/// A page being driven toward a goal for another tab (`browser_do`), waited on
+pub struct WordsCall {
+    pub reply: Option<Sender<Result<Value, String>>>,
+    pub caller: Option<String>,
+    pub target: String,
+    pub pane: usize,
+    pub goal: String,
+    pub asked_at: Instant,
+    pub deadline: Instant,
+}
+
+/// What the caller of `browser_do` is handed: how the run ended, and what the
+/// page showed about the goal
+pub fn words_answer(w: &WordsCall, code: i64, why: &str, found: &str) -> Value {
+    let state = match code {
+        0 => "DONE",
+        -1 => "STOPPED",
+        _ => "STUCK",
+    };
+    let reply = if found.trim().is_empty() { why } else { found };
+    json!({
+        "tab": w.target,
+        "state": state,
+        "reply": reply,
+        "note": why,
+        "source": "page",
+        "seconds": w.asked_at.elapsed().as_secs(),
+    })
 }
 
 /// What is typed into the caller's tab when the reply outlived the line
@@ -479,6 +678,13 @@ ALPHA-42"
         assert_eq!(reply_in(f.path(), "a new question"), None);
         let f = record(&[said("user", "a new question")]);
         assert_eq!(reply_in(f.path(), "a new question"), None);
+    }
+
+    #[test]
+    fn only_the_ids_written_as_mentions_are_named() {
+        let got = named_in("Run the tests in <@shell-2>, then ask <@finch> -- not <@ bad> or <@x");
+        assert!(got.contains("shell-2") && got.contains("finch"));
+        assert_eq!(got.len(), 2);
     }
 
     #[test]
