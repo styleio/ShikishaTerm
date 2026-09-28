@@ -251,7 +251,12 @@ const settles = async (id, got, from, callee, ms) => {
   const start = Date.now();
   let busy = false;
   let quiet = null;
+  // An answer that has just come back is still being read by the caller
+  let seen = 0;
+  let movedAt = Date.now();
   while (Date.now() - start < ms) {
+    const n = askEvents(from).length;
+    if (n !== seen) { seen = n; movedAt = Date.now(); quiet = null; }
     const st = await state(id).catch(() => '?');
     const q = QUIET.includes(st);
     if (['QUESTION', 'EXIT', 'FAILED', 'LIMIT'].includes(st)) return { ok: false, why: st };
@@ -260,7 +265,9 @@ const settles = async (id, got, from, callee, ms) => {
       if (q) return { ok: true };
     } else if (q && (busy || Date.now() - start > 15000)) {
       quiet ??= Date.now();
-      if (Date.now() - quiet > 20000 && !outstanding(from, callee)) return { ok: false, why: 'finished without it' };
+      if (Date.now() - quiet > 20000 && Date.now() - movedAt > 30000 && !outstanding(from, callee)) {
+        return { ok: false, why: 'finished without it' };
+      }
     }
     await sleep(1000);
   }

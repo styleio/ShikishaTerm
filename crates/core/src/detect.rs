@@ -265,6 +265,12 @@ impl Detector {
         &self.profile.interrupt
     }
 
+    /// The program's own helper processes, by file name (see
+    /// `ProfileFile::helpers`)
+    pub fn helpers(&self) -> &[String] {
+        &self.profile.helpers
+    }
+
     /// The program's own word about what it is doing, through its hook.
     ///
     /// `sent_ms` is the sender's clock at the moment it was said. Returns
@@ -445,6 +451,7 @@ mod tests {
         Profile::compile(ProfileFile {
             resume: None,
             interrupt: vec![],
+            helpers: vec![],
             install_url: None,
             install_on_linux: None,
             signed_in_on_linux: None,

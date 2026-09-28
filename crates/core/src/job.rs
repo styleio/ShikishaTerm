@@ -94,6 +94,47 @@ impl Drop for Job {
     }
 }
 
+/// Whether a process is somebody's own machinery rather than work: this
+/// program itself, or one of the CLI's helpers named by file (`helpers`,
+/// compared without regard to case).
+pub fn is_machinery(pid: u32, helpers: &[String]) -> bool {
+    if is_this_program(pid) {
+        return true;
+    }
+    if helpers.is_empty() {
+        return false;
+    }
+    let Some(image) = crate::guest::image_of(pid) else { return false };
+    let file = image.rsplit(['\\', '/']).next().unwrap_or(&image);
+    helpers.iter().any(|h| h.eq_ignore_ascii_case(file))
+}
+
+/// Whether a process is this program itself.
+///
+/// A tab's job holds what the tab started, and some of that is this app
+/// answering the CLI: the MCP server a CLI is given lives as long as the CLI,
+/// and each `--hook` report is a moment of this program too. Neither is work
+/// the tab started, and counting them made every AI with the MCP server read
+/// as having background work for good. `false` when it cannot be told, which
+/// counts the process as work -- the side the count already errs on.
+pub fn is_this_program(pid: u32) -> bool {
+    static ME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let Some(me) = ME.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .map(|p| plain_path(&p.display().to_string()))
+    }) else {
+        return false;
+    };
+    crate::guest::image_of(pid).is_some_and(|image| plain_path(&image).eq_ignore_ascii_case(me))
+}
+
+/// A path without the `\\?\` prefix Windows may hand one back with, so two
+/// spellings of the same file compare equal
+fn plain_path(p: &str) -> String {
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_string()
+}
+
 #[cfg(windows)]
 /// A job object with kill-on-close set, holding a tab's processes.
 #[cfg(windows)]
@@ -384,5 +425,22 @@ mod tests {
         let _ = job.take(pid);
         // A pid that was never a process is the clear case
         assert!(!job.take(0xFFFF_FFF0), "a process that does not exist is not put in");
+    }
+
+    #[test]
+    fn this_program_is_told_apart_from_what_a_tab_runs() {
+        // The test binary is this program, as far as the process table says
+        assert!(is_this_program(std::process::id()), "this process was not recognised as itself");
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut other = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .expect("cmd cannot start");
+        assert!(!is_this_program(other.id()), "a different program was taken for this one");
+        let _ = other.kill();
+        let _ = other.wait();
+        assert!(!is_this_program(0xFFFF_FFF0), "a process that does not exist answered");
     }
 }

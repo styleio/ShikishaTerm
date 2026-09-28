@@ -23,6 +23,7 @@
   "title_busy": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
   "silence_ms": 2000,
   "interrupt": ["esc"],
+  "helpers": ["codex-code-mode-host.exe"],
   "resume": {
     "with_id": [
       "resume",

@@ -3014,6 +3014,11 @@ pub struct Tab {
     /// How many processes this tab's job holds when nothing is going on.
     /// Learned rather than assumed -- see [`crate::detect::background_now`]
     job_rest: Option<u32>,
+    /// Which of the job's processes are machinery rather than work -- this
+    /// program (the MCP server, a hook report) or one of the CLI's helpers --
+    /// by id, remembered so each process is looked at once, not at every tick.
+    /// See [`crate::job::is_machinery`]
+    job_ours: std::collections::HashMap<u32, bool>,
     /// The AI somebody started by hand in here, while it is running. Only ever
     /// looked for on a tab whose own command is not an AI -- see
     /// [`crate::guest`]
@@ -3694,6 +3699,7 @@ impl Tab {
             bytes_out,
             job,
             job_rest: None,
+            job_ours: std::collections::HashMap::new(),
             guest: crate::guest::Watch::default(),
             own: own_profile,
             reported_cwd,
@@ -4182,6 +4188,26 @@ impl Tab {
         signature_of(&self.argv, &self.opts)
     }
 
+    /// How many processes this tab's job holds that are the tab's own work:
+    /// the kernel's count, less the machinery in it (this program, the CLI's
+    /// helpers). Only worked out when it is going to be read -- a working
+    /// tab's count is not
+    fn job_population(&mut self, busy: bool) -> Option<u32> {
+        let job = self.job.as_ref()?;
+        let all = job.active()?;
+        if busy || all == 0 {
+            return Some(all);
+        }
+        let pids = job.pids();
+        let helpers = self.detector.helpers();
+        self.job_ours.retain(|pid, _| pids.contains(pid));
+        let ours = pids
+            .iter()
+            .filter(|&&pid| *self.job_ours.entry(pid).or_insert_with(|| crate::job::is_machinery(pid, helpers)))
+            .count() as u32;
+        Some(all.saturating_sub(ours))
+    }
+
     /// How automation identifies this tab
     pub fn key(&self) -> crate::hooks::TabKey {
         crate::hooks::TabKey { id: self.id.clone() }
@@ -4322,11 +4348,9 @@ impl Tab {
         // its say. Both only ever refine a resting state: a tab that is
         // working, or that has a person to answer, is already saying the more
         // urgent thing and must not be talked over
-        let (background, rest) = crate::detect::background_now(
-            self.job.as_ref().and_then(crate::job::Job::active),
-            self.state == TabState::Busy,
-            self.job_rest,
-        );
+        let busy = self.state == TabState::Busy;
+        let population = self.job_population(busy);
+        let (background, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;
         if matches!(self.state, TabState::Done | TabState::Wait) {
             // Order is which one a person needs to hear. A turn that ended

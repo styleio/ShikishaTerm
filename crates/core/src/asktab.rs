@@ -52,6 +52,13 @@ const SETTLE: Duration = Duration::from_millis(1500);
 /// quiet this long
 const SCREEN_SETTLE: Duration = Duration::from_secs(3);
 
+/// How long a tab may sit with background work after its turn before the reply
+/// it has written is taken as its answer. An AI that put a wait in the
+/// background comes back and says more when it finishes; a tab that keeps a
+/// server running never will, and the caller should not be held for an hour
+/// on a reply that is already written
+const BACKGROUND_GRACE: Duration = Duration::from_secs(180);
+
 /// A tab that never looked busy after being sent something is taken to have
 /// started (and finished) quickly once this has passed
 const NEVER_SEEN_BUSY: Duration = Duration::from_secs(8);
@@ -85,6 +92,8 @@ pub struct Ask {
     pub sent_at: Option<Instant>,
     pub seen_busy: bool,
     pub quiet_since: Option<Instant>,
+    /// Since when the tab has sat in `Background` after the turn
+    pub background_since: Option<Instant>,
     pub deadline: Instant,
     pub round: u32,
     pub max_rounds: u32,
@@ -164,14 +173,20 @@ pub fn record_of(t: &Tab) -> Option<std::path::PathBuf> {
     crate::sessionfind::locate(&glob, &id)
 }
 
-/// The turn is over. `Background` counts: it is a finished turn with something
-/// still alive in the tab's job -- and an AI given this app's MCP server always
-/// has one, the server itself, so its tab never reads as plain `Done`
+/// The turn is over and nothing it started is still running. `Background` is
+/// not quiet: an AI that put a long command in the background has ended its
+/// turn without the answer, and asking it now gets "still waiting". The app's
+/// own MCP server in the tab's job is not counted as background work
+/// ([`crate::job::is_this_program`]), so an AI with nothing running does read
+/// as `Done`
 pub fn quiet(state: TabState) -> bool {
-    matches!(
-        state,
-        TabState::Done | TabState::Wait | TabState::Background
-    )
+    matches!(state, TabState::Done | TabState::Wait)
+}
+
+/// The tab's turn is over, whether or not something it started runs on: free
+/// to be typed into
+pub fn turn_over(state: TabState) -> bool {
+    quiet(state) || state == TabState::Background
 }
 
 /// The answer sent back to the caller
@@ -238,7 +253,7 @@ pub fn step(
                 Some("the tab's program has ended"),
             ));
         }
-        if quiet(t.state) {
+        if turn_over(t.state) {
             return Step::Send;
         }
         if now >= a.deadline {
@@ -258,6 +273,26 @@ pub fn step(
         TabState::Busy => {
             a.seen_busy = true;
             a.quiet_since = None;
+            a.background_since = None;
+        }
+        TabState::Background => {
+            a.seen_busy = true;
+            a.quiet_since = None;
+            let since = *a.background_since.get_or_insert(now);
+            if since.elapsed() >= BACKGROUND_GRACE {
+                if let Some(reply) = record_of(t).and_then(|path| reply_in(&path, &a.text)) {
+                    return Step::Answer(answer(
+                        a,
+                        "DONE",
+                        Some(&reply),
+                        "record",
+                        same_folder,
+                        Some(
+                            "the tab still has work running in the background; this is what it has said so far",
+                        ),
+                    ));
+                }
+            }
         }
         TabState::Question => {
             // A tab waiting on a person is not going to answer by itself, and
@@ -303,7 +338,7 @@ pub fn step(
                 Some("the turn ended in an error"),
             ));
         }
-        TabState::Done | TabState::Wait | TabState::Background => {
+        TabState::Done | TabState::Wait => {
             let sent = a.sent_at.unwrap_or(a.asked_at);
             if a.seen_busy || sent.elapsed() >= NEVER_SEEN_BUSY {
                 a.quiet_since.get_or_insert(now);
