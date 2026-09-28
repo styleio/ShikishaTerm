@@ -853,7 +853,8 @@ pub fn conn_in(
         timeout: conn.timeout,
         speaks: conn.speaks,
         max_choices: conn.max_choices,
-        persona: None,    })
+        persona: None,
+    })
 }
 
 #[cfg(test)]
@@ -1065,7 +1066,8 @@ mod tests {
             model: var("SHIKISHA_PROBE_MODEL"),
             headers,
             timeout: Some(std::time::Duration::from_secs(30)),
-            persona: None,            speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
+            persona: None,
+            speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
                 "choice" => crate::config::SPEAKS_CHOICE.to_string(),
                 _ => crate::config::SPEAKS_CHAT.to_string(),
             },
