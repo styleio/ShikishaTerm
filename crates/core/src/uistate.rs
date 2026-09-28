@@ -75,12 +75,6 @@ pub struct TabState {
     /// colour so the "run several AIs side by side" story reads at a glance.
     #[serde(default)]
     pub ai: Option<String>,
-    /// Whether this tab acts without pausing for confirmation — the prerequisite
-    /// for driving another tab (operate). The shell greys out / blocks picking an
-    /// operate target when the operator (active tab) can't. Always false for a
-    /// browser or the settings pane.
-    #[serde(default)]
-    pub auto: bool,
     /// Whether this tab came up on a conversation of nobody's while its folder
     /// has been worked in before. The caption offers the way back while it is
     /// true, which is until somebody speaks here: from then on this tab has a
@@ -2109,12 +2103,6 @@ pub struct UiState {
     /// so the button has to say which one it is rather than claim the other.
     #[serde(default)]
     pub remote_sticky: bool,
-    /// What the focused tab is aimed at, as a screen number, when it has been
-    /// aimed at anything. The picker on screen is the only place an aim is
-    /// chosen and it is written down against that tab, so this is how it comes
-    /// back after a restart -- not a second setting to keep in step with.
-    #[serde(default)]
-    pub aim: Option<usize>,
     /// First launch, before any settings exist yet
     pub first_run: bool,
     /// How many times the settings have been read in since the start. A
@@ -2330,7 +2318,6 @@ impl TabState {
             settings: false,
             ai: t.ai_kind(),
             limit: t.limit_note().map(str::to_string),
-            auto: t.auto_runs(),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
             // Filled in by `view::ui_state_of`: what is being typed into a tab
@@ -2484,7 +2471,6 @@ impl TabState {
             // that does nothing when it is pressed
             settings: key == "settings" || key == "guide",
             ai: None,
-            auto: false,
             // Nothing was said here to read back
             readable: false,
             ask: None,
@@ -2928,7 +2914,6 @@ mod tests {
             settings: false,
             ai: None,
             limit: None,
-            auto: false,
             status: None,
             progress: None,
             sending: None,

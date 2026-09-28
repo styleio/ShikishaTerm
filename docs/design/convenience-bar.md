@@ -185,6 +185,11 @@ A thin GUI in two sheets ("canned text" and "script") over the existing
 
 ## 3. Driving a target tab (AI-generated Lua) — hardest, last, opt-in
 
+> **Removed on 2026-09-28.** The 🎯 target panel and its `operate(A→T)` engine are
+> gone. An AI now hands work to a tab the person names with @ in the input bar:
+> `shikisha ask` (an AI), `shikisha run` (a terminal) and `shikisha do` (a page,
+> driven by its own 🗣 run). What follows is kept as the record of the design.
+
 ### The flow the user has in mind
 
 1. In tab A's convenience bar, pick the tab to drive (B: a browser) from a

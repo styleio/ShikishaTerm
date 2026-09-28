@@ -1396,8 +1396,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--bg); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r-ctl); }
   .castpanelhint { flex:1 1 0; padding:10px 4px; color:var(--dim); font-size:13px; }
-  /* A sentence about the panel (🎯's hint or its "can't drive" reason, 📼's
-     status) gets a line of its own under the row, full width, wrapping. It
+  /* A sentence about the panel (📼's status) gets a line of its own under the row, full width, wrapping. It
      used to sit IN the row, which scrolls sideways for chips and keys: on a
      phone the row's fixed parts already fill the width, so the sentence was
      squeezed to nothing and its nowrap text ran on under the next button and
@@ -1408,15 +1407,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     font-size:13px; line-height:1.35; color:var(--dim); }
   .castnote.bad { color:var(--danger); }
   .castnote.good { color:var(--brand); }
-  /* The "🎯 still aimed" chip: visible on EVERY panel while a target is set,
-     because the composer's Send goes to the operate goal, not the terminal.
-     Its ✕ releases the target. */
-  .castchip { flex:none; display:inline-flex; align-items:center; gap:var(--s2); margin:var(--s2) 0;
-    padding:4px 6px 4px 10px; font-size:13px; color:var(--text);
-    background:var(--bg); border:1px solid var(--brand); border-radius:999px; }
-  .castchipx { flex:none; border:0; background:none; color:var(--dim); font-size:13px;
-    cursor:pointer; padding:2px 6px; border-radius:999px; }
-  .castchipx:hover { color:var(--text); background:var(--line); }
   /* Fixed ⚙ at the right of the actions panel — edit the quick actions in settings. */
   .castgear { flex:none; margin:var(--s2) 0; padding:6px 8px; font-size:14px; cursor:pointer;
     background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
@@ -1436,10 +1426,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     flex:1 1 0; min-width:0; padding:6px 0;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }
   #castkeys::-webkit-scrollbar, #castactions::-webkit-scrollbar { display:none; }
-  #casttarget { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
-    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
-  #casttarget::-webkit-scrollbar { display:none; }
-  /* 📼 record/run: two radios + a hint, same row shape as 🎯. */
+  /* 📼 record/run: two radios + a hint, in a row that scrolls sideways. */
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castlua::-webkit-scrollbar { display:none; }
@@ -11215,10 +11202,9 @@ window.__state = function (json) {
     lastWordsUnset = wordsUnsetHere();
     if (castPanel === "lua" && castDock && castDock.style.display === "flex") renderPanel();
   }
-  // The panel area follows the active tab: which panels exist (a browser tab has
-  // no 🎯 target panel, so the switcher itself comes and goes) and the target
-  // panel's operator gating both depend on it. If the active tab changed while
-  // the dock is open, rebuild whatever is showing so none of it goes stale.
+  // The panel area follows the active tab: which panels exist depends on it (a
+  // browser tab gains 📼, a terminal 🤖). If the active tab changed while the
+  // dock is open, rebuild whatever is showing so none of it goes stale.
   if (castDock && castDock.style.display === "flex" && S.active !== lastCastActive) {
     renderPanel();
   }
@@ -15923,12 +15909,12 @@ async function attachFile(file) {
 let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null, castSendEl = null;
 // The dock's "still going in" row and the two things it says (see syncSending)
 let castSendingEl = null, castSendFill = null, castSendSay = null;
-// The active tab the 🎯 target panel was last built for, so __state can rebuild it
-// when the operator changes (its enabled/disabled gate depends on that tab).
+// The active tab the panels were last built for, so __state can rebuild them
+// when it changes (which panels exist depends on that tab).
 let lastCastActive = null;
 // The bar's upper area is a single switchable panel: a fixed switcher on the left
 // picks what fills the (horizontally scrolling) rest — the special keys, the quick
-// actions, or (later) the operate-target picker. Default: keys on the phone (no
+// actions, 📼 on a page, or 🤖 on a terminal. Default: keys on the phone (no
 // physical keyboard), actions on the desktop.
 let castPanel = null, castPanelEl = null;
 // The panel the PERSON last picked. Renders fall back when a tab switch makes
@@ -15946,9 +15932,6 @@ let luaMode = "words";
 // composer stays the ordinary input — typing into the page keeps working AND
 // that very input is what gets recorded. Same rule on every surface.
 let luaSheet = "", castDraft = "", castSlot = "draft";
-// The tab the "operate" (🎯) panel is aimed at, or null. Step 1 = choosing it;
-// the operate engine (the active AI writes Lua to drive it) is layered on next.
-let castTarget = null;
 // Open the settings screen: the child WebView in the window, or the reverse-proxied
 // /cfg page (native + responsive) on the phone, handing the token over once.
 // section: deep-link to one settings card (e.g. "actions"). ret: come back to the
@@ -16129,106 +16112,7 @@ function activeFolder() {
   const t = (S.tabs || []).find(x => x.index === S.active && !x.settings);
   return t && t.group != null ? (S.groups || [])[t.group] : null;
 }
-// Fetch the newest run's portable replay (durable anchors, no digest refs).
-// The phone downloads it over HTTP; the window board has no HTTP downloads,
-// so it asks the app to save the file into Downloads instead.
-async function downloadReplayLua() {
-  if (typeof REMOTE !== "undefined" && REMOTE) {
-    try {
-      const r = await fetch("api/replay?t=" + encodeURIComponent(TOKEN));
-      if (!r.ok) { toast(T["tui.cast.replay.none"] || "No macro yet", true); return; }
-      const blob = await r.blob();
-      const u = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = u; a.download = "shikisha-macro.lua";
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(u), 1000);
-      // A silent success reads as a failure — say it landed
-      toast(T["tui.cast.replay.downloaded"] || "Downloaded");
-    } catch (e) {
-      toast(String(e && e.message || e), true);
-    }
-  } else {
-    // The app answers with the saved path (or the reason it couldn't) as a
-    // message of its own; this one is the immediate "the press registered"
-    send({kind:"replaysave"});
-    toast(T["tui.cast.replay.saving"] || "Saving…");
-  }
-}
-// The picker for the 🎯 panel: choose another tab to operate. Candidates are
-// browsers and AI tabs only — the operate engine relays natural-language
-// instructions, and typed into a plain shell/SSH/WSL those would execute as
-// commands. The operator itself and INDEX are never candidates.
-// Driving requires the operator (the active tab) to act WITHOUT confirmation — a
-// model tab always does, a CLI only with its bypass flag. When it can't, the
-// picker is disabled and a jump to settings is offered instead of a dead end.
-function operatorCanDrive() {
-  const operator = (S && S.tabs) ? S.tabs.find(t => t && t.index === S.active) : null;
-  return !!(operator && operator.auto);
-}
-function buildTargetPanel() {
-  const wrap = el("div", {id:"casttarget"});
-  const canOperate = operatorCanDrive();
-  // An aim outlives the page: it was written down against this tab when it was
-  // picked, and S.aim is it, come back. Adopt it when this page has no aim of
-  // its own yet, so a restart (or a phone opening the board) finds the 🎯 where
-  // it was left rather than empty.
-  if (!castTarget && S && S.aim) {
-    const t = (S.tabs || []).find(x => x && x.index === S.aim);
-    if (t) castTarget = { index: t.index, name: t.name || ("#" + t.index), kind: t.kind, model: !!t.model };
-  }
-  const tabs = (S && S.tabs)
-    ? S.tabs.filter(t => t && t.index !== 0 && !t.settings && t.index !== S.active
-        && (t.kind === "browser" || t.ai)) : [];
-  const sel = el("select", {class:"castswitch"});
-  sel.disabled = !canOperate;
-  sel.append(el("option", {value:""}, T["tui.cast.target.none"] || "— none —"));
-  tabs.forEach(t => {
-    const icon = t.kind === "browser" ? "🌐" : (t.model ? "🤖" : "▷");
-    const o = el("option", {value:String(t.index)}, icon + " " + (t.name || ("#" + t.index)));
-    if (castTarget && castTarget.index === t.index) o.selected = true;
-    sel.append(o);
-  });
-  sel.onchange = () => {
-    if (!canOperate) { sel.value = ""; return; }
-    const idx = parseInt(sel.value, 10);
-    const t = tabs.find(x => x.index === idx);
-    // Picking IS the setting: it is written down against this tab and comes
-    // back on the next start. Aiming alone hands over no work — the operator
-    // hears about it when a goal is sent — so this is safe to send on a
-    // dropdown change.
-    if (t) {
-      castTarget = { index: t.index, name: t.name || ("#" + idx), kind: t.kind, model: !!t.model };
-      send({kind:"operate", target: t.index});
-    } else {
-      send({kind:"operate", target: 0});
-      castTarget = null;
-    }
-    renderPanel();   // the 🎯 chip appears/disappears with the choice
-  };
-  wrap.append(el("span", {class:"hint", style:"flex:none"}, T["tui.cast.target.label"] || "Operate:"), sel);
-  // The finished operation's portable script, right where the target was
-  // chosen. Always present: before any run exists, pressing it just says so
-  wrap.append(el("button", {class:"castbtn", style:"flex:none", onclick: downloadReplayLua},
-    T["tui.cast.target.replay"] || "⬇ Lua"));
-  // What this row means (or why it can't be used) is the panel's note, on
-  // its own line under the row -- and the way to Settings is the bar's ⚙ at
-  // the right edge. renderPanel places both outside this scrolling row, so
-  // they stay put and stay whole; in here they rode off the edge with the row
-  if (!canOperate) castTarget = null;  // an unusable operator can't be aimed at anything
-  return wrap;
-}
-// The 🎯 panel's line of explanation: the reason it can't drive, else what
-// aiming does
-function targetNote() {
-  return operatorCanDrive()
-    ? { text: T["tui.cast.target.hint"] || "", tone: "" }
-    : { text: T["tui.cast.target.needauto"] || "This AI must be allowed to act without confirmation.",
-        tone: "bad" };
-}
-// Panels available on this surface. "target" (operate a tab) shows a placeholder
-// until that feature lands, but it's listed now so the switcher is present on both
-// the phone (keys/actions/target) and the desktop (actions/target).
+// Panels available on this surface.
 function panelOptions() {
   return panelOptionsHere();
 }
@@ -16237,9 +16121,8 @@ function panelOptionsHere() {
   // A git panel writes its commit message in a box of its own, so the bar
   // over it is the bar over any other panel
   if (gitSurfaceTab()) return base;
-  // A browser tab is operated, not an operator, so it has no 🎯 target panel —
-  // instead it gains 📼 (record page actions as Lua / run composer Lua on the
-  // page). Otherwise it's the same sub-input bar as an AI tab.
+  // A browser tab gains 📼 (record page actions as Lua / run composer Lua on
+  // the page). Otherwise it's the same sub-input bar as an AI tab.
   if (onBrowserTab()) return base.concat("lua");
   const t = activeTab();
   // A model pane is a conversation, not a command line. There is nothing to
@@ -16247,11 +16130,10 @@ function panelOptionsHere() {
   // base and nothing more: quick actions at the window, and the key row as
   // well on a phone.
   if (t && t.model) return base;
-  // 🎯 exists ONLY where an AI can be the operator (the active tab drives
-  // the chosen target). A plain terminal has no AI to drive anything, so it
-  // gets no target panel at all — it gains 🤖 instead: natural language in,
-  // one reviewed command out.
-  if (t && t.ai) return base.concat("target");
+  // An AI tab keeps the base: it is handed other tabs' work by naming them
+  // with @ in what is sent to it. A plain terminal gains 🤖 instead: natural
+  // language in, one reviewed command out.
+  if (t && t.ai) return base;
   if (t && t.index !== 0 && !t.settings && t.kind !== "browser") {
     return base.concat("suggest");
   }
@@ -16326,8 +16208,7 @@ function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
-    : p === "suggest" ? (T["tui.cast.panel.suggest"] || "AI command suggest")
-    : (T["tui.cast.panel.target"] || "Target");
+    : (T["tui.cast.panel.suggest"] || "AI command suggest");
 }
 // The bar's gear: one shape, wherever it points
 function gearTo(section, title) {
@@ -16357,12 +16238,11 @@ function directBtn() {
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
   return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
-    : p === "suggest" ? "🤖" : "🎯";
+    : "🤖";
 }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
-  if (p === "target") { return buildTargetPanel(); }
   if (p === "lua") { return buildLuaPanel(); }
   if (p === "suggest") { return buildSuggestPanel(); }
   return null;
@@ -19150,23 +19030,6 @@ function renderPanel() {
     sel.onchange = () => { castPanel = sel.value; userPanel = sel.value; renderPanel(); };
     castPanelEl.append(sel);
   }
-  // While a 🎯 target is aimed, every panel says so — the person switching
-  // panels otherwise assumes the targeting ended, then their next Send goes
-  // to the operate goal instead of the terminal. ✕ releases the target
-  if (castTarget) {
-    const chip = el("span", {class:"castchip",
-      title: T["tui.cast.target.active_hint"] || "Send goes to the AI as a goal for this tab"});
-    chip.append(document.createTextNode("🎯 " + (castTarget.name || "")));
-    chip.append(el("button", {class:"castchipx",
-      title: T["tui.cast.target.clear"] || "Release",
-      onclick: () => {
-        send({kind:"operate", target: 0});
-        castTarget = null;
-        toast(T["tui.cast.target.cleared"] || "🎯 released");
-        renderPanel();
-      }}, "✕"));
-    castPanelEl.append(chip);
-  }
   const content = panelContent(castPanel);
   if (content) castPanelEl.append(content);
   // A fixed ⚙ at the right edge of the actions panel jumps straight to the Quick
@@ -19179,12 +19042,6 @@ function renderPanel() {
   // keys are and the scrolling isn't (see directBtn). Only away from the window:
   // there the pane already has the caret and this would be a second ✕
   if (!OURS && castPanel === "keys") castPanelEl.append(directBtn());
-  // A 🎯 that can't aim (the operator still asks for confirmation) gets the
-  // same gear: no section, so it opens THIS tab's own card -- where that is
-  // switched on -- and comes back here once saved
-  if (castPanel === "target" && !operatorCanDrive()) {
-    castPanelEl.append(gearTo(null, T["tui.cast.target.settings"] || "Settings"));
-  }
   // 🗣 names the models it drives with on this page's settings: the gear goes
   // there, and a page with none chosen asks for them as the mode is shown
   if (castPanel === "lua" && luaMode === "words") {
@@ -19207,7 +19064,7 @@ function renderPanel() {
   // The panel's sentence comes last, and takes a line of its own under the
   // row (it is the only child allowed to wrap): there it can be read whole
   // on a phone, where the row's fixed parts leave it no room beside them
-  const note = castPanel === "target" ? targetNote() : castPanel === "lua" ? luaNoteLine() : null;
+  const note = castPanel === "lua" ? luaNoteLine() : null;
   if (note && note.text) {
     castPanelEl.append(el("span", {class:"castnote" + (note.tone ? " " + note.tone : ""), title: note.text}, note.text));
   }
@@ -19728,13 +19585,13 @@ function sendLine(text, tab) {
   send({kind:"key", named:"enter"});
 }
 // Whether a key pressed in the empty composer has a keystroke to become, asked
-// in sendBar's own order. ▶ run mode's sheet and a 🎯 goal are documents, not
-// keystrokes, and a model pane has no line to take one from: there such a key
-// does nothing, as in any empty field.
+// in sendBar's own order. ▶ run mode's sheet is a document, not keystrokes,
+// and a model pane has no line to take one from: there such a key does
+// nothing, as in any empty field.
 function keysGoOn() {
   if (castPanel === "lua" && (luaMode === "run" || luaMode === "words")) return false;
   if (drivingBrowser()) return true;
-  return !castTarget && !onModelTab();
+  return !onModelTab();
 }
 function sendBar() {
   if (!castInput) return;
@@ -19765,13 +19622,6 @@ function sendBar() {
     // batch into the shown page, or a bare Enter. Same path for both surfaces.
     if (t) injectIn({kind:"inject", what:"text", text:t});
     else sendCastKey("enter");
-  } else if (castTarget) {
-    // 🎯 operate mode: hand the text to the active AI as a goal, and it drives the
-    // chosen target (writes Lua). Not typed into the terminal we're viewing.
-    send({kind:"operate", target: castTarget.index, goal: t});
-    // A bare tab name reads as noise — say what actually happened to the text
-    toast((T["tui.cast.target.sent"] || "🎯 Asked the AI to drive {name}")
-      .replaceAll("{name}", castTarget.name || ""));
   } else if (modCtrl && t) {
     // Terminal: Ctrl latched + a typed letter = a control chord (e.g. Ctrl+C to
     // interrupt). Takes the first character; no trailing Enter — a chord isn't a line.
@@ -20770,18 +20620,14 @@ mod tests {
         );
         assert!(p.contains("const BUILD = \""), "the build stamp is not in it");
         // A stale page (a phone keeping the board open across app updates)
-        // must reload itself, and the 🎯 picker must exclude plain terminals
+        // must reload itself
         assert!(p.contains("S.build !== BUILD"), "there is no automatic reload for an old page");
+        // An AI tab keeps the base panels (it is handed other tabs' work by
+        // @); only a plain terminal gets 🤖, and the pen is a color emoji
+        // (the text glyph ✎ has no glyph in some fonts — pressable but invisible)
         assert!(
-            p.contains("t.kind === \"browser\" || t.ai"),
-            "the 🎯 candidates are not limited to AI tabs and browsers"
-        );
-        // The 🎯 panel itself exists only on AI-operator tabs; a plain
-        // terminal gets 🤖 instead, and its pen is a color emoji (the text
-        // glyph ✎ has no glyph in some fonts — pressable but invisible)
-        assert!(
-            p.contains("if (t && t.ai) return base.concat(\"target\")"),
-            "the 🎯 panel is not limited to AI tabs"
+            p.contains("if (t && t.ai) return base;"),
+            "an AI tab is offered a panel of its own again"
         );
         assert!(p.contains("✏️"), "the pen is not a color emoji");
         // A horizontal accent rule says "the focus is here" and nothing else.
@@ -21014,7 +20860,7 @@ mod tests {
             p.contains(r#"send({kind:"say", tab: (tab == null ? S.active : tab), text}); return;"#),
             "the line handed over has no addressee"
         );
-        // Actions only there (plus the key row on a phone) -- no 🎯, no 🤖, no 📼
+        // Actions only there (plus the key row on a phone) -- no 🤖, no 📼
         assert!(
             p.contains("if (t && t.model) return base;"),
             "the model pane shows panels other than actions"
@@ -21160,7 +21006,7 @@ mod tests {
         );
         let at = p.find("function keysGoOn() {").expect("nothing decides where such a key goes");
         let body = &p[at..at + p[at..].find("\n}").unwrap()];
-        for guard in ["luaMode === \"run\"", "drivingBrowser()", "!castTarget", "!onModelTab()"] {
+        for guard in ["luaMode === \"run\"", "drivingBrowser()", "!onModelTab()"] {
             assert!(body.contains(guard), "keysGoOn has lost `{guard}`");
         }
     }

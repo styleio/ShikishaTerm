@@ -1587,10 +1587,10 @@ struct Attach {
     base: Option<usize>,
     desk: Option<usize>,
     tabs: std::collections::HashMap<usize, usize>,
-    /// What a pane had before an aim (🎯) took it over, so letting the aim go
-    /// gives the tab its own automation back. Being aimed at something is a
-    /// borrowed turn, not a replacement -- the two used to fight, and whichever
-    /// was set last won for good.
+    /// What a pane had before a run (🗣) took it over, so stopping the run
+    /// gives the tab its own automation back. A run is a borrowed turn, not a
+    /// replacement -- the two used to fight, and whichever was set last won for
+    /// good.
     lent: std::collections::HashMap<usize, Option<usize>>,
 }
 
@@ -4347,417 +4347,11 @@ local function brake_ok(code)
 end
 "##;
 
-    /// Load the built-in orchestrator for browser-operation mode, targeting
-    /// the given browser (chat-style).
-    ///
-    /// The user never writes Lua. The goal is **typed into the input
-    /// field**, not configured. What's typed (chain 0) is picked up as a
-    /// new goal/correction, and the AI repeats: write one browser move at a
-    /// time to in.lua -> execute -> return the screen. Once the AI reports
-    /// instead of writing a move, that's treated as a checkpoint and it
-    /// waits for the next input. Runaway loops are always stopped by the
-    /// safety net. BR (the id of the browser being operated) is injected up
-    /// front
-    pub fn load_browser_agent(&mut self, browser: &str, stops_lua: &str) -> Result<usize> {
-        // Runaway limits and the on-limit policy come from config; fold them into
-        // the cache key so editing them in settings yields a fresh script.
-        let op = crate::config::operate();
-        let key = format!(
-            "<browser-agent:{browser}>{stops_lua}|{}|{}|{}|{}|{}|{}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit, op.settle_ms, op.confirm
-        );
-        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
-            return Ok(i);
-        }
-        // Built-in orchestrator (function-definition layout). BR, STOPS and the
-        // limits (MAX_ROUNDS/MAX_SEC/MAX_TOK) plus ON_LIMIT are injected below.
-        const SRC: &str = r##"
-
--- A model brain can't write files, so it hands over the next move as a fenced
--- ```lua block in its reply. Pull that block out (any/no language tag). Fall
--- back to gathering bare browser_*/shikisha./local lines if the model forgot
--- the fence. Returns nil when there's nothing runnable.
-local function extract_lua(reply)
-  if not reply or #reply == 0 then return nil end
-  local body = reply:match("```%s*%w*%s*\n(.-)```")
-  if not body then body = reply:match("```%s*%w*%s*(.-)```") end
-  if body and #(body:gsub("%s", "")) > 0 then return body end
-  local lines = {}
-  for line in (reply .. "\n"):gmatch("(.-)\n") do
-    if line:match("browser_%w+%s*%(") or line:match("shikisha%.")
-        or line:match("^%s*local%s") or line:match("^%s*for%s") or line:match("^%s*if%s") then
-      lines[#lines + 1] = line
-    end
-  end
-  if #lines > 0 then return table.concat(lines, "\n") end
-  return nil
-end
-
--- A brain signals completion by replying with a bare DONE (no code block).
-local function is_done(reply)
-  if not reply then return false end
-  for line in (reply .. "\n"):gmatch("(.-)\n") do
-    local w = line:gsub("[%s%p]", "")
-    if w == "DONE" or w == "done" then return true end
-  end
-  return false
-end
-
--- One turn, one piece of paper. The file a move is written to carries the
--- number of the turn that asked for it, so a move written for turn 3 and
--- delivered late cannot be picked up as the answer to turn 4. Every hint that
--- names the file names this one, so the AI is always told the current number.
-local function infile_for(run, n)
-  return run .. "/in." .. n .. ".lua"
-end
-local function turn_no()
-  return shikisha.get_var("rally_turn") or 1
-end
-local function infile_now(run)
-  return infile_for(run, turn_no())
-end
-
-local function protocol(run)
-  local infile = infile_now(run)
-  local humanfile = run .. "/human.txt"
-  return table.concat({
-    shikisha.tf("agent.browser.proto.intro", { br = BR }),
-    shikisha.t("agent.browser.proto.each_turn"),
-    "  " .. infile,
-    shikisha.tf("agent.browser.proto.funcs_header", { br = BR }),
-    "    browser_go(\"" .. BR .. "\", \"to\"|\"reload\"|\"back\"|\"forward\", url?)",
-    "    browser_digest(\"" .. BR .. "\")",
-    "    browser_click(\"" .. BR .. "\", sel)   browser_fill(\"" .. BR .. "\", sel, value)   browser_press(\"" .. BR .. "\", key)",
-    "    browser_select(\"" .. BR .. "\", sel, \"" .. shikisha.t("agent.browser.choice_name") .. "\")   browser_scroll(\"" .. BR .. "\", 1|-1|\"top\"|\"bottom\", sel?)",
-    "    browser_fill_secret(\"" .. BR .. "\", sel, " .. shikisha.t("agent.browser.secret_name") .. ")   browser_auth(\"" .. BR .. "\", " .. shikisha.t("agent.browser.secret_name") .. ")",
-    "    browser_text(\"" .. BR .. "\", sel)   browser_find(\"" .. BR .. "\", sel)",
-    shikisha.t("agent.browser.proto.sel_note"),
-    shikisha.t("agent.browser.proto.digest_note"),
-    shikisha.tf("agent.browser.proto.result_note", { br = BR }),
-    shikisha.t("agent.browser.proto.press_note"),
-    shikisha.t("agent.browser.proto.human_before") .. humanfile .. shikisha.t("agent.browser.proto.human_after"),
-    shikisha.t("agent.browser.proto.done_note"),
-    shikisha.contract(),
-  }, "\n")
-end
-
--- Where to tell the AI to put its next move. A CLI agent writes a file; a
--- model brain just replies with a ```lua block (or DONE).
-local function fix_hint(tab, infile)
-  if tab.is_model then return shikisha.t("agent.browser.model.fix") end
-  return shikisha.tf("agent.browser.lint.fix", { infile = infile })
-end
-local function retry_hint(tab, infile)
-  if tab.is_model then return shikisha.t("agent.browser.model.retry") end
-  return shikisha.tf("agent.browser.run.retry", { infile = infile })
-end
-local function next_hint(tab, infile)
-  if tab.is_model then return shikisha.t("agent.browser.model.next") end
-  return shikisha.t("agent.browser.next_action.before") .. infile .. shikisha.t("agent.browser.next_action.after")
-end
-
--- Hand the turn back to the AI, with the screen on it. These two go together on
--- every path here: the AI is about to work and watching it is the whole point.
--- Passing work no longer moves the screen by itself, so asking for it is the job
--- of whoever wants to be watched
-local function back_to_ai(ai, msg)
-  shikisha.show(ai)
-  shikisha.send_to_tab(ai, msg)
-end
-
-function on_start(tab)
-  local run = shikisha.exchange_new()
-  shikisha.set_var("rally_run", run)
-  shikisha.set_var("rally_turn", 1)
-  shikisha.set_var("rally_record", run .. "/record.lua")
-  shikisha.set_var("rally_tx", run .. "/transcript.md")
-  shikisha.set_var("rally_nocode", 0)
-  reset_budget()
-  -- Start the durable replay fresh: drop journal lines left over from any
-  -- earlier context, and stamp the header
-  shikisha.take_replay()
-  pcall(shikisha.exchange_write, run .. "/replay.lua", shikisha.t("transcript.replay.header") .. "\n")
-  -- Stage the opening digest too, so a task on an already-open page can act
-  -- on move one without spending it on browser_digest
-  local okd, dg = pcall(shikisha.browser_digest, BR)
-  if okd and type(dg) == "string" then
-    pcall(shikisha.exchange_write, run .. "/digest.txt", dg)
-  end
-  tx(shikisha.t("transcript.rally.header") .. "\n")
-  tx(shikisha.tf("transcript.rally.mode", { br = BR }) .. "\n")
-  -- A model brain already carries the operating rules in its system prompt and
-  -- can't write files, so it isn't handed the file-based protocol; it waits for
-  -- the human's goal in the chat box. A CLI agent gets the file-handoff brief.
-  if not tab.is_model then
-    shikisha.send_to_tab(tab.index, table.concat({
-      protocol(run),
-      "",
-      shikisha.t("agent.browser.start.ready"),
-    }, "\n"))
-  end
-end
-
-function on_done(tab)
-  local ai = tab.index
-  local run = shikisha.get_var("rally_run")
-  if not run then return end
-  local infile = infile_now(run)
-  -- A brain hands its move over inside its reply; a CLI agent writes files, so
-  -- its reply text is on screen (tab.output). Use whichever carries the move.
-  local said = tab.reply or tab.output or ""
-
-  -- A human typed into the input field (chain 0) = a new goal/correction. Reset the budget (safety net)
-  if tab.chain_depth == 0 then
-    reset_budget()
-    shikisha.set_var("rally_nocode", 0)
-  end
-  shikisha.set_var("rally_tok", (shikisha.get_var("rally_tok") or 0) + #said)
-
-  -- Human-assistance-request file
-  local human = shikisha.exchange_take(run .. "/human.txt")
-  if human and #human > 0 then
-    tx("\n### " .. shikisha.t("transcript.rally.human_request") .. "\n" .. human .. "\n")
-    -- The person may be away from the machine: ring the primary
-    -- notification, with the phone board's URL when remote is on, so they
-    -- can come and do their part (login, CAPTCHA, …)
-    local note = shikisha.tf("agent.browser.human.notify", { text = human })
-    local url = shikisha.remote_url()
-    if url then note = note .. "\n" .. url end
-    shikisha.notify(note)
-    shikisha.show(BR)
-    -- A notified human needs time to get here — wait up to 30 minutes,
-    -- not the 5-minute default
-    local why = shikisha.browser_wait(BR, {
-      ask = human, label = shikisha.t("agent.browser.human.label"), timeout_ms = 1800000,
-    })
-    if why == "timeout" then
-      tx(shikisha.t("transcript.rally.human_timeout") .. "\n")
-      back_to_ai(ai, shikisha.t("agent.browser.human.timeout") .. "\n" .. next_hint(tab, infile))
-      return
-    end
-    tx(shikisha.t("transcript.rally.human_done") .. "\n")
-    back_to_ai(ai, shikisha.t("agent.browser.human.resumed_before") .. infile .. shikisha.t("agent.browser.human.resumed_after"))
-    return
-  end
-
-  -- Move: a CLI agent overwrites in.lua; a model brain returns a ```lua block
-  -- in its reply, which we pull out here. Either way it lands as `code` and the
-  -- rest of the pipeline (lint -> execute -> record -> judge) is shared.
-  local code = shikisha.exchange_take(infile)
-  if code and #code > 0 then
-    -- Read once, and the number moves on: whatever is written next is a new
-    -- answer, whether it is the next move or a corrected one
-    shikisha.set_var("rally_turn", turn_no() + 1)
-    infile = infile_now(run)
-  else
-    -- Nothing on this turn's paper. A move for the turn before it, arriving
-    -- after that turn was answered, is late -- and saying nothing about it
-    -- would make "your move was ignored" look exactly like "your move was
-    -- never read"
-    local n = turn_no()
-    if n > 1 then
-      local late = shikisha.exchange_take(infile_for(run, n - 1))
-      if late and #late > 0 then
-        local said_late = shikisha.t("agent.turn.late")
-        shikisha.note(ai, said_late)
-        shikisha.log(said_late .. " " .. infile_for(run, n - 1))
-        tx("\n" .. said_late .. "\n")
-      end
-    end
-  end
-  if (not code or #code == 0) and tab.is_model then
-    code = extract_lua(tab.reply)
-  end
-  if code and #code > 0 then
-    local lint = shikisha.lint(code)
-    if lint then
-      back_to_ai(ai, shikisha.t("agent.browser.lint.error") .. "\n" .. lint .. "\n" .. fix_hint(tab, infile))
-      return
-    end
-    -- Brake: optionally hold for a person to approve this move before it runs.
-    if not brake_ok(code) then
-      back_to_ai(ai, shikisha.t("agent.brake.declined") .. "\n" .. next_hint(tab, infile))
-      return
-    end
-    shikisha.show(BR)
-    local err, out = shikisha.run_scoped(BR, code)
-    -- Ops that ran before an error still happened; the replay keeps them.
-    -- These are the durable spellings (anchors, not refs) journaled per op
-    local rl = shikisha.take_replay()
-    if rl and #rl > 0 then
-      pcall(shikisha.exchange_append, shikisha.get_var("rally_run") .. "/replay.lua", table.concat(rl, "\n") .. "\n")
-    end
-    if err then
-      back_to_ai(ai, shikisha.t("agent.browser.run.error") .. "\n" .. err .. "\n" .. retry_hint(tab, infile))
-      return
-    end
-    shikisha.exchange_append(shikisha.get_var("rally_record"), code)
-    shikisha.set_var("rally_nocode", 0)
-    local n = (shikisha.get_var("rally_round") or 0) + 1
-    shikisha.set_var("rally_round", n)
-    -- Record the executed move in the human-readable transcript (4-space indent = Markdown code block)
-    tx("\n### " .. shikisha.t("transcript.rally.action") .. " " .. n .. "\n    " .. code:gsub("\n", "\n    ") .. "\n")
-    -- Settle: wait for the page to stop reacting to what just ran, then read
-    -- it. The page says when it is done -- usually within a frame or two --
-    -- and SETTLE_MS is only the point at which we stop waiting for it. This
-    -- used to sleep 180ms at a time and re-read the whole page between naps,
-    -- which cost most of a second on every move that needed no wait at all.
-    -- Skipped entirely when SETTLE_MS = 0
-    local v = nil
-    if SETTLE_MS > 0 then
-      pcall(shikisha.browser_settle, BR, { ms = SETTLE_MS })
-    end
-    v = judge(said)
-    local body0 = shikisha.browser_text(BR, "body") or ""
-    tx("- " .. shikisha.t("transcript.rally.screen") .. ": " .. (clip(body0, 400):gsub("%s+", " ")) .. "\n")
-    if out and #out > 0 then
-      tx("- " .. shikisha.t("transcript.rally.result") .. ": " .. (clip(out, 400):gsub("%s+", " ")) .. "\n")
-    end
-    -- The judge (configured stop conditions). Once satisfied, emit an exit code and pause (back to waiting)
-    if v then
-      tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. (v.outcome == "success" and shikisha.t("agent.verdict.success") or shikisha.t("agent.verdict.fail"))
-        .. " (code=" .. (v.code or 0) .. ")\n" .. (v.reason or "") .. "\n")
-      shikisha.show(v.outcome == "success" and ai or BR)
-      shikisha.set_result(v.code or 0, v.reason or v.outcome)
-      shikisha.open_result(run)
-      shikisha.send_to_tab(ai, shikisha.t("agent.verdict.label") .. ": " .. (v.reason or v.outcome)
-        .. " (code=" .. (v.code or 0) .. ")" .. shikisha.t("agent.browser.next_instruction"))
-      return
-    end
-    -- Safety net (runaway insurance). Each limit is off when set to 0. When one
-    -- is hit, ON_LIMIT decides: "continue" resets the budget and carries on
-    -- (never stop on the user; the operator still judges DONE), anything else
-    -- ("stop") halts and hands back to the human.
-    local t0 = shikisha.get_var("rally_t0") or shikisha.epoch_ms()
-    local over = (MAX_ROUNDS > 0 and n >= MAX_ROUNDS)
-      or (MAX_SEC > 0 and (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000)
-      or (MAX_TOK > 0 and (shikisha.get_var("rally_tok") or 0) >= MAX_TOK)
-    if over then
-      if ON_LIMIT == "continue" then
-        reset_budget()
-      else
-        back_to_ai(ai, shikisha.t("agent.browser.safety_net"))
-        return
-      end
-    end
-    -- Return what the move gave back, plus the screen, and prompt for the
-    -- next move. The full, untruncated screen is staged to a file each round:
-    -- a CLI operator reads it there (no truncation), while a model brain —
-    -- which can't read files — gets it inline (capped). A long return value
-    -- gets the same file treatment (out.txt) so a digest never floods the chat
-    shikisha.show(ai)
-    local text = shikisha.browser_text(BR, "body") or ""
-    local screenfile = run .. "/screen.txt"
-    pcall(shikisha.exchange_write, screenfile, text)
-    -- A fresh digest every round, taken after the settle so it reflects the
-    -- page as it now stands. The operator never needs to spend a move on
-    -- browser_digest: the numbered element list is simply always current
-    local okd, dg = pcall(shikisha.browser_digest, BR)
-    if not okd or type(dg) ~= "string" then dg = nil end
-    local digestfile = run .. "/digest.txt"
-    if dg then pcall(shikisha.exchange_write, digestfile, dg) end
-    local outline = nil
-    if out and #out > 0 then
-      if not tab.is_model and #out > 1500 then
-        local outfile = run .. "/out.txt"
-        pcall(shikisha.exchange_write, outfile, out)
-        outline = shikisha.tf("agent.browser.result_file", { file = outfile }) .. "\n" .. clip(out, 700)
-      elseif tab.is_model and #out > 3000 then
-        outline = shikisha.t("agent.browser.result") .. "\n" .. clip(out, 3000) .. shikisha.t("agent.browser.truncated")
-      else
-        outline = shikisha.t("agent.browser.result") .. "\n" .. out
-      end
-    end
-    local msg = {}
-    if outline then msg[#msg + 1] = outline end
-    if tab.is_model then
-      local inline = text
-      if #inline > 3000 then inline = clip(inline, 3000) .. shikisha.t("agent.browser.truncated") end
-      msg[#msg + 1] = shikisha.t("agent.browser.executed_screen")
-      msg[#msg + 1] = "----"
-      msg[#msg + 1] = inline
-      msg[#msg + 1] = "----"
-      if dg then
-        -- A model brain can't read files: the digest rides inline (capped)
-        msg[#msg + 1] = shikisha.t("agent.browser.digest_inline")
-        local dgi = dg
-        if #dgi > 3500 then dgi = clip(dgi, 3500) .. shikisha.t("agent.browser.truncated") end
-        msg[#msg + 1] = dgi
-      end
-      msg[#msg + 1] = next_hint(tab, infile)
-    else
-      msg[#msg + 1] = shikisha.tf("agent.browser.executed_file", { file = screenfile })
-      msg[#msg + 1] = clip(text, 800)
-      if dg then
-        msg[#msg + 1] = shikisha.tf("agent.browser.digest_file", { file = digestfile })
-        msg[#msg + 1] = clip(dg, 1200)
-      end
-      msg[#msg + 1] = next_hint(tab, infile)
-    end
-    shikisha.send_to_tab(ai, table.concat(msg, "\n"))
-    return
-  end
-
-  -- No runnable move.
-  if tab.is_model then
-    -- A brain replying with a bare DONE means the goal is met.
-    if is_done(said) then
-      tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. shikisha.t("agent.verdict.success") .. "\n")
-      shikisha.set_result(0, shikisha.t("agent.verdict.success"))
-      shikisha.open_result(run)
-      return
-    end
-    -- Neither code nor DONE: remind, but cap consecutive empty turns so a
-    -- chatty model can't loop forever prompting itself.
-    local nc = (shikisha.get_var("rally_nocode") or 0) + 1
-    shikisha.set_var("rally_nocode", nc)
-    if nc >= 3 then
-      back_to_ai(ai, shikisha.t("agent.browser.model.stuck"))
-      return
-    end
-    back_to_ai(ai, shikisha.t("agent.browser.model.remind"))
-    return
-  end
-
-  -- CLI no-code: if a human just typed the goal (chain 0), nudge once.
-  if tab.chain_depth == 0 then
-    back_to_ai(ai,
-      shikisha.t("agent.browser.first_action.before") .. infile .. shikisha.t("agent.browser.first_action.after"))
-    return
-  end
-  -- Mid-rally, a turn with no move is usually the AI narrating ("I wrote
-  -- the move") without actually writing the file this turn — left silent,
-  -- both sides wait on each other forever. Remind a couple of times (the
-  -- counter resets whenever a move actually runs), then go quiet so an AI
-  -- that genuinely finished and reported isn't pestered endlessly
-  local nc = (shikisha.get_var("rally_nocode") or 0) + 1
-  shikisha.set_var("rally_nocode", nc)
-  if nc <= 2 then
-    back_to_ai(ai, next_hint(tab, infile))
-  end
-end
-"##;
-        let src = format!(
-            "local BR = {browser:?}\nlocal STOPS = {stops_lua}\n\
-             local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n\
-             local SETTLE_MS = {}\nlocal CONFIRM = {:?}\n{}\n{SRC}",
-            op.max_rounds,
-            op.max_seconds,
-            op.max_tokens,
-            op.on_limit,
-            op.settle_ms,
-            op.confirm,
-            Self::SHARED_LUA
-        );
-        self.load_source(&key, &src)
-    }
-
     /// Load the built-in loop that carries out a goal written in ordinary
     /// words, deciding each move itself rather than asking an AI to write one.
     ///
-    /// The same run as [`Self::load_browser_agent`], turned around. There, an
-    /// AI is shown the page and writes the move; here, the page is turned into
-    /// a list of the moves that are *possible* and a model picks one of them.
+    /// No AI is shown the page to write a move: the page is turned into a list
+    /// of the moves that are *possible* and a model picks one of them.
     /// That is what makes it quick and what makes it safe: nothing the model
     /// says becomes a selector, a coordinate or a line of code -- it answers
     /// with a number that this side minted, or it does not answer at all.
@@ -5240,177 +4834,6 @@ end
             words,
             crate::bridge::MOST_CHOICES,
             Self::SHARED_LUA
-        );
-        self.load_source(&key, &src)
-    }
-
-    /// Attach the built-in "operate another AI tab" orchestrator to the operator.
-    /// The operator writes one instruction per turn (to in.txt, or inline for a
-    /// model brain); it's relayed to the target AI `target`, whose reply is read
-    /// back and handed to the operator, until the operator replies DONE. Shares the
-    /// operate limits/policy with the browser agent. Cached per (target, limits).
-    pub fn load_ai_agent(&mut self, target: &str) -> Result<usize> {
-        let op = crate::config::operate();
-        let key = format!(
-            "<ai-agent:{target}>|{}|{}|{}|{}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
-        );
-        if let Some(i) = self.scripts.iter().position(|s| s.path == key) {
-            return Ok(i);
-        }
-        // TARGET (the AI tab being driven) and the limits are injected below.
-        const SRC: &str = r##"
-local function is_done(reply)
-  if not reply then return false end
-  for line in (reply .. "\n"):gmatch("(.-)\n") do
-    local w = line:gsub("[%s%p]", "")
-    if w == "DONE" or w == "done" then return true end
-  end
-  return false
-end
-local function reset_budget()
-  shikisha.set_var("op_round", 0)
-  shikisha.set_var("op_t0", shikisha.epoch_ms())
-  shikisha.set_var("op_tok", 0)
-end
--- Hand the turn back to the AI, with the screen on it. These two go together on
--- every path here: the AI is about to work and watching it is the whole point.
--- Passing work no longer moves the screen by itself, so asking for it is the job
--- of whoever wants to be watched
-local function back_to_ai(ai, msg)
-  shikisha.show(ai)
-  shikisha.send_to_tab(ai, msg)
-end
-
-local function tx(entry)
-  local p = shikisha.get_var("op_tx")
-  if p then shikisha.exchange_append(p, entry) end
-end
-
--- One turn, one piece of paper (the same rule the browser rally follows): the
--- file the operator writes its instruction to carries the number of the turn
--- that asked for it, so an instruction written for turn 3 and delivered late
--- cannot be relayed as the instruction for turn 4
-local function infile_for(run, n)
-  return run .. "/in." .. n .. ".txt"
-end
-local function turn_no()
-  return shikisha.get_var("op_turn") or 1
-end
-local function infile_now(run)
-  return infile_for(run, turn_no())
-end
-
-function on_start(tab)
-  local run = shikisha.exchange_new()
-  shikisha.set_var("op_run", run)
-  shikisha.set_var("op_turn", 1)
-  shikisha.set_var("op_tx", run .. "/transcript.md")
-  shikisha.set_var("op_nocode", 0)
-  reset_budget()
-  tx(shikisha.tf("transcript.ai.header", { target = TARGET }) .. "\n")
-  -- A model brain carries its rules in the system prompt and can't write files,
-  -- so it just waits for the human's goal. A CLI gets the file-handoff brief.
-  if not tab.is_model then
-    shikisha.send_to_tab(tab.index,
-      shikisha.tf("agent.ai.brief", { target = TARGET, infile = infile_now(run) })
-        .. "\n" .. shikisha.contract())
-  end
-end
-
-function on_done(tab)
-  local ai = tab.index
-  local run = shikisha.get_var("op_run")
-  if not run then return end
-  local infile = infile_now(run)
-  local said = tab.reply or tab.output or ""
-  -- A human typed into the input (chain 0) = a fresh goal. Reset the safety budget.
-  if tab.chain_depth == 0 then reset_budget(); shikisha.set_var("op_nocode", 0) end
-  shikisha.set_var("op_tok", (shikisha.get_var("op_tok") or 0) + #said)
-
-  -- The operator's next instruction: a CLI writes its file; a model replies inline.
-  local instr = shikisha.exchange_take(infile)
-  if instr and #instr > 0 then
-    -- Read once, and the number moves on
-    shikisha.set_var("op_turn", turn_no() + 1)
-    infile = infile_now(run)
-  else
-    local prev = turn_no() - 1
-    if prev >= 1 then
-      local late = shikisha.exchange_take(infile_for(run, prev))
-      if late and #late > 0 then
-        local said_late = shikisha.t("agent.turn.late")
-        shikisha.note(ai, said_late)
-        shikisha.log(said_late .. " " .. infile_for(run, prev))
-        tx("\n" .. said_late .. "\n")
-      end
-    end
-  end
-  if (not instr or #instr == 0) and tab.is_model and not is_done(said) then
-    instr = said
-  end
-  if instr and #(instr:gsub("%s", "")) > 0 and not is_done(instr) then
-    shikisha.set_var("op_nocode", 0)
-    local n = (shikisha.get_var("op_round") or 0) + 1
-    shikisha.set_var("op_round", n)
-    tx("\n### " .. shikisha.t("transcript.ai.instruction") .. " " .. n .. "\n" .. instr .. "\n")
-    -- Relay to the target AI and wait for its reply. Nobody ever briefed the
-    -- target -- it is an ordinary tab that someone else has started driving --
-    -- so the promises ride along with the first instruction it is given, and
-    -- only that one.
-    shikisha.show(TARGET)
-    shikisha.send_to_tab(TARGET, n == 1 and (shikisha.contract() .. "\n\n" .. instr) or instr)
-    shikisha.sleep(1500)                          -- let the target begin
-    shikisha.wait_state(TARGET, "DONE", 300000)   -- ...then finish
-    local reply = ""
-    for _ = 1, 10 do
-      reply = shikisha.tab_output(TARGET) or ""
-      if #(reply:gsub("%s", "")) > 0 then break end
-      shikisha.sleep(300)
-    end
-    tx("- " .. shikisha.t("transcript.ai.reply") .. ": " .. reply:sub(1, 400):gsub("%s+", " ") .. "\n")
-    -- Safety net (same policy as the browser agent).
-    local t0 = shikisha.get_var("op_t0") or shikisha.epoch_ms()
-    local over = (MAX_ROUNDS > 0 and n >= MAX_ROUNDS)
-      or (MAX_SEC > 0 and (shikisha.epoch_ms() - t0) >= MAX_SEC * 1000)
-      or (MAX_TOK > 0 and (shikisha.get_var("op_tok") or 0) >= MAX_TOK)
-    if over then
-      if ON_LIMIT == "continue" then
-        reset_budget()
-      else
-        back_to_ai(ai, shikisha.t("agent.browser.safety_net"))
-        return
-      end
-    end
-    back_to_ai(ai, shikisha.tf("agent.ai.replied",
-      { target = TARGET, reply = reply, infile = infile }))
-    return
-  end
-
-  -- No instruction.
-  if is_done(said) then
-    tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. shikisha.t("agent.verdict.success") .. "\n")
-    shikisha.set_result(0, shikisha.t("agent.verdict.success"))
-    shikisha.open_result(run)
-    return
-  end
-  if tab.is_model then
-    local nc = (shikisha.get_var("op_nocode") or 0) + 1
-    shikisha.set_var("op_nocode", nc)
-    if nc >= 3 then back_to_ai(ai, shikisha.t("agent.browser.model.stuck")) return end
-    back_to_ai(ai, shikisha.t("agent.browser.model.remind"))
-    return
-  end
-  -- CLI no-code: nudge once right after the goal; otherwise wait for the human.
-  if tab.chain_depth == 0 then
-    back_to_ai(ai, shikisha.tf("agent.ai.first", { infile = infile }))
-  end
-end
-"##;
-        let src = format!(
-            "local TARGET = {target:?}\n\
-             local MAX_ROUNDS, MAX_SEC, MAX_TOK = {}, {}, {}\nlocal ON_LIMIT = {:?}\n{SRC}",
-            op.max_rounds, op.max_seconds, op.max_tokens, op.on_limit
         );
         self.load_source(&key, &src)
     }
@@ -5936,41 +5359,6 @@ end
         }
     }
 
-    /// Start an ad-hoc "operate a browser" session: attach the built-in browser
-    /// agent to `source_pane` (the AI that will drive) targeting browser `browser`,
-    /// and run its on_start so the operator is briefed. This is the same script a
-    /// configured Agent tab uses; the goal is delivered separately by the caller,
-    /// and from then on the normal on_done cycle runs the loop. Idempotent per
-    /// browser (the script is cached), with no stop conditions (the AI judges DONE).
-    pub fn start_operate(
-        &mut self,
-        source_pane: usize,
-        browser: &str,
-        stops_lua: &str,
-        ctx: &TabCtx,
-    ) -> Result<()> {
-        let id = self.load_browser_agent(browser, stops_lua)?;
-        self.lend_tab(source_pane, id);
-        crate::append_hook_log(&format!(
-            "operate: briefing operator pane{source_pane} on browser {browser:?}"
-        ));
-        self.fire("on_start", ctx, None);
-        Ok(())
-    }
-
-    /// Start an ad-hoc "operate another AI tab" session: attach the AI-operate
-    /// agent to `source_pane` (the driver), targeting the AI tab `target` (its
-    /// id/name), and brief the operator. The goal is delivered separately.
-    pub fn start_operate_ai(&mut self, source_pane: usize, target: &str, ctx: &TabCtx) -> Result<()> {
-        let id = self.load_ai_agent(target)?;
-        self.lend_tab(source_pane, id);
-        crate::append_hook_log(&format!(
-            "operate: briefing operator pane{source_pane} on AI tab {target:?}"
-        ));
-        self.fire("on_start", ctx, None);
-        Ok(())
-    }
-
     /// Start driving a page from a goal written in ordinary words.
     ///
     /// The script is attached to the browser's own pane, because that is
@@ -6127,12 +5515,12 @@ return o"#,
         for p in gone {
             let _ = self.lua.remove_registry_value(p.key);
         }
-        self.stop_operate(pane);
+        self.give_back(pane);
     }
 
-    /// Detach an ad-hoc operate: the source tab goes back to being a plain tab
-    /// (its on_done no longer runs the browser loop).
-    pub fn stop_operate(&mut self, source_pane: usize) {
+    /// The pane a run borrowed goes back to the automation it had before
+    /// (its on_done no longer runs the run's loop)
+    fn give_back(&mut self, source_pane: usize) {
         match self.attach.lent.remove(&source_pane) {
             // Give the tab back the automation it came with
             Some(Some(had)) => {
@@ -6147,22 +5535,12 @@ return o"#,
         }
     }
 
-    /// Point a pane at the aim's script, remembering what it had. See
-    /// `Attach::lent`: an aim borrows the turn and gives it back.
+    /// Point a pane at a run's script, remembering what it had. See
+    /// `Attach::lent`: a run borrows the turn and gives it back.
     fn lend_tab(&mut self, tab_index: usize, id: usize) {
         let had = self.attach.tabs.get(&tab_index).copied();
         self.attach.lent.entry(tab_index).or_insert(had);
         self.attach.tabs.insert(tab_index, id);
-    }
-
-    /// Hand a goal to the operator, queued as a command like on_start's brief —
-    /// so it arrives after the protocol (not before it, which a raw write would).
-    pub fn deliver_goal(&self, pane: usize, text: &str) {
-        self.commands.borrow_mut().push(Command::SendPrompt {
-            target: TabRef::Index(pane),
-            text: text.to_string(),
-            origin: self.current_origin.get(),
-        });
     }
 
     /// Call a browser hook.
@@ -6967,9 +6345,7 @@ mod tests {
             Default::default(),
         ));
         let mut eng = super::HookEngine::with_caps(caps).expect("engine");
-        eng.load_browser_agent("BR", "{}").expect("browser rally template");
         eng.load_browser_words("BR", "{}", &Default::default()).expect("driven-from-words template");
-        eng.load_ai_agent("target").expect("operate template");
         // Loaded the way `fire_template` loads it, but not run: running it
         // wants a server. A typo would otherwise wait until somebody sent a
         // folder for the first time
@@ -7355,44 +6731,6 @@ mod tests {
     }
 
     #[test]
-    fn browser_agent_mode_is_built_in_and_needs_no_lua() {
-        let _g = OwnRally::new();
-        // The built-in browser-operation mode must load, and on_start must send the "operation protocol".
-        // Since the goal is given via the input field rather than config, the prompt needs to explain the input field
-        let mut e = HookEngine::new().unwrap();
-        // Configured stop conditions (the judge) must still be readable once injected into Lua
-        let stops = crate::config::stops_to_lua(&[crate::config::StopCond {
-            when: "screen".into(),
-            tab: Some("br".into()),
-            pattern: Some("公開に進む".into()),
-            outcome: "success".into(),
-            code: 0,
-            reason: Some("エディタ表示".into()),
-            ..Default::default()
-        }]);
-        let id = e.load_browser_agent("br", &stops).expect("the built-in conductor cannot be read");
-        e.set_tab(1, id);
-        e.fire("on_start", &ctx(1, ""), None);
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter().any(|c| matches!(c,
-                Command::SendPrompt { text, .. }
-                    if text.contains("in.lua")
-                        && text.contains("browser_go")
-                        && text.contains("input field"))),
-            "on_start does not send the browser protocol (goal via the input field): {cmds:?}"
-        );
-    }
-
-    /// Three ways to read a tab, because there are three different things to
-    /// read: what a turn produced, what is on the glass right now, and the
-    /// whole run from a mark you keep.
-    ///
-    /// The screen is the one that was missing, and it is the only one a
-    /// full-screen program has -- a pager, a menu, a TUI panel. Reading a tab
-    /// that has no recording must not be an error either: automation written
-    /// against it should not have to ask first.
-    #[test]
     fn a_tab_can_be_read_three_ways() {
         let mut e = HookEngine::from_source(
             r#"
@@ -7458,75 +6796,6 @@ mod tests {
         );
     }
 
-    /// One turn, one piece of paper.
-    ///
-    /// The failure this stops: an AI writes its move, the turn is answered, and
-    /// then a second copy of that move lands -- from a retry, a slow write, a
-    /// tab that was still finishing. With one fixed file name it would be read
-    /// as the answer to the *next* question, which is how a rally ends up
-    /// acting on an instruction nobody gave it. Numbering the paper makes a
-    /// late move land somewhere nobody is reading, and the sweep is what turns
-    /// "silently ignored" into something a person can see.
-    #[test]
-    fn a_move_written_for_a_turn_that_is_over_is_not_used_for_the_next_one() {
-        let _g = OwnRally::new();
-        let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_agent("br", "{}").expect("the built-in conductor cannot be read");
-        e.set_tab(1, id);
-        e.fire("on_start", &ctx(1, ""), None);
-        let opening = e
-            .drain_commands()
-            .iter()
-            .filter_map(|c| match c {
-                Command::SendPrompt { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            opening.contains("in.1.lua"),
-            "the first turn's file has no number: {opening}"
-        );
-
-        let run = crate::exchange::latest_run().expect("run folder");
-        // The AI answers turn 1. The move itself fails (there is no browser
-        // here), which is fine -- the point is that the paper was read
-        std::fs::write(run.join("in.1.lua"), "browser_digest(BR)").unwrap();
-        e.fire("on_done", &ctx(1, "wrote the move"), None);
-        let after = e
-            .drain_commands()
-            .iter()
-            .filter_map(|c| match c {
-                Command::SendPrompt { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            after.contains("in.2.lua") && !after.contains("in.1.lua"),
-            "the turn moved on, but it still points at the same file: {after}"
-        );
-
-        // Now the late copy of turn 1's move arrives, after turn 1 was answered
-        std::fs::write(run.join("in.1.lua"), "browser_digest(BR)").unwrap();
-        e.fire("on_done", &ctx(1, "still talking"), None);
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter().any(|c| matches!(c,
-                Command::Note { text, .. } if text.contains("previous turn"))),
-            "a move that arrived late is quietly thrown away: {cmds:?}"
-        );
-        assert!(
-            !run.join("in.1.lua").exists(),
-            "a file decided not to be used is still there"
-        );
-    }
-
-    /// Deciding not to act is a decision, and it has to leave a trace. The run
-    /// ends where `skip` is called -- that is the easy half -- but the half that
-    /// matters is that it says so on the screen and in the log, and that it is
-    /// not filed as a fault: an automation that declines every night for a week
-    /// must be findable, and must not look broken while it is behaving.
     #[test]
     fn skipping_ends_that_run_and_says_so() {
         let mut e = HookEngine::from_source(
@@ -7616,14 +6885,6 @@ mod tests {
                 .join("\n")
         };
 
-        let mut browser = HookEngine::new().unwrap();
-        let id = browser.load_browser_agent("br", "{}").expect("browser rally");
-        browser.set_tab(1, id);
-
-        let mut operate = HookEngine::new().unwrap();
-        let id = operate.load_ai_agent("2").expect("operate another tab");
-        operate.set_tab(1, id);
-
         let mut discuss = HookEngine::new().unwrap();
         let id = discuss
             .load_discuss_agent(
@@ -7645,8 +6906,6 @@ mod tests {
         .unwrap();
 
         for (who, e) in [
-            ("browser rally", &mut browser),
-            ("operating another tab", &mut operate),
             ("discussion", &mut discuss),
             ("a hand-written one", &mut own),
         ] {
@@ -7660,32 +6919,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ad_hoc_operate_attaches_the_agent_and_detaches() {
-        let _g = OwnRally::new();
-        let mut e = HookEngine::new().unwrap();
-        // Start operating browser "br" from the tab in pane 1 (no config needed).
-        e.start_operate(1, "br", "{}", &ctx(1, ""))
-            .expect("operate should start");
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("browser_go"))),
-            "on_start should brief the operator with the browser protocol: {cmds:?}"
-        );
-        // After detaching, the tab is plain again: on_done runs nothing for it.
-        e.stop_operate(1);
-        e.fire("on_done", &ctx(1, "DONE"), None);
-        assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");
-    }
-
-    /// Letting an aim go gives the tab back the automation it came with.
+    /// A run that borrowed a pane gives it back the automation it came with.
     ///
-    /// A tab can have its own Lua AND be aimed at something. The aim borrows
-    /// the pane's script while it lasts; if detaching simply dropped it, the
-    /// tab's own automation would be gone for the rest of the run — a thing
-    /// nobody asked for, and nothing on screen would say why it stopped.
+    /// A page can have its own Lua AND be driven from words. The run borrows
+    /// the pane's script while it lasts; if stopping simply dropped it, the
+    /// page's own automation would be gone for the rest of the session -- a
+    /// thing nobody asked for, and nothing on screen would say why it stopped.
     #[test]
-    fn letting_an_aim_go_gives_back_the_tabs_own_automation() {
+    fn a_run_gives_the_pane_back_its_own_automation() {
         let _g = OwnRally::new();
         let mut e = HookEngine::new().unwrap();
         let mine = e
@@ -7693,120 +6934,17 @@ mod tests {
             .expect("the tab's own automation");
         e.set_tab(1, mine);
 
-        e.start_operate(1, "br", "{}", &ctx(1, ""))
-            .expect("operate should start");
+        e.start_words(1, "br", "{}", "a goal", &Default::default(), &ctx(1, ""))
+            .expect("a words run should start");
         e.drain_commands();
-        e.stop_operate(1);
+        e.stop_words(1);
 
         e.fire("on_done", &ctx(1, "DONE"), None);
         assert!(
             e.drain_commands()
                 .iter()
                 .any(|c| matches!(c, Command::Log(m) if m.contains("mine ran"))),
-            "the target was removed, but the tab's own automation did not come back"
-        );
-    }
-
-    #[test]
-    fn ad_hoc_ai_operate_briefs_the_operator_about_the_target() {
-        let _g = OwnRally::new();
-        let mut e = HookEngine::new().unwrap();
-        // Drive the AI tab "helper" from pane 1.
-        e.start_operate_ai(1, "helper", &ctx(1, "")).expect("ai operate should start");
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("helper"))),
-            "on_start should brief the operator about driving the target AI: {cmds:?}"
-        );
-        e.stop_operate(1);
-        e.fire("on_done", &ctx(1, "DONE"), None);
-        assert!(e.drain_commands().is_empty(), "a detached tab must not run the operate loop");
-    }
-
-    fn ctx_model(index: usize, reply: &str) -> TabCtx {
-        let mut c = ctx(index, "");
-        c.is_model = true;
-        c.reply = Some(reply.into());
-        c
-    }
-
-    fn load_brain() -> HookEngine {
-        let empty: &[crate::config::StopCond] = &[];
-        let stops = crate::config::stops_to_lua(empty);
-        let mut e = HookEngine::new().unwrap();
-        let id = e.load_browser_agent("br", &stops).expect("the built-in conductor cannot be read");
-        e.set_tab(1, id);
-        e
-    }
-
-    #[test]
-    fn a_browser_brain_gets_no_file_protocol_at_start() {
-        let _g = OwnRally::new();
-        // A model brain carries its rules in the system prompt and can't write
-        // files, so on_start must NOT hand it the in.lua file-handoff protocol.
-        let mut e = load_brain();
-        e.fire("on_start", &ctx_model(1, ""), None);
-        let cmds = e.drain_commands();
-        assert!(
-            !cmds
-                .iter()
-                .any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("in.lua"))),
-            "model brain should not receive the file-handoff protocol: {cmds:?}"
-        );
-    }
-
-    #[test]
-    fn a_browser_brain_move_is_pulled_from_its_reply() {
-        let _g = OwnRally::new();
-        // The brain never writes in.lua; the orchestrator must EXTRACT the
-        // fenced ```lua from its reply and run it through the same pipeline.
-        // A block that isn't valid Lua proves extraction reached the linter
-        // (rather than falling through to the "no move" path).
-        let mut e = load_brain();
-        e.fire("on_start", &ctx_model(1, ""), None);
-        let _ = e.drain_commands();
-        e.fire(
-            "on_done",
-            &ctx_model(1, "Sure, next:\n```lua\n=== not lua ===\n```"),
-            None,
-        );
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter().any(|c| matches!(c, Command::SendPrompt { text, .. }
-                if text.contains(&crate::i18n::t("agent.browser.lint.error")))),
-            "the ```lua block should have been extracted and linted: {cmds:?}"
-        );
-    }
-
-    #[test]
-    fn a_browser_brain_finishes_on_a_bare_done() {
-        let _g = OwnRally::new();
-        let mut e = load_brain();
-        e.fire("on_start", &ctx_model(1, ""), None);
-        let _ = e.drain_commands();
-        e.fire("on_done", &ctx_model(1, "DONE\nPosted the article."), None);
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Command::SetResult { code: 0, .. })),
-            "a bare DONE should end the rally with success: {cmds:?}"
-        );
-    }
-
-    #[test]
-    fn a_browser_brain_is_reminded_when_it_only_chats() {
-        let _g = OwnRally::new();
-        // A reply with neither a code block nor DONE gets nudged back toward
-        // emitting Lua (so a chatty model doesn't silently stall).
-        let mut e = load_brain();
-        e.fire("on_start", &ctx_model(1, ""), None);
-        let _ = e.drain_commands();
-        e.fire("on_done", &ctx_model(1, "I think we should log in first."), None);
-        let cmds = e.drain_commands();
-        assert!(
-            cmds.iter()
-                .any(|c| matches!(c, Command::SendPrompt { text, .. } if text.contains("```lua"))),
-            "a chatty no-code reply should be reminded to send lua: {cmds:?}"
+            "the run stopped, but the pane's own automation did not come back"
         );
     }
 

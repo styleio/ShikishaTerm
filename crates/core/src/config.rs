@@ -1130,7 +1130,8 @@ pub struct Config {
     /// the desk on screen when one is pressed
     #[serde(default)]
     pub quick_commands: crate::quick::QuickSpec,
-    /// Bounds and stall behavior for ad-hoc "operate a tab" (🎯) sessions.
+    /// Bounds and stall behavior for work handed to other tabs (`ask_tab`) and
+    /// for pages driven from words (🗣).
     #[serde(default)]
     pub operate: OperateSpec,
     /// Display language ("ja" etc). Follows the OS setting if omitted
@@ -1692,10 +1693,11 @@ pub fn actions() -> Vec<ActionSpec> {
     load().map(|c| c.actions).unwrap_or_default()
 }
 
-/// Bounds and stall behavior for an "operate a tab" (🎯) session. The limits are
-/// a runaway safety net; `on_limit` decides what happens when one is reached.
-/// Every limit accepts 0 to mean "no limit". These also feed a configured
-/// browser Agent tab and browser rallies (same built-in orchestrator).
+/// Bounds and stall behavior for work one tab hands to another: the rounds an
+/// AI may ask another tab (`ask_tab`), and a page's 🗣 run (moves, time,
+/// output, settling, the brake). The limits are a runaway safety net;
+/// `on_limit` decides what happens when one is reached. Every limit accepts 0
+/// to mean "no limit".
 #[derive(Debug, Clone, Deserialize)]
 pub struct OperateSpec {
     /// Operator turns before the safety net trips. 0 = unlimited.
@@ -2869,15 +2871,6 @@ pub struct TabConfig {
     /// unchanged -- the position is what somebody learned
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panes: Option<crate::layout::Kept>,
-    /// What this tab is aimed at (🎯): the id of the tab it drives, or absent.
-    ///
-    /// Written by the picker on screen -- picking IS the setting, so there is no
-    /// separate "default target" to keep in step with this. It is the aim only:
-    /// the operator is briefed when a goal is given, not at launch, and the
-    /// tab's own `automation` keeps running either way (the aim borrows the
-    /// pane's script while it is attached, and gives it back).
-    #[serde(default)]
-    pub drives: Option<String>,
     /// A conversation id to resume at launch, instead of starting a new one.
     /// Written by the Vault when a past conversation is reopened; the CLI is
     /// asked to resume it through the same resume flags a restart would use
@@ -6256,33 +6249,18 @@ pub fn add_tab_at(
     Ok(id)
 }
 
-/// Record which tab an operator is aimed at (🎯), or clear it.
-///
-/// The aim is chosen on screen and belongs in the settings file for the same
-/// reason the tab bar's width does: it must survive the next start, and one
-/// answer must not live in two places. There is no separate "default target"
-/// setting — the thing you pick IS the setting, and this is where it lands.
-///
-/// Walk every tab the settings file holds, and write the aim onto the one that
-/// answers to `tab_name`.
+/// Put one key on the tab with this automation name, wherever in the settings
+/// that tab was written, and say whether it was found.
 ///
 /// Recursive because tabs nest: a desk holds working folders, a folder
 /// holds tabs, and a tab holds children. Written as one walk over anything
-/// called "tabs" rather than as a list of the places to look, because that
-/// list was already out of date -- it knew the flat `tabs` and a desk's
-/// own, and not the working folder that every tab made today lands in, so an
-/// aim chosen on screen was never written down at all.
+/// called "tabs" rather than as a list of the places to look, because such a
+/// list falls behind -- one that knew the flat `tabs` and a desk's own, and
+/// not the working folder every tab made today lands in, wrote nothing at all.
 ///
 /// The tab is found by its automation name only, the same as everywhere else
-/// (see `hooks::TabKey`): matching the name on screen as well would let an aim
+/// (see `hooks::TabKey`): matching the name on screen as well would let a key
 /// land on a stranger that happens to be *called* what this one is *addressed* as
-fn write_aim(v: &mut serde_json::Value, tab_name: &str, target: Option<&str>, written: &mut bool) {
-    let value = target.map(|t| serde_json::Value::String(t.to_string()));
-    write_on_tab(v, tab_name, "drives", value.as_ref(), written);
-}
-
-/// Put one key on the tab with this automation name, wherever in the settings
-/// that tab was written, and say whether it was found.
 ///
 /// `None` takes the key away rather than writing an empty one: a key with
 /// nothing in it is a question somebody opening the file would have to answer
@@ -6560,34 +6538,12 @@ fn write_bring_choices(doc: &mut serde_json::Value, desk: &Desk, cwd: &Path, cho
     true
 }
 
-/// Read-modify-write on the parsed JSON, like every other change here, so the
-/// person's own file keeps its shape and its order. The tab is found by its
-/// automation name, wherever it is written: the flat `tabs` list, a
-/// desk's own, or -- where every tab a person makes today ends up -- a
-/// working folder inside one. Returns whether it was written.
-pub fn save_tab_aim(tab_name: &str, target: Option<&str>) -> bool {
-    let path = config_file_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
-    else {
-        crate::append_hook_log("could not record the aim: settings are not readable");
-        return false;
-    };
-    let mut written = false;
-    write_aim(&mut doc, tab_name, target, &mut written);
-    if !written {
-        return false;
-    }
-    match serde_json::to_string_pretty(&doc) {
-        Ok(out) => crate::crypto::write_atomic(&path, &out).is_ok(),
-        Err(_) => false,
-    }
-}
-
 /// Write down how a split row is divided, beside the row itself.
 ///
-/// The same road the aim takes, and for the same reason: the row is found by
-/// the name automation calls it, wherever in the file it was written. `None`
+/// Read-modify-write on the parsed JSON, like every other change here, so the
+/// person's own file keeps its shape and its order: the row is found by the
+/// name automation calls it, wherever in the file it was written (see
+/// `write_on_tab`). `None`
 /// takes the division away, which is what a split reduced to one pane is --
 /// and an empty key left in somebody's file is a question they would have to
 /// answer for themselves.
@@ -7285,14 +7241,12 @@ mod tests {
         );
     }
 
-    /// The aim (🎯) is chosen on screen and has to survive the next start, so
-    /// it is written back into the settings. It has to reach the tab wherever
-    /// that tab is written: a working folder inside a desk is where every
-    /// tab a person makes today lives, and an aim chosen on one used to be
-    /// dropped on the floor -- the walk only knew the flat list and a
-    /// desk's own
+    /// What is written back onto a tab (how its split row is divided) has to
+    /// reach the tab wherever that tab is written: a working folder inside a
+    /// desk is where every tab a person makes today lives, and a walk that
+    /// only knew the flat list and a desk's own dropped it on the floor
     #[test]
-    fn an_aim_reaches_a_tab_wherever_it_is_written() {
+    fn a_key_reaches_a_tab_wherever_it_is_written() {
         use serde_json::json;
         let mut doc = json!({
             "tabs": [{"id": "flat", "command": "sh"}],
@@ -7308,20 +7262,21 @@ mod tests {
         });
         let aim = |doc: &mut serde_json::Value, who: &str, at: Option<&str>| {
             let mut hit = false;
-            super::write_aim(doc, who, at, &mut hit);
+            let value = at.map(|a| json!(a));
+            super::write_on_tab(doc, who, "note", value.as_ref(), &mut hit);
             hit
         };
         for who in ["flat", "old", "coder", "deep"] {
             assert!(aim(&mut doc, who, Some("page")), "it does not reach {who}");
         }
-        assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["drives"], "page");
+        assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["note"], "page");
         assert_eq!(
-            doc["desks"][0]["folders"][0]["tabs"][0]["children"][0]["drives"],
+            doc["desks"][0]["folders"][0]["tabs"][0]["children"][0]["note"],
             "page"
         );
         // Clearing takes the key away rather than leaving an empty one behind
         assert!(aim(&mut doc, "coder", None));
-        assert!(doc["desks"][0]["folders"][0]["tabs"][0].get("drives").is_none());
+        assert!(doc["desks"][0]["folders"][0]["tabs"][0].get("note").is_none());
         // The name on screen is not an address, here either: aiming at the tab's display name
         // must not land on the tab that merely displays that name
         assert!(!aim(&mut doc, "実装", Some("page")), "it was written using the name on screen");

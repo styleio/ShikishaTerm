@@ -177,9 +177,6 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Firing one of the user's own quick actions (its Lua runs sandboxed).
         // No different in reach than typing the same instruction from the phone.
         Ev::RunAction { .. } => true,
-        // Aiming the active AI at another tab and handing it a goal — the same
-        // reach as typing that instruction into the AI from the phone.
-        Ev::Operate { .. } => true,
         Ev::Words { .. } => true,
         // A phone draws the page as a picture of its own, and shows its
         // messages over it itself: only the window asks the page to
@@ -408,15 +405,14 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Done on the phone through a door of its own, so the same button
         // works there without this: the settings are the proxied /cfg, the
         // manual and a program's install page are plain links, a file is sent
-        // to /api/attach, and the replay is downloaded from /api/replay. These
-        // intents would open those on this PC, in front of nobody
+        // to /api/attach. These intents would open those on this PC, in front
+        // of nobody
         Ev::OpenSettings { .. }
         | Ev::CloseSettings
         | Ev::SettingsFull
         | Ev::Help
         | Ev::InstallHelp { .. }
-        | Ev::Attach { .. }
-        | Ev::ReplaySave => false,
+        | Ev::Attach { .. } => false,
         // The star card opens this PC's browser, and the phone does not draw it
         Ev::Thanks { .. } => false,
         // Cutting every remote session is the window's own switch; from a
@@ -2156,40 +2152,6 @@ fn handle(
                 .unwrap_or_else(|_| serde_json::json!([]));
             req.respond(json_response(list))?;
         }
-        // The latest run's durable replay script (css/xpath anchors, no
-        // digest refs) — the 🎯 panel's download button on the phone.
-        // 404 while no run has recorded anything replayable yet
-        ("GET", "/api/replay") => {
-            let found = crate::exchange::latest_run().and_then(|dir| {
-                let text = std::fs::read_to_string(dir.join("replay.lua")).unwrap_or_default();
-                let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("run").to_string();
-                let live = text
-                    .lines()
-                    .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"));
-                live.then_some((text, name))
-            });
-            match found {
-                Some((text, name)) => {
-                    let cd = format!("attachment; filename=\"shikisha-macro-{name}.lua\"");
-                    let resp = Response::from_string(text)
-                        .with_header(
-                            Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"text/plain; charset=utf-8"[..],
-                            )
-                            .unwrap(),
-                        )
-                        .with_header(
-                            Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes())
-                                .unwrap(),
-                        );
-                    req.respond(resp)?;
-                }
-                None => {
-                    req.respond(Response::from_string("no replay").with_status_code(404))?;
-                }
-            }
-        }
         // State push. Same data as /api/state, but sent over a WebSocket the
         // moment it changes (the main loop calls push_state) instead of the
         // phone polling. Download-only; the write thread owns the socket.
@@ -2777,11 +2739,11 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 ///
 /// One list, checked against the routes themselves by
 /// `every_verb_this_file_serves_is_claimed`. It was written apart from them
-/// once, and the cost was silent: `/api/replay` was added below and not here,
-/// so the phone's download button asked the settings proxy for it and the code
-/// that actually serves it — a dozen lines away — was never once reached.
-const OWN_VERBS: [&str; 10] = [
-    "state", "send", "auto", "intent", "attach", "read", "replay", "snip", "video", "actions",
+/// once, and the cost was silent: a route added below and not here sent the
+/// phone to the settings proxy for it, and the code that actually served it --
+/// a dozen lines away -- was never once reached.
+const OWN_VERBS: [&str; 9] = [
+    "state", "send", "auto", "intent", "attach", "read", "snip", "video", "actions",
 ];
 
 /// Answer a viewer asking to watch as video, and remember it.
@@ -3218,7 +3180,7 @@ mod tests {
             // This PC's window, tray and keys
             "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own
-            "OpenSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach", "ReplaySave",
+            "OpenSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach",
             // Meaningless on a phone
             "Thanks", "RemoteCut", "Setup", "SetupRefresh",
             // Refused before this list was kept, each with its reason beside it
@@ -4321,7 +4283,7 @@ mod tests {
         }
         for p in [
             "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
-            "/api/replay", "/api/snip", "/api/actions", "/", "/shell", "/ws-state",
+            "/api/snip", "/api/actions", "/", "/shell", "/ws-state",
         ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");
         }

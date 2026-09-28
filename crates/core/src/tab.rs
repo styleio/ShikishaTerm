@@ -1961,35 +1961,6 @@ mod tests {
         assert_eq!(unread_limit(Some("You've hit your limit".into()), &mut acked).as_deref(), Some("You've hit your limit"), "a line shown again does not become a new notice");
     }
 
-    #[test]
-    fn auto_runs_needs_the_bypass_flag_for_a_cli() {
-        // A bare CLI still asks for confirmation, so it can't drive a tab...
-        assert!(!super::argv_auto_runs(&argv("claude"), false));
-        assert!(!super::argv_auto_runs(&argv("codex --model o3"), false));
-        // ...but with its own bypass flag it runs unattended.
-        assert!(super::argv_auto_runs(&argv("claude --dangerously-skip-permissions"), false));
-        assert!(super::argv_auto_runs(
-            &argv("codex --dangerously-bypass-approvals-and-sandbox"),
-            false
-        ));
-        assert!(super::argv_auto_runs(&argv("gemini --yolo"), false));
-        // A path-qualified head still resolves (file_stem), and flag order is free.
-        assert!(super::argv_auto_runs(
-            &argv("/usr/bin/claude --foo --dangerously-skip-permissions"),
-            false
-        ));
-    }
-
-    #[test]
-    fn auto_runs_is_true_for_a_model_and_false_for_others() {
-        // A model bridge writes replies in-process — no flag, always autonomous.
-        assert!(super::argv_auto_runs(&argv("anything"), true));
-        // Shells and CLIs without a known bypass flag never auto-run.
-        assert!(!super::argv_auto_runs(&argv(&crate::test_shell()), false));
-        assert!(!super::argv_auto_runs(&argv("aider --yes"), false));
-        assert!(!super::argv_auto_runs(&[], false));
-    }
-
     /// A portable build meeting a PC without the tool installed should get a
     /// plain-language pointer to Settings, not the raw CreateProcessW error.
     #[test]
@@ -2755,27 +2726,6 @@ pub fn bypass_flag(head: &str) -> Option<&'static str> {
     }
 }
 
-/// Whether a launch (its argv, plus whether it's a model bridge) acts without
-/// per-action confirmation. A model always does; a CLI only with its bypass flag
-/// present; everything else never does.
-pub fn argv_auto_runs(argv: &[String], is_model: bool) -> bool {
-    if is_model {
-        return true;
-    }
-    let Some(head) = argv.first() else {
-        return false;
-    };
-    let head = std::path::Path::new(head)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(head)
-        .to_ascii_lowercase();
-    match bypass_flag(&head) {
-        Some(flag) => argv.iter().any(|a| a == flag),
-        None => false,
-    }
-}
-
 /// Waveform width (number of samples). Advances by one per tick
 pub const ACTIVITY_LEN: usize = 24;
 
@@ -3126,11 +3076,9 @@ pub struct Tab {
     /// Whether a chat reply is currently being generated. Drives the spinner in
     /// the UI and is set/cleared by `chat_send`'s thread.
     model_busy: Arc<AtomicBool>,
-    /// A browser-brain model's latest reply, verbatim. The reply thread stores
-    /// it here so the rally orchestrator's `on_done` can pull the ```lua block
-    /// out of the exact text (the on-screen copy is line-wrapped to the tab
-    /// width, which would split long URLs). None until the first reply / for
-    /// non-brain tabs.
+    /// A model tab's latest reply, verbatim, for a hook to read as `tab.reply`
+    /// (the on-screen copy is line-wrapped to the tab width). None until the
+    /// first reply, and for a CLI tab.
     last_model_reply: Arc<Mutex<Option<String>>>,
     /// Which model turn is the live one. The reply thread remembers the number
     /// it started under and keeps its answer only if it is still that one; an
@@ -3996,7 +3944,6 @@ impl Tab {
         };
         if let Some(mut fresh) = crate::bridge::conn_in(conns, &self.argv) {
             fresh.persona = old.persona.clone();
-            fresh.drives = old.drives.clone();
             self.model = Some(fresh);
         }
     }
@@ -4185,15 +4132,6 @@ impl Tab {
             .to_ascii_lowercase();
         matches!(head.as_str(), "claude" | "codex" | "gemini" | "aider" | "kimi")
             .then_some(head)
-    }
-
-    /// Whether this tab runs without pausing for per-action confirmation — the
-    /// prerequisite for driving another tab (operate), autonomous discussion, and
-    /// automation. A model bridge always does (it writes replies in-process); a
-    /// CLI does only when launched with its "act without asking" flag. Anything
-    /// else (aider / kimi / a plain shell) has no such flag, so it never does.
-    pub fn auto_runs(&self) -> bool {
-        argv_auto_runs(&self.argv, self.model.is_some())
     }
 
     /// Fingerprint of the launch conditions. If this changes, the session needs to be recreated
@@ -4590,34 +4528,9 @@ impl Tab {
         self.write_bytes(keys).is_ok()
     }
 
-    /// Aim (or unaim) a model tab at a browser.
-    ///
-    /// A model tab is a browser brain only while it is aimed at one, and this
-    /// is what says so. It decides the system prompt the model is given and
-    /// whether its turn is marked for the orchestrator to pick up. That used to
-    /// be read from the settings file at launch, so a tab aimed on screen went
-    /// on answering as a plain chat — its fenced Lua arriving mangled by the
-    /// terminal's line wrapping, because nothing had told it it was driving.
-    pub fn set_brain(&mut self, browser: Option<String>) {
-        if let Some(c) = self.model.as_mut() {
-            c.drives = browser.filter(|b| !b.trim().is_empty());
-        }
-    }
-
-    /// True when this model tab is a browser-operation *brain* (it is aimed at
-    /// a browser): it steers that page by emitting Lua in its reply, so its
-    /// turns must fire `on_done` and its reply is kept verbatim for the
-    /// orchestrator.
-    pub fn is_browser_brain(&self) -> bool {
-        self.model
-            .as_ref()
-            .and_then(|c| c.drives.as_deref())
-            .is_some_and(|d| !d.trim().is_empty())
-    }
-
-    /// The brain's latest reply, verbatim (None for CLI / plain-chat tabs, or
-    /// before the first reply). Cloned so the on_done handler reads the exact
-    /// text rather than the line-wrapped screen copy.
+    /// A model tab's latest reply, verbatim (None for a CLI tab, or before the
+    /// first reply). Cloned so a hook reads the exact text rather than the
+    /// line-wrapped screen copy.
     pub fn model_reply(&self) -> Option<String> {
         self.last_model_reply
             .lock()
@@ -4663,27 +4576,18 @@ impl Tab {
     /// A human line typed into the chat box. Echoes the line with a
     /// Claude-style prompt marker, then the model replies.
     pub fn chat_send(&self, user_text: String) {
-        self.model_turn(user_text, true);
+        self.model_turn(user_text);
     }
 
-    /// A relayed rally turn (the orchestrator handing back the browser screen).
-    /// Same conversation, but the (potentially huge) context isn't echoed as a
-    /// prompt line — only a compact marker is shown, then the model's reply.
-    pub fn rally_relay(&self, context: String) {
-        self.model_turn(context, false);
-    }
-
-    /// Shared core of a model turn. `echo` controls whether the incoming text
-    /// is shown verbatim (a human's line) or as a compact marker (relayed rally
-    /// context). Either way the turn is marked, so BUSY→DONE→on_done fires and
-    /// the reply is stashed verbatim for whatever is orchestrating this pane.
-    fn model_turn(&self, incoming: String, echo: bool) {
+    /// One model turn: the incoming line shown as a prompt, the turn marked so
+    /// BUSY→DONE→on_done fires, and the reply stashed verbatim for whatever is
+    /// orchestrating this pane.
+    fn model_turn(&self, incoming: String) {
         let Some(conn) = self.model.clone() else { return };
         let text = incoming.trim().to_string();
         if text.is_empty() {
             return;
         }
-        let brain = self.is_browser_brain();
         let parser = Arc::clone(&self.parser);
         let counter = Arc::clone(&self.bytes_out);
         let busy = Arc::clone(&self.model_busy);
@@ -4713,36 +4617,18 @@ impl Tab {
         self.mark_turn_start();
         std::thread::spawn(move || {
             let inject = |s: &str| Self::inject_into(&parser, &counter, s);
-            if echo {
-                // The human's line, with a Claude-style prompt marker. The
-                // "generating" state is shown by the HTML thinking bubble
-                // (driven by model_busy), not a text line.
-                inject(&format!(
-                    "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
-                    text.replace('\n', "\r\n")
-                ));
-            } else {
-                // Relayed context: a compact dim marker instead of the dump.
-                inject(&format!(
-                    "\r\n\x1b[2m… {}\x1b[0m\r\n",
-                    crate::i18n::t("agent.browser.model.relayed")
-                ));
-            }
+            // The line, with a Claude-style prompt marker. The "generating"
+            // state is shown by the HTML thinking bubble (driven by
+            // model_busy), not a text line.
+            inject(&format!(
+                "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
+                text.replace('\n', "\r\n")
+            ));
             // Replay the whole history (the bridge keeps no state of its own).
             let msgs = {
                 let h = history.lock().unwrap_or_else(|e| e.into_inner());
                 let mut msgs = Vec::new();
-                // A brain gets the browser-operation protocol as its system
-                // prompt (so it never forgets to answer with a ```lua block);
-                // a plain chat tab gets the friendly chat system prompt.
-                let mut system = if brain {
-                    crate::i18n::tp(
-                        "agent.browser.model.system",
-                        &[("br", conn.drives.as_deref().unwrap_or_default())],
-                    )
-                } else {
-                    crate::i18n::t("agent.model.chat_system")
-                };
+                let mut system = crate::i18n::t("agent.model.chat_system");
                 if let Some(p) = &conn.persona {
                     system.push('\n');
                     system.push_str(p);

@@ -3542,7 +3542,6 @@ mod tests {
             r#"{"kind":"closesettings"}"#,
             r#"{"kind":"select","tab":2}"#,
             r#"{"kind":"menu","key":"q"}"#,
-            r#"{"kind":"operate","target":1,"goal":"x"}"#,
             r#"{"kind":"attach","id":1,"name":"a","data":"b"}"#,
             r#"{"kind":"paste"}"#,
             r#"{"kind":"copy","text":"x"}"#,

@@ -21,7 +21,7 @@ use crate::desk::{
     spawn_desk, surface_of_id, switch_desk,
 };
 use crate::{
-    api, ball, bridge, caps, config, crypto, exchange, folders, grants, hooks, i18n, layout,
+    api, ball, bridge, caps, config, crypto, folders, grants, hooks, i18n, layout,
     netaddr, notify, placed, profile, remote, reply, sessionfind, ssh, tab, tailscale, update,
     watch, webui,
 };
@@ -1743,9 +1743,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut first_paint_done = false;
     let slot = desk_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
-    // The current ad-hoc "operate a target" attachment, as (source pane, target),
-    // so a repeated goal to the same target doesn't re-brief from scratch.
-    let mut operating: Option<(usize, usize)> = None;
     // The page currently being driven from words (🗣), as (its pane, its key).
     // One at a time: a second one would be a second thing typing into pages
     // while the person watches only one of them
@@ -3942,7 +3939,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             while let Ok(call) = a.rx.try_recv() {
                 // A desk with no Lua of its own still has an engine's
                 // worth of commands to offer; make one rather than answer
-                // "not available" (the same gap-filler as 🎯 operate and ▶)
+                // "not available" (the same gap-filler as ▶)
                 if engine.is_none() {
                     match crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)) {
                         Ok(eng) => engine = Some(eng),
@@ -4267,9 +4264,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::WhyStopped { ask }) => {
                         shell.mail().why_stopped.push(ask);
-                    }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Operate { target, goal }) => {
-                        shell.mail().operates.push((target, goal));
                     }
                     // 📼 / ▶ from the phone's composer: same queues as the window's.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Record { on }) => {
@@ -5088,7 +5082,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_on: remote_ui.as_ref().is_some_and(|r| !r.local_only),
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
-            aim: aim_of(desks.get(desk_index), &surfaces, &tabs, active),
             nav,
             asks: caps.asks_now(),
             away: caps.drawn_away(),
@@ -7570,7 +7563,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             };
             // Running needs an engine; make a bare one if this desk didn't
-            // otherwise have any Lua (same gap-filler as 🎯 operate).
+            // otherwise have any Lua.
             if engine.is_none() {
                 engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
             }
@@ -10494,178 +10487,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
 
-        // The 🎯 panel's replay button: put the newest run's durable script
-        // where the user can grab it (the board itself can't download files)
-        if std::mem::take(&mut shell.mail().replay_saves) {
-            flash = Some(match save_replay_to_downloads() {
-                Ok(Some(path)) => {
-                    i18n::tp("msg.replay.saved", &[("path", &path.display().to_string())])
-                }
-                Ok(None) => i18n::t("msg.replay.none"),
-                Err(e) => i18n::tp("msg.replay.failed", &[("e", &e.to_string())]),
-            });
-        }
-
-        // "Operate a target tab" (🎯): aim the active AI at another tab and, if a
-        // goal was given, hand it over. Browser targets reuse the built-in
-        // browser-operate loop; the AI then writes Lua to drive the target.
-        for (target, goal) in shell.mail().take_operates() {
-            let src_pane = active;
-            // The tab doing the driving, under the name it is written down by.
-            // The aim is remembered against it, so picking one on screen is the
-            // whole of the setting — there is no second place to look
-            let operator_name = session_at(&surfaces, active)
-                .and_then(|i| tabs.get(i))
-                .map(|t| t.id.clone().unwrap_or_else(|| t.title.clone()));
-            if target == 0 {
-                if let Some(eng) = engine.as_mut() {
-                    eng.stop_operate(src_pane);
-                }
-                operating = None;
-                if remember_aim(desks.get_mut(desk_index), operator_name.as_deref(), None) {
-                    // Our own write is not news to the watcher (see the font size)
-                    watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-                }
-                if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
-                    t.set_brain(None);
-                }
-                continue;
-            }
-            // A discussion participant already has a job: the script that keeps
-            // its turn in the ring lives on this pane, and aiming would replace
-            // it. The settings screen used to be the only place that could be
-            // asked for, and it refused there; now that the aim is picked on
-            // screen, the refusal belongs on screen too.
-            let in_discuss = desks
-                .get(desk_index)
-                .and_then(|w| w.discuss.as_ref())
-                .is_some_and(|d| {
-                    let me = operator_name.as_deref().unwrap_or_default();
-                    !me.is_empty()
-                        && d.agents
-                            .iter()
-                            .chain(d.judge.iter())
-                            .chain(d.moderator.iter())
-                            .any(|x| x.trim() == me)
-                });
-            if in_discuss {
-                flash = Some(i18n::t("msg.operate.in_discuss"));
-                continue;
-            }
-            // First slice: browser targets only. Its id comes from the layout.
-            // Resolve the target: a browser (driven with browser_* Lua) or another
-            // AI tab (driven by relaying prompts). INDEX / settings / unknown surfaces
-            // can't be operated.
-            let (is_browser, target_id) = match surfaces.get(target.wrapping_sub(1)) {
-                // Drive by the browser's KEY, not its display name: the display name
-                // may be localized (a translated "Browser") while browser_* resolves by key, so
-                // passing the name yields "that browser isn't open".
-                Some(Surface::Browser { key, .. }) => (true, key.clone()),
-                Some(Surface::Session(s)) if Some(*s) != session_at(&surfaces, active) => {
-                    match tabs.get(*s) {
-                        // Only an AI can be operated by relaying instructions.
-                        // Typed into a plain shell/SSH/WSL they would execute
-                        // as commands — refuse, don't relay
-                        Some(t) if t.ai_kind().is_some() => {
-                            (false, t.id.clone().unwrap_or_else(|| t.title.clone()))
-                        }
-                        Some(_) => {
-                            flash = Some(i18n::t("msg.operate.bad_target"));
-                            continue;
-                        }
-                        None => continue,
-                    }
-                }
-                _ => {
-                    flash = Some(i18n::t("msg.operate.bad_target"));
-                    continue;
-                }
-            };
-            // Remember it, whether or not there is work yet: what is picked on
-            // screen IS the setting, and it has to survive the next start
-            if remember_aim(
-                desks.get_mut(desk_index),
-                operator_name.as_deref(),
-                Some(&target_id),
-            ) {
-                watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
-            }
-            // A model operator is a browser brain exactly while it is aimed at
-            // one: it changes the system prompt it gets and whether its turn
-            // reaches the orchestrator, and both must follow the live aim
-            if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get_mut(i)) {
-                t.set_brain(is_browser.then(|| target_id.clone()));
-            }
-            // Aiming is not yet working. The operator is briefed when there is
-            // something to do — otherwise touching the picker would fire a turn
-            // at an AI that has not been asked for anything
-            if goal.is_empty() {
-                continue;
-            }
-            // The operator (the active tab) must act without confirmation, or every
-            // step would stall waiting for a human. The shell already greys the
-            // picker out; this backs it up for anything that posts operate directly.
-            let operator_ready = session_at(&surfaces, active)
-                .and_then(|i| tabs.get(i))
-                .map(|t| t.auto_runs())
-                .unwrap_or(false);
-            if !operator_ready {
-                flash = Some(i18n::t("msg.operate.needs_autoapprove"));
-                continue;
-            }
-            // Operating needs an engine to run in; make a bare one if this
-            // desk didn't otherwise have any Lua (same gap as Lua actions).
-            if engine.is_none() {
-                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
-            }
-            // Attach the active AI as the operator once per (source, target).
-            if operating != Some((src_pane, target)) {
-                let tab_idx = session_at(&surfaces, active);
-                let started = tab_idx
-                    .and_then(|i| tabs.get(i))
-                    .map(|t| tab_ctx(t, active))
-                    .zip(engine.as_mut())
-                    .map(|(ctx, eng)| {
-                        if is_browser {
-                            // The referee is the desk's, as it always was
-                            // for a browser driven from the settings file. The
-                            // ad-hoc path used to hand over an empty one, so
-                            // whoever aimed on screen quietly had no stops
-                            let stops = desks
-                                .get(desk_index)
-                                .map(|w| config::stops_to_lua(&w.stops))
-                                .unwrap_or_else(|| "{}".to_string());
-                            eng.start_operate(src_pane, &target_id, &stops, &ctx)
-                        } else {
-                            eng.start_operate_ai(src_pane, &target_id, &ctx)
-                        }
-                    });
-                match started {
-                    Some(Ok(())) => {
-                        operating = Some((src_pane, target));
-                        // start_operate briefs the operator itself (it fires on_start
-                        // with the browser protocol). Mark this tab's startup hook as
-                        // already fired so the generic on_start machinery above doesn't
-                        // brief it a SECOND time now that the agent is attached.
-                        if let Some(f) = tab_idx.and_then(|i| started_fired.get_mut(i)) {
-                            *f = true;
-                        }
-                    }
-                    Some(Err(e)) => {
-                        append_hook_log(&format!("operate start failed: {e:#}"));
-                        continue;
-                    }
-                    None => continue,
-                }
-            }
-            // Deliver the goal to the operator. Queued as a command (like the
-            // on_start brief) so it lands after the protocol, not before it.
-            if !goal.is_empty()
-                && let Some(eng) = engine.as_mut() {
-                    eng.deliver_goal(active, &goal);
-                }
-        }
-
         // The settings page's "close settings" button. Collapses the settings tab
         // and returns to the operating board (INDEX). Settings disappears from the
         // left-hand list because it drops out of `hosted`, and the layout gets
@@ -12007,64 +11828,6 @@ pub fn focused_page(layout: &crate::layout::Layout, surfaces: &[Surface]) -> Opt
         | Surface::Split { .. }
         | Surface::Issues { .. } => None,
     }
-}
-/// Write down what a tab is aimed at: in the settings file, and in the copy of
-/// it this run is holding.
-///
-/// Both, or the answer disagrees with itself. The file is what the next start
-/// reads; the copy in memory is what the screen is drawn from, and it is not
-/// re-read from disk (our own write is deliberately not treated as news, or
-/// every pick would announce a settings reload). Returns whether the file was
-/// written, which is the caller's cue to leave the watcher unbothered.
-pub fn remember_aim(
-    desk: Option<&mut config::Desk>,
-    operator: Option<&str>,
-    aim: Option<&str>,
-) -> bool {
-    let Some(name) = operator else { return false };
-    if let Some(desk) = desk {
-        for t in desk.tabs.iter_mut() {
-            if t.cfg.id.as_deref() == Some(name) {
-                t.cfg.drives = aim.map(str::to_string);
-            }
-        }
-    }
-    if config::save_tab_aim(name, aim) {
-        append_hook_log(&match aim {
-            Some(a) => format!("{name} is aimed at {a}"),
-            None => format!("{name} is aimed at nothing"),
-        });
-        return true;
-    }
-    // A tab with no name of its own in the file has nowhere to keep this. It
-    // still works for this run; it just won't be there next time, and saying so
-    // beats a silent forgetting
-    append_hook_log(&format!("could not record the aim for {name}"));
-    false
-}
-/// What the tab in `surface` is aimed at (🎯), as a surface number.
-///
-/// The aim is picked on screen and written into the settings file, so this is
-/// how a restart gets it back: read what was written for that tab, and turn the
-/// id back into the number the screen speaks in. There is no separate "default
-/// target" setting to reconcile with — one place holds the answer.
-pub fn aim_of(
-    desk: Option<&config::Desk>,
-    surfaces: &[Surface],
-    tabs: &[Tab],
-    surface: usize,
-) -> Option<usize> {
-    let t = session_at(surfaces, surface).and_then(|i| tabs.get(i))?;
-    let me = t.id.clone()?;
-    let aim = desk?
-        .tabs
-        .iter()
-        .find(|x| x.cfg.id.as_deref() == Some(me.as_str()))?
-        .cfg
-        .drives
-        .clone()
-        .filter(|d| !d.trim().is_empty())?;
-    hooks::TabRef::Name(aim).resolve(&surface_keys(surfaces, tabs))
 }
 /// How long the panel waits on the far end before saying it did not answer.
 ///
@@ -14613,30 +14376,6 @@ pub fn survey_probe(cmdline: &str, screen: &str) -> &'static str {
         POSIX_PROBE
     }
 }
-/// Copy the newest run's replay.lua into the user's Downloads folder.
-/// `Ok(None)` = no run has recorded anything replayable yet
-pub fn save_replay_to_downloads() -> std::io::Result<Option<std::path::PathBuf>> {
-    let Some(dir) = exchange::latest_run() else {
-        return Ok(None);
-    };
-    let text = std::fs::read_to_string(dir.join("replay.lua")).unwrap_or_default();
-    let live = text
-        .lines()
-        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"));
-    if !live {
-        return Ok(None);
-    }
-    let name = dir.file_name().and_then(|s| s.to_str()).unwrap_or("run");
-    // Downloads is where a "download button" is expected to land things;
-    // fall back to the logs folder rather than failing when it's missing
-    let base = std::env::var_os("USERPROFILE")
-        .map(|p| std::path::PathBuf::from(p).join("Downloads"))
-        .filter(|p| p.is_dir())
-        .unwrap_or_else(config::logs_dir);
-    let dest = base.join(format!("shikisha-macro-{name}.lua"));
-    std::fs::write(&dest, text)?;
-    Ok(Some(dest))
-}
 /// The list of ids in the same order they're laid out on screen.
 ///
 /// Targets are counted by screen position. A name and a number both point to
@@ -15259,15 +14998,7 @@ pub fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
-                if t.is_browser_brain() {
-                    // A model steering the browser: replay the conversation
-                    // (history-backed) so it remembers earlier moves, mark the
-                    // turn so BUSY -> DONE -> on_done fires, and let on_done pull
-                    // the ```lua out of the reply. The relayed screen text is
-                    // fed as context but not echoed as a giant prompt line.
-                    t.rally_relay(text.clone());
-                    append_hook_log(&format!("brain's turn tab{target} ({} chars)", text.chars().count()));
-                } else if t.is_model() {
+                if t.is_model() {
                     // model bridge: hits complete() on a thread, injects the
                     // response into the screen, and writes it to say.txt too.
                     // Detection (BUSY -> DONE -> on_done) runs on the injected activity.
@@ -17329,29 +17060,6 @@ mod tests {
         assert_eq!(surface_of_id(&desk, "いない"), None);
         // The name on screen is a label, not an address: two tabs may share one
         assert_eq!(surface_of_id(&desk, "審判"), None);
-    }
-
-    /// An aim is not automation, and must not take a tab's own automation away.
-    ///
-    /// `drives` used to mean "browser-driving mode", and a tab that had it was
-    /// handed the built-in agent at launch INSTEAD of the automation written
-    /// for it -- silently, with nothing on screen saying so. It now means the
-    /// aim last picked on screen (🎯), which is attached when there is a goal
-    /// and handed back when it is let go, so the two no longer fight.
-    #[test]
-    fn an_aim_does_not_replace_the_tabs_own_automation() {
-        let mut desk = desk_from_rows(&[
-            ("エージェント", "ai", "claude"),
-            ("ページ", "br", "browser https://example.com/"),
-        ]);
-        desk.tabs[0].cfg.drives = Some("br".into());
-        desk.tabs[0].cfg.automation = Some("scripts/mine".into());
-
-        assert_eq!(
-            automation_by_pane(&desk),
-            vec![(1, TabAuto::Path("scripts/mine".to_string()))],
-            "a tab with its own target has had its automation taken"
-        );
     }
 
     /// The tab a pane asked for is the row that arrived, wherever it landed.

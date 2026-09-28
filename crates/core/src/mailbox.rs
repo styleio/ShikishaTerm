@@ -51,9 +51,6 @@ pub struct Mailbox {
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).
     pub open_settings: Option<SettingsWanted>,
-    /// The 🎯 panel's "save the replay" button. The loop copies the newest
-    /// run's replay.lua into Downloads and answers with a flash message.
-    pub replay_saves: bool,
 
     /// Panes clicked in the window. The loop moves focus to them
     pub focus_panes: Vec<u32>,
@@ -160,9 +157,6 @@ pub struct Mailbox {
     /// Quick-action chips (Lua) fired from the bar, by index into config.actions.
     /// The loop looks up the code and runs it against the active tab.
     pub run_actions: Vec<Vec<usize>>,
-    /// "Operate a target tab" requests from the 🎯 panel: (target tab index, goal).
-    /// target 0 = detach. The loop attaches the active AI as the target's operator.
-    pub operates: Vec<(usize, String)>,
     /// 🗣 requests from the panel: (still running, the goal as typed, agreed
     /// to sending the page just now). The loop attaches the words-driven run
     /// to the page being shown
@@ -622,9 +616,5 @@ impl Mailbox {
     /// Takes the composer inputs bound for the shown browser since the last drain.
     pub fn take_injects(&mut self) -> Vec<shikisha_shared::Input> {
         std::mem::take(&mut self.injects)
-    }
-    /// Takes the pending operate-a-target requests (target index, goal).
-    pub fn take_operates(&mut self) -> Vec<(usize, String)> {
-        std::mem::take(&mut self.operates)
     }
 }

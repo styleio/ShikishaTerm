@@ -39,12 +39,6 @@ pub struct ModelConn {
     /// forgets its stance and drifts off topic (only set when this is a
     /// discussion participant).
     pub persona: Option<String>,
-    /// When set, this model is a browser-operation *brain*: it drives the
-    /// browser tab with this id. Unlike a CLI agent (which writes `in.lua`
-    /// itself), a model brain emits a ```lua block in its reply; the tab
-    /// extracts it and hands it to the same rally orchestrator. Toggles the
-    /// rally system prompt and per-turn `on_done` firing in the tab's chat.
-    pub drives: Option<String>,
     /// Which protocol the far end answers: `"chat"` or `"choice"`
     /// (see [`crate::config::ProviderSpec::speaks`])
     pub speaks: String,
@@ -859,9 +853,7 @@ pub fn conn_in(
         timeout: conn.timeout,
         speaks: conn.speaks,
         max_choices: conn.max_choices,
-        persona: None,
-        drives: None,
-    })
+        persona: None,    })
 }
 
 #[cfg(test)]
@@ -1073,9 +1065,7 @@ mod tests {
             model: var("SHIKISHA_PROBE_MODEL"),
             headers,
             timeout: Some(std::time::Duration::from_secs(30)),
-            persona: None,
-            drives: None,
-            speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
+            persona: None,            speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
                 "choice" => crate::config::SPEAKS_CHOICE.to_string(),
                 _ => crate::config::SPEAKS_CHAT.to_string(),
             },
