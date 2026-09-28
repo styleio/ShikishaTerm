@@ -2117,30 +2117,23 @@ fn handle(
                 .tabs
                 .iter()
                 .find(|t| t.index == tab)
-                .map(|t| (t.record_id.clone(), t.record_glob.clone(), t.machine.clone()));
+                .and_then(|t| crate::reader::Record::named(&t.record_glob, &t.record_id, t.machine.clone()));
             // A tab on another machine keeps its record there: found and read
-            // there, a piece at a time, the same walk as a record here
-            let (record, far) = match record {
-                Some((id, glob, Some(at))) => (None, Some((id, glob, at))),
-                Some((id, glob, None)) => (Some((id, glob)), None),
-                None => (None, None),
-            };
-            // ...and answered from a thread of its own: this one serves every
-            // request from the phone, keys included, and a record fetched over
-            // the network would hold them all until it came
-            if let Some((id, glob, at)) = far.filter(|(id, glob, _)| !id.is_empty() && !glob.is_empty()) {
-                std::thread::spawn(move || {
-                    let page = crate::reader::locate_far(&at, &glob, &id)
-                        .map(|path| crate::reader::read_back_far(&at, &path, before, want));
-                    let _ = req.respond(json_response(read_answer(page)));
-                });
-                return Ok(());
+            // there, a piece at a time, the same walk as a record here -- and
+            // answered from a thread of its own: this one serves every request
+            // from the phone, keys included, and a record fetched over the
+            // network would hold them all until it came
+            match record {
+                Some(record) if record.is_far() => {
+                    std::thread::spawn(move || {
+                        let _ = req.respond(json_response(read_answer(record.page(before, want))));
+                    });
+                }
+                record => {
+                    let page = record.and_then(|r| r.page(before, want));
+                    req.respond(json_response(read_answer(page)))?;
+                }
             }
-            let found = record
-                .filter(|(id, glob)| !id.is_empty() && !glob.is_empty())
-                .and_then(|(id, glob)| crate::sessionfind::locate(&glob, &id));
-            let page = found.map(|path| crate::reader::read_back(&path, before, want));
-            req.respond(json_response(read_answer(page)))?;
         }
 
         // The quick actions, as the board's page is handed them when it loads.

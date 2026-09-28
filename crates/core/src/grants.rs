@@ -131,6 +131,7 @@ pub const CATALOG: &[Entry] = &[
     e("tab_output", Group::Tabs, true, true, false),
     e("tab_screen", Group::Tabs, true, true, false),
     e("tab_read", Group::Tabs, true, true, false),
+    e("tab_conversation", Group::Tabs, true, true, false),
     e("send_to_tab", Group::Tabs, true, true, false),
     e("ask_tab", Group::Tabs, true, true, false),
     e("tab_run", Group::Tabs, true, true, false),

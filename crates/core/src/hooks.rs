@@ -1550,6 +1550,14 @@ end
 function shikisha.browser_do(tab, goal, opts)
   return { accepted = true }
 end
+-- Another tab's conversation, read from its CLI's own record the way the
+-- phone's reader reads it -- here or on the machine the tab runs on. Answered
+-- by the app loop when it comes through the pipe or MCP (a record on another
+-- machine is a round trip away); what runs here is only the check that the
+-- call may be made
+function shikisha.tab_conversation(tab, opts)
+  return { accepted = true, state = shikisha.state(tab) }
+end
 -- The tabs of this desk, as another tab's AI addresses them
 function shikisha.tab_list()
   error("tab_list is answered by the app through the pipe or MCP")

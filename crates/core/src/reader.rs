@@ -243,6 +243,52 @@ pub fn read_back_by(
     })
 }
 
+/// Where a tab's CLI keeps its record of the conversation: the pattern that
+/// finds it and the conversation's id, on this PC or on the machine the tab
+/// runs on. Two strings and a machine, no filesystem: finding the file is a
+/// walk of a folder here and a round trip there, so it is done when a page is
+/// asked for, not when this is made.
+#[derive(Clone, Debug)]
+pub enum Record {
+    Here { glob: String, id: String },
+    Far { at: crate::elsewhere::Elsewhere, glob: String, id: String },
+}
+
+impl Record {
+    /// The record named by `glob` and `id`, on `at` when that is another
+    /// machine. `None` when either is unknown
+    pub fn named(glob: &str, id: &str, at: Option<crate::elsewhere::Elsewhere>) -> Option<Self> {
+        if glob.is_empty() || id.is_empty() {
+            return None;
+        }
+        let (glob, id) = (glob.to_string(), id.to_string());
+        Some(match at {
+            Some(at) => Record::Far { at, glob, id },
+            None => Record::Here { glob, id },
+        })
+    }
+
+    /// Whether reading it goes over the network, and so off the thread that
+    /// serves everything else
+    pub fn is_far(&self) -> bool {
+        matches!(self, Record::Far { .. })
+    }
+
+    /// The last `want` things said before byte `before` (see [`read_back`]).
+    /// `None` when the CLI has not written the record yet -- the ordinary
+    /// state of a tab nobody has spoken to
+    pub fn page(&self, before: u64, want: usize) -> Option<std::io::Result<Page>> {
+        match self {
+            Record::Here { glob, id } => {
+                crate::sessionfind::locate(glob, id).map(|path| read_back(&path, before, want))
+            }
+            Record::Far { at, glob, id } => {
+                locate_far(at, glob, id).map(|path| read_back_far(at, &path, before, want))
+            }
+        }
+    }
+}
+
 /// A CLI's record of one conversation on another machine: where it is there,
 /// found from the profile's pattern (`{home}/.../{id}.jsonl`) with the id the
 /// app handed the CLI. Waits on the machine
@@ -724,6 +770,25 @@ mod tests {
         let older = read_back(&path, page.from, 1).unwrap();
         assert_eq!(older.turns[0].text, "古い質問");
         assert!(!older.more);
+    }
+
+    #[test]
+    fn a_record_is_named_by_its_pattern_and_id_and_read_where_it_is() {
+        assert!(Record::named("", "abc", None).is_none(), "no pattern, no record");
+        assert!(Record::named("{home}/x/{id}.jsonl", "", None).is_none(), "no conversation, no record");
+        assert!(!Record::named("{home}/x/{id}.jsonl", "abc", None).unwrap().is_far(), "a tab here reads here");
+
+        let dir = std::env::temp_dir().join("shikisha-reader").join("named").join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("c0ffee.jsonl");
+        std::fs::write(&file, format!("{}\n{}\n", record("user", "hello"), record("assistant", "hi there"))).unwrap();
+        let glob = format!("{}/*/{{id}}.jsonl", dir.parent().unwrap().display());
+        let page = Record::named(&glob, "c0ffee", None).unwrap().page(u64::MAX, 6).unwrap().unwrap();
+        assert_eq!(page.turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(), ["hello", "hi there"]);
+        assert!(
+            Record::named(&glob, "not-written-yet", None).unwrap().page(u64::MAX, 6).is_none(),
+            "a record the CLI has not written yet reads as nothing, not an error"
+        );
     }
 
     #[test]

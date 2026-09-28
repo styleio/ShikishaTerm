@@ -3832,11 +3832,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 200,
                             ),
                             cwd: tab_cwd_abs(t),
-                            machine: match (t.remote(), t.cloud()) {
-                                (Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
-                                (None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
-                                (None, None) => None,
-                            },
+                            machine: t.machine(),
                             remote_cwd: t.remote_cwd().unwrap_or_default().to_string(),
                             // Two strings, no filesystem: this runs every tick,
                             // and finding the record means walking a folder.
@@ -3981,6 +3977,71 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let _ = call.reply.send(Ok(serde_json::json!(list)));
                     continue;
                 }
+                // Another tab's conversation, as the phone's reader reads it:
+                // from its CLI's own record, here or on the machine the tab
+                // runs on -- and so answered from a thread, since a record over
+                // there is a round trip or several away
+                if call.method == "tab_conversation" {
+                    let Some(eng) = engine.as_ref() else { continue };
+                    brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                    let who = subject_of(call.caller.as_deref(), &tabs);
+                    let target = call
+                        .params
+                        .first()
+                        .and_then(serde_json::Value::as_str)
+                        .map(|s| s.trim().trim_start_matches('<').trim_start_matches('@').trim_end_matches('>').to_string())
+                        .filter(|s| !s.is_empty());
+                    let Some(target) = target else {
+                        let _ = call.reply.send(Err("tab_conversation needs the tab's id first".to_string()));
+                        continue;
+                    };
+                    let opts = call.params.get(1);
+                    let before = opts.and_then(|o| o.get("before")).and_then(serde_json::Value::as_u64).unwrap_or(u64::MAX);
+                    let want = opts
+                        .and_then(|o| o.get("want"))
+                        .and_then(serde_json::Value::as_u64)
+                        .map_or(6, |n| n.clamp(1, 40) as usize);
+                    if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "tab_conversation", &[serde_json::json!(target)]) {
+                        let _ = call.reply.send(Err(e));
+                        continue;
+                    }
+                    let tab = tabs.iter().find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target);
+                    let Some(tab) = tab else {
+                        let page = surfaces.iter().any(|s| matches!(s, Surface::Browser { key, .. } if *key == target));
+                        let _ = call.reply.send(Err(if page {
+                            format!("<@{target}> is a web page, which keeps no conversation; tab_screen shows what it says")
+                        } else {
+                            format!("There is no tab <@{target}> on this desk")
+                        }));
+                        continue;
+                    };
+                    let Some(record) = tab.record_at() else {
+                        let _ = call.reply.send(Ok(serde_json::json!({
+                            "tab": target, "source": "none", "turns": [], "more": false,
+                            "note": "this tab keeps no conversation record the app can find; tab_screen shows its screen",
+                        })));
+                        continue;
+                    };
+                    let reply = call.reply;
+                    std::thread::spawn(move || {
+                        let answer = match record.page(before, want) {
+                            None => serde_json::json!({
+                                "tab": target, "source": "record", "turns": [], "more": false,
+                                "note": "nothing has been said in this tab's conversation yet",
+                            }),
+                            Some(Ok(page)) => serde_json::json!({
+                                "tab": target, "source": "record",
+                                "turns": page.turns, "from": page.from, "more": page.more,
+                            }),
+                            Some(Err(e)) => {
+                                let _ = reply.send(Err(format!("the record of <@{target}> could not be read: {e}")));
+                                return;
+                            }
+                        };
+                        let _ = reply.send(Ok(answer));
+                    });
+                    continue;
+                }
                 // A page driven toward a goal by its 🗣 run, for another tab:
                 // checked here, started where the 🗣 runs are started, and
                 // answered when it ends
@@ -4092,6 +4153,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         round: *round,
                                         max_rounds,
                                         run: (verb == "run").then(crate::asktab::RunFrom::default),
+                                        far: crate::asktab::FarRead::default(),
                                     });
                                 }
                             }

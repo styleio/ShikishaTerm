@@ -8,7 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **`shikisha.tab_conversation` reads another tab's conversation the way the
+  phone's reader does**: from the CLI's own record, on this PC or on the server
+  or MicroVM the tab runs on, so a long answer comes back whole. Through the
+  pipe or MCP, paged with `want` and `before`.
+
 ### Changed
+- Asking an AI on a server or a MicroVM with @ brings its answer back from the
+  record kept on that machine, whole, instead of what fits on its screen.
 - **Installing an update says how far it is, and the window keeps answering.**
   The press on "Install and restart" is answered at once; the files are replaced
   away from the window, under a bar that moves by the megabyte, and "Starting
