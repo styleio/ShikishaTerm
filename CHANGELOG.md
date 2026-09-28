@@ -28,6 +28,8 @@ once it reaches its first tagged release.
   in the folder a conversation ran in no longer matches every conversation had
   there. This PC's records are searched away from the window, and a search
   gives way to the next one typed.
+  Servers and MicroVMs are searched the same way: what their records note about
+  themselves is taken out there, and what is left is judged here.
 - **The `shikisha` command in every tab takes the commands' own names.**
   `shikisha ask_tab ID "..."` is `shikisha.ask_tab("ID", "...")`: the first word
   names any command Lua has, the rest are its arguments (JSON where written as
