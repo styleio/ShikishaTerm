@@ -320,6 +320,91 @@ mod tests {
         assert!(printed(&json!([{"id":"otter"}])).contains("\"id\": \"otter\""));
     }
 
+    /// The words this command answers by itself, without the app. Everything
+    /// else is a command's own name
+    const LOCAL: [&str; 4] = ["skill", "help", "--help", "-h"];
+
+    /// This door has no commands of its own. A word answered here instead of
+    /// being handed to the app is a second name for something, and the two
+    /// names are what drift apart: an `ask` here beside `shikisha.ask_tab` in Lua,
+    /// each with its own behaviour to keep in step
+    #[test]
+    fn this_door_has_no_commands_of_its_own() {
+        let src = include_str!("cli.rs");
+        let body = src
+            .split("pub fn run(args: &[String]) -> i32 {")
+            .nth(1)
+            .and_then(|r| r.split("\n}\n").next())
+            .expect("run() is not where the command's words are read any more");
+        let answered: Vec<&str> = body
+            .split("Some(\"")
+            .skip(1)
+            .filter_map(|p| p.split('"').next())
+            .collect();
+        assert!(!answered.is_empty(), "reading run() found no words at all");
+        for word in &answered {
+            assert!(
+                LOCAL.contains(word),
+                "run() answers `{word}` itself. Make it a command Lua has (grants::CATALOG) and let it through to the app"
+            );
+        }
+        for word in LOCAL.iter().chain(RENAMED.iter().map(|(was, _)| was)) {
+            assert!(
+                !crate::grants::CATALOG.iter().any(|e| e.name == *word),
+                "`{word}` is a command now, and this door would keep it from the app"
+            );
+        }
+    }
+
+    /// Every "shikisha WORD" written for someone to run -- in the skill, in
+    /// the manuals, in what the app answers -- names a command that exists.
+    /// Renaming a command and leaving the old name written somewhere fails here
+    #[test]
+    fn every_shikisha_written_anywhere_is_a_command() {
+        let root = crate::repo_root();
+        let mut texts: Vec<(String, String)> = vec![("the skill".into(), crate::skill::text()), ("usage".into(), usage().into())];
+        for dir in ["crates/core/src", "crates/shared/src", "docs", "lang"] {
+            for entry in std::fs::read_dir(root.join(dir)).expect(dir).flatten() {
+                let p = entry.path();
+                if matches!(p.extension().and_then(|e| e.to_str()), Some("rs" | "md" | "json")) {
+                    if let Ok(t) = std::fs::read_to_string(&p) {
+                        texts.push((p.display().to_string(), t));
+                    }
+                }
+            }
+        }
+        let known = |w: &str| LOCAL.contains(&w) || crate::grants::CATALOG.iter().any(|e| e.name == w);
+        let mut found = 0;
+        let mut wrong = Vec::new();
+        for (where_, text) in &texts {
+            for line in text.lines() {
+                // Written to be run: in backquotes, or at the head of a line
+                // of an example -- not prose that says "the shikisha table"
+                let heads = line
+                    .match_indices("`shikisha ")
+                    .map(|(i, _)| i + "`shikisha ".len())
+                    .chain(line.trim_start().starts_with("shikisha ").then(|| {
+                        line.len() - line.trim_start().len() + "shikisha ".len()
+                    }));
+                for at in heads {
+                    let word: String = line[at..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                        .collect();
+                    if word.is_empty() {
+                        continue;
+                    }
+                    found += 1;
+                    if !known(&word) {
+                        wrong.push(format!("{where_}: shikisha {word}"));
+                    }
+                }
+            }
+        }
+        assert!(found > 10, "reading the texts found almost nothing ({found})");
+        assert!(wrong.is_empty(), "written as \"shikisha WORD\" but no command has that name:\n{}", wrong.join("\n"));
+    }
+
     /// An AI following an older copy of the skill is told the new name
     #[test]
     fn an_old_name_says_the_new_one() {
