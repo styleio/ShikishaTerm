@@ -3098,8 +3098,10 @@ fn handle(
             req.respond(resp)?;
         }
         // Raw transcript for the chat-style result view. Returns the run's
-        // transcript.md verbatim plus a `kind` hint (discuss vs rally, told
-        // apart by whether the run recorded executed Lua). The page parses the
+        // transcript.md verbatim plus a `kind` hint (a rally, or a discussion
+        // recorded before discussions were taken out -- those records stay on
+        // disk and stay readable -- told apart by whether the run recorded
+        // executed Lua). The page parses the
         // Markdown itself; the untouched download stays available separately.
         ("GET", "/api/rally/transcript") => {
             let picked = req
@@ -5860,7 +5862,7 @@ function card(title, ...kids) { return el("div", {class:"card"}, el("h2", {}, ti
 
 // ── Tab id handling ────────────────────────────────────
 // Collects existing tab ids within a desk (falls back to the display name if there's no id).
-// Used as candidates for reference fields (discussion participants/judge/moderator, stop-condition target tab)
+// Used as candidates for reference fields (the stop-condition target tab)
 function tabIds(desk) {
   return [...new Set((desk.tabs || [])
     .map(t => (t.id || t.name || "").trim())
@@ -6192,17 +6194,6 @@ const AI_CLI_HEADS = ["claude", "codex", "gemini", "aider", "kimi"];
 const headOf = c => (cmdToText(c).trim().split(/\s+/)[0] || "").toLowerCase().replace(/\.exe$/, "");
 const isAiCli = c => AI_CLI_HEADS.includes(headOf(c));
 
-// Only an interactive AI CLI or a model (API connection) tab can join a discussion (AI vs AI).
-// Browser, shell (cmd/PowerShell/SSH/Docker/WSL), and Aider are excluded from discussions
-const DISCUSS_HEADS = ["claude", "codex", "gemini", "kimi"];
-function isDiscussable(t) {
-  const c = cmdToText(t.command).trim();
-  const k = kindOf(c);
-  if (k === "model") return true;
-  if (k !== "cmd") return false;
-  const head = c.split(/\s+/)[0].toLowerCase().replace(/\.exe$/, "");
-  return DISCUSS_HEADS.includes(head);
-}
 const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
 // The machine a tab's folder is on, when it is not this PC, and the folder as
 // that machine spells it. Null for a folder here. A tab there is a terminal on
@@ -6732,9 +6723,8 @@ function addTabTo(desk, group) {
 }
 
 // ── New-desk wizard ───────────────────────
-// The from-scratch flow: just pick a purpose (a template), then pick AIs from a dropdown,
-// and tabs, discuss blocks, stop conditions, and personas are auto-generated behind the scenes.
-// The primitives (model x/y, discuss, etc.) stay as they are. Only a thin GUI is added on top.
+// A desk starts empty or comes in from a file. Only a thin GUI sits on top of
+// the primitives.
 
 // A dynamic modal. Pass in the content's DOM and it's shown centered. Clicking the background closes it.
 function openModal(...kids) {
@@ -6799,8 +6789,8 @@ function confirmAction(message, action) {
   });
 }
 
-// The "act without asking" flag each CLI needs to run autonomously (a
-// discussion / automation stalls without it). Surfaced explicitly in the tab
+// The "act without asking" flag each CLI needs to run autonomously (work
+// handed to it by another tab or by automation stalls without it). Surfaced explicitly in the tab
 // editor as a checkbox with a risk note — never injected silently.
 function cliFlagOf(head) {
   if (head === "claude") return "--dangerously-skip-permissions";
@@ -11490,7 +11480,6 @@ function deskSections(desk) {
     // a team's rules, and a team is a repository, so they are on each
     // project's own page (projectGitCards)
     s("secrets", deskSecretsCard),
-    s("discuss", deskDiscussCard),
     s("stops", deskStopsCard),
     s("labels", deskLabelsCard),
   ];
@@ -13834,108 +13823,6 @@ async function familyOf(cwd, desk) {
   } catch (e) { return null; }
 }
 
-// AI vs AI discussion. Lines up participant tab ids and cycles them round-robin or moderated (moderator picks the next speaker).
-// At the round cap, the judge renders a verdict (winner/synthesis). The goal (topic) is typed into an input field
-function deskDiscussCard(desk) {
-  const body = el("div", {id:"wsdiscussbody"});
-  const ensure = () => {
-    desk.discuss = desk.discuss || { agents:[], order:"round-robin", max_rounds:6, verdict:"winner" };
-    desk.discuss.personas = desk.discuss.personas || {};
-    return desk.discuss;
-  };
-  const on = el("input", {type:"checkbox"});
-  on.checked = !!desk.discuss;
-  body.style.display = desk.discuss ? "" : "none";
-  on.addEventListener("change", () => {
-    if (on.checked) { ensure(); body.style.display=""; } else { desk.discuss = null; body.style.display="none"; }
-    render(); refreshSave();
-  });
-  const onLabel = el("label", {class:"check"});
-  onLabel.append(on, document.createTextNode(T["settings.discuss.enable"]));
-
-  const d = desk.discuss || {};
-  const txt = (val, ph, save) => { const e = el("input", {value:val||"", placeholder:ph||""});
-    e.addEventListener("input", () => { save(e.value); refreshSave(); }); return e; };
-  const numf = (val, save) => { const e = el("input", {type:"number", value:(val ?? 6), style:"width:90px"});
-    e.addEventListener("input", () => { save(parseInt(e.value,10)||1); refreshSave(); }); return e; };
-  const self = (val, opts, save) => { const e = el("select", {});
-    for (const [v,l] of opts) { const o=el("option",{value:v},l); if(val===v)o.selected=true; e.append(o); }
-    e.addEventListener("change", () => { save(e.value); refreshSave(); }); return e; };
-
-  // Persona editing. Shows a stance/personality field for each participant/judge/moderator id
-  const personaBox = el("div", {id:"discusspersonas"});
-  const drawPersonas = () => {
-    personaBox.textContent = "";
-    const dd = desk.discuss; if (!dd) return;
-    dd.personas = dd.personas || {};
-    const ids = [...new Set((dd.agents||[])
-      .concat(dd.judge ? [dd.judge] : [])
-      .concat(dd.moderator ? [dd.moderator] : [])
-      .filter(Boolean))];
-    if (!ids.length) { personaBox.append(el("div", {class:"hint"}, T["settings.discuss.persona_hint"])); return; }
-    ids.forEach(id => {
-      const ta = el("textarea", {rows:2, style:"width:100%;box-sizing:border-box",
-        placeholder:T["settings.discuss.persona_ph"]});
-      ta.value = dd.personas[id] || "";
-      ta.addEventListener("input", () => { dd.personas[id] = ta.value; refreshSave(); });
-      personaBox.append(el("div", {style:"margin:var(--s2) 0"},
-        el("div", {class:"mono", style:"font-size:12px;color:var(--text);margin-bottom:var(--s1)"}, id), ta));
-    });
-  };
-
-  const agentsIn = txt((d.agents||[]).join(", "), T["settings.discuss.agents_ph"],
-    v => { ensure().agents = v.split(",").map(s=>s.trim()).filter(Boolean); drawChips(); drawPersonas(); });
-  // Participant-candidate chips: one click appends an existing tab id to the end of the turn order.
-  const chipBox = el("div", {class:"hint", style:"display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center;margin-top:var(--s1)"});
-  const drawChips = () => {
-    chipBox.textContent = "";
-    const cur = (desk.discuss && desk.discuss.agents) || [];
-    // Only candidate tabs that are a discussable AI (CLI/model API), not already a participant
-    const cand = (desk.tabs || [])
-      .filter(t => isDiscussable(t))
-      .map(t => (t.id || "").trim())
-      .filter(id => id && !cur.includes(id));
-    if (!cand.length) { chipBox.append(document.createTextNode(T["settings.discuss.no_candidates"])); return; }
-    chipBox.append(document.createTextNode(T["settings.discuss.candidates_label"]));
-    for (const id of cand) chipBox.append(el("button", {class:"quiet", onclick:() => {
-      const a = ensure().agents; if (!a.includes(id)) a.push(id);
-      agentsIn.value = a.join(", "); drawChips(); drawPersonas(); refreshSave();
-    }}, "＋" + id));
-  };
-  const orderSel = self(d.order || "round-robin",
-    [["round-robin",T["settings.discuss.order.round_robin"]],["moderated",T["settings.discuss.order.moderated"]]], v => ensure().order = v);
-  const roundsIn = numf(d.max_rounds, v => ensure().max_rounds = v);
-  // Judge and moderator are likewise restricted to discussable AIs (shells and Aider are excluded)
-  const notDiscuss = t => !isDiscussable(t);
-  const judgeIn = idSelect(desk, d.judge, T["wizard.discuss.judge_none"],
-    v => { ensure().judge = v; drawPersonas(); }, notDiscuss);
-  const modIn = idSelect(desk, d.moderator, T["wizard.discuss.judge_none"],
-    v => { ensure().moderator = v; drawPersonas(); }, notDiscuss);
-  const verdictSel = self(d.verdict || "winner",
-    [["winner",T["wizard.discuss.verdict.winner"]],["synthesis",T["wizard.discuss.verdict.synthesis"]]], v => ensure().verdict = v);
-
-  body.append(
-    row(T["settings.discuss.agents_label"], agentsIn, el("span", {class:"hint"}, T["settings.discuss.agents_hint"])),
-    row("", chipBox),
-    row(T["settings.discuss.order_label"], orderSel),
-    row(T["settings.discuss.max_rounds_label"], roundsIn, el("span", {class:"hint"}, T["settings.discuss.max_rounds_hint"])),
-    row(T["settings.discuss.judge_field_label"], judgeIn, el("span", {class:"hint"}, T["settings.discuss.judge_hint"])),
-    row(T["settings.discuss.moderator_label"], modIn, el("span", {class:"hint"}, T["settings.discuss.moderator_hint"])),
-    row(T["wizard.discuss.verdict_label"], verdictSel),
-    el("div", {style:"margin-top:var(--s2)"},
-      el("div", {style:"font-size:12px;color:var(--text)"}, T["settings.discuss.persona_section_label"]),
-      el("div", {class:"hint"}, T["settings.discuss.persona_section_hint"]),
-      personaBox));
-  drawChips();
-  drawPersonas();
-
-  return card(T["settings.discuss.title"],
-    el("div", {class:"hint"},
-      T["settings.discuss.card_hint"]),
-    el("div", {class:"row", style:"margin-top:var(--s2)"}, onLabel),
-    body);
-}
-
 // Stop conditions (judge). Per-desk. Evaluated top to bottom; the first one satisfied wins.
 // Defines "when does this collaborative task end (success/failure)"
 function deskStopsCard(desk) {
@@ -14640,8 +14527,8 @@ function aiPanel(t, cmdInput, rebuild, real) {
     carry.hidden = !!m || !headOf(t.command);
     if (!m) {
       // A CLI is selected. If it has an "act without asking" flag, surface it
-      // as an explicit, explained checkbox — required for autonomous discussion
-      // / automation, but it lets the AI edit files and run commands unattended.
+      // as an explicit, explained checkbox — required for work handed over by
+      // another tab / automation, but it lets the AI edit files and run commands unattended.
       // Toggling only adds/removes that one token, so other args are preserved.
       const flag = cliFlagOf(headOf(t.command));
       if (!flag) return;
@@ -15777,8 +15664,7 @@ async function load() {
                  // never saw is a setting the next save erases
                  summary_ai: (w.summary_ai || "").trim(),
                  rename_branch: w.rename_branch !== false,
-                 stops: Array.isArray(w.stops) ? w.stops : [],
-                 discuss: w.discuss || null };
+                 stops: Array.isArray(w.stops) ? w.stops : [] };
     if (desk.file) {
       const got = await readUserJson(await deskApi("GET", desk.file));
       // A desk file is loaded to be written back. If it can't be read, the
@@ -15790,7 +15676,6 @@ async function load() {
       if (!desk.secrets_allow.length) desk.secrets_allow = f.secrets_allow || [];
       if (!desk.secrets_allow_all) desk.secrets_allow_all = !!f.secrets_allow_all;
       if (!desk.stops.length && Array.isArray(f.stops)) desk.stops = f.stops;
-      if (!desk.discuss && f.discuss) desk.discuss = f.discuss;
     } else readFolders(desk, w);
     desks.push(desk);
   }
@@ -15979,8 +15864,6 @@ function payload() {
 
   // Stop conditions are saved after dropping rows with an empty when
   const cleanStops = w => (w.stops || []).filter(s => s && s.when);
-  // A discussion is only saved when there are 2 or more participants
-  const cleanDiscuss = w => (w.discuss && (w.discuss.agents || []).length >= 2) ? w.discuss : null;
 
   // A desk that was split out into a separate file gets written to that file
   const files = [];
@@ -15991,7 +15874,6 @@ function payload() {
     if (w.secrets_allow && w.secrets_allow.length) body.secrets_allow = w.secrets_allow;
     if (w.secrets_allow_all) body.secrets_allow_all = true;
     const st = cleanStops(w); if (st.length) body.stops = st;
-    const dc = cleanDiscuss(w); if (dc) body.discuss = dc;
     files.push({ file:w.file, body });
   }
   out.desks = desks.map(w => {
@@ -16041,8 +15923,6 @@ function payload() {
     if (w.rename_branch === false) o.rename_branch = false;
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
-    // AI vs AI discussion
-    if (!w.file) { const dc = cleanDiscuss(w); if (dc) o.discuss = dc; }
     return o;
   });
   return { out, files };

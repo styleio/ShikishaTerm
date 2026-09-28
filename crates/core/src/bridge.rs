@@ -7,11 +7,10 @@
 //! deliberately kept to a thin pipe that just does "prompt -> hit the API ->
 //! return the response," not an "AI" itself.
 //!
-//! Usage from discussions **does not spawn a subprocess**. Because the main
-//! binary is a GUI subsystem and its ConPTY children have no console I/O,
-//! when `Command::SendPrompt` arrives at a model pane, the main binary calls
-//! `complete()` directly on a thread and injects the response into the tab
-//! screen plus writes it to say.txt (in-process).
+//! A model tab **does not spawn a subprocess**. Because the main binary is a
+//! GUI subsystem and its ConPTY children have no console I/O, when a message
+//! arrives at a model tab, the main binary calls `complete()` directly on a
+//! thread and draws the response on the tab's screen (in-process).
 //!
 //! The `--bridge` child process is kept around for direct terminal execution
 //! via pipes. It reads the connection info from env, reads stdin once, and
@@ -34,11 +33,6 @@ pub struct ModelConn {
     /// How long to wait for a whole reply. `None` waits as long as it takes
     /// (the setting's 0), which is what a local thinking model needs.
     pub timeout: Option<std::time::Duration>,
-    /// The stance/persona for a discussion. The bridge is stateless, so
-    /// unless this is attached as the system message every turn, the model
-    /// forgets its stance and drifts off topic (only set when this is a
-    /// discussion participant).
-    pub persona: Option<String>,
     /// Which protocol the far end answers: `"chat"` or `"choice"`
     /// (see [`crate::config::ProviderSpec::speaks`])
     pub speaks: String,
@@ -758,17 +752,6 @@ fn strip_think(s: &str) -> String {
     }
 }
 
-/// Extract `SHIKISHA_SAY=<path>` from the tail of a discussion prompt (last
-/// match; the path may contain spaces).
-pub fn extract_say(s: &str) -> Option<String> {
-    s.lines().rev().find_map(|l| {
-        l.trim()
-            .strip_prefix("SHIKISHA_SAY=")
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-    })
-}
-
 /// The app's model connections, resolved (name -> address, headers, wait).
 ///
 /// Swapped whole when the settings are read again. One list for every desk,
@@ -853,7 +836,6 @@ pub fn conn_in(
         timeout: conn.timeout,
         speaks: conn.speaks,
         max_choices: conn.max_choices,
-        persona: None,
     })
 }
 
@@ -1066,7 +1048,6 @@ mod tests {
             model: var("SHIKISHA_PROBE_MODEL"),
             headers,
             timeout: Some(std::time::Duration::from_secs(30)),
-            persona: None,
             speaks: match var("SHIKISHA_PROBE_SPEAKS").as_str() {
                 "choice" => crate::config::SPEAKS_CHOICE.to_string(),
                 _ => crate::config::SPEAKS_CHAT.to_string(),
@@ -1206,14 +1187,5 @@ mod tests {
     fn strip_think_keeps_answer() {
         assert_eq!(strip_think("<think>reasoning</think>Answer"), "Answer");
         assert_eq!(strip_think("no think here"), "no think here");
-    }
-
-    #[test]
-    fn extract_say_finds_marker() {
-        assert_eq!(
-            extract_say("hello\nSHIKISHA_SAY=C:/a b/say.txt\n").as_deref(),
-            Some("C:/a b/say.txt")
-        );
-        assert_eq!(extract_say("no marker"), None);
     }
 }

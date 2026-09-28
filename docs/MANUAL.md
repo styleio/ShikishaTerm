@@ -292,7 +292,6 @@ settings screen, so it cannot fall behind.
 - **Notifications** — Chats, this PC, phones
 - **Automation permissions** — What a person and an AI may run
 - **Secrets** — Passwords and tokens
-- **AI × AI discussion** — Several AI tabs discussing or working together
 - **Stop conditions** — When the joint work ends
 - **Automatic names** — The AI that names and describes working folders
 - **Automation doors** — Files and URLs a script can reach

@@ -2557,9 +2557,6 @@ pub struct DeskSpec {
     /// Stop conditions (the referee). Read by built-in controllers such as browser-operation mode
     #[serde(default)]
     pub stops: Vec<StopCond>,
-    /// AI-vs-AI discussion settings (when present, the built-in discussion orchestrator is put into each AI tab)
-    #[serde(default)]
-    pub discuss: Option<DiscussSpec>,
 
     // Everything below is this desk's alone. There is no app answer behind any
     // of it: a desk that registered no notification destination reaches none.
@@ -2641,47 +2638,6 @@ pub struct DeskFile {
     pub secrets_allow_all: bool,
     #[serde(default)]
     pub stops: Vec<StopCond>,
-    #[serde(default)]
-    pub discuss: Option<DiscussSpec>,
-}
-
-/// AI-vs-AI (N-party) discussion settings. Per desk. Read by the built-in discussion orchestrator.
-/// Participants (agents) are listed in turn order. Cycled round-robin; once max_rounds is reached, the judge (if any) rules
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct DiscussSpec {
-    /// ids of the participating AI tabs (in turn order)
-    #[serde(default)]
-    pub agents: Vec<String>,
-    /// How turns are cycled. Currently only "round-robin"
-    #[serde(default = "default_order")]
-    pub order: String,
-    /// Max number of rounds each participant speaks (once exceeded, goes to the judge/ends)
-    #[serde(default = "default_rounds")]
-    pub max_rounds: u32,
-    /// Tab id of the judge (referee). If omitted, hitting the round limit just folds up as "discussion ended"
-    #[serde(default)]
-    pub judge: Option<String>,
-    /// How the judge renders its verdict: "winner" / "synthesis". Default is winner
-    #[serde(default = "default_verdict")]
-    pub verdict: String,
-    /// Tab id of the moderator. When order="moderated", nominates the next speaker
-    #[serde(default)]
-    pub moderator: Option<String>,
-    /// Each tab's stance/persona (tab id -> persona text).
-    /// e.g. {"safety":"You are a safety-first faction...", ...}.
-    /// Told to that AI at the start. Empty means a plain (neutral) AI
-    #[serde(default)]
-    pub personas: std::collections::HashMap<String, String>,
-}
-
-fn default_order() -> String {
-    "round-robin".into()
-}
-fn default_rounds() -> u32 {
-    6
-}
-fn default_verdict() -> String {
-    "winner".into()
 }
 
 /// Stop conditions (the referee). Held per desk. Evaluated top to bottom; the first match wins.
@@ -3262,8 +3218,6 @@ pub struct Desk {
     pub secrets_allow_all: bool,
     /// Stop conditions (the referee)
     pub stops: Vec<StopCond>,
-    /// AI-vs-AI discussion settings
-    pub discuss: Option<DiscussSpec>,
     /// This desk's notification destinations, as written: an `@name` value is
     /// still a name here, read from the store when the desk is handed over
     /// (see [`desk_notify`])
@@ -5724,7 +5678,6 @@ impl Config {
                     secrets_allow: Vec::new(),
                     secrets_allow_all: false,
                     stops: Vec::new(),
-                    discuss: None,
                     // A screenful written before desks existed has nothing of
                     // its own registered, and there is no app answer to lend it
                     notify: Default::default(),
@@ -5742,13 +5695,12 @@ impl Config {
         for desk in &self.desks {
             #[allow(clippy::type_complexity)]
             #[allow(clippy::type_complexity)]
-            let (folder_defs, file_name, file_lua, file_secrets, file_stops, file_discuss): (
+            let (folder_defs, file_name, file_lua, file_secrets, file_stops): (
                 Vec<FolderConfig>,
                 Option<String>,
                 Option<String>,
                 (Vec<String>, bool),
                 Vec<StopCond>,
-                Option<DiscussSpec>,
             ) = match &desk.file {
                 Some(f) => match read_json::<DeskFile>(&resolve_data_path(f)) {
                     Ok(p) => (
@@ -5757,7 +5709,6 @@ impl Config {
                         p.automation.or(p.lua),
                         (p.secrets_allow, p.secrets_allow_all),
                         p.stops,
-                        p.discuss,
                     ),
                     Err(e) => {
                         errors.push(format!("{}: {e:#}", desk.name));
@@ -5770,7 +5721,6 @@ impl Config {
                     None,
                     (Vec::new(), false),
                     Vec::new(),
-                    None,
                 ),
             };
             // Each project's protected branches go to its folders here, so a
@@ -5801,7 +5751,6 @@ impl Config {
                 secrets_allow_all: desk.secrets_allow_all || file_secrets.1,
                 // Prefer config's setting; fall back to the definition file's if absent
                 stops: if desk.stops.is_empty() { file_stops } else { desk.stops.clone() },
-                discuss: desk.discuss.clone().or(file_discuss),
                 notify: desk.notify.clone(),
                 primary_notify: desk.primary_notify.as_deref().and_then(one_name),
                 capabilities: desk.capabilities.clone(),
@@ -9004,7 +8953,6 @@ mod tests {
             secrets_allow: allow.iter().map(|s| s.to_string()).collect(),
             secrets_allow_all: all,
             stops: Vec::new(),
-            discuss: None,
             ..Default::default()
         };
         let spaces = [desk("blog", &["github"], false), desk("shop", &[], true)];

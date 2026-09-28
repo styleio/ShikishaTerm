@@ -18,7 +18,7 @@ use crate::view::{
 };
 use crate::desk::{
     apply_ws_config, build_engine, extract_env_block, open_declared_browsers, panel_places, reseat_desks,
-    spawn_desk, surface_of_id, switch_desk,
+    spawn_desk, switch_desk,
 };
 use crate::{
     api, ball, bridge, caps, config, crypto, folders, grants, hooks, i18n, layout,
@@ -4746,30 +4746,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let _ = caps.browser_where(key);
         }
 
-        // If the current desk is a discussion, find the opening speaker
-        // (first participant) so the dashboard can offer a "start" card.
-        let (discuss_start, discuss_start_name) = desks
-            .get(desk_index)
-            .and_then(|w| {
-                let d = w.discuss.as_ref()?;
-                if d.agents.iter().filter(|s| !s.trim().is_empty()).count() < 2 {
-                    return None;
-                }
-                let first = d.agents.iter().find(|s| !s.trim().is_empty())?;
-                let pane = surface_of_id(w, first)?;
-                let name = w
-                    .tabs
-                    .iter()
-                    .find(|t| {
-                        t.cfg.id.as_deref() == Some(first.as_str())
-                            || t.cfg.name.as_deref() == Some(first.as_str())
-                    })
-                    .and_then(|t| t.cfg.name.as_deref().filter(|x| !x.is_empty()))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| first.clone());
-                Some((pane, name))
-            })
-            .map_or((None, None), |(p, n)| (Some(p), Some(n)));
         // The first-run pointer: worked out from what is on screen, and what
         // has been pointed at before. Written down the moment it moves on, so
         // the next start does not point at the same thing twice
@@ -5166,8 +5142,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // stands for can never disagree about where it applies
             restartable: session_at(&surfaces, active).is_some()
                 || restartable_page(&surfaces, active, &caps).is_some(),
-            discuss_start,
-            discuss_start_name,
         };
         if flash != flash_shown {
             flash_shown = flash.clone();
@@ -13502,13 +13476,12 @@ pub fn browser_ctx(index: usize, key: &str) -> TabCtx {
 }
 /// Grace period holding off auto-submit right after manual input (avoids keystroke cross-talk)
 pub const MANUAL_GUARD_MS: u64 = 5000;
-/// A person hands one named tab a line: the composer's Send, the discussion's
-/// topic box, and the phone's own send all end here.
+/// A person hands one named tab a line: the composer's Send and the phone's
+/// own send both end here.
 ///
 /// The tab is named rather than taken to be "the one in front". Those are the
-/// same tab most of the time, which is exactly why the difference went unnoticed
-/// -- until the topic box, which switches the view and hands over a line in the
-/// same breath and cannot rely on the two arriving in that order.
+/// same tab most of the time, but a view switch and a line sent in the same
+/// breath are two messages, and nothing promises they arrive in that order.
 ///
 /// How the line is delivered is the tab's business, not the caller's: a model
 /// bridge has no prompt to type at and is told directly, anything else is typed
@@ -14747,11 +14720,9 @@ pub fn exec_commands(
             // A rally's final result. Written to data/last-result.json, the log, and the UI.
             // External integrations read this file (the process itself keeps running as an interactive app).
             Command::SetResult { code, reason, origin } => {
-                // A result means the automated chain (rally, discussion, …) has
-                // concluded: hand the ring back to the human. Beyond being
-                // semantically right, this is what lets the discussion topic
-                // banner reappear once a round finishes — the ring sits Held on
-                // the last speaker until something puts it back in idle.
+                // A result means the automated chain (a rally, …) has
+                // concluded: hand the ring back to the human. The ring sits
+                // Held on the last speaker until something puts it back in idle.
                 ball.reset();
                 let at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -15007,10 +14978,10 @@ pub fn exec_commands(
                 }
                 t.chain_depth = depth;
                 if t.is_model() {
-                    // model bridge: hits complete() on a thread, injects the
-                    // response into the screen, and writes it to say.txt too.
+                    // model bridge: a turn of the tab's own conversation, shown
+                    // with who sent it; the reply is injected into the screen.
                     // Detection (BUSY -> DONE -> on_done) runs on the injected activity.
-                    t.dispatch_model(text.clone(), from);
+                    t.model_send(text.clone(), from);
                     append_hook_log(&format!("model's turn tab{target} ({} chars)", text.chars().count()));
                 } else {
                     let seen = t.output_count();
@@ -15018,11 +14989,9 @@ pub fn exec_commands(
                     pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms, text.chars().count()));
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
-                // A self-send (seeding a persona at launch, the opening nudge,
-                // a model's self-kick) starts things moving but isn't a hand-off
-                // between participants. Leaving the ring parked on it would make
-                // the "start the discussion" banner believe a round is already
-                // running, so only a genuine pass to another participant moves it.
+                // A self-send (the opening nudge, a model's self-kick) starts
+                // things moving but isn't a hand-off between tabs, so only a
+                // genuine pass to another tab moves the ring.
                 if origin != target {
                     ball.throw(origin, target, depth, now_ms);
                 }
@@ -17054,22 +17023,6 @@ mod tests {
         );
     }
 
-    /// A discussion participant's/referee's tab id must resolve correctly to a screen number
-    #[test]
-    fn discuss_agents_resolve_to_panes() {
-        let desk = desk_from_rows(&[
-            ("参加A", "ai1", "claude"),
-            ("参加B", "ai2", "codex"),
-            ("審判", "ref", "claude"),
-        ]);
-        assert_eq!(surface_of_id(&desk, "ai1"), Some(1));
-        assert_eq!(surface_of_id(&desk, "ai2"), Some(2));
-        assert_eq!(surface_of_id(&desk, "ref"), Some(3));
-        assert_eq!(surface_of_id(&desk, "いない"), None);
-        // The name on screen is a label, not an address: two tabs may share one
-        assert_eq!(surface_of_id(&desk, "審判"), None);
-    }
-
     /// The tab a pane asked for is the row that arrived, wherever it landed.
     ///
     /// A tab is written into its own folder's list, so one added to any folder
@@ -17159,7 +17112,6 @@ mod tests {
             secrets_allow: Vec::new(),
             secrets_allow_all: false,
             stops: Vec::new(),
-            discuss: None,
             ..Default::default()
         }
     }

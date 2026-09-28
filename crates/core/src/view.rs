@@ -768,37 +768,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         scrolled: ui.scrolled,
         build: crate::shell::stamp(),
         restartable: ui.restartable,
-        discuss_start: ui.discuss_start,
-        discuss_start_name: ui.discuss_start_name.clone(),
-        // "At rest" = a discussion desk where every participant's screen
-        // has gone quiet and the automation ring has settled (Idle). We gauge
-        // "quiet" from how long the screen has been unchanged rather than the
-        // BUSY verdict, because some CLIs (Claude Code) leave a static status
-        // footer that keeps the busy-pattern matcher latched — a screen that
-        // hasn't changed in a couple of seconds is genuinely done regardless.
-        // Requiring the ring to be idle too covers the brief hand-off gap
-        // between turns, when the outgoing speaker has stopped but the ring is
-        // still in flight — without it the banner would flicker mid-round.
-        discuss_idle: ui.discuss_start.is_some() && {
-            const QUIET_MS: u64 = 2000;
-            let anyone_active = ui.surfaces.iter().any(|p| match p {
-                Surface::Session(s) => tabs
-                    .get(*s)
-                    .map(|t| t.ms_since_change(ui.now_ms) < QUIET_MS)
-                    .unwrap_or(false),
-                // Neither a page nor a panel is doing anything on its own
-                Surface::Browser { .. }
-                | Surface::Git { .. }
-                | Surface::Sftp { .. }
-                | Surface::Editor { .. }
-                | Surface::Failed { .. }
-                | Surface::Issues { .. }
-                // ...and a split is a way of looking at rows, not one of them
-                | Surface::Split { .. } => false,
-            });
-            let ring_idle = matches!(ui.ball.phase(ui.now_ms), crate::ball::Phase::Idle);
-            !anyone_active && ring_idle
-        },
     }
 }
 
@@ -1653,10 +1622,6 @@ pub struct Ui {
     /// How the content area is divided, and which pane the keyboard is aimed at.
     /// `active` is always the surface in the focused pane
     pub layout: crate::layout::Layout,
-    /// If the current desk is a discussion, the opening speaker's session
-    /// number (1-based) and display name — for the dashboard's "start" card
-    pub discuss_start: Option<usize>,
-    pub discuss_start_name: Option<String>,
     /// What making a branch would do, while someone is naming one
     pub branch: Option<crate::uistate::BranchPlan>,
     /// What it would take to put a working folder back on this machine, while

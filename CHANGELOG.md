@@ -22,11 +22,18 @@ once it reaches its first tagged release.
 ### Changed
 - On a phone, Backspace is the first key of the key row, and the input row no
   longer has a ⌫ button of its own.
+- A model tab keeps one conversation: a line another tab hands it goes into the
+  same chat as a line typed at it, shown with who sent it, and the model
+  answers with the earlier turns in front of it.
 
 ### Removed
 - **The 🎯 target panel.** Aiming an AI at another tab and having it write Lua
   every turn is replaced by @ and `shikisha ask / run / do`. Its limits stay, as
   Settings > "Limits on handing work".
+- **AI-vs-AI discussions.** The desk's discussion card (participants, order,
+  judge, stances) and the topic banner are gone; @ another AI does the same
+  job from the input bar. A `discuss` block left in a settings file is ignored,
+  and discussion records already saved still open in the result view.
 
 ## [0.20.0] - 2026-09-27
 
