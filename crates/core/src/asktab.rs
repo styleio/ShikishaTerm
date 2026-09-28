@@ -122,7 +122,10 @@ pub fn parse(params: &[Value]) -> Result<(String, String, Duration), String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or("ask_tab needs the tab's id first")?
         .trim()
+        // Handed over the way it appears in a message -- `<@codex>` -- or bare
+        .trim_start_matches('<')
         .trim_start_matches('@')
+        .trim_end_matches('>')
         .to_string();
     let text = params
         .get(1)
@@ -405,7 +408,7 @@ fn tail(screen: &str, n: usize) -> String {
 
 /// What is typed into the caller's tab when the reply outlived the line
 pub fn handed(target: &str, reply: &str) -> String {
-    format!("[Reply from [[tab:{target}]] to your earlier ask_tab]\n{reply}")
+    format!("[Reply from <@{target}> to your earlier ask_tab]\n{reply}")
 }
 
 #[cfg(test)]
@@ -479,7 +482,9 @@ ALPHA-42"
     }
 
     #[test]
-    fn a_tab_is_named_by_its_id_with_or_without_the_at() {
+    fn a_tab_is_named_by_its_id_as_a_mention_or_bare() {
+        let (t, x, w) = parse(&[json!("<@codex>"), json!("hi")]).unwrap();
+        assert_eq!(t, "codex");
         let (t, x, w) = parse(&[json!("@codex"), json!("hi")]).unwrap();
         assert_eq!((t.as_str(), x.as_str(), w), ("codex", "hi", DEFAULT_WAIT));
         let (_, _, w) = parse(&[json!("codex"), json!("hi"), json!({"timeout_ms": 5000})]).unwrap();

@@ -91,7 +91,7 @@ shikisha.send_to_tab(2, "レビューして")            -- 番号でも可（�
 | 命令 | 説明 |
 |---|---|
 | `shikisha.send_to_tab(タブ, "文字列")` | **タブに指示を渡して実行させる。** 自分自身にも使えます（自動チェーン+1） |
-| `shikisha.ask_tab(タブID, "文字列", {timeout_ms=…})` | **ほかのタブの AI に頼んで、返答を受け取る。** 文中の `[[tab:ID]]` は SHIKISHA のタブを指します。相手が作業中なら終わるまで待ってから送り、相手の作業が終わると `{state, reply, round, max_rounds, same_folder, note}` を返します。`state` は、返答があれば `DONE`、承認待ちなら `QUESTION`、待ち時間（既定50分）を過ぎても作業中なら `PENDING` です。`PENDING` のときは、終わった時点で返答をあなたのタブへ届けます。`round` が `max_rounds` に達したら頼むのをやめます。`same_folder: false` は、相手からあなたのまだコミットしていない変更が見えないことを表します。パイプか MCP からだけ使えます |
+| `shikisha.ask_tab(タブID, "文字列", {timeout_ms=…})` | **ほかのタブの AI に頼んで、返答を受け取る。** 文中の `<@ID>` は SHIKISHA のタブを指します。相手が作業中なら終わるまで待ってから送り、相手の作業が終わると `{state, reply, round, max_rounds, same_folder, note}` を返します。`state` は、返答があれば `DONE`、承認待ちなら `QUESTION`、待ち時間（既定50分）を過ぎても作業中なら `PENDING` です。`PENDING` のときは、終わった時点で返答をあなたのタブへ届けます。`round` が `max_rounds` に達したら頼むのをやめます。`same_folder: false` は、相手からあなたのまだコミットしていない変更が見えないことを表します。パイプか MCP からだけ使えます |
 | `shikisha.send(tab, "文字列")` | 生のキー入力を送る（改行は `\r`）。指示ではなく、確認への返答用 |
 | `shikisha.note(タブ, "文字列")` | そのタブの画面**に**一行書く。見ている人へのお知らせで、中で動いているものには何も届かず、返事も求めません |
 | `shikisha.wait(tab, "正規表現", ミリ秒)` | 画面にその文字が出るまで待つ。出たら `true` |

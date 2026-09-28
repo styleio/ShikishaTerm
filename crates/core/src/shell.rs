@@ -1276,6 +1276,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      in half. Held to one line, the overflow is cut cleanly at the right edge
      instead, whatever a given language's wording came out to */
   #castinput::placeholder { white-space:nowrap; }
+  /* The field and the layer under it that draws the @ badges (mentions). The
+     field's own background moves to its holder so the layer shows through;
+     the layer copies the field's font, padding and border exactly, so each
+     badge sits under its own letters. A badge is a chip: --raise, the chip
+     radius, a ring of --edge. It is not a state, so it has no state colour */
+  .castfield { position:relative; flex:1; min-width:0; display:flex;
+    background:var(--bg); border-radius:var(--r-ctl); }
+  .castfield #castinput { background:transparent; position:relative; }
+  #castmirror { position:absolute; left:0; top:0; right:0; bottom:0; overflow:hidden;
+    pointer-events:none; font-family:inherit; font-size:16px; line-height:1.35;
+    padding:8px 10px; border:1px solid transparent; white-space:pre-wrap;
+    overflow-wrap:break-word; color:transparent; }
+  #castmirror mark { color:transparent; background:var(--raise);
+    border-radius:var(--r-chip); box-shadow:0 0 0 1px var(--edge); }
+  .fmenu.mentions { min-width:220px; }
+  .fmenu div.mrow { display:flex; align-items:center; gap:var(--s2); }
+  .fmenu div.mrow.on { background:var(--raise); }
+  .fmenu div.mrow .at { margin-left:auto; padding-left:var(--s3); font-size:11px; color:var(--dim); }
+  .fmenu div.mnone { cursor:default; font-size:12px; color:var(--dim); max-width:280px; }
+  .fmenu div.mnone:hover { background:transparent; }
   /* Held shut while the AI writes into it. A box that still looks writable and
      is not is worse than one that plainly is not, so the whole row goes flat:
      the field takes the panel's own colour, loses its caret, and the buttons
@@ -15826,6 +15846,7 @@ function growCastInput() {
   // browser may cover — a grown textarea must push that reserve up too, or the
   // panel row slides in under the browser layer and can't be clicked.
   if (typeof syncDockReserve === "function") syncDockReserve();
+  paintMentions();
 }
 // The window has no remote HTTP server, so it saves over the ipc bridge: post the
 // bytes, and Rust replies by eval-ing window.__attachDone(id, result). Correlate
@@ -19033,7 +19054,7 @@ window.__luaDone = function (err) {
 // 📎 attaches a file FOR AN AI — it's saved and its path dropped into the
 // composer to hand over. While the composer feeds a browser page (window native
 // or phone relay) a path is just text typed into the site, so the button hides.
-function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser() ? "none" : ""; }
+function syncAttach() { if (castAttEl) castAttEl.style.display = drivingBrowser() ? "none" : ""; syncMention(); }
 // Load the composer with the document the active panel owns (see the luaSheet
 // comment): 📼 shows the Lua sheet, every other panel the ordinary draft.
 // Edits made while a slot is loaded are stashed when switching away.
@@ -19182,6 +19203,230 @@ function renderPanel() {
   syncComposerSlot();
   syncSendLabel();
 }
+// ── @ mentions: naming another AI tab in what is sent ─────────────────────
+//
+// Slack's way: the box shows a name, and what is sent is the id -- `<@finch>`,
+// the shape Slack itself sends -- which is what an AI hands to ask_tab. Only
+// this desk's tabs: an id is unique on its desk and nowhere else, and one
+// desk is one piece of work.
+//
+// The box stays a <textarea>. A contenteditable would draw the badge itself,
+// and in exchange fight every phone keyboard and IME there is; here the badge
+// is painted on a layer under the text instead (castMirror), the same words
+// in the same place, with the mentioned ones given a chip behind them. The
+// text itself never changes width, so nothing under the caret moves.
+//
+// A mention is a label in the text that a pick put there: `@codex`, or
+// `@claude (fix-login)` when two tabs share a name. Edited into something
+// else it is plain text again -- which is what it looks like, too.
+let castMentionEl = null, castMirror = null;
+// label → tab id, for the labels picks have put in the box
+let mentions = new Map();
+// The open list: where its "@" is in the text (-1: opened by the button),
+// the tabs it offers, and which one Enter would take
+let mentionPick = null;
+
+// Whether the tab in front is one that can be asked to hand work on: an AI in
+// a terminal. A shell would run the words as a command, and a page or a panel
+// is not asking anybody anything
+function mentionHere() {
+  const t = activeTab();
+  return !!(t && t.ai && t.kind !== "browser" && !t.settings && !drivingBrowser() && !gitSurfaceTab());
+}
+function syncMention() {
+  if (castMentionEl) castMentionEl.style.display = mentionHere() ? "" : "none";
+}
+// The other AI tabs of this desk, nearest first: the same folder, then the
+// same project (its checkout and its worktrees), then the rest -- each in the
+// order the list shows them
+function mentionCandidates() {
+  const me = activeTab();
+  const groups = (S && S.groups) || [];
+  const g = me && me.group != null ? groups[me.group] : null;
+  const family = g && g.family;
+  const near = t => {
+    if (me && t.group === me.group) return 0;
+    const tg = t.group != null ? groups[t.group] : null;
+    return family && tg && tg.family === family ? 1 : 2;
+  };
+  return ((S && S.tabs) || [])
+    .filter(t => t && t.ai && t.id && t.index !== 0 && !t.settings && t.kind !== "browser" && (!me || t.index !== me.index))
+    .map((t, i) => ({t, i, n: near(t)}))
+    .sort((a, b) => a.n - b.n || a.i - b.i)
+    .map(x => x.t);
+}
+// What the box shows for a tab: its name, and its folder's when another AI
+// tab here has the same name -- `@claude` twice is not a choice
+function mentionLabel(t) {
+  const name = t.name || t.id;
+  const twins = ((S && S.tabs) || []).filter(x => x && x.ai && (x.name || x.id) === name);
+  if (twins.length < 2) return "@" + name;
+  const g = t.group != null && S.groups ? S.groups[t.group] : null;
+  return "@" + name + " (" + ((g && g.name) || t.id) + ")";
+}
+// Where a label stands as a whole word: not the front of `@codex2`
+function mentionSpans(text) {
+  const spans = [];
+  const labels = [...mentions.keys()].sort((a, b) => b.length - a.length);
+  for (const label of labels) {
+    let from = 0, at;
+    while ((at = text.indexOf(label, from)) >= 0) {
+      const after = text.charAt(at + label.length);
+      const before = at > 0 ? text.charAt(at - 1) : "";
+      const clear = !/[\w\-.]/.test(after) && !/[\w]/.test(before);
+      if (clear && !spans.some(s => at < s.end && at + label.length > s.at)) {
+        spans.push({at, end: at + label.length, label});
+      }
+      from = at + label.length;
+    }
+  }
+  return spans.sort((a, b) => a.at - b.at);
+}
+// The text as it goes out: each badge becomes the id it stands for
+function mentionize(text) {
+  const spans = mentionSpans(text);
+  if (!spans.length) return text;
+  let out = "", last = 0;
+  for (const s of spans) {
+    out += text.slice(last, s.at) + "<@" + mentions.get(s.label) + ">";
+    last = s.end;
+  }
+  return out + text.slice(last);
+}
+// Paint the badges under the text, and forget labels that are no longer there
+function paintMentions() {
+  if (!castMirror || !castInput) return;
+  const text = castInput.value;
+  for (const label of [...mentions.keys()]) if (!text.includes(label)) mentions.delete(label);
+  const spans = mentionSpans(text);
+  castMirror.textContent = "";
+  let last = 0;
+  for (const s of spans) {
+    castMirror.append(document.createTextNode(text.slice(last, s.at)), el("mark", {}, text.slice(s.at, s.end)));
+    last = s.end;
+  }
+  // A trailing newline has no height of its own in a div; the textarea gives
+  // it a line, so the layer has to as well or every badge after it rides high
+  castMirror.append(document.createTextNode(text.slice(last) + "\n"));
+  // The layer sits where the text sits: inside the same border and padding,
+  // short of the scroll bar the textarea may have grown, scrolled with it
+  castMirror.style.right = Math.max(0, castInput.offsetWidth - castInput.clientWidth - 2) + "px";
+  castMirror.scrollTop = castInput.scrollTop;
+}
+// Open the list: from the button (-1), or from an "@" just typed at `at`
+function openMentions(at) {
+  mentionPick = { at, tabs: [], on: 0 };
+  drawMentions();
+}
+function closeMentions() {
+  if (!mentionPick) return;
+  mentionPick = null;
+  closeFolderMenu();
+}
+// What has been typed after the "@", which narrows the list
+function mentionQuery() {
+  if (!mentionPick || mentionPick.at < 0 || !castInput) return "";
+  return castInput.value.slice(mentionPick.at + 1, castInput.selectionStart);
+}
+function drawMentions() {
+  if (!mentionPick || !castMentionEl) return;
+  const q = mentionQuery().toLowerCase();
+  const tabs = mentionCandidates().filter(t => !q || (t.name || "").toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
+  mentionPick.tabs = tabs;
+  mentionPick.on = Math.min(mentionPick.on, Math.max(0, tabs.length - 1));
+  const keep = e => e.preventDefault();   // the box keeps the keyboard
+  const rows = tabs.map((t, i) => {
+    const g = t.group != null && S.groups ? S.groups[t.group] : null;
+    const row = el("div", {class:"mrow" + (i === mentionPick.on ? " on" : ""), onclick:() => pickMention(t)},
+      aiMark(t.ai), el("span", {class:"nm"}, t.name || t.id), el("span", {class:"at"}, (g && g.name) || ""));
+    row.addEventListener("pointerdown", keep);
+    row.addEventListener("mousedown", keep);
+    return row;
+  });
+  // Nothing to name is said, with what would make something appear
+  if (!rows.length) {
+    rows.push(el("div", {class:"mnone"}, q
+      ? (T["tui.mention.nomatch"] || "No AI tab here matches")
+      : (T["tui.mention.none"] || "No other AI tab on this desk. Open one and it appears here.")));
+  }
+  closeFolderMenu();
+  const m = openList(castMentionEl, rows, rows.length > 8, null, "mentions");
+  // Over the bar rather than under it: the bar stands on the bottom edge, and
+  // a list clamped into the window from below would lie on the words being typed
+  const r = castBar.getBoundingClientRect();
+  m.style.top = Math.max(8, r.top - m.getBoundingClientRect().height - 4) + "px";
+  // openList's own "press elsewhere" closes the menu; the pick has to know
+  const away = new MutationObserver(() => { if (!m.isConnected) { away.disconnect(); if (mentionPick && !document.querySelector(".fmenu.mentions")) mentionPick = null; } });
+  away.observe(document.body, {childList: true});
+}
+// Put the label in the box in place of what the list was opened for
+function pickMention(t) {
+  if (!castInput) return;
+  const label = mentionLabel(t);
+  mentions.set(label, t.id);
+  const v = castInput.value;
+  const caret = castInput.selectionStart;
+  const from = mentionPick && mentionPick.at >= 0 ? mentionPick.at : caret;
+  const before = v.slice(0, from);
+  const lead = before && !/\s$/.test(before) ? " " : "";
+  const next = before + lead + label + " " + v.slice(caret);
+  castInput.value = next;
+  const end = (before + lead + label + " ").length;
+  castInput.setSelectionRange(end, end);
+  closeMentions();
+  castInput.focus();
+  growCastInput();
+}
+// Keys while the list is open: the arrows walk it, Enter and Tab take the
+// one lit, Esc puts it away. True when the key was the list's
+function mentionKey(e) {
+  if (!mentionPick) return false;
+  const n = mentionPick.tabs.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    if (n) mentionPick.on = (mentionPick.on + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+    drawMentions();
+  } else if ((e.key === "Enter" || e.key === "Tab") && n) {
+    pickMention(mentionPick.tabs[mentionPick.on]);
+  } else if (e.key === "Escape") {
+    closeMentions();
+  } else {
+    return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+// After each change to the text: a badge Backspace has cut into goes as a
+// whole, an "@" at the start of a word opens the list, and an open
+// list follows what is typed after it
+function mentionInput(e) {
+  if (!castInput) return;
+  const v = castInput.value, caret = castInput.selectionStart;
+  if (e && e.inputType === "deleteContentBackward") {
+    // The deleted character was the badge's last: the rest of it goes too
+    for (const label of mentions.keys()) {
+      const cut = label.slice(0, -1);
+      if (v.slice(caret - cut.length, caret) === cut && !v.slice(caret).startsWith(label.slice(-1))) {
+        castInput.value = v.slice(0, caret - cut.length) + v.slice(caret);
+        castInput.setSelectionRange(caret - cut.length, caret - cut.length);
+        mentions.delete(label);
+        break;
+      }
+    }
+  }
+  if (mentionPick && mentionPick.at >= 0) {
+    // The "@" was deleted, or the caret left the word: the list has nothing to follow
+    if (castInput.value.charAt(mentionPick.at) !== "@" || castInput.selectionStart <= mentionPick.at
+        || /\s/.test(mentionQuery())) closeMentions();
+    else drawMentions();
+  } else if (e && (e.inputType || "").startsWith("insert") && mentionHere()) {
+    // An "@" starting a word just before the caret, with what follows it --
+    // typed a key at a time, or arriving whole from an IME or a paste
+    const m = /(^|\s)@([^\s@]*)$/.exec(castInput.value.slice(0, castInput.selectionStart));
+    if (m) openMentions(castInput.selectionStart - m[2].length - 1);
+  }
+  paintMentions();
+}
 function ensureBar() {
   if (castDock) return;
   // A textarea (not <input>) so it can hold newlines: Shift+Enter inserts one and
@@ -19212,6 +19457,19 @@ function ensureBar() {
     onchange:(e) => { const f = e.target.files && e.target.files[0]; if (f) attachFile(f); e.target.value = ""; }});
   castAttEl = el("button", {class:"castbtn", title: T["tui.cast.attach"] || "Attach a file",
     onclick:() => fileIn.click()}, "📎");
+  // @: name another AI tab here to hand it work. A press while the list is
+  // open puts it away -- the list's own "pressed elsewhere" has already done
+  // that by the time the click lands, so whether it was open is read first
+  let mentionWasOpen = false;
+  castMentionEl = el("button", {class:"castbtn", title: T["tui.mention.button"] || "Hand work to another AI tab",
+    onclick:() => { if (!mentionWasOpen) { castInput.focus(); openMentions(-1); } }}, "@");
+  castMentionEl.addEventListener("pointerdown", (e) => {
+    mentionWasOpen = !!document.querySelector(".fmenu.mentions");
+    if (mentionWasOpen) mentionPick = null;
+    e.preventDefault();
+  });
+  castMirror = el("div", {id:"castmirror", "aria-hidden":"true"});
+  const castField = el("div", {class:"castfield"}, castMirror, castInput);
   // ⌫ and Send keep the input field's focus (= the keyboard) in place. If
   // the default pointerdown action weren't prevented, focus would shift to
   // the button, the keyboard would close, and typing couldn't continue.
@@ -19220,7 +19478,7 @@ function ensureBar() {
   // Attach works on both now (phone over HTTP, window over ipc). The backspace
   // key is only useful on the phone, whose on-screen keyboard the composer
   // sometimes covers; the window has a real keyboard. el() skips nulls.
-  castBar = el("div", {id:"castbar"}, castAttEl, fileIn, (OURS ? null : bs), castInput, castSendEl, close);
+  castBar = el("div", {id:"castbar"}, castAttEl, castMentionEl, fileIn, (OURS ? null : bs), castField, castSendEl, close);
   // One switchable panel above the input row (keys / actions / target), chosen by
   // a fixed switcher, instead of stacking every row at once. Default: keys on the
   // phone, actions on the desktop.
@@ -19256,6 +19514,7 @@ function ensureBar() {
   let bsBeganOnText = false;
   castInput.addEventListener("keydown", (e) => {
     if (typingIME(e)) return;
+    if (mentionKey(e)) return;
     // Enter is the Send button, and Shift+Enter is this box's own newline --
     // neither is handed on as a key, and an empty Send is already a bare Enter
     // to the pane (sendLine), which is where Enter was going anyway
@@ -19270,7 +19529,11 @@ function ensureBar() {
     sendCastKey(named, e);
   });
   // Grow the field with its content (up to the CSS max-height, then it scrolls).
+  // The mentions first: a Backspace into a badge is recognised by the badge
+  // still being known, and the repaint that follows forgets a broken one
+  castInput.addEventListener("input", mentionInput);
   castInput.addEventListener("input", growCastInput);
+  castInput.addEventListener("scroll", () => { if (castMirror) castMirror.scrollTop = castInput.scrollTop; });
   // Paste an image straight into the composer — it's saved and its path inserted.
   // Not while feeding a browser (same reason the 📎 button hides there).
   castInput.addEventListener("paste", (e) => {
@@ -19423,8 +19686,9 @@ function sendBar() {
     send({kind:"key", ctrl: t.slice(0, 1).toLowerCase()});
     modCtrl = false; modAlt = false; refreshMods();
   } else {
-    // Hand the line to the pane in front, whatever kind of pane it is.
-    sendLine(t);
+    // Hand the line to the pane in front, whatever kind of pane it is -- with
+    // each @ badge written as the tab id it stands for
+    sendLine(mentionize(t));
   }
   castInput.value = "";
   castInput.focus();
@@ -20641,7 +20905,8 @@ mod tests {
         // One place decides where a finished line goes, and both doors that
         // finish a line go through it
         assert!(p.contains("function sendLine(text, tab) {"), "there is no single place that decides how a line is handed over");
-        assert!(p.contains("    sendLine(t);"), "the input bar's Send sends on its own");
+        // (the @ badges written as the ids they stand for on the way)
+        assert!(p.contains("    sendLine(mentionize(t));"), "the input bar's Send sends on its own");
         assert!(
             p.contains("sendLine(topic, S.discuss_start);"),
             "the discussion topic box sends on its own (it never arrives when the opener is a model)"

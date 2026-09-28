@@ -5,7 +5,7 @@
  * Code and a real Codex, each in a tab of this checkout's build, each given
  * the app's MCP server the way the app would register it (the call held for up
  * to an hour). A person's request is typed into one tab, naming another as
- * [[tab:ID]]; the trial passes when the answer the other tab alone could give
+ * <@ID>; the trial passes when the answer the other tab alone could give
  * comes back and is reported by the first.
  *
  *     cargo build
@@ -289,7 +289,7 @@ const secretTrial = async (kind, n, caller, callee) => {
   const wait = kind === 'long'
     ? 'first run a shell command that waits 90 seconds (in the foreground, so it finishes before you answer), and after that '
     : '';
-  const ask = `Ask [[tab:${callee}]] to ${wait}tell you the text written in ${name} in its own folder. ` +
+  const ask = `Ask <@${callee}> to ${wait}tell you the text written in ${name} in its own folder. ` +
     'That memo is only in its folder. When you have its answer, reply to me with only that text.';
   const from = logLines().length;
   const t0 = Date.now();
@@ -315,7 +315,7 @@ const loopTrial = async (n) => {
   // A mark of this trial's own: the screen still shows the last trial's answer
   const mark = `LOOP${nonce()}`;
   const said = new RegExp(`${mark}-\\d`);
-  const ask = 'Ask [[tab:rev-codex]] to review calc.js in this folder for bugs. Fix every bug it reports, ' +
+  const ask = 'Ask <@rev-codex> to review calc.js in this folder for bugs. Fix every bug it reports, ' +
     'then ask it to review again. Repeat until it reports no remaining bugs. ' +
     `Then reply to me with only ${mark}- followed by how many reviews it took, like ${mark}-N.`;
   const from = logLines().length;
