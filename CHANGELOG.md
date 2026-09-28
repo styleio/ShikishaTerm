@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-28
+
 ### Added
 - **@ in the input bar hands work to another tab.** The @ button (or an @ typed at
   the start of a word) lists this desk's other tabs, nearest first, and a pick
@@ -20,8 +22,16 @@ once it reaches its first tagged release.
   skill that teaches the AI this (Settings > AI agents takes it out again).
 
 ### Changed
+- **A finished turn's reply is read from the CLI's own record.** What an AI said
+  is taken from the conversation file the CLI keeps (Gemini's too), counting only
+  what was written after the turn began, so the previous answer can never pass for
+  this one. The copy scraped off the screen is used only for CLIs that keep none.
 - On a phone, Backspace is the first key of the key row, and the input row no
   longer has a ⌫ button of its own.
+
+### Fixed
+- An idle Codex tab reads as done again: the app's own MCP server and Codex's
+  helper process are no longer counted as work in progress.
 
 ### Removed
 - **The 🎯 target panel.** Aiming an AI at another tab and having it write Lua
@@ -3672,7 +3682,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/styleio/ShikishaTerm/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/styleio/ShikishaTerm/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/styleio/ShikishaTerm/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/styleio/ShikishaTerm/compare/v0.17.0...v0.18.0
