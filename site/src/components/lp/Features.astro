@@ -8,11 +8,16 @@ const { features } = Astro.props.copy;
 ---
 
 <div class="features-head">
-  <div class="container">
+  <div class={`container ${features.image ? "features-head-grid" : ""}`}>
     <div class="section-head" style="margin-bottom:0">
       <span class="eyebrow">{features.eyebrow}</span>
       <h2>{features.title}</h2>
     </div>
+    {features.image && (
+      <div class="features-head-art">
+        <img src={features.image.src} alt={features.image.alt} width="800" height="800" loading="lazy" />
+      </div>
+    )}
   </div>
 </div>
 

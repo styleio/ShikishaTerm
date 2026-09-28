@@ -54,7 +54,7 @@ export type LpCopy = {
     states: { working: string; done: string; waiting: string };
     image: { src: string; alt: string };
   };
-  features: { eyebrow: string; title: string; items: Feature[] };
+  features: { eyebrow: string; title: string; image?: { src: string; alt: string }; items: Feature[] };
   phone: {
     eyebrow: string;
     title: string;

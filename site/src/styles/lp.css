@@ -916,6 +916,23 @@ ol {
 .features-head .section-head {
   max-width: 920px;
 }
+/* With a picture beside it, the title takes the room that is left and the
+   picture stands at the right, the size of the feature pictures below */
+.features-head-grid {
+  display: flex;
+  align-items: center;
+  gap: 64px;
+}
+.features-head-grid .section-head {
+  flex: 1;
+}
+.features-head-art {
+  flex: 0 0 360px;
+}
+.features-head-art img {
+  width: 100%;
+  height: auto;
+}
 @media (max-width: 768px) {
   .feature {
     padding: 64px 0;
@@ -924,6 +941,16 @@ ol {
   .feature.flip .container {
     flex-direction: column;
     gap: 32px;
+  }
+  .features-head-grid {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 32px;
+  }
+  .features-head-art {
+    flex: none;
+    width: min(280px, 80%);
+    margin-inline: auto;
   }
   .feature-text,
   .feature-art {

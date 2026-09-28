@@ -1,5 +1,6 @@
 ---
 import type { LpCopy } from "../../lp/types";
+import { sentences } from "../../lp/sentences";
 
 interface Props {
   copy: LpCopy;
@@ -16,7 +17,7 @@ const keycap = (title: string) => {
   <div class="container">
     <div class="section-head">
       <span class="eyebrow">{steps.eyebrow}</span>
-      <h2>{steps.title}</h2>
+      <h2>{sentences(steps.title).map((t) => <span class="sentence">{t}</span>)}</h2>
     </div>
 
     <ol class="steps-grid">
@@ -33,7 +34,7 @@ const keycap = (title: string) => {
     </ol>
 
     <div class="nb-lg shot steps-shot">
-      <img src={steps.image.src} alt={steps.image.alt} width="1210" height="988" loading="lazy" />
+      <img src={steps.image.src} alt={steps.image.alt} width="1600" height="650" loading="lazy" />
     </div>
   </div>
 </section>

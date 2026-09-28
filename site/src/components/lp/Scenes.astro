@@ -1,13 +1,11 @@
 ---
 import type { LpCopy } from "../../lp/types";
+import { sentences } from "../../lp/sentences";
 
 interface Props {
   copy: LpCopy;
 }
 const { scenes } = Astro.props.copy;
-// A title of two sentences breaks between them first: each sentence is kept
-// together when it fits, so a line never ends in the middle of the first one
-const sentences = (title: string) => title.split(/(?<=。)/).filter(Boolean);
 ---
 
 <section class="scenes section" id="scenes">

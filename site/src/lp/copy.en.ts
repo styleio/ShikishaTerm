@@ -150,25 +150,26 @@ export const en: LpCopy = {
   features: {
     eyebrow: "What it does",
     title: "The hand-off is the work.",
+    image: { src: "/lp/relay.webp", alt: "Two robots passing a document between them like a relay baton" },
     items: [
       {
-        id: "relay",
+        id: "mention",
         tone: "purple",
-        eyebrow: "Hand-off",
-        title: "Agents that pass work to each other",
+        eyebrow: "@mention",
+        title: "@mention one agent from another, like in a chat app",
         body:
-          "Knowing who is waiting is half of it. The other half is not being the courier. A code-and-review loop runs until it passes, then messages you on Slack.",
-        points: ["Write it in Lua, or just ask for it", "A cap on how many times work may pass along", "Every exchange kept as a readable transcript"],
-        image: { src: "/lp/relay.webp", alt: "Two robots passing a document between them like a relay baton" },
+          "Type @ in the input bar and pick a tab: the agent in front hands the work to that one, reads its answer and carries on. No more being the copy-paste courier. A long job sends its answer back when it is done.",
+        points: ["Type @ to see the list of tabs", "Agents team up the way people do in a chat", "Hand work to a browser tab and more with @"],
+        image: { src: "/lp/mention.webp", alt: "A robot calling @codex in a chat input box, and another robot answering with a check mark" },
       },
       {
-        id: "debate",
+        id: "loop",
         tone: "green",
-        eyebrow: "Debate",
-        title: "Put the same question to four of them",
+        eyebrow: "Review loop",
+        title: "Back and forth until the review comes back clean",
         body:
-          "Have Claude, Codex, Gemini and DeepSeek debate a question, with a judge to sum it up. You can cut in at any point, and stop it at any point.",
-        points: ["Different AIs, going back and forth", "A judge that writes the summary", "Room for you to interrupt, and to stop"],
+          "“Build this feature, ask @codex to review it, and loop until there is nothing left to fix.” That one line starts the write-and-review loop. The app counts the rounds, and you can step in at any time.",
+        points: ["The app counts the rounds, up to a limit you set", "Step in or stop it whenever you like", "Every exchange stays in each agent's own conversation"],
         image: { src: "/lp/debate.webp", alt: "Four robots around a round table and a referee robot with a whistle" },
       },
       {
@@ -237,13 +238,13 @@ export const en: LpCopy = {
   },
   steps: {
     eyebrow: "Getting started",
-    title: "Three steps. No JSON.",
+    title: "Three steps. A wizard walks you through the rest.",
     items: [
-      { title: "Install it", body: "From the Microsoft Store, or unzip the portable copy anywhere you like. A USB stick works." },
-      { title: "Open it", body: "A terminal tab is already there. Use it as your everyday shell to begin with." },
-      { title: "[e] to configure", body: "The settings screen opens inside the window. Pick which AI runs in which folder, in a form." },
+      { title: "Install it", body: "From the Microsoft Store, or unzip the portable copy anywhere you like." },
+      { title: "Choose your AI", body: "The first launch opens Getting set up. Pick your main AI from the ones on your PC. One you do not have yet opens its install page right there." },
+      { title: "Add a project", body: "Pick a folder or clone from a Git URL — on a MicroVM or an SSH server too. Then press where it points, and the AI starts in that folder." },
     ],
-    image: { src: "/lp/shot-settings.webp", alt: "The settings screen: each tab’s name, command or SSH host, working folder and automation, set in a form" },
+    image: { src: "/lp/shot-setup.en.webp", alt: "The Getting set up screen: choose your main AI from the ones installed on this PC, with a link to install the ones that are not" },
   },
   faq: {
     eyebrow: "Questions people ask first",
