@@ -997,7 +997,7 @@ fn tend_asks(
     asks.retain_mut(|a| {
         let target = find(&a.target);
         let caller = a.caller.as_deref().and_then(find);
-        let caller_free = caller.is_some_and(|t| crate::asktab::quiet(t.state));
+        let caller_free = caller.is_some_and(|t| crate::asktab::turn_over(t.state));
         let same_folder = match (caller.and_then(|t| t.cwd()), target.and_then(|t| t.cwd())) {
             (Some(x), Some(y)) => Some(crate::sessionfind::same_folder(x, y)),
             _ => None,
@@ -3976,6 +3976,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         sent_at: None,
                                         seen_busy: false,
                                         quiet_since: None,
+                                        background_since: None,
                                         deadline: now + wait,
                                         round: *round,
                                         max_rounds,
@@ -4029,7 +4030,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     || hooks::TabRef::Name(caller.clone())
                         .resolve(&keys)
                         .and_then(|i| tabs.get(i - 1))
-                        .is_some_and(|t| !crate::asktab::quiet(t.state) && t.state != TabState::Exited)
+                        .is_some_and(|t| !crate::asktab::turn_over(t.state) && t.state != TabState::Exited)
             });
         }
 

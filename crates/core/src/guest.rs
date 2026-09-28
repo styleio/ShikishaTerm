@@ -269,7 +269,7 @@ fn split(line: &str) -> Vec<String> {
 
 /// Where a running process's program lives on disk.
 #[cfg(windows)]
-fn image_of(pid: u32) -> Option<String> {
+pub(crate) fn image_of(pid: u32) -> Option<String> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -290,7 +290,7 @@ fn image_of(pid: u32) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn image_of(_pid: u32) -> Option<String> {
+pub(crate) fn image_of(_pid: u32) -> Option<String> {
     None
 }
 

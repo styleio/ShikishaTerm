@@ -119,6 +119,14 @@ pub struct ProfileFile {
     /// answer for a shell, where a Ctrl+C nobody asked for can end a build
     #[serde(default)]
     pub interrupt: Vec<String>,
+    /// Programs the CLI keeps running for itself, by file name
+    /// (`codex-code-mode-host.exe`). A tab counts what is still alive in its
+    /// job after a turn as background work; a helper the CLI leaves up for
+    /// minutes after it ran a command is not work anybody started, and without
+    /// this the tab read as busy in the background after every command.
+    /// Measured, never guessed: a name here hides that program's work for good
+    #[serde(default)]
+    pub helpers: Vec<String>,
     /// Where the person reads how to install this CLI, for a tab that could
     /// not start because it is not on this PC. The maker's own page: this app
     /// does not install anybody's program on this PC for them
@@ -433,6 +441,8 @@ pub struct Profile {
     /// What the emergency stop presses here (see `ProfileFile::interrupt`),
     /// already as bytes. Empty: nothing
     pub interrupt: Vec<u8>,
+    /// The CLI's own helper programs (see `ProfileFile::helpers`)
+    pub helpers: Vec<String>,
 }
 
 impl Profile {
@@ -450,6 +460,7 @@ impl Profile {
             done_confirm_ms: None,
             resume: None,
             interrupt: Vec::new(),
+            helpers: Vec::new(),
         }
     }
 
@@ -474,6 +485,7 @@ impl Profile {
             ignore_bottom_rows: f.ignore_bottom_rows,
             resume: f.resume,
             interrupt: key_bytes(&f.interrupt)?,
+            helpers: f.helpers,
             name: f.name,
         })
     }
