@@ -14994,6 +14994,10 @@ pub fn exec_commands(
                     append_hook_log(&format!("chain limit ({max_chain}): tab{origin} -> tab{target}"));
                     continue;
                 }
+                // Who sent it, by the id it is named by, for a model tab to say so
+                let from = session_of(origin)
+                    .and_then(|i| tabs.get(i))
+                    .map(|t| t.id.clone().unwrap_or_else(|| t.called().to_string()));
                 let Some(t) = session_of(target).and_then(|i| tabs.get_mut(i)) else {
                     continue;
                 };
@@ -15006,7 +15010,7 @@ pub fn exec_commands(
                     // model bridge: hits complete() on a thread, injects the
                     // response into the screen, and writes it to say.txt too.
                     // Detection (BUSY -> DONE -> on_done) runs on the injected activity.
-                    t.dispatch_model(text.clone());
+                    t.dispatch_model(text.clone(), from);
                     append_hook_log(&format!("model's turn tab{target} ({} chars)", text.chars().count()));
                 } else {
                     let seen = t.output_count();
