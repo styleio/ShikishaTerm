@@ -10329,7 +10329,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Ok(()) => flash = Some(i18n::tp("msg.skill.removed", &[("name", &name)])),
                     Err(e) => flash = Some(i18n::tp("msg.skill.failed", &[("name", &name), ("error", &e.to_string())])),
                 },
-                "later" => crate::skill::set_later(&ai, true),
                 _ => {}
             }
             skill_view = crate::skill::statuses();

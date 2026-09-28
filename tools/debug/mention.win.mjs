@@ -14,7 +14,8 @@
  *
  * Checked: every tab finds `shikisha` on its PATH; the @ button is there over
  * an AI tab; the first time, the list asks about the skill before anything is
- * written, "Not now" leaves one line and writes nothing, and "Install" writes
+ * written and is the whole list, "Close" writes nothing and it comes back at
+ * the next @, and "Install" writes
  * the skill and says so; typing "@" offers the other AI tab and not the shell
  * (and the terminal, which is given commands) and not the tab in front; Enter takes it and a badge is painted under it;
  * Backspace takes the whole badge back out; and what the tab in front
@@ -173,14 +174,15 @@ try {
   await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill .go")`), 'the card', 5000);
   check(await run(`document.querySelector(".fmenu.mentions .mskill code").textContent`) === SKILL,
     'the card says where it would write: ' + SKILL);
-  check(await run(`document.querySelectorAll(".fmenu.mentions .mrow").length`) === 2, 'the tabs are still offered under it');
+  check(await run(`document.querySelectorAll(".fmenu.mentions .mrow").length`) === 0, 'the card is the whole list: no tabs under it');
   check(!fs.existsSync(SKILL), 'nothing is written yet');
   await run(`[...document.querySelectorAll(".fmenu.mentions .mskill button")].find(b => b.classList.contains("quiet")).click(); true`);
-  await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill.line")`), 'the one line', 5000);
-  check(!fs.existsSync(SKILL), '"Not now" writes nothing');
-  await sleep(6000);   // the app reads the skill again every few seconds
-  check(await run(`S.skills.claude.state`) === 'later', '"Not now" is remembered');
-  await run(`document.querySelector(".fmenu.mentions .mskill.line button").click(); true`);
+  await until(() => run(`!document.querySelector(".fmenu.mentions")`), 'the list to close', 5000);
+  check(!fs.existsSync(SKILL), '"Close" writes nothing');
+  await run(`castMentionEl.click(); true`);
+  await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill .go")`), 'the card again', 5000);
+  check(true, 'the next @ asks again');
+  await run(`document.querySelector(".fmenu.mentions .mskill button.primary").click(); true`);
   await until(async () => fs.existsSync(SKILL), 'the skill to be written', 10000);
   check(fs.readFileSync(SKILL, 'utf8').startsWith('---\nname: shikisha'), '"Install" writes the skill');
   await until(() => run(`!!document.querySelector(".fmenu.mentions .mskill.done")`), 'the line saying it is in', 10000);

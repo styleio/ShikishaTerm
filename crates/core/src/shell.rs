@@ -1296,28 +1296,30 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div.mrow .at { margin-left:auto; padding-left:var(--s3); font-size:11px; color:var(--dim); }
   .fmenu div.mnone { cursor:default; font-size:12px; color:var(--dim); max-width:280px; }
   .fmenu div.mnone:hover { background:transparent; }
-  /* The skill the @ list asks about, above the tabs (§5 Mention). Not a row:
-     nothing happens on a press of the card itself, only its buttons */
-  .fmenu div.mskill { cursor:default; display:flex; flex-direction:column; gap:var(--s1);
-    padding:var(--s3); max-width:360px; border-bottom:1px solid var(--line); border-radius:0;
-    margin-bottom:var(--s1); }
+  /* The skill the @ list asks about (§5 Mention): until the AI in front has it,
+     this card is the whole list -- a one-question card, sized like the held
+     folder's (#held): title 13.5/600, one sentence 13px --dim, the path in a
+     --sunk well, where to undo it 11.5px --faint, then a quiet Close and the
+     primary Install. It is not a row: nothing happens on a press of the card */
+  .fmenu div.mskill { cursor:default; display:flex; flex-direction:column; gap:var(--s2);
+    padding:var(--s4); width:min(360px, calc(100vw - 32px)); box-sizing:border-box; }
   .fmenu div.mskill:hover { background:transparent; }
-  .fmenu div.mskill .t { font-size:13px; font-weight:600; color:var(--text); }
-  .fmenu div.mskill .say { font-size:12px; color:var(--text); white-space:normal; line-height:1.5; }
-  .fmenu div.mskill .kv { font-size:11px; color:var(--dim); white-space:normal; }
-  .fmenu div.mskill .kv code { font-family:var(--mono); color:var(--text); word-break:break-all; }
-  .fmenu div.mskill .kv .v { color:var(--text); }
+  .fmenu div.mskill .t { font-size:13.5px; font-weight:600; color:var(--text); }
+  .fmenu div.mskill .say { font-size:13px; line-height:1.5; color:var(--dim); white-space:normal; }
+  .fmenu div.mskill .lbl { font-size:12px; color:var(--text); margin-top:var(--s1); }
+  .fmenu div.mskill .well { display:block; padding:var(--s2) var(--s3); background:var(--sunk);
+    border-radius:var(--r-ctl); font-family:var(--mono); font-size:11.5px; color:var(--text);
+    white-space:normal; word-break:break-all; }
+  .fmenu div.mskill .undo { font-size:11.5px; color:var(--faint); }
   .fmenu div.mskill .go { display:flex; justify-content:flex-end; gap:var(--s2); margin-top:var(--s2); }
   .fmenu div.mskill button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px;
-    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer;
-    white-space:nowrap; flex:none; }
+    border:1px solid transparent; border-radius:var(--r-ctl); cursor:pointer; white-space:nowrap; }
   .fmenu div.mskill button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600; }
-  .fmenu div.mskill button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  .fmenu div.mskill button.quiet { background:transparent; color:var(--dim); }
   .fmenu div.mskill button.quiet:hover { color:var(--text); }
-  .fmenu div.mskill.line { flex-direction:row; align-items:center; justify-content:space-between;
-    gap:var(--s3); border-bottom:0; border-top:1px solid var(--line); margin:var(--s1) 0 0; }
-  .fmenu div.mskill.line.done { border-top:0; border-bottom:1px solid var(--line); margin:0 0 var(--s1); }
-  .fmenu div.mskill.line.done .say { color:var(--dim); }
+  /* Right after it goes in: one quiet line above the tabs */
+  .fmenu div.mskill.done { padding:var(--s2) var(--s3); border-bottom:1px solid var(--line);
+    border-radius:0; margin-bottom:var(--s1); width:auto; }
   /* Held shut while the AI writes into it. A box that still looks writable and
      is not is worse than one that plainly is not, so the whole row goes flat:
      the field takes the panel's own colour, loses its caret, and the buttons
@@ -1331,6 +1333,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--brand); color:#04121c; font-weight:700; cursor:pointer; }
   #castbar .castbtn { padding:8px 11px; border:1px solid var(--line);
     border-radius:var(--r-ctl); background:var(--bg); color:var(--text); cursor:pointer; }
+  /* Every control in the row is exactly as tall as the field holding one line
+     (16px text at 1.35, 8px padding each side, a 1px border: 40px), so the
+     row reads as one strip; they stay on its bottom edge while it grows. The
+     attach and @ are line drawings (pickIcon), square, their mark centred */
+  #castbar .castbtn, #castbar .castsend { box-sizing:border-box; height:40px; flex:none; }
+  #castbar .castico { width:40px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+  #castbar .castico .ico { display:flex; }
+  #castbar .castico svg { width:18px; height:18px; }
   /* A long message still going into the tab in front. It is the dock's top
      row: the dock stands on the bottom edge and grows upward, so a row
      appearing here never moves the input row out from under the finger that
@@ -7769,6 +7779,10 @@ const PICK_ICON = {
   // Throwing something away for good. Its own drawing rather than another ✕:
   // beside the ✕ that only puts a line out of sight, one mark for two acts --
   // one of them undoable and the other not -- is the mistake waiting to happen
+  // The input bar's attach and @: drawn like the rest, where an emoji clip
+  // came in the system's own colours and at its own size
+  clip: '<path d="M11.8 6.6 7.1 11.3a3.1 3.1 0 0 1-4.4-4.4l5-5a2.1 2.1 0 0 1 3 3l-5 5a1.05 1.05 0 0 1-1.5-1.5l4.6-4.6"/>',
+  at: '<circle cx="7" cy="7" r="2.3"/><path d="M9.3 4.7v3.1a1.6 1.6 0 0 0 3.2 0V7a5.5 5.5 0 1 0-2.2 4.4"/>',
   trash: '<path d="M2.5 3.5h9"/><path d="M5.5 3.5V2.2h3v1.3"/><path d="M3.6 3.5 4.2 12h5.6l.6-8.5"/><path d="M6 5.8v3.8M8 5.8v3.8"/>',
 };
 function pickIcon(name) {
@@ -19122,48 +19136,43 @@ function skillOf(ai) {
 }
 // The CLI the person just agreed for, so the list can say it was done
 let skillJustIn = null;
-// The skill, in the list: asked about in full the first time, one line once
-// "not now" was chosen, and a line saying it is in right after it went in.
-// Never a refusal -- the tabs stay under it, choosable, either way
-function mentionSkillRows() {
+// The skill, in the list. Until the AI in front has it, the list is this card
+// and nothing else: offered under a row of tabs, it read as noise and was
+// passed over, and a tab picked without it goes to an AI that cannot act on
+// it. The card says what is written and where, and how to take it out; it
+// can be closed, and comes back at the next @ until the skill is in. Right
+// after it goes in, one line says so above the tabs.
+function mentionSkillCard() {
   const me = activeTab();
   const sk = me && skillOf(me.ai);
-  if (!sk) return { top: [], bottom: [] };
+  if (!sk) return null;
   const name = sk.name || me.ai;
   const fill = (k, d) => (T[k] || d).replaceAll("{name}", name);
   const keep = e => e.preventDefault();
-  const act = (a) => (e) => {
-    e.stopPropagation();
-    if (a === "install") skillJustIn = me.ai;
-    send({kind:"skill", ai: me.ai, act: a});
-    if (a === "later") { S.skills[me.ai] = Object.assign({}, sk, {state: "later"}); drawMentions(); }
-  };
-  const btn = (cls, a, label) => {
-    const b = el("button", {type:"button", class: cls, onclick: act(a)}, label);
+  const btn = (cls, label, onclick) => {
+    const b = el("button", {type:"button", class: cls, onclick: (e) => { e.stopPropagation(); onclick(); }}, label);
     b.addEventListener("pointerdown", keep);
     return b;
   };
   if (sk.state === "missing") {
-    return { top: [el("div", {class:"mskill"},
+    return { alone: true, el: el("div", {class:"mskill"},
       el("span", {class:"t"}, T["tui.mention.skill.title"] || "Getting ready to ask other tabs (once)"),
-      el("span", {class:"say"}, fill("tui.mention.skill.say", "Teach {name} how to hand work to a SHIKISHA tab (a skill).")),
-      el("span", {class:"kv"}, (T["tui.mention.skill.where"] || "Written to") + " ", el("code", {}, sk.file)),
-      el("span", {class:"kv"}, (T["tui.mention.skill.undo"] || "To take it out") + " ",
-        el("span", {class:"v"}, T["tui.mention.skill.undo.where"] || "Settings > AI agents")),
+      el("span", {class:"say"}, fill("tui.mention.skill.say", "Teach {name} how to hand work to another SHIKISHA tab and read its reply (a skill). Once it is in, @ lists the tabs.")),
+      el("span", {class:"lbl"}, T["tui.mention.skill.where"] || "Written to"),
+      el("code", {class:"well"}, sk.file),
+      el("span", {class:"undo"}, T["tui.mention.skill.undo"] || "To take it out: Settings > AI agents"),
       el("span", {class:"go"},
-        btn("quiet", "later", T["tui.mention.skill.later"] || "Not now"),
-        btn("primary", "install", T["tui.mention.skill.install"] || "Install and continue")))], bottom: [] };
-  }
-  if (sk.state === "later") {
-    return { top: [], bottom: [el("div", {class:"mskill line"},
-      el("span", {class:"say"}, fill("tui.mention.skill.short", "{name} is not ready to ask other tabs yet.")),
-      btn("", "install", T["tui.mention.skill.install.short"] || "Install"))] };
+        btn("quiet", T["tui.mention.skill.close"] || "Close", () => closeMentions()),
+        btn("primary", T["tui.mention.skill.install"] || "Install", () => {
+          skillJustIn = me.ai;
+          send({kind:"skill", ai: me.ai, act: "install"});
+        }))) };
   }
   if (skillJustIn === me.ai && (sk.state === "in" || sk.state === "old")) {
-    return { top: [el("div", {class:"mskill line done"},
-      el("span", {class:"say"}, fill("tui.mention.skill.done", "Done: {name} can ask other tabs now.")))], bottom: [] };
+    return { alone: false, el: el("div", {class:"mskill done"},
+      el("span", {class:"say"}, fill("tui.mention.skill.done", "Done: {name} can ask other tabs now."))) };
   }
-  return { top: [], bottom: [] };
+  return null;
 }
 // A new state: the button follows the tab in front, and an open list follows
 // the skill changing under it (installed here, or from the phone)
@@ -19292,14 +19301,16 @@ function drawMentions() {
     return row;
   });
   // Nothing to name is said, with what would make something appear
-  const skill = mentionSkillRows();
+  const card = mentionSkillCard();
   if (!rows.length) {
     rows.push(el("div", {class:"mnone"}, q
       ? (T["tui.mention.nomatch"] || "No tab on this desk has that name.")
       : (T["tui.mention.none"] || "No other tab on this desk to hand work to. Open an AI, a terminal or a page and it appears here.")));
   }
   closeFolderMenu();
-  const m = openList(castMentionEl, [...skill.top, ...rows, ...skill.bottom], rows.length > 8, null, "mentions");
+  const m = card && card.alone
+    ? openList(castMentionEl, [card.el], false, null, "mentions")
+    : openList(castMentionEl, [...(card ? [card.el] : []), ...rows], rows.length > 8, null, "mentions");
   // Over the bar rather than under it: the bar stands on the bottom edge, and
   // a list clamped into the window from below would lie on the words being typed
   const r = castBar.getBoundingClientRect();
@@ -19330,7 +19341,7 @@ function pickMention(t) {
 // one lit, Esc puts it away. True when the key was the list's
 function mentionKey(e) {
   if (!mentionPick) return false;
-  const n = mentionPick.tabs.length;
+  const n = document.querySelector(".fmenu.mentions .mrow") ? mentionPick.tabs.length : 0;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     if (n) mentionPick.on = (mentionPick.on + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
     drawMentions();
@@ -19403,14 +19414,14 @@ function ensureBar() {
   const fileIn = el("input", {type:"file", accept:"image/*,application/pdf",
     style:"display:none",
     onchange:(e) => { const f = e.target.files && e.target.files[0]; if (f) attachFile(f); e.target.value = ""; }});
-  castAttEl = el("button", {class:"castbtn", title: T["tui.cast.attach"] || "Attach a file",
-    onclick:() => fileIn.click()}, "📎");
+  castAttEl = el("button", {class:"castbtn castico", title: T["tui.cast.attach"] || "Attach a file",
+    onclick:() => fileIn.click()}, pickIcon("clip"));
   // @: name another AI tab here to hand it work. A press while the list is
   // open puts it away -- the list's own "pressed elsewhere" has already done
   // that by the time the click lands, so whether it was open is read first
   let mentionWasOpen = false;
-  castMentionEl = el("button", {class:"castbtn", title: T["tui.mention.button"] || "Hand work to another AI tab",
-    onclick:() => { if (!mentionWasOpen) { castInput.focus(); openMentions(-1); } }}, "@");
+  castMentionEl = el("button", {class:"castbtn castico", title: T["tui.mention.button"] || "Hand work to another AI tab",
+    onclick:() => { if (!mentionWasOpen) { castInput.focus(); openMentions(-1); } }}, pickIcon("at"));
   castMentionEl.addEventListener("pointerdown", (e) => {
     mentionWasOpen = !!document.querySelector(".fmenu.mentions");
     if (mentionWasOpen) mentionPick = null;

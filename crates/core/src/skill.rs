@@ -115,10 +115,8 @@ pub fn file_of(ai: &str) -> Option<PathBuf> {
 pub enum Status {
     /// This CLI has no skills folder to put it in
     Unsupported,
-    /// Not there, and not turned down
+    /// Not there
     Missing,
-    /// Not there, and the person said "not now"
-    Later,
     /// There: this app's current one, or a file of that name somebody else
     /// wrote, which is theirs and is left alone
     Installed,
@@ -131,7 +129,6 @@ impl Status {
         match self {
             Status::Unsupported => "none",
             Status::Missing => "missing",
-            Status::Later => "later",
             Status::Installed => "in",
             Status::Old => "old",
         }
@@ -142,10 +139,10 @@ pub fn status(ai: &str) -> Status {
     let Some(file) = file_of(ai) else {
         return Status::Unsupported;
     };
-    status_at(&file, later().iter().any(|a| a == ai))
+    status_at(&file)
 }
 
-fn status_at(file: &Path, turned_down: bool) -> Status {
+fn status_at(file: &Path) -> Status {
     match std::fs::read_to_string(file) {
         Ok(had)
             if had.contains("written by SHIKISHA-TERM, skill version ")
@@ -154,7 +151,6 @@ fn status_at(file: &Path, turned_down: bool) -> Status {
             Status::Old
         }
         Ok(_) => Status::Installed,
-        Err(_) if turned_down => Status::Later,
         Err(_) => Status::Missing,
     }
 }
@@ -163,7 +159,6 @@ fn status_at(file: &Path, turned_down: bool) -> Status {
 pub fn install(ai: &str) -> Result<PathBuf> {
     let file = file_of(ai).ok_or_else(|| anyhow!("{ai} has no skills folder"))?;
     install_at(&file)?;
-    set_later(ai, false);
     Ok(file)
 }
 
@@ -211,35 +206,11 @@ pub fn refresh() -> Vec<String> {
         if !seen.insert(file.clone()) {
             continue;
         }
-        if status_at(&file, false) == Status::Old && install_at(&file).is_ok() {
+        if status_at(&file) == Status::Old && install_at(&file).is_ok() {
             done.push(ai.to_string());
         }
     }
     done
-}
-
-/// The CLIs the person said "not now" for, kept beside the app's other state
-fn later_file() -> PathBuf {
-    crate::config::state_path("skill-later")
-}
-
-fn later() -> Vec<String> {
-    std::fs::read_to_string(later_file())
-        .unwrap_or_default()
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-pub fn set_later(ai: &str, on: bool) {
-    let mut list = later();
-    list.retain(|a| a != ai);
-    if on {
-        list.push(ai.to_string());
-    }
-    let _ = std::fs::write(later_file(), list.join("\n"));
 }
 
 /// Every AI this app knows a skills folder for, with how it stands: what the
@@ -274,8 +245,7 @@ mod tests {
     fn it_is_written_read_as_current_and_taken_out_again() {
         let d = scratch("round");
         let file = d.join(NAME).join("SKILL.md");
-        assert_eq!(status_at(&file, false), Status::Missing);
-        assert_eq!(status_at(&file, true), Status::Later);
+        assert_eq!(status_at(&file), Status::Missing);
         install_at(&file).unwrap();
         let had = std::fs::read_to_string(&file).unwrap();
         assert!(
@@ -283,7 +253,7 @@ mod tests {
             "the front matter is not first: {had}"
         );
         assert!(had.contains("shikisha ask ID"));
-        assert_eq!(status_at(&file, false), Status::Installed);
+        assert_eq!(status_at(&file), Status::Installed);
         remove_at(&file).unwrap();
         assert!(!file.exists());
         assert!(
@@ -303,9 +273,9 @@ mod tests {
             "---\nname: shikisha\n---\n<!-- written by SHIKISHA-TERM, skill version 0; x -->\n",
         )
         .unwrap();
-        assert_eq!(status_at(&file, false), Status::Old);
+        assert_eq!(status_at(&file), Status::Old);
         std::fs::write(&file, "---\nname: shikisha\n---\nmy own notes\n").unwrap();
-        assert_eq!(status_at(&file, false), Status::Installed);
+        assert_eq!(status_at(&file), Status::Installed);
         assert!(
             remove_at(&file).is_err(),
             "a file this app did not write was removed"

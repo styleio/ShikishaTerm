@@ -8,9 +8,9 @@
  * What is judged: the list opens over the bar, never on the words being
  * typed; it is ordered nearest first (the same folder, then the same project,
  * then the rest) and says where each tab is; two tabs with one name are told
- * apart; a shell tab and the tab in front are not offered. The first time,
- * the skill is asked about above the tabs (what is written and where, and how
- * to take it out), and after "Not now" only one line stays at the foot. A badge sits
+ * apart; a shell tab and the tab in front are not offered. Until the AI in
+ * front has the skill, the list is only the card that asks for it (what is
+ * written and where, and how to take it out). A badge sits
  * exactly under its own letters, is a chip rather than a state colour, and
  * the row keeps the field as its widest thing on a phone.
  */
@@ -78,11 +78,8 @@ export default {
       castInput.value = "Ask @co";
       castInput.setSelectionRange(7, 7);
       openMentions(4);`),
-    // The first time: the list asks before the skill is written, and the
-    // tabs stay under it, choosable
+    // The first time: the list is the card that asks for the skill, alone
     ask: opened(`castInput.focus(); openMentions(-1);`, stateOf('missing')),
-    // After "Not now": one line at the foot of the list, not the whole card
-    later: opened(`castInput.focus(); openMentions(-1);`, stateOf('later')),
     // What a pick leaves behind: two badges in a sentence
     badges: opened(`castInput.focus();
       mentions.set("@codex", "otter");

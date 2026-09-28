@@ -2007,7 +2007,7 @@ pub struct NavState {
 /// One CLI and the skill that teaches it to ask another tab (see `skill`)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SkillView {
-    /// `in` / `old` / `missing` / `later` / `none`
+    /// `in` / `old` / `missing` / `none`
     pub state: String,
     /// Where it is written, or would be: what the @ list shows before asking
     pub file: String,
@@ -2165,7 +2165,7 @@ pub struct UiState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machine_ais: Vec<MachineAiChoice>,
     /// How each CLI stands with the skill that teaches it to ask another tab
-    /// (`claude` -> `in` / `old` / `missing` / `later` / `none`): what the @ list
+    /// (`claude` -> `in` / `old` / `missing` / `none`): what the @ list
     /// reads to decide whether to ask first
     #[serde(default)]
     pub skills: std::collections::BTreeMap<String, SkillView>,
