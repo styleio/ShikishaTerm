@@ -193,21 +193,52 @@ pub fn search_far(at: &crate::elsewhere::Elsewhere, machine: &str, query: &str, 
     far_search_hits(&out, &sources, &needle, machine, limit)
 }
 
+/// What a record notes about itself on every line, whose values a search on
+/// another machine takes out before it looks: the folder a conversation ran in
+/// is on every one of its lines, and a word in it would make every line a
+/// candidate to bring over. Only a narrowing -- whatever is left is still
+/// judged here the way a record on this PC is (`reader::mention`), so a key a
+/// CLI adds later costs lines carried over, never a wrong match
+const FAR_BOOKKEEPING: &[&str] = &[
+    "cwd", "gitBranch", "sessionId", "session_id", "uuid", "parentUuid", "leafUuid", "id",
+    "timestamp", "version", "cli_version", "requestId", "slug", "userType", "entrypoint",
+    "originator", "model",
+];
+
+/// How many lines of one record, and how much of them, are brought over as
+/// candidates. The first line that holds the words is almost always one a
+/// reader sees, once the bookkeeping is out of the way
+const FAR_CANDIDATE_LINES: usize = 20;
+const FAR_CANDIDATE_BYTES: usize = 1024 * 1024;
+
+/// How many records of one CLI there are brought over as candidates. The
+/// search wants a page of hits, and a common word would otherwise bring over
+/// a candidate from every record the machine holds
+const FAR_CANDIDATE_RECORDS: usize = 80;
+
 /// The one command `search_far` runs: every CLI's records there, newest first,
 /// each that holds `query` printed as `@@F <which> <mtime> <path>`, then the
-/// start of it and the line it matched on, both in base64
+/// start of it and the lines it matched on -- with the bookkeeping's values
+/// taken out -- both in base64
 fn far_search_script(sources: &[Source], query: &str) -> String {
     use base64::Engine as _;
     let q = base64::engine::general_purpose::STANDARD.encode(query.trim());
-    let mut script = format!("cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); n=0; ");
+    // "key":"value" becomes "key":"", which leaves every line the JSON it was
+    let strip = format!(
+        "s/\"({})\":\"([^\"\\\\]|\\\\.)*\"/\"\\1\":\"\"/g",
+        FAR_BOOKKEEPING.join("|")
+    );
+    let mut script = format!("cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); ");
     for (i, src) in sources.iter().enumerate() {
         let Some(rest) = src.verify.strip_prefix("{home}/").map(crate::sessionfind::any_id) else { continue };
         if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
             continue;
         }
         script.push_str(&format!(
-            "ls -t {rest} 2>/dev/null | while IFS= read -r f; do \
-if [ -z \"$q\" ]; then m=''; else m=$(grep -i -F -m1 -e \"$q\" \"$f\" 2>/dev/null | head -c 65536); [ -z \"$m\" ] && continue; fi; \
+            "n=0; ls -t {rest} 2>/dev/null | while IFS= read -r f; do \
+if [ -z \"$q\" ]; then m=''; else grep -q -i -F -e \"$q\" \"$f\" 2>/dev/null || continue; \
+m=$(sed -E '{strip}' \"$f\" 2>/dev/null | grep -i -F -m {FAR_CANDIDATE_LINES} -e \"$q\" | head -c {FAR_CANDIDATE_BYTES}); \
+[ -z \"$m\" ] && continue; n=$((n+1)); [ $n -gt {FAR_CANDIDATE_RECORDS} ] && break; fi; \
 printf '@@F {i} %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; \
 head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; done; "
         ));
@@ -226,13 +257,19 @@ fn far_search_hits(out: &str, sources: &[Source], needle: &str, machine: &str, l
         let mut parts = rest.splitn(3, ' ');
         let (Some(which), Some(when), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
         let head = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
-        let matched = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
+        let matched = decode(lines.next().unwrap_or_default());
         let Some(src) = which.parse::<usize>().ok().and_then(|i| sources.get(i)) else { continue };
         let Some(id) = id_of(Path::new(path), &head, src) else { continue };
         let cwd = cwd_of(&head, src);
+        // The lines brought over are judged the way a record here is: a
+        // record whose words matched only in what it notes about itself is
+        // not a match
         let snippet = match needle.is_empty() {
             true => String::new(),
-            false => matched.to_lowercase().find(&needle).map(|at| snippet(&matched, at, needle.len())).unwrap_or_default(),
+            false => match crate::reader::mention(&matched, needle) {
+                Some((words, at)) => snippet(&words, at, needle.len()),
+                None => continue,
+            },
         };
         hits.push(Hit {
             program: src.program.clone(),
@@ -1138,12 +1175,13 @@ mod far_search_tests {
             std::fs::write(to, &script).unwrap();
         }
         assert!(!script.contains("rm -rf"), "the words looked for reach the shell as words");
-        assert!(script.contains("grep -i -F -m1"), "{script}");
+        assert!(script.contains("grep -i -F -m 20"), "{script}");
+        assert!(script.contains("\"(cwd|gitBranch|"), "the bookkeeping is not taken out before looking: {script}");
 
         use base64::Engine as _;
         let b = |t: &str| base64::engine::general_purpose::STANDARD.encode(t);
         let head = r#"{"type":"user","cwd":"/home/user/site","sessionId":"aaa"}"#;
-        let line = r#"{"message":{"content":"please fix the login bug in auth.rs"}}"#;
+        let line = r#"{"type":"user","cwd":"","message":{"role":"user","content":"please fix the login bug in auth.rs"}}"#;
         let out = format!(
             "@@F 0 1790430222 .claude/projects/-home-user-site/aaa.jsonl\n{}\n{}\n",
             b(head),
@@ -1155,6 +1193,16 @@ mod far_search_tests {
         assert!(hits[0].title.starts_with("vm: "), "{}", hits[0].title);
         assert!(hits[0].snippet.contains("login bug"), "{}", hits[0].snippet);
         assert_eq!(hits[0].cwd.as_deref(), Some("/home/user/site"));
+
+        // A line whose words did not hold it -- it was only in what the
+        // record notes about itself -- is not a match
+        let noted = r#"{"type":"user","cwd":"","instructions":"login bug","message":{"role":"user","content":"hello"}}"#;
+        let out = format!(
+            "@@F 0 1790430222 .claude/projects/-home-user-site/bbb.jsonl\n{}\n{}\n",
+            b(head),
+            b(noted)
+        );
+        assert!(far_search_hits(&out, &[claude()], "login bug", "vm", 10).is_empty());
     }
 }
 
