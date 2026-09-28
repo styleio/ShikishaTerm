@@ -46,6 +46,11 @@ pub const DEFAULT_WAIT: Duration = Duration::from_secs(50 * 60);
 /// anything a caller may ask for; the loop is what decides when to answer
 pub const LINE_HOLD: Duration = Duration::from_secs(6 * 60 * 60);
 
+/// The commands answered once another tab has finished, which can be an hour
+/// of work: the pipe holds their line for [`LINE_HOLD`], and the `shikisha`
+/// command gives them a wait shorter than an AI's shell will sit through
+pub const HELD: [&str; 3] = ["ask_tab", "tab_run", "browser_do"];
+
 /// A finished-looking tab has to stay finished this long before it counts. A
 /// turn has quiet moments -- between a tool and the next thought -- that the
 /// detector can read as the end
@@ -596,7 +601,7 @@ fn tail(screen: &str, n: usize) -> String {
     lines[end.saturating_sub(n)..end].join("\n")
 }
 
-/// What a named tab is, for deciding which verb reaches it
+/// What a named tab is, for deciding which command reaches it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// An AI in a terminal, or a model tab: asked in words (`ask_tab`)
@@ -650,24 +655,24 @@ pub fn named_in(text: &str) -> std::collections::HashSet<String> {
     out
 }
 
-/// Why a verb does not reach a tab of the other kind, with the one that does
-pub fn wrong_verb(verb: &str, id: &str, kind: Kind) -> Option<String> {
+/// Why a command does not reach a tab of the other kind, with the one that does
+pub fn wrong_command(command: &str, id: &str, kind: Kind) -> Option<String> {
     let right = match kind {
-        Kind::Ai => "ask",
-        Kind::Shell => "run",
-        Kind::Browser(_) => "do",
+        Kind::Ai => "ask_tab",
+        Kind::Shell => "tab_run",
+        Kind::Browser(_) => "browser_do",
         Kind::Missing => return None,
     };
-    if right == verb {
+    if right == command {
         return None;
     }
     let what = match kind {
-        Kind::Ai => format!("<@{id}> is an AI: use `shikisha ask {id} \"what you want it to do\"`"),
+        Kind::Ai => format!("<@{id}> is an AI: use ask_tab (`shikisha ask_tab {id} \"what you want it to do\"`)"),
         Kind::Shell => {
-            format!("<@{id}> is a terminal, not an AI: use `shikisha run {id} \"a command\"`")
+            format!("<@{id}> is a terminal, not an AI: use tab_run (`shikisha tab_run {id} \"a command\"`)")
         }
         Kind::Browser(_) => {
-            format!("<@{id}> is a web page: use `shikisha do {id} \"what to get done on it\"`")
+            format!("<@{id}> is a web page: use browser_do (`shikisha browser_do {id} \"what to get done on it\"`)")
         }
         Kind::Missing => unreachable!(),
     };

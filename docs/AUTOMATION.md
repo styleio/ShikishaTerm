@@ -762,31 +762,40 @@ someone who is already you.
 The first caller of each session is written to `logs/hooks.log`, along with any connection
 that presented no valid key.
 
-### Handing work to another tab: `shikisha`
+### The same commands from a tab: `shikisha`
 
-Every tab finds a command called `shikisha` on its PATH. It talks to the app through the
-tab's own key, so what it asks counts against that tab, under that tab's permissions:
+Every tab finds a command called `shikisha` on its PATH. It is these same commands with
+another door: `shikisha ask_tab otter "review this"` is `shikisha.ask_tab("otter", "review
+this")`. The first word names the command and the rest are its arguments; an argument
+written as JSON (`{"want":3}`) is passed as that value, and every other one as text. It
+talks to the app through the tab's own key, so what it asks counts against that tab, under
+that tab's permissions -- the same table that decides what an AI may call through MCP.
+`shikisha list` shows the commands the tab may call.
+
+The ones an AI in a tab is taught to use:
 
 ```text
-shikisha ask ID "what you want it to do"   # another AI: it does the work and replies
-shikisha run ID "a command"                # a terminal: one command, its output back
-shikisha do ID "what to get done"          # a web page: its 🗣 run driven toward the goal, what it found back
-shikisha tabs                              # the tabs of this desk and what each is
+shikisha ask_tab ID "what you want it to do"   # another AI: it does the work and replies
+shikisha tab_run ID "a command"                # a terminal: one command, its output back
+shikisha browser_do ID "what to get done"      # a web page: its 🗣 run driven toward the goal, what it found back
+shikisha tab_list                              # the tabs of this desk and what each is
+shikisha tab_conversation ID '{"want":3}'      # the last things said in that tab's conversation
 ```
 
 A terminal or a page is only driven when the person named it with `@` in what they last
 sent the AI (a terminal can be a server somewhere). Using the wrong command for a tab says
 which one to use.
 
-It types the request into the tab `ID` on this desk, waits for its AI to finish, and prints
-the reply, ending in one line that says what happened (`[shikisha] DONE`, `STILL WORKING`,
-`WAITING`, …). It waits a little under two minutes, because an AI's shell gives up on a
-command at about that point; when the other tab is not done by then, it says so, and the
-reply is typed into the asking tab when it comes. `shikisha skill` prints the skill that
-explains this to an AI.
+`ask_tab`, `tab_run` and `browser_do` wait for the other tab and print its reply, ending in
+one line that says what happened (`[shikisha] DONE`, `STILL WORKING`, `WAITING`, …). From
+here they wait a little under two minutes unless given a `timeout_ms` of their own, because
+an AI's shell gives up on a command at about that point; when the other tab is not done by
+then, it says so, and the reply is typed into the asking tab when it comes. What any other
+command answers is printed as it is: a text as text, anything else as JSON. `shikisha
+skill` prints the skill that explains this to an AI.
 
 This is what `@` in the input bar is for: choosing a tab puts `<@ID>` in what is sent, and
-the skill tells the AI to run `shikisha ask` with that ID. The first `@` asks before the
+the skill tells the AI to run `shikisha ask_tab` with that ID. The first `@` asks before the
 skill is written (Settings > AI agents puts it in or takes it out).
 
 ### The same door, as MCP tools

@@ -4057,7 +4057,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "browser_do",
                                 &[serde_json::json!(target), serde_json::json!(goal)]) {
                                 Some(e)
-                            } else if let Some(why) = crate::asktab::wrong_verb("do", &target, kind) {
+                            } else if let Some(why) = crate::asktab::wrong_command("browser_do", &target, kind) {
                                 Some(why)
                             } else if kind == crate::asktab::Kind::Missing {
                                 Some(format!("There is no tab <@{target}> on this desk"))
@@ -4095,7 +4095,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // checked here, then kept (see asktab.rs). tab_run is the same
                 // wait for a command typed into a terminal
                 if call.method == "ask_tab" || call.method == "tab_run" {
-                    let verb = if call.method == "ask_tab" { "ask" } else { "run" };
+                    let run = call.method == "tab_run";
                     let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
                     if let Some(eng) = engine.as_ref() {
                         brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
@@ -4107,14 +4107,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 &call.method,
                                 &[serde_json::json!(target), serde_json::json!(text)],
                             )?;
-                            // The verb for this kind of tab, or the one that is
+                            // The command for this kind of tab, or the one that is
                             // -- said, not merely refused
-                            if let Some(why) = crate::asktab::wrong_verb(verb, &target, crate::asktab::kind_of(&target, &surfaces, &tabs)) {
+                            if let Some(why) = crate::asktab::wrong_command(&call.method, &target, crate::asktab::kind_of(&target, &surfaces, &tabs)) {
                                 return Err(why);
                             }
                             // A terminal can be a server somewhere: only one the
                             // person named is typed into
-                            if verb == "run" && call.caller.is_some() && !granted.contains(&target) {
+                            if run && call.caller.is_some() && !granted.contains(&target) {
                                 return Err(format!("Not run: the person has not named <@{target}> in what they asked you. \
                                     A terminal is only typed into when the person names it with @; ask them to."));
                             }
@@ -4152,7 +4152,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         deadline: now + wait,
                                         round: *round,
                                         max_rounds,
-                                        run: (verb == "run").then(crate::asktab::RunFrom::default),
+                                        run: run.then(crate::asktab::RunFrom::default),
                                         far: crate::asktab::FarRead::default(),
                                     });
                                 }

@@ -1,23 +1,34 @@
-//! `shikisha`: the command an AI in a tab runs to hand work to another tab.
+//! `shikisha`: the command an AI in a tab runs to use this app.
 //!
 //! Every tab finds it on its PATH (`shim_dir`), and it finds the app the way
 //! the rest of a tab's children do -- `SHIKISHA_PIPE` and the tab's own key --
 //! so what it asks is counted against that tab, under that tab's permissions.
 //! Nothing to install, nothing to point at the app.
 //!
+//! **One door, the commands Lua has.** `shikisha ask_tab otter "review this"`
+//! is `shikisha.ask_tab("otter", "review this")`: the first word names the
+//! command, the rest are its arguments, and the call goes down the same pipe
+//! to the same code. Nothing here knows what any command does, so a command
+//! added for Lua is a command here the moment it exists, and the permission
+//! table decides what this tab may call, as it does for every other caller.
+//! An argument written as JSON (`{"want":3}`) is handed over as that value;
+//! every other one is a string.
+//!
 //! A command rather than an MCP server for the same reason the skill that
 //! explains it is written only on the person's say-so: registering a server
 //! means writing into the CLI's own settings, and a command on the tab's PATH
 //! changes nothing outside the tab.
 //!
-//! **How long it waits.** Less than two minutes, then it says so and stops:
-//! an AI's shell tool gives up on a command at its own limit (Claude Code's is
-//! two minutes unless asked for more), and a command killed there would say
-//! nothing at all. Stopping first, the AI is told to end its turn -- and the
-//! other tab's reply, when it comes, is typed into this tab (see `asktab`).
+//! **How long it waits.** The commands that wait for another tab (`HELD`)
+//! wait less than two minutes, then say so and stop: an AI's shell tool gives
+//! up on a command at its own limit (Claude Code's is two minutes unless
+//! asked for more), and a command killed there would say nothing at all.
+//! Stopping first, the AI is told to end its turn -- and the other tab's
+//! reply, when it comes, is typed into this tab (see `asktab`).
 //!
-//! Printed for an AI to read, so every answer ends in one line that starts
-//! `[shikisha]` and says, in a word, what happened.
+//! Printed for an AI to read: a text as it is, anything else as JSON, and the
+//! answer of a hand-off ending in one line that starts `[shikisha]` and says,
+//! in a word, what happened.
 
 use std::io::Write as _;
 
@@ -25,17 +36,22 @@ use serde_json::{Value, json};
 
 use crate::api::ApiClient;
 
-/// How long `ask` holds on before handing the wait over to the tab
+/// How long a hand-off holds on before handing the wait over to the tab
 const WAIT_MS: u64 = 100_000;
+
+/// The names this command answered to before it took the commands' own, and
+/// what each is now -- for an AI still following an older copy of the skill
+const RENAMED: [(&str, &str); 4] = [
+    ("ask", "ask_tab"),
+    ("run", "tab_run"),
+    ("do", "browser_do"),
+    ("tabs", "tab_list"),
+];
 
 pub fn run(args: &[String]) -> i32 {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
     match args.first().map(String::as_str) {
-        Some("ask") => held("ask_tab", &args[1..], &mut out, &mut err),
-        Some("run") => held("tab_run", &args[1..], &mut out, &mut err),
-        Some("do") => held("browser_do", &args[1..], &mut out, &mut err),
-        Some("tabs") => tabs(&mut out, &mut err),
         // The skill this app teaches an AI, as it would be written: for a
         // person to read before agreeing, and for a check to put in a folder
         Some("skill") => {
@@ -46,85 +62,58 @@ pub fn run(args: &[String]) -> i32 {
             let _ = writeln!(out, "{}", usage());
             0
         }
-        Some(other) => {
-            let _ = writeln!(err, "[shikisha] {other} is not a command. {}", usage());
+        Some(old) if RENAMED.iter().any(|(was, _)| *was == old) => {
+            let now = RENAMED.iter().find(|(was, _)| *was == old).map(|(_, n)| *n).unwrap_or_default();
+            let _ = writeln!(err, "[shikisha] `{old}` is now `{now}`: run `shikisha {now} ...` with the same arguments.");
             2
         }
+        Some(command) => call(command, &args[1..], &mut out, &mut err),
     }
-}
-
-/// The tabs of this desk as the AI addresses them, one to a line
-fn tabs(out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
-    let answer = ApiClient::from_env()
-        .map_err(|e| e.to_string())
-        .and_then(|mut c| c.call("tab_list", Vec::new()).map_err(|e| e.to_string()));
-    let answer = match answer {
-        Ok(a) if a.get("ok").and_then(Value::as_bool) == Some(true) => {
-            a.get("result").cloned().unwrap_or(Value::Null)
-        }
-        Ok(a) => {
-            let _ = writeln!(
-                err,
-                "[shikisha] {}",
-                a.get("error").and_then(Value::as_str).unwrap_or("refused")
-            );
-            return 1;
-        }
-        Err(e) => {
-            let _ = writeln!(
-                err,
-                "[shikisha] Not in a SHIKISHA-TERM tab, or its API is off ({e})."
-            );
-            return 1;
-        }
-    };
-    for t in answer.as_array().cloned().unwrap_or_default() {
-        let s = |k: &str| {
-            t.get(k)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        };
-        let flag = |k: &str| t.get(k).and_then(Value::as_bool).unwrap_or(false);
-        let mut line = format!("<@{}>  {}  \"{}\"", s("id"), s("kind"), s("name"));
-        if !s("folder").is_empty() {
-            line.push_str(&format!("  {}", s("folder")));
-        }
-        if flag("you") {
-            line.push_str("  (this tab)");
-        } else if flag("named") {
-            line.push_str("  (named by the person: you may drive it)");
-        }
-        let _ = writeln!(out, "{line}");
-    }
-    0
 }
 
 fn usage() -> &'static str {
-    "Usage: shikisha ask ID \"what you want it to do\"   -- hand work to the AI in the tab <@ID> and print its reply
-       shikisha run ID \"a command\"                -- run a command in the terminal <@ID> and print its output
-       shikisha do ID \"what to get done\"          -- have the web page <@ID> driven toward a goal, and print what it found
-       shikisha tabs                                -- list the tabs of this desk
-       shikisha skill                               -- print the skill that explains this to an AI"
+    "Usage: shikisha COMMAND [ARGUMENT...]
+  Runs the SHIKISHA-TERM command of that name -- the one Lua calls shikisha.COMMAND --
+  for this tab. An argument written as JSON ({\"want\":3}) is passed as that value.
+    shikisha ask_tab ID \"what you want it to do\"   -- hand work to the AI in <@ID>, print its reply
+    shikisha tab_run ID \"a command\"                -- run a command in the terminal <@ID>, print its output
+    shikisha browser_do ID \"what to get done\"      -- drive the web page <@ID> toward a goal, print what it found
+    shikisha tab_list                               -- the tabs of this desk
+    shikisha tab_conversation ID '{\"want\":3}'      -- the last things said in <@ID>'s conversation
+    shikisha list                                   -- every command this tab may call
+    shikisha skill                                  -- print the skill that explains this to an AI"
 }
 
-/// One held call to the app: `ask` an AI, `run` a command in a terminal, or
-/// `do` something on a page -- the tab first, then what to say to it
-fn held(
-    method: &str,
+/// One argument as the command is handed it: JSON when it is written as a
+/// JSON object or list, a string otherwise -- so a request that happens to be
+/// a number is still a request
+fn argument(arg: &str) -> Value {
+    let t = arg.trim_start();
+    if t.starts_with('{') || t.starts_with('[') {
+        if let Ok(v) = serde_json::from_str(arg) {
+            return v;
+        }
+    }
+    json!(arg)
+}
+
+/// The arguments of `command`. A hand-off that names no wait of its own is
+/// given this command's, so it answers before the AI's shell gives up on it
+fn arguments(command: &str, args: &[String]) -> Vec<Value> {
+    let mut params: Vec<Value> = args.iter().map(|a| argument(a)).collect();
+    if crate::asktab::HELD.contains(&command) && params.len() == 2 {
+        params.push(json!({"timeout_ms": WAIT_MS}));
+    }
+    params
+}
+
+/// One call to the app, printed for an AI
+fn call(
+    command: &str,
     args: &[String],
     out: &mut impl std::io::Write,
     err: &mut impl std::io::Write,
 ) -> i32 {
-    let Some(tab) = args.first() else {
-        let _ = writeln!(err, "[shikisha] Which tab? {}", usage());
-        return 2;
-    };
-    let text = args[1..].join(" ");
-    if text.trim().is_empty() {
-        let _ = writeln!(err, "[shikisha] What should it do? {}", usage());
-        return 2;
-    }
     let mut client = match ApiClient::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -135,14 +124,7 @@ fn held(
             return 1;
         }
     };
-    let tab = tab
-        .trim_start_matches('<')
-        .trim_start_matches('@')
-        .trim_end_matches('>');
-    let answer = match client.call(
-        method,
-        vec![json!(tab), json!(text), json!({"timeout_ms": WAIT_MS})],
-    ) {
+    let answer = match client.call(command, arguments(command, args)) {
         Ok(a) => a,
         Err(e) => {
             let _ = writeln!(err, "[shikisha] The app stopped answering: {e}");
@@ -154,12 +136,24 @@ fn held(
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or("the app refused without saying why");
-        let _ = writeln!(err, "[shikisha] Not sent: {why}");
+        let _ = writeln!(err, "[shikisha] {command}: {why}");
         return 1;
     }
-    let r = answer.get("result").cloned().unwrap_or(Value::Null);
-    let _ = writeln!(out, "{}", said(&r));
+    let _ = writeln!(out, "{}", printed(&answer.get("result").cloned().unwrap_or(Value::Null)));
     0
+}
+
+/// What a command answered, as an AI reads it: a hand-off's answer ends in the
+/// line that says what happened, a text is itself, the rest is JSON
+fn printed(r: &Value) -> String {
+    if r.get("tab").is_some() && r.get("state").and_then(Value::as_str).is_some() {
+        return said(r);
+    }
+    match r {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
 }
 
 /// The answer, as an AI reads it: the reply, then one line of what happened
@@ -294,11 +288,44 @@ mod tests {
         assert!(q.contains("WAITING") && q.starts_with("Allow?"), "{q}");
     }
 
+    /// The words after the command are its arguments, as Lua would pass them
     #[test]
-    fn nothing_to_ask_is_said_rather_than_sent() {
-        let mut out = Vec::new();
-        let mut err = Vec::new();
-        assert_eq!(held("ask_tab", &["otter".into()], &mut out, &mut err), 2);
-        assert!(String::from_utf8_lossy(&err).contains("What should it do?"));
+    fn the_arguments_are_the_commands_own() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // A hand-off with no wait of its own answers before the AI's shell gives up
+        assert_eq!(
+            arguments("ask_tab", &s(&["otter", "review this"])),
+            vec![json!("otter"), json!("review this"), json!({"timeout_ms": WAIT_MS})]
+        );
+        // ...and one that names its own keeps it
+        assert_eq!(
+            arguments("tab_run", &s(&["sh", "make", r#"{"timeout_ms":5000}"#])),
+            vec![json!("sh"), json!("make"), json!({"timeout_ms": 5000})]
+        );
+        // JSON only where it is written as an object or a list: a request that
+        // is a number, or a word, is still text
+        assert_eq!(
+            arguments("tab_conversation", &s(&["otter", r#"{"want":3}"#])),
+            vec![json!("otter"), json!({"want": 3})]
+        );
+        assert_eq!(arguments("send_to_tab", &s(&["otter", "42"])), vec![json!("otter"), json!("42")]);
+        assert_eq!(arguments("send_to_tab", &s(&["otter", "{not json"])), vec![json!("otter"), json!("{not json")]);
+    }
+
+    #[test]
+    fn what_comes_back_is_printed_for_an_ai() {
+        assert!(printed(&json!({"tab":"otter","state":"DONE","reply":"LGTM"})).ends_with("is above"));
+        assert_eq!(printed(&json!("on the screen")), "on the screen");
+        assert_eq!(printed(&Value::Null), "");
+        assert!(printed(&json!([{"id":"otter"}])).contains("\"id\": \"otter\""));
+    }
+
+    /// An AI following an older copy of the skill is told the new name
+    #[test]
+    fn an_old_name_says_the_new_one() {
+        assert_eq!(run(&["ask".to_string(), "otter".to_string(), "hi".to_string()]), 2);
+        for (was, now) in RENAMED {
+            assert!(crate::grants::CATALOG.iter().any(|e| e.name == now), "{was} points at {now}, which is no command");
+        }
     }
 }

@@ -316,6 +316,17 @@ try {
   check(shell.source === 'none' && /tab_screen/.test(shell.note || ''), 'a shell keeps no conversation, and is told where to look: ' + (shell.note || shell.error));
   const gone = await door('tab_conversation', 'nobody', {}).then(() => '').catch((e) => e.message);
   check(/no tab <@nobody>/.test(gone), 'a tab that is not there is said to be not there: ' + gone);
+
+  console.log('4. the real Claude reads the far AI\'s conversation with the shikisha command');
+  from = logLen();
+  await board(`send({kind:"say", tab:${idx}, text:${JSON.stringify('Without asking it anything, read the last answer in the conversation of <@farai> and tell me its final line exactly.')}}); true`);
+  const read = await until(async () => {
+    const s = await screen('claude');
+    return s.includes('answer line 80 of ping ' + VALUE) && (await door('state', 'claude').catch(() => '?')) !== 'BUSY';
+  }, 'the last line of the far answer', 6 * 60000).catch(() => false);
+  check(read, 'the last of the eighty lines came back through the real Claude');
+  check(!logSince(from).some((l) => /ask_tab: \S+ asks farai/.test(l)), 'the far AI was not asked anything');
+  if (!read) note('claude: ' + (await screen('claude')).split('\n').slice(-25).join('\n'));
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + (e.stack || e));

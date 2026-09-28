@@ -457,7 +457,7 @@ fn handle_line(line: &str, caller: Option<&str>, tx: &Sender<ApiCall>) -> String
     };
     // ask_tab is answered when another tab has finished, which can be an hour
     // of work; the loop decides when to answer it, not this line
-    let hold = if matches!(method, "ask_tab" | "tab_run" | "browser_do") {
+    let hold = if crate::asktab::HELD.contains(&method) {
         crate::asktab::LINE_HOLD
     } else {
         std::time::Duration::from_secs(300)
