@@ -15,6 +15,12 @@ once it reaches its first tagged release.
   pipe or MCP, paged with `want` and `before`.
 
 ### Changed
+- **The `shikisha` command in every tab takes the commands' own names.**
+  `shikisha ask_tab ID "..."` is `shikisha.ask_tab("ID", "...")`: the first word
+  names any command Lua has, the rest are its arguments (JSON where written as
+  JSON), under the tab's permissions. `ask`, `run`, `do` and `tabs` are now
+  `ask_tab`, `tab_run`, `browser_do` and `tab_list`, and the old names say so.
+  The skill is rewritten with the new names the next time the app starts.
 - Asking an AI on a server or a MicroVM with @ brings its answer back from the
   record kept on that machine, whole, instead of what fits on its screen.
 - **Installing an update says how far it is, and the window keeps answering.**

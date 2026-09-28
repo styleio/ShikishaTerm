@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -48,12 +48,12 @@ description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal
 # Working with other SHIKISHA-TERM tabs
 
 `<@ID>` in a message is another tab on this SHIKISHA-TERM desk, named by its id.
-Which command reaches it depends on what the tab is (`shikisha tabs` lists
+Which command reaches it depends on what the tab is (`shikisha tab_list` lists
 them, with their kind):
 
-    shikisha ask ID "what you want it to do"    # another AI: it does the work and replies
-    shikisha run ID "a command"                 # a terminal: runs one command, prints its output
-    shikisha do ID "what to get done"           # a web page: driven toward the goal, prints what it found
+    shikisha ask_tab ID "what you want it to do"   # another AI: it does the work and replies
+    shikisha tab_run ID "a command"                # a terminal: runs one command, prints its output
+    shikisha browser_do ID "what to get done"      # a web page: driven toward the goal, prints what it found
 
 Each waits for the tab to finish and prints the result. Read the last line:
 
@@ -67,7 +67,7 @@ Each waits for the tab to finish and prints the result. Read the last line:
   says which one to use.
 
 A terminal or a page is only driven when the person named it with @ in what
-they asked you (`shikisha tabs` marks those). If they did not, ask them to.
+they asked you (`shikisha tab_list` marks those). If they did not, ask them to.
 A page cannot be given passwords or other secrets: ask the person to do that
 step themselves.
 
@@ -81,6 +81,12 @@ the page to report anything: what it shows at the end comes back to you.
 To repeat (for example "until the review finds nothing"): ask, act on the
 result, ask again. Stop when it reports nothing significant, or when the round
 shown in the output reaches its limit.
+
+To read what was said in another tab without asking it anything -- its last
+answer in full, or further back -- use
+`shikisha tab_conversation ID '{{"want":3}}'`. Every word after `shikisha` is a
+SHIKISHA-TERM command and its arguments (`shikisha list` shows the ones this
+tab may use); an argument written as JSON is passed as that value.
 
 Talk to the person in their own language.
 
@@ -252,7 +258,7 @@ mod tests {
             had.starts_with("---\nname: shikisha\n"),
             "the front matter is not first: {had}"
         );
-        assert!(had.contains("shikisha ask ID"));
+        assert!(had.contains("shikisha ask_tab ID"));
         assert_eq!(status_at(&file), Status::Installed);
         remove_at(&file).unwrap();
         assert!(!file.exists());

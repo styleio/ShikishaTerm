@@ -77,7 +77,7 @@ const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, 
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
 const skillText = spawnSync(appExe, ['--cli', 'skill'], { encoding: 'utf8' }).stdout;
-if (!skillText.includes('shikisha run ID')) die('the app did not print the skill with run and do:\n' + skillText);
+if (!skillText.includes('shikisha tab_run ID')) die('the app did not print the skill with tab_run and browser_do:\n' + skillText);
 const skillAt = path.join(WORK, '.claude', 'skills', 'shikisha');
 fs.mkdirSync(skillAt, { recursive: true });
 fs.writeFileSync(path.join(skillAt, 'SKILL.md'), skillText);
