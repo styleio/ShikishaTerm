@@ -408,7 +408,7 @@ fn tail(screen: &str, n: usize) -> String {
 
 /// What is typed into the caller's tab when the reply outlived the line
 pub fn handed(target: &str, reply: &str) -> String {
-    format!("[Reply from <@{target}> to your earlier ask_tab]\n{reply}")
+    format!("[shikisha] The reply of <@{target}> to what you asked earlier:\n{reply}")
 }
 
 #[cfg(test)]

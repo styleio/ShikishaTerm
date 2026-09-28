@@ -758,6 +758,26 @@ someone who is already you.
 The first caller of each session is written to `logs/hooks.log`, along with any connection
 that presented no valid key.
 
+### Handing work to another tab: `shikisha`
+
+Every tab finds a command called `shikisha` on its PATH. It talks to the app through the
+tab's own key, so what it asks counts against that tab, under that tab's permissions:
+
+```text
+shikisha ask ID "what you want it to do"
+```
+
+It types the request into the tab `ID` on this desk, waits for its AI to finish, and prints
+the reply, ending in one line that says what happened (`[shikisha] DONE`, `STILL WORKING`,
+`WAITING`, …). It waits a little under two minutes, because an AI's shell gives up on a
+command at about that point; when the other tab is not done by then, it says so, and the
+reply is typed into the asking tab when it comes. `shikisha skill` prints the skill that
+explains this to an AI.
+
+This is what `@` in the input bar is for: choosing a tab puts `<@ID>` in what is sent, and
+the skill tells the AI to run `shikisha ask` with that ID. The first `@` asks before the
+skill is written (Settings > AI agents puts it in or takes it out).
+
 ### The same door, as MCP tools
 
 An AI client that speaks the Model Context Protocol -- Claude Code, and the others -- can be

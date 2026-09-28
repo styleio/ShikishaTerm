@@ -1745,6 +1745,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Asks from one tab to another that are waiting for a reply (ask_tab), and
     // how many each caller has made in its current turn
     let mut asks: Vec<crate::asktab::Ask> = Vec::new();
+    // How each CLI stands with the skill for asking another tab (see `skill`)
+    let mut skill_view = crate::skill::statuses();
+    let mut skill_seen = std::time::Instant::now();
+    let mut skills_refreshed = false;
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // A words run taken out of an engine that was built again, waiting to be
     // taken up by the new one (HookEngine::words_carry)
@@ -4354,6 +4358,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Login { folder, act }) => {
                         shell.mail().logins.push((folder, act));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Skill { ai, act }) => {
+                        shell.mail().skills.push((ai, act));
+                    }
                     // The add-a-project dialog, from a phone: the same queues
                     // the window's dialog fills (see `main.rs`)
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::AddProject {
@@ -4717,6 +4724,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         };
         let ui = Ui {
             ais: ai_choices.clone(),
+            skills: skill_view.clone(),
             split_open: open_split.clone(),
             // What is still being typed into a tab, so the composer can say so
             // rather than emptying and leaving the person guessing. Taken from
@@ -10125,6 +10133,43 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         if git_signin_gone {
             git_signin = None;
+        }
+        for (ai, act) in shell.mail().take_skills() {
+            let name = crate::profile::load_by_name(&ai).name;
+            match act.as_str() {
+                "install" => match crate::skill::install(&ai) {
+                    Ok(file) => {
+                        append_hook_log(&format!("skill: written for {ai} at {}", file.display()));
+                        flash = Some(i18n::tp("msg.skill.installed", &[("name", &name), ("file", &file.display().to_string())]));
+                    }
+                    Err(e) => flash = Some(i18n::tp("msg.skill.failed", &[("name", &name), ("error", &e.to_string())])),
+                },
+                "remove" => match crate::skill::remove(&ai) {
+                    Ok(()) => flash = Some(i18n::tp("msg.skill.removed", &[("name", &name)])),
+                    Err(e) => flash = Some(i18n::tp("msg.skill.failed", &[("name", &name), ("error", &e.to_string())])),
+                },
+                "later" => crate::skill::set_later(&ai, true),
+                _ => {}
+            }
+            skill_view = crate::skill::statuses();
+            skill_seen = std::time::Instant::now();
+        }
+        // Once, as the program starts: a skill agreed to earlier is brought up
+        // to the words this version writes, and the person is told which
+        if !skills_refreshed {
+            skills_refreshed = true;
+            let updated = crate::skill::refresh();
+            if !updated.is_empty() {
+                let names: Vec<String> = updated.iter().map(|a| crate::profile::load_by_name(a).name).collect();
+                flash = Some(i18n::tp("msg.skill.updated", &[("names", &names.join(", "))]));
+                skill_view = crate::skill::statuses();
+            }
+        }
+        // What the @ list asks from: read again now and then, since the file is
+        // the person's to delete by hand as well
+        if skill_seen.elapsed() >= std::time::Duration::from_secs(5) {
+            skill_view = crate::skill::statuses();
+            skill_seen = std::time::Instant::now();
         }
         for (folder, act) in shell.mail().take_logins() {
             // The server's git step: "next" tries the clone again, and either

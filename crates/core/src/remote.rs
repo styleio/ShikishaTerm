@@ -345,6 +345,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // opens the project's rules, "later" puts the step away. The clone
         // itself is allowed from here, so the step that follows it is
         Ev::Login { .. } => true,
+        // The skill the @ list asks about: the same card is on the phone's
+        // list, and what it writes is on this PC, which is where it is read
+        Ev::Skill { .. } => true,
         // The add-a-project dialog: a project looked at, cloned or made, a
         // MicroVM's clone asked about and started, the folders of a server
         // listed, a server written into the settings. Each reaches no

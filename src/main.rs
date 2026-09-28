@@ -164,7 +164,7 @@ fn main() -> Result<()> {
         // failing it.
         let quiet = matches!(
             std::env::args().nth(1).as_deref(),
-            Some("--bridge") | Some("--hook") | Some("--mcp")
+            Some("--bridge") | Some("--hook") | Some("--mcp") | Some("--cli")
         );
         if !quiet {
             say_fatally(&format!("{e}"));
@@ -204,6 +204,13 @@ fn boot() -> Result<()> {
     // the client is reading this process's output as the protocol itself.
     if std::env::args().nth(1).as_deref() == Some("--mcp") {
         return shikisha_core::mcp::run();
+    }
+    // Command mode: `shikisha` in a tab (see `cli`). An AI's shell runs it
+    // and reads what it prints, so it prints only its answer and exits with
+    // its own code
+    if std::env::args().nth(1).as_deref() == Some("--cli") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(shikisha_core::cli::run(&args));
     }
     // Whether this copy is only a window onto a runtime somewhere else.
     //
@@ -781,6 +788,7 @@ impl WinSurface {
                 Ev::FarPage { folder, port } => self.mail.far_pages.push((folder, port)),
                 Ev::FarServe { folder } => self.mail.far_serves.push(folder),
                 Ev::Login { folder, act } => self.mail.logins.push((folder, act)),
+                Ev::Skill { ai, act } => self.mail.skills.push((ai, act)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,

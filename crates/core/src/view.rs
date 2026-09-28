@@ -604,6 +604,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         key_changes: ui.key_changes.clone(),
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
+        skills: ui.skills.clone(),
         git_accounts: ui.git_accounts.clone(),
         project_home: ui.project_home.clone(),
         // Held by the settings server, which is where the page says it
@@ -1752,6 +1753,8 @@ pub struct Ui {
     pub login_step: Option<crate::uistate::LoginStepState>,
     /// The AIs a MicroVM can be given
     pub machine_ais: Vec<crate::uistate::MachineAiChoice>,
+    /// How each CLI stands with the skill for asking another tab
+    pub skills: std::collections::BTreeMap<String, crate::uistate::SkillView>,
     /// The app's own git accounts, for the dialog that asks which one a
     /// MicroVM signs in as
     pub git_accounts: Vec<crate::uistate::GitAccountChoice>,

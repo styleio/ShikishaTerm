@@ -317,6 +317,10 @@ pub enum Ev {
     /// `next` goes on to the project's rules, `later` puts the step away.
     /// `folder` is the checkout on the machine
     Login { folder: String, act: String },
+    /// The skill that teaches an AI to hand work to another tab, answered for
+    /// one CLI (`claude`, `codex`, `gemini`): `install` writes it, `later`
+    /// puts the question away for now, `remove` takes it out again
+    Skill { ai: String, act: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
     /// it, and the next launch shows it again. `hide` false with an empty
@@ -1052,6 +1056,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("farpage") => Ev::FarPage {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             port: v.get("port").and_then(|x| x.as_u64()).and_then(|p| u16::try_from(p).ok()).unwrap_or(0),
+        },
+        Some("skill") => Ev::Skill {
+            ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("login") => Ev::Login {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

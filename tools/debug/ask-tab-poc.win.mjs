@@ -1,12 +1,12 @@
 /**
  * How often one AI tab can hand work to another with ask_tab and get the reply back.
  *
- * The proof of concept behind the @ mention in the input bar: a real Claude
- * Code and a real Codex, each in a tab of this checkout's build, each given
- * the app's MCP server the way the app would register it (the call held for up
- * to an hour). A person's request is typed into one tab, naming another as
- * <@ID>; the trial passes when the answer the other tab alone could give
- * comes back and is reported by the first.
+ * The @ mention in the input bar, with the AIs themselves: a real Claude Code
+ * and a real Codex, each in a tab of this checkout's build, where every tab
+ * finds `shikisha` on its PATH and the skill that explains it is in place. A
+ * person's request is typed into one tab, naming another as <@ID>; the trial
+ * passes when the answer the other tab alone could give comes back and is
+ * reported by the first.
  *
  *     cargo build
  *     node tools/debug/ask-tab-poc.win.mjs [--short=20] [--long=6] [--loop=5] [--only=short|long|loop]
@@ -23,8 +23,9 @@
  * Needs Windows, Node, git, and `claude` and `codex` signed in on this machine.
  * Spends real turns of both accounts. Isolated the way keep-running.win.mjs is:
  * its own folder and LOCALAPPDATA, nothing of a copy somebody is using touched.
- * Codex's settings are passed as -c on the tab's own command line, so the
- * user's ~/.codex/config.toml is not written. Results go to
+ * The skill goes into each test folder as a project skill (.claude/skills and
+ * .agents/skills), so the skills in the person's own home are not touched.
+ * Results go to
  * target/ask-tab-poc/results.json and a line per trial to the console.
  */
 import fs from 'node:fs';
@@ -112,26 +113,24 @@ fs.writeFileSync(HIDDEN, [
   'assert.strictEqual(discounted(200, 10), 180);',
   "console.log('ok');",
 ].join('\n'));
+const skillText = spawnSync(appExe, ['--cli', 'skill'], { encoding: 'utf8' }).stdout;
+if (!skillText.includes('name: shikisha')) die('the app did not print its skill:\n' + skillText);
+for (const dir of Object.values(F)) {
+  for (const where of ['.claude', '.agents']) {
+    const at = path.join(dir, where, 'skills', 'shikisha');
+    fs.mkdirSync(at, { recursive: true });
+    fs.writeFileSync(path.join(at, 'SKILL.md'), skillText);
+  }
+  if (dir !== F.repo) git(dir, 'init', '-q');
+}
 git(F.repo, 'init', '-q');
 git(F.repo, 'add', '.');
 git(F.repo, 'commit', '-q', '-m', 'start');
 
-// The app's MCP server, as the app would register it for each CLI
-const mcpJson = path.join(RUN, 'mcp-claude.json');
-fs.writeFileSync(mcpJson, JSON.stringify({ mcpServers: { shikisha: {
-  command: appExe, args: ['--mcp'], timeout: 3600000,
-  env: { SHIKISHA_PIPE: '${SHIKISHA_PIPE}', SHIKISHA_TOKEN: '${SHIKISHA_TOKEN}', SHIKISHA_TAB: '${SHIKISHA_TAB}' },
-} } }, null, 2));
-const exeFwd = appExe.replace(/\\/g, '/');
-// As argv, not one line: a line is split at spaces and its quotes kept, and
-// Codex reads each -c value as TOML
-const claudeCmd = ['claude', '--dangerously-skip-permissions', '--mcp-config', mcpJson];
-const codexCmd = ['codex', '--dangerously-bypass-approvals-and-sandbox',
-  '-c', `mcp_servers.shikisha.command=${exeFwd}`,
-  '-c', 'mcp_servers.shikisha.args=["--mcp"]',
-  '-c', 'mcp_servers.shikisha.env_vars=["SHIKISHA_PIPE","SHIKISHA_TOKEN","SHIKISHA_TAB"]',
-  '-c', 'mcp_servers.shikisha.tool_timeout_sec=3600',
-  '-c', 'mcp_servers.shikisha.default_tools_approval_mode="auto"'];
+// Nothing to register: `shikisha` is on every tab's PATH, and the skill is
+// in the folder
+const claudeCmd = ['claude', '--dangerously-skip-permissions'];
+const codexCmd = ['codex', '--dangerously-bypass-approvals-and-sandbox'];
 
 const TABS = {
   'claude-a': { cwd: F.a, command: claudeCmd },
@@ -357,7 +356,10 @@ try {
     console.log(`  ${id} is up`);
   }
   await sleep(3000);
-  const pairs = [['claude-a', 'codex-b'], ['codex-b', 'claude-c'], ['claude-a', 'claude-c']];
+  // --pair=claude-a,codex-b runs one pair alone
+  const only = arg('pair', '').split(',').filter(Boolean);
+  const pairs = [['claude-a', 'codex-b'], ['codex-b', 'claude-c'], ['claude-a', 'claude-c']]
+    .filter(([a, b]) => !only.length || (a === only[0] && b === only[1]));
   for (const kind of ['short', 'long']) {
     if (ONLY && ONLY !== kind) continue;
     for (let n = 1; n <= COUNTS[kind]; n++) {

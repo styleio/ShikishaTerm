@@ -127,6 +127,11 @@ pub struct ProfileFile {
     /// Measured, never guessed: a name here hides that program's work for good
     #[serde(default)]
     pub helpers: Vec<String>,
+    /// The folder this CLI reads skills from (`{home}/.claude/skills`), for
+    /// the skill that teaches it to ask another tab (see `skill`). Absent:
+    /// this CLI has none, and the @ list says so instead of offering it
+    #[serde(default)]
+    pub skills: Option<String>,
     /// Where the person reads how to install this CLI, for a tab that could
     /// not start because it is not on this PC. The maker's own page: this app
     /// does not install anybody's program on this PC for them
@@ -443,6 +448,8 @@ pub struct Profile {
     pub interrupt: Vec<u8>,
     /// The CLI's own helper programs (see `ProfileFile::helpers`)
     pub helpers: Vec<String>,
+    /// Where this CLI reads skills from (see `ProfileFile::skills`)
+    pub skills: Option<String>,
 }
 
 impl Profile {
@@ -461,6 +468,7 @@ impl Profile {
             resume: None,
             interrupt: Vec::new(),
             helpers: Vec::new(),
+            skills: None,
         }
     }
 
@@ -486,6 +494,7 @@ impl Profile {
             resume: f.resume,
             interrupt: key_bytes(&f.interrupt)?,
             helpers: f.helpers,
+            skills: f.skills,
             name: f.name,
         })
     }

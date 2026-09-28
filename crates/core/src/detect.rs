@@ -452,6 +452,7 @@ mod tests {
             resume: None,
             interrupt: vec![],
             helpers: vec![],
+            skills: None,
             install_url: None,
             install_on_linux: None,
             signed_in_on_linux: None,

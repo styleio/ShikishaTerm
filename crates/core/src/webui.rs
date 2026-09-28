@@ -4034,6 +4034,40 @@ fn handle(
                 .collect();
             req.respond(json_resp(serde_json::json!(rows)))?;
         }
+        // The skill that teaches an AI to ask another tab, for each CLI that has
+        // somewhere to keep one: how it stands, where it goes, and its words
+        ("GET", "/api/skill") => {
+            let rows: Vec<serde_json::Value> = crate::skill::statuses()
+                .into_iter()
+                .filter(|(_, v)| v.state != "none")
+                .map(|(ai, v)| serde_json::json!({
+                    "ai": ai, "name": v.name, "state": v.state, "file": v.file,
+                    "preview": crate::skill::text(),
+                }))
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        ("POST", "/api/skill") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let ai = v.get("ai").and_then(|x| x.as_str()).unwrap_or_default();
+            let on = v.get("on").and_then(|x| x.as_bool()).unwrap_or(false);
+            let known = crate::skill::statuses().get(ai).is_some_and(|s| s.state != "none");
+            let resp = if !known {
+                serde_json::json!({ "ok": false, "error": "no such CLI" })
+            } else {
+                let done = if on { crate::skill::install(ai).map(|_| ()) } else { crate::skill::remove(ai) };
+                match done {
+                    Ok(()) => serde_json::json!({ "ok": true, "state": crate::skill::status(ai).word() }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Put one CLI's hook in, or take it out. Named by profile, so the page
         // never hands over a path to write to
         ("POST", "/api/resume/hook") => {
@@ -8495,7 +8529,61 @@ function aiAgentsCard() {
         checkDefaultOn(current, "summary_small_model", T["settings.summary_small.label"]),
         el("span", {class:"hint"}, T["settings.summary_small.hint"])));
   names.id = "ai-names";
-  box.append(ais, names, providersCard());
+  const skill = skillCard();
+  skill.id = "ai-skill";
+  box.append(ais, names, skill, providersCard());
+  return box;
+}
+// The skill that teaches an AI what `<@ID>` means in the input bar, per CLI:
+// how it stands, where it is written, the words it writes (before agreeing
+// to them, not a description of them), and a button to put it in or take it
+// out. The @ list asks the first time; this is where it is undone
+function skillCard() {
+  const STATE = {
+    in: T["settings.skill.state.in"], old: T["settings.skill.state.old"],
+    missing: T["settings.skill.state.missing"], later: T["settings.skill.state.later"],
+  };
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.skill.title"],
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.skill.intro"]),
+    list);
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await fetch("/api/skill", {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { return; }
+    list.textContent = "";
+    for (const r of rows) list.append(rowFor(r));
+    // Two CLIs reading one folder share one file: said once, under them
+    const files = rows.map(r => r.file);
+    if (new Set(files).size < files.length) list.append(el("div", {class:"hint"}, T["settings.skill.shared"]));
+  }
+  function rowFor(r) {
+    const on = r.state === "in" || r.state === "old";
+    const btn = el("button", {class:"btn"}, on ? T["settings.skill.remove"] : T["settings.skill.install"]);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const j = await (await fetch("/api/skill", {
+          method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+          body: JSON.stringify({ai: r.ai, on: !on}),
+        })).json();
+        if (!j.ok) result(j.error || "", true);
+      } catch (e) {}
+      load();
+    });
+    const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:var(--s1) 0;" +
+      "padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"}, r.preview);
+    const show = el("a", {href:"#"}, T["settings.skill.show"]);
+    show.addEventListener("click", (e) => {
+      e.preventDefault();
+      pre.style.display = pre.style.display === "none" ? "block" : "none";
+    });
+    const right = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);min-width:0;flex:1"},
+      el("span", {class:"hint"}, (STATE[r.state] || r.state) + " — ", el("span", {class:"mono"}, r.file)),
+      el("div", {style:"display:flex;gap:var(--s2);align-items:center"}, btn, show), pre);
+    return el("div", {class:"row", style:"align-items:flex-start"}, el("label", {}, r.name), right);
+  }
   return box;
 }
 // What the app's "AI for automatic names" reads as, for a desk's row that
