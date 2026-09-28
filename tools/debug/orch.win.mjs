@@ -56,7 +56,9 @@ const stopApp = () => ps('-Command',
   `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
   `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
 
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// --exe=<path> runs another build instead of this checkout's: the one
+// installed, say, to try exactly what people will run
+const exe = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6) || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
 console.log('starting this checkout\'s build, isolated');
