@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -42,33 +42,44 @@ pub fn text() -> String {
     format!(
         r#"---
 name: {NAME}
-description: Hand work to another AI tab in SHIKISHA-TERM and get its reply. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this"), or asks you to have another tab's AI do something.
+description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>").
 ---
 
-# Asking another SHIKISHA-TERM tab
+# Working with other SHIKISHA-TERM tabs
 
 `<@ID>` in a message is another tab on this SHIKISHA-TERM desk, named by its id.
-To hand it work, run:
+Which command reaches it depends on what the tab is (`shikisha tabs` lists
+them, with their kind):
 
-    shikisha ask ID "what you want it to do"
+    shikisha ask ID "what you want it to do"    # another AI: it does the work and replies
+    shikisha run ID "a command"                 # a terminal: runs one command, prints its output
+    shikisha do ID "what to get done"           # a web page: driven toward the goal, prints what it found
 
-This types the request into that tab, waits for its AI to finish, and prints
-its reply. Read the last line of the output:
+Each waits for the tab to finish and prints the result. Read the last line:
 
-- `[shikisha] DONE` -- the reply is above it. Act on it.
-- `[shikisha] STILL WORKING` -- it has not finished. End your turn now; its
-  reply will be typed into this tab when it is done, and you carry on then.
+- `[shikisha] DONE` -- the result is above it. Act on it.
+- `[shikisha] STILL WORKING` -- it has not finished. End your turn now; the
+  result will be typed into this tab when it is done, and you carry on then.
 - `[shikisha] WAITING` -- that tab is waiting for a person to approve or
   choose something. Tell the person.
-- Anything else says why nothing was sent.
+- `[shikisha] NOT DONE` -- the reason is above it.
+- Anything else says why nothing was sent. Using the wrong command for a tab
+  says which one to use.
 
-Write each request so the other AI can act on it alone: it cannot see this
-conversation. Say which files, branch or folder to look at and what to answer.
-If the output says `same folder: no`, it cannot see your uncommitted changes:
-commit them, or put the diff in the request.
+A terminal or a page is only driven when the person named it with @ in what
+they asked you (`shikisha tabs` marks those). If they did not, ask them to.
+A page cannot be given passwords or other secrets: ask the person to do that
+step themselves.
+
+Write each request so it can be acted on alone: the other tab cannot see this
+conversation. For an AI, say which files, branch or folder to look at and what
+to answer. If the output says `same folder: no`, it cannot see your uncommitted
+changes: commit them, or put the diff in the request. For a page, write only
+what to do on it ("type Alice in the name box and send the form"). Do not ask
+the page to report anything: what it shows at the end comes back to you.
 
 To repeat (for example "until the review finds nothing"): ask, act on the
-reply, ask again. Stop when it reports nothing significant, or when the round
+result, ask again. Stop when it reports nothing significant, or when the round
 shown in the output reaches its limit.
 
 Talk to the person in their own language.

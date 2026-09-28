@@ -1543,6 +1543,18 @@ end
 function shikisha.ask_tab(tab, text, opts)
   return { accepted = true, state = shikisha.state(tab) }
 end
+-- The same wait, for a command typed into a terminal the person named
+function shikisha.tab_run(tab, command, opts)
+  return { accepted = true, state = shikisha.state(tab) }
+end
+-- A page driven toward a goal by its 🗣 run, for a tab the person named it to
+function shikisha.browser_do(tab, goal, opts)
+  return { accepted = true }
+end
+-- The tabs of this desk, as another tab's AI addresses them
+function shikisha.tab_list()
+  error("tab_list is answered by the app through the pipe or MCP")
+end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end
@@ -4883,6 +4895,10 @@ end
 
 local function finish(code, why, good)
   shikisha.set_var("words_running", 0)
+  -- Kept for whoever started the run from another tab (browser_do), who is
+  -- handed these when it ends
+  shikisha.set_var("words_code", code)
+  shikisha.set_var("words_why", why)
   tx("\n## " .. shikisha.t("agent.verdict.label") .. ": " .. why .. "\n")
   say(why, not good)
   shikisha.set_result(code, why)
@@ -5078,6 +5094,28 @@ function on_step(tab)
   end
 
   if op == "DONE" then
+    -- Started from another tab (browser_do), the run is asked what the page
+    -- now shows about the goal, once: "look up the price" is not answered by
+    -- "done". Read from the page only, in the model that writes values
+    if (shikisha.get_var("words_report") or 0) ~= 0 then
+      local okt, text = pcall(shikisha.browser_text, BR, "body")
+      local ok2, said = pcall(shikisha.ai_text, {
+        model = WORDS_MODEL ~= "" and WORDS_MODEL or nil,
+        system = "You read a web page for someone who asked another program to do something on it. "
+          .. "Answer only from the page text you are given.",
+        prompt = "Goal: " .. tostring(goal) .. "\n\nPage text:\n"
+          .. string.sub(okt and tostring(text or "") or "", 1, 6000)
+          .. "\n\nIn a few sentences, say what the page shows that answers or completes the goal "
+          .. "(values, names, messages, confirmations). If the page does not show it, say so.",
+        shape = { type = "object", properties = { answer = { type = "string" } },
+                  required = { "answer" }, additionalProperties = false },
+      })
+      if stopped() then return end
+      local got = ok2 and shikisha.json_decode(tostring(said or "")) or nil
+      if type(got) == "table" and type(got.answer) == "string" then
+        shikisha.set_var("words_answer", got.answer)
+      end
+    end
     finish(0, shikisha.t("words.done"), true)
     return
   elseif op == "STUCK" then
@@ -5091,6 +5129,8 @@ function on_step(tab)
   if not brake_ok(plan) then
     say(shikisha.t("words.held"), false)
     shikisha.set_var("words_running", 0)
+    shikisha.set_var("words_code", 1)
+    shikisha.set_var("words_why", shikisha.t("words.held"))
     return
   end
 
@@ -5164,6 +5204,10 @@ function on_start(tab)
   shikisha.set_var("words_history", {})
   shikisha.set_var("words_expect", "quiet")
   shikisha.set_var("words_running", 1)
+  shikisha.set_var("words_code", -1)
+  shikisha.set_var("words_why", "")
+  shikisha.set_var("words_answer", "")
+  shikisha.set_var("words_report", 0)
   reset_budget()
   shikisha.take_replay()
   tx(shikisha.t("transcript.rally.header") .. "\n")
@@ -6037,6 +6081,28 @@ return o"#,
     }
 
     /// Whether a words-driven run is still going
+    /// Mark the run as started from another tab, so it is asked what the page
+    /// shows about the goal when it is done (see `browser_do`)
+    pub fn report_words(&self) {
+        let _ = self.call_primitive_as(
+            None,
+            crate::grants::Subject::Human,
+            "set_var",
+            &[serde_json::json!("words_report"), serde_json::json!(1)],
+        );
+    }
+
+    /// How the last run ended: (code, why, what the page showed). The code is
+    /// -1 while nothing has ended it
+    pub fn words_outcome(&self) -> (i64, String, String) {
+        let var = |k: &str| self.call_primitive("get_var", &[serde_json::json!(k)]).unwrap_or_default();
+        (
+            var("words_code").as_i64().unwrap_or(-1),
+            var("words_why").as_str().unwrap_or_default().to_string(),
+            var("words_answer").as_str().unwrap_or_default().to_string(),
+        )
+    }
+
     pub fn words_running(&self) -> bool {
         matches!(
             self.call_primitive("get_var", &[serde_json::json!("words_running")]),

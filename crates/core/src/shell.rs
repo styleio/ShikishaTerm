@@ -19323,9 +19323,11 @@ function mentionsArrived() {
 function syncMention() {
   if (castMentionEl) castMentionEl.style.display = mentionHere() ? "" : "none";
 }
-// The other AI tabs of this desk, nearest first: the same folder, then the
-// same project (its checkout and its worktrees), then the rest -- each in the
-// order the list shows them
+// The other tabs of this desk that can be handed work, nearest first: the
+// same folder, then the same project (its checkout and its worktrees), then
+// the rest -- each in the order the list shows them. An AI is asked, a
+// terminal is given a command, a page is driven toward a goal (see cli.rs);
+// the last two only because the person names them here
 function mentionCandidates() {
   const me = activeTab();
   const groups = (S && S.groups) || [];
@@ -19337,7 +19339,8 @@ function mentionCandidates() {
     return family && tg && tg.family === family ? 1 : 2;
   };
   return ((S && S.tabs) || [])
-    .filter(t => t && t.ai && t.id && t.index !== 0 && !t.settings && t.kind !== "browser" && (!me || t.index !== me.index))
+    .filter(t => t && t.id && t.index !== 0 && !t.settings && (!me || t.index !== me.index)
+      && (t.ai || t.kind === "browser" || t.kind === "pty"))
     .map((t, i) => ({t, i, n: near(t)}))
     .sort((a, b) => a.n - b.n || a.i - b.i)
     .map(x => x.t);
@@ -19426,7 +19429,7 @@ function drawMentions() {
   const rows = tabs.map((t, i) => {
     const g = t.group != null && S.groups ? S.groups[t.group] : null;
     const row = el("div", {class:"mrow" + (i === mentionPick.on ? " on" : ""), onclick:() => pickMention(t)},
-      aiMark(t.ai), el("span", {class:"nm"}, t.name || t.id), el("span", {class:"at"}, (g && g.name) || ""));
+      markFor(t) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, t.name || t.id), el("span", {class:"at"}, (g && g.name) || ""));
     row.addEventListener("pointerdown", keep);
     row.addEventListener("mousedown", keep);
     return row;
@@ -19435,8 +19438,8 @@ function drawMentions() {
   const skill = mentionSkillRows();
   if (!rows.length) {
     rows.push(el("div", {class:"mnone"}, q
-      ? (T["tui.mention.nomatch"] || "No AI tab here matches")
-      : (T["tui.mention.none"] || "No other AI tab on this desk. Open one and it appears here.")));
+      ? (T["tui.mention.nomatch"] || "No tab on this desk has that name.")
+      : (T["tui.mention.none"] || "No other tab on this desk to hand work to. Open an AI, a terminal or a page and it appears here.")));
   }
   closeFolderMenu();
   const m = openList(castMentionEl, [...skill.top, ...rows, ...skill.bottom], rows.length > 8, null, "mentions");
