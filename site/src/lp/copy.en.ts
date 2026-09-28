@@ -9,7 +9,7 @@ export const en: LpCopy = {
     title: "SHIKISHA-TERM — The multitasking terminal for AI-native development",
     description:
       "The free, next-generation multitasking terminal built for AI-native development. Works with Claude Code, Codex, local LLMs and more. Drive it from your PC or your phone, and run agents in several working folders at once.",
-    ogImage: "https://shikisha-term.com/og.png",
+    ogImage: "https://shikisha-term.com/og.en.png",
   },
   nav: {
     links: [

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — Run many AI agents at once, on your PC or in the cloud" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — Conduct all your AIs from one window" width="820">
 </p>
 
 <p align="center">

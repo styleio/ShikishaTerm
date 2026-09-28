@@ -9,7 +9,7 @@ export const ja: LpCopy = {
     title: "SHIKISHA-TERM — AIネイティブ時代のマルチタスク開発ターミナル",
     description:
       "AIネイティブ時代に最適化された、無料の次世代のマルチタスク開発ターミナル。Claude Code、Codex、ローカルLLMなど多彩なAIに対応。PCからもスマホからも操作でき、複数の作業フォルダでエージェントを同時に動かせます。",
-    ogImage: "https://shikisha-term.com/og.png",
+    ogImage: "https://shikisha-term.com/og.ja.png",
   },
   nav: {
     links: [

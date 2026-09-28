@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.png" alt="SHIKISHA-TERM — 複数のAIエージェントを、PCでもクラウドでも同時に動かす" width="820">
+  <img src="https://raw.githubusercontent.com/styleio/ShikishaTerm/main/assets/banner.ja.png" alt="SHIKISHA-TERM — 複数のAIを、1つの画面で指揮する" width="820">
 </p>
 
 <p align="center">
