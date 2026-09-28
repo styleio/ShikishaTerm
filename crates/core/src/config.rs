@@ -1482,12 +1482,12 @@ pub fn side_bar_px() -> u16 {
     load().and_then(|c| c.side_bar_width).map(clamp_side_bar).unwrap_or(0)
 }
 
-/// Default order of the auxiliary key row. Frequently used Enter/Space/Backspace and the
-/// arrow keys come first; F1-F12 and Ctrl/Alt come later (reachable by scrolling sideways).
-/// Users can freely override this via cast_keys in config
+/// Default order of the auxiliary key row. Backspace first (see `cast_keys`), then the
+/// frequently used Esc/Tab, the arrows, Space and Enter; F1-F12 and Ctrl/Alt come later
+/// (reachable by scrolling sideways). Users can freely override this via cast_keys in config
 pub fn cast_keys_default() -> Vec<String> {
     [
-        "esc", "tab", "left", "up", "down", "right", "space", "enter", "backspace", "ctrl", "alt",
+        "backspace", "esc", "tab", "left", "up", "down", "right", "space", "enter", "ctrl", "alt",
         "home", "end", "pageup", "pagedown", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
         "f10", "f11", "f12",
     ]
@@ -1497,11 +1497,22 @@ pub fn cast_keys_default() -> Vec<String> {
 }
 
 /// Get the auxiliary key row from config (default if unset). Passed to the relay screen client
+///
+/// Backspace always leads it, whatever order was written. It is the phone's only
+/// Backspace besides its own keyboard: the input row once had a ⌫ of its own, and on a
+/// screen 390 pixels wide that button was room taken from the field
 pub fn cast_keys() -> Vec<String> {
-    load()
+    let keys = load()
         .and_then(|c| c.cast_keys)
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(cast_keys_default)
+        .unwrap_or_else(cast_keys_default);
+    backspace_first(keys)
+}
+
+fn backspace_first(keys: Vec<String>) -> Vec<String> {
+    let mut out = vec!["backspace".to_string()];
+    out.extend(keys.into_iter().filter(|k| !k.eq_ignore_ascii_case("backspace")));
+    out
 }
 
 /// Decide where WebView2 stores its data, based on config. To avoid Drive cache churn
@@ -6944,6 +6955,15 @@ mod pair_desks_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn backspace_leads_the_key_row_whatever_order_was_written() {
+        let keys = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(super::cast_keys_default()[0], "backspace");
+        assert_eq!(super::backspace_first(keys(&["esc", "Backspace", "enter"])), keys(&["backspace", "esc", "enter"]));
+        // A row written without it gets it all the same: the phone has no other
+        assert_eq!(super::backspace_first(keys(&["esc", "enter"])), keys(&["backspace", "esc", "enter"]));
+    }
+
 
     fn accounts_desk() -> super::Desk {
         let spec = |name: &str, host: Option<&str>, owners: &[&str]| super::GitAccountSpec {
