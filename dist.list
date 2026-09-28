@@ -18,6 +18,11 @@ lang/*.json
 # State-detection profiles. Without them every AI is judged GENERIC and the
 # per-AI busy/question patterns never fire
 profiles/*.json
+# The bridge a person may put on another machine (crates/bridge), one per
+# processor: shikisha-bridge-x86_64-linux and shikisha-bridge-aarch64-linux.
+# Built on Linux (release.yml); a build of the app without them cannot put the
+# bridge anywhere, and says so when asked to
+bridge/shikisha-bridge-*-linux
 # The automation manual. Not just for people: the settings screen hands it to an
 # AI as the specification when it writes automation, so an old copy here teaches
 # it that half the commands do not exist

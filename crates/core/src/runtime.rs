@@ -133,6 +133,21 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project
     Ok(Added::New(i18n::tp("msg.project.remote_added", &[("name", &name), ("host", host)])))
 }
 
+/// Branch asks numbered from here on were made by a command (`worktree_add`),
+/// not by the dialog: answered to the caller, never drawn on the dialog
+const COMMAND_ASKS: u64 = 1 << 62;
+
+/// A `worktree_add` waiting for its folder
+struct WorktreeCall {
+    seq: u64,
+    caller: Option<String>,
+    branch: String,
+    /// Where it will be, once planned
+    folder: Option<String>,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+    deadline: std::time::Instant,
+}
+
 /// A worktree being made from the dialog, from the press until its card is on
 /// the desk. The making runs on a thread; what it is written down as, and
 /// where, is decided here when it is pressed, so a desk switched in between
@@ -977,6 +992,7 @@ fn tend_asks(
     desk: Option<&config::Desk>,
     surfaces: &[Surface],
     tabs: &[Tab],
+    orchestra: &mut crate::orch::Orchestra,
 ) {
     use crate::asktab::{Phase, Step};
     let keys: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
@@ -984,6 +1000,14 @@ fn tend_asks(
         hooks::TabRef::Name(name.to_string())
             .resolve(&keys)
             .and_then(|i| tabs.get(i - 1))
+    };
+    // A caller is kept by the name its key was minted under; its inbox by the
+    // id it is named by
+    let caller_id = |c: &str| {
+        tabs.iter()
+            .find(|t| t.called() == c)
+            .map(crate::orch::glue::tab_id)
+            .unwrap_or_else(|| c.to_string())
     };
     let mut briefed = false;
     let mut send = |from: Option<&str>, to: &str, text: &str| {
@@ -1049,25 +1073,26 @@ fn tend_asks(
                     append_hook_log("ask_tab: the caller let go of the line; the reply goes into its tab");
                 }
                 // Nobody holds the line any more: a finished reply goes into
-                // the caller's tab once it is free; anything else is dropped
+                // the caller's inbox, and the caller is told when it is free
+                // to read it; anything else is dropped
                 match (state.as_str(), reply) {
                     ("PENDING", _) => {
                         a.phase = Phase::Deliver;
                         true
                     }
                     ("DONE", Some(r)) if a.caller.is_some() => {
-                        a.phase = Phase::Handing(crate::asktab::handed(&a.target, &r));
-                        true
+                        let to = caller_id(a.caller.as_deref().unwrap_or_default());
+                        orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &r);
+                        append_hook_log(&format!("ask_tab: {}'s reply is in {to}'s inbox", a.target));
+                        false
                     }
                     _ => false,
                 }
             }
             Step::Hand(text) => {
-                let to = a.caller.clone().unwrap_or_default();
-                match send(Some(&a.target), &to, &text) {
-                    Ok(_) => append_hook_log(&format!("ask_tab: handed {}'s reply to {to}", a.target)),
-                    Err(e) => append_hook_log(&format!("ask_tab: could not hand the reply to {to}: {e}")),
-                }
+                let to = caller_id(a.caller.as_deref().unwrap_or_default());
+                orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &text);
+                append_hook_log(&format!("ask_tab: {}'s answer is in {to}'s inbox", a.target));
                 false
             }
         }
@@ -1759,6 +1784,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // because the person named them in what they last sent it (<@ID>)
     let mut mention_grants: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
+    // Work one AI tab hands out to others and sees through (`orch`): its
+    // record, what each profile says about pasting, and when the tabs were
+    // last looked at for it
+    let mut orchestra = crate::orch::Orchestra::default();
+    let mut orch_profiles = crate::orch::glue::Profiles::default();
+    let mut orch_looked = std::time::Instant::now();
+    let mut orch_manual: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    // The open jobs as the board draws them, rebuilt a few times a second
+    let mut orch_board = serde_json::json!([]);
+    // The lines to the bridges on other machines, and when they were last seen to
+    let mut bridges = crate::farlink::Keeper::default();
+    let mut bridges_looked = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    // Working folders asked for by a command (`worktree_add`), answered once
+    // the folder is on the desk
+    let mut worktree_calls: Vec<WorktreeCall> = Vec::new();
+    let mut worktree_call_seq: u64 = COMMAND_ASKS;
     // Pages to be driven toward a goal for another tab, and the one being driven
     let mut words_calls: Vec<crate::asktab::WordsCall> = Vec::new();
     let mut words_waiter: Option<crate::asktab::WordsCall> = None;
@@ -3957,9 +3998,110 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                 }
+                // A job handed out between AI tabs (`orch`): checked against
+                // the permission table like any call, then answered from the
+                // record -- now, or once the tabs have done what it waits on
+                if crate::orch::Orchestra::handles(&call.method) {
+                    let Some(eng) = engine.as_ref() else { continue };
+                    brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                    let who = subject_of(call.caller.as_deref(), &tabs);
+                    if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
+                        let _ = call.reply.send(Err(e));
+                        continue;
+                    }
+                    let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+                    let named = call
+                        .caller
+                        .as_deref()
+                        .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                        .unwrap_or_default();
+                    let op = config::operate();
+                    let limits = crate::orch::Limits { max_dispatches: op.max_rounds, max_depth: op.depth() };
+                    let fx = orchestra.call(
+                        crate::orch::Call {
+                            caller: call.caller,
+                            incarnation: call.incarnation,
+                            method: call.method,
+                            params: call.params,
+                            reply: call.reply,
+                        },
+                        &scene,
+                        &named,
+                        limits,
+                    );
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                    continue;
+                }
+                // A working folder for a branch, made the way the worktree
+                // dialog makes one -- the same ask on the same queue, marked
+                // as a command's so the person's own dialog is left alone --
+                // and answered once the folder is on the desk
+                if call.method == "worktree_add" {
+                    let Some(eng) = engine.as_ref() else { continue };
+                    brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                    let who = subject_of(call.caller.as_deref(), &tabs);
+                    if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
+                        let _ = call.reply.send(Err(e));
+                        continue;
+                    }
+                    let branch = call.params.first().and_then(serde_json::Value::as_str).map(str::trim).unwrap_or_default().to_string();
+                    let base = call
+                        .params
+                        .iter()
+                        .find_map(|p| p.get("base").and_then(serde_json::Value::as_str))
+                        .unwrap_or_default()
+                        .to_string();
+                    let from = call
+                        .caller
+                        .as_deref()
+                        .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                        .and_then(|t| t.place());
+                    let refused = match (&from, branch.is_empty()) {
+                        (_, true) => Some("worktree_add needs the branch name: shikisha worktree_add fix-parser".to_string()),
+                        (None, _) => Some("worktree_add is made from the folder of the tab that asks, and this tab is in none".to_string()),
+                        _ => None,
+                    };
+                    if let Some(why) = refused {
+                        let _ = call.reply.send(Err(why));
+                        continue;
+                    }
+                    worktree_call_seq += 1;
+                    shell.mail().branches.push(shikisha_shared::BranchAsk {
+                        from: from.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                        branch: branch.clone(),
+                        base,
+                        make: true,
+                        carry: Vec::new(),
+                        start: "none".into(),
+                        ais: Vec::new(),
+                        at: String::new(),
+                        host: String::new(),
+                        machine_ai: String::new(),
+                        private: false,
+                        setup: true,
+                        link: serde_json::Value::Null,
+                        adopt: false,
+                        auto: false,
+                        seq: worktree_call_seq,
+                    });
+                    worktree_calls.push(WorktreeCall {
+                        seq: worktree_call_seq,
+                        caller: call.caller,
+                        branch,
+                        folder: None,
+                        reply: call.reply,
+                        deadline: std::time::Instant::now() + crate::orch::WAIT,
+                    });
+                    continue;
+                }
                 // The tabs of this desk, as another tab's AI can address them
                 if call.method == "tab_list" {
-                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
+                    let granted = call
+                        .caller
+                        .as_deref()
+                        .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                        .unwrap_or_default();
                     let mut list = Vec::new();
                     for s in surfaces.iter() {
                         match s {
@@ -4053,7 +4195,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // checked here, started where the 🗣 runs are started, and
                 // answered when it ends
                 if call.method == "browser_do" {
-                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
+                    let granted = call
+                        .caller
+                        .as_deref()
+                        .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                        .unwrap_or_default();
                     let refused = match (engine.as_ref(), crate::asktab::parse(&call.params)) {
                         (_, Err(e)) => Some(e),
                         (None, _) => Some("no engine".to_string()),
@@ -4103,7 +4249,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // wait for a command typed into a terminal
                 if call.method == "ask_tab" || call.method == "tab_run" {
                     let run = call.method == "tab_run";
-                    let granted = call.caller.as_deref().and_then(|c| mention_grants.get(c)).cloned().unwrap_or_default();
+                    let granted = call
+                        .caller
+                        .as_deref()
+                        .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                        .unwrap_or_default();
                     if let Some(eng) = engine.as_ref() {
                         brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                         let who = subject_of(call.caller.as_deref(), &tabs);
@@ -4192,6 +4342,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     None => Err("no engine".to_string()),
                 };
+                // A tab a job's lead opened is the job's: it may hand it work
+                // without the person naming it, and closes it when it is done
+                let answer = match answer {
+                    Ok(mut v) if call.method == "open_ai_tab" || call.method == "open_tab" => {
+                        if let Some(id) = v.get("id").and_then(serde_json::Value::as_str).map(str::to_string) {
+                            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+                            if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id) {
+                                v["next"] = next;
+                            }
+                        }
+                        Ok(v)
+                    }
+                    other => other,
+                };
                 let _ = call.reply.send(answer);
             }
         }
@@ -4199,7 +4363,111 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Asks waiting on another tab: a look at each, every turn of the loop
         if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs);
+                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs, &mut orchestra);
+            }
+        }
+        // Handed-out work: briefs waiting for their tab to be free, waits on
+        // an inbox, mail to point out, and what went quiet. A few times a
+        // second is enough for all of it -- nothing here is a keystroke
+        if orch_looked.elapsed() >= std::time::Duration::from_millis(250) {
+            orch_looked = std::time::Instant::now();
+            // A person typing into a tab a job opened makes it theirs
+            for t in tabs.iter() {
+                if let Some(ms) = t.last_manual_ms {
+                    let id = crate::orch::glue::tab_id(t);
+                    if orch_manual.get(&id).is_none_or(|seen| *seen < ms) {
+                        if orch_manual.insert(id.clone(), ms).is_some() {
+                            orchestra.person_typed(&id);
+                        }
+                    }
+                }
+            }
+            // Working folders asked for by a command: answered once on the desk
+            if !worktree_calls.is_empty() {
+                let now = std::time::Instant::now();
+                let on_desk = |folder: &str| {
+                    desks.get(desk_index).is_some_and(|d| {
+                        d.folders.iter().any(|f| {
+                            f.cwd.as_deref().is_some_and(|c| crate::sessionfind::same_folder(c, std::path::Path::new(folder)))
+                        })
+                    })
+                };
+                let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+                let mut kept = Vec::new();
+                for w in worktree_calls.drain(..) {
+                    let Some(folder) = w.folder.clone() else {
+                        if now >= w.deadline {
+                            let _ = w.reply.send(Err("the working folder was not planned in time; try again".into()));
+                        } else {
+                            kept.push(w);
+                        }
+                        continue;
+                    };
+                    let failed = makings.iter().find_map(|p| {
+                        (p.making.plan.folder.to_string_lossy() == folder.as_str()).then(|| p.error.clone()).flatten()
+                    });
+                    if let Some(e) = failed {
+                        let _ = w.reply.send(Err(e));
+                    } else if on_desk(&folder) {
+                        let next = orchestra
+                            .worktree_made(w.caller.as_deref(), &scene, &folder, &w.branch)
+                            .unwrap_or_else(|| serde_json::json!([format!("shikisha open_ai_tab <claude|codex|gemini> '{}'", serde_json::json!({"folder": folder}))]));
+                        let _ = w.reply.send(Ok(serde_json::json!({"branch": w.branch, "folder": folder, "next": next})));
+                    } else if now >= w.deadline {
+                        let _ = w.reply.send(Ok(serde_json::json!({
+                            "branch": w.branch, "folder": folder, "state": "still being made",
+                            "next": ["The folder is not ready yet. Wait a minute, then open a tab in it; if that is refused, it is still being made."],
+                        })));
+                    } else {
+                        kept.push(w);
+                    }
+                }
+                worktree_calls = kept;
+            }
+            // The bridges: a line to each machine where an AI tab of this desk
+            // runs, the person agreed to the bridge, and -- a MicroVM -- this
+            // app already has it awake. Every few seconds is plenty
+            if bridges_looked.elapsed() >= std::time::Duration::from_secs(5) {
+                bridges_looked = std::time::Instant::now();
+                let (agreed, hosts) = cfg
+                    .as_ref()
+                    .map(|c| (c.bridges.clone(), c.hosts.clone()))
+                    .unwrap_or_default();
+                let mut wanted: std::collections::BTreeMap<String, crate::farlink::Want> = Default::default();
+                let mut awake: Vec<crate::elsewhere::Elsewhere> = Vec::new();
+                let mut stray: Vec<crate::elsewhere::Elsewhere> = Vec::new();
+                for t in tabs.iter() {
+                    let Some(at) = t.machine() else { continue };
+                    let woke = match &at {
+                        crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().is_some_and(crate::e2b::awake),
+                        crate::elsewhere::Elsewhere::Ssh(_) => true,
+                    };
+                    if woke && matches!(at, crate::elsewhere::Elsewhere::Cloud(_)) {
+                        awake.push(at.clone());
+                    }
+                    if woke && t.host_name().is_some_and(|h| !agreed.iter().any(|a| a == h)) {
+                        stray.push(at.clone());
+                    }
+                    let (Some(host), Some(key)) = (t.host_name(), t.far_key.as_ref()) else { continue };
+                    if !woke || !agreed.iter().any(|a| a == host) || !t.is_ai() {
+                        continue;
+                    }
+                    wanted
+                        .entry(at.machine_key())
+                        .or_insert_with(|| crate::farlink::Want { at: at.clone(), host: host.to_string(), keys: Vec::new() })
+                        .keys
+                        .push((t.called().to_string(), key.clone()));
+                }
+                bridges.tend(wanted.into_values().collect());
+                bridges.agreed_now(&agreed, &hosts, &awake);
+                bridges.sweep(stray);
+            }
+            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+            let fx = orchestra.tick(&scene);
+            orch_board = orchestra.board(&scene);
+            if !fx.is_empty() {
+                let now_ms = start.elapsed().as_millis() as u64;
+                crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
             }
         }
         if !ask_rounds.is_empty() {
@@ -4535,6 +4803,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Skill { ai, act }) => {
                         shell.mail().skills.push((ai, act));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Orch { act, run, gate, choice }) => {
+                        shell.mail().orch.push((act, run, gate, choice));
                     }
                     // The add-a-project dialog, from a phone: the same queues
                     // the window's dialog fills (see `main.rs`)
@@ -4876,6 +5147,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         let ui = Ui {
             ais: ai_choices.clone(),
             skills: skill_view.clone(),
+            jobs: orch_board.clone(),
             split_open: open_split.clone(),
             // What is still being typed into a tab, so the composer can say so
             // rather than emptying and leaving the person guessing. Taken from
@@ -10247,6 +10519,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     said_before_reload = Some((std::time::Instant::now(), f));
                 }
             }
+            // Asked by a command: its answer is the folder, or why not. The
+            // dialog on screen, if any, is somebody else's and stays as it is
+            if ask.seq >= COMMAND_ASKS {
+                if let Some(i) = worktree_calls.iter().position(|w| w.seq == ask.seq) {
+                    match (&view.error, view.folder.trim().is_empty()) {
+                        (Some(e), _) => {
+                            let w = worktree_calls.remove(i);
+                            let _ = w.reply.send(Err(e.clone()));
+                        }
+                        (None, true) => {
+                            let w = worktree_calls.remove(i);
+                            let _ = w.reply.send(Err("the working folder could not be planned".into()));
+                        }
+                        (None, false) => worktree_calls[i].folder = Some(view.folder.clone()),
+                    }
+                }
+                continue;
+            }
             branch_view = Some(view);
         }
         // What a MicroVM would sign in as, once it has been found out: put on
@@ -10439,6 +10729,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         if git_signin_gone {
             git_signin = None;
+        }
+        // A job's card, pressed: here or on a phone
+        for (act, run, gate, choice) in shell.mail().take_orch() {
+            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+            match act.as_str() {
+                "stop" => {
+                    let fx = orchestra.stop_run(run, &scene);
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                    append_hook_log(&format!("orchestration: the person stopped r{run}"));
+                }
+                "decide" => match orchestra.decide_gate(gate, &choice, "person") {
+                    Ok(_) => append_hook_log(&format!("orchestration: the person decided g{gate}: {choice}")),
+                    Err(e) => flash = Some(e),
+                },
+                _ => {}
+            }
+            orch_board = orchestra.board(&scene);
         }
         for (ai, act) in shell.mail().take_skills() {
             let name = crate::profile::load_by_name(&ai).name;
@@ -15138,6 +15446,11 @@ pub fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
+                // Words from another tab are not the person's: what they name
+                // does not let this tab drive anything (see orch::glue::named_for)
+                if origin != 0 && from.is_some() {
+                    crate::orch::glue::note_typed(&crate::orch::glue::tab_id(t), &text);
+                }
                 if t.is_model() {
                     // model bridge: a turn of the tab's own conversation, shown
                     // with who sent it; the reply is injected into the screen.

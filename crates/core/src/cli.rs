@@ -24,7 +24,7 @@
 //! up on a command at its own limit (Claude Code's is two minutes unless
 //! asked for more), and a command killed there would say nothing at all.
 //! Stopping first, the AI is told to end its turn -- and the other tab's
-//! reply, when it comes, is typed into this tab (see `asktab`).
+//! reply, when it comes, goes into this tab's inbox (see `asktab`).
 //!
 //! Printed for an AI to read: a text as it is, anything else as JSON, and the
 //! answer of a hand-off ending in one line that starts `[shikisha]` and says,
@@ -54,10 +54,8 @@ pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         // The skill this app teaches an AI, as it would be written: for a
         // person to read before agreeing, and for a check to put in a folder
-        Some("skill") => {
-            let _ = write!(out, "{}", crate::skill::text());
-            0
-        }
+        // The skill this app teaches an AI, and the guides beside it
+        Some("skill") => skill(args.get(1).map(String::as_str), &mut out, &mut err),
         Some("help") | Some("--help") | Some("-h") | None => {
             let _ = writeln!(out, "{}", usage());
             0
@@ -71,6 +69,26 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
+/// The skill as it would be written -- for a person to read before agreeing,
+/// and for a check to put in a folder -- or a guide it points to. The guides
+/// are kept in the program so they always describe this version's commands
+fn skill(topic: Option<&str>, out: &mut impl std::io::Write, err: &mut impl std::io::Write) -> i32 {
+    match topic {
+        None => {
+            let _ = write!(out, "{}", crate::skill::text());
+            0
+        }
+        Some(t) if t == "orchestration" => {
+            let _ = write!(out, "{}", crate::orch::text::guide());
+            0
+        }
+        Some(other) => {
+            let _ = writeln!(err, "[shikisha] There is no guide called {other}. Try: shikisha skill orchestration");
+            2
+        }
+    }
+}
+
 fn usage() -> &'static str {
     "Usage: shikisha COMMAND [ARGUMENT...]
   Runs the SHIKISHA-TERM command of that name -- the one Lua calls shikisha.COMMAND --
@@ -81,7 +99,8 @@ fn usage() -> &'static str {
     shikisha tab_list                               -- the tabs of this desk
     shikisha tab_conversation ID '{\"want\":3}'      -- the last things said in <@ID>'s conversation
     shikisha list                                   -- every command this tab may call
-    shikisha skill                                  -- print the skill that explains this to an AI"
+    shikisha skill                                  -- print the skill that explains this to an AI
+    shikisha skill orchestration                    -- the guide for handing a job out to other AI tabs"
 }
 
 /// One argument as the command is handed it: JSON when it is written as a
@@ -144,16 +163,41 @@ fn call(
 }
 
 /// What a command answered, as an AI reads it: a hand-off's answer ends in the
-/// line that says what happened, a text is itself, the rest is JSON
+/// line that says what happened, an answer that says what to do next ends in
+/// those commands, a text is itself, the rest is JSON
 fn printed(r: &Value) -> String {
     if r.get("tab").is_some() && r.get("state").and_then(Value::as_str).is_some() {
         return said(r);
+    }
+    if let Some(next) = r.get("next").and_then(Value::as_array) {
+        return with_next(r, next);
     }
     match r {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
         other => serde_json::to_string_pretty(other).unwrap_or_default(),
     }
+}
+
+/// The answer, then the commands to run next, one to a line and last, where
+/// an AI reading the output from the bottom finds them first
+fn with_next(r: &Value, next: &[Value]) -> String {
+    let mut rest = r.clone();
+    if let Some(o) = rest.as_object_mut() {
+        o.remove("next");
+    }
+    let body = serde_json::to_string_pretty(&rest).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    if r.get("state").and_then(Value::as_str).is_some_and(|s| s == "NOTHING YET") {
+        lines.push("[shikisha] NOTHING YET: nothing has arrived. This is not a failure.".to_string());
+    }
+    for n in next.iter().filter_map(Value::as_str) {
+        lines.push(format!("[shikisha] next: {n}"));
+    }
+    format!("{body}
+
+{}", lines.join("
+"))
 }
 
 /// The answer, as an AI reads it: the reply, then one line of what happened
@@ -193,7 +237,7 @@ fn said(r: &Value) -> String {
             format!("{reply}\n\n[shikisha] DONE: the reply of <@{tab}> is above{facts}{note}")
         }
         "PENDING" => format!(
-            "[shikisha] STILL WORKING: <@{tab}> has not finished. End your turn now; its reply will be typed into this tab when it is done{facts}"
+            "[shikisha] STILL WORKING: <@{tab}> has not finished. End your turn now; when it is done you will be told here, and shikisha inbox gives you its reply{facts}"
         ),
         "STUCK" => format!(
             "{reply}\n\n[shikisha] NOT DONE: <@{tab}> could not get it done (the reason is above){facts}"

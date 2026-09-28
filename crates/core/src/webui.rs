@@ -5080,6 +5080,8 @@ const PAGE: &str = r##"<!doctype html>
  input[type=text]::placeholder, textarea::placeholder {
    color:color-mix(in srgb, var(--muted) 72%, var(--bg)); }
  input[type=checkbox] { width:16px; height:16px; accent-color:var(--accent); margin:0; }
+ /* The bridge on a machine: what it is and where it goes, said above the box that agrees to it */
+ .bridgecard { display:flex; flex-direction:column; gap:var(--s1); margin-bottom:var(--s3); }
  label.check { display:flex; align-items:center; gap:var(--s2); width:auto; color:var(--text);
    font-size:14px; cursor:pointer; }
  textarea { width:100%; min-height:220px; line-height:1.55; resize:vertical; }
@@ -9961,6 +9963,12 @@ function operateCard() {
     row(T["settings.operate.max_rounds"], num("max_rounds", 40), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_seconds"], num("max_seconds", 900), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
     row(T["settings.operate.max_tokens"], num("max_tokens", 400000), el("span", {class:"hint"}, T["settings.operate.zero_hint"])),
+    // How deep handed-out work may nest. Never unlimited: 1 at least
+    row(T["settings.operate.max_depth"], (() => {
+      const e = num("max_depth", 1);
+      e.min = "1";
+      return e;
+    })(), el("span", {class:"hint"}, T["settings.operate.max_depth.hint"])),
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
     row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
@@ -10392,6 +10400,17 @@ function hostDialog(at, redraw, kind, done) {
       }}, false);
   if (mark) atIn.addEventListener("input", () => mark.schedule());
 
+  // The bridge: put on this machine only because the person ticks it here, and
+  // taken off by unticking it. What it is, where it goes, how big it is and how
+  // it comes off are all said before the box, since the box is the agreement
+  const bridgeIn = el("input", {type:"checkbox"});
+  bridgeIn.checked = editing && (current.bridges || []).includes((h.name || "").trim());
+  const bridgeBox = el("div", {class:"bridgecard"},
+    el("div", {class:"hint"}, T["settings.hosts.bridge.what"]),
+    el("div", {class:"hint"}, T["settings.hosts.bridge.where"]),
+    el("div", {class:"hint"}, T["settings.hosts.bridge.off"]),
+    (() => { const l = el("label", {class:"check"}); l.append(bridgeIn, document.createTextNode(T["settings.hosts.bridge.put"])); return l; })());
+
   const shut = () => { back.remove(); if (done && !closedBy) done(null); };
   let closedBy = null;
   const back = openModal(
@@ -10405,11 +10424,13 @@ function hostDialog(at, redraw, kind, done) {
            credential,
            field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
            field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"]),
-           mark ? mark.box : null]
+           mark ? mark.box : null,
+           field(T["settings.hosts.bridge"], bridgeBox, "")]
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,
            field(T["settings.hosts.keepalive"], keepaliveIn, T["settings.hosts.keepalive.hint"]),
+           field(T["settings.hosts.bridge"], bridgeBox, ""),
            el("div", {class:"hint"}, T["settings.hosts.projects.hint"])])),
     el("div", {class:"mfoot"},
       editing
@@ -10477,6 +10498,12 @@ function hostDialog(at, redraw, kind, done) {
       it.keepalive = Number.isFinite(k) && k >= 0 ? k : FAR_DEFAULTS.keepalive;
     }
     if (!editing) (current.hosts = current.hosts || []).push(it);
+    // The agreement goes with the entry's name: renamed, it follows; unticked,
+    // the machine is taken off the list and the app takes the bridge off it
+    const was = (h.name || "").trim();
+    const bridges = (current.bridges || []).filter(b => b !== was && b !== it.name);
+    if (bridgeIn.checked && it.name) bridges.push(it.name);
+    if (bridges.length) current.bridges = bridges; else delete current.bridges;
     if (mark) mark.commit();
     closedBy = "save";
     refreshSave(); shut(); redraw();
@@ -15837,17 +15864,19 @@ function payload() {
   // it still matches the defaults (keeps config tidy). 0 = "no limit" is kept.
   if (out.operate) {
     const o = Object.assign({}, out.operate);
-    ["max_rounds","max_seconds","max_tokens","settle_ms"].forEach(k => {
+    ["max_rounds","max_seconds","max_tokens","settle_ms","max_depth"].forEach(k => {
       o[k] = (o[k] === "" || o[k] === null || o[k] === undefined) ? undefined : Number(o[k]);
     });
     const isDefault = (o.max_rounds ?? 40) === 40 && (o.max_seconds ?? 900) === 900
       && (o.max_tokens ?? 400000) === 400000 && (o.on_limit || "stop") === "stop"
-      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off";
+      && (o.settle_ms ?? 1800) === 1800 && (o.confirm || "off") === "off"
+      && (o.max_depth ?? 1) === 1;
     if (isDefault) delete out.operate;
     else {
       out.operate = { max_rounds:(o.max_rounds ?? 40), max_seconds:(o.max_seconds ?? 900),
                       max_tokens:(o.max_tokens ?? 400000), on_limit:(o.on_limit || "stop"),
-                      settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off") };
+                      settle_ms:(o.settle_ms ?? 1800), confirm:(o.confirm || "off"),
+                      max_depth:Math.max(1, o.max_depth ?? 1) };
     }
   }
   // Quick commands, written in one shape whatever state the editor left them

@@ -770,6 +770,36 @@ pub struct HostSpec {
     pub instance: Option<String>,
 }
 
+/// Whether the person agreed to put the bridge on the machine this entry
+/// names (`Config::bridges`)
+pub fn bridge_agreed(host: &str) -> bool {
+    !host.is_empty() && load().is_some_and(|c| c.bridges.iter().any(|b| b == host))
+}
+
+/// Say whether the bridge may be on a machine, and write it down
+pub fn set_bridge_agreed(host: &str, agreed: bool) -> anyhow::Result<()> {
+    let path = config_file_path();
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
+    let mut v: serde_json::Value = serde_json::from_str(&text)?;
+    let obj = v.as_object_mut().ok_or_else(|| anyhow::anyhow!("the settings are not an object"))?;
+    let mut list: Vec<String> = obj
+        .get("bridges")
+        .and_then(|b| b.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    list.retain(|b| b != host);
+    if agreed {
+        list.push(host.to_string());
+    }
+    if list.is_empty() {
+        obj.shift_remove("bridges");
+    } else {
+        obj.insert("bridges".into(), serde_json::json!(list));
+    }
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&v)?)?;
+    Ok(())
+}
+
 /// How many minutes a MicroVM runs untouched when its entry does not say:
 /// written into the entry's form as it is, never assumed behind it
 pub const MICROVM_MINUTES: u32 = 30;
@@ -1060,6 +1090,11 @@ pub struct Config {
     /// setup, kept under Basic
     #[serde(default)]
     pub yolo: bool,
+    /// The machines (their entries' names) a person agreed to put the bridge
+    /// on (`farlink`): only these ever get it. Taking a machine off this
+    /// list takes the bridge off it
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<String>,
     /// What writes the automatic names, and the branch names that follow them
     /// ("claude", "codex", "gemini", or `model <connection>/<model>`). Unset
     /// is the assistant AI above. A desk may name another
@@ -1727,6 +1762,19 @@ pub struct OperateSpec {
     /// Approval is a button shown on the target page; declining holds the run.
     #[serde(default = "default_operate_confirm")]
     pub confirm: String,
+    /// How deep work handed between AI tabs may nest: 1 lets a lead hand work
+    /// to workers and no further, 2 lets those workers hand some on, and so
+    /// on. Never unlimited -- anything under 1 is read as 1 (see `depth`)
+    #[serde(default = "default_operate_depth")]
+    pub max_depth: u32,
+}
+
+impl OperateSpec {
+    /// The nesting allowed, whatever the file says: a value that cannot be a
+    /// depth is the smallest one, never "no limit"
+    pub fn depth(&self) -> u32 {
+        self.max_depth.max(1)
+    }
 }
 
 impl Default for OperateSpec {
@@ -1738,8 +1786,13 @@ impl Default for OperateSpec {
             on_limit: default_operate_on_limit(),
             settle_ms: default_operate_settle_ms(),
             confirm: default_operate_confirm(),
+            max_depth: default_operate_depth(),
         }
     }
+}
+
+fn default_operate_depth() -> u32 {
+    1
 }
 
 fn default_operate_rounds() -> u32 {

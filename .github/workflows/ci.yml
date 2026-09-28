@@ -78,11 +78,18 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           CC_x86_64_unknown_linux_musl=musl-gcc \
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            cargo build --release -p shikisha-serve --locked \
+            cargo build --release -p shikisha-serve -p shikisha-bridge --locked \
                         --target x86_64-unknown-linux-musl
-          file target/x86_64-unknown-linux-musl/release/shikisha-serve > /tmp/what
-          cat /tmp/what
-          grep -qE "static-pie linked|statically linked" /tmp/what
+          for b in shikisha-serve shikisha-bridge; do
+            file target/x86_64-unknown-linux-musl/release/$b > /tmp/what
+            cat /tmp/what
+            grep -qE "static-pie linked|statically linked" /tmp/what
+          done
+          # The bridge serves the line on its input: a hello, and the answer to one ask
+          printf '%s\n' '{"t":"op","id":1,"op":"ping","p":{}}' \
+            | target/x86_64-unknown-linux-musl/release/shikisha-bridge serve > /tmp/said
+          cat /tmp/said
+          grep -q '"t":"hello"' /tmp/said && grep -q '"id":1' /tmp/said
 
       # Check the scripts that hand things out in the shell each one says it is written for.
       # install.sh is piped into whatever sh is on somebody's machine, so it is POSIX;

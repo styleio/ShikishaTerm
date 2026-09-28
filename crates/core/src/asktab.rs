@@ -24,8 +24,8 @@
 //!
 //! **What is never lost.** The caller may stop holding the line: its client
 //! has a timeout of its own, or a person pressed Esc. The other tab goes on
-//! working all the same, and when it finishes its reply is typed into the
-//! caller's tab instead, once the caller is free to read it.
+//! working all the same, and when it finishes its reply goes into the
+//! caller's inbox, and the caller is told so once it is free to read it.
 
 use std::path::Path;
 use std::sync::mpsc::Sender;
@@ -538,7 +538,7 @@ pub fn step(
                     None,
                     "none",
                     same_folder,
-                    Some("still running; its output will be typed into your tab when it finishes"),
+                    Some("still running; when it finishes you will be told in your tab, and shikisha inbox has its output"),
                 ))
             } else {
                 Step::Nothing
@@ -584,7 +584,7 @@ pub fn step(
             None,
             "none",
             same_folder,
-            Some("still working; its reply will be typed into your tab when it finishes"),
+            Some("still working; when it finishes you will be told in your tab, and shikisha inbox has its reply"),
         ));
     }
     Step::Nothing
@@ -709,9 +709,10 @@ pub fn words_answer(w: &WordsCall, code: i64, why: &str, found: &str) -> Value {
     })
 }
 
-/// What is typed into the caller's tab when the reply outlived the line
-pub fn handed(target: &str, reply: &str) -> String {
-    format!("[shikisha] The reply of <@{target}> to what you asked earlier:\n{reply}")
+/// What a reply that outlived the line it was asked on is filed under in the
+/// caller's inbox (the caller is told it is there once it is free)
+pub fn handed_subject(target: &str) -> String {
+    format!("The reply of <@{target}> to what you asked earlier")
 }
 
 #[cfg(test)]

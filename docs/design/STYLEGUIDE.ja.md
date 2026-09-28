@@ -246,6 +246,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | めったに要らない欄の折りたたみ | `foldMore(label, open, ...kids)`（ラベルに何が入っているかを書く。中の欄に値があるときは開いた状態で出す） | 設定（`webui.rs`） |
 | フォルダ・ファイルを選ぶ | `choosePath(kind, title, now)`（この PC ではシステムのダイアログ、スマホではページの中でたどる）。欄と組にするなら `pathField(obj, key, ph, kind, title)` | 設定（`webui.rs`） |
 | 取り消せない操作の質問（盤面） | `askQuestion({title, say, what, label, go})` | 盤面（`shell.rs`） |
+| AI どうしで分担している依頼（`.job`） | `jobRow(j)`。依頼元のタブの行の下に置く（`jobsOf(t)`）。依頼・作業ごとの状態と担当のタブ（押すとそのタブへ）・人が決める判断のボタン・「止める」（`askQuestion` で確かめてから）を描く | 盤面（`shell.rs`） |
 | ダイアログ（選ぶ・`.picker`） | `openBrowse(at, handBack)` | 盤面（`shell.rs`） |
 | 盤面の上に設定を立てる | `openSettings(section, ret, folder)`（窓もスマホも。スマホでは中で `openCfgLayer(params, size)` が枠を作る） | 盤面（`shell.rs`） |
 | 線画の印 | `pickIcon(name)` | 盤面（`shell.rs`） |

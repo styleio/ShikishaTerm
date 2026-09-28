@@ -75,6 +75,10 @@ fn main() {
     // fetched would not carry it beside the exe, and the in-box ConPTY would
     // quietly stay in use
     println!("cargo:rerun-if-changed=vendor/conpty");
+    // The bridge for other machines, placed there by a Linux build (dist.list).
+    // Unwatched, a newer one placed after the last build would never reach the
+    // exe, and the app would put an old one on every machine
+    println!("cargo:rerun-if-changed=bridge");
 }
 
 include!("tools/build_git_head.rs");

@@ -21,6 +21,8 @@ permissions:
 
 jobs:
   windows:
+    # The bridge for other machines is built on Linux and carried in this zip
+    needs: linux
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,11 +59,31 @@ jobs:
       # (when each thing that hands it out kept its own list, they quietly disagreed).
       # Only the example settings files are included -- so a user's own config.json / secrets.json
       # are never overwritten. logs/ is not included; the program makes it the first time it writes
+      # The bridge a person may put on a server or a MicroVM (crates/bridge),
+      # one per processor, built by the Linux jobs. Put where dist.list says
+      # the app finds them: bridge/ beside the exe
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bridge-*
+          path: bridge
+          merge-multiple: true
+
       - name: Stage the portable folder
         shell: pwsh
         run: |
           ./tools/stage.ps1 -Dest "dist/SHIKISHA-TERM" -Package `
                             -Exe "target/release/SHIKISHA-TERM.exe"
+
+      # Optional to stage.ps1, required here: a zip without them is an app
+      # that cannot put the bridge anywhere, and says so only when asked to
+      - name: The staged folder carries the bridge
+        shell: pwsh
+        run: |
+          foreach ($a in 'x86_64', 'aarch64') {
+            $p = "dist/SHIKISHA-TERM/bridge/shikisha-bridge-$a-linux"
+            if (-not (Test-Path $p)) { throw "the $a bridge did not reach the staged folder" }
+            Write-Host "$p  $((Get-Item $p).Length) bytes"
+          }
 
       # stage.ps1 skips a pattern that matched nothing, because most of what it
       # carries is optional. These two are not: without them the terminal falls
@@ -171,7 +193,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y musl-tools
           rustup target add ${{ matrix.target }}
-          cargo build --release --locked -p shikisha-serve --target ${{ matrix.target }}
+          cargo build --release --locked -p shikisha-serve -p shikisha-bridge --target ${{ matrix.target }}
         # Named per target rather than as a bare CC: a bare one is also handed
         # to the build scripts, which are compiled for this machine and not for
         # what is being built
@@ -190,6 +212,12 @@ jobs:
           cat /tmp/what
           grep -qE "static-pie linked|statically linked" /tmp/what
           "$BIN" --version
+          BRIDGE=target/${{ matrix.target }}/release/shikisha-bridge
+          file "$BRIDGE" > /tmp/what
+          grep -qE "static-pie linked|statically linked" /tmp/what
+          "$BRIDGE" --version
+          mkdir -p bridge-out
+          cp "$BRIDGE" "bridge-out/shikisha-bridge-${{ matrix.arch }}-linux"
 
       # Three shapes: a tar for curl, a .deb for apt, an .rpm for dnf.
       # The tar includes the service file -- it sits inside the signature, so
@@ -231,6 +259,13 @@ jobs:
         with:
           name: linux-${{ matrix.arch }}
           path: out/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.arch }}
+          path: bridge-out/*
           retention-days: 7
           if-no-files-found: error
 

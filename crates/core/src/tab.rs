@@ -2992,6 +2992,9 @@ pub struct Tab {
     /// None means "never touched yet." Using 0 to represent that would be
     /// misread as "just touched" for the guard duration right after app startup
     pub last_manual_ms: Option<u64>,
+    /// The key of a tab whose program runs on another machine, for the bridge
+    /// there to hand its `shikisha` command (`farlink::give_key`)
+    pub far_key: Option<String>,
     /// What a person asked the program in this tab since the loop last looked:
     /// sent from the input bar, or reported by the program itself as having
     /// been asked. Read for the folder's automatic name and summary
@@ -3191,6 +3194,12 @@ impl Tab {
 
     /// The machine this tab's terminal is on, when it is not this one. What
     /// the file commands connect to when they are told this tab's name
+    /// The settings entry of the machine this tab runs on, by name, when it
+    /// is not this PC
+    pub fn host_name(&self) -> Option<&str> {
+        self.opts.host.as_deref()
+    }
+
     pub fn remote(&self) -> Option<&crate::ssh::Spec> {
         self.opts.remote.as_ref()
     }
@@ -3472,6 +3481,25 @@ impl Tab {
         // a CLI started anywhere else would silently have no way to call home
         let api_env = crate::api::child_env(opts.called(&title));
         let api_on = !api_env.is_empty();
+        // A tab over there cannot be handed its key through an environment:
+        // the bridge on its machine is given it instead (`farlink`)
+        let far_key = (!local)
+            .then(|| api_env.iter().find(|(k, _)| k == crate::api::ENV_TOKEN).map(|(_, v)| v.clone()))
+            .flatten();
+        // ...and the program started there is told where `shikisha` is, on
+        // a machine the person agreed to put the bridge on. Typed in front of
+        // the program, like the rest of what is typed there
+        let far_typed = match (far_typed, opts.host.as_deref()) {
+            (Some(line), Some(host)) if api_on && crate::config::bridge_agreed(host) => {
+                let home = format!("$HOME/{}", crate::farlink::HOME_DIR);
+                let env: Vec<String> = crate::farlink::tab_env(&home, opts.called(&title))
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}=\"{v}\""))
+                    .collect();
+                Some(format!("export {} && {line}", env.join(" ")))
+            }
+            (typed, _) => typed,
+        };
         for (k, v) in api_env {
             cmd.env(k, v);
         }
@@ -3794,6 +3822,7 @@ impl Tab {
             profile_spec,
             opts,
             last_manual_ms: None,
+            far_key,
             asked: Vec::new(),
             master,
             killer,
