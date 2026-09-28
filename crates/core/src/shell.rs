@@ -2283,13 +2283,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #page { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--navh));
     right:var(--fr); bottom:calc(var(--fb) + var(--dock, 0px) + var(--askh, 0px)); pointer-events:none; }
 
-  /* ── Discussion topic banner ─────────────────────
-     A prominent prompt floated over whatever tab is in view while an AI-vs-AI
-     discussion is at rest. Type a topic → it's sent to the opening speaker and
-     the round begins. It hides itself the moment a participant starts speaking,
-     so the AI screens are never covered, and returns when the round finishes so
-     the next topic can be posed. Placed at the very top: the AI CLIs keep their
-     input line at the bottom, so this never sits on top of it. */
   /* The one press that puts a phone on the list of places answers go. Shown
      only on a phone, only while the settings ask for one and this browser is
      not yet it. Blinks two values a second like everything else that says
@@ -2337,31 +2330,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #crashbar .cb-ask { background:var(--brand); color:#04121c; }
   #crashbar .cb-ask[disabled] { opacity:.6; cursor:default; }
   #crashbar .cb-close { background:transparent; color:var(--muted); }
-  #topicbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:24;
-    display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
-    padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
-    border-bottom:2px solid var(--live); box-shadow:0 8px 22px rgba(0,0,0,.55); }
-  #topicbar[hidden] { display:none; }
-  #topicbar .tb-ico { font-size:16px; flex:none; }
-  #topicbar .tb-label { font-weight:700; color:var(--text); font-size:13px; flex:none; }
-  #topicbar input { flex:1 1 220px; min-width:140px; padding:9px 12px;
-    border-radius:var(--r-ctl); border:1px solid var(--line); background:var(--bg);
-    color:var(--text); font-size:14px; outline:none; }
-  #topicbar input:focus { border-color:var(--live); }
-  #topicbar button { flex:none; padding:9px 22px; border-radius:var(--r-ctl); border:0;
-    background:var(--live); color:#04121c; font-weight:700; cursor:pointer;
-    font-size:14px; animation:tbpulse 1.7s ease-in-out 6; }
-  #topicbar button:hover { filter:brightness(1.08); }
-  /* A soft green ring that breathes outward, to draw the eye without motion
-     sickness. It breathes six times and then stops: this bar waits for a
-     person, so "forever" means until they get back -- and a shadow that grows
-     and blurs is redrawn whole on every frame of it. Catching the eye is what
-     the ring is for, and it has done that within ten seconds */
-  @keyframes tbpulse { 0%,100% { box-shadow:0 0 0 0 color-mix(in srgb, var(--live) 55%, transparent) }
-    50% { box-shadow:0 0 0 7px color-mix(in srgb, var(--live) 0%, transparent) } }
-  /* The topic hint drops onto its own line below on narrow widths */
-  #topicbar .tb-hint { color:var(--dim); font-size:12px; flex:1 1 100%; margin:-var(--s1) 0 0; }
-  @media (prefers-reduced-motion: reduce) { #topicbar button { animation:none; } }
   /* Claude-style "thinking" bubble floated over the conversation while a reply
      generates — bouncing dots + a bubble that breathes, so the wait feels alive.
      Sits just above the chat input, bottom-left like a chat app. */
@@ -3770,7 +3738,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="back" hidden></div>
     {{TOAST_HTML}}
     <div id="crashbar" hidden></div>
-    <div id="topicbar" hidden></div>
     <div id="thinking" hidden></div>
     <div id="pageui">
       <button id="readOpen" class="pagebtn" aria-label="read">&#128214;</button>
@@ -10310,10 +10277,6 @@ function drawBoard() {
     el("div", {class:"sub"}, S.ball.depth + " / " + S.ball.max),
     lanes()));
 
-  // (The "start the discussion" prompt used to live here as a dashboard card,
-  // but it blended into the board and only showed on INDEX. It's now the
-  // #topicbar banner — floated over every tab while the discussion is at rest.)
-
   // Tab list
   const rows = el("table", {class:"rows"});
   rows.append(el("tr", {},
@@ -10375,50 +10338,6 @@ function lanes() {
   if (S.ball.awaiting_human) ball.className += " wait";
   box.append(ball);
   return box;
-}
-
-// ── Discussion topic banner ──────────────────
-// A prominent prompt floated over any tab while an AI-vs-AI discussion is at
-// rest. Type a topic → it's sent to the opening speaker and the round starts.
-// The banner is rebuilt only when the target changes (desk / speaker),
-// so a half-typed topic survives the frequent state pushes.
-function drawTopicBar() {
-  const bar = document.getElementById("topicbar");
-  const show = !!(S && S.discuss_start && S.discuss_idle);
-  if (!show) { bar.hidden = true; return; }
-  const sig = (S.desk || "") + "|" + S.discuss_start + "|" + (S.discuss_start_name || "");
-  if (bar.dataset.sig === sig && bar.childNodes.length) { bar.hidden = false; return; }
-  bar.dataset.sig = sig;
-  bar.textContent = "";
-  const input = el("input", {type:"text",
-    placeholder: T["tui.discuss.start.ph"] || "Type the topic to start the discussion"});
-  const go = () => {
-    const topic = input.value.trim();
-    if (!topic) { input.focus(); return; }
-    // Put the opening speaker in front, then hand it the topic the way it
-    // takes input. Typed as keystrokes it reached a CLI and vanished into a
-    // model bridge, which has no keyboard to type at -- so a discussion whose
-    // opening speaker was a model could not be started at all.
-    send({kind:"select", tab:S.discuss_start});
-    sendLine(topic, S.discuss_start);
-    input.value = "";
-    // It vanishes on its own once the opening speaker goes BUSY, but hide it
-    // right away so a stray second Enter can't fire a duplicate topic.
-    bar.hidden = true;
-  };
-  input.addEventListener("keydown", e => {
-    if (typingIME(e)) return;
-    if (e.key === "Enter") { e.preventDefault(); go(); }
-  });
-  const hint = (T["tui.discuss.start.hint"] || "Sends your topic to the opening speaker ({name}) and begins.")
-    .split("{name}").join(S.discuss_start_name || "");
-  bar.append(
-    el("span", {class:"tb-ico"}, "\u{1F5E3}"),
-    el("span", {class:"tb-label"}, T["tui.discuss.start.title"] || "Start the discussion"),
-    input,
-    el("button", {onclick:go}, T["tui.discuss.start.btn"] || "Start"),
-    el("span", {class:"tb-hint"}, hint));
-  bar.hidden = false;
 }
 
 // A model pane types into the same sub-input bar as everything else -- see
@@ -11230,7 +11149,6 @@ window.__state = function (json) {
   if (lastCastActive !== null && S.active !== lastCastActive) focusComposer();
   lastCastActive = S.active;
   if (S.board) drawBoard();
-  drawTopicBar();
   drawThinking();
   drawVeil();
   renderVault();
@@ -13219,8 +13137,8 @@ const focus = () => {
   if (setupUp()) return;
   // Nor while a project is being added: the keyboard walks its cards
   if (!document.getElementById("addproj").hidden) return;
-  // Never steal focus while a text field is being used (the cast input bar, the
-  // discussion-topic box, etc.). Otherwise every keystroke would be swallowed by
+  // Never steal focus while a text field is being used (the cast input bar,
+  // a settings field, etc.). Otherwise every keystroke would be swallowed by
   // #kbd and fired as a board shortcut (e.g. typing "w" opens the desk list).
   // A dropdown too: taking its focus shuts the list it has just opened
   if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) return;
@@ -19574,23 +19492,17 @@ function closeBar() {
 }
 // Hand one line to a pane, the way THAT pane takes input: a message for a
 // model bridge, keystrokes and a submit for anything at a prompt. Everywhere a
-// person finishes a line comes through here -- the composer's Send and the
-// discussion's topic box -- so what pressing Enter means cannot come to mean
-// two different things in two places. `tab` names the recipient when it is not
-// the pane in front (the topic box aims at the opening speaker); the caller
-// puts it in front first, exactly as a person would.
+// person finishes a line comes through here, so what pressing Enter means
+// cannot come to mean two different things in two places.
 //
 // A model pane has no command line, so an empty line has nothing to accept and
 // does nothing; at a prompt a bare Enter is itself the instruction (accept a
 // default, insert a newline), so it is still sent.
-function sendLine(text, tab) {
-  // Say who it is for. Left unsaid, a line is handed to whatever pane happens
-  // to be in front when it arrives -- the same pane nearly always, which is why
-  // this went unnoticed until the topic box, which puts the opening speaker in
-  // front and hands over the topic in the same breath. Those are two messages,
-  // and nothing promises they land in that order: the topic reached the pane
-  // being looked at, or, if that pane could not take it, nobody at all.
-  if (text) { send({kind:"say", tab: (tab == null ? S.active : tab), text}); return; }
+function sendLine(text) {
+  // Say who it is for: the pane in front as this page sees it. Left unsaid, a
+  // line is handed to whatever pane happens to be in front when it arrives,
+  // and a view switch still on its way would take it somewhere else.
+  if (text) { send({kind:"say", tab: S.active, text}); return; }
   // An empty Send is a bare Enter: meaningful at a prompt (accept a default,
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
@@ -20853,13 +20765,9 @@ mod tests {
         );
         // One place decides where a finished line goes, and both doors that
         // finish a line go through it
-        assert!(p.contains("function sendLine(text, tab) {"), "there is no single place that decides how a line is handed over");
+        assert!(p.contains("function sendLine(text) {"), "there is no single place that decides how a line is handed over");
         // (the @ badges written as the ids they stand for on the way)
         assert!(p.contains("    sendLine(mentionize(t));"), "the input bar's Send sends on its own");
-        assert!(
-            p.contains("sendLine(topic, S.discuss_start);"),
-            "the discussion topic box sends on its own (it never arrives when the opener is a model)"
-        );
         // ...and the line always says who it is for. Delivered to "whoever is
         // in front", the topic box's own view switch could arrive after it
         assert_eq!(
@@ -20868,7 +20776,7 @@ mod tests {
             "there is more than one way to hand over a line"
         );
         assert!(
-            p.contains(r#"send({kind:"say", tab: (tab == null ? S.active : tab), text}); return;"#),
+            p.contains(r#"send({kind:"say", tab: S.active, text}); return;"#),
             "the line handed over has no addressee"
         );
         // Actions only there (plus the key row on a phone) -- no 🤖, no 📼

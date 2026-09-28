@@ -2259,21 +2259,6 @@ pub struct UiState {
     /// shows its restart button from this rather than working it out again
     #[serde(default)]
     pub restartable: bool,
-    /// If the current desk is an AI-vs-AI discussion, the session number
-    /// (1-based) of the opening speaker. The dashboard shows a "start the
-    /// discussion" card that sends the typed topic there. None = not a discussion.
-    #[serde(default)]
-    pub discuss_start: Option<usize>,
-    /// The opening speaker's display name, for the start card's label.
-    #[serde(default)]
-    pub discuss_start_name: Option<String>,
-    /// Whether the discussion is currently at rest: nobody is generating and
-    /// the automation ring is idle. When true, the shell floats a prominent
-    /// "pose a topic" banner over whatever tab is in view, so you never have to
-    /// hunt for the opening speaker. While a participant is speaking it hides,
-    /// so the AI screens are never covered. Only meaningful with `discuss_start`.
-    #[serde(default)]
-    pub discuss_idle: bool,
     /// A tab's ✕ waiting for an answer, while there is one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_ask: Option<CloseAskState>,

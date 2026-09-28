@@ -14,7 +14,7 @@ program (the portable download) or under
 `%LOCALAPPDATA%\SHIKISHA-TERM` (the Microsoft Store copy):
 
 - your settings, desks and automation scripts,
-- what the terminals showed, and the transcripts of AI discussions you saved,
+- what the terminals showed, and the records of automated runs you saved,
 - logs of what the program itself did.
 
 You can read, back up or delete any of it with Explorer. Uninstalling the Store
@@ -33,7 +33,7 @@ and each one goes straight to the party you chose — never through us.
 | --- | --- |
 | The AI command-line tools you run in a tab (Claude Code, Codex, Gemini, Aider, …) | Those programs are separate products with their own accounts and their own privacy policies. SHIKISHA-TERM starts them and reads their screen; it does not see or store their credentials. |
 | The tools' **AI text reading and AI naming**, only once you agreed to them | The part of the screen you framed, as a picture, handed to the AI command-line tool chosen under Settings › AI agents › Assistant AI (Claude Code, Codex or Gemini), which sends it to its own provider. The agreement is saved in the settings against that AI, under Settings › AI agents › AI providers, and is asked for again when the assistant AI is one you have not agreed to. The picture is deleted from the local temporary folder once it has been read. |
-| An **assistant model** (the AI that writes automation for you, or judges a discussion) | The provider you picked, with the API key you entered — for example Anthropic, OpenAI, Google, or a model running locally on your own machine. |
+| An **assistant model** (the AI that writes automation for you) | The provider you picked, with the API key you entered — for example Anthropic, OpenAI, Google, or a model running locally on your own machine. |
 | The **phone remote** | Your own phone, over your own network. It is a small web server on your machine that you reach directly. Over [Tailscale](https://tailscale.com/) it is your own private network, end-to-end encrypted; no traffic passes through us. |
 | **Notifications** | The Slack, Discord or Telegram webhook you supplied. |
 | The **GitHub** pull-request panel | `api.github.com`, with the token of the git account you chose for that project -- or, when you chose none, the GitHub credential git on this PC already stores. |

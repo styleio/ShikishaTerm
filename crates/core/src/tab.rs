@@ -892,8 +892,7 @@ fn card(header: &str, body: &[String], want: usize, cols: u16, colour: &str) -> 
             " ".repeat(inner.saturating_sub(width_of(body)))
         )
     };
-    // Lead with a few blank lines so the header clears the discussion banner
-    // (which floats over the top of every tab while a discussion is at rest).
+    // Lead with a few blank lines so the card stands clear of the top edge.
     let mut out = String::from("\r\n\r\n\r\n");
     out.push_str(&format!("\x1b[{colour}m\u{256d}{bar}\u{256e}\x1b[0m\r\n"));
     out.push_str(&format!(
@@ -2741,7 +2740,7 @@ pub fn bypass_flag(head: &str) -> Option<&'static str> {
 /// is sent all of it
 const ASKED_SHOWN: usize = 2000;
 
-/// What was sent to a model tab, as the line its screen shows: who sent it,
+/// What a model tab was sent, as the line its screen shows: who sent it,
 /// dim (`<@turtle>`), then the prompt marker a person's own line has, then
 /// the words -- cut short past `ASKED_SHOWN` characters
 fn asked_line(prompt: &str, from: Option<&str>) -> String {
@@ -4059,7 +4058,7 @@ impl Tab {
     }
 
     /// Re-resolve a model tab's connection from the current provider table,
-    /// keeping the persona and browser-drive role it was launched with.
+    /// keeping everything else it was launched with.
     ///
     /// Model tabs are resolved at spawn, which happens before the master
     /// password is entered. With an encrypted secrets file the api_key can't be
@@ -4068,11 +4067,10 @@ impl Tab {
     ///
     /// `conns` is the connections of the desk this tab belongs to.
     pub fn refresh_model_conn(&mut self, conns: &std::collections::HashMap<String, crate::config::ProviderConn>) {
-        let Some(old) = self.model.as_ref() else {
+        if self.model.is_none() {
             return;
-        };
-        if let Some(mut fresh) = crate::bridge::conn_in(conns, &self.argv) {
-            fresh.persona = old.persona.clone();
+        }
+        if let Some(fresh) = crate::bridge::conn_in(conns, &self.argv) {
             self.model = Some(fresh);
         }
     }
@@ -4706,13 +4704,24 @@ impl Tab {
     /// A human line typed into the chat box. Echoes the line with a
     /// Claude-style prompt marker, then the model replies.
     pub fn chat_send(&self, user_text: String) {
-        self.model_turn(user_text);
+        self.model_turn(user_text, None);
     }
 
-    /// One model turn: the incoming line shown as a prompt, the turn marked so
-    /// BUSY→DONE→on_done fires, and the reply stashed verbatim for whatever is
-    /// orchestrating this pane.
-    fn model_turn(&self, incoming: String) {
+    /// Words another tab sent (`send_to_tab`, and so `ask_tab`), by the id of
+    /// the tab they came from. The same turn a person's line takes: shown on
+    /// the screen with who sent it, and part of the one conversation this tab
+    /// keeps -- so a second round remembers the first, and a person talking to
+    /// the model afterwards is talking to one that knows what it was asked
+    pub fn model_send(&self, text: String, from: Option<String>) {
+        self.model_turn(text, from);
+    }
+
+    /// One model turn: the incoming line shown as a prompt (with who sent it,
+    /// when it came from another tab), the turn marked so BUSY→DONE→on_done
+    /// fires, and the reply stashed verbatim for whatever is orchestrating this
+    /// pane. The whole conversation is replayed each time: the bridge keeps no
+    /// state of its own
+    fn model_turn(&self, incoming: String, from: Option<String>) {
         let Some(conn) = self.model.clone() else { return };
         let text = incoming.trim().to_string();
         if text.is_empty() {
@@ -4734,35 +4743,22 @@ impl Tab {
             .unwrap_or_else(|e| e.into_inner())
             .push((true, text.clone()));
         // Every model turn is marked, so detection sees BUSY→DONE and fires
-        // on_done. Marking here mirrors dispatch_model.
-        //
-        // It used to be done for a browser brain only, on the reasoning that a
-        // line typed into a chat pane has no orchestrator waiting on it. It
-        // can: a discussion's opening speaker is handed the topic by a person,
-        // and if that pane is a model bridge its answer was the one turn in the
-        // whole round that detection ignored -- so the discussion never started.
-        // With no hook attached, firing on_done reaches nobody and costs
-        // nothing, which is the right price for not having to know in advance
-        // who is listening.
+        // on_done -- a person's line too: a hook may be waiting on the answer
+        // to it. With no hook attached, firing on_done reaches nobody and
+        // costs nothing, which is the right price for not having to know in
+        // advance who is listening.
         self.mark_turn_start();
         std::thread::spawn(move || {
             let inject = |s: &str| Self::inject_into(&parser, &counter, s);
-            // The line, with a Claude-style prompt marker. The "generating"
-            // state is shown by the HTML thinking bubble (driven by
-            // model_busy), not a text line.
-            inject(&format!(
-                "\r\n\x1b[1;32m❯\x1b[0m {}\r\n",
-                text.replace('\n', "\r\n")
-            ));
+            // The line, with a Claude-style prompt marker and, when another
+            // tab sent it, that tab's id. The "generating" state is shown by
+            // the HTML thinking bubble (driven by model_busy), not a text line.
+            inject(&asked_line(&text, from.as_deref()));
             // Replay the whole history (the bridge keeps no state of its own).
             let msgs = {
                 let h = history.lock().unwrap_or_else(|e| e.into_inner());
                 let mut msgs = Vec::new();
                 let mut system = crate::i18n::t("agent.model.chat_system");
-                if let Some(p) = &conn.persona {
-                    system.push('\n');
-                    system.push_str(p);
-                }
                 // In English, as every instruction to a model is; what it
                 // writes for the person is in the language of the screen
                 system.push_str("\n\n");
@@ -4821,88 +4817,6 @@ impl Tab {
         self.submit_tick_ms.store(u64::MAX, Ordering::Relaxed);
         self.resized_while_waiting.store(false, Ordering::Relaxed);
         *self.submitted_rows.lock().unwrap() = self.visible_rows();
-    }
-
-    /// The model's turn: hit complete() on a thread, inject the response
-    /// into the screen, and write it to say.txt.
-    /// Since parser/bytes_out are Arc-shared, the main loop's detection
-    /// (BUSY→DONE→on_done) works unchanged. The blocking HTTP call runs on a
-    /// separate thread so it never stalls the main loop.
-    ///
-    /// What was sent is written on the screen first, with the tab it came from
-    /// (`from`, its id): a model tab has no program of its own to echo it, and
-    /// a reply standing alone -- "pong", out of nowhere -- leaves the person
-    /// watching unable to tell what was asked, or by whom
-    pub fn dispatch_model(&self, prompt: String, from: Option<String>) {
-        let Some(conn) = self.model.clone() else {
-            return;
-        };
-        // Without recording the turn start, the DONE on the injected response would be ignored with prompted=false
-        self.mark_turn_start();
-        let parser = Arc::clone(&self.parser);
-        let counter = Arc::clone(&self.bytes_out);
-        // Raised for the whole turn, exactly as a chat turn does it. Both are
-        // "this pane is waiting on the API"; only who asked differs.
-        let busy = Arc::clone(&self.model_busy);
-        let turn = Arc::clone(&self.model_turn);
-        let this_turn = turn.load(Ordering::Relaxed);
-        busy.store(true, Ordering::Relaxed);
-        std::thread::spawn(move || {
-            let inject = |s: &str| Self::inject_into(&parser, &counter, s);
-            inject(&asked_line(&prompt, from.as_deref()));
-            inject(&format!(
-                "\r\n\x1b[36m… {}\x1b[0m\r\n",
-                crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
-            ));
-            // The debate prompt has CLI-oriented instructions mixed in, like
-            // "write to say.txt."
-            // With the bridge, SHIKISHA does the writing, so we tell the
-            // model to "just state your opinion."
-            // Since it's stateless, attach the stance (persona) to `system` every time too, so it's never forgotten
-            let mut system = crate::i18n::t("agent.model.system");
-            if let Some(p) = &conn.persona {
-                system.push('\n');
-                system.push_str(&crate::i18n::t("agent.model.persona_head"));
-                system.push_str(p);
-                system.push('\n');
-                system.push_str(&crate::i18n::t("agent.model.persona_tail"));
-            }
-            // The statement is read by people, in the language of the screen
-            system.push_str("\n\n");
-            system.push_str(&crate::i18n::tp("agent.model.language", &[("language", &crate::i18n::t("lang.self"))]));
-            let answer = crate::bridge::complete(
-                &conn.url, &conn.model, &conn.headers, conn.timeout, Some(&system), prompt.trim(),
-            );
-            // Interrupted while the call was out (see chat_send)
-            if turn.load(Ordering::Relaxed) != this_turn {
-                return;
-            }
-            match answer {
-                Ok(text) => {
-                    if let Some(say) = crate::bridge::extract_say(&prompt) {
-                        match std::fs::write(&say, &text) {
-                            Ok(_) => inject(&format!(
-                                "\x1b[32m→ {}\x1b[0m\r\n",
-                                crate::i18n::tp(
-                                    "agent.model.wrote",
-                                    &[("n", &text.chars().count().to_string())]
-                                )
-                            )),
-                            Err(e) => inject(&format!(
-                                "\x1b[31m{}\x1b[0m\r\n",
-                                crate::i18n::tp("agent.model.say_failed", &[("e", &e.to_string())])
-                            )),
-                        }
-                    }
-                    inject(&format!("{}\r\n", text.replace('\n', "\r\n")));
-                }
-                Err(e) => inject(&format!(
-                    "\x1b[31m{}\x1b[0m\r\n",
-                    crate::i18n::tp("agent.model.error", &[("e", &e.to_string())])
-                )),
-            }
-            busy.store(false, Ordering::Relaxed);
-        });
     }
 
     /// Cumulative bytes read from the PTY. Used to check for activity since a given point in time

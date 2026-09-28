@@ -86,9 +86,6 @@ pub fn build_engine(
     let base = cfg.and_then(|c| c.automation_path());
     let desk_lua = desk.and_then(|w| w.automation.clone());
     let tab_luas: Vec<(usize, TabAuto)> = desk.map(automation_by_pane).unwrap_or_default();
-    let has_discuss = desk
-        .and_then(|w| w.discuss.as_ref())
-        .is_some_and(|d| d.agents.len() >= 2);
     // Keep the engine even with no Lua hooks when a tab wants a completion
     // notification: the on_done detection loop only runs when an engine exists,
     // so without this a notify-only desk would never fire on_done.
@@ -102,7 +99,6 @@ pub fn build_engine(
     if base.is_none()
         && desk_lua.is_none()
         && tab_luas.is_empty()
-        && !has_discuss
         && !wants_notify
         && !has_lua_actions
     {
@@ -138,10 +134,6 @@ pub fn build_engine(
         && let Some(id) = load(&mut engine, p, errors) {
             engine.set_desk(id);
         }
-    // The referee (stop conditions) is per-desk. Passed to the built-in commander as a Lua table.
-    let stops_lua = desk
-        .map(|w| config::stops_to_lua(&w.stops))
-        .unwrap_or_else(|| "{}".to_string());
     for (idx, auto) in &tab_luas {
         let id = match auto {
             TabAuto::Path(p) => load(&mut engine, p, errors),
@@ -150,132 +142,6 @@ pub fn build_engine(
             engine.set_tab(*idx, id);
         }
     }
-    // AI-vs-AI discussion: if the desk has `discuss`, load the built-in discussion commander into each participant tab
-    if let Some(w) = desk
-        && let Some(d) = &w.discuss {
-            let agents: Vec<String> = d
-                .agents
-                .iter()
-                .filter(|s| !s.trim().is_empty())
-                .cloned()
-                .collect();
-            let n = agents.len();
-            if n >= 2 {
-                let max_turns = (d.max_rounds.max(1) as usize) * n;
-                // Turn the participant list into a Lua list literal to pass to the commander (used by group stops)
-                let agents_lua = format!(
-                    "{{{}}}",
-                    agents
-                        .iter()
-                        .map(|a| format!("{a:?}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
-                // id -> display name, so the discussion (statements, transcript,
-                // hand-offs) refers to participants by their display name while
-                // routing still uses the stable id.
-                let names_lua = {
-                    let mut s = String::from("{");
-                    for t in &w.tabs {
-                        if t.cfg.command.argv().is_empty() {
-                            continue;
-                        }
-                        let key = t
-                            .cfg
-                            .id
-                            .as_deref()
-                            .filter(|x| !x.is_empty())
-                            .or_else(|| t.cfg.name.as_deref().filter(|x| !x.is_empty()));
-                        let Some(key) = key else { continue };
-                        let disp = t
-                            .cfg
-                            .name
-                            .as_deref()
-                            .filter(|x| !x.is_empty())
-                            .unwrap_or(key);
-                        s.push_str(&format!("[{key:?}]={disp:?},"));
-                    }
-                    s.push('}');
-                    s
-                };
-                let moderator = d.moderator.as_deref().filter(|s| !s.trim().is_empty());
-                for (i, id) in agents.iter().enumerate() {
-                    let Some(pane) = surface_of_id(w, id) else {
-                        errors.push(crate::i18n::tp(
-                            "err.desk.discuss_tab_missing",
-                            &[("id", id)],
-                        ));
-                        continue;
-                    };
-                    let next = &agents[(i + 1) % n];
-                    let persona = d.personas.get(id).map(String::as_str).unwrap_or("");
-                    match engine.load_discuss_agent(
-                        id,
-                        next,
-                        i == 0,
-                        false,
-                        d.judge.as_deref(),
-                        max_turns,
-                        &agents_lua,
-                        &names_lua,
-                        &stops_lua,
-                        &d.verdict,
-                        &d.order,
-                        moderator,
-                        false,
-                        persona,
-                    ) {
-                        Ok(sid) => engine.set_tab(pane, sid),
-                        Err(e) => errors.push(crate::i18n::tp(
-                            "err.desk.discuss_agent_failed",
-                            &[("id", id), ("e", &format!("{e:#}"))],
-                        )),
-                    }
-                }
-                if let Some(j) = d.judge.as_deref().filter(|s| !s.trim().is_empty()) {
-                    let persona = d.personas.get(j).map(String::as_str).unwrap_or("");
-                    match surface_of_id(w, j) {
-                        Some(pane) => match engine.load_discuss_agent(
-                            j, j, false, true, None, max_turns, &agents_lua, &names_lua,
-                            &stops_lua,
-                            &d.verdict, &d.order, moderator, false, persona,
-                        ) {
-                            Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(crate::i18n::tp(
-                                "err.desk.discuss_judge_failed",
-                                &[("j", j), ("e", &format!("{e:#}"))],
-                            )),
-                        },
-                        None => errors.push(crate::i18n::tp(
-                            "err.desk.discuss_judge_missing",
-                            &[("j", j)],
-                        )),
-                    }
-                }
-                // The moderator tab: nominates the next speaker when order="moderated"
-                if let Some(m) = moderator {
-                    let persona = d.personas.get(m).map(String::as_str).unwrap_or("");
-                    match surface_of_id(w, m) {
-                        Some(pane) => match engine.load_discuss_agent(
-                            m, m, false, false, d.judge.as_deref(), max_turns, &agents_lua,
-                            &names_lua, &stops_lua, &d.verdict, &d.order, moderator, true, persona,
-                        ) {
-                            Ok(sid) => engine.set_tab(pane, sid),
-                            Err(e) => errors.push(crate::i18n::tp(
-                                "err.desk.discuss_moderator_failed",
-                                &[("m", m), ("e", &format!("{e:#}"))],
-                            )),
-                        },
-                        None => errors.push(crate::i18n::tp(
-                            "err.desk.discuss_moderator_missing",
-                            &[("m", m)],
-                        )),
-                    }
-                }
-            } else if !d.agents.is_empty() {
-                errors.push(crate::i18n::t("err.desk.discuss_needs_two"));
-            }
-        }
     // Keep the engine even with no Lua hooks when a tab wants a completion
     // notification (the on_done detection loop lives behind `Some(engine)`), or
     // when there are Lua quick-actions to run in it.
@@ -862,24 +728,6 @@ pub enum TabAuto {
     Path(String),
 }
 
-/// Returns the screen number (1-based) of the tab in a desk whose id
-/// (or name, if no id) matches. Used to resolve discussion participants/referee
-/// from a tab id to a screen number.
-pub fn surface_of_id(desk: &config::Desk, id: &str) -> Option<usize> {
-    let mut pane = 0;
-    for t in &desk.tabs {
-        if t.cfg.command.argv().is_empty() {
-            continue;
-        }
-        pane += 1;
-        // The id, and not the name on screen: see hooks::TabKey
-        if t.cfg.id.as_deref() == Some(id) {
-            return Some(pane);
-        }
-    }
-    None
-}
-
 pub fn automation_by_pane(desk: &config::Desk) -> Vec<(usize, TabAuto)> {
     let mut pane = 0;
     let mut out = Vec::new();
@@ -898,8 +746,7 @@ pub fn automation_by_pane(desk: &config::Desk) -> Vec<(usize, TabAuto)> {
 
 /// Converts a rebuilt tab config into TabOptions.
 /// For a `model <provider>/<model>` tab, loads the resolved connection info into opts.
-/// A discussion participant also gets its persona attached (so the stateless
-/// bridge doesn't forget its stance). argv is left as-is for identification
+/// argv is left as-is for identification
 /// (the spawn side swaps it for the waiting process). A regular tab passes through untouched.
 pub fn resolve_launch(
     argv: Vec<String>,
@@ -918,13 +765,7 @@ pub fn resolve_launch(
         };
         opts.remote = Some(server_spec(&host, port, &user, cfg.server.as_ref(), &under));
     }
-    if let Some(mut conn) = bridge::launch_for(&argv) {
-        if let (Some(d), Some(id)) = (desk.and_then(|w| w.discuss.as_ref()), id) {
-            conn.persona = d.personas.get(id).filter(|p| !p.trim().is_empty()).cloned();
-        }
-        // Whether this model is a browser brain is not decided here. It is
-        // decided by what it is aimed at, which can change while it runs
-        // (see Tab::set_brain)
+    if let Some(conn) = bridge::launch_for(&argv) {
         opts.model = Some(conn);
     }
     // Who a git typed in this tab signs in as. Worked out here because this is

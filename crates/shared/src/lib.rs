@@ -684,11 +684,9 @@ pub enum Ev {
     },
     /// A person hands one tab a line, and that tab is named.
     ///
-    /// Naming it is the whole point. This used to be delivered to "whichever
-    /// tab is in front", which is a different tab from the one the sender meant
-    /// whenever the two messages "look at N" and "here is a line" did not land
-    /// in that order -- the discussion's topic box does exactly that pair, and
-    /// its topic went to the wrong pane, or to nobody.
+    /// Naming it is the whole point. "Whichever tab is in front" is a
+    /// different tab from the one the sender meant whenever the two messages
+    /// "look at N" and "here is a line" do not land in that order.
     Say { tab: usize, text: String },
     /// A quick command was pressed, for the tab it names (0 = the one in
     /// view). Only its id travels: what it sends is looked up in the settings

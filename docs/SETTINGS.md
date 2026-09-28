@@ -237,16 +237,6 @@ Passwords and tokens
 
 - **Where this secret may be used**
 
-### AI × AI discussion
-
-Several AI tabs discussing or working together
-
-- **Participants**
-- **Turn order**
-- **Round limit**
-- **Judge**
-- **Moderator**
-
 ### Stop conditions
 
 When the joint work ends
