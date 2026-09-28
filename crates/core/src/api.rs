@@ -245,6 +245,9 @@ impl ApiServer {
             .ok_or_else(|| anyhow::anyhow!("could not create {path}"))?;
 
         let (tx, rx) = channel();
+        if let Ok(mut d) = FAR_DOOR.lock() {
+            *d = Some(tx.clone());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let accept = {
             let (path, tokens, stop) = (path.clone(), Arc::clone(&tokens), Arc::clone(&stop));
@@ -361,6 +364,9 @@ impl ApiServer {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
 
         let (tx, rx) = channel();
+        if let Ok(mut d) = FAR_DOOR.lock() {
+            *d = Some(tx.clone());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let accept = {
             let (tokens, stop) = (Arc::clone(&tokens), Arc::clone(&stop));
@@ -423,7 +429,32 @@ fn accept_loop(
     }
 }
 
-/// One connection: a handshake line, then a call per line until it hangs up
+/// Where calls that come from another machine go in: the same queue the pipe
+/// fills, once the pipe is open. `None` while the API is off
+static FAR_DOOR: Mutex<Option<Sender<ApiCall>>> = Mutex::new(None);
+
+/// Serve one connection that arrived some other way than the pipe -- a
+/// `shikisha` command run on another machine, carried here by the bridge
+/// (`farlink`). The same handshake, the same keys and the same queue as the
+/// pipe, so a call from there is exactly a call from here. Refused while the
+/// API is off
+pub fn serve_elsewhere<R: Read + Send + 'static, W: Write>(conn: R, out: W) -> bool {
+    let Some(tx) = FAR_DOOR.lock().ok().and_then(|d| d.clone()) else {
+        return false;
+    };
+    serve(conn, out, Arc::clone(tokens()), tx, Arc::new(AtomicBool::new(true)));
+    true
+}
+
+/// A key for a tab whose program runs on another machine: minted the way a
+/// local tab's is (a new run of it, a new key), and handed over by the bridge
+/// instead of through the environment. `None` while the API is off
+pub fn mint_far(tab: &str) -> Option<String> {
+    PIPE.lock().ok()?.as_ref()?;
+    forget_in(tokens(), tab);
+    Some(mint_into(tokens(), tab))
+}
+
 /// One connection: a handshake line, then a call per line until it hangs up.
 ///
 /// Written once for both doors. What arrives is a reader and a writer; whether

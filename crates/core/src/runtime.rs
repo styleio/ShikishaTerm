@@ -1793,6 +1793,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut orch_manual: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     // The open jobs as the board draws them, rebuilt a few times a second
     let mut orch_board = serde_json::json!([]);
+    // The lines to the bridges on other machines, and when they were last seen to
+    let mut bridges = crate::farlink::Keeper::default();
+    let mut bridges_looked = std::time::Instant::now() - std::time::Duration::from_secs(60);
     // Working folders asked for by a command (`worktree_add`), answered once
     // the folder is on the desk
     let mut worktree_calls: Vec<WorktreeCall> = Vec::new();
@@ -4006,7 +4009,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = call.reply.send(Err(e));
                         continue;
                     }
-                    let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles, |_| false);
+                    let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
                     let named = call
                         .caller
                         .as_deref()
@@ -4344,7 +4347,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let answer = match answer {
                     Ok(mut v) if call.method == "open_ai_tab" || call.method == "open_tab" => {
                         if let Some(id) = v.get("id").and_then(serde_json::Value::as_str).map(str::to_string) {
-                            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles, |_| false);
+                            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
                             if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id) {
                                 v["next"] = next;
                             }
@@ -4389,7 +4392,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         })
                     })
                 };
-                let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles, |_| false);
+                let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
                 let mut kept = Vec::new();
                 for w in worktree_calls.drain(..) {
                     let Some(folder) = w.folder.clone() else {
@@ -4421,7 +4424,40 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 worktree_calls = kept;
             }
-            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles, |_| false);
+            // The bridges: a line to each machine where an AI tab of this desk
+            // runs, the person agreed to the bridge, and -- a MicroVM -- this
+            // app already has it awake. Every few seconds is plenty
+            if bridges_looked.elapsed() >= std::time::Duration::from_secs(5) {
+                bridges_looked = std::time::Instant::now();
+                let (agreed, hosts) = cfg
+                    .as_ref()
+                    .map(|c| (c.bridges.clone(), c.hosts.clone()))
+                    .unwrap_or_default();
+                let mut wanted: std::collections::BTreeMap<String, crate::farlink::Want> = Default::default();
+                let mut awake: Vec<crate::elsewhere::Elsewhere> = Vec::new();
+                for t in tabs.iter() {
+                    let Some(at) = t.machine() else { continue };
+                    let woke = match &at {
+                        crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().is_some_and(crate::e2b::awake),
+                        crate::elsewhere::Elsewhere::Ssh(_) => true,
+                    };
+                    if woke && matches!(at, crate::elsewhere::Elsewhere::Cloud(_)) {
+                        awake.push(at.clone());
+                    }
+                    let (Some(host), Some(key)) = (t.host_name(), t.far_key.as_ref()) else { continue };
+                    if !woke || !agreed.iter().any(|a| a == host) || !t.is_ai() {
+                        continue;
+                    }
+                    wanted
+                        .entry(at.machine_key())
+                        .or_insert_with(|| crate::farlink::Want { at: at.clone(), host: host.to_string(), keys: Vec::new() })
+                        .keys
+                        .push((t.called().to_string(), key.clone()));
+                }
+                bridges.tend(wanted.into_values().collect());
+                bridges.agreed_now(&agreed, &hosts, &awake);
+            }
+            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
             let fx = orchestra.tick(&scene);
             orch_board = orchestra.board(&scene);
             if !fx.is_empty() {
@@ -10691,7 +10727,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A job's card, pressed: here or on a phone
         for (act, run, gate, choice) in shell.mail().take_orch() {
-            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles, |_| false);
+            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
             match act.as_str() {
                 "stop" => {
                     let fx = orchestra.stop_run(run, &scene);
@@ -15405,6 +15441,11 @@ pub fn exec_commands(
                     continue;
                 }
                 t.chain_depth = depth;
+                // Words from another tab are not the person's: what they name
+                // does not let this tab drive anything (see orch::glue::named_for)
+                if origin != 0 && from.is_some() {
+                    crate::orch::glue::note_typed(&crate::orch::glue::tab_id(t), &text);
+                }
                 if t.is_model() {
                     // model bridge: a turn of the tab's own conversation, shown
                     // with who sent it; the reply is injected into the screen.

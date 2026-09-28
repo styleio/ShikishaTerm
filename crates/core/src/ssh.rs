@@ -375,6 +375,13 @@ enum Job {
         port: u16,
         stream: std::net::TcpStream,
     },
+    /// A program run over there with its input and output carried both ways
+    /// through a socket here, for as long as either end keeps it (see [`pipe`])
+    Pipe {
+        spec: Spec,
+        command: String,
+        stream: std::net::TcpStream,
+    },
 }
 
 /// What is said to one open terminal.
@@ -501,6 +508,25 @@ async fn run_job(job: Job) {
                     let _ = tokio::io::copy_bidirectional(&mut here, &mut there).await;
                 }
                 Err(e) => crate::append_hook_log(&format!("ssh: could not carry a connection to port {port} on {}: {e:#}", spec.address())),
+            }
+        }
+        Job::Pipe { spec, command, stream } => {
+            let opened = async {
+                let lease = lease(&spec).await?;
+                let ch = lease.handle.channel_open_session().await?;
+                ch.exec(true, command.as_str()).await?;
+                stream.set_nonblocking(true)?;
+                Ok::<_, anyhow::Error>((lease, ch, tokio::net::TcpStream::from_std(stream)?))
+            }
+            .await;
+            match opened {
+                // Held for as long as the program runs: the connection is in
+                // use the whole time, and is not let go of under it
+                Ok((_lease, ch, mut here)) => {
+                    let mut there = ch.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut here, &mut there).await;
+                }
+                Err(e) => crate::append_hook_log(&format!("ssh: could not run a piped program on {}: {e:#}", spec.address())),
             }
         }
     }
@@ -1413,6 +1439,34 @@ pub fn forward(spec: &Spec, port: u16) -> Result<u16> {
     })?;
     made.lock().map_err(|_| anyhow!("forward"))?.insert(key, here);
     Ok(here)
+}
+
+/// Run `command` on the server with its input and output carried through a
+/// socket: what is written to the answer goes to the program, and what the
+/// program writes comes back on it. Over the same connection the terminals
+/// use. The program ends when the socket is closed here, or ends by itself
+pub fn pipe(spec: &Spec, command: &str) -> Result<std::net::TcpStream> {
+    let (here, there) = socket_pair()?;
+    hub()
+        .send(Job::Pipe { spec: spec.clone(), command: command.to_string(), stream: there })
+        .map_err(|_| anyhow!(crate::i18n::t("err.ssh.no_thread")))?;
+    Ok(here)
+}
+
+/// Two ends of one connection on this PC's loopback: one to hand to whatever
+/// carries it on, one to use here
+pub fn socket_pair() -> Result<(std::net::TcpStream, std::net::TcpStream)> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    let here = std::net::TcpStream::connect(listener.local_addr()?)?;
+    let (there, from) = listener.accept()?;
+    // Only the connection made just above: anything else that raced to the
+    // port is not ours to carry
+    if from != here.local_addr()? {
+        bail!("another program connected first");
+    }
+    here.set_nodelay(true)?;
+    there.set_nodelay(true)?;
+    Ok((here, there))
 }
 
 /// The ports here each server's ports are carried to, by route and port there

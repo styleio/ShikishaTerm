@@ -1886,6 +1886,100 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
     }
 }
 
+/// Run a program on the machine with its input and output carried through a
+/// socket here, as [`crate::ssh::pipe`] does over SSH: what is written to the
+/// answer is the program's input, and what it prints comes back on it. No
+/// terminal, so nothing it says is echoed or wrapped. The program is ended when
+/// the socket here is closed.
+///
+/// Asks the machine for nothing unless it is awake: a paused one is not
+/// started for this (see `farlink`, which only asks while it is)
+pub fn pipe(host: &crate::config::HostSpec, cmd: &str, args: &[String]) -> Result<std::net::TcpStream> {
+    let sandbox = machine(host)?;
+    let (here, there) = crate::ssh::socket_pair()?;
+    let mut out = there.try_clone()?;
+    let mut input = there;
+    let body = serde_json::json!({
+        "process": { "cmd": cmd, "args": args, "envs": {} },
+        "tag": a_tag(),
+        "stdin": true,
+    });
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel::<Option<u32>>();
+    let reading = sandbox.clone();
+    std::thread::Builder::new().name("e2b-pipe-out".into()).spawn(move || {
+        use std::io::Write as _;
+        let agent = ureq::Agent::config_builder().timeout_global(None).build().new_agent();
+        let sent = match serde_json::to_vec(&body) {
+            Ok(b) => frame(&b),
+            Err(_) => return,
+        };
+        let resp = headed(agent.post(&format!("{SANDBOX}/process.Process/Start")), &reading)
+            .header("Keepalive-Ping-Interval", KEEPALIVE)
+            .header("Content-Type", "application/connect+json")
+            .send(sent);
+        let Ok(mut resp) = resp else {
+            let _ = pid_tx.send(None);
+            return;
+        };
+        let mut reader = resp.body_mut().as_reader();
+        let mut held = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut told = false;
+        loop {
+            let n = match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            held.extend_from_slice(&buf[..n]);
+            for msg in whole_frames(&mut held) {
+                let event = msg.get("event");
+                if !told && let Some(start) = event.and_then(|e| e.get("start")) {
+                    told = true;
+                    let _ = pid_tx.send(start.get("pid").and_then(|p| p.as_u64()).map(|p| p as u32));
+                }
+                if let Some(s) = event.and_then(|e| e.get("data")).and_then(|d| d.get("stdout"))
+                    && let Some(bytes) = unwrap_bytes(s).filter(|b| !b.is_empty())
+                    && (out.write_all(&bytes).is_err() || out.flush().is_err())
+                {
+                    return;
+                }
+                if event.and_then(|e| e.get("end")).is_some() {
+                    let _ = out.shutdown(std::net::Shutdown::Both);
+                    return;
+                }
+            }
+        }
+        if !told {
+            let _ = pid_tx.send(None);
+        }
+        let _ = out.shutdown(std::net::Shutdown::Both);
+    })?;
+    let pid = pid_rx
+        .recv_timeout(Duration::from_secs(30))
+        .ok()
+        .flatten()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the program did not start")])))?;
+    std::thread::Builder::new().name("e2b-pipe-in".into()).spawn(move || {
+        use base64::Engine as _;
+        let at = serde_json::json!({ "pid": pid });
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = match std::io::Read::read(&mut input, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            let typed = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+            let said = serde_json::json!({ "process": at, "input": { "stdin": typed } });
+            if tell(&sandbox, "process.Process/SendInput", &said).is_err() {
+                break;
+            }
+        }
+        // Closed here: the program is told to end, and ends
+        let _ = signal(&sandbox, &at, "SIGNAL_SIGTERM");
+    })?;
+    Ok(here)
+}
+
 /// Every whole message at the front of what has been read, taken out of it.
 ///
 /// A read off a socket is a length of bytes, not a message: one read can carry

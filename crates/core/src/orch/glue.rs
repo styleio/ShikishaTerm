@@ -46,10 +46,14 @@ impl Profiles {
     }
 }
 
-/// The tabs on this desk's screen, as orchestration needs to know them.
-/// `reachable` says whether a tab on another machine can run `shikisha` here
-/// (the relay is there and connected)
-pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles, reachable: impl Fn(&Tab) -> bool) -> Scene {
+/// Whether a tab on another machine can run `shikisha` and reach this app:
+/// the bridge on its machine is there and its line is up
+pub fn reachable(t: &Tab) -> bool {
+    t.machine().is_some_and(|at| crate::farlink::is_up(&at))
+}
+
+/// The tabs on this desk's screen, as orchestration needs to know them
+pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Scene {
     let mut out = Vec::new();
     for s in surfaces {
         let Surface::Session(i) = s else { continue };

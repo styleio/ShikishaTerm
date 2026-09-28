@@ -1,0 +1,788 @@
+//! The bridge: this app's small helper on another machine, and the line to it.
+//!
+//! A tab on a server or a MicroVM runs its AI over there, where this app's
+//! `shikisha` command and the pipe it talks through do not exist. So the AI
+//! there could not report a task, ask its lead, or read its inbox. The bridge
+//! (`shikisha-bridge`, one small program) closes that gap:
+//!
+//!   - **over there** it opens a socket the tabs' `shikisha` command connects
+//!     to, exactly as it would to the pipe here, and carries each connection
+//!     down one line to this app. The command is this crate's own `cli`, so it
+//!     is the same command on both machines
+//!   - **here** each connection that comes down the line is served by the same
+//!     code as the pipe (`api::serve_elsewhere`): the same keys, the same
+//!     queue, the same answers
+//!   - it also does small jobs on its machine when asked ([`crate::farops`]),
+//!     above all reading a conversation record there instead of fetching it a
+//!     piece at a time with remote commands
+//!
+//! **The line is always made from here.** Over SSH it is a program run on the
+//! connection the terminals already use; on a MicroVM it is a program started
+//! the way terminals are, without a terminal. Nothing over there ever connects
+//! to this PC, and nothing is opened to anyone else -- so a private MicroVM
+//! works exactly like a public one.
+//!
+//! **It runs only while the line is up.** When this app lets go (it quits, the
+//! machine is not in use any more) the bridge's input ends and it exits. It is
+//! never left running, and nothing makes it start again by itself.
+//!
+//! **It is only there if the person said so.** Putting it on a machine is asked
+//! first, per machine, and taking it off is one press (see [`install`] and
+//! [`remove`], and the host's card in the settings). Nothing here puts it
+//! anywhere on its own.
+//!
+//! The wire: one JSON object per line ([`Frame`]), both ways.
+
+use std::collections::HashMap;
+use std::io::{BufRead as _, BufReader, Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use anyhow::{Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+/// One thing said on the line
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum Frame {
+    /// The bridge is up, and which version it is
+    Hello { version: String, rev: String },
+    /// A `shikisha` command over there connected (`c` names the connection)
+    Open { c: u64 },
+    /// A line of one connection, either way
+    Line { c: u64, l: String },
+    /// One side of a connection is done with it
+    Close { c: u64 },
+    /// An operation this PC asks for ([`crate::farops`])
+    Op { id: u64, op: String, p: Value },
+    /// Its answer
+    Re {
+        id: u64,
+        #[serde(default)]
+        r: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        e: Option<String>,
+    },
+}
+
+impl Frame {
+    fn line(&self) -> String {
+        let mut s = serde_json::to_string(self).unwrap_or_default();
+        s.push('\n');
+        s
+    }
+}
+
+/// The folder the bridge lives in on its machine, below the account's home.
+/// Everything of it is here, so taking it off is one folder
+pub const HOME_DIR: &str = ".local/share/shikisha/bridge";
+
+// ── Over there ──────────────────────────────────────────────────────────────
+
+/// The bridge's whole life: say hello, open the socket the tabs' commands
+/// connect to, and carry both ways until the line from this PC ends
+#[cfg(unix)]
+pub fn serve_far(home: std::path::PathBuf, input: impl Read, output: impl Write + Send + 'static) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::net::{UnixListener, UnixStream};
+
+    crate::farops::set_home(home.clone());
+    let run = home.join("run");
+    std::fs::create_dir_all(&run)?;
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
+    let sock = run.join("shikisha.sock");
+    let _ = std::fs::remove_file(&sock);
+    let listener = UnixListener::bind(&sock)?;
+    std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600))?;
+
+    let out = Arc::new(Mutex::new(output));
+    let say = {
+        let out = Arc::clone(&out);
+        move |f: &Frame| -> bool {
+            let mut o = out.lock().unwrap_or_else(|e| e.into_inner());
+            o.write_all(f.line().as_bytes()).is_ok() && o.flush().is_ok()
+        }
+    };
+    say(&Frame::Hello { version: env!("CARGO_PKG_VERSION").into(), rev: crate::build_rev().into() });
+
+    let conns: Arc<Mutex<HashMap<u64, UnixStream>>> = Arc::default();
+    {
+        let (conns, say) = (Arc::clone(&conns), say.clone());
+        std::thread::spawn(move || {
+            let next = AtomicU64::new(0);
+            for conn in listener.incoming() {
+                let Ok(conn) = conn else { continue };
+                let c = next.fetch_add(1, Ordering::SeqCst) + 1;
+                let Ok(reader) = conn.try_clone() else { continue };
+                conns.lock().unwrap_or_else(|e| e.into_inner()).insert(c, conn);
+                say(&Frame::Open { c });
+                let (conns, say) = (Arc::clone(&conns), say.clone());
+                std::thread::spawn(move || {
+                    for line in BufReader::new(reader).lines() {
+                        let Ok(l) = line else { break };
+                        if !say(&Frame::Line { c, l }) {
+                            break;
+                        }
+                    }
+                    say(&Frame::Close { c });
+                    conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&c);
+                });
+            }
+        });
+    }
+
+    for line in BufReader::new(input).lines() {
+        let Ok(line) = line else { break };
+        let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
+        match frame {
+            Frame::Line { c, l } => {
+                if let Some(conn) = conns.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&c) {
+                    let _ = conn.write_all(format!("{l}\n").as_bytes());
+                }
+            }
+            Frame::Close { c } => {
+                if let Some(conn) = conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&c) {
+                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                }
+            }
+            Frame::Op { id, op, p } => {
+                let say = say.clone();
+                std::thread::spawn(move || {
+                    let (r, e) = match crate::farops::run(&op, &p) {
+                        Ok(r) => (r, None),
+                        Err(e) => (Value::Null, Some(e)),
+                    };
+                    say(&Frame::Re { id, r, e });
+                });
+            }
+            _ => {}
+        }
+    }
+    // The line from this PC ended: nothing is left for the bridge to do
+    let _ = std::fs::remove_file(&sock);
+    Ok(())
+}
+
+/// The `shikisha` command over there: this crate's own command, pointed at the
+/// bridge's socket, with the tab's key read from the file the bridge was given
+/// (`farops::put_key`). The tab says which file through its environment
+pub fn far_cli(args: &[String]) -> i32 {
+    let (Ok(sock), Ok(key_file)) = (std::env::var(ENV_SOCK), std::env::var(ENV_KEY)) else {
+        eprintln!("[shikisha] This command works in a SHIKISHA-TERM tab; this terminal was not opened by the app.");
+        return 1;
+    };
+    let key = std::fs::read_to_string(&key_file).unwrap_or_default();
+    // SAFETY: set before anything else runs on this thread; the command is a
+    // single-threaded program that has only just started
+    unsafe {
+        std::env::set_var(crate::api::ENV_PIPE, sock);
+        std::env::set_var(crate::api::ENV_TOKEN, key.trim());
+    }
+    crate::cli::run(args)
+}
+
+/// Where the `shikisha` command over there finds the bridge, and its tab's key
+pub const ENV_SOCK: &str = "SHIKISHA_BRIDGE_SOCK";
+pub const ENV_KEY: &str = "SHIKISHA_KEY_FILE";
+
+// ── Here ────────────────────────────────────────────────────────────────────
+
+/// The line to one machine's bridge
+pub struct Link {
+    out: Mutex<Box<dyn Write + Send>>,
+    /// The socket itself, to be closed when the line is let go: other threads
+    /// hold the link, so dropping it here would close nothing
+    socket: Option<std::net::TcpStream>,
+    waiting: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
+    conns: Mutex<HashMap<u64, Sender<Vec<u8>>>>,
+    next: AtomicU64,
+    up: AtomicBool,
+    /// The bridge's own version, once it has said hello
+    pub version: Mutex<Option<String>>,
+    /// Its folder over there (`$HOME/.local/share/shikisha/bridge`)
+    pub home: String,
+}
+
+impl Link {
+    fn say(&self, f: &Frame) -> bool {
+        let mut o = self.out.lock().unwrap_or_else(|e| e.into_inner());
+        let ok = o.write_all(f.line().as_bytes()).is_ok() && o.flush().is_ok();
+        if !ok {
+            self.up.store(false, Ordering::SeqCst);
+        }
+        ok
+    }
+
+    pub fn is_up(&self) -> bool {
+        self.up.load(Ordering::SeqCst)
+    }
+
+    /// Ask the bridge to do something over there, and wait for its answer
+    pub fn call(&self, op: &str, p: Value, wait: Duration) -> Result<Value, String> {
+        if !self.is_up() {
+            return Err("the bridge is not connected".into());
+        }
+        let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let (tx, rx) = channel();
+        self.waiting.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+        if !self.say(&Frame::Op { id, op: op.to_string(), p }) {
+            self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+            return Err("the bridge's line broke".into());
+        }
+        let got = rx.recv_timeout(wait).map_err(|_| format!("the bridge did not answer {op} in time"));
+        self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        got?
+    }
+
+    /// Read what comes down the line, until it ends. One thread per link
+    fn listen(self: &Arc<Self>, input: impl Read) {
+        for line in BufReader::new(input).lines() {
+            let Ok(line) = line else { break };
+            let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
+            match frame {
+                Frame::Hello { version, .. } => {
+                    *self.version.lock().unwrap_or_else(|e| e.into_inner()) = Some(version);
+                    self.up.store(true, Ordering::SeqCst);
+                }
+                Frame::Open { c } => self.open(c),
+                Frame::Line { c, l } => {
+                    if let Some(tx) = self.conns.lock().unwrap_or_else(|e| e.into_inner()).get(&c) {
+                        let mut bytes = l.into_bytes();
+                        bytes.push(b'\n');
+                        let _ = tx.send(bytes);
+                    }
+                }
+                Frame::Close { c } => {
+                    self.conns.lock().unwrap_or_else(|e| e.into_inner()).remove(&c);
+                }
+                Frame::Re { id, r, e } => {
+                    if let Some(tx) = self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
+                        let _ = tx.send(match e {
+                            Some(e) => Err(e),
+                            None => Ok(r),
+                        });
+                    }
+                }
+                Frame::Op { .. } => {}
+            }
+        }
+        self.up.store(false, Ordering::SeqCst);
+        // Everybody still waiting is told, rather than left to time out
+        for (_, tx) in self.waiting.lock().unwrap_or_else(|e| e.into_inner()).drain() {
+            let _ = tx.send(Err("the bridge's line ended".into()));
+        }
+        self.conns.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    /// A `shikisha` command over there connected: served here like the pipe
+    fn open(self: &Arc<Self>, c: u64) {
+        let (tx, rx) = channel::<Vec<u8>>();
+        self.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(c, tx);
+        let link = Arc::clone(self);
+        std::thread::spawn(move || {
+            let reader = Incoming { rx, held: Vec::new(), at: 0 };
+            let writer = Outgoing { link: Arc::clone(&link), c, held: Vec::new() };
+            if !crate::api::serve_elsewhere(reader, writer) {
+                let _ = link.say(&Frame::Line {
+                    c,
+                    l: r#"{"ok":false,"error":"the app's external API is off"}"#.into(),
+                });
+            }
+            let _ = link.say(&Frame::Close { c });
+        });
+    }
+}
+
+/// What a connection over there sent, read as a stream
+struct Incoming {
+    rx: Receiver<Vec<u8>>,
+    held: Vec<u8>,
+    at: usize,
+}
+
+impl Read for Incoming {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.at >= self.held.len() {
+            match self.rx.recv() {
+                Ok(b) => {
+                    self.held = b;
+                    self.at = 0;
+                }
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.held.len() - self.at);
+        buf[..n].copy_from_slice(&self.held[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+}
+
+/// What is said back to that connection, sent a line at a time
+struct Outgoing {
+    link: Arc<Link>,
+    c: u64,
+    held: Vec<u8>,
+}
+
+impl Write for Outgoing {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.held.extend_from_slice(buf);
+        while let Some(i) = self.held.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.held.drain(..=i).collect();
+            let l = String::from_utf8_lossy(&line[..line.len() - 1]).to_string();
+            if !self.link.say(&Frame::Line { c: self.c, l }) {
+                return Err(std::io::Error::other("the bridge's line broke"));
+            }
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Every line to a bridge this app holds, by the machine it goes to
+/// (`Elsewhere::machine_key`)
+fn links() -> &'static Mutex<HashMap<String, Arc<Link>>> {
+    static L: OnceLock<Mutex<HashMap<String, Arc<Link>>>> = OnceLock::new();
+    L.get_or_init(Default::default)
+}
+
+/// The line to a machine's bridge, when it is up
+pub fn link(at: &crate::elsewhere::Elsewhere) -> Option<Arc<Link>> {
+    links().lock().ok()?.get(&at.machine_key()).filter(|l| l.is_up()).cloned()
+}
+
+pub fn is_up(at: &crate::elsewhere::Elsewhere) -> bool {
+    link(at).is_some()
+}
+
+/// Ask a machine's bridge to do something, if its line is up
+pub fn call(at: &crate::elsewhere::Elsewhere, op: &str, p: Value) -> Result<Value, String> {
+    link(at)
+        .ok_or_else(|| "the bridge is not connected".to_string())?
+        .call(op, p, Duration::from_secs(60))
+}
+
+/// Start a machine's bridge over the line this app already has to it, and
+/// keep it. Blocks until it has said hello (or not); call from a thread
+pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
+    if let Some(l) = link(at) {
+        return Ok(l);
+    }
+    let home = far_home(at)?;
+    let program = format!("{home}/{}", program_name(env!("CARGO_PKG_VERSION")));
+    let stream = match at {
+        crate::elsewhere::Elsewhere::Ssh(spec) => {
+            crate::ssh::pipe(spec, &format!("exec {} serve", crate::ssh::sh_quote(&program)))?
+        }
+        crate::elsewhere::Elsewhere::Cloud(host) => crate::e2b::pipe(host, &program, &["serve".to_string()])?,
+    };
+    let input = stream.try_clone()?;
+    let socket = stream.try_clone().ok();
+    let link = Arc::new(Link {
+        out: Mutex::new(Box::new(stream)),
+        socket,
+        waiting: Mutex::default(),
+        conns: Mutex::default(),
+        next: AtomicU64::new(0),
+        up: AtomicBool::new(false),
+        version: Mutex::new(None),
+        home,
+    });
+    {
+        let l = Arc::clone(&link);
+        std::thread::Builder::new()
+            .name(format!("bridge {}", at.address()))
+            .spawn(move || l.listen(input))?;
+    }
+    let end = Instant::now() + Duration::from_secs(20);
+    while !link.is_up() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !link.is_up() {
+        bail!("the bridge on {} did not start", at.address());
+    }
+    links()
+        .lock()
+        .map_err(|_| anyhow!("bridge"))?
+        .insert(at.machine_key(), Arc::clone(&link));
+    crate::append_hook_log(&format!("bridge: connected to {}", at.address()));
+    Ok(link)
+}
+
+/// Let go of a machine's bridge: its input ends, and it exits over there
+pub fn disconnect(at: &crate::elsewhere::Elsewhere) {
+    if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(&at.machine_key())) {
+        l.up.store(false, Ordering::SeqCst);
+        // Closing the socket ends the program's input over there, and it exits
+        if let Some(s) = &l.socket {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        crate::append_hook_log(&format!("bridge: let go of {}", at.address()));
+    }
+}
+
+/// The bridge's file name for one version. A new version is a new file beside
+/// the old, so one being replaced is never the one running
+pub fn program_name(version: &str) -> String {
+    format!("shikisha-bridge-{version}")
+}
+
+/// Where the bridge lives on a machine, as an absolute path there
+fn far_home(at: &crate::elsewhere::Elsewhere) -> Result<String> {
+    static KNOWN: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let known = KNOWN.get_or_init(Default::default);
+    if let Some(h) = known.lock().ok().and_then(|m| m.get(&at.machine_key()).cloned()) {
+        return Ok(h);
+    }
+    let ran = crate::elsewhere::exec(at, "printf %s \"$HOME\"", 30_000)?;
+    let home = ran.out.trim();
+    if home.is_empty() {
+        bail!("the machine did not say where its home is");
+    }
+    let dir = format!("{home}/{HOME_DIR}");
+    if let Ok(mut m) = known.lock() {
+        m.insert(at.machine_key(), dir.clone());
+    }
+    Ok(dir)
+}
+
+// ── Putting it on, and taking it off ──────────────────────────────────────
+
+/// What a machine has: which bridge, if any
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum Installed {
+    /// None there
+    No,
+    /// This app's version
+    Current,
+    /// Another version (this app puts its own beside it when it connects)
+    Other(String),
+}
+
+/// The bridge's program for a machine's processor, from the folder beside this
+/// app's program. `uname -m` is what the machine said
+pub fn bundled_for(machine: &str) -> Result<std::path::PathBuf> {
+    let arch = match machine.trim() {
+        "x86_64" | "amd64" => "x86_64",
+        "aarch64" | "arm64" => "aarch64",
+        other => bail!("there is no bridge for a {other} machine"),
+    };
+    let exe = std::env::current_exe()?;
+    let dir = exe.parent().ok_or_else(|| anyhow!("no folder beside the program"))?;
+    let file = dir.join("bridge").join(format!("shikisha-bridge-{arch}-linux"));
+    if !file.exists() {
+        bail!("this copy of the app has no bridge for {arch} machines ({})", file.display());
+    }
+    Ok(file)
+}
+
+/// Whether a machine has the bridge, and which
+pub fn installed(at: &crate::elsewhere::Elsewhere) -> Result<Installed> {
+    let home = far_home(at)?;
+    let ran = crate::elsewhere::exec(at, &format!("ls -1 {} 2>/dev/null", crate::ssh::sh_quote(&home)), 30_000)?;
+    let mine = program_name(env!("CARGO_PKG_VERSION"));
+    let found: Vec<&str> = ran.out.lines().map(str::trim).filter(|l| l.starts_with("shikisha-bridge-")).collect();
+    Ok(if found.contains(&mine.as_str()) {
+        Installed::Current
+    } else if let Some(other) = found.first() {
+        Installed::Other(other.trim_start_matches("shikisha-bridge-").to_string())
+    } else {
+        Installed::No
+    })
+}
+
+/// Put the bridge on a machine. Only ever called because the person said so
+/// (the settings, or the question asked where it is needed). Older versions
+/// there are removed; the tabs' command is written beside it
+pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
+    let home = far_home(at)?;
+    let machine = crate::elsewhere::exec(at, "uname -m", 30_000)?.out;
+    let from = bundled_for(&machine)?;
+    let program = format!("{home}/{}", program_name(env!("CARGO_PKG_VERSION")));
+    let q = |s: &str| crate::ssh::sh_quote(s);
+    crate::elsewhere::exec(at, &format!("mkdir -p {}/bin && chmod 700 {}", q(&home), q(&home)), 30_000)?;
+    let part = format!("{program}.part");
+    crate::elsewhere::files(
+        at,
+        crate::ssh::FileJob::Put { from, to: part.clone(), overwrite: true },
+        10 * 60_000,
+    )?;
+    // The tabs' command: the bridge's own, under the name the tabs call
+    let shim = format!("#!/bin/sh\nexec {} cli \"$@\"\n", q(&program));
+    let bin = format!("{home}/bin/shikisha");
+    let ran = crate::elsewhere::exec(
+        at,
+        &format!(
+            "chmod 700 {part} && mv -f {part} {prog} && printf %s {shim} > {bin} && chmod 700 {bin} \
+             && for f in {home}/shikisha-bridge-*; do [ \"$f\" = {prog} ] || rm -f \"$f\"; done && {prog} --version",
+            part = q(&part),
+            prog = q(&program),
+            shim = q(&shim),
+            bin = q(&bin),
+            home = q(&home),
+        ),
+        60_000,
+    )?;
+    if !ran.out.contains(env!("CARGO_PKG_VERSION")) {
+        bail!("the bridge was put on {} but did not run there: {}", at.address(), ran.err.trim());
+    }
+    crate::append_hook_log(&format!("bridge: installed on {}", at.address()));
+    Ok(())
+}
+
+/// Take the bridge off a machine: its line is let go, and its folder -- the
+/// program, the tabs' command, the keys -- is deleted
+pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
+    disconnect(at);
+    let home = far_home(at)?;
+    if !home.ends_with(HOME_DIR) {
+        bail!("refusing to delete {home}");
+    }
+    crate::elsewhere::exec(at, &format!("rm -rf {}", crate::ssh::sh_quote(&home)), 60_000)?;
+    crate::append_hook_log(&format!("bridge: removed from {}", at.address()));
+    Ok(())
+}
+
+/// What a tab over there needs in its environment for `shikisha` to reach this
+/// app through the bridge: the command on its PATH, the bridge's socket, and
+/// where its key is. Written as a line typed before the tab's program starts
+/// (the environment of a login over SSH is the server's to decide)
+pub fn tab_env(home: &str, tab: &str) -> Vec<(String, String)> {
+    vec![
+        ("PATH".into(), format!("{home}/bin:$PATH")),
+        (ENV_SOCK.into(), format!("{home}/run/shikisha.sock")),
+        (ENV_KEY.into(), format!("{home}/keys/{}", key_name(tab))),
+    ]
+}
+
+/// The file a tab's key is kept in over there: its name in letters any file
+/// system and any shell take as they are, and a short hash of the whole name so
+/// two tabs whose names differ only in other letters do not share one
+pub fn key_name(tab: &str) -> String {
+    let plain: String = tab
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(40)
+        .collect();
+    let mut h: u32 = 0x811c_9dc5;
+    for b in tab.as_bytes() {
+        h ^= u32::from(*b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    format!("{}-{h:08x}", plain.trim_start_matches('_'))
+}
+
+/// Hand a tab's key to the bridge on its machine, for its `shikisha` command
+pub fn give_key(at: &crate::elsewhere::Elsewhere, tab: &str, key: &str) -> Result<(), String> {
+    call(at, "put_key", json!({"tab": key_name(tab), "key": key})).map(|_| ())
+}
+
+// ── Keeping the lines ─────────────────────────────────────────────────────
+
+/// A machine this app wants a line to right now: a tab on it runs an AI, the
+/// person agreed to the bridge there, and (a MicroVM) it is awake anyway
+pub struct Want {
+    pub at: crate::elsewhere::Elsewhere,
+    /// Its entry's name in the settings
+    pub host: String,
+    /// The keys of its tabs, by the name each tab's key file has
+    pub keys: Vec<(String, String)>,
+}
+
+/// Holds the lines the app wants and lets go of the rest. Everything that
+/// touches the network is done on a thread; the loop only asks, a few times a
+/// minute, what should be up
+#[derive(Default)]
+pub struct Keeper {
+    busy: Arc<Mutex<std::collections::HashSet<String>>>,
+    given: Arc<Mutex<std::collections::HashSet<String>>>,
+    tried: HashMap<String, Instant>,
+    held: HashMap<String, crate::elsewhere::Elsewhere>,
+    agreed: Option<Vec<String>>,
+}
+
+/// How long after a failed try a machine is tried again
+const RETRY: Duration = Duration::from_secs(60);
+
+impl Keeper {
+    pub fn tend(&mut self, wanted: Vec<Want>) {
+        let now = Instant::now();
+        let keys: std::collections::HashSet<String> = wanted.iter().map(|w| w.at.machine_key()).collect();
+        // Nothing on it wants the line any more: let go, and the bridge there exits
+        let gone: Vec<String> = self.held.keys().filter(|k| !keys.contains(*k)).cloned().collect();
+        for k in gone {
+            if let Some(at) = self.held.remove(&k) {
+                disconnect(&at);
+            }
+        }
+        for w in wanted {
+            let key = w.at.machine_key();
+            if self.busy.lock().is_ok_and(|b| b.contains(&key)) {
+                continue;
+            }
+            let up = is_up(&w.at);
+            let fresh: Vec<(String, String)> = {
+                let given = self.given.lock().unwrap_or_else(|e| e.into_inner());
+                w.keys.iter().filter(|(t, k)| !given.contains(&format!("{key}|{t}|{k}"))).cloned().collect()
+            };
+            if up && fresh.is_empty() {
+                continue;
+            }
+            if !up && self.tried.get(&key).is_some_and(|t| now.duration_since(*t) < RETRY) {
+                continue;
+            }
+            self.tried.insert(key.clone(), now);
+            self.held.insert(key.clone(), w.at.clone());
+            if let Ok(mut b) = self.busy.lock() {
+                b.insert(key.clone());
+            }
+            let (busy, given) = (Arc::clone(&self.busy), Arc::clone(&self.given));
+            let _ = std::thread::Builder::new().name(format!("bridge keep {}", w.at.address())).spawn(move || {
+                let done = (|| -> Result<()> {
+                    if !is_up(&w.at) {
+                        // Agreed to for this machine's entry: a machine of it
+                        // without this version gets it now, as the person said
+                        if installed(&w.at)? != Installed::Current {
+                            install(&w.at)?;
+                        }
+                        connect(&w.at)?;
+                    }
+                    for (tab, k) in fresh {
+                        give_key(&w.at, &tab, &k).map_err(|e| anyhow!(e))?;
+                        if let Ok(mut g) = given.lock() {
+                            g.insert(format!("{}|{tab}|{k}", w.at.machine_key()));
+                        }
+                    }
+                    Ok(())
+                })();
+                if let Err(e) = done {
+                    crate::append_hook_log(&format!("bridge: {} ({}): {e:#}", w.at.address(), w.host));
+                }
+                if let Ok(mut b) = busy.lock() {
+                    b.remove(&w.at.machine_key());
+                }
+            });
+        }
+    }
+
+    /// The machines the person agreed to, as the settings say now. One taken
+    /// off the list has the bridge taken off it, wherever this app can reach
+    /// without waking anything: servers, and MicroVMs that are awake
+    pub fn agreed_now(&mut self, agreed: &[String], hosts: &[crate::config::HostSpec], awake: &[crate::elsewhere::Elsewhere]) {
+        let before = self.agreed.replace(agreed.to_vec());
+        let Some(before) = before else { return };
+        for name in before.iter().filter(|b| !agreed.contains(b)) {
+            let mut targets: Vec<crate::elsewhere::Elsewhere> = awake
+                .iter()
+                .filter(|at| matches!(at, crate::elsewhere::Elsewhere::Cloud(h) if &h.name == name))
+                .cloned()
+                .collect();
+            if let Some(h) = hosts.iter().find(|h| &h.name == name && !h.is_made())
+                && let Ok(at) = crate::elsewhere::Elsewhere::of(h)
+            {
+                targets.push(at);
+            }
+            for at in targets {
+                self.held.remove(&at.machine_key());
+                let _ = std::thread::Builder::new().name("bridge remove".into()).spawn(move || {
+                    if let Err(e) = remove(&at) {
+                        crate::append_hook_log(&format!("bridge: taking it off {} failed: {e:#}", at.address()));
+                    }
+                });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_is_one_line_of_json() {
+        for f in [
+            Frame::Hello { version: "1".into(), rev: "x".into() },
+            Frame::Open { c: 3 },
+            Frame::Line { c: 3, l: "{\"id\":\"1\"}".into() },
+            Frame::Close { c: 3 },
+            Frame::Op { id: 9, op: "ping".into(), p: json!({}) },
+            Frame::Re { id: 9, r: json!({"a": 1}), e: None },
+            Frame::Re { id: 9, r: Value::Null, e: Some("no".into()) },
+        ] {
+            let line = f.line();
+            assert!(line.ends_with('\n') && line.matches('\n').count() == 1, "{line}");
+            assert_eq!(serde_json::from_str::<Frame>(line.trim()).unwrap(), f);
+        }
+    }
+
+    #[test]
+    fn a_program_for_every_machine_or_a_reason() {
+        assert!(bundled_for("riscv64").unwrap_err().to_string().contains("riscv64"));
+    }
+
+    #[test]
+    fn a_tab_over_there_finds_the_command_the_socket_and_its_key() {
+        let env = tab_env("/home/u/.local/share/shikisha/bridge", "coder");
+        assert_eq!(env[0], ("PATH".to_string(), "/home/u/.local/share/shikisha/bridge/bin:$PATH".to_string()));
+        assert!(env.iter().any(|(k, v)| k == ENV_KEY && v.ends_with(&format!("/keys/{}", key_name("coder")))));
+    }
+
+    #[test]
+    fn every_tab_name_gives_a_key_file_the_bridge_accepts() {
+        let dir = std::path::Path::new("/h");
+        for name in ["coder", "Claude 2", "レビュー", "../etc", "a/b", ".x", ""] {
+            let k = key_name(name);
+            assert!(crate::farops::key_file(dir, &k).is_some(), "{name} -> {k}");
+        }
+        assert_ne!(key_name("a b"), key_name("a_b"), "two names, two files");
+    }
+
+    /// The line itself, both ends in this process: a connection over there is
+    /// carried here and served; an operation is asked and answered
+    #[test]
+    fn a_call_goes_down_the_line_and_comes_back() {
+        let (here, there) = crate::ssh::socket_pair().unwrap();
+        let far_in = there.try_clone().unwrap();
+        // Over there: answers operations the way the bridge does
+        std::thread::spawn(move || {
+            let mut out = there;
+            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into() }.line().as_bytes());
+            for line in BufReader::new(far_in).lines() {
+                let Ok(line) = line else { break };
+                if let Ok(Frame::Op { id, op, p }) = serde_json::from_str::<Frame>(&line) {
+                    let (r, e) = match crate::farops::run(&op, &p) {
+                        Ok(r) => (r, None),
+                        Err(e) => (Value::Null, Some(e)),
+                    };
+                    let _ = out.write_all(Frame::Re { id, r, e }.line().as_bytes());
+                }
+            }
+        });
+        let input = here.try_clone().unwrap();
+        let link = Arc::new(Link {
+            out: Mutex::new(Box::new(here)),
+            socket: None,
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(false),
+            version: Mutex::new(None),
+            home: String::new(),
+        });
+        let l = Arc::clone(&link);
+        std::thread::spawn(move || l.listen(input));
+        let end = Instant::now() + Duration::from_secs(5);
+        while !link.is_up() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(link.is_up());
+        assert_eq!(link.call("ping", Value::Null, Duration::from_secs(5)).unwrap()["version"], env!("CARGO_PKG_VERSION"));
+        assert!(link.call("teleport", Value::Null, Duration::from_secs(5)).unwrap_err().contains("older version"));
+    }
+}

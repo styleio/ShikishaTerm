@@ -37,6 +37,8 @@ pub mod digest;
 pub mod discover;
 pub mod exchange;
 pub mod faraway;
+pub mod farlink;
+pub mod farops;
 pub mod files;
 pub mod folders;
 pub mod git;
