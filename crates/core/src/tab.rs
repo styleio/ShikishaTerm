@@ -1469,6 +1469,16 @@ mod tests {
     /// with the id -- so a line about a tab carrying `Minted:758c051b` was
     /// taken for an id, looked for on the disk, not found, and written up as a
     /// real fault. The tab was carrying exactly the right conversation.
+    /// What another tab sent a model tab is on its screen, with who sent it,
+    /// so a reply never stands there alone
+    #[test]
+    fn a_model_tab_shows_what_it_was_asked_and_by_whom() {
+        let line = super::asked_line("Say pong.\n(one word)", Some("turtle"));
+        assert!(line.contains("<@turtle>") && line.contains("Say pong.\r\n(one word)"), "{line:?}");
+        assert!(!super::asked_line("ping", None).contains("<@"), "a sender was made up");
+        let long = "x".repeat(super::ASKED_SHOWN + 50);
+        assert!(super::asked_line(&long, None).contains("x …"), "a long brief is not cut short");
+    }
     #[test]
     fn what_a_log_calls_a_conversation_cannot_be_read_as_an_id() {
         let s = crate::tab::Session {
@@ -2724,6 +2734,22 @@ pub fn bypass_flag(head: &str) -> Option<&'static str> {
         "gemini" => Some("--yolo"),
         _ => None,
     }
+}
+
+/// How much of what another tab sent a model tab is shown on its screen. A
+/// discussion's brief runs to pages; the screen shows its start, and the model
+/// is sent all of it
+const ASKED_SHOWN: usize = 2000;
+
+/// What was sent to a model tab, as the line its screen shows: who sent it,
+/// dim (`<@turtle>`), then the prompt marker a person's own line has, then
+/// the words -- cut short past `ASKED_SHOWN` characters
+fn asked_line(prompt: &str, from: Option<&str>) -> String {
+    let text = prompt.trim();
+    let shown: String = text.chars().take(ASKED_SHOWN).collect();
+    let more = if text.chars().count() > ASKED_SHOWN { " …" } else { "" };
+    let who = from.map(|f| format!("\x1b[2m<@{f}>\x1b[0m ")).unwrap_or_default();
+    format!("\r\n{who}\x1b[1;32m❯\x1b[0m {}{more}\r\n", shown.replace('\n', "\r\n"))
 }
 
 /// Waveform width (number of samples). Advances by one per tick
@@ -4801,8 +4827,13 @@ impl Tab {
     /// into the screen, and write it to say.txt.
     /// Since parser/bytes_out are Arc-shared, the main loop's detection
     /// (BUSY→DONE→on_done) works unchanged. The blocking HTTP call runs on a
-    /// separate thread so it never stalls the main loop
-    pub fn dispatch_model(&self, prompt: String) {
+    /// separate thread so it never stalls the main loop.
+    ///
+    /// What was sent is written on the screen first, with the tab it came from
+    /// (`from`, its id): a model tab has no program of its own to echo it, and
+    /// a reply standing alone -- "pong", out of nowhere -- leaves the person
+    /// watching unable to tell what was asked, or by whom
+    pub fn dispatch_model(&self, prompt: String, from: Option<String>) {
         let Some(conn) = self.model.clone() else {
             return;
         };
@@ -4818,6 +4849,7 @@ impl Tab {
         busy.store(true, Ordering::Relaxed);
         std::thread::spawn(move || {
             let inject = |s: &str| Self::inject_into(&parser, &counter, s);
+            inject(&asked_line(&prompt, from.as_deref()));
             inject(&format!(
                 "\r\n\x1b[36m… {}\x1b[0m\r\n",
                 crate::i18n::tp("agent.model.generating", &[("model", &conn.model)])
