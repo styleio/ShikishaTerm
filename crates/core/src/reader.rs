@@ -551,7 +551,7 @@ const PIECES_CAP: usize = 200;
 
 /// What a piece of the work is: something the AI said on the way, a tool it
 /// reached for, or what came back from one
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PieceKind {
     Say,
@@ -562,20 +562,20 @@ pub enum PieceKind {
 /// One piece of the work, as text. Nothing here knows any tool: what a call
 /// asked for and what a result held are read the same way, as the words in
 /// them (`leaves`)
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Piece {
     pub kind: PieceKind,
     /// The tool's name, for a call
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
     pub text: String,
     /// Characters left out in front of what is shown, and after it
-    #[serde(skip_serializing_if = "is_none_left")]
+    #[serde(default, skip_serializing_if = "is_none_left")]
     pub before: usize,
-    #[serde(skip_serializing_if = "is_none_left")]
+    #[serde(default, skip_serializing_if = "is_none_left")]
     pub after: usize,
     /// Whether it holds what was searched for
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hit: bool,
 }
 
@@ -585,22 +585,22 @@ fn is_none_left(n: &usize) -> bool {
 
 /// A stretch of work, opened: its pieces in the order they happened, and how
 /// many more there were than are handed over
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Work {
     pub pieces: Vec<Piece>,
-    #[serde(skip_serializing_if = "is_none_left")]
+    #[serde(default, skip_serializing_if = "is_none_left")]
     pub more: usize,
 }
 
 /// One stretch of a whole conversation, in the order it happened.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "k", rename_all = "lowercase")]
 pub enum Item {
     /// Somebody speaking. What one person said in a row is one of these
     Say {
         who: Who,
         text: String,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hit: bool,
     },
     /// The work between a question and its answer. `from` and `to` are where
@@ -610,9 +610,9 @@ pub enum Item {
         calls: usize,
         from: u64,
         to: u64,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         hit: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         work: Option<Work>,
     },
 }

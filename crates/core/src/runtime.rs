@@ -8141,7 +8141,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     },
                     _ => match crate::vault::open(&program, &id, at.as_ref(), &query) {
                         Ok(read) => {
-                            let exists = read.folder.as_deref().and_then(|f| crate::vault::folder_there(at.as_ref(), f));
+                            let exists = read.exists;
                             // Only asked when there is nowhere to reopen it in
                             let homes = match (exists, read.branch.as_deref(), at.is_none()) {
                                 (Some(false), Some(branch), true) => crate::vault::branch_homes(branch, &here),

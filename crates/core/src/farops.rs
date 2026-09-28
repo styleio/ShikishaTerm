@@ -23,6 +23,9 @@ pub const OPS: &[(&str, Op)] = &[
     ("read_page", read_page),
     ("put_key", put_key),
     ("drop_key", drop_key),
+    ("vault_search", crate::vault::bridge_search),
+    ("vault_read", crate::vault::bridge_read),
+    ("vault_work", crate::vault::bridge_work),
 ];
 
 /// Carry out one operation
