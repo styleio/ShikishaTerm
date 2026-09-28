@@ -8541,7 +8541,7 @@ function aiAgentsCard() {
 function skillCard() {
   const STATE = {
     in: T["settings.skill.state.in"], old: T["settings.skill.state.old"],
-    missing: T["settings.skill.state.missing"], later: T["settings.skill.state.later"],
+    missing: T["settings.skill.state.missing"],
   };
   const list = el("div", {}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.skill.title"],

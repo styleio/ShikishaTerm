@@ -318,8 +318,8 @@ pub enum Ev {
     /// `folder` is the checkout on the machine
     Login { folder: String, act: String },
     /// The skill that teaches an AI to hand work to another tab, answered for
-    /// one CLI (`claude`, `codex`, `gemini`): `install` writes it, `later`
-    /// puts the question away for now, `remove` takes it out again
+    /// one CLI (`claude`, `codex`, `gemini`): `install` writes it, `remove`
+    /// takes it out again
     Skill { ai: String, act: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
