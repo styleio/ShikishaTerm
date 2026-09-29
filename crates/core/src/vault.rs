@@ -91,6 +91,12 @@ pub struct Hit {
     /// What reopening it goes by, with the folder
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// Where in its record the line holding what was searched for starts, as
+    /// a byte offset: where a reader opened on it begins. Absent when that is
+    /// not known -- a blank search, or a record searched line by line on a
+    /// machine with no bridge
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
 }
 
 /// What a search came back with, and whether it saw everything.
@@ -144,6 +150,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
             break;
         }
         read += 1;
+        let mut line = None;
         // A blank search lists; it has nothing to read the records through for
         let (head, snip) = match needle.is_empty() {
             true => match read_head(path) {
@@ -152,9 +159,10 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
             },
             false => {
                 let Ok(bytes) = std::fs::read(path) else { continue };
-                let Some((words, at)) = crate::reader::mention(&bytes, &needle) else { continue };
+                let Some(found) = crate::reader::mention(&bytes, &needle) else { continue };
                 let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
-                (head, snippet(&words, at, needle.len()))
+                line = Some(found.line);
+                (head, snippet(&found.words, found.at, needle.len()))
             }
         };
         let Some(id) = id_of(path, &head, src) else { continue };
@@ -168,6 +176,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
             host: None,
+            at: line,
         });
     }
     // Stopped at enough with records left unread: there may be older ones
@@ -379,7 +388,7 @@ fn far_search_hits(
             let snippet = match needle.is_empty() {
                 true => String::new(),
                 false => match crate::reader::mention(&r.candidates, needle) {
-                    Some((words, at)) => snippet(&words, at, needle.len()),
+                    Some(found) => snippet(&found.words, found.at, needle.len()),
                     None => {
                         // One more line than a round takes, or cut at its
                         // size: there are more candidates after these
@@ -404,6 +413,7 @@ fn far_search_hits(
                 when: r.when,
                 tab: None,
                 host: Some(machine.to_string()),
+                at: None,
             });
         }
         if again.is_empty() {
@@ -528,6 +538,7 @@ fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
             host: None,
+            at: None,
         });
     }
     out
@@ -610,6 +621,7 @@ fn far_hits(out: &str, src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             when: when.trim().parse().unwrap_or(0),
             tab: None,
             host: None,
+            at: None,
         });
     }
     hits
@@ -1348,6 +1360,7 @@ mod tests {
             when: 0,
             tab: None,
             host: None,
+            at: None,
         };
         // With no profiles installed in the test env, reopen has nothing to
         // resolve against; the shape is what a real source produces
@@ -1551,6 +1564,10 @@ mod whole_tests {
         assert_eq!(ids, vec!["aaaa-late"], "a word past the first megabytes was not found");
         assert!(found.hits[0].snippet.contains("Refund handler"), "{}", found.hits[0].snippet);
         assert_eq!(found.hits[0].cwd.as_deref(), Some("D:/work/paymentsvc"));
+        // ...and where its line starts, for a reader to open on it
+        let record = std::fs::read(root.join("proj").join("aaaa-late.jsonl")).unwrap();
+        let at = found.hits[0].at.expect("where the words are") as usize;
+        assert!(record[at..].starts_with(said("assistant", "D:/work/paymentsvc", "The Refund handler double-counts").as_bytes()));
 
         let folder = search_in(&src, "paymentsvc", 10, &|| false);
         assert!(folder.hits.is_empty(), "the folder's name matched every conversation had in it: {:?}", folder.hits);

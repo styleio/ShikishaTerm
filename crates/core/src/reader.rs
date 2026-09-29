@@ -1060,8 +1060,20 @@ fn words_seen(line: &[u8]) -> Vec<String> {
     }
 }
 
+/// Where a search found what it looked for in a record
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mention {
+    /// The words it was found in, as a reader sees them
+    pub words: String,
+    /// Where in those words, as a byte offset
+    pub at: usize,
+    /// Where the record's line holding them starts, as a byte offset into
+    /// what was searched: where a reader opened on it begins
+    pub line: u64,
+}
+
 /// `needle`, lowercase, found in `bytes` where a reader would see it: the
-/// words it was found in, and where in them. `None` when it is nowhere but in
+/// words it was found in, where in them, and where its line starts. `None` when it is nowhere but in
 /// the record's bookkeeping.
 ///
 /// Found first as bytes, which is what makes reading every record on a
@@ -1070,16 +1082,18 @@ fn words_seen(line: &[u8]) -> Vec<String> {
 /// JSON writes it. A needle with letters whose case lies outside ASCII cannot
 /// be found that way -- the bytes of "É" are not the bytes of "é" -- and is
 /// looked for line by line instead
-pub fn mention(bytes: &[u8], needle: &str) -> Option<(String, usize)> {
+pub fn mention(bytes: &[u8], needle: &str) -> Option<Mention> {
     if needle.is_empty() {
         return None;
     }
-    let seen = |line: &[u8]| {
-        words_seen(line).into_iter().find_map(|w| find_in(&w, needle).map(|at| (w, at)))
+    let seen = |start: usize, end: usize| {
+        words_seen(&bytes[start..end])
+            .into_iter()
+            .find_map(|w| find_in(&w, needle).map(|at| Mention { words: w, at, line: start as u64 }))
     };
     let caseful = needle.chars().any(|c| !c.is_ascii() && c.to_uppercase().ne(c.to_lowercase()));
     if caseful {
-        return lines_of(bytes).find_map(|(s, e)| seen(&bytes[s..e]));
+        return lines_of(bytes).find_map(|(s, e)| seen(s, e));
     }
     let raw = serde_json::to_string(needle).unwrap_or_default();
     let raw = raw.get(1..raw.len().saturating_sub(1)).unwrap_or(needle).as_bytes();
@@ -1087,7 +1101,7 @@ pub fn mention(bytes: &[u8], needle: &str) -> Option<(String, usize)> {
     while let Some(at) = find_ascii_blind(bytes, raw, from) {
         let start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
         let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
-        if let Some(found) = seen(&bytes[start..end]) {
+        if let Some(found) = seen(start, end) {
             return Some(found);
         }
         from = end;
@@ -1588,8 +1602,11 @@ mod tests {
     fn a_mention_is_in_the_words_not_the_bookkeeping() {
         let line = r#"{"type":"user","cwd":"D:/work/Refund","message":{"role":"user","content":"hello"}}"#;
         assert!(mention(line.as_bytes(), "refund").is_none(), "the folder's name counted as a mention");
-        let (words, at) = mention(conversation().as_bytes(), "期限切れ").expect("said");
-        assert_eq!(&words[at..at + "期限切れ".len()], "期限切れ");
+        let found = mention(conversation().as_bytes(), "期限切れ").expect("said");
+        assert_eq!(&found.words[found.at..found.at + "期限切れ".len()], "期限切れ");
+        // ...and its line is where the record says it
+        let bytes = conversation();
+        assert!(bytes[found.line as usize..].starts_with(&record("assistant", "トークンの期限切れが原因でした。")));
         // A quote is escaped in the record, and still found
         let quoted = record("assistant", r#"say \"yes\" now"#);
         assert!(mention(quoted.as_bytes(), "\"yes\"").is_some());

@@ -8021,6 +8021,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // Select expects and a person presses
                             tab: Some(i + 1),
                             host: None,
+                            at: None,
                         });
                     }
                 }
