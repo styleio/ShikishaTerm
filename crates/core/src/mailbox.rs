@@ -262,7 +262,7 @@ pub struct Mailbox {
     /// The skill for asking another tab, answered: (the CLI, `install`,
     /// `later` or `remove`)
     pub skills: Vec<(String, String)>,
-    /// A job's card acted on: (act, run, decision, choice) -- see `Ev::Orch`
+    /// A job's card acted on: (act, job, decision, choice) -- see `Ev::Orch`
     pub orch: Vec<(String, i64, i64, String)>,
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them

@@ -14,19 +14,19 @@
  * The person's words go in through the input bar, naming the two workers with
  * @, exactly as a person would send them. Then the lead:
  *
- *   1. opens a job and a task, and dispatches it to the coder. The coder is
+ *   1. opens a job and a task, and assigns it to the coder. The coder is
  *      handed its brief as a typed line and a paste (Claude takes pasted
  *      instructions only when typed words ask for them)
  *   2. waits on its inbox. The coder asks it a question (ask_lead); the lead
  *      answers from the inbox; the coder carries on and reports
- *   3. adds a review task that waits on the first, dispatches it to the
+ *   3. adds a review task that waits on the first, assigns it to the
  *      reviewer (Codex: the paste alone), and ends its turn without waiting
  *   4. is told in its own tab that a message came when the review is in (the
- *      line the app types), reads it, releases both workers and closes the job
+ *      line the app types), reads it, lets both workers go and closes the job
  *
  * Checked along the way: every answer that moves the job on carries `next`;
  * a second report is "already"; the job card is on the board while the job is
- * open and gone once it is closed; a dispatch to a tab the person did not
+ * open and gone once it is closed; an assign to a tab the person did not
  * name is refused with the way to open one.
  *
  * Needs Windows and Node. No account is used and nothing leaves the machine.
@@ -44,7 +44,7 @@ const WORK = path.join(RUN, 'work');
 const STUB = path.join(RUN, 'stub');
 const LOGS = path.join(RUN, 'logs');
 const CONFIG = path.join(APP, 'config', 'config.json');
-const LEAD_LINE = 'Please carry out this task from the AI tab that assigned it to you';
+const LEAD_LINE = 'Another AI tab in SHIKISHA-TERM has handed you the task pasted below';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -57,8 +57,11 @@ const stopApp = () => ps('-Command',
   `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
 
 // --exe=<path> runs another build instead of this checkout's: the one
-// installed, say, to try exactly what people will run
-const exe = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6) || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// installed, say, to try exactly what people will run. What it reads beside
+// itself then comes from beside it too, not from this checkout
+const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
+const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+const from = installed ? ['-From', path.dirname(installed)] : [];
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
 console.log('starting this checkout\'s build, isolated');
@@ -131,49 +134,49 @@ const pump = async () => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Read the inbox until a batch with a message of one of these kinds comes,
-// answering questions and acknowledging every batch on the way
+// answering questions and saying each handover is dealt with on the way
 const drain = async (kinds, tries = 12) => {
-  let ack = null;
+  let dealt = null;
   for (let n = 0; n < tries; n++) {
-    const got = sh('inbox', 'wait', ...(ack ? [JSON.stringify({ ack })] : []));
+    const got = sh('inbox', 'wait', ...(dealt ? [JSON.stringify({ dealt })] : []));
     const v = json(got);
-    ack = null;
-    if (!v.messages || !v.messages.length) continue;
-    ack = v.delivery;
-    for (const m of v.messages) if (m.kind === 'question') sh('answer', m.question, 'src/app.rs');
-    const hit = v.messages.find((m) => kinds.includes(m.kind));
-    if (hit) { sh('inbox', JSON.stringify({ ack })); return hit; }
+    dealt = null;
+    if (!v.mail || !v.mail.length) continue;
+    dealt = v.handover;
+    for (const m of v.mail) if (m.kind === 'question') sh('answer', m.question, 'src/app.rs');
+    const hit = v.mail.find((m) => kinds.includes(m.kind));
+    if (hit) { sh('inbox', JSON.stringify({ dealt })); return hit; }
   }
   return null;
 };
 const act = async (text) => {
   if (role === 'lead' && text.includes('GO')) {
-    sh('run_open', 'Fix the parser and get it reviewed');
+    sh('job_open', 'Fix the parser and get it reviewed');
     sh('task_add', 'Implement the fix in src/app.rs. Done when it builds.');
-    sh('dispatch', 't1', 'shell');   // not an AI: refused
-    sh('dispatch', 't1', 'coder');
+    sh('assign', 't1', 'shell');   // not an AI: refused
+    sh('assign', 't1', 'coder');
     const first = await drain(['report']);
     fs.appendFileSync(said, JSON.stringify({ first }) + '\n');
-    sh('task_add', 'Review the fix in src/app.rs.', JSON.stringify({ deps: ['t1'] }));
-    sh('dispatch', 't2', 'reviewer');
+    sh('task_add', 'Review the fix in src/app.rs.', JSON.stringify({ waits_on: ['t1'] }));
+    sh('assign', 't2', 'reviewer');
     return;   // ends its turn: the review comes back as a line in this tab
   }
-  if (role === 'lead' && text.includes('You have')) {
+  if (role === 'lead' && text.includes('New mail for this tab')) {
     const v = json(sh('inbox'));
     fs.appendFileSync(said, JSON.stringify({ pointed: v }) + '\n');
-    if (v.delivery) sh('inbox', JSON.stringify({ ack: v.delivery }));
-    sh('release', 'd1');
-    sh('release', 'd2');
-    sh('run_close', 'Fixed and reviewed');
-    sh('run_status');
+    if (v.handover) sh('inbox', JSON.stringify({ dealt: v.handover }));
+    sh('let_go', 'a1');
+    sh('let_go', 'a2');
+    sh('job_close', 'Fixed and reviewed');
+    sh('job_status');
     return;
   }
-  if (text.includes('=== TASK')) {
+  if (text.includes('--- t')) {
     await sleep(800);
     if (role === 'coder') sh('ask_lead', 'Which file?');
     await sleep(800);
-    sh('report', 'succeeded', role + ' did it. Nothing odd was found. Nothing is left.');
-    sh('report', 'succeeded', 'again');
+    sh('report', 'done', role + ' did it.', 'Nothing odd.', 'nothing');
+    sh('report', 'done', 'again');
   }
 };
 `);
@@ -185,7 +188,7 @@ const standIn = (role, cli) => {
   return [cmd];
 };
 
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
+const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
@@ -258,17 +261,17 @@ try {
 
   console.log('1. the person asks, naming the workers with @');
   await run(`send({kind:"say", tab:${lead}, text:"GO: have <@coder> fix it and <@reviewer> review it"}); true`);
-  await until(async () => call('lead', 'dispatch').length >= 2, 'the lead to dispatch', 30000);
-  const [refused, first] = call('lead', 'dispatch');
+  await until(async () => call('lead', 'assign').length >= 2, 'the lead to assign', 30000);
+  const [refused, first] = call('lead', 'assign');
   check(refused.code !== 0 && /tab_run/.test(refused.err), 'a terminal is refused, with the command that fits it: ' + refused.err);
-  check(first.code === 0 && /\[shikisha\] next: shikisha inbox wait/.test(first.out), 'the dispatch answers with what to run next');
-  check(call('lead', 'run_open')[0]?.code === 0 && /next: shikisha task_add/.test(call('lead', 'run_open')[0].out), 'run_open says to add a task next');
+  check(first.code === 0 && /\[shikisha\] next: shikisha inbox wait/.test(first.out), 'the assign answers with what to run next');
+  check(call('lead', 'job_open')[0]?.code === 0 && /next: shikisha task_add/.test(call('lead', 'job_open')[0].out), 'job_open says to add a task next');
 
   console.log('2. the coder is handed its brief, typed line first');
-  await until(async () => heard('coder').includes('=== TASK t1'), 'the brief', 30000);
+  await until(async () => heard('coder').includes('--- t1 ---'), 'the brief', 30000);
   const h = heard('coder');
   check(h.includes(LEAD_LINE) && h.indexOf(LEAD_LINE) < h.indexOf('\x1b[200~'), 'Claude gets the typed request before the paste');
-  check(h.includes('shikisha report succeeded'), 'the brief carries the report command');
+  check(h.includes('shikisha report done'), 'the brief carries the report command');
   await until(() => run(`(S.jobs || []).length === 1 && S.jobs[0].tasks.length >= 1`), 'the job card', 10000);
   check(true, 'the job is on the board');
 
@@ -281,16 +284,16 @@ try {
   check(again.code === 0 && /already reported/.test(again.out), 'a second report is "already"');
 
   console.log('4. the review comes back as a line in the lead\'s tab');
-  await until(async () => heard('reviewer').includes('=== TASK t2'), 'the review brief', 60000);
+  await until(async () => heard('reviewer').includes('--- t2 ---'), 'the review brief', 60000);
   const r = heard('reviewer');
   check(!r.includes(LEAD_LINE), 'Codex gets the paste alone');
-  await until(async () => heard('lead').includes('You have 1 message'), 'the line saying there is mail', 60000);
+  await until(async () => heard('lead').includes('New mail for this tab (1)'), 'the line saying there is mail', 60000);
   check(true, 'the lead was told in its tab');
-  await until(async () => call('lead', 'run_close').length >= 1, 'the lead to close the job', 60000);
-  const close = call('lead', 'run_close')[0];
+  await until(async () => call('lead', 'job_close').length >= 1, 'the lead to close the job', 60000);
+  const close = call('lead', 'job_close')[0];
   check(close.code === 0 && /closed/.test(close.out), 'the job is closed: ' + (close.out || close.err).split('\n')[0]);
-  const released = call('lead', 'release');
-  check(released.length === 2 && released.every((x) => x.code === 0), 'both workers released');
+  const letGo = call('lead', 'let_go');
+  check(letGo.length === 2 && letGo.every((x) => x.code === 0), 'both workers let go');
   await until(() => run(`(S.jobs || []).length === 0`), 'the job card to go', 10000);
   check(true, 'the card is gone once the job is closed');
 } catch (e) {

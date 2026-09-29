@@ -1625,21 +1625,21 @@ end
 -- orch/mod.rs). Answered by the app loop when they come through the pipe or
 -- MCP, where the record of the job is kept; what runs here is only the check,
 -- under the permission table, that the call may be made
-function shikisha.run_open(objective, opts) return { accepted = true } end
-function shikisha.run_status(opts) return { accepted = true } end
-function shikisha.run_close(summary, opts) return { accepted = true } end
-function shikisha.task_add(spec, opts) return { accepted = true } end
+function shikisha.job_open(goal, opts) return { accepted = true } end
+function shikisha.job_status(opts) return { accepted = true } end
+function shikisha.job_close(outcome, opts) return { accepted = true } end
+function shikisha.task_add(task, opts) return { accepted = true } end
 function shikisha.task_list(opts) return { accepted = true } end
-function shikisha.dispatch(task, tab, opts) return { accepted = true } end
-function shikisha.report(outcome, summary, opts) return { accepted = true } end
+function shikisha.assign(task, tab, opts) return { accepted = true } end
+function shikisha.report(outcome, did, found, left, opts) return { accepted = true } end
 function shikisha.ask_lead(question, opts) return { accepted = true } end
 function shikisha.answer(question, text) return { accepted = true } end
 function shikisha.tell(to, text, opts) return { accepted = true } end
 function shikisha.inbox(opts) return { accepted = true } end
-function shikisha.gate_open(task, question, opts) return { accepted = true } end
-function shikisha.gate_answer(gate, choice) return { accepted = true } end
-function shikisha.release(assignment) return { accepted = true } end
-function shikisha.retain(assignment) return { accepted = true } end
+function shikisha.decision_open(task, question, opts) return { accepted = true } end
+function shikisha.decision_make(decision, choice) return { accepted = true } end
+function shikisha.let_go(assignment) return { accepted = true } end
+function shikisha.keep(assignment) return { accepted = true } end
 function shikisha.stop(assignment) return { accepted = true } end
 -- A working folder for a branch, made the way the worktree dialog makes one
 function shikisha.worktree_add(branch, opts) return { accepted = true } end

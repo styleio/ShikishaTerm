@@ -23,19 +23,19 @@ const tab = (index, name, group, extra) => Object.assign({
 
 const job = (decide) => ({
   id: 1,
-  objective: 'Fix the login redirect and get it reviewed',
+  goal: 'Fix the login redirect and get it reviewed',
   lead: 'lead',
-  opened_at: 0,
+  started_at: 0,
   rounds: 3,
   working: true,
   workers: ['codex', 'reviewer'],
   tasks: [
-    { id: 1, title: 'Fix the redirect after login in auth/session.rs', state: 'completed', tab: 'codex', tab_state: 'DONE', tries: 1 },
-    { id: 2, title: 'Review the fix on branch fix-login', state: 'dispatched', tab: 'reviewer', tab_state: 'BUSY', tries: 1 },
-    { id: 3, title: 'Fix what the review finds', state: 'pending', tab: null, tries: 0 },
-    { id: 4, title: 'Merge fix-login into main', state: decide ? 'blocked' : 'ready', note: decide ? 'waiting for a decision (g1)' : null, tab: null, tries: 0 },
+    { id: 1, title: 'Fix the redirect after login in auth/session.rs', state: 'done', tab: 'codex', tab_state: 'DONE', tries: 1 },
+    { id: 2, title: 'Review the fix on branch fix-login', state: 'working', tab: 'reviewer', tab_state: 'BUSY', tries: 1 },
+    { id: 3, title: 'Fix what the review finds', state: 'waiting', tab: null, tries: 0 },
+    { id: 4, title: 'Merge fix-login into main', state: decide ? 'held' : 'open', why: decide ? 'waiting for a decision (d1)' : null, tab: null, tries: 0 },
   ],
-  decisions: decide ? [{ id: 1, task: 4, question: 'Merge fix-login into main now?', options: ['Merge', 'Not yet'], who: 'person' }] : [],
+  decisions: decide ? [{ id: 1, task: 4, question: 'Merge fix-login into main now?', choices: ['Merge', 'Not yet'], who: 'person' }] : [],
 });
 
 const state = (decide) => JSON.stringify({

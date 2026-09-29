@@ -15,129 +15,127 @@
 /// Typed before the brief, for a CLI that follows pasted text only when the
 /// person's own typed words ask it to (the profile's `paste_needs_typed_request`)
 pub const LEAD_LINE: &str =
-    "Please carry out this task from the AI tab that assigned it to you, following the brief pasted below.";
+    "Another AI tab in SHIKISHA-TERM has handed you the task pasted below. Please do it as the brief says.";
 
-/// What a worker is handed: who it works for, the four commands it needs, and
-/// the task. `nest` adds how to hand work on, when the depth allows it
-pub fn brief(dispatch: i64, task: i64, spec: &str, nest: bool) -> String {
+/// What a worker is handed: whose work it is, how to answer, and the task.
+/// `nest` adds how to hand parts on, when the depth allows it
+pub fn brief(assignment: i64, task: i64, body: &str, nest: bool) -> String {
     let nested = if nest {
-        "\n\nIf part of this is better done by another AI tab, you may lead that part\n\
-yourself: run `shikisha skill orchestration` and follow it. Report here only\n\
-once everything you handed on has come back."
+        "\n\nPart of this better done by another AI tab? You may hand it on and lead\n\
+that part yourself: `shikisha skill orchestration` explains how. Report here\n\
+once everything you handed on is back."
     } else {
         ""
     };
     format!(
-        "You are a worker in SHIKISHA-TERM, on assignment d{dispatch} (task t{task}).
-The tab that assigned it cannot see this terminal. Reach it only with these
-commands; anything left only in this terminal never gets to it.
+        "SHIKISHA-TERM: task t{task}, handed to this tab as assignment a{assignment}.
+The AI tab that handed it to you does not watch this screen. It hears from
+you only through the commands below.
 
-    # Report the outcome, exactly once. Use failed when it is not done.
-    # The summary is three sentences: what you did, what you found, what is left.
-    shikisha report succeeded \"<summary>\"
+When you finish -- or cannot -- report once:
+    shikisha report done \"<what you did>\" \"<what you found>\" \"<what is left, or: nothing>\"
+    (failed in place of done when it is not done)
 
-    # A question only the assigning tab can answer. Never ask the person here.
+Stuck on something only that tab can settle? Ask it, not the person:
     shikisha ask_lead \"<question>\"
 
-    # Follow-ups from the assigning tab: read them before starting a new file,
-    # after a test run, and once more just before you report.
+It may send you more while you work. Look now and then, and once more
+before you report:
     shikisha inbox
 
-After you report, stop and wait at the prompt. Do not poll.
-A direct instruction from the person comes first and is new work.{nested}
+Once you have reported, stop and wait at the prompt.
+If the person tells you something directly, that comes first.{nested}
 
-=== TASK t{task} ===
-{spec}"
+--- t{task} ---
+{body}"
     )
 }
 
 /// Typed into a tab that has mail and is not already waiting for it
-pub fn pointer(count: usize) -> String {
-    let noun = if count == 1 { "message" } else { "messages" };
-    format!("[shikisha] You have {count} {noun}. Run: shikisha inbox")
+pub fn mail_line(count: usize) -> String {
+    format!("[shikisha] New mail for this tab ({count}). Read it with: shikisha inbox")
 }
 
 /// The whole guide for a lead, printed by `shikisha skill orchestration`.
 /// Kept in the program so the guide and the commands it describes are always
 /// the same version
 pub fn guide() -> String {
-    r#"# Orchestration: handing work to other AI tabs and seeing it through
+    r#"# Orchestration: handing parts of a job to other AI tabs and seeing it through
 
-Use this when the person asks you to have other tabs do parts of a job and to
-see it through ("have <@claude> implement it and <@codex> review it until
-nothing is left", "split this across tabs"). You are the lead: you hand out
-tasks, wait for reports, and decide what happens next. For a single question
-to one tab, `shikisha ask_tab` is enough; this is for work that needs reports,
-several tabs, or several rounds.
+For when the person asks you to have other tabs do parts of a job and to see
+it through ("have <@claude> implement it and <@codex> review it until nothing is
+left", "split this across tabs"). You lead the job: you cut it into tasks,
+hand each to a tab, read what comes back, and decide what happens next. One
+question to one tab needs none of this: `shikisha ask_tab` does that.
 
-Every command answers with `next`: the exact command(s) to run next. Follow
-them. `shikisha run_status` tells you where everything stands at any time --
-use it whenever you are unsure, or after your conversation was summarised.
+Every command answers with `next`, the exact command to run after it. Run it.
+Lost track, or your conversation was summarised? `shikisha job_status` shows
+where everything stands.
 
-## The loop
+## The round
 
-    shikisha run_open "<the whole job, in one sentence>"
-    shikisha task_add "<task>"                    # one per independent piece
-    shikisha task_add "<task>" '{"deps":["t1"]}'  # one that waits on t1
-    shikisha dispatch t1 <tab>                    # hand each ready task to a tab
-    shikisha inbox wait                           # wait for reports and questions
+    shikisha job_open "<the whole job, in one sentence>"
+    shikisha task_add "<task>"                         # one per piece
+    shikisha task_add "<task>" '{"waits_on":["t1"]}'   # a piece that needs t1 done first
+    shikisha assign t1 <tab>                           # hand an open task to a tab
+    shikisha inbox wait                                # wait for what comes back
 
-`inbox wait` returns a batch of messages, or `NOTHING YET` after a while.
-NOTHING YET is not a failure: run `shikisha inbox wait` again. A batch comes
-back until you acknowledge it, so deal with every message in it, then run the
-`next` it gives (it acknowledges the batch and waits for the next one).
+`inbox wait` answers with mail, or with `NOTHING YET` after a while. NOTHING
+YET only means nothing came yet: wait again. The same mail keeps coming back
+until you say you have dealt with it, so act on every piece of it first, then
+run the `next` it gives -- that says so and waits for more.
 
-For each message:
+What the mail can be:
 
-- **report** -- a task is done (succeeded or failed). Decide what follows: hand
-  the tab its next task (`dispatch` to the same tab), keep it (`retain`), or
-  close it (`release`). Failed means not done: read why, then dispatch again,
-  add a task that fixes the cause, or ask the person.
-- **question** -- a worker is waiting on you: `shikisha answer q<N> "<answer>"`.
-- **escalation** -- something needs you: a tab stopped without reporting, is
-  waiting for the person to approve something, or its program ended. It says
-  what to do.
-- **gate** -- a decision you asked for was made.
+- **report** -- a tab finished its task (done) or could not (failed). Decide
+  what follows: give the same tab its next task (`assign`), keep it open
+  (`keep`), or let it go (`let_go`). Failed means not done: read why, then
+  assign it again, add a task that removes the cause, or ask the person.
+- **question** -- a worker waits on you: `shikisha answer q<N> "<answer>"`.
+- **alert** -- something needs you: a tab went quiet without reporting, waits
+  for the person's approval, or its program ended. It says what to do.
+- **decision** -- a decision you asked for was made.
 
-When the job is done: `shikisha run_close "<what was done>"`. It refuses while
-anything is left open and lists what, with the command for each.
+When everything is done: `shikisha job_close "<what was done>"`. While
+anything is still open it refuses, and lists each thing with the command
+that settles it.
 
-## Which tab
+## Which tabs
 
-- A tab the person named with @ in what they asked you, or one this job opened.
-- If the person named none, open one: `shikisha open_ai_tab codex` (or claude,
-  gemini; add `'{"folder":"<folder>"}'` to work elsewhere). Its answer gives the
-  tab to dispatch to.
-- A separate working copy for a task, when two tabs would edit the same files:
-  `shikisha worktree_add <branch>`, then open the tab in the folder it returns.
+- Tabs the person named with @ when they asked you, and tabs this job opened.
+- Named none? Open one: `shikisha open_ai_tab codex` (or claude, gemini; add
+  `'{"folder":"<folder>"}'` for another folder). Its answer names the tab.
+- Two tabs about to edit the same files? Give one its own working copy:
+  `shikisha worktree_add <branch>`, then open the tab in the folder it names.
 
 ## Writing a task
 
-The worker sees only the task, not this conversation. Each task says:
+The tab you hand it to has not seen this conversation. Put in the task:
 
-- **Target** -- the files, component or environment in scope.
-- **Change** -- the concrete result to produce.
-- **Constraints** -- what must not change, compatibility, style.
-- **Ownership** -- what this worker may edit; what others are editing.
-- **Done when** -- the test, output or evidence that proves it.
+1. **Where** -- the repository, folder, branch and files it is about.
+2. **What to end up with** -- the change or the answer, concretely.
+3. **What must not change** -- files others are editing, behaviour to keep,
+   style to follow.
+4. **How to tell it is done** -- the test to pass, the output to show, what
+   to put in the report.
 
-For a review, name the branch, commit or files, and what to report. A worker in
-another folder cannot see uncommitted changes: commit first, or put the diff in
+A review task names the branch, commit or files to review. A tab in another
+folder does not see uncommitted changes: commit first, or paste the diff into
 the task.
 
-## Rules that are yours
+## What stays with you
 
-- A review's findings are fixed by a worker you dispatch, not by you -- unless
-  the person asked you to do the fixes yourself.
+- Findings from a review are fixed by a tab you assign, not by you -- unless
+  the person asked you to fix them yourself.
 - Merge or push only when the person asked for it.
-- A decision the person should make (merging to main, anything that cannot be
-  undone): `shikisha gate_open t<N> "<question>" '{"options":["yes","no"],"to":"person"}'`,
-  then wait; the answer arrives in your inbox.
-- Tell a worker something while it works: `shikisha tell d<N> "<text>"`
-  (`workers` for all of them). It reads it at its next checkpoint.
-- Stop a worker with `shikisha stop d<N>`; stop all of them with `shikisha stop all`.
-- Only positive evidence justifies stopping or retrying: a tab that is quiet is
-  not a tab that is dead. The inbox tells you when a tab's program ended.
+- Something the person should decide (merging to main, anything that cannot
+  be undone): `shikisha decision_open t<N> "<question>" '{"choices":["yes","no"],"to":"person"}'`,
+  then wait; the decision arrives in your mail.
+- To tell a working tab something: `shikisha tell a<N> "<text>"` (`workers`
+  reaches all of them). It reads it the next time it looks.
+- To stop one: `shikisha stop a<N>`; every one: `shikisha stop all`.
+- A quiet tab is not a dead one. Retry or stop only on evidence; your mail
+  tells you when a tab's program has ended.
 
 Talk to the person in their own language.
 "#
@@ -151,7 +149,7 @@ mod tests {
     #[test]
     fn a_brief_names_its_assignment_and_ends_with_the_task() {
         let b = brief(5, 3, "Fix the parser.", false);
-        assert!(b.contains("d5") && b.contains("t3"));
+        assert!(b.contains("a5") && b.contains("t3"));
         assert!(b.trim_end().ends_with("Fix the parser."));
         assert!(!b.contains("skill orchestration"), "no nesting unless the depth allows it");
         assert!(brief(5, 3, "x", true).contains("skill orchestration"));
@@ -161,10 +159,22 @@ mod tests {
     fn nothing_said_to_an_ai_names_a_tab_the_way_a_person_does() {
         // `<@ID>` in a person's request is what lets an AI drive a terminal or
         // a page; words this app types must never read as that
-        for text in [brief(1, 1, "x", true), pointer(2), guide(), LEAD_LINE.to_string()] {
+        for text in [brief(1, 1, "x", true), mail_line(2), guide(), LEAD_LINE.to_string()] {
             assert!(!text.contains("<@") || text.contains("<@claude>"), "{text}");
         }
         assert!(!brief(1, 1, "x", true).contains("<@"));
-        assert!(!pointer(3).contains("<@"));
+        assert!(!mail_line(3).contains("<@"));
+    }
+
+    #[test]
+    fn the_brief_and_the_guide_use_the_commands_that_exist() {
+        let said = format!("{}\n{}", brief(1, 1, "x", true), guide());
+        for word in said.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).collect::<Vec<_>>().windows(2) {
+            if word[0] == "shikisha" && !word[1].is_empty() && word[1].chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                let known = super::super::METHODS.contains(&word[1])
+                    || ["skill", "ask_tab", "open_ai_tab", "worktree_add", "tab_conversation"].contains(&word[1]);
+                assert!(known, "`shikisha {}` is not a command", word[1]);
+            }
+        }
     }
 }
