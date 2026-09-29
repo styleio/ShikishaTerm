@@ -21434,6 +21434,27 @@ struct Spot {
     starts: String,
 }
 
+/// Whether row `r` runs on into the next without saying so: full to its last
+/// column, and the next row starting where it left off (`termlink::runs_on`).
+///
+/// The wrap mark alone is not enough. It is set only when the text itself ran
+/// past the edge, and a pseudo console drawing the screen again puts every
+/// row in place with a line break of its own -- after a resize, or whenever
+/// its idea of the width and ours are a column apart -- so an address that
+/// was one line comes back as two rows with nothing saying they belong together
+fn broken_at_edge(screen: &vt100::Screen, r: u16, cols: u16) -> bool {
+    let first_of = |cell: Option<&vt100::Cell>| cell.and_then(|c| c.contents().chars().next());
+    // A wide character's right half holds nothing; the character is left of it
+    let end = match screen.cell(r, cols.saturating_sub(1)) {
+        Some(c) if c.is_wide_continuation() => screen.cell(r, cols.saturating_sub(2)),
+        other => other,
+    };
+    match (first_of(end), first_of(screen.cell(r + 1, 0))) {
+        (Some(last), Some(first)) => crate::termlink::runs_on(last, first),
+        _ => false,
+    }
+}
+
 /// Every place worth pressing on the screen, and which of them each cell
 /// (`row * cols + col`) belongs to.
 ///
@@ -21449,7 +21470,7 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
     let mut r = 0u16;
     while r < rows {
         let mut last = r;
-        while last + 1 < rows && screen.row_wrapped(last) {
+        while last + 1 < rows && (screen.row_wrapped(last) || broken_at_edge(screen, last, cols)) {
             last += 1;
         }
         // The line's characters, where each one is drawn, and the program's
@@ -25027,6 +25048,32 @@ mod tests {
             assert!(r.contains(r#"data-go="https://example.com/abcdefghijk" data-at="0.0""#), "{rows:?}");
         }
         assert!(!rows[2].contains("data-go"), "{rows:?}");
+    }
+
+    /// The same address, broken at the edge by the pseudo console with a line
+    /// break of its own rather than run on past it -- which is how a screen
+    /// drawn again comes (after a resize, or when the console's width and
+    /// ours differ by a column). No row says it was wrapped; the address
+    /// reaching the edge and going on at the start of the next row is all
+    /// there is, and it is still one address
+    #[test]
+    fn an_address_broken_at_the_edge_by_a_line_break_is_one_place() {
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"https://example.com/\r\nabcdefghijk");
+        assert!(!p.screen().row_wrapped(0), "the shape under test is a row that says nothing");
+        let rows = screen_rows(p.screen());
+        for r in &rows[..2] {
+            assert!(r.contains(r#"data-go="https://example.com/abcdefghijk" data-at="0.0""#), "{rows:?}");
+        }
+        // A sentence that happens to end at the edge is not run into the next
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"see src/lib/a.rs.  \r\nThen more");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#), "{rows:?}");
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"xx see src/lib/a.rs.\r\nThen more");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#) && !rows[1].contains("data-go"), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of
