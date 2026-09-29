@@ -2338,6 +2338,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut console_heard: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut console_sent: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut console_told = Instant::now();
+    // DevTools screens this run has made again for a split that was written
+    // down with them in it. Once each: a screen that could not be made is not
+    // asked for again on every pass
+    let mut devtools_remade: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A DevTools screen just opened, waiting for the half it goes in
+    let mut devtools_place: Option<(String, Instant)> = None;
     // What each row was on the last pass, and on which desk, so a pane can
     // follow its tab when the rows move
     let mut rows_were: (String, Vec<String>) = (String::new(), Vec::new());
@@ -2727,6 +2733,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .and_then(|d| d.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(key.as_str())))
                 .and_then(|t| t.cfg.panes.clone());
             let keyed = surface_keys(&surfaces, &tabs);
+            // A DevTools screen is not a tab of the settings: it is made for a
+            // page while the program runs, and its key to that page is made
+            // at each start. A split written down with one in it is put back
+            // with one -- made again for the same page, with this run's key --
+            // rather than with a hole where it stood. Made now, it is a tab by
+            // the next pass, so the arrangement is taken then
+            let mut remade = false;
+            if let Some(kept) = written.as_ref() {
+                for screen in kept.names() {
+                    let Some(page) = crate::caps::devtools_page(screen) else { continue };
+                    let page_listed = surfaces.iter().any(|s| matches!(s, Surface::Browser { key, .. } if key == page));
+                    let screen_open = keyed.iter().any(|t| t.matches(screen));
+                    if !page_listed || screen_open || devtools_remade.contains(screen) {
+                        continue;
+                    }
+                    if caps.hosted_names().iter().any(|h| h == page) {
+                        devtools_remade.insert(screen.to_string());
+                        match caps.browser_devtools(page) {
+                            Ok(_) => remade = true,
+                            Err(e) => append_hook_log(&format!("devtools: {screen} not made again: {e}")),
+                        }
+                    } else if start.elapsed() < DEVTOOLS_WAIT {
+                        // The page is written down but not open yet: at a
+                        // start, the arrangement waits for it a little
+                        remade = true;
+                    }
+                }
+            }
+            if remade {
+                continue;
+            }
             pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| {
                 keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
             });
@@ -2735,6 +2772,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         if open_split.is_none() && (!pane_layout.is_single() || pane_layout.focused_surface() != active) {
             pane_layout = crate::layout::Layout::single(active);
+        }
+        // A DevTools screen goes in the half made for it, which has the focus
+        if let Some((screen, until)) = devtools_place.clone() {
+            match crate::closed::row_named(&surfaces, &tabs, &screen) {
+                Some(n) if !pane_layout.is_single() => {
+                    // The half left empty for it, whichever has the focus
+                    // when the written-down arrangement comes back
+                    if let Some((id, _)) = pane_layout.leaves().into_iter().find(|(_, s)| *s == 0) {
+                        pane_layout.put(id, n);
+                        pane_layout.focus_pane(id);
+                    }
+                    active = n;
+                    devtools_place = None;
+                }
+                _ if Instant::now() > until => devtools_place = None,
+                _ => {}
+            }
         }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
@@ -6293,10 +6347,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // it is only shown
         for page in std::mem::take(&mut shell.mail().devtools) {
             let Some(n) = crate::closed::row_named(&surfaces, &tabs, &page) else { continue };
+            let fresh = !caps.hosted_names().contains(&crate::caps::devtools_screen(&page));
             let code = format!(
                 "local screen, fresh = shikisha.browser_devtools({page})\n\
-                 if fresh then shikisha.split_pane(\"right\") end\n\
-                 shikisha.show(screen)\n",
+                 if fresh then shikisha.split_pane(\"right\") end\n",
                 page = serde_json::Value::String(page.clone())
             );
             if engine.is_none() {
@@ -6304,6 +6358,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &browser_ctx(n, &page));
+            }
+            // Put in the new half by the person's own press, once there is a
+            // new half and the screen is a tab -- both happen on a later pass,
+            // and a script's `show` asked for now would find neither (nor may
+            // it move a view somebody has just touched). Open already, it is
+            // only brought forward
+            let screen = crate::caps::devtools_screen(&page);
+            if fresh {
+                devtools_place = Some((screen, Instant::now() + Duration::from_secs(10)));
+            } else {
+                reveal = Some((screen, Instant::now() + Duration::from_secs(10)));
             }
         }
 
@@ -12608,6 +12673,13 @@ pub const WHERE_EVERY_MS: u64 = 400;
 /// How long a division has to stand still before it is written down. Long
 /// enough that a divider being dragged is one write and not one per frame
 pub const SPLIT_SAVE_AFTER: Duration = Duration::from_millis(600);
+
+/// How long, after a start, a split with a DevTools screen in it waits for the
+/// page that screen is for. A page is opened a moment after the settings are
+/// read (placing one takes a few hundred milliseconds, and several are placed
+/// one after another); ten seconds is far past that, and short enough that a
+/// page which never opens leaves the split drawn without its screen soon
+pub const DEVTOOLS_WAIT: Duration = Duration::from_secs(10);
 /// The page placed in the focused pane, if that is what is there.
 ///
 /// Two things need this and must agree: the pen (which that page draws for

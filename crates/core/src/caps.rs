@@ -278,6 +278,17 @@ enum Deciding {
 
 const OP_MS: u64 = 5_000;
 
+/// What a page's DevTools screen is called: the page's name and a word after
+/// it, so the two sort together and the one says which page the other is for
+pub fn devtools_screen(page: &str) -> String {
+    format!("{page}-devtools")
+}
+
+/// The page a DevTools screen's name is for, when it is one
+pub fn devtools_page(screen: &str) -> Option<&str> {
+    screen.strip_suffix("-devtools").filter(|p| !p.is_empty())
+}
+
 /// Wait window for actions (click/fill). Actions auto-wait for the element
 /// to appear and become actionable — across a navigation if need be — so
 /// they get a longer leash than a read
@@ -1196,7 +1207,7 @@ impl Capabilities {
     /// is left as it is: a second screen on the same page would be a second
     /// session speaking to it
     pub fn browser_devtools(&self, name: &str) -> Result<(String, bool)> {
-        let screen = format!("{name}-devtools");
+        let screen = devtools_screen(name);
         let desk = self.desk.get();
         if self.hosted.borrow().iter().any(|(w, x)| *w == desk && *x == screen) {
             return Ok((screen, false));

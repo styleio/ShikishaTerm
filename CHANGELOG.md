@@ -41,7 +41,9 @@ once it reaches its first tagged release.
   open as a page of their own in the other half of the pane -- elements,
   console, network, all of it -- and a phone is shown them and works them like
   any page. They reach their page through the app, on a key made at each
-  start, so no debugging port is opened for other programs on the PC.
+  start, so no debugging port is opened for other programs on the PC. When the
+  app starts again, a split that had DevTools in it comes back with them,
+  opened afresh for the same page.
   `shikisha.browser_devtools` opens them from automation.
 
 ## [0.22.1] - 2026-09-29

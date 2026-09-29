@@ -91,7 +91,8 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
 env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0';
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+const launch = () => spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+launch();
 
 const portOf = (envName) => {
   const f = path.join(LOCAL, 'ShikishaTerm', 'webview2', envName, 'EBWebView', 'DevToolsActivePort');
@@ -176,6 +177,9 @@ try {
   check(true, 'a page named page-devtools is open');
   await until(async () => (await panes()) > panesBefore, 'the pane divided', 10000).catch(() => {});
   check((await panes()) > panesBefore, `the pane was divided (${panesBefore} -> ${await panes()})`);
+  const screenTab = await board.run('S.tabs.find(t => (t.id || t.name) === "page-devtools").index');
+  await until(() => board.run(`S.panes.panes.some(p => p.surface === ${screenTab}) && S.panes.panes.every(p => p.surface > 0)`), 'the screen in a pane', 10000).catch(() => {});
+  check(await board.run(`S.panes.panes.some(p => p.surface === ${screenTab}) && S.panes.panes.every(p => p.surface > 0)`), 'the screen stands in the new half, the page in the other: ' + await board.run('JSON.stringify(S.panes.panes.map(p => p.surface))'));
 
   let screenTarget;
   await until(async () => {
@@ -222,7 +226,41 @@ try {
   const log = fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8') : '';
   check(!log.includes(key), 'the key is not in the log');
 
-  console.log('5. the phone');
+  console.log('5. the app started again');
+  // The division is written down a moment after it is made
+  await until(() => fs.readFileSync(CONFIG, 'utf8').includes('page-devtools'), 'the split written down', 20000);
+  stopApp();
+  await sleep(1000);
+  for (const e of ['shell', path.join('profiles', 'default')]) {
+    fs.rmSync(path.join(LOCAL, 'ShikishaTerm', 'webview2', e, 'EBWebView', 'DevToolsActivePort'), { force: true });
+  }
+  launch();
+  let board2Target;
+  await until(async () => {
+    const p = portOf('shell');
+    return p && (board2Target = (await targetsOf(p)).find((t) => t.type === 'page'));
+  }, 'the window\'s page again', 40000);
+  const board2 = await connect(board2Target);
+  await until(() => board2.run('!!S && S.tabs.some(t => t.kind === "split")'), 'the split row', 30000);
+  await board2.run('send({kind:"select", tab: S.tabs.find(t => t.kind === "split").index})');
+  await until(() => board2.run('S.tabs.some(t => (t.id || t.name) === "page-devtools")'), 'the screen made again', 20000).catch(() => {});
+  check(await board2.run('S.tabs.some(t => (t.id || t.name) === "page-devtools")'), 'the DevTools screen is made again');
+  await until(() => board2.run('S.panes && S.panes.panes.length === 2 && S.panes.panes.every(p => p.surface > 0)'), 'both panes filled', 20000).catch(() => {});
+  check(await board2.run('S.panes.panes.length === 2 && S.panes.panes.every(p => p.surface > 0)'),
+    'the split comes back with both halves: ' + await board2.run('JSON.stringify(S.panes.panes.map(p => p.surface))'));
+  let screen2Target;
+  await until(async () => {
+    const p = portOf(path.join('profiles', 'default'));
+    return p && (screen2Target = (await targetsOf(p)).find((t) => t.url.startsWith('devtools://devtools/bundled/devtools_app.html')));
+  }, 'the screen\'s page again', 30000);
+  check(!screen2Target.url.includes(key), 'with a key of this run');
+  const screen2 = await connect(screen2Target);
+  const again = () => screen2.run(`(async () => { const m = await import("./core/sdk/sdk.js");
+    const t = m.TargetManager.TargetManager.instance().primaryPageTarget(); return t ? t.inspectedURL() : ""; })()`);
+  await until(() => again().then((u) => u.includes(`127.0.0.1:${pagePort}`)), 'the screen to know the page again', 30000).catch(() => {});
+  check(String(await again().catch((e) => e.message)).includes(`127.0.0.1:${pagePort}`), 'and it is inspecting the page again');
+
+  console.log('6. the phone');
   fs.mkdirSync(PHONE_DIR, { recursive: true });
   chrome = spawn(findChrome(), ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + PHONE_DIR,
     '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: 'ignore' });

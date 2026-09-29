@@ -666,6 +666,13 @@ pub struct Kept {
     keys: Vec<(PaneId, Option<String>)>,
 }
 
+impl Kept {
+    /// The names of the tabs its panes were showing
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.keys.iter().filter_map(|(_, k)| k.as_deref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
