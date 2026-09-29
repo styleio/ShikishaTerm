@@ -32,6 +32,9 @@ once it reaches its first tagged release.
   machine, the search and the reading run there and only the answer comes back;
   elsewhere, what their records note about themselves is taken out there, and
   what is left is judged here.
+  Find says when a machine could not be searched, and when a search stopped
+  before the end, instead of showing either as nothing found; a match inside a
+  long stretch of tool runs is always kept on the page it opens.
 - **The `shikisha` command in every tab takes the commands' own names.**
   `shikisha ask_tab ID "..."` is `shikisha.ask_tab("ID", "...")`: the first word
   names any command Lua has, the rest are its arguments (JSON where written as
