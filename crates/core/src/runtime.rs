@@ -4707,6 +4707,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::EditOpen { panel, path, diff }) => {
                         shell.mail().edits.push((panel, path, diff));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::LinkPress { tab, target, kind, act, ask }) => {
+                        shell.mail().link_presses.push(crate::mailbox::LinkPress { tab, target, kind, act, ask });
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
                     }
@@ -5242,6 +5245,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // the setup is in front of the list
             coach: coach.filter(|_| setup_view.is_none()),
             discard_unasked: cfg.as_ref().is_some_and(|c| c.confirm_worktree_delete == Some(false)),
+            link_press: cfg.as_ref().and_then(|c| c.terminal_links.clone()).unwrap_or_default(),
             setup: setup_view.clone(),
             add_project: add_view.clone(),
             worktrees_kept: worktrees_kept.clone(),
@@ -8922,23 +8926,45 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 _ => format!("far://{port}"),
             };
             let Some(desk) = desks.get(desk_index) else { continue };
-            let key = std::path::PathBuf::from(&folder);
-            let have = desk.tabs.iter().find(|ft| {
-                desk.folder_of(ft).and_then(|f| f.place()).is_some_and(|p| crate::uistate::same_folder(&p, &key))
-                    && config::browser_url_of(&ft.cfg.command.argv()).as_deref() == Some(written.as_str())
-            });
-            if let Some(ft) = have {
-                reveal = Some((ft.page_key(), Instant::now() + Duration::from_secs(10)));
-                continue;
-            }
-            let (on, cwd) = crate::uistate::place_of(&key);
-            let line = serde_json::json!({ "name": format!(":{port}"), "command": format!("browser {written}") });
-            match config::add_tab_at(&config::config_file_path(), &desk.name, line, Some(&cwd), on.as_deref(), config::NewFolder::Refused) {
-                Ok(id) => {
-                    reveal = Some((id, Instant::now() + Duration::from_secs(20)));
-                    watcher.poke();
+            match page_in_folder(desk, std::path::Path::new(&folder), &written, &format!(":{port}")) {
+                Ok((id, fresh)) => {
+                    reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
+                    if fresh {
+                        watcher.poke();
+                    }
                 }
                 Err(e) => flash = Some(e),
+            }
+        }
+        // A place pressed on a terminal's screen. Asked about, or acted on;
+        // either way worked out again here from the tab and the words, never
+        // from a path the page hands over
+        for press in shell.mail().take_link_presses() {
+            let Some(t) = tabs.iter().find(|t| t.key().matches(&press.tab)) else { continue };
+            let place = files_at(&press.tab, &surfaces, &tabs);
+            let said = link_press(&press, t, place.as_ref());
+            if press.act == "page" && press.kind == "web" && shikisha_shared::is_openable(&press.target) {
+                let Some(desk) = desks.get(desk_index) else { continue };
+                let p = tab_place(t);
+                let key = std::path::PathBuf::from(crate::uistate::place_key(t.host(), &p.dir));
+                // The address's host is what a person would call the page
+                let name = press.target.split("//").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("page").to_string();
+                match page_in_folder(desk, &key, press.target.trim(), &name) {
+                    Ok((id, fresh)) => {
+                        reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
+                        if fresh {
+                            watcher.poke();
+                        }
+                    }
+                    Err(e) => flash = Some(e),
+                }
+            }
+            if let Some(js) = said {
+                let js = js.to_string();
+                shell.push_link(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"termlink\":{js}}}"));
+                }
             }
         }
         while let Ok(answer) = far_ports_rx.try_recv() {
@@ -12717,6 +12743,131 @@ pub fn files_at(panel: &str, surfaces: &[Surface], tabs: &[Tab]) -> Option<Files
     match p.remote {
         Some(at) if !p.remote_dir.is_empty() => Some(FilesAt::There { at, root: p.remote_dir }),
         _ => Some(p.dir).filter(|d| !d.as_os_str().is_empty()).map(FilesAt::Here),
+    }
+}
+
+/// A browser tab showing `url` in the folder `key` (a place key), written
+/// down beside the folder's other tabs so it is there again next time. One
+/// already there for the same address is the answer instead of a second one.
+/// Gives the tab's name and whether it was just made
+fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &str) -> Result<(String, bool), String> {
+    let have = desk.tabs.iter().find(|ft| {
+        desk.folder_of(ft).and_then(|f| f.place()).is_some_and(|p| crate::uistate::same_folder(&p, key))
+            && config::browser_url_of(&ft.cfg.command.argv()).as_deref() == Some(url)
+    });
+    if let Some(ft) = have {
+        return Ok((ft.page_key(), false));
+    }
+    let (on, cwd) = crate::uistate::place_of(key);
+    let line = serde_json::json!({ "name": name, "command": format!("browser {url}") });
+    // A tab in no folder puts its page in none either, rather than in
+    // whichever folder this program happens to be started from
+    let at = (!cwd.as_os_str().is_empty()).then_some(cwd.as_path());
+    config::add_tab_at(&config::config_file_path(), &desk.name, line, at, on.as_deref(), config::NewFolder::Refused)
+        .map(|id| (id, true))
+}
+
+/// What a place pressed on a terminal's screen is, and -- for what only this
+/// PC can do -- doing it. Gives the page's answer to a `look`, `None` for
+/// everything else.
+///
+/// Worked out from the tab it was pressed on: a relative path is where the
+/// shell in it says it is (`cd` moves that), or else the tab's folder. The
+/// editor is offered only for a file inside that folder, the fence every file
+/// the editor reads goes through. A folder on another machine is not looked
+/// at from here -- the editor asks when it opens the file, and says if it is
+/// not there
+fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt>) -> Option<serde_json::Value> {
+    let answer = |more: serde_json::Value| {
+        let mut js = serde_json::json!({ "ask": press.ask, "tab": press.tab, "target": press.target, "lk": press.kind });
+        if let (Some(o), serde_json::Value::Object(m)) = (js.as_object_mut(), more) {
+            o.extend(m);
+        }
+        js
+    };
+    if press.kind == "web" {
+        let ok = shikisha_shared::is_openable(&press.target);
+        if press.act == "pc" && ok {
+            crate::webui::open_external(press.target.trim());
+        }
+        return (press.act == "look").then(|| answer(serde_json::json!({ "ok": ok })));
+    }
+    if press.kind != "file" {
+        return None;
+    }
+    let spot = crate::termlink::place_of(&press.target);
+    let reported = t.reported_cwd();
+    match place {
+        Some(FilesAt::There { root, .. }) => {
+            let base = if reported.starts_with('/') { reported.as_str() } else { root.as_str() };
+            let full = crate::termlink::resolve_there(&spot.path, base);
+            let rel = crate::transfer::under_remote(root, &full)
+                .map(|inside| inside.trim_start_matches(root.trim_end_matches('/')).trim_start_matches('/').to_string());
+            (press.act == "look").then(|| {
+                answer(serde_json::json!({
+                    "ok": true, "far": true, "path": full, "rel": rel,
+                    "line": spot.line, "col": spot.column,
+                }))
+            })
+        }
+        here => {
+            let root = match here {
+                Some(FilesAt::Here(root)) => Some(root.clone()),
+                _ => None,
+            };
+            let said = std::path::PathBuf::from(&reported);
+            let base = if said.is_absolute() { Some(said) } else { root.clone() };
+            let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from);
+            let Some(full) = crate::termlink::resolve_here(&spot.path, base.as_deref(), home.as_deref()) else {
+                return (press.act == "look").then(|| answer(serde_json::json!({ "ok": false, "why": "nowhere" })));
+            };
+            let meta = std::fs::metadata(&full).ok();
+            let dir = meta.as_ref().is_some_and(|m| m.is_dir());
+            let runs = !dir && crate::termlink::runs_when_opened(&full);
+            match press.act.as_str() {
+                "app" if meta.is_some() && !runs => crate::webui::open_external(&full.display().to_string()),
+                "reveal" => reveal_in_folder(&full, meta.is_some(), dir),
+                _ => {}
+            }
+            (press.act == "look").then(|| {
+                let rel = root.as_ref().and_then(|r| {
+                    let inside = local_under(r, &full.display().to_string())?;
+                    let norm = r.components().fold(std::path::PathBuf::new(), |mut acc, c| {
+                        acc.push(c.as_os_str());
+                        acc
+                    });
+                    let rest = inside.strip_prefix(&norm).ok()?;
+                    Some(rest.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"))
+                });
+                answer(serde_json::json!({
+                    "ok": true, "far": false, "path": display_path_of(&full),
+                    "found": meta.is_some(), "dir": dir, "runs": runs,
+                    "rel": rel.filter(|r| !r.is_empty()),
+                    "line": spot.line, "col": spot.column,
+                }))
+            })
+        }
+    }
+}
+
+/// Shows a file where it is in this PC's file manager, picked out. A folder is
+/// opened; something that is not there opens the nearest folder that is
+fn reveal_in_folder(full: &std::path::Path, found: bool, dir: bool) {
+    #[cfg(windows)]
+    {
+        if found && !dir {
+            // One argument, written exactly as Explorer reads it: `/select,`
+            // and the path, quoted -- a space in the path otherwise ends it
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("explorer.exe")
+                .raw_arg(format!("/select,\"{}\"", full.display()))
+                .spawn();
+            return;
+        }
+    }
+    let open = if found && dir { Some(full) } else { full.ancestors().skip(1).find(|p| p.is_dir()) };
+    if let Some(p) = open {
+        crate::webui::open_external(&p.display().to_string());
     }
 }
 

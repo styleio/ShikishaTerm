@@ -55,6 +55,10 @@ desk on screen.
 **The middle** is the tab in view: a terminal, a browser page, or the git panel.
 Once the window is divided, each pane's caption carries ▥ and ▤ to divide it again
 and ✕ to close that view.
+An address or a file path in a terminal is underlined under the pointer. Press it
+for what it can be opened with -- a browser tab, the editor at that line, the
+default app, its folder -- or Ctrl+click to open it straight away (Settings >
+Basic > Pressing an address or a path in a terminal).
 
 **Along the top of the middle** are the tabs of the folder in view. Press one to
 switch to it, and `+` to add one. A tab's ✕, or a middle click on it, closes that

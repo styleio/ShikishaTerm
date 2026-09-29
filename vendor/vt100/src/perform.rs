@@ -207,6 +207,15 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
             [b"2", s] => {
                 self.callbacks.set_window_title(&mut self.screen, s);
             }
+            // NOTE (vendored patch): OSC 8 hyperlinks,
+            // `ESC ] 8 ; params ; uri ST`. The parameters (an `id=` to join
+            // the pieces of one link) are not needed to draw it. An address
+            // with `;` in it arrives in several pieces and is put back
+            // together; an empty one ends the link
+            [b"8", _params, uri @ ..] => {
+                let uri = uri.join(&b';');
+                self.screen.set_link(&uri);
+            }
             [b"52", ty, data] => {
                 match (
                     ty.iter().all(|c| CLIPBOARD_SELECTOR.contains(c)),

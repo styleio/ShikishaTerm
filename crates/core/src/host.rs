@@ -70,6 +70,9 @@ pub trait Shell {
     /// Where a past conversation was had, for picking it back up
     fn push_vault_where(&self, json: &str);
     fn push_sftp(&self, json: &str);
+    /// What a place pressed on a terminal's screen turned out to be (already
+    /// JSON-encoded; see `shikisha_shared::Ev::LinkPress`)
+    fn push_link(&self, json: &str);
     fn push_recorded(&self, line_json: &str);
     /// A line about the run being driven from words, for the strip under
     /// the page it is driving
@@ -283,6 +286,7 @@ impl Shell for Headless {
     fn push_ideas(&self, json: &str) { let _ = json; }
     fn push_vault_where(&self, json: &str) { let _ = json; }
     fn push_sftp(&self, json: &str) { let _ = json; }
+    fn push_link(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str) { let _ = line_json; }
     fn push_words_note(&self, json: &str) { let _ = json; }
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) { self.mail.queue_ui(ev); }

@@ -1601,6 +1601,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .castkey.mod.on { background:var(--brand); color:#04121c; border-color:var(--brand); }
   /* Only this is selectable — the tab bar and frame never get pulled into a selection */
   #screen { user-select:text; }
+  /* An address or a path on the screen (see screen_rows). Underlined only
+     under the pointer -- a terminal full of permanent underlines is a page
+     of links, not a terminal. One broken over two rows lights up whole */
+  #screen .lk, .pscreen .lk { cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  #screen .lk:hover, .pscreen .lk:hover, #screen .lk.lit, .pscreen .lk.lit {
+    text-decoration:underline; text-underline-offset:2px; }
+  /* What a pressed place is, over what can be done with it: said the way it
+     can be typed back, so in the terminal's face */
+  .fmenu.lkmenu { max-width:min(440px, calc(100vw - 16px)); }
+  .fmenu.lkmenu div.fabout { max-width:none; }
+  .fmenu div.fabout.lkhead .ttl { font-family:var(--mono); font-weight:400; word-break:break-all; }
+  .fmenu div.fabout.lkhead .sum { font-family:var(--mono); word-break:break-all; }
+  /* A choice that cannot be made here: grey, and a press says why (§5.4) */
+  .fmenu div.off { color:var(--faint); cursor:not-allowed; }
+  .fmenu div.off:hover, .fmenu div.off:focus { background:transparent; }
 
   /* ── The file panel ──────────────────────────────
      Two lists of files side by side: this machine on the left, the server the
@@ -12258,6 +12273,8 @@ const ED = {
   asked: null,      // the opts of the save waiting for an answer
   said: "", bad: false,
   loading: false,
+  goto: null,       // {path, line, col}: where a pressed place asked to be taken
+  reading: false,   // a read's text is on its way into the editor
 };
 let edUi = null, edAce = null, edAceAsked = false;
 // Unsaved typing, by file, for the files that are not on screen. The editor
@@ -12339,6 +12356,16 @@ function edModeFor(path) {
   const ext = dot < 0 ? "" : path.slice(dot + 1).toLowerCase();
   return ED_MODES[ext] || null;
 }
+// Takes the editor to the line a pressed place named (`src/a.rs:12:5` in a
+// terminal), once that file is the one open and its text is in. Asked for
+// once: a place pressed again asks again
+function edGotoNow() {
+  const g = ED.goto;
+  if (!g || !edAce || ED.loading || ED.reading || g.path !== ED.path) return;
+  ED.goto = null;
+  edAce.gotoLine(g.line, Math.max(0, g.col - 1), false);
+  edAce.scrollToLine(Math.max(0, g.line - 1), true, false, () => {});
+}
 // Everything the editor learns comes back through the file list's own door
 function editHeard(d) {
   // The same for the editor: a file on another machine is read and saved
@@ -12364,7 +12391,11 @@ function editHeard(d) {
       ED.encoding = draft.encoding || ED.encoding; ED.exact = draft.exact !== false;
       ED.encPicked = !!draft.encPicked;
     }
+    // The text goes in twice when this drawing is what makes the editor; a
+    // place asked for waits for the second, or the second would undo it
+    ED.reading = true;
     drawEdit();
+    ED.reading = false;
     if (edAce) {
       // Setting the text is not the person typing, so it must not look like it
       edAce.session.doc.setValue(draft ? draft.text : ED.text);
@@ -12372,6 +12403,7 @@ function editHeard(d) {
       edAce.clearSelection();
       ED.dirty = draft ? draft.text !== ED.text : false;
       drawEdit();
+      edGotoNow();
     }
     return;
   }
@@ -12619,6 +12651,8 @@ function drawEdit() {
       edAce.session.doc.setValue(ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
+      // After the text, never before: putting text in moves the cursor
+      edGotoNow();
     }
     const mode = edModeFor(ED.path);
     const want = mode ? "ace/mode/" + mode : "ace/mode/text";
@@ -14797,6 +14831,10 @@ document.addEventListener("mouseup", e => {
     else send({kind:"copy", text:t});
     return;
   }
+  // A press on an address or a path is the place's, and the click that
+  // follows handles it -- the input bar opening under it would put the
+  // keyboard over the list it brings up
+  if (linkTaken(e)) return;
   // On a touch screen, tapping a terminal tab opens the sub-input bar (see
   // openTermBar) rather than the hidden #kbd, so the keyboard never lands on top
   // of the screen. With real keys about, a click puts the caret in the pane
@@ -14814,6 +14852,149 @@ document.addEventListener("contextmenu", e => {
   send({kind:"paste"});
   focus();
 });
+
+// ── Places on the terminal's screen ───────────────────────
+// An address or a file path found on the screen arrives as an element that
+// says what it is (screen_rows: data-lk is the kind, data-go what to open,
+// data-at where it starts). A press on a path asks the app what it is right
+// now -- is the file there, may the editor open it -- because only the app
+// knows the folder, and the answer brings up what can be done with it. An
+// address needs no asking. Ctrl+press does the first thing without the list.
+//
+// The asking is tagged, because the answer comes back to every screen
+// looking at the board: a phone and the window each wait for their own
+let linkWait = null;
+const LINK_TAG = Math.random().toString(36).slice(2, 8);
+let linkCount = 0;
+function linkNode(e) {
+  const n = e.target && e.target.closest ? e.target.closest(".lk") : null;
+  return n && n.closest("#screen, .pscreen") ? n : null;
+}
+// Whether this press is a place's to answer, not the terminal's
+function linkTaken(e) {
+  if (!linkNode(e) || e.button > 0) return false;
+  return !!(e.ctrlKey || e.metaKey) || ((S && S.link_press) || "") !== "off";
+}
+// One place broken over two rows is several elements; all of them light up
+function linkLit(n, on) {
+  const box = n.closest("#screen, .pscreen");
+  if (!box) return;
+  for (const x of box.querySelectorAll(".lk")) {
+    if (x.dataset.at === n.dataset.at && x.dataset.go === n.dataset.go) x.classList.toggle("lit", on);
+  }
+}
+document.addEventListener("mouseover", e => { const n = linkNode(e); if (n) linkLit(n, true); });
+document.addEventListener("mouseout", e => { const n = linkNode(e); if (n) linkLit(n, false); });
+// The tab a place was pressed on: the pane it is drawn in, or the one in front
+function linkTab(n) {
+  const pane = n.closest("#panes .pane");
+  if (pane && PANES) {
+    const p = (PANES.panes || []).find(q => String(q.id) === pane.dataset.pid);
+    if (p) return paneTab(p);
+  }
+  return ((S && S.tabs) || []).find(x => x.index === (S && S.active)) || null;
+}
+document.addEventListener("click", e => {
+  const n = linkNode(e);
+  if (!n || !linkTaken(e)) return;
+  const s = window.getSelection();
+  if (s && s.toString()) return;
+  const t = linkTab(n);
+  if (!t) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const w = {n, t, at: {clientX: e.clientX, clientY: e.clientY},
+    now: !!(e.ctrlKey || e.metaKey) || (S && S.link_press) === "straight",
+    go: n.dataset.go, lk: n.dataset.lk};
+  if (w.lk === "web") { linkShow(w, {ok: true}); return; }
+  w.ask = LINK_TAG + (++linkCount);
+  linkWait = w;
+  send({kind:"linkpress", tab: t.id || t.name || "", target: w.go, lk: w.lk, act: "look", ask: w.ask});
+});
+window.__linkSaid = function (d) {
+  if (!d || !linkWait || d.ask !== linkWait.ask) return;
+  const w = linkWait;
+  linkWait = null;
+  linkShow(w, d);
+};
+// Asks the app to do what only it can do with the place
+function linkDo(w, act) {
+  send({kind:"linkpress", tab: w.t.id || w.t.name || "", target: w.go, lk: w.lk, act, ask: ""});
+}
+// What can be done with a place, first choice first. A choice that cannot be
+// made here stays on the list, grey, with the reason it gives when pressed
+function linkChoices(w, d) {
+  const out = [];
+  const copy = (label, text, said) => out.push({label, run: () => { copyToClipboard(text); toast(T[said] || ""); }});
+  if (w.lk === "web") {
+    out.push({label: T["tui.link.page"], run: () => linkDo(w, "page")});
+    // The PC's browser opens on the PC. From a phone the same wish is this
+    // device's own browser -- one it can see
+    if (REMOTE) out.push({label: T["tui.link.here"], run: () => window.open(w.go, "_blank", "noopener")});
+    else out.push({label: T["tui.link.pc"], run: () => linkDo(w, "pc")});
+    copy(T["tui.link.copy_url"], w.go, "tui.urls.copied");
+    return out;
+  }
+  const where = d.path || w.go;
+  if (!d.ok) return out;
+  if (d.far) {
+    out.push(linkEdit(w, d));
+    copy(T["tui.link.copy_path"], where, "tui.link.copied");
+    return out;
+  }
+  if (d.found && !d.dir) out.push(linkEdit(w, d));
+  // Programs and folders of this PC open on this PC's screen: from a phone
+  // there would be nothing to see, so they are not offered there
+  if (!REMOTE && d.found) {
+    if (d.dir) out.push({label: T["tui.link.open_dir"], run: () => linkDo(w, "reveal")});
+    else {
+      if (!d.runs) out.push({label: T["tui.link.app"], run: () => linkDo(w, "app")});
+      out.push({label: T["tui.link.reveal"], run: () => linkDo(w, "reveal")});
+    }
+  }
+  copy(T["tui.link.copy_path"], where, "tui.link.copied");
+  return out;
+}
+function linkEdit(w, d) {
+  const label = d.line ? (T["tui.link.edit_line"] || "").replaceAll("{line}", d.line) : T["tui.link.edit"];
+  if (!d.rel) return {label, why: T["tui.link.outside"]};
+  return {label, run: () => {
+    ED.goto = d.line ? {path: d.rel, line: d.line, col: d.col || 1} : null;
+    send({kind:"editopen", panel: w.t.id || w.t.name || "", path: d.rel, diff: ""});
+    edGotoNow();
+  }};
+}
+// What the list says under its choices, when there is something to say
+function linkNote(w, d) {
+  if (w.lk === "web" || d.far) return "";
+  if (!d.ok) return T["tui.link.nowhere"] || "";
+  if (!d.found) return T["tui.link.missing"] || "";
+  if (d.runs && !REMOTE) return T["tui.link.runs"] || "";
+  return "";
+}
+function linkShow(w, d) {
+  const choices = linkChoices(w, d);
+  const first = choices.find(c => c.run);
+  const note = linkNote(w, d);
+  // Something to say (not there, nowhere to look) is said even to a Ctrl+press:
+  // copying a path that names nothing is not what was asked for
+  if (w.now && first && !note) { first.run(); return; }
+  const shown = w.lk === "web" ? w.go : (d.path || w.go);
+  const head = el("div", {class:"fabout lkhead"}, el("span", {class:"ttl"}, w.go));
+  if (shown !== w.go) head.append(el("span", {class:"sum"}, shown));
+  const say = el("div", {class:"fsay bad", hidden:true});
+  const rows = [head];
+  for (const c of choices) {
+    rows.push(c.run
+      ? el("div", {onclick: () => { closeFolderMenu(); c.run(); }}, c.label || "")
+      : el("div", {class:"off", onclick: ev => { ev.stopPropagation(); say.textContent = c.why || ""; say.hidden = false; }}, c.label || ""));
+  }
+  if (note) rows.push(el("div", {class:"fsay"}, note));
+  rows.push(say);
+  // The element can be gone by now -- the row was drawn again while the app
+  // was being asked -- so the list opens where the press was
+  openList(w.n.isConnected ? w.n : document.body, rows, false, w.at, "lkmenu");
+}
 window.addEventListener("focus", focus);
 focus();
 measure();
@@ -14912,6 +15093,7 @@ if (REMOTE) {
     if (d.issues) window.__issues(d.issues);
     if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
+    if (d.termlink) window.__linkSaid(d.termlink);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
     if (d.vaultwhere) window.__vaultWhere(d.vaultwhere);
@@ -21109,6 +21291,7 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
     const BG: &str = "transparent";
     let (rows, cols) = screen.size();
     let mut out_rows: Vec<String> = Vec::with_capacity(rows as usize);
+    let (spots, at) = spots_of(screen);
     // How the cell before this one looked, and the CSS it came out as. A
     // screen is overwhelmingly cells that look like their neighbour, so
     // spelling the same declaration out again for each of them is thousands
@@ -21118,6 +21301,10 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
     for r in 0..rows {
         let mut out = String::with_capacity(cols as usize * 2);
         let mut open: Option<String> = None;
+        // Which place worth pressing the open run belongs to. A run is cut
+        // where one starts or ends, the same as where the colour changes, so
+        // the element the page is handed is exactly the place
+        let mut open_spot: Option<usize> = None;
         let mut run = String::new();
         // How many cells this run spans. Position is determined by this, not by font advance width
         let mut span = 0usize;
@@ -21125,6 +21312,15 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
             let Some(cell) = screen.cell(r, c) else { continue };
             if cell.is_wide_continuation() {
                 continue;
+            }
+            let spot = at[usize::from(r) * usize::from(cols) + usize::from(c)];
+            if spot != open_spot {
+                if let Some(prev) = open.take() {
+                    flush_run(&mut out, &prev, &run, span, open_spot.map(|i| &spots[i]));
+                    run.clear();
+                    span = 0;
+                }
+                open_spot = spot;
             }
             let look = Look {
                 fg: cell.fgcolor(),
@@ -21169,9 +21365,10 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
             }
             let style = seen_style.as_str();
             // Break the run wherever the appearance changes
+            let link = open_spot.map(|i| &spots[i]);
             if open.as_deref() != Some(style) {
                 if let Some(prev) = open.take() {
-                    flush_run(&mut out, &prev, &run, span);
+                    flush_run(&mut out, &prev, &run, span, link);
                     run.clear();
                     span = 0;
                 }
@@ -21200,19 +21397,118 @@ pub fn screen_rows(screen: &vt100::Screen) -> Vec<String> {
                 continue;
             }
             // Anything that can't be merged gets its own single-character box
-            flush_run(&mut out, style, &run, span);
+            flush_run(&mut out, style, &run, span, link);
             run.clear();
             span = 0;
             let mut one = String::new();
             esc_into(&mut one, ch);
-            flush_cell(&mut out, style, &one, if wide { 2 } else { 1 });
+            flush_cell(&mut out, style, &one, if wide { 2 } else { 1 }, link);
         }
         if let Some(prev) = open.take() {
-            flush_run(&mut out, &prev, &run, span);
+            flush_run(&mut out, &prev, &run, span, open_spot.map(|i| &spots[i]));
         }
         out_rows.push(out);
     }
     out_rows
+}
+
+/// A place on the screen worth pressing -- an address or a file path -- as
+/// the page is told about it
+struct Spot {
+    /// `web` or `file`: which list of things to do the page offers
+    kind: &'static str,
+    /// What to open: the address, or the path as written (with `:line:col`)
+    target: String,
+    /// Where it starts, as `row.col`. One place broken over two rows is
+    /// several elements; this is what tells the page they are the same one
+    starts: String,
+}
+
+/// Every place worth pressing on the screen, and which of them each cell
+/// (`row * cols + col`) belongs to.
+///
+/// Read a line at a time rather than a row at a time: a long address that ran
+/// past the edge of the terminal continues on the next row, and only the whole
+/// of it opens anything. A program's own hyperlinks (OSC 8) come first -- the
+/// program knows what it meant -- and the text around them is read for the rest
+fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
+    let (rows, cols) = screen.size();
+    let width = usize::from(cols);
+    let mut at: Vec<Option<usize>> = vec![None; usize::from(rows) * width];
+    let mut spots: Vec<Spot> = Vec::new();
+    let mut r = 0u16;
+    while r < rows {
+        let mut last = r;
+        while last + 1 < rows && screen.row_wrapped(last) {
+            last += 1;
+        }
+        // The line's characters, where each one is drawn, and the program's
+        // hyperlink on it
+        let mut text: Vec<char> = Vec::new();
+        let mut cells: Vec<(u16, u16, u16)> = Vec::new();
+        for row in r..=last {
+            for c in 0..cols {
+                let Some(cell) = screen.cell(row, c) else { continue };
+                if cell.is_wide_continuation() {
+                    continue;
+                }
+                let s = cell.contents();
+                if s.is_empty() {
+                    text.push(' ');
+                    cells.push((row, c, cell.link()));
+                } else {
+                    for ch in s.chars() {
+                        text.push(ch);
+                        cells.push((row, c, cell.link()));
+                    }
+                }
+            }
+        }
+        let mut claimed = vec![false; text.len()];
+        let mut place = |from: usize, to: usize, kind: &'static str, target: String, spots: &mut Vec<Spot>| {
+            let (row, col, _) = cells[from];
+            spots.push(Spot { kind, target, starts: format!("{row}.{col}") });
+            let i = spots.len() - 1;
+            for &(row, col, _) in &cells[from..to] {
+                at[usize::from(row) * width + usize::from(col)] = Some(i);
+            }
+        };
+        let mut i = 0;
+        while i < cells.len() {
+            let id = cells[i].2;
+            let mut end = i + 1;
+            while end < cells.len() && cells[end].2 == id {
+                end += 1;
+            }
+            if id != 0 {
+                let target = screen.link_target(id).unwrap_or_default();
+                let chosen = if shikisha_shared::is_openable(target) {
+                    Some(("web", target.to_string()))
+                } else {
+                    crate::termlink::file_url_path(target).map(|p| ("file", p))
+                };
+                if let Some((kind, target)) = chosen {
+                    place(i, end, kind, target, &mut spots);
+                    for c in &mut claimed[i..end] {
+                        *c = true;
+                    }
+                }
+            }
+            i = end;
+        }
+        for f in crate::termlink::find(&text) {
+            if claimed[f.from..f.to].iter().any(|&c| c) {
+                continue;
+            }
+            let kind = match f.kind {
+                crate::termlink::Kind::Web => "web",
+                crate::termlink::Kind::File => "file",
+            };
+            place(f.from, f.to, kind, f.text, &mut spots);
+        }
+        r = last + 1;
+    }
+    (spots, at)
 }
 
 /// Everything about a cell that decides how it is painted.
@@ -21245,12 +21541,12 @@ pub fn screen_html(screen: &vt100::Screen) -> String {
 /// Without writing the width explicitly, a single character from a font
 /// whose advance width doesn't match would throw off the rest of that
 /// entire line. Both box-drawing characters and CJK text run into this.
-fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
+fn flush_run(out: &mut String, style: &str, run: &str, span: usize, link: Option<&Spot>) {
     if run.is_empty() {
         return;
     }
     // Trailing whitespace at the end of a line doesn't need a fixed position (nothing follows it)
-    if style.is_empty() && run.trim_end().is_empty() {
+    if style.is_empty() && link.is_none() && run.trim_end().is_empty() {
         out.push_str(run);
         return;
     }
@@ -21258,7 +21554,7 @@ fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
     // variable. Using ch (the font's own advance width for "0") instead
     // would give the cursor a different number than the content, and the
     // gap would widen column by column.
-    box_of(out, style, run, span, false);
+    box_of(out, style, run, span, false, link);
 }
 
 /// Writes out a single cell (2 cells wide for full-width characters), containing just that one character.
@@ -21266,16 +21562,41 @@ fn flush_run(out: &mut String, style: &str, run: &str, span: usize) {
 /// A character whose advance width is narrower than the cell is centered.
 /// Left-aligning it instead would leave gaps only on the right side of
 /// each character, making the row look uneven.
-fn flush_cell(out: &mut String, style: &str, ch: &str, span: usize) {
-    box_of(out, style, ch, span, true);
+fn flush_cell(out: &mut String, style: &str, ch: &str, span: usize, link: Option<&Spot>) {
+    box_of(out, style, ch, span, true, link);
 }
 
-fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool) {
+/// Text for inside a double-quoted attribute
+fn attr_into(out: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+fn box_of(out: &mut String, style: &str, body: &str, span: usize, center: bool, link: Option<&Spot>) {
+    out.push_str("<span ");
+    // A place worth pressing says what it is on the element itself, so the
+    // page needs nothing but the element to know what a press means
+    if let Some(s) = link {
+        out.push_str("class=\"lk\" data-lk=\"");
+        out.push_str(s.kind);
+        out.push_str("\" data-go=\"");
+        attr_into(out, &s.target);
+        out.push_str("\" data-at=\"");
+        out.push_str(&s.starts);
+        out.push_str("\" ");
+    }
     // The cell width is measured by the page and supplied via a CSS
     // variable. Using ch (the font's own advance width for "0") instead
     // would give the cursor a different number than the content, and the
     // gap would widen column by column.
-    out.push_str("<span style=\"display:inline-block;vertical-align:top;width:calc(var(--cw)*");
+    out.push_str("style=\"display:inline-block;vertical-align:top;width:calc(var(--cw)*");
     out.push_str(&span.to_string());
     out.push_str(");");
     if center {
@@ -24661,6 +24982,71 @@ mod tests {
     /// element on screen -- which the person typing into the composer pays for,
     /// because the browser must finish that layout before it can answer how
     /// tall their text box now is.
+    /// An address or a path on the screen is one element that says what it is,
+    /// so a press on it needs nothing but the element
+    #[test]
+    fn a_place_on_the_screen_says_what_it_opens() {
+        let mut p: vt100::Parser = vt100::Parser::new(3, 60, 0);
+        p.process("see https://example.com/a and src/main.rs:12:5".as_bytes());
+        let row = &screen_rows(p.screen())[0];
+        assert!(row.contains(r#"class="lk" data-lk="web" data-go="https://example.com/a" data-at="0.4""#), "{row}");
+        assert!(row.contains(r#"data-lk="file" data-go="src/main.rs:12:5""#), "{row}");
+        assert!(row.contains(">https://example.com/a</span>"), "the address is not one element: {row}");
+        // ...and a press on it is answered on a phone too: the answer rides
+        // the state socket there, and without this line the phone would ask
+        // and wait for ever
+        assert!(PAGE.contains("if (d.termlink) window.__linkSaid(d.termlink);"), "the phone never hears what a place is");
+    }
+
+    /// An address longer than the terminal is wide goes on on the next row;
+    /// both pieces are the same place
+    #[test]
+    fn an_address_broken_over_two_rows_is_one_place() {
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"https://example.com/abcdefghijk");
+        let rows = screen_rows(p.screen());
+        for r in &rows[..2] {
+            assert!(r.contains(r#"data-go="https://example.com/abcdefghijk" data-at="0.0""#), "{rows:?}");
+        }
+        assert!(!rows[2].contains("data-go"), "{rows:?}");
+    }
+
+    /// Japanese in a path is drawn a character to a box; each box is part of
+    /// the same place, and the sentence around it is not
+    #[test]
+    fn a_japanese_path_is_pressed_as_one_place() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process("保存先 docs/議事録・秋.md です".as_bytes());
+        let row = &screen_rows(p.screen())[0];
+        let boxes = row.matches(r#"data-go="docs/議事録・秋.md""#).count();
+        // "docs/" as one run, then 議 事 録 ・ 秋 one box each, then ".md"
+        assert_eq!(boxes, 7, "{row}");
+        assert!(!row.contains(r#"data-go="保存先"#), "{row}");
+    }
+
+    /// A program's own hyperlink is what it says, whatever the words are
+    #[test]
+    fn a_programs_hyperlink_opens_what_the_program_meant() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process(b"\x1b]8;;https://example.com/docs\x1b\\read the docs\x1b]8;;\x1b\\ after");
+        p.process(b"\r\n\x1b]8;;file:///C:/work/a%20b.txt\x1b\\a b\x1b[0m.txt\x1b]8;;\x1b\\ done");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-lk="web" data-go="https://example.com/docs" data-at="0.0" style="display:inline-block;vertical-align:top;width:calc(var(--cw)*13);">read the docs</span>"#), "{rows:?}");
+        assert_eq!(rows[0].matches("data-go").count(), 1, "the words after the link became part of it: {rows:?}");
+        // A colour reset in the middle does not end the link; the link's end does
+        assert_eq!(rows[1].matches(r#"data-go="C:/work/a b.txt""#).count(), 1, "{rows:?}");
+        assert!(rows[1].contains(r#"width:calc(var(--cw)*7);">a b.txt</span>"#), "{rows:?}");
+    }
+
+    /// Erasing after a link leaves blanks, not more of the link
+    #[test]
+    fn blanks_erased_after_a_hyperlink_are_not_part_of_it() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 30, 0);
+        p.process(b"\x1b]8;;https://a.io/\x1b\\x\x1b[K\x1b]8;;\x1b\\");
+        let row = &screen_rows(p.screen())[0];
+        assert!(row.contains(r#"width:calc(var(--cw)*1);">x</span>"#), "{row}");
+    }
+
     #[test]
     fn the_screen_is_made_of_rows_that_can_be_repaired_one_at_a_time() {
         let mut p: vt100::Parser = vt100::Parser::new(4, 20, 0);

@@ -119,6 +119,7 @@ pub mod splits;
 pub mod ssh;
 pub mod tab;
 pub mod tailscale;
+pub mod termlink;
 pub mod theme;
 pub mod toast;
 /// The icon in the notification area. Windows' own, and the only place a

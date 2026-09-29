@@ -62,7 +62,25 @@ pub struct Screen {
     modes: u8,
     mouse_protocol_mode: MouseProtocolMode,
     mouse_protocol_encoding: MouseProtocolEncoding,
+
+    // NOTE (vendored patch): OSC 8 hyperlinks. A cell carries a number
+    // (`Attrs::link`); the address is here, number - 1. Numbers are handed
+    // out once per distinct address and never reused, so a cell in the
+    // scrollback still means what it meant when it was written
+    links: Vec<String>,
+    link_numbers: std::collections::HashMap<String, u16>,
 }
+
+/// How many distinct hyperlink addresses a screen remembers. A directory
+/// listing that links every name is a few hundred; a program that links every
+/// line of a long log could go on for ever, and past this its new links are
+/// shown as plain text rather than the table growing without end
+const LINKS_KEPT: usize = 8192;
+
+/// The longest address a hyperlink may carry. Longer than any address a
+/// program has a reason to attach to text, short enough that a stream of
+/// junk cannot turn the table into megabytes
+const LINK_LONGEST: usize = 4096;
 
 impl Screen {
     pub(crate) fn new(
@@ -81,7 +99,47 @@ impl Screen {
             modes: 0,
             mouse_protocol_mode: MouseProtocolMode::default(),
             mouse_protocol_encoding: MouseProtocolEncoding::default(),
+
+            links: Vec::new(),
+            link_numbers: std::collections::HashMap::new(),
         }
+    }
+
+    // NOTE (vendored patch): OSC 8 hyperlinks.
+    /// The address of hyperlink number `id` (see
+    /// [`Cell::link`](crate::Cell::link)), or `None` for 0 and for a
+    /// number this screen never handed out
+    #[must_use]
+    pub fn link_target(&self, id: u16) -> Option<&str> {
+        let at = usize::from(id).checked_sub(1)?;
+        self.links.get(at).map(String::as_str)
+    }
+
+    /// Text written from now on belongs to `uri`; an empty one ends the link
+    pub(crate) fn set_link(&mut self, uri: &[u8]) {
+        if uri.is_empty() {
+            self.attrs.set_link(0);
+            return;
+        }
+        let Ok(uri) = std::str::from_utf8(uri) else {
+            self.attrs.set_link(0);
+            return;
+        };
+        if uri.len() > LINK_LONGEST || uri.chars().any(char::is_control) {
+            self.attrs.set_link(0);
+            return;
+        }
+        let id = match self.link_numbers.get(uri) {
+            Some(&id) => id,
+            None if self.links.len() < LINKS_KEPT => {
+                self.links.push(uri.to_string());
+                let id = u16::try_from(self.links.len()).unwrap_or(0);
+                self.link_numbers.insert(uri.to_string(), id);
+                id
+            }
+            None => 0,
+        };
+        self.attrs.set_link(id);
     }
 
     /// Resizes the terminal.
@@ -1133,8 +1191,12 @@ impl Screen {
         // XXX really i want to just be able to pass in a default Params
         // instance with a 0 in it, but vte doesn't allow creating new Params
         // instances
+        // NOTE (vendored patch): resetting the colours does not end a
+        // hyperlink -- only OSC 8 with no address does
+        let link = self.attrs.link();
         if params.is_empty() {
             self.attrs = crate::attrs::Attrs::default();
+            self.attrs.set_link(link);
             return;
         }
 
@@ -1171,7 +1233,10 @@ impl Screen {
 
         loop {
             match next_param!() {
-                [0] => self.attrs = crate::attrs::Attrs::default(),
+                [0] => {
+                    self.attrs = crate::attrs::Attrs::default();
+                    self.attrs.set_link(link);
+                }
                 [1] => self.attrs.set_bold(),
                 [2] => self.attrs.set_dim(),
                 [3] => self.attrs.set_italic(true),

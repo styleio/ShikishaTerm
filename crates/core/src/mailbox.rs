@@ -209,6 +209,9 @@ pub struct Mailbox {
     /// which change of it to show -- empty for the file itself). An empty path
     /// means "put this editor's file away"
     pub edits: Vec<(String, String, String)>,
+    /// Places pressed on a terminal's screen since the last drain (see
+    /// `shikisha_shared::Ev::LinkPress`)
+    pub link_presses: Vec<LinkPress>,
     /// Recorded steps reported by pages. The loop turns each into one Lua
     /// line for the composer.
     pub recorded: Vec<RecordedStep>,
@@ -288,6 +291,16 @@ pub struct Mailbox {
     pub folder_hides: Vec<(String, bool)>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
+}
+
+/// A place pressed on a terminal's screen (see `shikisha_shared::Ev::LinkPress`)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LinkPress {
+    pub tab: String,
+    pub target: String,
+    pub kind: String,
+    pub act: String,
+    pub ask: String,
 }
 
 /// A server reached over SSH, written into the settings from the dialog
@@ -567,6 +580,9 @@ impl Mailbox {
     }
     pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)
+    }
+    pub fn take_link_presses(&mut self) -> Vec<LinkPress> {
+        std::mem::take(&mut self.link_presses)
     }
     /// Takes what the file panel has asked for since the last drain
     pub fn take_sftps(&mut self) -> Vec<(String, String, serde_json::Value)> {

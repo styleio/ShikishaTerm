@@ -991,6 +991,11 @@ pub struct Config {
     /// could read the clipboard could read whatever was copied last, from
     /// anywhere, including the far end of an ssh session.
     pub tui_clipboard: Option<bool>,
+    /// What a plain press on an address or a file path in a terminal does:
+    /// omitted shows what can be done with it, `straight` does the first of those
+    /// at once, `off` leaves the press to the terminal. Ctrl+press always
+    /// does the first, whatever this says
+    pub terminal_links: Option<String>,
     /// Width of the left tab bar, in pixels, or 0 when it is put away. Omitted
     /// means the built-in width. Dragging the bar's edge writes it back here,
     /// which is how it survives a restart.

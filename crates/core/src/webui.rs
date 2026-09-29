@@ -7342,6 +7342,14 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.stay_awake.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
+    // Beside the clipboard: both are what a press or a copy inside a terminal does
+    row(T["settings.terminal_links"],
+        choose(current, "terminal_links", [
+          ["", T["settings.terminal_links.list"]],
+          ["straight", T["settings.terminal_links.open"]],
+          ["off", T["settings.terminal_links.off"]],
+        ]),
+        el("span", {class:"hint"}, T["settings.terminal_links.hint"])),
     row(T["settings.conpty"], conptyState(),
         el("span", {class:"hint"}, T["settings.conpty.hint"])),
     // What a folder opens with: a project added, or an empty folder pressed
