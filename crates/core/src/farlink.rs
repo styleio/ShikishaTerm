@@ -753,7 +753,16 @@ impl Keeper {
                 .collect()
         };
         for (key, at) in due {
+            // Being put there or taken off right now: tried once that is done,
+            // so two threads never work on one machine's folder at once
             if self.busy.lock().is_ok_and(|b| b.contains(&key)) {
+                continue;
+            }
+            // A MicroVM is never woken to have its folder deleted: it is tried
+            // while it is awake, which is when this app is using it
+            if let crate::elsewhere::Elsewhere::Cloud(h) = &at
+                && !h.instance.as_deref().is_some_and(crate::e2b::awake)
+            {
                 continue;
             }
             self.remove_tried.insert(key.clone(), now);
@@ -773,6 +782,13 @@ impl Keeper {
         }
         let (busy, unremoved) = (Arc::clone(&self.busy), Arc::clone(&self.unremoved));
         let _ = std::thread::Builder::new().name("bridge remove".into()).spawn(move || {
+            // Agreed to again since it was asked for: it stays
+            if !unremoved.lock().is_ok_and(|u| u.contains_key(&key)) {
+                if let Ok(mut b) = busy.lock() {
+                    b.remove(&key);
+                }
+                return;
+            }
             match remove(&at) {
                 Ok(()) => {
                     if let Ok(mut u) = unremoved.lock() {
@@ -790,7 +806,9 @@ impl Keeper {
     /// Machines this app is using anyway whose entry the person has not agreed
     /// to (any more): a bridge left there -- unticked while the machine was
     /// paused, or before this app last started -- is taken off. Looked at once
-    /// per machine per run, and never by waking anything
+    /// per machine per run, and never by waking anything. A machine that could
+    /// not be looked at, or whose folder could not be deleted, joins the ones
+    /// tried again every minute
     pub fn sweep(&mut self, awake_not_agreed: Vec<(String, crate::elsewhere::Elsewhere)>) {
         for (name, at) in awake_not_agreed {
             if !self.swept.insert(at.machine_key()) {
@@ -808,7 +826,12 @@ impl Keeper {
                             }
                         }
                     }
-                    Err(e) => crate::append_hook_log(&format!("bridge: could not look at {}: {e:#}", at.address())),
+                    Err(e) => {
+                        crate::append_hook_log(&format!("bridge: could not look at {}, trying again in a minute: {e:#}", at.address()));
+                        if let Ok(mut u) = unremoved.lock() {
+                            u.insert(at.machine_key(), (name, at));
+                        }
+                    }
                 }
             });
         }
@@ -844,10 +867,12 @@ impl Keeper {
                 if let Ok(mut u) = self.unremoved.lock() {
                     u.insert(key.clone(), (name.clone(), at.clone()));
                 }
-                self.remove_tried.insert(key.clone(), Instant::now());
-                self.take_off(key, at);
+                self.remove_tried.remove(&key);
             }
         }
+        // Taken off at once -- or, on a machine the bridge is being put on at
+        // this moment, as soon as that is done, never at the same time
+        self.retry_removals(Instant::now());
     }
 }
 

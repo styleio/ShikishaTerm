@@ -5,12 +5,14 @@ rules below exist so that any version of the app can open a file an older versio
 bring it up to date without losing a row, and refuse a file a newer version wrote instead of
 damaging it.
 
-What every file shares -- how it is opened, the numbered steps, the rebuild, the generated
-design file and the tests of its numbering -- is written once in `crates/core/src/sqlite.rs`.
-A feature's store calls it; it does not carry a copy. The worked examples are the record of
-handed work (`crates/core/src/orch/db.rs`, [orchestration-db.md](orchestration-db.md)) and
-the record of conversations (`crates/core/src/convo/db.rs`,
-[conversations-db.md](conversations-db.md)). Follow them rather than inventing another way.
+**The shared code is `crates/core/src/sqlite.rs`.** It opens every file, runs the steps, makes
+the backup, rebuilds tables and checks the design file, so a rule fixed there is fixed for
+every database. A new database uses it; it does not copy it.
+
+The worked examples of a database built on it are the record of handed work
+(`crates/core/src/orch/db.rs`, its steps in `crates/core/src/orch/migrations/`, and
+[orchestration-db.md](orchestration-db.md)) and the record of conversations
+(`crates/core/src/convo/db.rs`, [conversations-db.md](conversations-db.md)).
 
 SQLite is bundled with `rusqlite` (`features = ["bundled"]`), so the version is known and the
 same on every machine: **3.53.2** today (see `libsqlite3-sys` in `Cargo.lock`). Anything
@@ -33,14 +35,20 @@ described here as needing a newer SQLite is available.
 
 ## 2. Opening a connection
 
-Every connection, every time, before anything else. `sqlite::open(path, STEPS, what)` does
-all of it (and `sqlite::in_memory` for tests):
+Always through the shared opener, never `Connection::open` directly:
+
+```rust
+let conn = crate::sqlite::open(&config::state_path("<feature>.db"), STEPS, "the record of <what>")?;
+let conn = crate::sqlite::in_memory(STEPS, "the record of <what>")?; // tests
+```
+
+It gives every connection, before anything else:
 
 ```rust
 conn.pragma_update(None, "journal_mode", "WAL")?;     // readers do not block the writer
 conn.pragma_update(None, "synchronous", "NORMAL")?;   // safe with WAL, much faster than FULL
 conn.busy_timeout(Duration::from_secs(5))?;          // wait for a lock instead of failing
-migrate(&mut conn, STEPS, Some(&backup))?;            // see 4
+migrate(&mut conn, steps, Some(&backup), what)?;      // see 4; backup is <name>.v<version>.bak
 conn.pragma_update(None, "foreign_keys", "ON")?;      // off by default in SQLite, per connection
 ```
 
@@ -137,7 +145,7 @@ pub const STEPS: &[(i64, &str, Step)] = &[
 ## 5. Rebuilding a table
 
 SQLite's own procedure (<https://www.sqlite.org/lang_altertable.html>, "Making Other Kinds Of
-Table Schema Changes"), written once as `rebuild(tx, table, create, columns, indexes)`:
+Table Schema Changes"), written once as `crate::sqlite::rebuild(tx, table, create, columns, indexes)`:
 
 1. create the new table beside the old one under another name;
 2. `INSERT INTO new (cols) SELECT cols FROM old` — reshaping values here if needed;
@@ -187,8 +195,8 @@ which is safe only because every table referencing them is dropped in the same s
 | a step that fails leaves the file exactly as it was | the transaction per step works |
 | a step that leaves rows pointing at nothing is refused | the foreign key check works |
 | a file from a newer version is refused and left alone | no downgrade damage |
-| steps and files are numbered 1, 2, 3 ... and match | nobody inserted or skipped a number |
-| the generated design file matches the steps | the design doc is never stale |
+| steps and files are numbered 1, 2, 3 ... and match (`crate::sqlite::check_numbering`) | nobody inserted or skipped a number |
+| the generated design file matches the steps (`crate::sqlite::check_design`) | the design doc is never stale |
 
 ## 9. Keeping files small
 

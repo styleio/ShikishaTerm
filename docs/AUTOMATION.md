@@ -832,7 +832,8 @@ What keeps it going without a person in the loop:
   dealt with it, and a tab that is not waiting for its mail is told in one typed line when it
   is free to read it.
 - **The next step is always given.** Every answer carries `next`: what to do next, as the
-  command to run wherever there is one. A refusal says what to run instead.
+  command to run wherever there is one. A refusal says why, and names the command that puts
+  it right when there is one.
   `job_close` refuses while anything is left open and lists what, with the command for each.
 - **Bounded.** Work goes only to tabs you named with `@` or that the job opened itself
   (`open_ai_tab`), the number of assignments per job and how deep jobs may nest are set under
@@ -1216,7 +1217,8 @@ it; nobody has to say so.
 
 A job one AI tab (the lead) hands out to others and sees through (see "Orchestration" in
 chapter 7). Answered through the pipe or MCP only; each answer carries `next`, what to do next
-(the command, wherever there is one), and a refusal says what to run instead. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions `d1`.
+(the command, wherever there is one); a refusal says why, and names the command that puts it
+right when there is one. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions `d1`.
 
 | Command | Description |
 |---|---|

@@ -69,7 +69,8 @@ hand each to a tab, read what comes back, and decide what happens next. One
 question to one tab needs none of this: `shikisha ask_tab` does that.
 
 Every command answers with `next`: what to do after it, as the exact command
-wherever there is one. Do it. A refusal says what to run instead.
+wherever there is one. Do it. A refusal says why, and names the command that
+puts it right when there is one.
 Lost track, or your conversation was summarised? `shikisha job_status` shows
 where everything stands.
 
