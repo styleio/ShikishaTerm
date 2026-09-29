@@ -4435,7 +4435,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_default();
                 let mut wanted: std::collections::BTreeMap<String, crate::farlink::Want> = Default::default();
                 let mut awake: Vec<crate::elsewhere::Elsewhere> = Vec::new();
-                let mut stray: Vec<crate::elsewhere::Elsewhere> = Vec::new();
+                let mut stray: Vec<(String, crate::elsewhere::Elsewhere)> = Vec::new();
                 for t in tabs.iter() {
                     let Some(at) = t.machine() else { continue };
                     let woke = match &at {
@@ -4445,8 +4445,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     if woke && matches!(at, crate::elsewhere::Elsewhere::Cloud(_)) {
                         awake.push(at.clone());
                     }
-                    if woke && t.host_name().is_some_and(|h| !agreed.iter().any(|a| a == h)) {
-                        stray.push(at.clone());
+                    if woke && let Some(h) = t.host_name().filter(|h| !agreed.iter().any(|a| a == *h)) {
+                        stray.push((h.to_string(), at.clone()));
                     }
                     let (Some(host), Some(key)) = (t.host_name(), t.far_key.as_ref()) else { continue };
                     if !woke || !agreed.iter().any(|a| a == host) || !t.is_ai() {
