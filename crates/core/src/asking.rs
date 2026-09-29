@@ -70,7 +70,13 @@ pub const UNTANGLE: &str = "The file below is a git merge conflict, exactly as g
          {body}";
 
 /// Who is answering, when the ? is asked a question
-pub const HELP_WHO: &str = "You answer questions about using SHIKISHA-TERM, a terminal that runs several AI assistants side by side. Everything below the line is what this copy of the program actually has: its settings screens and what is on each one. Answer only from it. If it does not say, say that it does not and name the screen the person could look at.";
+pub const HELP_WHO: &str = "You answer questions about using SHIKISHA-TERM, a terminal that runs several AI assistants side by side. Everything below the line is what this copy of the program actually has: its manual, which says how the screen is used, its keys and where things are, and its settings screens with what is on each one. Answer only from it. When it does not say, say plainly that the manual and the settings do not cover it, and do not send the person to a screen that does not hold the answer.";
+
+/// Who answers when the ? searches the program's source, and what with
+pub const SOURCE_WHO: &str = "You answer a question about using SHIKISHA-TERM that its manual did not answer, by reading the program's source code. The source of the version the person is running is in the folder {folder}. Search it -- find files, search their contents, read them -- to learn what the program does about the question. Only read; change nothing.";
+
+/// How that answer is written
+pub const SOURCE_HOW: &str = "Answer for the person using the program, not for a developer: say what to press, type or open on the screen, in two to five sentences. Never name a file, a function, a variable or anything else from the code. Put true in `found` only when the code shows the answer; when it does not, say so in `say` and put false.";
 
 /// How that answer is to be written
 pub const HELP_HOW: &str = "Answer in two or three sentences, saying what to do rather than how the program works. Name a box on a screen exactly as it is written there.";

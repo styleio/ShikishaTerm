@@ -101,6 +101,7 @@ pub mod shell;
 pub mod skill;
 pub mod hotkeys;
 pub mod snip;
+pub mod source;
 pub mod devcontainer;
 pub mod e2b;
 pub mod elsewhere;

@@ -1,0 +1,36 @@
+name: A question the guide could not answer
+description: Sent from the ? in the app, when only the source code had the answer
+labels: [guide-question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The ? beside the gear answers from the manual. This question was not in
+        it, and the answer below was found by reading the source code. Sending
+        it in lets the manual say it, so the ? answers it straight away next
+        time. Check that nothing personal or confidential is in it before you
+        create the issue.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: What was asked, as it was typed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: answer
+    attributes:
+      label: The answer found in the source code
+      description: What the ? answered after reading the source. It may be wrong; say so if it was.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The version of the app the question was asked in.
+    validations:
+      required: false

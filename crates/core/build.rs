@@ -37,6 +37,17 @@ fn main() {
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false);
     println!("cargo:rustc-env=BUILD_REV={rev}{}", if dirty { "+" } else { "" });
+    // The whole commit, for fetching this very version of the source from the
+    // public repository (the ? searching the code). A short one cannot be
+    // fetched by
+    let sha = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    println!("cargo:rustc-env=BUILD_SHA={sha}");
     println!("cargo:rerun-if-changed=src");
     // And again after every commit. Without it the stamp kept the commit the
     // sources were last edited at: fix, build, then commit, and the app went on

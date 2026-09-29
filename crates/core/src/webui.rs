@@ -160,7 +160,7 @@ fn query_param(url: &str, key: &str) -> Option<String> {
 }
 
 /// Minimal percent-encoding for a query-string value.
-fn pct(s: &str) -> String {
+pub(crate) fn pct(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
@@ -1042,6 +1042,10 @@ const CLAUDE_SETTINGS_FILE: &str = "settings.json";
 /// seconds for each of the three; the rest is a slow network or a first start
 const LIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
+/// How an assistant AI is started: its arguments, and what goes into its
+/// environment (`{dir}` in either is the folder it runs in)
+type Invocation = (Vec<String>, Vec<(&'static str, String)>);
+
 /// What to start an assistant AI with for a short answer that costs as little
 /// as it can: the arguments after the program, and what goes in its
 /// environment. The prompt goes in on standard input; the instructions are in
@@ -1088,7 +1092,7 @@ fn light_invocation(
     small: bool,
     model: Option<&str>,
     schema: Option<&str>,
-) -> Option<(Vec<String>, Vec<(&'static str, String)>)> {
+) -> Option<Invocation> {
     let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     match name {
         "claude" => {
@@ -1208,6 +1212,21 @@ pub fn ask_local_ai_shaped(
     ask_confined(name, prompt, system, Some(schema), timeout)
 }
 
+/// [`ask_local_ai_shaped`], always on the assistant AI's own model: for a
+/// question somebody typed and is waiting to read the answer to (the ?). The
+/// smallest model is a setting about names (`summary_small_model`), and read
+/// with the whole manual in front of it, it lost a long question and answered
+/// that the manual did not say what it said. The full one took no longer
+pub fn ask_local_ai_answering(
+    prompt: &str,
+    system: &str,
+    schema: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let name = which_assistant(None)?;
+    ask_confined_as(name, false, None, prompt, system, Some(schema), timeout)
+}
+
 /// Ask a question that needs no tools at all, and take prose back.
 ///
 /// For the questions where everything the AI needs is already in the prompt
@@ -1224,6 +1243,91 @@ pub fn ask_local_ai_confined(
 ) -> Result<String> {
     let name = which_assistant(engine)?;
     ask_confined(name, prompt, system, None, timeout)
+}
+
+/// Ask the assistant AI a question it answers by reading a folder: given tools
+/// that read (find a file, search its contents, read it) and nothing else --
+/// no editing, no command that changes anything, no network. For the ?
+/// searching this program's own source when the manual has no answer.
+///
+/// Slower than [`ask_local_ai_shaped`] by design: it reads, one file after
+/// another, where that one only answers
+pub fn ask_reading(
+    folder: &std::path::Path,
+    prompt: &str,
+    system: &str,
+    schema: &str,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    let name = which_assistant(None)?;
+    let (args, env) = reading_invocation(name, &folder.display().to_string(), schema)
+        .with_context(|| crate::i18n::tp("webui.err.ai_not_found", &[("name", name)]))?;
+    let system = match holds_shape(name) {
+        true => system.to_string(),
+        false => format!("{system}\n\n{SHAPE_TOLD}\n{schema}"),
+    };
+    let files: Vec<(&str, &[u8])> = vec![
+        (SYSTEM_FILE, system.as_bytes()),
+        (CLAUDE_SETTINGS_FILE, br#"{"disableAllHooks": true}"#),
+        (SCHEMA_FILE, schema.as_bytes()),
+    ];
+    let ran = run_in_own_folder(name, args, prompt.to_string(), &files, &env, timeout)?;
+    if !ran.ok || ran.out.trim().is_empty() {
+        let why: String = ran.err.trim().chars().take(300).collect();
+        anyhow::bail!("{}", crate::i18n::tp("ai.err.failed", &[("cmd", &ran.cmd), ("error", &why)]));
+    }
+    Ok(ran.out)
+}
+
+/// How each assistant AI is started to read `folder` and nothing else. The
+/// same precautions as [`light_invocation`] -- no hooks, no MCP servers, no
+/// slash commands, nothing kept -- with the reading tools let in, and the
+/// folder named as one it may read
+fn reading_invocation(
+    name: &str,
+    folder: &str,
+    schema: &str,
+) -> Option<Invocation> {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match name {
+        "claude" => Some((
+            v(&[
+                "-p", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob", "--add-dir", folder,
+                "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands",
+                "--settings", &format!("{{dir}}/{CLAUDE_SETTINGS_FILE}"),
+                "--system-prompt-file", &format!("{{dir}}/{SYSTEM_FILE}"),
+                "--json-schema", schema,
+            ]),
+            Vec::new(),
+        )),
+        "codex" => {
+            // Its reading is done with shell commands, which the read-only
+            // sandbox lets look and never change anything
+            let mut args = v(&[
+                "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
+                "-C", folder, "-c", "web_search=disabled", "-c", "mcp_servers={}",
+                "-c", &format!("model_instructions_file={{dir}}/{SYSTEM_FILE}"),
+                "--output-schema", &format!("{{dir}}/{SCHEMA_FILE}"),
+            ]);
+            for feature in [
+                "apps", "browser_use", "computer_use", "image_generation", "goals", "hooks", "multi_agent", "plugins",
+                "sleep_tool", "tool_suggest", "view_image", "skill_search", "personality", "memories", "in_app_browser",
+            ] {
+                args.push("-c".into());
+                args.push(format!("features.{feature}=false"));
+            }
+            args.push("-".into());
+            Some((args, Vec::new()))
+        }
+        "gemini" => Some((
+            v(&[
+                "--extensions", "none", "--allowed-mcp-server-names", "none", "--approval-mode", "plan",
+                "--include-directories", folder, "-p", "",
+            ]),
+            vec![("GEMINI_SYSTEM_MD", format!("{{dir}}/{SYSTEM_FILE}"))],
+        )),
+        _ => None,
+    }
 }
 
 /// Which assistant AI answers, said the same way wherever it is asked
@@ -1861,6 +1965,68 @@ fn handle(
             };
             req.respond(json_resp(body))?;
         }
+        // The program's own source, fetched for the ? to search: this version,
+        // once, and again after an update. Its own request so the panel can say
+        // it is fetching before it says it is searching
+        ("POST", "/api/guide/source/fetch") => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::source::ready());
+            });
+            let body = match rx.recv() {
+                Ok(Ok(at)) => serde_json::json!({"ok": true, "instead": at.instead}),
+                Ok(Err(e)) => serde_json::json!({
+                    "error": format!("{e:#}"),
+                    // What to do about it, when the answer is to install git
+                    "git": crate::tab::resolve_command("git").is_none(),
+                }),
+                Err(e) => serde_json::json!({"error": e.to_string()}),
+            };
+            req.respond(json_resp(body))?;
+        }
+        // The question searched for in that source, by the assistant AI
+        // reading it. Minutes rather than seconds, on a thread of its own
+        ("POST", "/api/guide/source/ask") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let ask: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let question = ask.get("question").and_then(|q| q.as_str()).unwrap_or("").to_string();
+            let so_far: Vec<crate::guide::Said> = ask
+                .get("so_far")
+                .and_then(|s| serde_json::from_value(s.clone()).ok())
+                .unwrap_or_default();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::source::ready().and_then(|at| {
+                    crate::guide::ask_source(&question, &so_far, &at).map(|a| (a, at.instead))
+                }));
+            });
+            let body = match rx.recv() {
+                Ok(Ok((a, instead))) => serde_json::json!({"say": a.say, "found": a.found, "instead": instead}),
+                Ok(Err(e)) => serde_json::json!({"error": format!("{e:#}")}),
+                Err(e) => serde_json::json!({"error": e.to_string()}),
+            };
+            req.respond(json_resp(body))?;
+        }
+        // A new issue in the program's repository, filled in with a question
+        // the manual did not answer and what the source said. Only the
+        // address: the person reads it, changes it and sends it on GitHub.
+        // Opened on this PC when asked; a phone opens the address itself
+        ("POST", "/api/guide/issue") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let ask: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let text = |k: &str| ask.get(k).and_then(|q| q.as_str()).unwrap_or("").to_string();
+            let url = crate::guide::issue_url(&text("question"), &text("answer"));
+            if ask.get("open").and_then(|o| o.as_bool()) == Some(true) {
+                open_external(&url);
+            }
+            req.respond(json_resp(serde_json::json!({"url": url})))?;
+        }
         // The box somebody picked on the settings screen, and putting one down
         ("GET", "/api/guide/picked") => {
             req.respond(json_resp(
@@ -1946,6 +2112,8 @@ fn handle(
                 // this link and now answers instead, so the link lives inside
                 // what answers -- nothing that was reachable has been taken away
                 Some("manual") => Some(crate::i18n::t("tui.help.url")),
+                // Where git comes from, for the ? to search the source with
+                Some("git") => Some("https://git-scm.com/downloads".to_string()),
                 // How to install the program a tab needs. The address is the
                 // app's own, looked up by program name -- the page names a
                 // program, never a place to go
