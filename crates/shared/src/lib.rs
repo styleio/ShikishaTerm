@@ -322,9 +322,9 @@ pub enum Ev {
     /// takes it out again
     Skill { ai: String, act: String },
     /// A job handed out between AI tabs, acted on from its card: `stop`
-    /// stops every tab working on run `run`; `decide` answers the decision
-    /// `gate` with `choice`
-    Orch { act: String, run: i64, gate: i64, choice: String },
+    /// stops every tab working on job `job`; `decide` makes the decision
+    /// `decision` with `choice`
+    Orch { act: String, job: i64, decision: i64, choice: String },
     /// A folder put out of sight until the program is started again. Nothing
     /// is written down and nothing on disk is touched: the settings still hold
     /// it, and the next launch shows it again. `hide` false with an empty
@@ -1071,8 +1071,8 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("orch") => Ev::Orch {
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
-            run: v.get("run").and_then(|x| x.as_i64()).unwrap_or_default(),
-            gate: v.get("gate").and_then(|x| x.as_i64()).unwrap_or_default(),
+            job: v.get("job").and_then(|x| x.as_i64()).unwrap_or_default(),
+            decision: v.get("decision").and_then(|x| x.as_i64()).unwrap_or_default(),
             choice: v.get("choice").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("skill") => Ev::Skill {

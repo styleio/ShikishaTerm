@@ -69,10 +69,15 @@ const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.
   .split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && l.includes('='))
   .map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim().replace(/^"|"$/g, '')]));
 // --exe=<path> runs another build instead of this checkout's: the one
-// installed, say, to try exactly what people will run
-const exe = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6) || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// installed, say, to try exactly what people will run. What it reads beside
+// itself -- the bridge among it -- then comes from beside it too, not from
+// this checkout
+const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
+const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+const from = installed ? ['-From', path.dirname(installed)] : [];
+const payload = installed ? path.dirname(installed) : ROOT;
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
-if (!fs.existsSync(path.join(ROOT, 'bridge', 'shikisha-bridge-x86_64-linux'))) die('no Linux bridge in bridge/ -- build one first');
+if (!fs.existsSync(path.join(payload, 'bridge', 'shikisha-bridge-x86_64-linux'))) die(`no Linux bridge in ${path.join(payload, 'bridge')} -- ${installed ? 'the installed copy is missing it' : 'build one first'}`);
 
 // The far AI: reads lines; on its brief, reports through `shikisha` and writes
 // down what it was told. Keeps a record where Claude Code would, so reading
@@ -88,9 +93,9 @@ echo "stand-in claude"
 while read -r line; do
   printf '{"type":"user","message":{"role":"user","content":"%s"}}\\n' "brief line" >> "$rec"
   case "$line" in
-    *"=== TASK"*)
+    *"--- t"*)
       sleep 1
-      shikisha report succeeded "far did it. nothing odd. nothing left." >> "$log" 2>&1
+      shikisha report done "far did it." "nothing odd." "nothing" >> "$log" 2>&1
       echo "report exit $?" >> "$log"
       printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\\n' "reported from far" >> "$rec"
       echo "DONE-FAR";;
@@ -188,22 +193,22 @@ process.stdin.on('data', async (d) => {
   if (!buf.includes('GO')) return;
   buf = '';
   sh('set_state', 'BUSY');
-  sh('run_open', 'Have the far AI do one thing');
+  sh('job_open', 'Have the far AI do one thing');
   sh('task_add', 'Say that you are there, then report.');
   let sent = null;
   for (let n = 0; n < 40 && !sent; n++) {
-    const r = sh('dispatch', 't1', 'farai');
+    const r = sh('assign', 't1', 'farai');
     if (r.code === 0) sent = r; else await sleep(5000);
   }
-  let ack = null;
+  let dealt = null;
   for (let n = 0; n < 8; n++) {
-    const v = json(sh('inbox', 'wait', ...(ack ? [JSON.stringify({ ack })] : [])));
-    ack = v.delivery || null;
-    if ((v.messages || []).some((m) => m.kind === 'report')) break;
+    const v = json(sh('inbox', 'wait', ...(dealt ? [JSON.stringify({ dealt })] : [])));
+    dealt = v.handover || null;
+    if ((v.mail || []).some((m) => m.kind === 'report')) break;
   }
-  if (ack) sh('inbox', JSON.stringify({ ack }));
-  sh('retain', 'd1');
-  sh('run_close', 'The far AI reported');
+  if (dealt) sh('inbox', JSON.stringify({ dealt }));
+  sh('keep', 'a1');
+  sh('job_close', 'The far AI reported');
   sh('set_state', 'DONE');
 });
 `);
@@ -280,7 +285,7 @@ try {
   console.log(`the other machine (${WHERE}): ` + (await there('uname -srm')).trim());
   await there(`rm -rf ${HOME}/${BRIDGE_DIR}; mkdir -p ${DIR}/bin && printf %s ${b64(STAND_IN)} | base64 -d > ${DIR}/bin/claude && chmod +x ${DIR}/bin/claude`);
   stopApp();
-  const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
+  const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
   const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
   if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
   check(fs.existsSync(path.join(APP, 'bridge', 'shikisha-bridge-x86_64-linux')), 'the bridge travels beside the app (dist.list)');
@@ -321,14 +326,14 @@ try {
 
   console.log('3. the task goes there, and the far AI\'s report comes back');
   if (WHERE === 'vm') check(logSince(from).some((l) => l.includes('opened farai')), 'the MicroVM was opened for its task');
-  await until(() => leadSaid().some((s) => s.args[0] === 'run_close'), 'the lead to close the job', 240000)
+  await until(() => leadSaid().some((s) => s.args[0] === 'job_close'), 'the lead to close the job', 240000)
     .catch(() => note('lead said: ' + JSON.stringify(leadSaid()).slice(0, 1500)));
-  const dispatched = leadSaid().filter((s) => s.args[0] === 'dispatch');
-  check(dispatched.some((d) => d.code === 0), 'the task went to the far AI' + (dispatched.length ? ' (' + dispatched.map((d) => d.code === 0 ? 'ok' : d.err.slice(0, 80)).join('; ') + ')' : ''));
+  const assigned = leadSaid().filter((s) => s.args[0] === 'assign');
+  check(assigned.some((d) => d.code === 0), 'the task went to the far AI' + (assigned.length ? ' (' + assigned.map((d) => d.code === 0 ? 'ok' : d.err.slice(0, 80)).join('; ') + ')' : ''));
   const farLog = await there(`cat ${DIR}/said.txt 2>&1`);
   check(/"state": "reported"|reported/.test(farLog) && /report exit 0/.test(farLog), 'shikisha report ran there and was taken: ' + farLog.split('\n').filter((l) => /report|state/.test(l)).join(' | ').slice(0, 200));
-  check(logSince(from).some((l) => /orchestration: d\d+ reported succeeded/.test(l)), 'the report reached the job here');
-  const closed = leadSaid().find((s) => s.args[0] === 'run_close');
+  check(logSince(from).some((l) => /orchestration: a\d+ reported done/.test(l)), 'the report reached the job here');
+  const closed = leadSaid().find((s) => s.args[0] === 'job_close');
   check(closed && closed.code === 0, 'the job was closed');
 
   console.log('4. its conversation is read by the bridge');
