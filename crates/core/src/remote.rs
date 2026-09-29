@@ -2851,10 +2851,16 @@ fn proxy_settings(
     // An assistant AI asked to propose something may take up to four minutes,
     // after the files it reads are fetched from a machine that may have to be
     // started first: those are waited for as long as the page itself waits
-    let slow = matches!(sub, "/api/project/machine-setup-ai" | "/api/project/inherit-ai");
+    // The ? fetching the program's source, and then reading it, take longer
+    // still: minutes each, as long as the settings server gives them
+    let waited = match sub {
+        "/api/project/machine-setup-ai" | "/api/project/inherit-ai" => 330,
+        "/api/guide/source/fetch" | "/api/guide/source/ask" => 780,
+        _ => 120,
+    };
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .timeout_global(Some(std::time::Duration::from_secs(if slow { 330 } else { 120 })))
+        .timeout_global(Some(std::time::Duration::from_secs(waited)))
         .build()
         .new_agent();
     // Tell the settings server the operator is on a phone, not at this PC's screen.

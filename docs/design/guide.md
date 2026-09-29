@@ -22,7 +22,7 @@ it reads is **built from a machine-readable source, every time**.
 | **The settings words** | the 1,100-odd `settings.*` texts (labels, hints) | `lang/<code>.json` | whole (the screen is drawn from it) |
 | **Which screen a word is on** | word → screen | the two above, joined (§2) | just under six in ten. The rest name no screen |
 | **Keys and permissions** | the `Ctrl+B` list, the automation permission table | `keys::listing()` / the `grants` catalog | whole |
-| **The manual** | what is on the screen, starting out, when something is wrong | `docs/MANUAL.*.md` (prose, written by hand) | watched by §4 |
+| **The manual** | what is on the screen, starting out, when something is wrong | `docs/MANUAL.*.md` (prose, written by hand), built into the program so it is the manual of the version running, and handed over whole with every question | watched by §4 |
 
 **One place is written by hand**, and even there a test checks that everything
 it names by name still exists.
@@ -132,16 +132,41 @@ kind of input it is (text, number, tick, choice) are handed over as they stand.
 
 ## 8. When the deeper answer is wanted
 
-For the kind of question the index does not hold (why does it behave like this,
-what is this error), a road is kept to an AI with its tools, **taken only when a
-person presses for it**. It is not the default road. Speed and cost differ by an
-order of magnitude (about 1,400 tokens asked the light way for claude, about
-9,500 with tools).
+For the kind of question the manual and the index do not hold, a road is kept to
+an AI with its tools, **taken only when a person presses for it**. It is not the
+default road. Speed and cost differ by an order of magnitude (about 1,400 tokens
+asked the light way for claude, about 9,500 with tools).
+
+How it goes (2026-09-29):
+
+- Under the last answer: "Not what you were looking for?" and a button that says
+  it takes minutes. Nothing is fetched or run until it is pressed
+- **The source of the version that is running** (`crate::source`): the commit the
+  build was made from (`BUILD_SHA`), fetched shallow (about 30 MB) into the
+  state folder the first time, and fetched again only when the build is a
+  different commit. A commit the public repository does not have reads `main`,
+  and the answer says so. No git: the answer is a button to get git
+- **Read-only**: the assistant AI is started with tools that find, search and
+  read files and nothing else (`webui::ask_reading`), and told to answer in the
+  words of the screen, never of the code
+- **What only the code answered is offered back**, so the manual can say it next
+  time: a form in the panel where the question and the answer can be read and
+  changed, then GitHub's own new-issue page, filled in from the
+  `guide_question.yml` template. Nothing is sent by the app; the second press
+  is on GitHub, as the person signed in there
+- The ?'s questions are asked on the assistant AI's own model, never the
+  smallest one: that setting is about names, and the smallest model reading
+  the whole manual lost a long question (measured: it said the manual did not
+  cover what the manual says, where the full model answered it in the same
+  four to seven seconds)
 
 ## 9. What is not done
 
 - **Writing a manual for the AI by hand.** Stale from the day it is written
 - **Answering by reading GitHub as it runs.** As fresh as the index, but slower,
-  dearer and less accurate (a small model guessing from 700KB of screen code)
+  dearer and less accurate (a small model guessing from 700KB of screen code).
+  Searching code needs finding files by what is in them, which GitHub answers
+  only to a signed-in caller and a few dozen times an hour; §8 reads a local
+  copy instead, and only when asked
 - **Copying the screen's words into the index.** The index is built from the
   dictionary and the screen, every time

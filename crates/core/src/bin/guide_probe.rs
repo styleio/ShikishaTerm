@@ -9,6 +9,11 @@
 //!
 //!     cargo run -p shikisha-core --bin guide_probe -- "how do I use my phone"
 //!     cargo run -p shikisha-core --bin guide_probe -- --ja "スマホから使いたい"
+//!     cargo run -p shikisha-core --bin guide_probe -- --ja --source "閉じたタブを戻したい"
+//!
+//! `--source` asks the second way: this version's source is fetched (into the
+//! state folder beside this build, the first time) and read by the assistant
+//! AI with tools that read and nothing else.
 //!
 //! It prints what was asked, what came back, and whether the answer named a
 //! screen this program has. An answer with no `open` is not a failure -- not
@@ -21,9 +26,13 @@ fn main() {
     if ja {
         args.remove(0);
     }
+    let source = args.first().is_some_and(|a| a == "--source");
+    if source {
+        args.remove(0);
+    }
     let question = args.join(" ");
     if question.trim().is_empty() {
-        eprintln!("usage: guide_probe [--ja] <question>");
+        eprintln!("usage: guide_probe [--ja] [--source] <question>");
         std::process::exit(2);
     }
     // The language decides the words it is given and the words it answers in
@@ -36,6 +45,29 @@ fn main() {
     println!("screens: {}", idx.pages.len());
     println!("asked:   {question}");
     let began = std::time::Instant::now();
+    if source {
+        let at = match shikisha_core::source::ready() {
+            Ok(at) => at,
+            Err(e) => {
+                eprintln!("the source could not be fetched: {e:#}");
+                std::process::exit(1);
+            }
+        };
+        println!("source:  {} at {}{} ({:.1}s)", at.folder.display(), at.commit, if at.instead { " (main, instead)" } else { "" }, began.elapsed().as_secs_f32());
+        match shikisha_core::guide::ask_source(&question, &[], &at) {
+            Ok(a) => {
+                println!("took:    {:.1}s", began.elapsed().as_secs_f32());
+                println!("found:   {}", a.found);
+                println!("said:    {}", a.say);
+                println!("issue:   {}", shikisha_core::guide::issue_url(&question, &a.say));
+            }
+            Err(e) => {
+                eprintln!("nothing came back: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     match shikisha_core::guide::ask(&question, &[], None) {
         Ok(a) => {
             println!("took:    {:.1}s", began.elapsed().as_secs_f32());

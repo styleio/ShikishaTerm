@@ -17,6 +17,13 @@ once it reaches its first tagged release.
 ## [0.22.0] - 2026-09-29
 
 ### Added
+- **The ? answers from the manual, and can search the source code when that is
+  not enough.** Every question now carries the manual of the version running,
+  so how to reopen a closed tab or which key does what is answered from it.
+  Under an answer, "Not what you were looking for?" fetches this version's
+  source once and has the assistant AI read it (read-only). What only the code
+  could answer can be sent in as a GitHub issue, from a form you read and change
+  first and GitHub's own page after it.
 - **One AI tab can hand a job out to others and see it through.** Ask an AI
   to, say, have <@claude> implement something and <@codex> review it until
   nothing is left, and it becomes the job's lead: it adds tasks, assigns them
