@@ -2331,6 +2331,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A reopened tab to bring into view once it is on screen, and until when
     // to keep looking for it
     let mut reveal: Option<(String, Instant)> = None;
+    // Pages whose console said something since the panel was last told, the
+    // newest line each surface was sent per page, and when that last was.
+    // Sent in batches rather than per line: a page logging in a loop would
+    // otherwise send a phone a message every frame
+    let mut console_heard: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut console_sent: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut console_told = Instant::now();
+    // DevTools screens this run has made again for a split that was written
+    // down with them in it. Once each: a screen that could not be made is not
+    // asked for again on every pass
+    let mut devtools_remade: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A DevTools screen just opened, waiting for the half it goes in
+    let mut devtools_place: Option<(String, Instant)> = None;
     // What each row was on the last pass, and on which desk, so a pane can
     // follow its tab when the rows move
     let mut rows_were: (String, Vec<String>) = (String::new(), Vec::new());
@@ -2720,6 +2733,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .and_then(|d| d.tabs.iter().find(|t| t.cfg.id.as_deref() == Some(key.as_str())))
                 .and_then(|t| t.cfg.panes.clone());
             let keyed = surface_keys(&surfaces, &tabs);
+            // A DevTools screen is not a tab of the settings: it is made for a
+            // page while the program runs, and its key to that page is made
+            // at each start. A split written down with one in it is put back
+            // with one -- made again for the same page, with this run's key --
+            // rather than with a hole where it stood. Made now, it is a tab by
+            // the next pass, so the arrangement is taken then
+            let mut remade = false;
+            if let Some(kept) = written.as_ref() {
+                for screen in kept.names() {
+                    let Some(page) = crate::caps::devtools_page(screen) else { continue };
+                    let page_listed = surfaces.iter().any(|s| matches!(s, Surface::Browser { key, .. } if key == page));
+                    let screen_open = keyed.iter().any(|t| t.matches(screen));
+                    if !page_listed || screen_open || devtools_remade.contains(screen) {
+                        continue;
+                    }
+                    if caps.hosted_names().iter().any(|h| h == page) {
+                        devtools_remade.insert(screen.to_string());
+                        match caps.browser_devtools(page) {
+                            Ok(_) => remade = true,
+                            Err(e) => append_hook_log(&format!("devtools: {screen} not made again: {e}")),
+                        }
+                    } else if start.elapsed() < DEVTOOLS_WAIT {
+                        // The page is written down but not open yet: at a
+                        // start, the arrangement waits for it a little
+                        remade = true;
+                    }
+                }
+            }
+            if remade {
+                continue;
+            }
             pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| {
                 keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
             });
@@ -2728,6 +2772,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         if open_split.is_none() && (!pane_layout.is_single() || pane_layout.focused_surface() != active) {
             pane_layout = crate::layout::Layout::single(active);
+        }
+        // A DevTools screen goes in the half made for it, which has the focus
+        if let Some((screen, until)) = devtools_place.clone() {
+            match crate::closed::row_named(&surfaces, &tabs, &screen) {
+                Some(n) if !pane_layout.is_single() => {
+                    // The half left empty for it, whichever has the focus
+                    // when the written-down arrangement comes back
+                    if let Some((id, _)) = pane_layout.leaves().into_iter().find(|(_, s)| *s == 0) {
+                        pane_layout.put(id, n);
+                        pane_layout.focus_pane(id);
+                    }
+                    active = n;
+                    devtools_place = None;
+                }
+                _ if Instant::now() > until => devtools_place = None,
+                _ => {}
+            }
         }
         if pane_layout.focused_surface() != active {
             pane_layout.show(active);
@@ -4670,6 +4731,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Design { page, act, args }) => {
                         shell.mail().designs.push((page, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Console { page, act, args }) => {
+                        shell.mail().console_asks.push((page, act, args));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::DevTools { page }) => {
+                        shell.mail().devtools.push(page);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
@@ -6306,6 +6373,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
 
+        // "Open DevTools" on a page's tab: the same three primitives a script
+        // would put together -- open the screen, divide the pane, show it in
+        // the new half -- run as a person's own automation is. Already open,
+        // it is only shown
+        for page in std::mem::take(&mut shell.mail().devtools) {
+            let Some(n) = crate::closed::row_named(&surfaces, &tabs, &page) else { continue };
+            let fresh = !caps.hosted_names().contains(&crate::caps::devtools_screen(&page));
+            let code = format!(
+                "local screen, fresh = shikisha.browser_devtools({page})\n\
+                 if fresh then shikisha.split_pane(\"right\") end\n",
+                page = serde_json::Value::String(page.clone())
+            );
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            if let Some(eng) = engine.as_mut() {
+                eng.fire_action(&code, &browser_ctx(n, &page));
+            }
+            // Put in the new half by the person's own press, once there is a
+            // new half and the screen is a tab -- both happen on a later pass,
+            // and a script's `show` asked for now would find neither (nor may
+            // it move a view somebody has just touched). Open already, it is
+            // only brought forward
+            let screen = crate::caps::devtools_screen(&page);
+            if fresh {
+                devtools_place = Some((screen, Instant::now() + Duration::from_secs(10)));
+            } else {
+                reveal = Some((screen, Instant::now() + Duration::from_secs(10)));
+            }
+        }
+
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
         for on in shell.mail().take_record_arms() {
@@ -6359,6 +6457,83 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     flash = Some(i18n::tp("msg.pick.drafted", &[("tab", &title), ("n", &picks.len().to_string())]));
                 }
                 Err(why) => flash = Some(why),
+            }
+        }
+
+        // What pages said on their consoles, and what the Console panel asked
+        for (child, entry) in shell.mail().take_console_lines() {
+            if let Some(name) = caps.note_console(&child, &entry) {
+                console_heard.insert(name);
+            }
+        }
+        let tell_console = |shell: &mut dyn Shell, js: String| {
+            shell.push_console(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"console\":{js}}}"));
+            }
+        };
+        // Four times a second reads as live, and keeps a page that logs in a
+        // loop from sending a phone a message every frame
+        if !console_heard.is_empty() && console_told.elapsed() >= Duration::from_millis(250) {
+            for name in std::mem::take(&mut console_heard) {
+                let since = console_sent.get(&name).copied().unwrap_or(0);
+                let (lines, last, listening) = caps.console_after(&name, since);
+                console_sent.insert(name.clone(), last);
+                let js = serde_json::json!({"page": name, "lines": lines, "last": last, "listening": listening, "from": since});
+                tell_console(shell, js.to_string());
+            }
+            console_told = Instant::now();
+        }
+        for (page, act, args) in shell.mail().take_console_asks() {
+            match act.as_str() {
+                "read" | "clear" => {
+                    if act == "clear" {
+                        caps.console_clear(&page);
+                    }
+                    let error = caps.console_listen(&page).err().map(|e| e.to_string());
+                    let (lines, last, listening) = caps.console_after(&page, 0);
+                    console_sent.insert(page.clone(), last);
+                    let js = serde_json::json!({"page": page, "lines": lines, "last": last,
+                        "listening": listening, "from": 0, "error": error});
+                    tell_console(shell, js.to_string());
+                }
+                "send" => {
+                    let to = args.get("to").and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let wanted: Vec<&str> = args
+                        .get("levels")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+                        .unwrap_or_default();
+                    let (lines, _, _) = caps.console_after(&page, 0);
+                    let lines: Vec<crate::console::Line> = lines
+                        .into_iter()
+                        .filter(|l| wanted.is_empty() || wanted.contains(&l.level.word()))
+                        .collect();
+                    if lines.is_empty() {
+                        flash = Some(i18n::t("msg.console.none"));
+                        continue;
+                    }
+                    // Where the page is now, when it is the one in view;
+                    // otherwise where it was opened
+                    let url = where_now
+                        .as_ref()
+                        .filter(|(n, ..)| *n == page)
+                        .map(|(_, u, ..)| u.clone())
+                        .or_else(|| caps.browser_spec(&page).map(|(u, _)| u))
+                        .unwrap_or_default();
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    let full = crate::console::describe(&url, &lines);
+                    let at = url.clone();
+                    match draft_into(&tabs, &surfaces, to, full, "console", |p| crate::console::pointer(p, &at), now_ms, &mut pending_send) {
+                        Ok(title) => {
+                            reveal = Some((to.to_string(), Instant::now() + Duration::from_secs(10)));
+                            let n = lines.len().min(crate::console::HANDED_MAX);
+                            flash = Some(i18n::tp("msg.console.drafted", &[("tab", &title), ("n", &n.to_string())]));
+                        }
+                        Err(why) => flash = Some(why),
+                    }
+                }
+                other => append_hook_log(&format!("console: unknown ask {other}")),
             }
         }
 
@@ -12530,6 +12705,13 @@ pub const WHERE_EVERY_MS: u64 = 400;
 /// How long a division has to stand still before it is written down. Long
 /// enough that a divider being dragged is one write and not one per frame
 pub const SPLIT_SAVE_AFTER: Duration = Duration::from_millis(600);
+
+/// How long, after a start, a split with a DevTools screen in it waits for the
+/// page that screen is for. A page is opened a moment after the settings are
+/// read (placing one takes a few hundred milliseconds, and several are placed
+/// one after another); ten seconds is far past that, and short enough that a
+/// page which never opens leaves the split drawn without its screen soon
+pub const DEVTOOLS_WAIT: Duration = Duration::from_secs(10);
 /// The page placed in the focused pane, if that is what is there.
 ///
 /// Two things need this and must agree: the pen (which that page draws for
@@ -14178,6 +14360,26 @@ fn draft_picks(
     if picks.is_empty() {
         return Err(i18n::t("msg.pick.none"));
     }
+    let count = picks.len();
+    draft_into(tabs, surfaces, to, crate::pick::describe(picks), "picked", |path| crate::pick::pointer(path, count), now_ms, pending_send)
+}
+
+/// Put `full` into the input of the AI tab named `to` (its id) as a draft,
+/// without pressing Enter. Longer than a draft can be read in
+/// (`pick::INLINE_MAX`), it is written to a file `<stem>-<time>.txt` in the
+/// tab's folder -- on the tab's own machine -- and the input is given what
+/// `pointer` says about that path instead. Answers the tab's title
+#[allow(clippy::too_many_arguments)]
+fn draft_into(
+    tabs: &[Tab],
+    surfaces: &[Surface],
+    to: &str,
+    full: String,
+    stem: &str,
+    pointer: impl FnOnce(&str) -> String,
+    now_ms: u64,
+    pending_send: &mut Vec<PendingSend>,
+) -> Result<String, String> {
     let n = crate::closed::row_named(surfaces, tabs, to)
         .ok_or_else(|| i18n::tp("msg.tab_not_found", &[("target", to)]))?;
     let t = session_at(surfaces, n)
@@ -14186,14 +14388,13 @@ fn draft_picks(
     if !t.accepts_bracketed_paste() {
         return Err(i18n::tp("msg.draft_unsupported", &[("tab", &t.title)]));
     }
-    let full = crate::pick::describe(picks);
     let text = if full.chars().count() <= crate::pick::INLINE_MAX {
         full
     } else {
         // Ours, so the list of what a person may attach does not apply: only
         // text is written, a page's worth of markup at most
         let limits = crate::attach::Limits { max_bytes: 1024 * 1024, allowed_ext: vec!["txt".into()] };
-        let name = format!("picked-{}.txt", crate::sqlite::now_ms());
+        let name = format!("{stem}-{}.txt", crate::sqlite::now_ms());
         let saved = match tab_far(t).filter(|(_, there)| !there.trim().is_empty()) {
             Some((at, there)) => crate::attach::send_up(&at, &there, &name, full.as_bytes(), &limits),
             None => {
@@ -14206,12 +14407,12 @@ fn draft_picks(
             }
         }
         .map_err(|e| format!("{e:#}"))?;
-        crate::pick::pointer(&saved, picks.len())
+        pointer(&saved)
     };
     let seen = t.output_count();
     let chunks = paste_chunks(t, &text);
     pending_send.push(PendingSend::new(n, chunks, false, seen, now_ms, text.chars().count()));
-    append_hook_log(&format!("pick: {} element(s) drafted into {}", picks.len(), t.title));
+    append_hook_log(&format!("{stem}: drafted into {} ({} characters)", t.title, text.chars().count()));
     Ok(t.title.clone())
 }
 /// Ensure the local settings/result web server is running and hand back its

@@ -203,6 +203,39 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   :is(#filepanel, #convopanel) .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); }
+  /* ── The console ───────────────────────────────
+     What the page in view said, oldest at the top as a console reads. The
+     kinds are the file list's two-way switch made five-way; a line is its
+     time, how bad it is and where it came from, over the words themselves.
+     The colours are the states' own: an error is stopped, a warning wants a
+     person, and nothing else is coloured */
+  #consolepanel[hidden] { display:none; }
+  #consolepanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column;
+    overflow:hidden; font-size:13px; }
+  #consolepanel .chead { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #consolepanel .chead .grow { flex:1 1 auto; }
+  #consolepanel .chead button { height:28px; padding:0 var(--s2); font:inherit; font-size:12px;
+    border-radius:var(--r-chip); border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer; }
+  #consolepanel .chead button.on { color:var(--text); border-color:var(--brand);
+    background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #consolepanel .chead button.cgo { border-color:var(--brand); color:var(--brand); }
+  #consolepanel button.cquiet { border-color:transparent; background:none; color:var(--dim);
+    font:inherit; font-size:12px; cursor:pointer; }
+  #consolepanel button.cquiet:hover { color:var(--text); }
+  #consolepanel .clist { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; padding:var(--s1) 0; }
+  #consolepanel .crow { padding:var(--s1) 10px; border-bottom:1px solid var(--line); }
+  #consolepanel .cmeta { display:flex; gap:var(--s2); align-items:baseline; font-size:11px; color:var(--faint); }
+  #consolepanel .cwhen { flex:none; font-variant-numeric:tabular-nums; }
+  #consolepanel .clv { flex:none; color:var(--dim); }
+  #consolepanel .crow.lv-error .clv { color:var(--stop); }
+  #consolepanel .crow.lv-warn .clv { color:var(--warn); }
+  #consolepanel .cat { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #consolepanel .ctext { font-size:12px; color:var(--text); white-space:pre-wrap; overflow-wrap:anywhere; }
+  #consolepanel .crow.lv-debug .ctext { color:var(--dim); }
+  #consolepanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
+    font-size:11.5px; border-top:1px solid var(--line); }
+  #consolepanel .fsay .cnow { margin-top:var(--s1); line-height:1.5; }
   /* ── The conversation ───────────────────────────
      What was said in the AI tab being looked at, the newest at the top. The
      search box is the file list's; the boxes are the checkboxes of the form
@@ -3930,6 +3963,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div id="filepanel" hidden></div>
       <!-- What was said in the AI tab being looked at -->
       <div id="convopanel" hidden></div>
+      <!-- What the page being looked at said on its console -->
+      <div id="consolepanel" hidden></div>
     </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
@@ -7801,6 +7836,9 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // The page's DevTools, beside it. The window and a phone alike: the
+    // screen is a page, relayed like any other
+    t.kind === "browser" ? item(T["tui.menu.devtools"] || "", () => send({kind:"devtools", page: t.id || t.name})) : null,
   ], false, e);
 }
 function folderMenu(e, g) {
@@ -12113,6 +12151,7 @@ const SIDE_PANELS = [
   ["files", () => T["tui.side.files"] || "Files"],
   ["git", () => T["tui.side.git"] || "Git"],
   ["convo", () => T["tui.side.convo"] || "Chat"],
+  ["console", () => T["tui.side.console"] || "Console"],
 ];
 let sidePanel = "files";
 function sideWidth() {
@@ -13387,11 +13426,17 @@ function drawSide() {
   // Every conversation stands on nothing: it is there whatever is in front
   const convoMissing = sidePanel === "convo" && !cvAll ? convoFollow() : "";
   if (convo) convo.hidden = sidePanel !== "convo" || !!convoMissing;
+  // The console stands on the page being looked at
+  const cons = document.getElementById("consolepanel");
+  const page = activeTab();
+  const onPage = !!(page && page.kind === "browser" && !page.settings);
+  if (cons) cons.hidden = sidePanel !== "console" || !onPage;
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
   // "there is nothing here"
-  const missing = sidePanel === "convo" ? convoMissing
+  const missing = sidePanel === "console" ? (onPage ? "" : (T["tui.console.nopage"] || ""))
+    : sidePanel === "convo" ? convoMissing
     : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
     : "";
@@ -13413,6 +13458,101 @@ function drawSide() {
     else drawFiles();
   }
   if (sidePanel === "convo") drawConvo();
+  if (sidePanel === "console") drawConsole();
+}
+
+// ── The console ─────────────────────────────────────────
+// What the page being looked at said: its code's logging, what it threw, and
+// what the browser said about it. The app keeps the lines (and starts
+// listening when this is first opened on a page); this keeps a copy of the
+// page in view, told the new lines as they come
+const CN = { page: null, lines: [], last: 0, listening: false, error: null,
+             // Which kinds are shown. Debug is the chatter a page leaves in on
+             // purpose, and starts hidden
+             show: new Set(["error", "warn", "info", "log"]), drawn: "" };
+const CN_LEVELS = ["error", "warn", "info", "log", "debug"];
+function consoleAsk(act, args) {
+  if (CN.page) send({kind:"console", page: CN.page, act, args: args || {}});
+}
+window.__console = function (d) {
+  if (!d || d.page !== CN.page) return;
+  if (!d.from) CN.lines = [];
+  for (const l of d.lines || []) if (l.seq > CN.last || !d.from) CN.lines.push(l);
+  if (CN.lines.length > 400) CN.lines = CN.lines.slice(-400);
+  CN.last = d.last || CN.last;
+  CN.listening = !!d.listening;
+  CN.error = d.error || null;
+  if (sidePanel === "console") drawConsole();
+};
+function consoleTime(ms) {
+  const d = new Date(ms);
+  const two = n => String(n).padStart(2, "0");
+  return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
+}
+function drawConsole() {
+  const box = document.getElementById("consolepanel");
+  const t = activeTab();
+  if (!box || box.hidden || !t || t.kind !== "browser") return;
+  const page = t.id || t.name;
+  if (CN.page !== page) {
+    CN.page = page; CN.lines = []; CN.last = 0; CN.listening = false; CN.error = null; CN.drawn = "";
+    consoleAsk("read");
+  }
+  const shown = CN.lines.filter(l => CN.show.has(l.level));
+  // Drawn again only when what it shows changed: this runs on every state
+  // push, and rebuilding a list somebody is scrolling moves it under them
+  const key = page + "|" + CN.last + "|" + CN.lines.length + "|" + [...CN.show].join() + "|" + (CN.error || "") + "|" + CN.listening;
+  if (CN.drawn === key) return;
+  CN.drawn = key;
+  const list = box.querySelector(".clist");
+  const atEnd = !list || list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
+  box.textContent = "";
+  const head = el("div", {class:"chead"});
+  for (const lv of CN_LEVELS) {
+    head.append(el("button", {class: CN.show.has(lv) ? "on" : "", "aria-pressed": CN.show.has(lv) ? "true" : "false",
+      onclick: () => { CN.show.has(lv) ? CN.show.delete(lv) : CN.show.add(lv); drawConsole(); }},
+      T["tui.console.lv." + lv] || lv));
+  }
+  head.append(el("span", {class:"grow"}));
+  const go = el("button", {class:"cgo"}, (T["tui.console.send"] || "Hand to an AI") + " ▾");
+  go.onclick = () => {
+    const ais = mentionCandidates().filter(x => x.ai);
+    const rows = ais.length ? ais.map(x => {
+      const g = x.group != null && S.groups ? S.groups[x.group] : null;
+      return el("div", {class:"mrow", onclick: () => {
+        closeFolderMenu();
+        consoleAsk("send", {to: x.id, levels: [...CN.show]});
+      }}, markFor(x) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, x.name || x.id),
+        el("span", {class:"at"}, (g && g.name) || ""));
+    }) : [el("div", {class:"mnone"}, T["tui.pick.no_ai"] || "")];
+    openList(go, rows, false, null, "picksend");
+  };
+  head.append(go, el("button", {class:"cquiet", onclick: () => consoleAsk("clear")}, T["tui.console.clear"] || "Clear"));
+  const rows = el("div", {class:"clist"});
+  for (const l of shown) {
+    rows.append(el("div", {class:"crow lv-" + l.level},
+      el("div", {class:"cmeta"}, el("span", {class:"cwhen"}, consoleTime(l.ms)),
+        el("span", {class:"clv"}, T["tui.console.is." + l.level] || l.level),
+        // The file and line, which is what is looked for; the whole address
+        // is under the pointer
+        l.at ? el("span", {class:"cat", title: l.at}, l.at.replace(/^[a-z]+:\/\/[^/]*/i, "").replace(/^.*\/(?=[^/:])/, "")) : null),
+      el("div", {class:"ctext"}, l.text)));
+  }
+  if (!shown.length) {
+    rows.append(el("div", {class:"sempty"}, CN.error
+      ? (T["tui.console.cannot"] || "").replaceAll("{why}", CN.error)
+      : (T["tui.console.empty"] || "")));
+  }
+  const foot = el("div", {class:"fsay"},
+    el("span", {}, (T["tui.console.count"] || "").replaceAll("{n}", shown.length).replaceAll("{all}", CN.lines.length)));
+  // Said while there is little to read: what is here is what came after the
+  // panel was opened, and the way to see a page's first words
+  if (CN.listening && CN.lines.length < 3) {
+    foot.append(el("div", {class:"cnow"}, T["tui.console.from_now"] || ""),
+      el("button", {class:"cquiet", onclick: () => send({kind:"go", what:"reload"})}, T["tui.console.reload"] || "Reload"));
+  }
+  box.append(head, rows, foot);
+  if (atEnd) rows.scrollTop = rows.scrollHeight;
 }
 
 // One unfocused pane's terminal contents.
@@ -14958,6 +15098,7 @@ if (REMOTE) {
     // waits for ever -- which is what both of them did
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
+    if (d.console) window.__console(d.console);
     if (d.convo) window.__convo(d.convo);
     if (d.issues) window.__issues(d.issues);
     if (d.ideas) window.__ideas(d.ideas);

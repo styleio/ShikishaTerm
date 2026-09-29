@@ -189,6 +189,9 @@ pub struct Capabilities {
     /// on it pick right now (per in-window name). Held here, not in the page:
     /// a page says what was pressed, and is believed only while it is armed
     picks: std::cell::RefCell<HashMap<String, crate::pick::Picking>>,
+    /// What each page has said on its console since somebody started
+    /// listening to it (per in-window name). Nothing is heard before that
+    consoles: std::cell::RefCell<HashMap<String, crate::console::Book>>,
     /// Whether to overlay the terminal
     /// If we have a host window, its handle. Keeping it here means it doesn't become a separate window
     host: std::cell::RefCell<Option<std::rc::Rc<dyn shikisha_shared::BrowserHost>>>,
@@ -275,6 +278,17 @@ enum Deciding {
 
 const OP_MS: u64 = 5_000;
 
+/// What a page's DevTools screen is called: the page's name and a word after
+/// it, so the two sort together and the one says which page the other is for
+pub fn devtools_screen(page: &str) -> String {
+    format!("{page}-devtools")
+}
+
+/// The page a DevTools screen's name is for, when it is one
+pub fn devtools_page(screen: &str) -> Option<&str> {
+    screen.strip_suffix("-devtools").filter(|p| !p.is_empty())
+}
+
 /// Wait window for actions (click/fill). Actions auto-wait for the element
 /// to appear and become actionable — across a navigation if need be — so
 /// they get a longer leash than a read
@@ -291,6 +305,7 @@ impl Capabilities {
             pressed: std::cell::RefCell::new(HashMap::new()),
             asks: std::cell::RefCell::new(HashMap::new()),
             picks: std::cell::RefCell::new(HashMap::new()),
+            consoles: std::cell::RefCell::new(HashMap::new()),
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
@@ -663,9 +678,15 @@ impl Capabilities {
         }
         // Newly placed items get their position decided on the next redraw
         *self.shown.borrow_mut() = None;
+        // A DevTools screen's address carries the key to its bridge, and a
+        // log is read by more than whoever opened it
+        let said = match url.starts_with("devtools://") {
+            true => url.split('?').next().unwrap_or(url),
+            false => url,
+        };
         crate::append_hook_log(&crate::i18n::tp(
             "err.caps.log_browser_open",
-            &[("name", name), ("url", url)],
+            &[("name", name), ("url", said)],
         ));
         Ok(())
     }
@@ -1181,6 +1202,65 @@ impl Capabilities {
             .collect()
     }
 
+    /// Open the DevTools of a page as a page of its own, named after it, and
+    /// answer that name and whether it was opened just now. Open already, it
+    /// is left as it is: a second screen on the same page would be a second
+    /// session speaking to it
+    pub fn browser_devtools(&self, name: &str) -> Result<(String, bool)> {
+        let screen = devtools_screen(name);
+        let desk = self.desk.get();
+        if self.hosted.borrow().iter().any(|(w, x)| *w == desk && *x == screen) {
+            return Ok((screen, false));
+        }
+        let url = self.with(name, |b, to| b.devtools_url(to))?;
+        // A refusal says the address it refused; this one carries the key to
+        // the bridge, and an error is logged and shown
+        let bare = url.split('?').next().unwrap_or_default().to_string();
+        self.browser_open(&screen, &url, shikisha_shared::BrowserProfile::shared_default())
+            .map_err(|e| anyhow::anyhow!(e.to_string().replace(&url, &bare)))?;
+        Ok((screen, true))
+    }
+
+    /// Start hearing a page's console, if nobody has yet. Asked by the Console
+    /// panel when it opens on the page and by a script reading it: before
+    /// that, nothing a page says is heard (see `crate::console`)
+    pub fn console_listen(&self, name: &str) -> Result<()> {
+        let key = Self::key(self.desk.get(), name);
+        if self.consoles.borrow().get(&key).is_some_and(|b| b.listening) {
+            return Ok(());
+        }
+        self.with(name, |b, to| b.console(to, true))?;
+        self.consoles.borrow_mut().entry(key).or_default().listening = true;
+        Ok(())
+    }
+
+    /// A line a page said. Kept only for a page somebody is listening to;
+    /// answers its display name when it was kept
+    pub fn note_console(&self, child: &str, entry: &serde_json::Value) -> Option<String> {
+        let name = self.name_of_child(child)?;
+        let mut books = self.consoles.borrow_mut();
+        books.get_mut(child).filter(|b| b.listening)?.add(entry)?;
+        Some(name)
+    }
+
+    /// What a page said after line `since`, and the number of its newest
+    /// line (what to ask after next time). Nothing, and 0, for a page nobody
+    /// is listening to
+    pub fn console_after(&self, name: &str, since: u64) -> (Vec<crate::console::Line>, u64, bool) {
+        let key = Self::key(self.desk.get(), name);
+        match self.consoles.borrow().get(&key) {
+            Some(b) => (b.after(since), b.last(), b.listening),
+            None => (Vec::new(), 0, false),
+        }
+    }
+
+    pub fn console_clear(&self, name: &str) {
+        let key = Self::key(self.desk.get(), name);
+        if let Some(b) = self.consoles.borrow_mut().get_mut(&key) {
+            b.clear();
+        }
+    }
+
     /// Show controls above a page. If there's nothing to show, it's as if nothing were shown at all
     pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
         // Can't show controls on a page that isn't open. Rejected here
@@ -1368,6 +1448,7 @@ impl Capabilities {
         self.pressed.borrow_mut().remove(&key);
         self.asks.borrow_mut().remove(&key);
         self.picks.borrow_mut().remove(&key);
+        self.consoles.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = None;

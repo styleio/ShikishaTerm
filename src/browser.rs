@@ -254,6 +254,16 @@ pub enum Cmd {
         user: String,
         pass: String,
     },
+    /// Start or stop hearing a page's console. While on, every line it says
+    /// comes back as `Ev::ConsoleLine`
+    Console { to: Option<String>, on: bool },
+    /// A DevTools screen connected for a page (`devtools.rs`): what the page
+    /// says to it goes to `out`
+    DevtoolsOpen { conn: u64, to: Option<String>, out: Sender<String> },
+    /// One message the screen said, for its page
+    DevtoolsSay { conn: u64, text: String },
+    /// The screen went away
+    DevtoolsClose { conn: u64 },
     /// Put the window away. The program, its tabs and the phone's connection
     /// go on; only the picture is gone, and the icon in the notification area
     /// is how it comes back
@@ -480,6 +490,9 @@ pub struct Browser {
     /// a number. Nothing is recorded because of this; it is the answer to
     /// "whose sound?" for if somebody taps the speaker on their phone
     sound_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// Where a DevTools screen connects to its page (`devtools.rs`), started
+    /// the first time one is opened
+    devtools: std::sync::Mutex<Option<crate::devtools::Bridge>>,
 }
 
 
@@ -663,6 +676,7 @@ impl Browser {
             next_id: AtomicU64::new(1),
             away: std::sync::atomic::AtomicBool::new(false),
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
+            devtools: std::sync::Mutex::new(None),
             spare: std::sync::Mutex::new(Vec::new()),
             through: std::sync::Mutex::new(None),
             digests: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -783,6 +797,21 @@ impl Browser {
         })
     }
 
+    /// Where the DevTools of page `to` open from, starting the bridge the
+    /// first time
+    pub fn devtools_url(&self, to: Option<&str>) -> Result<String> {
+        let mut bridge = self.devtools.lock().unwrap_or_else(|e| e.into_inner());
+        if bridge.is_none() {
+            *bridge = Some(crate::devtools::Bridge::start(self.proxy.clone())?);
+        }
+        Ok(bridge.as_ref().map(|b| b.screen_url(to)).unwrap_or_default())
+    }
+
+    /// Start or stop hearing a page's console (`Ev::ConsoleLine` per line)
+    pub fn console(&self, to: Option<&str>, on: bool) -> Result<()> {
+        self.send(Cmd::Console { to: to.map(str::to_string), on })
+    }
+
     /// Inject input into the screencast view (finger traces, swipes, text)
     pub fn inject(&self, to: Option<&str>, input: Input) -> Result<()> {
         self.send(Cmd::Inject {
@@ -837,7 +866,16 @@ impl Browser {
         rect: (i32, i32, i32, i32),
         profile: BrowserProfile,
     ) -> Result<()> {
-        if !is_openable(url) {
+        // The web, or a DevTools screen this window's own bridge made: its
+        // address is the only way anything reaches that screen, so no other
+        // `devtools://` address is let through
+        let our_screen = self
+            .devtools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|b| b.made(url));
+        if !is_openable(url) && !our_screen {
             return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
         self.send(Cmd::AddChild {
@@ -1688,6 +1726,12 @@ fn run_window(
     // Automatic handling of JS dialogs. One per child. Without this, automation freezes on things like "leave this page?" confirmations
     let mut dialogs: std::collections::HashMap<Option<String>, cdp::DialogArm> =
         std::collections::HashMap::new();
+    // Pages whose console is being heard. One per page, held until it is let
+    // go of or the page closes; the lines leave as reports
+    let mut consoles: std::collections::HashMap<Option<String>, cdp::ConsoleArm> =
+        std::collections::HashMap::new();
+    // DevTools screens connected to pages, and the sessions they speak through
+    let mut screens = crate::devtools::Screens::default();
     // The most recent frame's CSS pixel dimensions (used to convert
     // coordinates for input injection).
     // Frame notification and input injection run on the same thread, so `Rc<Cell>` is enough
@@ -1870,6 +1914,30 @@ fn run_window(
                         }
                     }
                 }
+                Cmd::Console { to, on } => {
+                    if !on {
+                        consoles.remove(&to);
+                    } else if !consoles.contains_key(&to)
+                        && let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
+                            let tx = ev_tx.clone();
+                            let from = to.clone();
+                            if let Some(arm) = cdp::arm_console(&cdp::webview_of(v), move |entry| {
+                                let _ = tx.send(Ev::ConsoleLine { from: from.clone(), entry });
+                            }) {
+                                consoles.insert(to, arm);
+                            }
+                        }
+                }
+                Cmd::DevtoolsOpen { conn, to, out } => {
+                    match target(main_view(&shell), &children, &overlays, &to) {
+                        Some(v) => screens.open(conn, to, cdp::webview_of(v), out),
+                        None => shikisha_core::append_hook_log(&format!(
+                            "[devtools] screen {conn}: no such page here"
+                        )),
+                    }
+                }
+                Cmd::DevtoolsSay { conn, text } => screens.say(conn, text),
+                Cmd::DevtoolsClose { conn } => screens.close(conn),
                 Cmd::AddChild { name, url, rect, profile, through } => {
                     // Creating a WebView2 controller runs synchronously ON THIS
                     // event-loop thread, and this thread also pumps the whole
@@ -2098,6 +2166,8 @@ fn run_window(
                     }
                     dialogs.remove(&Some(name.clone()));
                     auths.remove(&Some(name.clone()));
+                    consoles.remove(&Some(name.clone()));
+                    screens.page_closed(&Some(name.clone()));
                     // If this child was placed in private mode, clean up
                     // its throwaway folder. WebView2 can take a moment to
                     // release the lock, so this is best-effort
@@ -2870,7 +2940,7 @@ fn pct(s: &str) -> String {
 ///
 /// COM objects are thread-bound, so calls must always be made from the
 /// window's event-loop thread (inside `run_window`). Frame notifications also arrive on that same thread.
-mod cdp {
+pub(crate) mod cdp {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2, ICoreWebView2DevToolsProtocolEventReceivedEventArgs,
         ICoreWebView2DevToolsProtocolEventReceiver,
@@ -3155,6 +3225,18 @@ mod cdp {
         }
     }
 
+    /// Hear one event of a page's protocol session, until `unlisten`
+    pub fn listen<F>(webview: &ICoreWebView2, event: &str, on: F) -> Option<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>
+    where
+        F: Fn(&serde_json::Value) + 'static,
+    {
+        subscribe(webview, event, on)
+    }
+
+    pub fn unlisten(made: &(ICoreWebView2DevToolsProtocolEventReceiver, i64)) {
+        unhook(std::slice::from_ref(made));
+    }
+
     pub fn arm_basic_auth(webview: &ICoreWebView2, user: &str, pass: &str) -> Option<AuthArm> {
         let creds = std::rc::Rc::new(std::cell::RefCell::new((user.to_string(), pass.to_string())));
 
@@ -3230,6 +3312,47 @@ mod cdp {
         // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
         call(webview, "Page.enable", "{}");
         Some(DialogArm { receivers: vec![opening] })
+    }
+
+    /// Hearing a page's console. Only while this is held: dropping it lets go
+    /// of every subscription and turns the log reports back off
+    pub struct ConsoleArm {
+        pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+        pub webview: ICoreWebView2,
+    }
+
+    impl Drop for ConsoleArm {
+        /// `Runtime` stays on: the page's automation evaluates through it,
+        /// and turning it off would pull it out from under a run. `Log` is
+        /// only ever on for this
+        fn drop(&mut self) {
+            unhook(&self.receivers);
+            call(&self.webview, "Log.disable", "{}");
+        }
+    }
+
+    /// Start hearing a page's console: what its code logs, what it throws
+    /// and nobody catches, and what the browser says about it. Each becomes
+    /// one line (`console::entry_of`) handed to `on`
+    pub fn arm_console<F>(webview: &ICoreWebView2, on: F) -> Option<ConsoleArm>
+    where
+        F: Fn(serde_json::Value) + 'static,
+    {
+        let on = std::rc::Rc::new(on);
+        let mut receivers = Vec::new();
+        for event in shikisha_core::console::EVENTS {
+            let tell = std::rc::Rc::clone(&on);
+            let heard = subscribe(webview, event, move |v| {
+                if let Some(entry) = shikisha_core::console::entry_of(event, v, shikisha_core::sqlite::now_ms()) {
+                    tell(entry);
+                }
+            })?;
+            receivers.push(heard);
+        }
+        for domain in shikisha_core::console::DOMAINS {
+            call(webview, &format!("{domain}.enable"), "{}");
+        }
+        Some(ConsoleArm { receivers, webview: webview.clone() })
     }
 
     /// Force the current screen out as one frame (re-issues startScreencast).
@@ -4743,6 +4866,8 @@ impl BrowserHost for Browser {
         }
     }
     fn record(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::record(self, to, on) }
+    fn console(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::console(self, to, on) }
+    fn devtools_url(&self, to: Option<&str>) -> Result<String> { Browser::devtools_url(self, to) }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         pageops::find(self, to, sel, timeout_ms)

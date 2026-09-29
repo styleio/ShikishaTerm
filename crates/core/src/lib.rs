@@ -27,6 +27,7 @@ pub mod chrome;
 pub mod clients;
 pub mod closed;
 pub mod config;
+pub mod console;
 pub mod convo;
 /// Windows's own pseudo console, and the copy of it we ship beside the exe.
 /// A unix pty needs no such thing, so the module is not built there

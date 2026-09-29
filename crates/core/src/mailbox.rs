@@ -183,6 +183,12 @@ pub struct Mailbox {
     pub picked: Vec<(String, serde_json::Value)>,
     /// What the 🎯 panel asked for: (page key, act, args)
     pub designs: Vec<(String, String, serde_json::Value)>,
+    /// Lines pages said on their consoles: (the page's in-window name, the line)
+    pub console_lines: Vec<(String, serde_json::Value)>,
+    /// What the Console panel asked for: (page key, act, args)
+    pub console_asks: Vec<(String, String, serde_json::Value)>,
+    /// Pages whose DevTools were asked for, by key
+    pub devtools: Vec<String>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     pub run_luas: Vec<String>,
@@ -365,6 +371,7 @@ impl Mailbox {
                 self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint });
             }
             Ev::Picked { from: Some(child), item } => self.picked.push((child, item)),
+            Ev::ConsoleLine { from: Some(child), entry } => self.console_lines.push((child, entry)),
             // A frame of a page being watched from somewhere else. Decoded
             // here because what goes out to a phone is bytes
             Ev::Frame { data, .. } => {
@@ -537,6 +544,12 @@ impl Mailbox {
     }
     pub fn take_designs(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.designs)
+    }
+    pub fn take_console_lines(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.console_lines)
+    }
+    pub fn take_console_asks(&mut self) -> Vec<(String, String, serde_json::Value)> {
+        std::mem::take(&mut self.console_asks)
     }
     /// Takes what the 🗣 panel has asked for since the last drain
     pub fn take_words(&mut self) -> Vec<(bool, String, bool)> {

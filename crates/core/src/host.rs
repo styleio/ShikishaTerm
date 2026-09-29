@@ -61,6 +61,8 @@ pub trait Shell {
     fn open_ideas(&self);
     fn push_git(&self, json: &str);
     fn push_files(&self, json: &str);
+    /// Lines a page said on its console, for the column's Console panel
+    fn push_console(&self, json: &str);
     /// An answer for the column's conversation panel (already JSON-encoded)
     fn push_convo(&self, json: &str);
     fn push_issues(&self, json: &str);
@@ -282,6 +284,7 @@ impl Shell for Headless {
     fn open_ideas(&self) {}
     fn push_git(&self, json: &str) { let _ = json; }
     fn push_files(&self, json: &str) { let _ = json; }
+    fn push_console(&self, json: &str) { let _ = json; }
     fn push_convo(&self, json: &str) { let _ = json; }
     fn push_issues(&self, json: &str) { let _ = json; }
     fn push_ideas(&self, json: &str) { let _ = json; }

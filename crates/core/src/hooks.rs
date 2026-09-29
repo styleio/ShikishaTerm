@@ -2774,6 +2774,45 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // A page's DevTools as a page of its own: answers its name (to
+            // `show`, or to put beside the page with `split_pane`) and whether
+            // it was opened just now
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_devtools",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_devtools(&name).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // What a page said on its console after line `since` (0 or
+            // nothing: everything kept), and the number of its newest line to
+            // ask after next time. The first call starts listening, so a page
+            // is heard from then on -- not before
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_console",
+                    lua.create_function(move |lua_, (name, since): (String, Option<u64>)| {
+                        c.console_listen(&name).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let (lines, last, _) = c.console_after(&name, since.unwrap_or(0));
+                        let rows = serde_json::to_value(&lines).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+                        let rows = serde_json::Value::String(c.redact(&rows.to_string()));
+                        let rows: serde_json::Value = rows
+                            .as_str()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or(serde_json::Value::Array(Vec::new()));
+                        Ok((json_to_lua(lua_, &rows)?, last))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // What has been picked on a page, oldest first: one table per
             // element (its number, the person's note, and what the page said
             // of it), and the same list written out the way an AI is handed
