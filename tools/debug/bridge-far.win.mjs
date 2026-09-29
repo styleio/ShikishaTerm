@@ -74,7 +74,7 @@ const dotenv = Object.fromEntries(fs.readFileSync(path.join(MAIN, '.private', '.
 // this checkout
 const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
 const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
-const from = installed ? ['-From', path.dirname(installed)] : [];
+const fromCopy = installed ? ['-From', path.dirname(installed)] : [];
 const payload = installed ? path.dirname(installed) : ROOT;
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 if (!fs.existsSync(path.join(payload, 'bridge', 'shikisha-bridge-x86_64-linux'))) die(`no Linux bridge in ${path.join(payload, 'bridge')} -- ${installed ? 'the installed copy is missing it' : 'build one first'}`);
@@ -285,7 +285,7 @@ try {
   console.log(`the other machine (${WHERE}): ` + (await there('uname -srm')).trim());
   await there(`rm -rf ${HOME}/${BRIDGE_DIR}; mkdir -p ${DIR}/bin && printf %s ${b64(STAND_IN)} | base64 -d > ${DIR}/bin/claude && chmod +x ${DIR}/bin/claude`);
   stopApp();
-  const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
+  const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...fromCopy);
   const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
   if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
   check(fs.existsSync(path.join(APP, 'bridge', 'shikisha-bridge-x86_64-linux')), 'the bridge travels beside the app (dist.list)');

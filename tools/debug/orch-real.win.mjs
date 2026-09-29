@@ -67,7 +67,7 @@ const nonce = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 // itself then comes from beside it too, not from this checkout
 const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
 const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
-const from = installed ? ['-From', path.dirname(installed)] : [];
+const fromCopy = installed ? ['-From', path.dirname(installed)] : [];
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 for (const cli of ['claude', 'codex']) {
   if (spawnSync('where.exe', [cli], { encoding: 'utf8' }).status !== 0) die(`${cli} is not on PATH`);
@@ -78,7 +78,7 @@ stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, REPO, path.join(RUN, 'localappdata'), OUT]) fs.mkdirSync(d, { recursive: true });
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
+const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...fromCopy);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
 
