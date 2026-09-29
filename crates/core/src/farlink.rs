@@ -783,7 +783,7 @@ impl Keeper {
         let (busy, unremoved) = (Arc::clone(&self.busy), Arc::clone(&self.unremoved));
         let _ = std::thread::Builder::new().name("bridge remove".into()).spawn(move || {
             // Agreed to again since it was asked for: it stays
-            if !unremoved.lock().is_ok_and(|u| u.contains_key(&key)) {
+            if !unremoved.lock().is_ok_and(|u| u.get(&key).is_some_and(|(name, _)| !agreed(name))) {
                 if let Ok(mut b) = busy.lock() {
                     b.remove(&key);
                 }
@@ -811,27 +811,41 @@ impl Keeper {
     /// tried again every minute
     pub fn sweep(&mut self, awake_not_agreed: Vec<(String, crate::elsewhere::Elsewhere)>) {
         for (name, at) in awake_not_agreed {
-            if !self.swept.insert(at.machine_key()) {
+            let key = at.machine_key();
+            // Being put there or taken off right now: looked at once that is
+            // done, never at the same time
+            if self.swept.contains(&key) || self.busy.lock().is_ok_and(|b| b.contains(&key)) {
                 continue;
             }
-            let unremoved = Arc::clone(&self.unremoved);
+            self.swept.insert(key.clone());
+            if let Ok(mut b) = self.busy.lock() {
+                b.insert(key.clone());
+            }
+            let (busy, unremoved) = (Arc::clone(&self.busy), Arc::clone(&self.unremoved));
             let _ = std::thread::Builder::new().name("bridge sweep".into()).spawn(move || {
+                // Agreed to again while this was on its way: it stays, and
+                // nothing is left behind to take it off later
+                let still_off = || !agreed(&name);
+                let later = |why: String| {
+                    crate::append_hook_log(&format!("bridge: {why}, trying again in a minute"));
+                    if let Ok(mut u) = unremoved.lock()
+                        && still_off()
+                    {
+                        u.insert(at.machine_key(), (name.clone(), at.clone()));
+                    }
+                };
                 match installed(&at) {
                     Ok(Installed::No) => {}
-                    Ok(_) => {
+                    Ok(_) if still_off() => {
                         if let Err(e) = remove(&at) {
-                            crate::append_hook_log(&format!("bridge: taking it off {} failed, trying again in a minute: {e:#}", at.address()));
-                            if let Ok(mut u) = unremoved.lock() {
-                                u.insert(at.machine_key(), (name, at));
-                            }
+                            later(format!("taking it off {} failed: {e:#}", at.address()));
                         }
                     }
-                    Err(e) => {
-                        crate::append_hook_log(&format!("bridge: could not look at {}, trying again in a minute: {e:#}", at.address()));
-                        if let Ok(mut u) = unremoved.lock() {
-                            u.insert(at.machine_key(), (name, at));
-                        }
-                    }
+                    Ok(_) => {}
+                    Err(e) => later(format!("could not look at {}: {e:#}", at.address())),
+                }
+                if let Ok(mut b) = busy.lock() {
+                    b.remove(&key);
                 }
             });
         }
