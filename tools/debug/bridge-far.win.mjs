@@ -287,7 +287,7 @@ try {
   stopApp();
   const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...fromCopy);
   const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
-  if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
+  if (staged.status !== 0 || !fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
   check(fs.existsSync(path.join(APP, 'bridge', 'shikisha-bridge-x86_64-linux')), 'the bridge travels beside the app (dist.list)');
   fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
   writeConfig([farHost.name]);

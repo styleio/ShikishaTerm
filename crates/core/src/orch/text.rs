@@ -97,8 +97,11 @@ What the mail can be:
 - **decision** -- a decision you asked for was made.
 
 When everything is done: `shikisha job_close "<what was done>"`. While
-anything is still open it refuses, and lists each thing with the command
-that settles it.
+anything is still open -- a task not done among them -- it refuses, and
+lists each thing with the command that settles it. A task that turned out
+not to be needed is taken out on purpose, with why:
+`shikisha task_drop t<N> "<why>"`. A failed or stopped task is tried again
+by assigning it again.
 
 ## Which tabs
 

@@ -945,6 +945,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .job .jst { flex:none; min-width:4.5em; color:var(--dim); }
   .job .jst.failed { color:var(--stop); }
   .job .jst.held { color:var(--warn); }
+  .job .jst.dropped { color:var(--dim); text-decoration:line-through; }
   .job .jn { flex:1 1 0; min-width:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .job .jtry { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
   .job button { font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
@@ -7299,8 +7300,9 @@ function jobRow(j) {
     el("span", {class:"dot " + (waiting ? "QUESTION" : j.working ? "BUSY" : "DONE")}),
     el("span", {class:"jlabel"}, T["tui.job.label"] || ""),
     el("span", {class:"jt", title:j.goal}, j.goal),
-    j.working
-      ? el("button", {onclick:e => {
+    // Always there: stopping a job ends it, whether or not a tab is at work
+    // on it right now
+    el("button", {onclick:e => {
           e.stopPropagation();
           askQuestion({
             title:T["tui.job.stop.title"] || "",
@@ -7310,8 +7312,7 @@ function jobRow(j) {
             danger:true,
             go:() => send({kind:"orch", act:"stop", job:j.id}),
           });
-        }}, T["tui.job.stop"] || "")
-      : null));
+        }}, T["tui.job.stop"] || "")));
   for (const task of j.tasks || []) {
     const w = task.tab ? tabOf(task.tab) : null;
     box.append(el("div", {class:"jtask"},

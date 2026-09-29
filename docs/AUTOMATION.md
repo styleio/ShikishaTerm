@@ -813,7 +813,11 @@ shikisha assign t1 claude            # the task goes to <@claude>, with how to r
 shikisha inbox wait                  # the lead waits; the report arrives here
 shikisha task_add "Review the fix on branch fix-parser." '{"waits_on":["t1"]}'
 shikisha assign t2 codex
-shikisha job_close "fixed, reviewed, merged"
+shikisha inbox wait '{"dealt":1}'   # the first mail is dealt with; wait for the review
+shikisha inbox '{"dealt":2}'        # the review's report is dealt with too
+shikisha let_go a1                   # each worker's tab, once its part is over
+shikisha let_go a2
+shikisha job_close "fixed and reviewed"
 ```
 
 What keeps it going without a person in the loop:
@@ -1217,9 +1221,10 @@ run next. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions
 |---|---|
 | `shikisha.job_open("the whole job")` | **Start a job** led by the calling tab. Refused to a worker already as deep as Settings > Limits on handing work allows |
 | `shikisha.job_status({job="j1"})` | **Where a job stands**: its tasks, who is on them, questions and decisions waiting, loose ends, and `next` |
-| `shikisha.job_close("what was done", {job="j1"})` | **Close a job.** Refused while anything is left open (an assignment at work, a tab nobody let go or kept, an unanswered question, an open decision, unread mail); the refusal lists each with its command |
+| `shikisha.job_close("what was done", {job="j1"})` | **Close a job.** Refused while anything is left open (a task not done and not dropped, an assignment at work, a tab nobody let go or kept, an unanswered question, an open decision, unread mail); the refusal lists each with its command |
 | `shikisha.task_add("the task", {waits_on={"t1"}, title=…})` | **Add a task.** Open at once, or once every task in `waits_on` is done. Write it to be read alone: where, what to end up with, what must not change, and how to tell it is done |
 | `shikisha.task_list({open=true, short=true})` | **A job's tasks.** `open` keeps only those that can be assigned; `short` cuts each to 120 characters |
+| `shikisha.task_drop("t1", "why it is not needed")` | **Take a task out of the job** on purpose, so the job can close without it. Not one being worked on (stop it first) or already done. A failed or stopped task is tried again by assigning it again instead |
 | `shikisha.assign("t1", "tab_id")` | **Hand a task to an AI tab.** Only a tab the person named with `@` or that this job opened. Waits while the tab is busy (up to 45 seconds), types the brief in (after one typed line, for a CLI that needs it), and answers once the tab has started on it |
 | `shikisha.report("done" or "failed", "what it did", "what it found", "what is left", {files={…}, report_path=…})` | **A worker reports its assignment**, once. Only from the tab, and the run of its program, that was given it |
 | `shikisha.ask_lead("question", {choices={…}, resume="q1"})` | **A worker asks its lead** and waits for the answer. If the wait runs out the question stays asked; `resume` waits for the same one again |
@@ -1230,7 +1235,7 @@ run next. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions
 | `shikisha.decision_make("d1", "choice")` | **The lead makes one of its own decisions** |
 | `shikisha.let_go("a1")` | **Let a worker's tab go once its assignment is over**: closed if this job opened it and nobody has typed into it, kept otherwise (the answer says why) |
 | `shikisha.keep("a1")` | **Keep a worker's tab** once its assignment is over |
-| `shikisha.stop("a1" or "all")` | **Stop a worker**: Esc now, and a tab the job opened is closed if it has not stopped 15 seconds later. The task is held for the lead |
+| `shikisha.stop("a1" or "all")` | **Stop a worker**: Esc now, and a tab the job opened is closed if it has not stopped 15 seconds later. The task is held: assigning it again goes on with it, `task_drop` takes it out |
 | `shikisha.open_ai_tab("claude" or "codex" or "gemini", {folder=…, name=…})` | **Open a new AI tab** running that CLI, set up the way every new AI tab is (Yolo only if the person's setting says so). Open to an AI where `open_tab` is not: what starts is never a command the caller wrote |
 | `shikisha.worktree_add("branch", {base=…})` | **Make a working folder (git worktree)** for a branch, placed by the project's worktree rules, and put it on the desk. Answers the folder |
 

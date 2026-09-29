@@ -44,7 +44,6 @@ $sections = @('beside-exe', 'beside-exe-flat')
 if ($Package) { $sections += 'package' }
 
 New-Item -ItemType Directory -Force $Dest | Out-Null
-if ($Exe) { Copy-Item $Exe (Join-Path $Dest 'SHIKISHA-TERM.exe') -Force }
 if ($From -and -not (Test-Path $From)) { throw "no installed copy at $From" }
 
 $staged = 0
@@ -93,4 +92,7 @@ foreach ($s in $sections) {
         $staged += $hits.Count
     }
 }
+# The exe last: a folder with an exe in it is taken for a staged one, so it
+# only gets one once everything beside it is there
+if ($Exe) { Copy-Item $Exe (Join-Path $Dest 'SHIKISHA-TERM.exe') -Force }
 Write-Host "staged $staged item(s) into $Dest"
