@@ -1,70 +1,72 @@
 /**
- * Find, and one past conversation read whole in it, for tools/debug/shoot.mjs.
+ * The conversation panel's "Every conversation", for tools/debug/shoot.mjs.
  *
- * The list, then a conversation opened from it: the word looked for marked
- * and in view, a long answer and a long block of code folded, the work
- * between a question and its answer one line (one of them opened), and
- * Resume -- plain where the folder is there, with its list of places where a
- * worktree was removed. Answered the way the app answers them, through
- * `window.__vaultRead`, rather than by reading records that are not here.
+ * The list the search of every conversation fills: a conversation of one of
+ * this app's AI tabs (named by its tab), one on another machine, one found by
+ * a note written on it and pinned, one whose words a phone sent -- and over a
+ * conversation opened from it, the way back and Resume, with the places a
+ * conversation whose worktree was removed can go instead. Answered the way the
+ * app answers them, through the state and `window.__vaultWhere`.
  */
 
 const folder = 'D:/work/shop';
 const hits = [
-  {program: 'claude', id: 'aaaa', title: 'shop', cwd: folder, when: 1790000000,
-    snippet: '…The cart total is computed by the pricing module on every request…'},
-  {program: 'codex', id: 'bbbb', title: 'shop-fix-tax', cwd: 'D:/work/shop-fix-tax', when: 1789900000,
+  {program: 'claude', id: 'aaaa', title: 'shop', cwd: folder, when: 1790000000, at: 120, thread: 'coder',
+    snippet: '…The cart total is computed by the pricing module on every request…',
+    said: {who: 'ai', when: null, head: 'The cart total'}},
+  {program: 'claude', id: 'bbbb', title: 'shop', cwd: folder, when: 1789990000, at: 40,
+    snippet: 'why is the pricing page slow on the phone?',
+    said: {who: 'you', when: null, head: 'why is'}, from: {by: 'person', device: 'phone', via: 'input'}},
+  {program: 'codex', id: 'cccc', title: 'vm: shop-fix-tax', cwd: '/home/user/shop-fix-tax', when: 1789900000, host: 'vm',
     snippet: 'Explain how the pricing rules apply tax to a discounted line…'},
+  {program: 'claude', id: 'dddd', title: 'shop', cwd: folder, when: 1789800000, at: 0, pinned: true, noted: true,
+    snippet: 'remember: pricing rounds half up'},
 ];
 
-const setup = `
-  S = Object.assign(S || {}, {tabs: [], active: 0,
-    groups: [{name: "shop", key: "${folder}", folder: "${folder}", project: "shop", color: "#5b7cff"}],
-    vault: {query: "pricing", hits: ${JSON.stringify(hits)}, capped: false}});
-  window.__openVault();
-  const q = document.getElementById("vq"); q.value = "pricing";
-  renderVault();
-  "ok"`;
+const tab = (index, name, extra) => Object.assign({
+  index, name, id: name, state: "DONE", state_label: "Done", profile: "Claude Code",
+  locked: false, depth: 0, activity: [0, 1, 3, 2, 0, 0, 1, 0, 0, 0], group: 0, kind: "pty",
+  model: false, busy: false, settings: false, auto: false, restartable: true,
+  readable: true, key: "tab:" + index,
+}, extra);
 
-const explanation = Array.from({length: 24}, (_, i) =>
-  `Step ${i + 1}: the rule reads the line's price, then its discount, then the tax band it falls in.`).join('\n');
-const code = '```rust\n' + Array.from({length: 24}, (_, i) => `    let band_${i} = tax_band(line, ${i});`).join('\n') + '\n```';
-
-const answer = (exists) => ({
-  req: 1, ok: true, folder: exists ? folder : 'D:/work/shop-fix-tax', exists, branch: 'fix/tax',
-  homes: exists ? [] : [{dir: folder, local: true}],
-  items: [
-    {k: 'say', who: 'you', text: 'the checkout page is slow'},
-    {k: 'work', calls: 3, from: 100, to: 900, hit: true, work: {pieces: [
-      {kind: 'say', text: 'Let me look at the logs first.'},
-      {kind: 'call', name: 'Bash', text: 'tail -n 200 logs/app.log'},
-      {kind: 'out', text: 'GET /checkout 200 812ms\nGET /checkout 200 794ms\nslow query in pricing.total (740ms)', hit: true, after: 18233},
-    ]}},
-    {k: 'say', who: 'ai', text: 'The cart total is computed by the **pricing** module on every request, and it reads every tax band from the database each time.\n\nI would cache the bands for a minute.', hit: true},
-    {k: 'say', who: 'you', text: 'explain how the rules apply tax'},
-    {k: 'work', calls: 12, from: 1000, to: 5000},
-    {k: 'say', who: 'ai', text: explanation + '\n\n' + code},
-    {k: 'say', who: 'you', text: 'cache it'},
-    {k: 'work', calls: 4, from: 6000, to: 7000},
-    {k: 'say', who: 'ai', text: 'Cached the tax bands for sixty seconds. The checkout page now answers in about 90 ms.'},
-  ],
+const state = JSON.stringify({
+  desk: "work", desk_id: "work", desks: ["work"], desk_index: 0, active: 1,
+  hotkeys: {}, quick: { cols: 0, rows: 0, pages: 0, items: [], dests: [] }, quick_to: {},
+  groups: [{ name: "shop", folder, color: "#5b7cff", linked: false, family: folder + "/.git", branch: "main",
+    health: { as: "fine" }, drift: { behind: 0, ahead: 0 } }],
+  tabs: [tab(1, "coder", { ai: "claude" })],
+  jobs: [],
+  vault: { query: "pricing", hits, capped: false },
+  ball: { holder: 0, from: 0, depth: 0, max: 0, phase: "", progress: 0, awaiting_human: false },
+  auto_enabled: true, build: "", help_rows: [], ais: [],
 });
 
-const open = (exists) => `
-  openVaultRead(${JSON.stringify(hits[exists ? 0 : 1])}, "pricing");
-  vaultReading.req = 1;
-  window.__vaultRead(${JSON.stringify(answer(exists))});
+const setup = `
+  window.__state(${JSON.stringify(state)});
+  setSideWidth(420);
+  window.__openVault();
+  cvUi.q.value = "pricing"; CV.q = "pricing";
+  delete cvUi.list.dataset.all;
+  drawConvo();
+  "ok"`;
+
+// A conversation opened from the list, its folder gone, the places offered
+const gone = `
+  cvAll = false; cvFromAll = true;
+  CV.past = {program: "codex", id: "gone", host: ""}; CV.loading = false; CV.rows = []; CV.rev++;
+  cvWhereReq = 7;
+  window.__vaultWhere({req: 7, ok: true, program: "codex", id: "gone", folder: "D:/work/shop-fix-tax",
+    exists: false, branch: "fix/tax", homes: [{dir: "${folder}", local: true}]});
+  drawConvo();
+  document.querySelector("#convoHead .hgo").click();
   "ok"`;
 
 export default {
   setup,
   scenes: {
-    list: 'renderVault(); "ok"',
-    reading: open(true),
-    gone: {
-      run: open(false) + '; document.querySelector("#vault .vrgo").click(); "ok"',
-      looks: ['dark'],
-    },
+    list: 'drawConvo(); "ok"',
+    gone: { run: gone, looks: ['dark'] },
   },
   settle: 1200,
 };

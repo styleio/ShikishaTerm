@@ -593,9 +593,9 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__issues && window.__issues({json});"));
     }
 
-    /// Hand a past conversation, read, to the Vault (already JSON-encoded)
-    fn push_vault_read(&self, json: &str) {
-        let _ = self.win.eval(&format!("window.__vaultRead && window.__vaultRead({json});"));
+    /// Hand where a past conversation was had to the page (already JSON-encoded)
+    fn push_vault_where(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__vaultWhere && window.__vaultWhere({json});"));
     }
 
     /// Hand one answer back to the ideas window (already JSON-encoded)
@@ -774,7 +774,7 @@ impl WinSurface {
                 }
                 ev @ (Ev::VaultSearch { .. }
                 | Ev::VaultOpen { .. }
-                | Ev::VaultRead { .. }
+                | Ev::VaultWhere { .. }
                 | Ev::Convo { .. }
                 | Ev::PastList { .. }
                 | Ev::PastResume { .. }) => self.mail.queue_ui(ev),
@@ -2076,7 +2076,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_convo(&self, json: &str) { WinSurface::push_convo(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
-    fn push_vault_read(&self, json: &str) { WinSurface::push_vault_read(self, json) }
+    fn push_vault_where(&self, json: &str) { WinSurface::push_vault_where(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }

@@ -829,17 +829,13 @@ pub fn human_part(text: &str) -> String {
     kept.trim().to_string()
 }
 
-// -- The whole conversation --------------------------------------------------
+// -- The work, and what a search finds ----------------------------------------
 //
-// The walk above reads back from the end, a page at a time, because what a
-// phone opens a reader for is the last thing said. A conversation found by a
-// search is read the other way: all of it, from its first word, with the place
-// the search found open in front of whoever is reading. Only the words are
-// handed over whole. Everything the AI did in between -- the tools it reached
-// for, what they gave back, what it said on the way -- is where nearly all of
-// a record's bytes are (a 70 MB record held 325 KB of words, measured), so it
-// is counted and named by where it lies in the file, and read when somebody
-// opens it.
+// Everything the AI did between two things said -- the tools it reached for,
+// what they gave back, what it said on the way -- is where nearly all of a
+// record's bytes are (a 70 MB record held 325 KB of words, measured). It is
+// read as pieces when somebody opens it (`work_at`), and it is where a search
+// looks as well as in what was said (`mention`).
 
 /// How many characters of one piece of the work are shown. Past that it is a
 /// command's output or a file's contents, and the reader says how much was
@@ -896,37 +892,6 @@ pub struct Work {
     pub more: usize,
 }
 
-/// One stretch of a whole conversation, in the order it happened.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "k", rename_all = "lowercase")]
-pub enum Item {
-    /// Somebody speaking. What one person said in a row is one of these
-    Say {
-        who: Who,
-        text: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        hit: bool,
-    },
-    /// The work between a question and its answer. `from` and `to` are where
-    /// it lies in the record, which is how it is asked for when somebody opens
-    /// it (`work_at`). Opened already when it holds what was searched for
-    Work {
-        calls: usize,
-        from: u64,
-        to: u64,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        hit: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        work: Option<Work>,
-    },
-}
-
-/// The line put in place of one that was too long to bring over from another
-/// machine: `{"<this>": <how many bytes>}`. Read as what came back from a
-/// tool, all of it left out, so the reader says so rather than showing a
-/// call with nothing after it
-pub const LEFT_OUT: &str = "shikisha_left_out";
-
 /// What one line of a record is, read forwards
 enum Line {
     Said(Turn),
@@ -944,15 +909,6 @@ fn read_line(line: &[u8]) -> Line {
     let Ok(text) = std::str::from_utf8(line) else {
         return Line::Nothing;
     };
-    if let Some(n) = text
-        .strip_prefix(&format!("{{\"{LEFT_OUT}\":"))
-        .and_then(|rest| rest.trim_end().strip_suffix('}'))
-        .and_then(|n| n.trim().parse::<usize>().ok())
-    {
-        let mut p = piece(PieceKind::Out, String::new(), String::new());
-        p.after = n;
-        return Line::Out(vec![p]);
-    }
     let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
     let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
     let tooling = text.contains("_use\"")
@@ -1177,13 +1133,6 @@ fn clip(mut p: Piece, needle: &str) -> Piece {
     p
 }
 
-/// One step of the AI's side, between two things a person said
-enum Step {
-    Said(String),
-    Call(Vec<Piece>),
-    Out(Vec<Piece>),
-}
-
 /// Where each line of `bytes` starts and ends, the newline left out
 fn lines_of(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     let mut at = 0;
@@ -1198,104 +1147,8 @@ fn lines_of(bytes: &[u8]) -> impl Iterator<Item = (usize, usize)> + '_ {
     })
 }
 
-/// The AI's side of one exchange, split into the work and the answer.
-///
-/// The rule `read_back` keeps, read forwards: whatever the AI said before the
-/// last tool it reached for was said on the way to that tool, and belongs to
-/// the work. What it said after is the answer
-fn split_side(steps: Vec<(usize, usize, Step)>, needle: &str) -> (Option<Item>, Option<String>) {
-    let last_call = steps.iter().rposition(|(_, _, s)| matches!(s, Step::Call(_)));
-    let mut answer: Vec<String> = Vec::new();
-    let mut pieces: Vec<Piece> = Vec::new();
-    let (mut from, mut to) = (usize::MAX, 0usize);
-    let mut calls = 0;
-    let mut worked = false;
-    for (i, (start, end, step)) in steps.into_iter().enumerate() {
-        let in_work = match (&step, last_call) {
-            (Step::Said(_), Some(k)) => i < k,
-            (Step::Said(_), None) => false,
-            _ => true,
-        };
-        if !in_work {
-            if let Step::Said(text) = step {
-                answer.push(text);
-            }
-            continue;
-        }
-        worked = true;
-        from = from.min(start);
-        to = to.max(end);
-        match step {
-            Step::Said(text) => pieces.push(piece(PieceKind::Say, String::new(), text)),
-            Step::Call(ps) => {
-                calls += ps.iter().filter(|p| p.kind == PieceKind::Call).count();
-                pieces.extend(ps);
-            }
-            Step::Out(ps) => pieces.extend(ps),
-        }
-    }
-    let work = worked.then(|| {
-        let pieces: Vec<Piece> = pieces.into_iter().map(|p| clip(p, needle)).collect();
-        let hit = pieces.iter().any(|p| p.hit);
-        Item::Work {
-            calls,
-            from: from as u64,
-            to: to as u64,
-            hit,
-            work: hit.then(|| keep(pieces)),
-        }
-    });
-    let answer = answer.join("\n\n");
-    (work, (!answer.trim().is_empty()).then_some(answer))
-}
-
-/// Something said, joined to what the same speaker said just before it
-fn say(items: &mut Vec<Item>, who: Who, text: String, needle: &str) {
-    let hit = find_in(&text, needle).is_some();
-    if let Some(Item::Say { who: w, text: t, hit: h }) = items.last_mut()
-        && *w == who
-    {
-        t.push_str("\n\n");
-        t.push_str(&text);
-        *h |= hit;
-        return;
-    }
-    items.push(Item::Say { who, text, hit });
-}
-
-/// The whole conversation in `bytes` (a record, or a stretch of one), in the
-/// order it happened. `needle` marks what holds it; empty marks nothing
-pub fn read_whole(bytes: &[u8], needle: &str) -> Vec<Item> {
-    let needle = needle.trim().to_lowercase();
-    let mut items = Vec::new();
-    let mut side: Vec<(usize, usize, Step)> = Vec::new();
-    let settle = |items: &mut Vec<Item>, side: &mut Vec<(usize, usize, Step)>| {
-        let (work, answer) = split_side(std::mem::take(side), &needle);
-        if let Some(w) = work {
-            items.push(w);
-        }
-        if let Some(a) = answer {
-            say(items, Who::Ai, a, &needle);
-        }
-    };
-    for (start, end) in lines_of(bytes) {
-        match read_line(&bytes[start..end]) {
-            Line::Said(t) if t.who == Who::You => {
-                settle(&mut items, &mut side);
-                say(&mut items, Who::You, t.text, &needle);
-            }
-            Line::Said(t) => side.push((start, end, Step::Said(t.text))),
-            Line::Reaching(ps) => side.push((start, end, Step::Call(ps))),
-            Line::Out(ps) => side.push((start, end, Step::Out(ps))),
-            Line::Nothing => {}
-        }
-    }
-    settle(&mut items, &mut side);
-    items
-}
-
-/// One stretch of work, opened: the lines between `from` and `to` of a record.
-/// The same reading as `read_whole`, so what opens is what was counted
+/// One stretch of work, opened: the lines between `from` and `to` of a record,
+/// as the pages that counted it say where it lies
 pub fn work_at(bytes: &[u8], from: u64, to: u64, needle: &str) -> Work {
     let from = (from as usize).min(bytes.len());
     let to = (to as usize).clamp(from, bytes.len());
@@ -1315,13 +1168,17 @@ pub fn work_at(bytes: &[u8], from: u64, to: u64, needle: &str) -> Work {
 /// or what a tool was asked and gave back. What a search is matched against,
 /// so a word that only appears in a record's bookkeeping -- the folder it ran
 /// in, the branch, an id -- does not make a conversation a match
-fn words_seen(line: &[u8]) -> Vec<String> {
+fn words_seen(line: &[u8]) -> Vec<(String, SaidBy)> {
     match read_line(line) {
-        Line::Said(t) => vec![t.text],
-        Line::Reaching(ps) | Line::Out(ps) => ps.into_iter().map(|p| p.text).collect(),
+        Line::Said(t) => vec![(t.text, Some((t.who, t.when)))],
+        Line::Reaching(ps) | Line::Out(ps) => ps.into_iter().map(|p| (p.text, None)).collect(),
         Line::Nothing => Vec::new(),
     }
 }
+
+/// Who said some words and when (milliseconds, when the record says), for
+/// words that were said; `None` for a tool's
+pub type SaidBy = Option<(Who, Option<i64>)>;
 
 /// Where a search found what it looked for in a record
 #[derive(Debug, Clone, PartialEq)]
@@ -1333,6 +1190,9 @@ pub struct Mention {
     /// Where the record's line holding them starts, as a byte offset into
     /// what was searched: where a reader opened on it begins
     pub line: u64,
+    /// Who said them and when, when they were something said rather than a
+    /// tool's words
+    pub said: SaidBy,
 }
 
 /// `needle`, lowercase, found in `bytes` where a reader would see it: the
@@ -1352,7 +1212,7 @@ pub fn mention(bytes: &[u8], needle: &str) -> Option<Mention> {
     let seen = |start: usize, end: usize| {
         words_seen(&bytes[start..end])
             .into_iter()
-            .find_map(|w| find_in(&w, needle).map(|at| Mention { words: w, at, line: start as u64 }))
+            .find_map(|(w, said)| find_in(&w, needle).map(|at| Mention { words: w, at, line: start as u64, said }))
     };
     let caseful = needle.chars().any(|c| !c.is_ascii() && c.to_uppercase().ne(c.to_lowercase()));
     if caseful {
@@ -1783,33 +1643,14 @@ mod tests {
         .join("\n")
     }
 
-    /// All of it, from its first word, in the order it happened: what each
-    /// side said, and the work between a question and its answer counted in
-    /// one line. What the AI said on its way to a tool is part of the work,
-    /// not the answer -- the same rule the walk from the end keeps
+    /// The work between a question and its answer opens to what was said on
+    /// the way, the call, and what came back
     #[test]
-    fn a_conversation_is_read_whole_with_the_work_between_counted() {
+    fn the_work_opens_to_its_pieces() {
         let bytes = conversation();
-        let items = read_whole(bytes.as_bytes(), "");
-        let shape: Vec<String> = items
-            .iter()
-            .map(|i| match i {
-                Item::Say { who, text, .. } => format!("{who:?}: {text}"),
-                Item::Work { calls, work, .. } => format!("work {calls} opened={}", work.is_some()),
-            })
-            .collect();
-        assert_eq!(
-            shape,
-            vec![
-                "You: ログインが落ちます",
-                "work 1 opened=false",
-                "Ai: トークンの期限切れが原因でした。",
-                "You: 直して",
-                "Ai: 直しました。",
-            ]
-        );
-        // The work opens to what was said on the way, the call, and what came back
-        let Item::Work { from, to, .. } = items[1] else { panic!("{items:?}") };
+        let lines: Vec<&str> = bytes.split('\n').collect();
+        let from = (lines[0].len() + 1) as u64;
+        let to = from + (lines[1].len() + lines[2].len() + lines[3].len() + 2) as u64;
         let work = work_at(bytes.as_bytes(), from, to, "");
         let kinds: Vec<(PieceKind, &str)> = work.pieces.iter().map(|p| (p.kind, p.text.as_str())).collect();
         assert_eq!(
@@ -1821,28 +1662,8 @@ mod tests {
             ]
         );
         assert_eq!(work.pieces[1].name, "Bash");
-    }
-
-    /// What was searched for is marked where it was said, and a stretch of
-    /// work that holds it comes already open, so the page opens on it
-    #[test]
-    fn what_was_searched_for_is_marked_and_its_work_comes_open() {
-        let bytes = conversation();
-        let items = read_whole(bytes.as_bytes(), "TOKEN EXPIRED");
-        let Item::Work { hit, work: Some(work), .. } = &items[1] else { panic!("{items:?}") };
-        assert!(hit);
-        assert!(work.pieces.iter().any(|p| p.hit && p.kind == PieceKind::Out));
-        let said_hits: Vec<bool> = items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Say { hit, .. } => Some(*hit),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(said_hits, vec![false, false, false, false]);
-
-        let items = read_whole(bytes.as_bytes(), "直して");
-        assert!(matches!(&items[3], Item::Say { hit: true, .. }), "{items:?}");
+        let found = work_at(bytes.as_bytes(), from, to, "TOKEN EXPIRED");
+        assert!(found.pieces.iter().any(|p| p.hit && p.kind == PieceKind::Out), "what was looked for is marked");
     }
 
     /// A tool's output of megabytes is shown as its start -- or the stretch
@@ -1866,6 +1687,9 @@ mod tests {
         let line = r#"{"type":"user","cwd":"D:/work/Refund","message":{"role":"user","content":"hello"}}"#;
         assert!(mention(line.as_bytes(), "refund").is_none(), "the folder's name counted as a mention");
         let found = mention(conversation().as_bytes(), "期限切れ").expect("said");
+        assert_eq!(found.said.map(|(who, _)| who), Some(Who::Ai), "who said it");
+        let tool = mention(conversation().as_bytes(), "auth.rs:42").expect("in a tool's output");
+        assert_eq!(tool.said, None, "a tool's words were said by nobody");
         assert_eq!(&found.words[found.at..found.at + "期限切れ".len()], "期限切れ");
         // ...and its line is where the record says it
         let bytes = conversation();
@@ -1876,25 +1700,6 @@ mod tests {
         // A letter whose case lies outside ASCII is found whatever its case
         let accent = record("assistant", "Élan vital");
         assert!(mention(accent.as_bytes(), "élan").is_some());
-    }
-
-    /// A line too long to bring over from another machine is said to be
-    /// left out, with how long it was -- not dropped without a word
-    #[test]
-    fn a_line_left_on_the_other_machine_is_said_to_be_left_out() {
-        let bytes = [
-            record("user", "look"),
-            call("Bash", "cat big.log"),
-            format!("{{\"{LEFT_OUT}\":2000123}}"),
-            record("assistant", "done"),
-        ]
-        .join("\n");
-        let items = read_whole(bytes.as_bytes(), "");
-        let Item::Work { from, to, calls, .. } = items[1] else { panic!("{items:?}") };
-        assert_eq!(calls, 1);
-        let work = work_at(bytes.as_bytes(), from, to, "");
-        let out = work.pieces.iter().find(|p| p.kind == PieceKind::Out).expect("the left-out output is a piece");
-        assert_eq!((out.text.as_str(), out.after), ("", 2_000_123));
     }
 
     /// A stretch of work too long to hand over whole keeps every piece that

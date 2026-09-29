@@ -68,7 +68,7 @@ struct Source {
 }
 
 /// One conversation the search turned up.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct Hit {
     /// What to run to reopen it (`claude`), and the id to resume
     pub program: String,
@@ -97,6 +97,44 @@ pub struct Hit {
     /// machine with no bridge
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<u64>,
+    /// Who said the words it was found in and when, when they were something
+    /// said: what `annotate` finds who really sent them by
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<Said>,
+    /// The tab whose conversation this is, when this app's own AI tab had it:
+    /// one tab's conversation can run across several records (a `/clear`, a
+    /// conversation picked back up), and the list shows it once
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    /// Who really sent a person's line the words were found in: the person
+    /// (and from where), another tab, a job, automation -- as the
+    /// conversation panel says it (`convo::read::origins`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<serde_json::Value>,
+    /// Whether something in it is pinned
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+    /// Whether it was found in a note written on it rather than in the record
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub noted: bool,
+}
+
+/// Who said the words a search found, and how they begin
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Said {
+    pub who: crate::reader::Who,
+    /// When, in milliseconds, when the record says
+    pub when: Option<i64>,
+    /// How the words begin: what the sends a person's line came from are
+    /// found by (`convo::db::head`)
+    pub head: String,
+}
+
+impl Said {
+    fn of(m: &crate::reader::Mention) -> Option<Self> {
+        let (who, when) = m.said?;
+        Some(Said { who, when, head: m.words.chars().take(200).collect() })
+    }
 }
 
 /// What a search came back with, and whether it saw everything.
@@ -151,6 +189,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
         }
         read += 1;
         let mut line = None;
+        let mut said = None;
         // A blank search lists; it has nothing to read the records through for
         let (head, snip) = match needle.is_empty() {
             true => match read_head(path) {
@@ -162,6 +201,7 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
                 let Some(found) = crate::reader::mention(&bytes, &needle) else { continue };
                 let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
                 line = Some(found.line);
+                said = Said::of(&found);
                 (head, snippet(&found.words, found.at, needle.len()))
             }
         };
@@ -177,6 +217,8 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
             tab: None,
             host: None,
             at: line,
+            said,
+            ..Hit::default()
         });
     }
     // Stopped at enough with records left unread: there may be older ones
@@ -225,7 +267,7 @@ pub fn search_far(at: &crate::elsewhere::Elsewhere, machine: &str, query: &str, 
             return FarFound { failed: Some(format!("{e:#}")), ..FarFound::default() };
         }
     };
-    let mut more = |again: &[(usize, String, usize)]| match crate::elsewhere::exec(at, &far_more_script(query, again), 120_000) {
+    let mut more = |again: &[Again]| match crate::elsewhere::exec(at, &far_more_script(query, again), 120_000) {
         Ok(r) => Some(r.out),
         Err(e) => {
             crate::append_hook_log(&format!("could not search further on {}: {e:#}", at.address()));
@@ -322,7 +364,7 @@ one {i} \"$f\" 0 && n=$((n+1)); done; "
 
 /// A later command of a far search: the next candidates of the records whose
 /// earlier ones were none of them words a reader sees
-fn far_more_script(query: &str, more: &[(usize, String, usize)]) -> String {
+fn far_more_script(query: &str, more: &[Again]) -> String {
     let mut script = far_search_prelude(query);
     for (which, path, skip) in more {
         let quoted = crate::worktree::for_a_shell(std::slice::from_ref(path));
@@ -330,6 +372,10 @@ fn far_more_script(query: &str, more: &[(usize, String, usize)]) -> String {
     }
     script
 }
+
+/// A record asked again for its next candidates: which CLI's, where it is,
+/// and how many candidate lines to skip
+type Again = (usize, String, usize);
 
 /// One record as a far search printed it
 struct FarRecord {
@@ -376,12 +422,12 @@ fn far_search_hits(
     needle: &str,
     machine: &str,
     limit: usize,
-    more: &mut dyn FnMut(&[(usize, String, usize)]) -> Option<String>,
+    more: &mut dyn FnMut(&[Again]) -> Option<String>,
 ) -> (Vec<Hit>, bool) {
     let (mut records, mut capped) = far_records(first);
     let mut hits: Vec<Hit> = Vec::new();
     for round in 0..=FAR_ROUNDS {
-        let mut again: Vec<(usize, String, usize)> = Vec::new();
+        let mut again: Vec<Again> = Vec::new();
         for r in records.drain(..) {
             let Some(src) = sources.get(r.which) else { continue };
             let Some(id) = id_of(Path::new(&r.path), &r.head, src) else { continue };
@@ -413,7 +459,7 @@ fn far_search_hits(
                 when: r.when,
                 tab: None,
                 host: Some(machine.to_string()),
-                at: None,
+                ..Hit::default()
             });
         }
         if again.is_empty() {
@@ -538,7 +584,7 @@ fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,
             host: None,
-            at: None,
+            ..Hit::default()
         });
     }
     out
@@ -621,7 +667,7 @@ fn far_hits(out: &str, src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
             when: when.trim().parse().unwrap_or(0),
             tab: None,
             host: None,
-            at: None,
+            ..Hit::default()
         });
     }
     hits
@@ -750,35 +796,22 @@ fn snippet(text: &str, at: usize, len: usize) -> String {
     format!("{lead}{trimmed}{tail}")
 }
 
-// -- Reading one conversation whole ------------------------------------------
+// -- Where a conversation was had ---------------------------------------------
+//
+// A conversation found by the search is read in the conversation panel, by
+// the reader the panel reads every conversation with. What is left to this
+// module is what picking it back up needs: the folder it was had in, the
+// branch that folder was on, and whether the folder is still there.
 
-/// The most of a record on another machine that is brought over to be read.
-/// Far past any conversation's words, which is what it is for; a record that
-/// is bigger is cut, and its end is what is lost
-const FAR_CAP: usize = 256 * 1024 * 1024;
-
-/// A line longer than this, in a record on another machine, is left there and
-/// a line saying how long it was brought in its place (`reader::LEFT_OUT`).
-/// Nobody says a megabyte: a line that long is a tool's output or a file's
-/// contents, and it is most of what would otherwise cross the network.
-/// Replaced rather than dropped, so every line still lies where the reading
-/// counted it, and the reader can say what it is not showing
-const FAR_LINE_CAP: usize = 1024 * 1024;
-
-/// The record last brought over from another machine, by where it was
-static FAR_LAST: std::sync::Mutex<Option<(String, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(None);
-
-/// One conversation, read whole: what the reader shows, and what the
-/// conversation says about where it was had
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Opened {
-    pub items: Vec<crate::reader::Item>,
+/// Where one conversation was had, as its record says, and whether that
+/// folder is still there on the machine it was had on
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Where {
     /// The folder it was had in, when the record says
     pub folder: Option<String>,
     /// The branch that folder was on, when the record says
     pub branch: Option<String>,
-    /// Whether that folder is still there, on the machine it was had on.
-    /// `None` when that could not be asked
+    /// Whether that folder is still there. `None` when that could not be asked
     pub exists: Option<bool>,
 }
 
@@ -793,21 +826,10 @@ fn plain_id(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
 }
 
-/// The bytes of one conversation's record, here or on the machine `at`, by
-/// the CLI and id a search hit carries. `fresh` fetches a record on another
-/// machine again rather than using the copy last brought over.
-///
-/// A record here is read again every time: it only ever grows at its end, so
-/// where a stretch of it lies does not move. One on another machine is kept
-/// once brought over, because opening a stretch of its work asks for bytes by
-/// where they lie, and fetching the whole record over the network for every
-/// stretch opened would be the slow way to the same bytes
-fn record_bytes(
-    program: &str,
-    id: &str,
-    at: Option<&crate::elsewhere::Elsewhere>,
-    fresh: bool,
-) -> Result<std::sync::Arc<Vec<u8>>, String> {
+/// Where one conversation was had, by the CLI and id a search hit carries,
+/// here or on the machine `at`. Reads the start of the record only: that is
+/// where every CLI writes the folder and the branch
+pub fn where_is(program: &str, id: &str, at: Option<&crate::elsewhere::Elsewhere>) -> Result<Where, String> {
     use crate::i18n::t;
     let src = sources()
         .into_iter()
@@ -817,93 +839,39 @@ fn record_bytes(
         return Err(t("err.vault.no_record"));
     }
     let Some(at) = at else {
-        let path = crate::sessionfind::locate(&src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
-        return std::fs::read(&path)
-            .map(std::sync::Arc::new)
-            .map_err(|e| format!("{}: {e}", t("err.vault.unreadable")));
+        return where_here(&src, id);
     };
-    let path = crate::reader::locate_far(at, &src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
-    let key = format!("{}\u{1f}{path}", at.address());
-    if !fresh
-        && let Some((k, bytes)) = FAR_LAST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
-        && *k == key
-    {
-        return Ok(bytes.clone());
+    if let Some(found) = by_bridge::<Result<Where, String>>(at, "vault_where", serde_json::json!({"source": src, "id": id})) {
+        return found;
     }
+    // The long way: the start of the record brought over, and the folder
+    // looked for there
     use base64::Engine as _;
+    let path = crate::reader::locate_far(at, &src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
     let quoted = crate::worktree::for_a_shell(std::slice::from_ref(&path));
-    let line = format!(
-        "LC_ALL=C awk -v m={FAR_LINE_CAP} 'length($0) > m {{ printf \"{{\\\"{}\\\":%d}}\\n\", length($0); next }} {{ print }}' {quoted} | head -c {FAR_CAP} | base64 -w0",
-        crate::reader::LEFT_OUT
-    );
-    let ran = crate::elsewhere::exec(at, &line, 180_000).map_err(|e| format!("{}: {e:#}", t("err.vault.unreadable")))?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(ran.out.trim())
-        .map_err(|e| format!("{}: {e}", t("err.vault.unreadable")))?;
-    let bytes = std::sync::Arc::new(bytes);
-    *FAR_LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, bytes.clone()));
-    Ok(bytes)
-}
-
-/// One conversation read whole, with what `needle` was found in marked (see
-/// `reader::read_whole`). Waits on the disk, or on the machine it is on
-pub fn open(
-    program: &str,
-    id: &str,
-    at: Option<&crate::elsewhere::Elsewhere>,
-    needle: &str,
-) -> Result<Opened, String> {
-    let src = sources()
-        .into_iter()
-        .find(|s| s.program == program)
-        .ok_or_else(|| crate::i18n::t("err.vault.no_program"))?;
-    if let Some(at) = at
-        && let Some(read) = by_bridge::<Result<Opened, String>>(at, "vault_read", serde_json::json!({
-            "source": src, "id": id, "query": needle,
-        }))
-    {
-        return read;
-    }
-    let bytes = record_bytes(program, id, at, true)?;
-    let mut read = opened(&bytes, &src, needle);
-    read.exists = match at {
-        None => read.folder.as_deref().map(|f| Path::new(f).is_dir()),
-        Some(at) => read.folder.as_deref().and_then(|f| folder_there(Some(at), f)),
-    };
-    Ok(read)
-}
-
-/// What a record says, read whole. Where its folder is has to be asked on
-/// the machine it was had on, and is left for whoever read it to say
-fn opened(bytes: &[u8], src: &Source, needle: &str) -> Opened {
-    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_CAP)]).into_owned();
-    Opened {
-        items: crate::reader::read_whole(bytes, needle),
-        folder: cwd_of(&head, src),
+    let ran = crate::elsewhere::exec(at, &format!("head -c {FOLDER_CAP} {quoted} | base64 -w0"), 60_000)
+        .map_err(|e| format!("{}: {e:#}", t("err.vault.unreadable")))?;
+    let head = base64::engine::general_purpose::STANDARD.decode(ran.out.trim()).unwrap_or_default();
+    let head = String::from_utf8_lossy(&head);
+    let folder = cwd_of(&head, &src);
+    Ok(Where {
+        exists: folder.as_deref().and_then(|f| folder_there(Some(at), f)),
         branch: branch_of(&head),
-        exists: None,
-    }
+        folder,
+    })
 }
 
-/// One stretch of a conversation's work, opened (see `reader::work_at`)
-pub fn open_work(
-    program: &str,
-    id: &str,
-    at: Option<&crate::elsewhere::Elsewhere>,
-    from: u64,
-    to: u64,
-    needle: &str,
-) -> Result<crate::reader::Work, String> {
-    if let Some(at) = at
-        && let Some(src) = sources().into_iter().find(|s| s.program == program)
-        && let Some(work) = by_bridge::<Result<crate::reader::Work, String>>(at, "vault_work", serde_json::json!({
-            "source": src, "id": id, "from": from, "to": to, "query": needle,
-        }))
-    {
-        return work;
-    }
-    let bytes = record_bytes(program, id, at, false)?;
-    Ok(crate::reader::work_at(&bytes, from, to, needle))
+/// The same, for a record on this machine
+fn where_here(src: &Source, id: &str) -> Result<Where, String> {
+    use crate::i18n::t;
+    let path = crate::sessionfind::locate(&src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
+    let head = read_some(&path, FOLDER_CAP).ok_or_else(|| t("err.vault.unreadable"))?;
+    let folder = cwd_of(&head, src);
+    Ok(Where {
+        exists: folder.as_deref().map(|f| Path::new(f).is_dir()),
+        branch: branch_of(&head),
+        folder,
+    })
 }
 
 // -- The same, done by the bridge on another machine ---------------------------
@@ -943,21 +911,6 @@ fn param<'a>(p: &'a serde_json::Value, key: &str) -> Result<&'a serde_json::Valu
     p.get(key).ok_or_else(|| format!("missing {key}"))
 }
 
-fn source_param(p: &serde_json::Value) -> Result<Source, String> {
-    serde_json::from_value(param(p, "source")?.clone()).map_err(|e| e.to_string())
-}
-
-/// The record of one conversation on the bridge's own machine
-fn record_here(src: &Source, p: &serde_json::Value) -> Result<Vec<u8>, String> {
-    use crate::i18n::t;
-    let id = param(p, "id")?.as_str().unwrap_or_default();
-    if !plain_id(id) {
-        return Err(t("err.vault.no_record"));
-    }
-    let path = crate::sessionfind::locate(&src.verify, id).ok_or_else(|| t("err.vault.no_record"))?;
-    std::fs::read(&path).map_err(|e| format!("{}: {e}", t("err.vault.unreadable")))
-}
-
 /// `vault_search`, on the bridge's machine: the search this PC runs on its
 /// own records (`search`), over the CLIs this PC sent
 pub fn bridge_search(p: &serde_json::Value) -> Result<serde_json::Value, String> {
@@ -967,29 +920,90 @@ pub fn bridge_search(p: &serde_json::Value) -> Result<serde_json::Value, String>
     serde_json::to_value(search_in(&sources, query, limit, &|| false)).map_err(|e| e.to_string())
 }
 
-/// `vault_read`, on the bridge's machine: one conversation read whole
-/// (`open`), and whether its folder is still there. A record it cannot read is
-/// said as an answer, not a failure of the bridge: this PC shows it as it is
-pub fn bridge_read(p: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let src = source_param(p)?;
-    let query = p.get("query").and_then(serde_json::Value::as_str).unwrap_or_default();
-    let read: Result<Opened, String> = record_here(&src, p).map(|bytes| {
-        let mut read = opened(&bytes, &src, query);
-        read.exists = read.folder.as_deref().map(|f| Path::new(f).is_dir());
-        read
-    });
-    serde_json::to_value(read).map_err(|e| e.to_string())
+/// `vault_where`, on the bridge's machine: where one conversation was had
+/// (`where_is`). A record it cannot read is said as an answer, not as a
+/// failure of the bridge: this PC shows it as it is
+pub fn bridge_where(p: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let src: Source = serde_json::from_value(param(p, "source")?.clone()).map_err(|e| e.to_string())?;
+    let id = param(p, "id")?.as_str().unwrap_or_default();
+    let found: Result<Where, String> = match plain_id(id) {
+        true => where_here(&src, id),
+        false => Err(crate::i18n::t("err.vault.no_record")),
+    };
+    serde_json::to_value(found).map_err(|e| e.to_string())
 }
 
-/// `vault_work`, on the bridge's machine: one stretch of a conversation's
-/// work, opened (`open_work`)
-pub fn bridge_work(p: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let src = source_param(p)?;
-    let at = |k: &str| p.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
-    let query = p.get("query").and_then(serde_json::Value::as_str).unwrap_or_default();
-    let work: Result<crate::reader::Work, String> =
-        record_here(&src, p).map(|bytes| crate::reader::work_at(&bytes, at("from"), at("to"), query));
-    serde_json::to_value(work).map_err(|e| e.to_string())
+// -- What this PC knows about a conversation besides its record ------------------
+//
+// The conversation panel keeps, for the AI tabs of this app, who really sent
+// each thing a person's line holds, which records one tab's conversation ran
+// across, and the pins and notes put on it (`convo`). The search is asked of
+// the records themselves; this is laid over what it found.
+
+/// Lay over hits what this PC knows about them: the tab whose conversation
+/// each belongs to (`thread`, one tab's records being one conversation), who
+/// sent the words a person's line was found in (`from`), and whether anything
+/// in it is pinned
+pub fn annotate(hits: &mut [Hit]) {
+    let store = crate::convo::db::Store::open_read(&crate::convo::path()).ok();
+    let pinned: std::collections::HashSet<String> = crate::convo::marks::all(&crate::convo::marks::path())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| m.pinned)
+        .map(|m| m.record)
+        .collect();
+    for h in hits.iter_mut() {
+        if h.tab.is_some() {
+            continue;
+        }
+        h.pinned = pinned.contains(&h.id);
+        let Some(store) = store.as_ref() else { continue };
+        h.thread = store.tab_of(&h.id).ok().flatten();
+        if let Some(said) = h.said.as_ref().filter(|s| s.who == crate::reader::Who::You) {
+            h.from = crate::convo::read::origins(&h.id, &[(said.when, said.head.as_str())]).into_iter().next().flatten();
+        }
+    }
+}
+
+/// The notes written on this PC's conversations that hold `query`, as hits:
+/// a note is words a person wrote about a conversation, and finding the
+/// conversation by them is what they were written for. Opened at the thing
+/// said the note is on
+pub fn note_hits(query: &str) -> Vec<Hit> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let marks = crate::convo::marks::all(&crate::convo::marks::path()).unwrap_or_default();
+    let sources = sources();
+    let mut hits: Vec<Hit> = Vec::new();
+    for m in marks {
+        let Some(at) = crate::reader::find_in(&m.note, &needle) else { continue };
+        if hits.iter().any(|h| h.id == m.record) || !plain_id(&m.record) {
+            continue;
+        }
+        // Which CLI's record it is, and where that conversation was had
+        let Some((src, head)) = sources.iter().find_map(|s| {
+            let path = crate::sessionfind::locate(&s.verify, &m.record)?;
+            Some((s, read_some(&path, FOLDER_CAP)?))
+        }) else {
+            continue;
+        };
+        let cwd = cwd_of(&head, src);
+        hits.push(Hit {
+            program: src.program.clone(),
+            id: m.record.clone(),
+            title: title_of(cwd.as_deref(), &src.program),
+            snippet: snippet(&m.note, at, needle.len()),
+            cwd,
+            when: (m.changed.max(m.made) / 1000).max(0) as u64,
+            at: Some(m.at),
+            pinned: m.pinned,
+            noted: true,
+            ..Hit::default()
+        });
+    }
+    hits
 }
 
 /// Whether the folder a conversation was had in is still there, on the
@@ -1360,7 +1374,7 @@ mod tests {
             when: 0,
             tab: None,
             host: None,
-            at: None,
+            ..Hit::default()
         };
         // With no profiles installed in the test env, reopen has nothing to
         // resolve against; the shape is what a real source produces
@@ -1463,7 +1477,7 @@ mod far_search_tests {
         let record = |id: &str, skip: usize, candidates: &str| {
             format!("@@F 0 1790430222 {skip} .claude/projects/-home-user-site/{id}.jsonl\n{}\n{}\n", b(head), b(candidates))
         };
-        let mut never = |_: &[(usize, String, usize)]| -> Option<String> { panic!("nothing more was needed") };
+        let mut never = |_: &[Again]| -> Option<String> { panic!("nothing more was needed") };
         let (hits, capped) = far_search_hits(&record("aaa", 0, line), &[claude()], "login bug", "vm", 10, &mut never);
         assert_eq!(hits.len(), 1);
         assert!(!capped);
@@ -1482,8 +1496,8 @@ mod far_search_tests {
         // next ones, and the match after them is found
         let thought = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the login bug again"}]}}"#;
         let first: String = std::iter::repeat_n(thought, FAR_CANDIDATE_LINES + 1).collect::<Vec<_>>().join("\n");
-        let mut asked: Vec<(usize, String, usize)> = Vec::new();
-        let mut more = |again: &[(usize, String, usize)]| {
+        let mut asked: Vec<Again> = Vec::new();
+        let mut more = |again: &[Again]| {
             asked.extend_from_slice(again);
             Some(record("ccc", again[0].2, line))
         };
@@ -1494,7 +1508,7 @@ mod far_search_tests {
 
         // Asked for more past the rounds it may ask, the search says it
         // stopped before the end rather than calling the record a miss
-        let mut forever = |again: &[(usize, String, usize)]| Some(record("ddd", again[0].2, &first));
+        let mut forever = |again: &[Again]| Some(record("ddd", again[0].2, &first));
         let (hits, capped) = far_search_hits(&record("ddd", 0, &first), &[claude()], "login bug", "vm", 10, &mut forever);
         assert!(hits.is_empty());
         assert!(capped, "a search that stopped before the end did not say so");
@@ -1611,8 +1625,8 @@ mod whole_tests {
     }
 
     /// What a bridge does on its machine is what this PC does on its own: the
-    /// same search, the same reading, the same stretch of work -- asked by
-    /// name through the bridge's table and read back from what it sends
+    /// same search, and the same answer to where a conversation was had --
+    /// asked by name through the bridge's table and read back from what it sends
     #[test]
     fn a_bridge_answers_the_way_this_pc_reads() {
         let root = tmp("bridge");
@@ -1632,26 +1646,36 @@ mod whole_tests {
         let far: Found = serde_json::from_value(far).unwrap();
         assert_eq!(far, search_in(std::slice::from_ref(&src), "PRICING", 10, &|| false));
         assert_eq!(far.hits.len(), 1);
+        // Found in a tool's output: nobody said it
+        assert_eq!(far.hits[0].said, None);
 
-        let read = crate::farops::run("vault_read", &serde_json::json!({"source": as_json, "id": "conv", "query": "pricing"})).unwrap();
-        let read: Result<Opened, String> = serde_json::from_value(read).unwrap();
-        let read = read.unwrap();
-        assert_eq!(read.items, crate::reader::read_whole(lines.as_bytes(), "pricing"));
-        assert_eq!(read.folder.as_deref(), Some(gone.as_str()));
-        assert_eq!(read.branch.as_deref(), Some("fix/login"));
-        assert_eq!(read.exists, Some(false), "a worktree removed since is said to be gone");
-
-        let crate::reader::Item::Work { from, to, .. } = read.items[1] else { panic!("{:?}", read.items) };
-        let work = crate::farops::run("vault_work", &serde_json::json!({"source": as_json, "id": "conv", "from": from, "to": to, "query": ""})).unwrap();
-        let work: Result<crate::reader::Work, String> = serde_json::from_value(work).unwrap();
-        assert_eq!(work.unwrap(), crate::reader::work_at(lines.as_bytes(), from, to, ""));
+        let asked = |id: &str| {
+            let v = crate::farops::run("vault_where", &serde_json::json!({"source": as_json, "id": id})).unwrap();
+            serde_json::from_value::<Result<Where, String>>(v).unwrap()
+        };
+        let there = asked("conv").unwrap();
+        assert_eq!(there, where_here(&src, "conv").unwrap());
+        assert_eq!(there.folder.as_deref(), Some(gone.as_str()));
+        assert_eq!(there.branch.as_deref(), Some("fix/login"));
+        assert_eq!(there.exists, Some(false), "a worktree removed since is said to be gone");
 
         // A record that is not there is an answer, said as it is
-        let none = crate::farops::run("vault_read", &serde_json::json!({"source": as_json, "id": "nobody", "query": ""})).unwrap();
-        assert!(serde_json::from_value::<Result<Opened, String>>(none).unwrap().is_err());
+        assert!(asked("nobody").is_err());
         // ...and an id that climbs out of the folder is not looked up at all
-        let bad = crate::farops::run("vault_read", &serde_json::json!({"source": as_json, "id": "../x", "query": ""})).unwrap();
-        assert!(serde_json::from_value::<Result<Opened, String>>(bad).unwrap().is_err());
+        assert!(asked("../x").is_err());
+    }
+
+    /// What a person said is found with who said it and when, for who really
+    /// sent it to be looked up
+    #[test]
+    fn a_hit_in_something_said_says_who_said_it() {
+        let root = tmp("said");
+        let line = r#"{"type":"user","timestamp":"2026-09-29T01:02:03.000Z","cwd":"D:/w","message":{"role":"user","content":"please look at the marmot table"}}"#;
+        std::fs::write(root.join("proj").join("c1.jsonl"), line).unwrap();
+        let found = search_in(&[source(&root)], "marmot", 10, &|| false);
+        let said = found.hits[0].said.as_ref().expect("who said it");
+        assert_eq!(said.who, crate::reader::Who::You);
+        assert!(said.head.starts_with("please look at the marmot"));
     }
 
     /// A folder gone from the disk is said to be gone

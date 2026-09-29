@@ -231,9 +231,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // for a tab it could have asked for by hand -- the same reach as adding
         // a tab, which the person does from their own device all the time
         Ev::VaultSearch { .. } | Ev::VaultOpen { .. } => true,
-        // Reading one of those conversations is a read, of the same records
-        // the search already reads
-        Ev::VaultRead { .. } => true,
+        // Asking where one of those conversations was had is a read of the
+        // same records the search already reads
+        Ev::VaultWhere { .. } => true,
         // The column's conversation panel: reading what was said in a tab, the
         // same records; and a pin or a note, which is the person's own
         // writing about their own conversation

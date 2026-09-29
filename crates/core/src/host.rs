@@ -65,8 +65,8 @@ pub trait Shell {
     fn push_convo(&self, json: &str);
     fn push_issues(&self, json: &str);
     fn push_ideas(&self, json: &str);
-    /// A past conversation read for the Vault, or one stretch of its work
-    fn push_vault_read(&self, json: &str);
+    /// Where a past conversation was had, for picking it back up
+    fn push_vault_where(&self, json: &str);
     fn push_sftp(&self, json: &str);
     fn push_recorded(&self, line_json: &str);
     /// A line about the run being driven from words, for the strip under
@@ -278,7 +278,7 @@ impl Shell for Headless {
     fn push_convo(&self, json: &str) { let _ = json; }
     fn push_issues(&self, json: &str) { let _ = json; }
     fn push_ideas(&self, json: &str) { let _ = json; }
-    fn push_vault_read(&self, json: &str) { let _ = json; }
+    fn push_vault_where(&self, json: &str) { let _ = json; }
     fn push_sftp(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str) { let _ = line_json; }
     fn push_words_note(&self, json: &str) { let _ = json; }

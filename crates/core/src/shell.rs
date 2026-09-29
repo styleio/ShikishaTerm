@@ -175,10 +175,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); font-family:var(--mono); font-size:12px; }
   :is(#filepanel, #convopanel) .fsearch input:focus { outline:none; border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
-  #filepanel .fmode { flex:0 0 auto; display:flex; gap:var(--s1); }
-  #filepanel .fmode button { padding:5px 12px; font-size:12.5px; border-radius:var(--r-chip);
+  #filepanel .fmode, #convoMode { flex:0 0 auto; display:flex; gap:var(--s1); }
+  #convoMode { padding:var(--s2); border-bottom:1px solid var(--line); }
+  :is(#filepanel .fmode, #convoMode) button { padding:5px 12px; font-size:12.5px; border-radius:var(--r-chip);
     border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
-  #filepanel .fmode button.on { color:var(--text); border-color:var(--brand);
+  :is(#filepanel .fmode, #convoMode) button.on { color:var(--text); border-color:var(--brand);
     background:color-mix(in srgb, var(--brand) 14%, transparent); }
   #filepanel .flist { flex:1 1 auto; overflow:auto; padding:var(--s1) 0; }
   /* No gap: the folder and the name are one path, and a space between them
@@ -212,6 +213,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     overflow:hidden; font-size:13px; }
   #convopanel .cshow { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:var(--s2) var(--s5);
     padding:var(--s2); border-bottom:1px solid var(--line); }
+  /* Put away while every conversation is listed: they choose rows of one */
+  #convopanel .cshow[hidden] { display:none; }
   #convopanel .cshow label { display:flex; align-items:center; gap:var(--s2); font-size:14px;
     color:var(--text); cursor:pointer; white-space:nowrap; }
   #convopanel .cshow input { width:15px; height:15px; margin:0; accent-color:var(--brand); cursor:pointer; }
@@ -2835,16 +2838,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #guidewrap.beside { height:42vh; }
   #cfgwrap.beside { bottom:42vh; padding:0; background:none; }
   #cfgwrap.beside .cfgbox { width:100%; height:100%; border:0; border-radius:0; }
-  #vault, #past, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
+  #past, #palette, #branch, #browse, #repair, #sask, #sdiff { position:fixed; inset:0; background:#00000099; display:flex;
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
-  #vault[hidden], #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
+  #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
   #repair[hidden], #sask[hidden], #sdiff[hidden] { display:none; }
-  #vault .vbox, #past .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
+  #past .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
   #repair .vbox, #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
     max-height:82vh; display:flex; flex-direction:column; gap:var(--s3); }
   #branch .vbox { gap:var(--s5); }
-  #vault .vhead, #past .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
+  #past .vhead, #palette .vhead, #branch .vhead, #browse .vhead,
   #repair .vhead, #sask .vhead, #sdiff .vhead { display:flex; align-items:center; }
   /* The title is one thing and what is under it is another */
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
@@ -2978,18 +2981,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .quiet:hover { color:var(--text); }
   #sask .go.stop { border-color:var(--stop); background:transparent; color:var(--stop); }
   #browse .brow { padding-top:var(--s3); border-top:1px solid var(--line); }
-  #vault .vtitle, #past .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
+  #past .vtitle, #palette .vtitle, #branch .vtitle, #browse .vtitle,
   #repair .vtitle, #sask .vtitle, #sdiff .vtitle { color:var(--text);
     font-size:13.5px; font-weight:600; text-transform:uppercase; flex:1; }
-  #vault .vclose, #past .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
+  #past .vclose, #palette .vclose, #branch .vclose, #browse .vclose,
   #repair .vclose, #sask .vclose, #sdiff .vclose { cursor:pointer;
     color:var(--dim); font-size:16px; padding:2px 6px; }
-  #vault .vclose:hover, #past .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
+  #past .vclose:hover, #palette .vclose:hover, #branch .vclose:hover,
   #browse .vclose:hover, #repair .vclose:hover, #sask .vclose:hover,
   #sdiff .vclose:hover { color:var(--text); }
-  #vault #vq, #palette #pq { font:inherit; font-size:14px; background:var(--bg);
+  #palette #pq { font:inherit; font-size:14px; background:var(--bg);
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); padding:9px 12px; outline:none; }
-  #vault #vq:focus, #palette #pq:focus { border-color:var(--brand); }
+  #palette #pq:focus { border-color:var(--brand); }
   /* Section 5.1: 36px tall, 13px, the edge colour that means "you can type
      here" rather than the one that means "structure", and a ring as well as a
      border -- a border that only thickens moves the box every time focus lands */
@@ -3411,97 +3414,70 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder .drift .ahd { color:var(--dim); }
   /* The + keeps its place at the very end */
   .tab.folder .drift + .more { margin-left:6px; }
-  #vault .vhint, #past .vhint { color:var(--dim); font-size:11.5px; }
-  #vault .vlist, #past .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); }
-  #vault .vrow, #past .vrow, #palette .prow { padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; border:1px solid transparent; }
+  #convopanel .vhint, #past .vhint { color:var(--dim); font-size:11.5px; }
+  #past .vlist, #palette .vlist { overflow:auto; display:flex; flex-direction:column; gap:var(--s1); }
+  #convopanel .vrow, #past .vrow, #palette .prow { padding:9px 10px; border-radius:var(--r-ctl); cursor:pointer; border:1px solid transparent; }
   #palette .prow { display:flex; gap:var(--s3); align-items:baseline; }
   #palette .prow.sel { background:var(--raise); border-color:var(--brand); }
   #palette .pgrp { flex:none; font-size:10px; color:var(--brand); text-transform:uppercase;
     width:64px; letter-spacing:.5px; }
   #palette .plabel { color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrow:hover, #past .vrow:hover { background:var(--raise); border-color:var(--line); }
-  #vault .vrow .vr1, #past .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
-  #vault .vrow .vprog, #past .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
-  #vault .vrow .vname, #past .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
+  #convopanel .vrow:hover, #past .vrow:hover { background:var(--raise); border-color:var(--line); }
+  #convopanel .vrow .vr1, #past .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
+  #convopanel .vrow .vprog, #past .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
+  #convopanel .vrow .vname, #past .vrow .vname { color:var(--text); font-size:13px; overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrow .vwhen, #past .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
-  #vault .vrow .vsnip, #past .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
+  #convopanel .vrow .vwhen, #past .vrow .vwhen { color:var(--dim); font-size:11px; margin-left:auto; flex:none; }
+  #convopanel .vrow .vsnip, #past .vrow .vsnip { color:var(--dim); font-size:11.5px; margin-top:2px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  /* One conversation found, read whole: the same box grown to a page, the
-     search and its list put away (not emptied) until the way back is pressed,
-     so the list comes back as it was left */
-  #vault .vread { display:none; }
-  #vault.reading .vbox { width:min(900px,100%); height:86vh; max-height:86vh; padding:0; gap:0; }
-  #vault.reading .vbox > .vhead, #vault.reading .vbox > #vq, #vault.reading .vbox > .vhint,
-  #vault.reading .vbox > .vlist { display:none; }
-  #vault.reading .vread { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; }
-  #vault .vrhead { flex:none; display:flex; align-items:center; gap:var(--s3);
-    padding:var(--s3) var(--s4); border-bottom:1px solid var(--line); }
-  /* Back is quiet, picking it up again an ordinary button: neither is the
-     one thing this page is for, which is reading (5, buttons) */
-  #vault .vrback, #vault .vrgo { flex:none; height:32px; padding:0 var(--s3); border-radius:var(--r-ctl);
+  /* Every conversation found, in the conversation panel's list: which tab's
+     conversation a row is, and who said the words it was found in */
+  #convopanel .vrow .vtab { flex:none; color:var(--dim); font-size:11px; }
+  #convopanel .vrow .vpin { flex:none; display:flex; color:var(--brand); }
+  #convopanel .vrow .vwho { color:var(--text); }
+  #convopanel .vhint { padding:0 0 var(--s1); }
+  #convopanel .vhint.bad { color:var(--warn); }
+  /* Over a conversation opened from that list: the way back to it, quiet, and
+     picking the conversation back up, an ordinary button (5, buttons) */
+  #convopanel #convoHead { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #convopanel #convoHead:empty { display:none; }
+  #convopanel #convoHead button { flex:none; height:32px; padding:0 var(--s3); border-radius:var(--r-ctl);
     font:inherit; font-size:12.5px; color:var(--text); cursor:pointer; white-space:nowrap; }
-  #vault .vrback { border:0; background:transparent; }
-  #vault .vrback:hover { background:var(--hover); }
-  #vault .vrgo { border:1px solid var(--edge); background:var(--panel2); }
-  #vault .vrgo:hover { border-color:var(--edge-hi); }
-  #vault .vrgo[hidden] { display:none; }
-  #vault .vrtitle { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
-  #vault .vrname { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrwhere { font-family:var(--mono); font-size:10px; color:var(--dim);
-    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #vault .vrbody { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
-    padding:var(--s4) var(--s5); font-size:14px; line-height:1.75; user-select:text; -webkit-user-select:text; }
-  /* Where the conversation begins and ends, so all of it is known to be here */
-  #vault .vredge { text-align:center; font-size:11px; color:var(--faint); margin:0 0 var(--s5); }
-  #vault .vredge.end { margin:var(--s2) 0 0; }
-  :is(#vault, #convopanel) .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
-  #vault .vhint.bad { color:var(--warn); }
-  :is(#vault, #convopanel) .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
+  #convopanel #convoHead .hback { border:0; background:transparent; }
+  #convopanel #convoHead .hback:hover { background:var(--hover); }
+  #convopanel #convoHead .hgo { margin-left:auto; border:1px solid var(--edge); background:var(--panel2); }
+  #convopanel #convoHead .hgo:hover { border-color:var(--edge-hi); }
+  #convopanel .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
+  #convopanel .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius:var(--r-ctl);
     padding:var(--s2) var(--s3); }
   /* A long thing said, folded to its first twelve lines */
-  :is(#vault, #convopanel) .vrtext.vfold { max-height:calc(var(--vlh) * 12); overflow:hidden;
+  #convopanel .vrtext.vfold { max-height:calc(var(--vlh) * 12); overflow:hidden;
     -webkit-mask-image:linear-gradient(to bottom, #000 75%, transparent);
     mask-image:linear-gradient(to bottom, #000 75%, transparent); }
-  :is(#vault, #convopanel) .vmore { display:block; border:0; background:transparent; padding:var(--s1) 0; font:inherit;
+  #convopanel .vmore { display:block; border:0; background:transparent; padding:var(--s1) 0; font:inherit;
     font-size:12px; color:var(--dim); cursor:pointer; }
-  :is(#vault, #convopanel) .vmore:hover { color:var(--text); }
-  :is(#vault, #convopanel) .vmore.code { font-family:var(--mono); margin:0 0 var(--s4); }
+  #convopanel .vmore:hover { color:var(--text); }
+  #convopanel .vmore.code { font-family:var(--mono); margin:0 0 var(--s4); }
   /* The work between a question and its answer: one quiet line until opened */
-  #vault .vwork { margin:0 0 var(--s6); }
-  :is(#vault, #convopanel) .vwbody { border-left:2px solid var(--line); padding-left:var(--s3); margin-top:var(--s2); }
-  :is(#vault, #convopanel) .vwbody[hidden] { display:none; }
-  :is(#vault, #convopanel) .vpiece { margin:0 0 var(--s3); }
-  :is(#vault, #convopanel) .vpname { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:var(--s1); }
-  :is(#vault, #convopanel) .vpiece pre { margin:0; padding:var(--s2) var(--s3); background:var(--sunk); border:1px solid var(--line);
+  #convopanel .vwbody { border-left:2px solid var(--line); padding-left:var(--s3); margin-top:var(--s2); }
+  #convopanel .vwbody[hidden] { display:none; }
+  #convopanel .vpiece { margin:0 0 var(--s3); }
+  #convopanel .vpname { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:var(--s1); }
+  #convopanel .vpiece pre { margin:0; padding:var(--s2) var(--s3); background:var(--sunk); border:1px solid var(--line);
     border-radius:var(--r-ctl); font-family:var(--mono); font-size:12px; line-height:1.5;
     white-space:pre-wrap; overflow-wrap:anywhere; }
-  :is(#vault, #convopanel) .vpcut { font-size:11px; color:var(--faint); }
+  #convopanel .vpcut { font-size:11px; color:var(--faint); }
   /* What was searched for, where it was said: the face drawn toward the
-     brand, and the one being looked at ringed in it (2, faces; 5, attention) */
-  :is(#vault, #convopanel) mark.vmark { background:var(--tint); color:inherit; border-radius:var(--r-chip); padding:0 1px; }
-  :is(#vault, #convopanel) mark.vmark.cur { box-shadow:0 0 0 1px var(--brand); }
-  #vault .vrnav { flex:none; display:flex; align-items:center; justify-content:flex-end; gap:var(--s2);
-    padding:var(--s2) var(--s4); border-top:1px solid var(--line); }
-  #vault .vrnav[hidden] { display:none; }
-  #vault .vrnav button { width:32px; height:32px; border:1px solid var(--edge); background:var(--panel2);
-    border-radius:var(--r-ctl); color:var(--text); cursor:pointer; font:inherit; font-size:12px; }
-  #vault .vrnav button:hover { border-color:var(--edge-hi); }
-  #vault .vrcount { font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
+     brand (2, faces; 5, attention) */
+  #convopanel mark.vmark { background:var(--tint); color:inherit; border-radius:var(--r-chip); padding:0 1px; }
   /* Where a conversation can be picked back up instead: a folder's name, and
      its path to the right, the way the list of machines says its addresses */
   .fmenu .vwhere { display:flex; align-items:center; gap:var(--s2); min-width:240px; max-width:min(560px, calc(100vw - 16px)); }
   .fmenu .vwhere .nm { flex:none; }
   .fmenu .vwhere .at { margin-left:auto; padding-left:var(--s3); min-width:0; font-family:var(--mono); font-size:11px;
     color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  /* On a phone the page is the whole screen, as the other reader is */
-  @media (max-width:640px) {
-    #vault.reading { padding:0; }
-    #vault.reading .vbox { width:100%; height:100%; max-height:none; border-radius:0; border:0;
-      padding-top:env(safe-area-inset-top); }
-    #vault .vrbody { padding:var(--s4) var(--s4) calc(var(--s4) + env(safe-area-inset-bottom)); font-size:16px; }
-  }
   #veil .box { background:var(--panel); border:1px solid var(--brand);
     border-radius:var(--r-card); padding:20px 24px; max-width:min(760px,86vw);
     max-height:84vh; overflow:auto; }
@@ -3615,7 +3591,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     user-select:text; -webkit-user-select:text; }
   /* The one place in this app where text is NOT monospace: this is prose to be
      read, and a proportional face fits more of it on a phone's width */
-  #rbody, #rhead, #vault .vrbody, #convopanel .clist { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  #rbody, #rhead, #convopanel .clist { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
   .rturn { margin:0 0 var(--s6); }
   .rwho { font-size:11px; font-weight:700; letter-spacing:.09em; color:var(--dim);
     margin-bottom:6px; }
@@ -3938,32 +3914,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       </div>
       <div class="vhint"></div>
       <div class="vlist"></div>
-    </div>
-  </div>
-  <div id="vault" hidden>
-    <div class="vbox">
-      <div class="vhead">
-        <span class="vtitle"></span>
-        <span class="vclose" title="close">✕</span>
-      </div>
-      <input id="vq" type="text" autocomplete="off" spellcheck="false">
-      <div class="vhint"></div>
-      <div class="vlist"></div>
-      <!-- One of the conversations found, read whole in the same box: back to
-           the list at the left, picking it back up at the right -->
-      <div class="vread">
-        <div class="vrhead">
-          <button type="button" class="vrback"></button>
-          <div class="vrtitle"><span class="vrname"></span><span class="vrwhere"></span></div>
-          <button type="button" class="vrgo"></button>
-        </div>
-        <div class="vrbody"></div>
-        <div class="vrnav">
-          <button type="button" class="vrprev"></button>
-          <span class="vrcount"></span>
-          <button type="button" class="vrnext"></button>
-        </div>
-      </div>
     </div>
   </div>
   <!-- Another branch of a project already open. One thing to type; everything
@@ -11383,7 +11333,7 @@ window.__state = function (json) {
   if (S.board) drawBoard();
   drawThinking();
   drawVeil();
-  renderVault();
+  drawAllIfShown();
   renderPast();
   drawBranch();
   drawRepair();
@@ -13143,7 +13093,7 @@ function convoBuild(box) {
   const search = el("div", {class: "fsearch"});
   const q = el("input", {type: "text", autocomplete: "off", spellcheck: "false",
     placeholder: T["convo.find.ph"] || "Search this conversation"});
-  q.oninput = () => { CV.q = q.value.trim(); convoFindSoon(); };
+  q.oninput = () => { CV.q = q.value.trim(); if (cvAll) allFindSoon(); else convoFindSoon(); };
   search.append(q);
   // Where the choice between this conversation and every conversation stands
   const mode = el("div", {id: "convoMode"});
@@ -13180,6 +13130,9 @@ function drawConvo() {
   if (document.activeElement !== u.q && u.q.value !== CV.q) u.q.value = CV.q;
   for (const [id] of CONVO_KINDS) u.boxes[id].checked = !!CV.show[id];
   u.pins.checked = CV.pins;
+  drawMode(u);
+  drawHead();
+  if (cvAll) { drawAll(u); return; }
   const searching = !!(CV.q || CV.pins);
   const source = convoSource();
   const shown = source.filter(r => CV.show[convoKind(r)]);
@@ -13325,7 +13278,8 @@ function drawSide() {
   if (files) files.hidden = !wantFiles;
   // The conversation stands on the tab being looked at, not on its folder
   const convo = document.getElementById("convopanel");
-  const convoMissing = sidePanel === "convo" ? convoFollow() : "";
+  // Every conversation stands on nothing: it is there whatever is in front
+  const convoMissing = sidePanel === "convo" && !cvAll ? convoFollow() : "";
   if (convo) convo.hidden = sidePanel !== "convo" || !!convoMissing;
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
@@ -14757,7 +14711,7 @@ if (REMOTE) {
     if (d.sftp) window.__sftp(d.sftp);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
-    if (d.vaultread) window.__vaultRead(d.vaultread);
+    if (d.vaultwhere) window.__vaultWhere(d.vaultwhere);
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
@@ -15503,30 +15457,48 @@ function onIssuesTab() { return !!(S && S.tabs && S.tabs.some(t => t.index === S
 // Swap the whole palette without reloading. Everything the window draws with
 // is a variable, so a scheme change is one rule being replaced -- including the
 // terminal's own sixteen, which the cells name rather than carry.
-// The Vault overlay: search past conversations, reopen one as a resuming tab.
+// ── Every conversation ─────────────────────────────────
+// The conversation panel's other half: the search of every conversation --
+// this PC's, and every other machine a folder of a desk is on -- in the same
+// box, listed in the panel's own list. A row opens that conversation in the
+// panel, at the place it was found, with the words marked; the way back to
+// the list and the way to pick the conversation back up stand over it.
 //
-// Opening it asks for the recent ones (a blank search). Typing narrows, with a
-// short pause so a search does not fire on every letter. The results arrive in
-// the state (S.vault), so the same overlay works from the phone -- the window
-// runs the search and both sides read the answer
-let vaultTimer = 0;
+// The search runs in the app (S.vault holds what it found), so the phone's
+// panel is the window's panel
+let cvAll = false;       // the panel is listing every conversation found, not reading one
+let cvFromAll = false;   // the conversation being read was opened from that list
+let cvAllTimer = 0;
+let cvWhere = null;      // where that conversation was had (`vaultwhere`), for picking it back up
+let cvWhereReq = 0;
+// Every road that opened the search -- INDEX's menu, the palette, the key --
+// opens the panel on every conversation, the search box ready
 window.__openVault = function () {
-  const v = document.getElementById("vault");
-  if (!v) return;
-  endVaultRead();
-  v.hidden = false;
-  const q = document.getElementById("vq");
-  q.placeholder = T["vault.placeholder"] || "Search past conversations…";
-  q.value = "";
-  v.querySelector(".vtitle").textContent = T["vault.title"] || "PAST WORK";
-  renderVault();
-  send({kind:"vaultsearch", query:""});
-  setTimeout(() => q.focus(), 30);
+  sidePanel = "convo";
+  if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
+  sideStoodAside = false;
+  convoModeTo(true);
+  setTimeout(() => { if (cvUi) cvUi.q.focus(); }, 30);
 };
-function closeVault() {
-  const v = document.getElementById("vault");
-  if (v) v.hidden = true;
-  endVaultRead();
+// Searched as typed, with a short pause so a search does not run on every letter
+function allFindNow() {
+  clearTimeout(cvAllTimer);
+  send({kind:"vaultsearch", query: CV.q});
+}
+function allFindSoon() {
+  clearTimeout(cvAllTimer);
+  cvAllTimer = setTimeout(allFindNow, 180);
+}
+// This conversation, or every conversation. The words in the box carry across
+function convoModeTo(all) {
+  const was = cvAll;
+  cvAll = !!all;
+  if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; }
+  if (cvAll && !was) allFindNow();
+  if (!cvAll && was && (CV.q || CV.pins)) convoFindSoon();
+  CV.rev++;
+  drawSide();
+  drawConvo();
 }
 // What was said in one tab's folder before. Asked for as the list opens, so
 // what it holds is what is on the disk now rather than what was there when the
@@ -15592,233 +15564,72 @@ function ago(sec) {
   if (d < 86400*30) return Math.floor(d/86400) + "d";
   return Math.floor(d/(86400*30)) + "mo";
 }
-function renderVault() {
-  const v = document.getElementById("vault");
-  if (!v || v.hidden) return;
-  const list = v.querySelector(".vlist");
-  const hint = v.querySelector(".vhint");
+// One conversation found, as a row: which CLI, which tab's conversation, how
+// long ago; under it who said the words it was found in, and the words.
+// A line on a tab open right now goes to that tab instead
+function vaultRow(h, query) {
+  const live = h.tab !== undefined && h.tab !== null;
+  const row = el("div", {class:"vrow", onclick:() => openFound(h)});
+  row.append(el("div", {class:"vr1"},
+    el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),
+    el("span", {class:"vname"}, h.title),
+    h.thread ? el("span", {class:"vtab"}, convoTabName(h.thread)) : null,
+    h.pinned ? el("span", {class:"vpin", title:T["convo.pinned"] || ""}, pickIcon("pin")) : null,
+    el("span", {class:"vwhen"}, live ? (T["vault.here"] || "on screen") : ago(h.when))));
+  if (h.snippet) {
+    const who = live ? "" : h.noted ? (T["vault.noted"] || "")
+      : h.said ? convoSpeaker({who: h.said.who, from: h.from}) : "";
+    const snip = el("div", {class:"vsnip"}, who ? el("span", {class:"vwho"}, who + ": ") : null, h.snippet);
+    markWords(snip, query);
+    row.append(snip);
+  }
+  return row;
+}
+function openFound(h) {
+  if (h.tab !== undefined && h.tab !== null) { send({kind:"select", tab:h.tab}); return; }
+  cvAll = false;
+  cvFromAll = true;
+  cvWhere = null;
+  if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; }
+  window.__openConvo({program:h.program, id:h.id, host:h.host || "", at:h.at, query:CV.q});
+  cvWhereReq += 1;
+  send({kind:"vaultwhere", program:h.program, id:h.id, host:h.host || "", req:cvWhereReq});
+  drawHead();
+}
+// The list, and at its foot what is still being searched, what could not be,
+// and what there is to press
+function drawAll(u) {
   const vs = S && S.vault;
-  // A conversation is being read over the list: the list stays as it was
-  // left, and is drawn again on the way back
-  if (vaultReading) return;
-  list.textContent = "";
   const hits = (vs && vs.hits) || [];
-  // This PC's records still being read through, other machines still being
-  // searched, and the paused ones left out, with the press that searches them
-  // too (and starts them)
-  const far = [];
-  if (vs && vs.searching) far.push(el("div", {class:"vhint"}, T["vault.searching"] || "Searching…"));
-  if (vs && vs.asking) far.push(el("div", {class:"vhint"}, (T["vault.asking"] || "").replaceAll("{n}", vs.asking)));
+  const sig = JSON.stringify([vs ? vs.query : null, hits.map(h => [h.id, h.tab, h.pinned, !!h.from]),
+    vs && vs.searching, vs && vs.asking, vs && vs.sleeping, vs && vs.capped, vs && vs.failed, (S.tabs || []).length]);
+  if (u.list.dataset.all === sig) return;
+  u.list.dataset.all = sig;
+  // What this conversation's own list drew is drawn afresh when it comes back
+  delete u.list.dataset.rev;
+  u.list.textContent = "";
+  for (const h of hits) u.list.append(vaultRow(h, (vs && vs.query) || ""));
+  u.say.textContent = "";
+  u.say.style.color = "";
+  const line = (text, cls) => u.say.append(el("div", {class:"vhint" + (cls ? " " + cls : "")}, text));
+  if (vs && vs.searching) line(T["vault.searching"] || "Searching…");
+  if (vs && vs.asking) line((T["vault.asking"] || "").replaceAll("{n}", vs.asking));
+  if (vs && vs.failed && vs.failed.length) line((T["vault.failed"] || "{names}").replaceAll("{names}", vs.failed.join(", ")), "bad");
   if (vs && vs.sleeping) {
-    far.push(el("button", {class:"quiet", onclick:() => send({kind:"vaultsearch", query: vs.query || "", wake:true})},
+    u.say.append(el("button", {type:"button", class:"cshowall", onclick:() => send({kind:"vaultsearch", query:CV.q, wake:true})},
       (T["vault.wake"] || "").replaceAll("{n}", vs.sleeping)));
   }
-  // A machine that did not answer is not one that had nothing
-  if (vs && vs.failed && vs.failed.length) {
-    far.push(el("div", {class:"vhint bad"}, (T["vault.failed"] || "{names}").replaceAll("{names}", vs.failed.join(", "))));
-  }
-  if (!hits.length) {
-    // Nothing, said only once everything has answered -- and said as nothing
-    // among what was looked through when the search stopped before the end
-    hint.textContent = vs && (vs.asking || vs.searching) ? ""
-      : vs && vs.capped ? (T["vault.none.capped"] || "") : (T["vault.none"] || "Nothing found.");
-    for (const f of far) list.append(f);
-    return;
-  }
-  hint.textContent = vs.capped
-    ? (T["vault.more"] || "Showing the most recent matches — narrow the search for older ones.")
-    : "";
-  for (const f of far) list.append(f);
-  for (const h of hits) {
-    // A live hit is a line in an open tab: selecting it goes to that tab. A
-    // past hit is a record: selecting it opens the conversation to be read,
-    // and picking it back up is a press from there
-    const live = (h.tab !== undefined && h.tab !== null);
-    const row = el("div", {class:"vrow", onclick:() => {
-      if (live) { closeVault(); send({kind:"select", tab:h.tab}); }
-      else openVaultRead(h, vs.query || "");
-    }});
-    row.append(el("div", {class:"vr1"},
-      el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),
-      el("span", {class:"vname"}, h.title),
-      el("span", {class:"vwhen"}, live ? (T["vault.here"] || "on screen") : ago(h.when))));
-    if (h.snippet) {
-      const snip = el("div", {class:"vsnip"}, h.snippet);
-      markWords(snip, vs.query || "");
-      row.append(snip);
-    }
-    list.append(row);
-  }
+  if (!vs || vs.searching || vs.asking) return;
+  if (!hits.length) line(vs.capped ? (T["vault.none.capped"] || "") : (T["vault.none"] || "Nothing found."));
+  else if (vs.capped) line(T["vault.more"] || "");
 }
-
-// -- One conversation found, read whole ---------------------------------------
-//
-// Opened from the list in the same box, the list put away rather than thrown
-// out, so the way back finds it where it was left. All of the conversation is
-// drawn at once, from its first word -- only the words, which are small; the
-// work between them is one line each, opened when pressed. What was searched
-// for is marked and brought into view, and the arrows at the foot walk it.
-// Long things said, and long code, are folded to their start, unless they
-// hold what was searched for.
-let vaultReading = null;
-let vaultReq = 0;
+// Drawn again when what the search found changes, while the list is showing
+function drawAllIfShown() {
+  if (cvAll && sidePanel === "convo") drawConvo();
+}
 // How many lines of something said, and of a block of code, are shown before
 // the rest is folded away
 const VAULT_FOLD_LINES = 12, VAULT_FOLD_CODE = 15;
-
-function openVaultRead(h, query) {
-  const v = document.getElementById("vault");
-  if (!v) return;
-  const list = v.querySelector(".vlist");
-  vaultReq += 1;
-  vaultReading = {hit: h, query, req: vaultReq, answer: null, marks: [], at: -1, listTop: list.scrollTop};
-  v.classList.add("reading");
-  v.querySelector(".vrback").textContent = "← " + (T["vault.back"] || "Back");
-  v.querySelector(".vrname").textContent = h.title || h.program;
-  v.querySelector(".vrwhere").textContent = h.cwd || "";
-  const go = v.querySelector(".vrgo");
-  go.hidden = true;
-  const prev = v.querySelector(".vrprev"), next = v.querySelector(".vrnext");
-  prev.textContent = "↑"; next.textContent = "↓";
-  prev.title = T["vault.prev"] || "Previous match";
-  next.title = T["vault.next"] || "Next match";
-  prev.setAttribute("aria-label", prev.title);
-  next.setAttribute("aria-label", next.title);
-  v.querySelector(".vrnav").hidden = true;
-  const body = v.querySelector(".vrbody");
-  body.textContent = "";
-  body.append(el("div", {class:"vrnote"}, T["vault.loading"] || "Reading the conversation…"));
-  send({kind:"vaultread", program:h.program, id:h.id, host:h.host || "", query, req:vaultReading.req});
-  setTimeout(() => v.querySelector(".vrback").focus(), 0);
-}
-
-// Back to the list, where it was left
-function leaveVaultRead() {
-  const v = document.getElementById("vault");
-  if (!v || !vaultReading) return;
-  const top = vaultReading.listTop;
-  endVaultRead();
-  renderVault();
-  v.querySelector(".vlist").scrollTop = top;
-  setTimeout(() => document.getElementById("vq").focus(), 0);
-}
-function endVaultRead() {
-  const v = document.getElementById("vault");
-  vaultReading = null;
-  if (!v) return;
-  v.classList.remove("reading");
-  v.querySelector(".vrbody").textContent = "";
-}
-
-// The answer to a read: the whole conversation, or one stretch of its work.
-// An answer to an earlier read -- a conversation left before it came -- is
-// nobody's any more
-window.__vaultRead = function (d) {
-  const r = vaultReading;
-  if (!r || !d || d.req !== r.req) return;
-  const v = document.getElementById("vault");
-  if (d.from !== undefined && d.from !== null) {
-    const w = v.querySelector('.vwork[data-from="' + d.from + '"]');
-    if (w) fillWork(w, d.ok ? d.work : null, d.error);
-    return;
-  }
-  const body = v.querySelector(".vrbody");
-  body.textContent = "";
-  if (!d.ok) {
-    body.append(el("div", {class:"vrnote bad"}, d.error || ""));
-    return;
-  }
-  r.answer = d;
-  drawResume(d);
-  drawVaultRead(body, d, r.query);
-};
-
-function drawVaultRead(body, d, query) {
-  const items = d.items || [];
-  body.append(el("div", {class:"vredge"}, T["vault.start"] || "Start of the conversation"));
-  for (const it of items) {
-    if (it.k === "say") {
-      const box = rdTurn({who: it.who, text: it.text});
-      // Everything but the name, in one box, so it can be measured and folded
-      const text = el("div", {class:"vrtext"});
-      for (const n of [...box.childNodes]) if (!(n.classList && n.classList.contains("rwho"))) text.append(n);
-      box.append(text);
-      if (it.hit) { box.dataset.hit = "1"; markWords(text, query); }
-      body.append(box);
-    } else if (it.k === "work") {
-      const w = el("div", {class:"vwork", "data-from": String(it.from), "data-to": String(it.to)});
-      const toggle = el("button", {type:"button", class:"vmore"});
-      const inside = el("div", {class:"vwbody"});
-      inside.hidden = true;
-      w.append(toggle, inside);
-      const say = () => {
-        const n = it.calls || 0;
-        const label = n ? (T["vault.work"] || "Tool runs ({n})").replaceAll("{n}", n) : (T["vault.work.none"] || "Work");
-        toggle.textContent = (inside.hidden ? "▸ " : "▾ ") + label;
-      };
-      toggle.onclick = () => {
-        inside.hidden = !inside.hidden;
-        say();
-        if (!inside.hidden && !w.dataset.filled) {
-          inside.textContent = "";
-          inside.append(el("div", {class:"vrnote"}, T["vault.work.loading"] || "Loading…"));
-          const r = vaultReading;
-          send({kind:"vaultread", program:r.hit.program, id:r.hit.id, host:r.hit.host || "", query:r.query,
-                from:it.from, to:it.to, req:r.req});
-        }
-      };
-      if (it.work) { fillWork(w, it.work); inside.hidden = false; }
-      say();
-      body.append(w);
-    }
-  }
-  body.append(el("div", {class:"vredge end"}, T["vault.end"] || "End of the conversation"));
-  foldLong(body);
-  const marks = [...body.querySelectorAll("mark.vmark")];
-  vaultReading.marks = marks;
-  const nav = document.querySelector("#vault .vrnav");
-  nav.hidden = !marks.length;
-  if (marks.length) {
-    showMark(0);
-    return;
-  }
-  // What the reading found it in is what decides, not what the page managed
-  // to mark: a word marking cannot find in the text drawn (its lowercase is
-  // another length) still holds, and the place is brought into view
-  const found = items.findIndex(it => it.hit);
-  if (found >= 0) {
-    const at = body.querySelectorAll(".rturn, .vwork")[found];
-    if (at) at.scrollIntoView({block:"center"});
-    return;
-  }
-  // Looked for, and found in nothing said and nothing run. Said, rather than
-  // showing a page with nothing marked on it and leaving the person to wonder
-  if (query.trim()) body.prepend(el("div", {class:"vrnote"}, T["vault.nohit"] || ""));
-  // Nothing looked for: the conversation opens where it ended, the way the
-  // other reader does -- the last thing said is what a list of recent ones
-  // is opened for
-  else body.scrollTop = body.scrollHeight;
-}
-
-// A stretch of work, opened: what the AI said on the way, each tool it
-// reached for, and what came back
-function fillWork(w, work, error) {
-  const inside = w.querySelector(".vwbody");
-  inside.textContent = "";
-  if (!work) {
-    inside.append(el("div", {class:"vrnote bad"}, error || ""));
-    return;
-  }
-  w.dataset.filled = "1";
-  workPieces(inside, work, vaultReading ? vaultReading.query : "");
-  // Opened by a press after the page was drawn: its marks join the walk
-  if (vaultReading && vaultReading.answer) {
-    const all = [...document.querySelectorAll("#vault .vrbody mark.vmark")];
-    vaultReading.marks = all;
-    document.querySelector("#vault .vrnav").hidden = !all.length;
-    countMarks();
-  }
-}
 
 // The pieces of a stretch of work, into `inside`: what the AI said on the way,
 // each tool it reached for and what came back, cut to what is shown, with
@@ -15911,45 +15722,61 @@ function foldLong(body) {
   });
 }
 
-// Bring the `i`th mark into view, and ring it
-function showMark(i) {
-  const r = vaultReading;
-  if (!r || !r.marks.length) return;
-  const n = r.marks.length;
-  if (r.at >= 0 && r.marks[r.at]) r.marks[r.at].classList.remove("cur");
-  r.at = ((i % n) + n) % n;
-  const m = r.marks[r.at];
-  m.classList.add("cur");
-  m.scrollIntoView({block:"center"});
-  countMarks();
+// The two halves of the panel, as the file list's two-way switch; the search
+// box asks for what the half on is about
+function drawMode(u) {
+  const box = document.getElementById("convoMode");
+  const show = document.querySelector("#convopanel .cshow");
+  if (show) show.hidden = cvAll;
+  u.q.placeholder = cvAll ? (T["vault.placeholder"] || "") : (T["convo.find.ph"] || "");
+  if (!box || box.dataset.on === String(cvAll)) return;
+  box.dataset.on = String(cvAll);
+  box.textContent = "";
+  box.append(
+    el("button", {type:"button", class: cvAll ? "" : "on", onclick:() => convoModeTo(false)}, T["convo.mode.this"] || "This conversation"),
+    el("button", {type:"button", class: cvAll ? "on" : "", onclick:() => convoModeTo(true)}, T["convo.mode.all"] || "Every conversation"));
 }
-function countMarks() {
-  const r = vaultReading;
-  const c = document.querySelector("#vault .vrcount");
-  if (!r || !c) return;
-  c.textContent = (T["vault.hits"] || "{i} / {n}").replaceAll("{i}", r.at + 1).replaceAll("{n}", r.marks.length);
-}
-
-// Picking it back up. Where the conversation was had is still there: one
-// press reopens it there. Gone -- a worktree removed since -- and the press
-// lists where it can go instead, each said by name and path: its branch
-// made into a folder again, or one of this desk's folders
-function drawResume(d) {
-  const r = vaultReading;
-  const go = document.querySelector("#vault .vrgo");
-  const h = r.hit;
-  const gone = d.exists === false;
-  go.hidden = false;
-  go.textContent = (T["vault.resume"] || "Resume") + (gone ? " ▾" : "");
+// Over a conversation opened from the list: the way back to it, and the way to
+// pick the conversation back up where it was had -- or, the folder gone, the
+// places it can go instead
+function drawHead() {
+  const head = document.getElementById("convoHead");
+  if (!head) return;
+  const past = CV.past;
+  if (!past) cvFromAll = false;
+  const here = cvWhere && past && cvWhere.id === past.id ? cvWhere : null;
+  const key = JSON.stringify([past, cvFromAll, cvAll, here && [here.exists, here.folder, (here.homes || []).length]]);
+  if (head.dataset.key === key) return;
+  head.dataset.key = key;
+  head.textContent = "";
+  if (!past || cvAll) return;
+  if (cvFromAll) {
+    head.append(el("button", {type:"button", class:"hback", onclick:() => convoModeTo(true)},
+      "← " + (T["vault.back.list"] || "Every conversation")));
+  }
+  if (!here || !here.ok) return;
+  const gone = here.exists === false;
+  const go = el("button", {type:"button", class:"hgo"}, (T["vault.resume"] || "Resume") + (gone ? " ▾" : ""));
   go.onclick = () => {
     if (!gone) {
-      closeVault();
-      send({kind:"vaultopen", program:h.program, id:h.id, cwd:d.folder || h.cwd || "", title:h.title, host:h.host || ""});
+      send({kind:"vaultopen", program:past.program, id:past.id, cwd:here.folder || "", title:tabTitleOf(past, here), host:past.host || ""});
       return;
     }
-    openList(go, resumeRows(d, h), true);
+    openList(go, resumeRows(here, past), true);
   };
+  head.append(go);
 }
+// What a conversation is called as a tab: the folder it was had in
+function tabTitleOf(past, here) {
+  const f = String((here && here.folder) || "").replace(/[\\/]+$/, "");
+  const name = f.split(/[\\/]/).pop() || past.program;
+  return past.host ? past.host + ": " + name : name;
+}
+window.__vaultWhere = function (d) {
+  if (!d || d.req !== cvWhereReq) return;
+  cvWhere = d;
+  drawHead();
+};
 function resumeRows(d, h) {
   const rows = [el("div", {class:"fabout"},
     el("span", {class:"ttl"}, T["vault.gone"] || "The folder this conversation was had in is gone"),
@@ -15959,7 +15786,6 @@ function resumeRows(d, h) {
     const say = home.local ? (T["vault.remake"] || "") : (T["vault.remake.remote"] || "");
     rows.push(el("div", {onclick:() => {
       closeFolderMenu();
-      closeVault();
       openBranch({folder: home.dir}, {name: d.branch, base: home.local ? "" : "origin/" + d.branch});
     }}, say.replaceAll("{branch}", d.branch || "").replaceAll("{project}", name(home.dir))));
   }
@@ -15970,8 +15796,7 @@ function resumeRows(d, h) {
   for (const g of here) {
     rows.push(el("div", {class:"vwhere", onclick:() => {
       closeFolderMenu();
-      closeVault();
-      send({kind:"vaultopen", program:h.program, id:h.id, cwd:g.folder, title:h.title, host:h.host || ""});
+      send({kind:"vaultopen", program:h.program, id:h.id, cwd:g.folder, title:tabTitleOf(h, d), host:h.host || ""});
     }}, el("span", {class:"nm"}, g.name || g.folder), el("span", {class:"at"}, g.folder)));
   }
   if (!here.length && !(d.homes || []).length) rows.push(el("div", {class:"fsay bad"}, T["vault.nowhere"] || ""));
@@ -15985,34 +15810,11 @@ function sameDir(a, b) {
 }
 // The input and the overlay's own keys, wired once
 (function () {
-  const q = document.getElementById("vq");
-  if (q) {
-    q.addEventListener("input", () => {
-      clearTimeout(vaultTimer);
-      const query = q.value;
-      vaultTimer = setTimeout(() => send({kind:"vaultsearch", query}), 180);
-    });
-  }
   const pv = document.getElementById("past");
   if (pv) {
     pv.querySelector(".vclose").addEventListener("click", closePast);
     pv.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closePast(); } });
     pv.addEventListener("mousedown", (e) => { if (e.target === pv) closePast(); });
-  }
-  const v = document.getElementById("vault");
-  if (v) {
-    v.querySelector(".vclose").addEventListener("click", closeVault);
-    v.querySelector(".vrback").addEventListener("click", leaveVaultRead);
-    v.querySelector(".vrprev").addEventListener("click", () => showMark(vaultReading ? vaultReading.at - 1 : 0));
-    v.querySelector(".vrnext").addEventListener("click", () => showMark(vaultReading ? vaultReading.at + 1 : 0));
-    // Esc steps back one place: out of a conversation to the list, then out
-    v.addEventListener("keydown", (e) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      if (vaultReading) leaveVaultRead(); else closeVault();
-    });
-    // A click on the dark surround (not the box) closes it
-    v.addEventListener("mousedown", (e) => { if (e.target === v) closeVault(); });
   }
 })();
 // The command palette: find and run anything by typing. One list over the

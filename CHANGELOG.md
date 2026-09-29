@@ -17,14 +17,15 @@ once it reaches its first tagged release.
   every conversation the tab had, tool output included. Lines can be pinned and
   given a note. What only the app saw is kept in `data/conversations.db` without
   any of the words; pins and notes in `config/conversation-marks.json`.
-- **Find opens a past conversation to read before anything is reopened.** A
-  result opens the whole conversation in the same box, first word to last, with
-  the words looked for marked and brought into view (the arrows at the foot walk
-  them), long answers and long code folded, and the tools the AI ran between a
-  question and its answer one line that opens when pressed. Back returns to the
-  same list. Resume reopens it where it was had; when that worktree was removed,
-  it offers the branch made into a worktree again or one of the desk's folders,
-  and writes nothing into the settings until one is chosen.
+- **The conversation panel searches every conversation, too.** One search box:
+  under it, "This conversation" narrows the one being read, and "Every
+  conversation" lists what the search of every machine found -- which tab's
+  conversation each is, who said the words (you from the phone, another tab, a
+  job), a pin, a note that holds the words. A row opens that conversation in the
+  panel at the place it was found. Resume over it reopens it where it was had;
+  when that worktree was removed, it offers the branch made into a worktree
+  again or one of the desk's folders, and writes nothing into the settings
+  until one is chosen. Find (INDEX, the palette) opens the panel this way.
 - **`shikisha.tab_conversation` reads another tab's conversation the way the
   phone's reader does**: from the CLI's own record, on this PC or on the server
   or MicroVM the tab runs on, so a long answer comes back whole. Through the

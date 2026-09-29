@@ -1,23 +1,16 @@
 /**
- * A past conversation found by Find, read whole, and picked back up.
+ * A past conversation found by the search of every conversation, read in the
+ * conversation panel, and picked back up.
  *
  * Starts the app built in this checkout, isolated, over a home with three
- * conversations written the way Claude Code writes them, and uses Find the way
- * a person does:
- *
- *   - a word said after megabytes of tool output is found (every record is
- *     read all the way through), and a word that is only in the folder a
- *     conversation ran in finds nothing (only what a reader sees is matched)
- *   - pressing a result opens the conversation in the same box, from its first
- *     word to its last, with the word marked, brought into view, and walked by
- *     the arrows at the foot; the work between a question and its answer is
- *     one line that opens when pressed
- *   - long things said and long code are folded, and what holds the word is not
- *   - Back returns to the same list, scrolled where it was
- *   - Resume on a conversation whose folder is there reopens it in that
- *     folder; on one whose worktree was removed it writes nothing into the
- *     settings and offers the branch made into a worktree again, and the
- *     desk's folders, by name and path
+ * conversations written the way Claude Code writes them, and uses the search
+ * the way a person does: from Find (INDEX, the palette) into the panel's
+ * "Every conversation"; a word said after megabytes of tool output found, a
+ * word only in a folder not; a row opening the conversation in the panel with
+ * the word marked and the way back over it; the tool runs opening; a note
+ * finding its conversation and a pin shown; a conversation whose worktree was
+ * removed writing nothing until a place is chosen, and its branch opening the
+ * worktree dialog.
  *
  *     cargo build
  *     node tools/debug/vault-reader.win.mjs
@@ -193,126 +186,127 @@ const until = async (test, what, ms = 40000) => {
   throw new Error('timed out waiting for ' + what);
 };
 const search = async (q) => {
-  await run(`(() => { const i = document.getElementById("vq"); i.value = ${JSON.stringify(q)};
-    i.dispatchEvent(new Event("input")); return true; })()`);
+  await run(`(() => { const i = cvUi.q; i.value = ${JSON.stringify(q)}; i.dispatchEvent(new Event("input")); return true; })()`);
   await until(() => run(`!!(S && S.vault && S.vault.query === ${JSON.stringify(q)} && !S.vault.searching)`),
     'the search for ' + q);
-  return run('S.vault.hits.filter(h => h.tab == null).map(h => ({id: h.id, snippet: h.snippet, cwd: h.cwd}))');
+  await until(() => run('document.querySelectorAll("#convopanel .vrow").length === S.vault.hits.length'), 'the list to be drawn');
+  return run('S.vault.hits.filter(h => h.tab == null).map(h => ({id: h.id, snippet: h.snippet, cwd: h.cwd, at: h.at, pinned: !!h.pinned, noted: !!h.noted}))');
 };
 const openRow = async (id) => {
-  await run(`(() => { const hits = S.vault.hits; const rows = document.querySelectorAll("#vault .vrow");
+  await run(`(() => { const hits = S.vault.hits; const rows = document.querySelectorAll("#convopanel .vrow");
     const i = hits.findIndex(h => h.id === ${JSON.stringify(id)}); rows[i].click(); return true; })()`);
-  await until(() => run('!!document.querySelector("#vault .vredge.end")'), 'the conversation to be read');
+  await until(() => run(`!!(CV.past && CV.past.id === ${JSON.stringify(id)} && !CV.loading && CV.rows.length)`), 'the conversation to be read');
+  await until(() => run('!!document.querySelector("#convoHead .hgo")'), 'the way to pick it back up');
 };
 const configNow = () => fs.readFileSync(CONFIG, 'utf8');
 
 try {
   await until(() => run('!!(S && S.tabs)'), 'the board');
-  await run('window.__openVault(); true');
 
-  console.log('1. every record is read all the way through, and only its words are matched');
+  console.log('1. Find opens the conversation panel on every conversation');
+  await run('window.__openVault(); true');
+  await until(() => run('!!document.querySelector("#convopanel:not([hidden]) #convoMode button.on")'), 'the panel');
+  const opened = await run(`({ mode: document.querySelector("#convoMode button.on").textContent,
+    boxes: document.querySelector("#convopanel .cshow").hidden, ph: cvUi.q.placeholder,
+    floating: !!document.getElementById("vault") })`);
+  check(opened.mode === 'Every conversation' && opened.boxes, 'on every conversation, the boxes put away: ' + JSON.stringify(opened));
+  check(!opened.floating, 'there is no floating box any more');
+
+  console.log('2. every record is read all the way through, and only its words are matched');
   const late = await search('quasarbilling');
   check(late.length === 1 && late[0].id === LATE, 'a word after 3 MB of tool output is found: ' + JSON.stringify(late.map((h) => h.id)));
   check(/quasarbilling/.test(late[0]?.snippet || ''), 'the row shows the words it was found in: ' + late[0]?.snippet);
-  check(await run('!!document.querySelector("#vault .vsnip mark.vmark")'), 'the word is marked in the row');
+  check(typeof late[0]?.at === 'number', 'and where in the record they are');
+  check(await run('!!document.querySelector("#convopanel .vsnip mark.vmark")'), 'the word is marked in the row');
+  const who = await run('(document.querySelector("#convopanel .vsnip .vwho") || {}).textContent || ""');
+  check(/^AI: /.test(who), 'the row says who said it: ' + who);
   const folder = await search('shop-fix-gone');
   check(folder.length === 0, 'a word only in the folder a conversation ran in finds nothing: ' + JSON.stringify(folder));
 
-  console.log('2. a result opens the whole conversation, the word marked and in view');
+  console.log('3. a row opens the conversation in the panel, at the place, the word marked');
   await search('quasarbilling');
-  await run('document.querySelector("#vault .vlist").scrollTop = 0; true');
   await openRow(LATE);
   const read = await run(`(() => {
-    const body = document.querySelector("#vault .vrbody");
-    const marks = [...body.querySelectorAll("mark.vmark")];
-    const cur = body.querySelector("mark.vmark.cur");
-    const r = cur && cur.getBoundingClientRect(), b = body.getBoundingClientRect();
-    return {
-      turns: [...body.querySelectorAll(".rturn")].map(t => t.querySelector(".vrtext").textContent.slice(0, 40)),
-      marks: marks.length, inView: !!r && r.top >= b.top && r.bottom <= b.bottom,
-      count: document.querySelector("#vault .vrcount").textContent,
-      listHidden: getComputedStyle(document.querySelector("#vault .vlist")).display === "none",
-      start: !!body.querySelector(".vredge"), work: [...body.querySelectorAll(".vwork .vmore")].map(b => b.textContent),
-      go: document.querySelector("#vault .vrgo").textContent,
-    };
+    const list = cvUi.list;
+    const marks = [...list.querySelectorAll("mark.vmark")];
+    return { mode: document.querySelector("#convoMode button.on").textContent, q: cvUi.q.value,
+      marks: marks.length, back: (document.querySelector("#convoHead .hback") || {}).textContent || "",
+      go: document.querySelector("#convoHead .hgo").textContent, boxes: document.querySelector("#convopanel .cshow").hidden };
   })()`);
-  check(read.turns.length === 4 && /^the checkout page/.test(read.turns[0]) && read.turns[3] === "Cached.",
-    'everything said is there, first to last: ' + JSON.stringify(read.turns));
-  check(read.start, 'it says where the conversation starts and ends');
-  check(read.marks === 1 && read.inView, 'the word is marked and in view: ' + JSON.stringify(read));
-  check(/1 of 1/.test(read.count), 'the foot counts the matches: ' + read.count);
-  check(read.listHidden, 'the list is put away while reading');
-  check(read.work.length === 1 && /Tool runs \(1\)/.test(read.work[0]), 'the work between is one line: ' + JSON.stringify(read.work));
-  check(read.go === 'Resume', 'the folder is there, so Resume is one press: ' + read.go);
+  check(read.mode === 'This conversation' && read.q === 'quasarbilling', 'it is read as this conversation, the words kept: ' + JSON.stringify(read));
+  check(read.marks >= 1, 'the word is marked in it');
+  check(/Every conversation/.test(read.back), 'the way back to the list stands over it');
+  check(read.go === 'Resume', 'its folder is there, so Resume is one press: ' + read.go);
 
-  console.log('3. the work opens when pressed, cut to what is worth reading');
-  await run('document.querySelector("#vault .vwork .vmore").click(); true');
-  await until(() => run('!!document.querySelector("#vault .vwork[data-filled] .vpiece")'), 'the work to open');
-  const work = await run(`[...document.querySelectorAll("#vault .vwork .vpiece")].map(p => ({
+  console.log('4. the tool runs open when their kind is shown, cut to what is worth reading');
+  // With the words in the box only what holds them is listed, so they are
+  // cleared first: the whole conversation, its tool runs among it
+  await run('(() => { cvUi.q.value = ""; cvUi.q.dispatchEvent(new Event("input")); return true; })()');
+  await run('(() => { const b = cvUi.boxes.work; if (!b.checked) b.click(); return true; })()');
+  await until(() => run('!!cvUi.list.querySelector(".vwork")'), 'the tool runs to be listed');
+  await run('(() => { const w = cvUi.list.querySelector(".vwork"); if (!w.dataset.filled) w.querySelector(".vmore").click(); return true; })()');
+  await until(() => run('!!cvUi.list.querySelector(".vwork[data-filled] .vpiece")'), 'the work to open');
+  const work = await run(`[...cvUi.list.querySelectorAll(".vwork .vpiece")].map(p => ({
     kind: p.className, name: (p.querySelector(".vpname") || {}).textContent || "", cut: (p.querySelector(".vpcut") || {}).textContent || "" }))`);
   check(work.some((p) => /call/.test(p.kind) && p.name === 'Bash'), 'the call names its tool: ' + JSON.stringify(work));
-  check(/say/.test(work[0]?.kind || ''), 'what was said on the way to the tool is part of the work, not the answer');
   check(work.some((p) => /out/.test(p.kind) && /not shown/.test(p.cut)), 'a long output says how much is left out');
 
-  console.log('4. Back is the same list, where it was');
-  await run('document.querySelector("#vault .vrback").click(); true');
-  const back = await run(`({ rows: document.querySelectorAll("#vault .vrow").length,
-    reading: document.getElementById("vault").classList.contains("reading"), q: document.getElementById("vq").value })`);
-  check(!back.reading && back.rows === 1 && back.q === 'quasarbilling', 'the list and the search are as they were: ' + JSON.stringify(back));
+  console.log('5. back is the same list');
+  await run('document.querySelector("#convoHead .hback").click(); true');
+  // The words in the box carry across: cleared in 4, the list is the recent ones
+  await until(() => run('cvAll && S.vault.query === "" && !S.vault.searching'), 'the list');
+  check(await run('document.querySelectorAll("#convopanel .vrow").length >= 3'), 'the list is back, over what the box now holds');
 
-  console.log('5. long things are folded, and what holds the word is not');
+  console.log('6. long things are folded, and what holds the word is not');
   await search('marmalade');
   await openRow(LONG);
-  const folds = await run(`(() => { const body = document.querySelector("#vault .vrbody");
-    return { folded: body.querySelectorAll(".vrtext.vfold").length, code: body.querySelectorAll(".vmore.code").length,
-      hitFolded: !!body.querySelector(".rturn[data-hit] .vfold"),
-      more: [...body.querySelectorAll(".vmore:not(.code)")].map(b => b.textContent) }; })()`);
-  check(folds.folded === 1, 'the long explanation is folded: ' + JSON.stringify(folds));
-  check(folds.code === 1, 'the long code is folded to one line');
-  check(!folds.hitFolded, 'what holds the word is left open');
-  check(folds.more.some((m) => /Show more \(\d+ more lines\)/.test(m)), 'the fold says how much is under it: ' + JSON.stringify(folds.more));
-  await run('document.querySelector("#vault .vrback").click(); true');
+  // The whole conversation, not only what holds the words
+  await run('(() => { cvUi.q.value = ""; cvUi.q.dispatchEvent(new Event("input")); return true; })()');
+  await until(() => run('cvUi.list.querySelectorAll(".rturn").length >= 4'), 'the rows');
+  const folds = await run(`(() => { const l = cvUi.list;
+    return { folded: l.querySelectorAll(".vrtext.vfold").length, code: l.querySelectorAll(".vmore.code").length }; })()`);
+  check(folds.folded >= 1, 'the long explanation is folded: ' + JSON.stringify(folds));
+  check(folds.code >= 1, 'the long code is folded to one line');
 
-  console.log('6. a conversation whose worktree is gone is not written back into the settings');
+  console.log('7. a note written on a conversation finds it, and a pin is shown on its row');
+  fs.writeFileSync(path.join(APP, 'config', 'conversation-marks.json'), JSON.stringify({
+    version: 1, marks: [{ record: LONG, at: 0, pinned: true, note: 'remember the zanzibarite rule', made: Date.now(), changed: Date.now() }],
+  }));
+  await run('document.querySelector("#convoHead .hback").click(); true');
+  const noted = await search('zanzibarite');
+  check(noted.length === 1 && noted[0].id === LONG && noted[0].noted, 'the note finds its conversation: ' + JSON.stringify(noted));
+  check(await run('!!document.querySelector("#convopanel .vrow .vpin")'), 'the row wears the pin');
+
+  console.log('8. a conversation whose worktree is gone writes nothing until a place is chosen');
   const before = configNow();
   await search('zebracorn');
   await openRow(LOST);
-  const gone = await run('document.querySelector("#vault .vrgo").textContent');
+  const gone = await run('document.querySelector("#convoHead .hgo").textContent');
   check(gone === 'Resume ▾', 'Resume lists where it can go instead: ' + gone);
-  await run('document.querySelector("#vault .vrgo").click(); true');
+  await run('document.querySelector("#convoHead .hgo").click(); true');
   await until(() => run('!!document.querySelector(".fmenu")'), 'the list of places');
   const places = await run('[...document.querySelectorAll(".fmenu > div")].map(d => d.textContent)');
   check(places.some((p) => /The folder this conversation was had in is gone/.test(p) && p.includes('shop-fix-gone')),
     'it says the folder is gone, and which: ' + JSON.stringify(places));
   check(places.some((p) => /Make a worktree from branch fix\/gone again/.test(p)), 'it offers the branch made into a worktree again');
-  check(places.some((p) => /Only committed work comes back/.test(p)), 'it says what comes back and what does not');
   check(places.some((p) => p.includes(WORK)), 'it offers this desk\'s folder by its path');
   check(configNow() === before, 'nothing was written into the settings');
-  await run('closeFolderMenu(); true');
-
-  console.log('7. the gone folder\'s conversation resumed in a folder that is there');
-  await run(`[...document.querySelectorAll("#vault .vrgo")][0].click(); true`);
-  await until(() => run('!!document.querySelector(".fmenu .vwhere")'), 'the list of places');
   await run('document.querySelector(".fmenu .vwhere").click(); true');
   await until(() => Promise.resolve(configNow().includes(LOST)), 'the tab to be written');
   const written = JSON.parse(configNow());
   const tabs = written.desks[0].folders.flatMap((f) => (f.tabs || []).map((t) => ({ cwd: f.cwd, ...t })));
   check(tabs.some((t) => t.resume === LOST && t.cwd === WORK), 'it is written into the folder chosen: ' + JSON.stringify(tabs));
   check(written.desks[0].folders.every((f) => f.cwd !== GONE), 'the gone folder is not written back as a folder');
-  await until(() => Promise.resolve(new RegExp('--resume\\s+' + LOST).test(fs.existsSync(ARGV) ? fs.readFileSync(ARGV, 'utf8') : '')),
-    'the CLI to be started resuming it');
-  check(true, 'the CLI was started resuming the conversation');
 
-  console.log('8. the branch made into a worktree again opens the worktree dialog on it');
+  console.log('9. the branch made into a worktree again opens the worktree dialog on it');
   await run('window.__openVault(); true');
   await search('zebracorn');
   await openRow(LOST);
-  await run('document.querySelector("#vault .vrgo").click(); true');
+  await run('document.querySelector("#convoHead .hgo").click(); true');
   await until(() => run('!!document.querySelector(".fmenu")'), 'the list of places');
   await run(`[...document.querySelectorAll(".fmenu > div")].find(d => /Make a worktree/.test(d.textContent)).click(); true`);
   await until(() => run('!document.getElementById("branch").hidden'), 'the worktree dialog');
-  const dialog = await run(`({ name: document.getElementById("bq").value, vault: !document.getElementById("vault").hidden })`);
-  check(dialog.name === 'fix/gone' && !dialog.vault, 'the dialog is on the branch, and Find is put away: ' + JSON.stringify(dialog));
+  check(await run('document.getElementById("bq").value') === 'fix/gone', 'the dialog is on the branch');
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);

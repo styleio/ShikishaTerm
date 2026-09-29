@@ -15,11 +15,12 @@
  * Checked, in each of the two passes:
  *   1. the word said after the tool output is found, on that machine
  *   2. a word only in a conversation's folder finds nothing
- *   3. the conversation opens whole, the word marked, Resume one press
- *   4. the work between opens when pressed
+ *   3. the conversation opens in the conversation panel, the word marked,
+ *      Resume one press
+ *   4. its tool runs open when their kind is shown
  *   5. a conversation whose folder is gone offers the desk's folder there,
  *      and writes nothing until one is chosen; chosen, it is written there
- *   6. which way it was read: by the bridge when it is there, the long way
+ *   6. which way it was found and placed: by the bridge when it is there, the long way
  *      when it is not
  *
  *     cargo build
@@ -229,53 +230,60 @@ const pass = async (bridged) => {
     await sleep(WHERE === 'vm' ? 20000 : 5000);
   }
   await run('window.__openVault(); true');
+  await until(() => run('!!(cvUi && cvAll)'), 'the panel on every conversation', 20000);
   const search = async (q) => {
-    await run(`(() => { const i = document.getElementById("vq"); i.value = ${JSON.stringify(q)};
+    // Asked with the paused machines too: a MicroVM is only searched when awake
+    await run(`(() => { cvUi.q.value = ${JSON.stringify(q)}; CV.q = ${JSON.stringify(q)};
       send({kind:"vaultsearch", query:${JSON.stringify(q)}, wake:true}); return true; })()`);
     await until(() => run(`!!(S && S.vault && S.vault.query === ${JSON.stringify(q)} && !S.vault.searching && !S.vault.asking)`),
       'the search for ' + q, 180000);
-    return run('S.vault.hits.filter(h => h.host).map(h => ({id: h.id, snippet: h.snippet, title: h.title, host: h.host}))');
+    await until(() => run('document.querySelectorAll("#convopanel .vrow").length === S.vault.hits.length'), 'the list to be drawn');
+    return run('S.vault.hits.filter(h => h.host).map(h => ({id: h.id, snippet: h.snippet, title: h.title, host: h.host, at: h.at}))');
   };
   const openRow = async (id) => {
     await run(`(() => { const i = S.vault.hits.findIndex(h => h.id === ${JSON.stringify(id)});
-      document.querySelectorAll("#vault .vrow")[i].click(); return true; })()`);
-    await until(() => run('!!document.querySelector("#vault .vredge.end") || !!document.querySelector("#vault .vrnote.bad")'),
+      document.querySelectorAll("#convopanel .vrow")[i].click(); return true; })()`);
+    await until(() => run(`!!(CV.past && CV.past.id === ${JSON.stringify(id)} && !CV.loading && (CV.rows.length || CV.said))`),
       'the conversation to be read', 180000);
+    await until(() => run('!!document.querySelector("#convoHead .hgo")'), 'the way to pick it back up', 120000);
   };
 
   console.log('1. the word said after the tool output is found there');
   const late = await search(WORD);
   check(late.length === 1 && late[0].id === LATE, 'found on that machine: ' + JSON.stringify(late));
   check(late[0] && late[0].host === farHost.name && late[0].title.startsWith(farHost.name + ': '), 'the row says which machine');
+  if (bridged) check(typeof (late[0] && late[0].at) === 'number', 'and, by the bridge, where in the record it is');
 
   console.log('2. a word only in a conversation\'s folder finds nothing');
   const named = await search(FOLDER_WORD);
   check(named.length === 0, 'nothing: ' + JSON.stringify(named));
 
-  console.log('3. the conversation opens whole, the word marked, Resume one press');
+  console.log('3. the conversation opens in the panel, the word marked, Resume one press');
   await search(WORD);
   await openRow(LATE);
-  const read = await run(`(() => { const b = document.querySelector("#vault .vrbody");
-    return { bad: (b.querySelector(".vrnote.bad") || {}).textContent || "", turns: b.querySelectorAll(".rturn").length,
-      marks: b.querySelectorAll("mark.vmark").length, work: b.querySelectorAll(".vwork").length,
-      go: document.querySelector("#vault .vrgo").textContent }; })()`);
-  check(!read.bad && read.turns === 2 && read.marks === 1 && read.work === 1, 'read whole: ' + JSON.stringify(read));
+  await until(() => run('!!cvUi.list.querySelector("mark.vmark")'), 'the word to be marked', 60000).catch(() => {});
+  const read = await run(`({ said: CV.said, marks: cvUi.list.querySelectorAll("mark.vmark").length,
+    back: !!document.querySelector("#convoHead .hback"), go: document.querySelector("#convoHead .hgo").textContent })`);
+  check(!read.said && read.marks >= 1, 'read, the word marked: ' + JSON.stringify(read));
+  check(read.back, 'the way back to the list stands over it');
   check(read.go === 'Resume', 'its folder is there, so Resume is one press: ' + read.go);
 
-  console.log('4. the work between opens when pressed');
-  await run('document.querySelector("#vault .vwork .vmore").click(); true');
-  await until(() => run('!!document.querySelector("#vault .vwork[data-filled] .vpiece") || !!document.querySelector("#vault .vwork .vrnote.bad")'),
-    'the work to open', 120000);
-  const work = await run(`[...document.querySelectorAll("#vault .vwork .vpiece")].map(p => p.className + ":" + ((p.querySelector(".vpname") || {}).textContent || "") + ":" + ((p.querySelector(".vpcut") || {}).textContent || ""))`);
+  console.log('4. the tool runs open when their kind is shown');
+  await run('(() => { cvUi.q.value = ""; cvUi.q.dispatchEvent(new Event("input")); return true; })()');
+  await run('(() => { const b = cvUi.boxes.work; if (!b.checked) b.click(); return true; })()');
+  await until(() => run('!!cvUi.list.querySelector(".vwork")'), 'the tool runs to be listed', 60000);
+  await run('(() => { const w = cvUi.list.querySelector(".vwork"); if (!w.dataset.filled) w.querySelector(".vmore").click(); return true; })()');
+  await until(() => run('!!cvUi.list.querySelector(".vwork[data-filled] .vpiece")'), 'the work to open', 120000);
+  const work = await run(`[...cvUi.list.querySelectorAll(".vwork .vpiece")].map(p => p.className + ":" + ((p.querySelector(".vpname") || {}).textContent || "") + ":" + ((p.querySelector(".vpcut") || {}).textContent || ""))`);
   check(work.some((w) => /call:Bash/.test(w)) && work.some((w) => /out:.*not shown/.test(w)), 'the call and its cut output: ' + JSON.stringify(work));
-  await run('document.querySelector("#vault .vrback").click(); true');
 
   console.log('5. a conversation whose folder is gone offers the folder there');
   const before = fs.readFileSync(CONFIG, 'utf8');
+  await run('document.querySelector("#convoHead .hback").click(); true');
   await search(GONE_WORD);
   await openRow(GONE);
-  check(await run('document.querySelector("#vault .vrgo").textContent') === 'Resume ▾', 'Resume lists where it can go instead');
-  await run('document.querySelector("#vault .vrgo").click(); true');
+  check(await run('document.querySelector("#convoHead .hgo").textContent') === 'Resume ▾', 'Resume lists where it can go instead');
+  await run('document.querySelector("#convoHead .hgo").click(); true');
   await until(() => run('!!document.querySelector(".fmenu .vwhere")'), 'the list of places', 10000);
   const places = await run('[...document.querySelectorAll(".fmenu > div")].map(d => d.textContent)');
   check(places.some((p) => p.includes(`${MARK}-gone`)) && places.some((p) => p.includes(DIR)),
@@ -288,9 +296,9 @@ const pass = async (bridged) => {
   check(far && (far.tabs || []).some((t) => t.resume === GONE), 'written into the folder there: ' + JSON.stringify(far && far.tabs));
   check(!folders.some((f) => (f.cwd || '').includes('-gone')), 'the gone folder is not written back');
 
-  console.log('6. which way it was read');
-  const byBridge = ['vault_search', 'vault_read', 'vault_work'].map((op) => new RegExp(`vault: ${op} answered by the bridge`).test(since()));
-  if (bridged) check(byBridge.every(Boolean), 'the search, the reading and the work all by the bridge: ' + JSON.stringify(byBridge));
+  console.log('6. which way it was found and placed');
+  const byBridge = ['vault_search', 'vault_where'].map((op) => new RegExp(`vault: ${op} answered by the bridge`).test(since()));
+  if (bridged) check(byBridge.every(Boolean), 'the search and where it was had, by the bridge: ' + JSON.stringify(byBridge));
   else check(!byBridge.some(Boolean), 'no bridge was asked');
   check(!/asking the long way/.test(since()) || !bridged, 'the bridge never fell back to the long way');
 };

@@ -1833,8 +1833,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Which search is the current one. Reading this PC's records gives up the
     // moment a newer search replaces it: reading on would only hold that one up
     let vault_now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    // One past conversation read for the Vault, or a stretch of its work
-    let (vault_read_tx, vault_read_rx) = std::sync::mpsc::channel::<String>();
+    // Where a past conversation was had, for picking it back up
+    let (vault_where_tx, vault_where_rx) = std::sync::mpsc::channel::<String>();
     // What was said before in a tab's folder on another machine, read there
     let (past_tx, past_rx) = std::sync::mpsc::channel::<(usize, Vec<crate::vault::Hit>)>();
     // A MicroVM folder asked to be deleted, checked on its machine for work
@@ -4701,7 +4701,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. })
-                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultRead { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultWhere { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Convo { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastList { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastResume { .. }) => {
@@ -8056,7 +8056,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // Select expects and a person presses
                             tab: Some(i + 1),
                             host: None,
-                            at: None,
+                            ..crate::vault::Hit::default()
                         });
                     }
                 }
@@ -8071,7 +8071,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let found = crate::vault::search_until(&q, 40, &|| {
                         now.load(std::sync::atomic::Ordering::Relaxed) != seq
                     });
-                    let _ = tx.send((seq, None, crate::vault::FarFound { hits: found.hits, capped: found.capped, failed: None }));
+                    let mut hits = found.hits;
+                    for n in crate::vault::note_hits(&q) {
+                        if !hits.iter().any(|h| h.id == n.id) {
+                            hits.push(n);
+                        }
+                    }
+                    crate::vault::annotate(&mut hits);
+                    let _ = tx.send((seq, None, crate::vault::FarFound { hits, capped: found.capped, failed: None }));
                 });
             }
             // Then every other machine a folder of any desk is on, each on a
@@ -8099,7 +8106,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     asking += 1;
                     let (tx, q, seq, name) = (vault_far_tx.clone(), query.clone(), vault_seq, host.name.clone());
                     std::thread::spawn(move || {
-                        let found = crate::vault::search_far(&at, &name, &q, 40);
+                        let mut found = crate::vault::search_far(&at, &name, &q, 40);
+                        crate::vault::annotate(&mut found.hits);
                         let _ = tx.send((seq, Some(name), found));
                     });
                 }
@@ -8148,14 +8156,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (true, true) => std::cmp::Ordering::Equal,
                 (false, false) => b.when.cmp(&a.when),
             });
+            let mut threads: Vec<String> = Vec::new();
+            v.hits.retain(|h| match &h.thread {
+                Some(t) if threads.contains(t) => false,
+                Some(t) => {
+                    threads.push(t.clone());
+                    true
+                }
+                None => true,
+            });
             v.hits.truncate(120);
         }
-        // One past conversation, read to be shown rather than reopened: all of
-        // it, or one stretch of its work somebody opened. Read on a thread --
-        // a record is tens of megabytes, or on another machine -- and handed
-        // to whichever page asked, by the number it asked with
-        for ev in shell.mail().take_vault_reads() {
-            let shikisha_shared::Ev::VaultRead { program, id, host, query, from, to, req } = ev else { continue };
+        // Where a past conversation was had, asked by the conversation panel
+        // when it shows one opened from the search: the folder, whether it is
+        // still there, and -- a folder on this PC that is gone -- where its
+        // branch could be made into a folder again. On a thread: the record
+        // may be on another machine
+        for ev in shell.mail().take_vault_wheres() {
+            let shikisha_shared::Ev::VaultWhere { program, id, host, req } = ev else { continue };
             // The machine it was had on, by the name the settings give it
             let at = host.as_deref().map(|name| {
                 desks
@@ -8167,7 +8185,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             });
             if let Some(None) = at {
                 let js = serde_json::json!({"req": req, "ok": false, "error": i18n::t("err.vault.no_machine")});
-                let _ = vault_read_tx.send(js.to_string());
+                let _ = vault_where_tx.send(js.to_string());
                 continue;
             }
             let at = at.flatten();
@@ -8177,41 +8195,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|d| d.folders.iter().filter(|f| f.host.is_none()).filter_map(|f| f.cwd.clone()).collect())
                 .unwrap_or_default();
-            let tx = vault_read_tx.clone();
+            let tx = vault_where_tx.clone();
             std::thread::spawn(move || {
-                let js = match (from, to) {
-                    (Some(from), Some(to)) => match crate::vault::open_work(&program, &id, at.as_ref(), from, to, &query) {
-                        Ok(work) => serde_json::json!({"req": req, "ok": true, "from": from, "work": work}),
-                        Err(why) => serde_json::json!({"req": req, "ok": false, "from": from, "error": why}),
-                    },
-                    _ => match crate::vault::open(&program, &id, at.as_ref(), &query) {
-                        Ok(read) => {
-                            let exists = read.exists;
-                            // Only asked when there is nowhere to reopen it in
-                            let homes = match (exists, read.branch.as_deref(), at.is_none()) {
-                                (Some(false), Some(branch), true) => crate::vault::branch_homes(branch, &here),
-                                _ => Vec::new(),
-                            };
-                            serde_json::json!({
-                                "req": req,
-                                "ok": true,
-                                "items": read.items,
-                                "folder": read.folder,
-                                "exists": exists,
-                                "branch": read.branch,
-                                "homes": homes,
-                            })
-                        }
-                        Err(why) => serde_json::json!({"req": req, "ok": false, "error": why}),
-                    },
+                let js = match crate::vault::where_is(&program, &id, at.as_ref()) {
+                    Ok(w) => {
+                        // Only asked when there is nowhere to reopen it in
+                        let homes = match (w.exists, w.branch.as_deref(), at.is_none()) {
+                            (Some(false), Some(branch), true) => crate::vault::branch_homes(branch, &here),
+                            _ => Vec::new(),
+                        };
+                        serde_json::json!({
+                            "req": req, "ok": true, "program": program, "id": id,
+                            "folder": w.folder, "exists": w.exists, "branch": w.branch, "homes": homes,
+                        })
+                    }
+                    Err(why) => serde_json::json!({"req": req, "ok": false, "error": why}),
                 };
                 let _ = tx.send(js.to_string());
             });
         }
-        while let Ok(js) = vault_read_rx.try_recv() {
-            shell.push_vault_read(&js);
+        while let Ok(js) = vault_where_rx.try_recv() {
+            shell.push_vault_where(&js);
             if let Some(r) = remote_ui.as_ref() {
-                r.push_state(format!("{{\"vaultread\":{js}}}"));
+                r.push_state(format!("{{\"vaultwhere\":{js}}}"));
             }
         }
         // The column's conversation panel. What it looks at is worked out here,
