@@ -8,7 +8,26 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-29
+
 ### Added
+- **One AI tab can hand a job out to others and see it through.** Ask an AI
+  to, say, have <@claude> implement something and <@codex> review it until
+  nothing is left, and it becomes the job's lead: it adds tasks, assigns them
+  to the tabs you named with @ (or AI tabs it opens itself), and waits in an
+  inbox that keeps every report, question and stop until it is dealt with.
+  Workers report how it went and ask the lead, not you; a decision that is
+  yours (merging to main, say) is asked of you. A card shows the job's tasks
+  and who is on each, and its Stop ends the whole job. A job closes only once
+  nothing is left open. How many assignments a job may make and how deep jobs
+  may nest are under Settings > Limits on handing work.
+- **A bridge for servers and MicroVMs.** Ticking "Put the bridge on this
+  machine" (Settings > Where it runs > the machine) puts a small program
+  (about 1 MB) in `~/.local/share/shikisha/bridge/` there, so the AI tabs on
+  that machine have the `shikisha` command too: they can be handed tasks,
+  report back and ask their lead, and Find and the conversation reader run
+  there and send back only the answer. It runs only while this app is using a
+  tab on that machine, and unticking the box deletes it.
 - **A Chat panel in the right-hand column** shows what was said in the AI tab in
   front, newest first, and who really sent each line: you at this PC or from
   afar, another tab, a job, or automation. Checkboxes narrow it to what you sent,
@@ -61,6 +80,9 @@ once it reaches its first tagged release.
 ### Fixed
 - The update's progress bar was drawn only at phone width; at window width it
   had no height.
+- A command written with a Windows path (`C:\...\claude.exe`) is known as
+  the AI it runs when it is started on a Linux server, so a tab that runs
+  without asking is shown as such there too.
 
 ## [0.21.0] - 2026-09-28
 
@@ -3743,7 +3765,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/styleio/ShikishaTerm/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/styleio/ShikishaTerm/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/styleio/ShikishaTerm/compare/v0.18.0...v0.19.0
