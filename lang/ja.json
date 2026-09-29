@@ -253,6 +253,8 @@
   "tui.making.step.setup": "マシンの設定 {k}/{of} 行目",
   "tui.making.step.show": "コマンドを表示",
   "tui.making.step.hide": "コマンドを隠す",
+  "tui.making.files.copy": "{name} をコピーしています：{done} / {of} ファイル・{time}",
+  "tui.making.files.delete": "削除したファイル：{done} / {of}・{time}",
   "worktree.left.title": "フォルダを削除できませんでした",
   "worktree.left.say": "{why}。一覧から削除しますか？フォルダと残ったファイルはディスクに残ります。",
   "worktree.left.forget": "一覧から削除",

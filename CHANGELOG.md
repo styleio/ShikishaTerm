@@ -27,6 +27,11 @@ once it reaches its first tagged release.
   awake for as long as it works.
 
 ### Added
+- **A worktree being made or deleted says how many files it has copied or
+  deleted, of how many, with a bar.** A folder of many small files, such as
+  `node_modules`, can take minutes, and its row no longer sits on "Setting up"
+  with nothing moving. Stopping a worktree while it copies stops at the next
+  file.
 - **Keep the PC awake while an AI works.** Settings > Basic > "Keep the PC
   awake": off (the default), while an AI is working, or always while the
   program runs. While it is on, the lower row says whether the PC is being

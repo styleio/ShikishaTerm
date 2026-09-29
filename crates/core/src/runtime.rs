@@ -246,6 +246,14 @@ impl Pending {
             },
             unlinked: self.unlinked.clone(),
             step: None,
+            // The copy the person asked for, else the one the making does
+            // on its own once the branch is cut
+            files: match (&self.error, &self.copying) {
+                (Some(_), _) => None,
+                (None, Some((job, _))) => job.copying(),
+                (None, None) => self.making.copying(),
+            }
+            .map(Into::into),
         }
     }
 
@@ -411,6 +419,7 @@ impl Leaving {
                 None => "removing".into(),
             },
             error: self.error.clone().unwrap_or_default(),
+            files: self.removal.deleting().filter(|_| self.error.is_none()).map(Into::into),
             ..Default::default()
         }
     }

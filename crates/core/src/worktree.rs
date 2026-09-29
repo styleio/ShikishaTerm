@@ -915,6 +915,20 @@ fn take_back(plan: &Plan) {
     }
 }
 
+/// [`carry_into_watched`], told into `copying` while it goes and cleared once
+/// it is done: a finished copy has nothing left to count
+fn carry_watched(
+    plan: &Plan,
+    carry: &[Carry],
+    copying: &std::sync::Mutex<Option<FileProgress>>,
+    stop: &dyn Fn() -> bool,
+) -> Brought {
+    let put = |c: Option<FileProgress>| *copying.lock().unwrap_or_else(|e| e.into_inner()) = c;
+    let said = carry_into_watched(plan, carry, &|c| put(Some(c.clone())), stop);
+    put(None);
+    said
+}
+
 /// A folder being made on a thread of its own.
 ///
 /// Making one takes seconds on a large project and minutes on a machine that
@@ -927,6 +941,8 @@ pub struct Making {
     stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
     outcome: std::sync::Arc<std::sync::Mutex<Option<Result<Brought, String>>>>,
     machines: std::sync::Arc<std::sync::Mutex<Machines>>,
+    /// How far the copying of what comes along has got, while it is going
+    copying: std::sync::Arc<std::sync::Mutex<Option<FileProgress>>>,
 }
 
 impl Making {
@@ -939,9 +955,10 @@ impl Making {
             stopping: Default::default(),
             outcome: Default::default(),
             machines: Default::default(),
+            copying: Default::default(),
         };
         let (stage, stopping, outcome) = (making.stage.clone(), making.stopping.clone(), making.outcome.clone());
-        let machines = making.machines.clone();
+        let (machines, copying) = (making.machines.clone(), making.copying.clone());
         std::thread::spawn(move || {
             let at_stage = |s: Stage| {
                 // Once stopping, it says so until it has stopped
@@ -953,7 +970,7 @@ impl Making {
             let noted = |m: &Machines| *machines.lock().unwrap_or_else(|e| e.into_inner()) = m.clone();
             let made = make_noting(&plan, &at_stage, &stop, &noted).map(|()| {
                 at_stage(Stage::SettingUp);
-                carry_into(&plan, &carry)
+                carry_watched(&plan, &carry, &copying, &stop)
             });
             // Stopped after the last command: taken back all the same, since
             // nobody is waiting for the folder any more
@@ -993,14 +1010,20 @@ impl Making {
             stopping: Default::default(),
             outcome: Default::default(),
             machines: Default::default(),
+            copying: Default::default(),
         };
         making.stage.store(Stage::SettingUp as u8, Ordering::Relaxed);
-        let outcome = making.outcome.clone();
+        let (outcome, copying) = (making.outcome.clone(), making.copying.clone());
         std::thread::spawn(move || {
-            let said = carry_into(&plan, &carry);
+            let said = carry_watched(&plan, &carry, &copying, &|| false);
             *outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(said));
         });
         making
+    }
+
+    /// How far the copying of what comes along has got, while it is going
+    pub fn copying(&self) -> Option<FileProgress> {
+        self.copying.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn stage(&self) -> Stage {
@@ -1333,6 +1356,55 @@ pub struct Brought {
 /// two would rather be told which one is missing than have the whole thing
 /// taken away again.
 pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
+    carry_into_watched(plan, items, &|_| {}, &|| false)
+}
+
+/// How far a copy into a worktree, or the deleting of one, has got, counted in
+/// files. A folder of many small files -- a `node_modules` -- takes minutes by
+/// the number of them rather than by their size, so the number of files is
+/// what says how long is left
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileProgress {
+    /// What is being copied now, as the project names it. Empty for a
+    /// deleting, whose row already names the folder
+    pub name: String,
+    pub done: u64,
+    pub of: u64,
+    /// When it began, in Unix seconds
+    pub since: u64,
+}
+
+/// Where one thing to bring comes from and goes to. None when its name climbs
+/// out of the folder or names nothing
+fn carry_ends(plan: &Plan, c: &Carry) -> Option<(PathBuf, PathBuf)> {
+    let inside = clean_inside(&c.name);
+    if inside.is_empty() {
+        return None;
+    }
+    let from = match &c.from {
+        Some(f) => PathBuf::from(f),
+        None => plan.main.join(&inside),
+    };
+    Some((from, plan.folder.join(&inside)))
+}
+
+/// The files a copy of `from` will write, counted the way [`copy_folder`]
+/// walks: links inside are not followed and not counted
+fn files_in(from: &Path) -> u64 {
+    let Ok(read) = std::fs::read_dir(from) else { return 0 };
+    read.flatten()
+        .map(|e| match std::fs::symlink_metadata(e.path()).map(|m| m.file_type()) {
+            Ok(k) if k.is_dir() => files_in(&e.path()),
+            Ok(k) if !k.is_symlink() => 1,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// The same, telling `tell` after each file copied how far the copying has
+/// got, and asking `stop` between files whether to go on. Stopped, it leaves
+/// at once, and what it made is taken back by whoever asked it to stop
+pub fn carry_into_watched(plan: &Plan, items: &[Carry], tell: &dyn Fn(&FileProgress), stop: &dyn Fn() -> bool) -> Brought {
     let mut said = Brought::default();
     let wanted: Vec<&Carry> = items.iter().filter(|c| c.how != "skip").collect();
     // Files are put between folders on this machine. A folder on another one
@@ -1342,16 +1414,41 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
         said.missed = wanted.iter().map(|c| c.name.clone()).collect();
         return said;
     }
-    for c in wanted {
-        let inside = clean_inside(&c.name);
-        if inside.is_empty() {
-            continue;
+    // Counted before the first file goes, so "of how many" is said from the
+    // start. A second name is made at once and copies nothing, so a link is
+    // not counted; a file that has to be copied because it could not be
+    // linked is one file, and is not worth a walk to foresee
+    let of: u64 = wanted
+        .iter()
+        .filter(|c| c.how != "link")
+        .filter_map(|c| carry_ends(plan, c))
+        .filter(|(from, to)| from.exists() && !to.exists())
+        .map(|(from, _)| if from.is_dir() { files_in(&from) } else { 1 })
+        .sum();
+    let copying = std::cell::RefCell::new(FileProgress {
+        of,
+        since: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        ..Default::default()
+    });
+    // One file more, said; and whether to go on
+    let one_more = || {
+        let mut now = copying.borrow_mut();
+        now.done = (now.done + 1).min(now.of);
+        if now.of > 0 {
+            tell(&now);
         }
-        let from = match &c.from {
-            Some(f) => PathBuf::from(f),
-            None => plan.main.join(&inside),
-        };
-        let to = plan.folder.join(&inside);
+        !stop()
+    };
+    for c in wanted {
+        if stop() {
+            break;
+        }
+        let Some((from, to)) = carry_ends(plan, c) else { continue };
+        if c.how != "link" && of > 0 {
+            let mut now = copying.borrow_mut();
+            now.name = c.name.clone();
+            tell(&now);
+        }
         if !from.exists() || to.exists() {
             if !from.exists() {
                 said.missed.push(c.name.clone());
@@ -1380,9 +1477,15 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
                     copied
                 }
             }
-            (_, true) => copy_folder(&from, &to).is_ok(),
+            (_, true) => match copy_folder(&from, &to, &one_more) {
+                Ok(()) => true,
+                // Stopped half way: the folder goes with the rest
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
+                Err(_) => false,
+            },
             (how, false) => {
                 let copied = std::fs::copy(&from, &to).is_ok();
+                one_more();
                 if copied && how == "replace" && !c.replace.is_empty() {
                     // The words a replacement writes are this worktree's own
                     let replaces: Vec<crate::config::Replace> = c
@@ -1418,8 +1521,9 @@ pub fn carry_into(plan: &Plan, items: &[Carry]) -> Brought {
 
 /// A copy of a whole folder. What is linked inside it is copied as the thing it
 /// points at would be skipped: following a link out of the folder could copy
-/// something nobody meant to bring
-fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+/// something nobody meant to bring. `each` is called after every file, and
+/// the copy stops -- as `Interrupted` -- the moment it says not to go on
+fn copy_folder(from: &Path, to: &Path, each: &dyn Fn() -> bool) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for e in std::fs::read_dir(from)? {
         let e = e?;
@@ -1428,9 +1532,12 @@ fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
         if kind.is_symlink() {
             continue;
         } else if kind.is_dir() {
-            copy_folder(&e.path(), &there)?;
+            copy_folder(&e.path(), &there, each)?;
         } else {
             std::fs::copy(e.path(), &there)?;
+            if !each() {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
         }
     }
     Ok(())
@@ -1807,6 +1914,40 @@ pub fn discard_waiting(folder: &Path) -> Result<()> {
     }
 }
 
+/// Runs `delete`, saying into `deleting` how many of the folder's files are
+/// gone while it runs, and nothing once it is done.
+///
+/// Git removes a worktree in one command that says nothing on the way, so
+/// what is left is counted instead: once before, and again every so often on
+/// a thread of its own until the deleting ends. A count walks the folder the
+/// way a delete does, so it is taken at the pace a person reads, not faster
+fn count_while<T>(folder: &Path, deleting: &std::sync::Mutex<Option<FileProgress>>, delete: impl FnOnce() -> T) -> T {
+    const EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+    let put = |p: Option<FileProgress>| *deleting.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    let of = files_in(folder);
+    if of == 0 {
+        return delete();
+    }
+    let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let at = |left: u64| FileProgress { name: String::new(), done: of - left.min(of), of, since };
+    put(Some(at(of)));
+    // The counting stops the moment the deleting ends -- its sender dropped --
+    // rather than at the end of a wait
+    let (ended, wait) = std::sync::mpsc::channel::<()>();
+    let said = std::thread::scope(|s| {
+        s.spawn(move || {
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(EVERY) {
+                put(Some(at(files_in(folder))));
+            }
+        });
+        let said = delete();
+        drop(ended);
+        said
+    });
+    put(None);
+    said
+}
+
 /// A worktree's folder being deleted on a thread of its own.
 ///
 /// A big folder takes seconds to delete, and the tabs standing in it take a
@@ -1820,14 +1961,16 @@ pub struct Removal {
     /// lets the program speak to again -- or a server, where git removes it
     on: Option<crate::config::HostSpec>,
     outcome: std::sync::Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    /// How many of the folder's files are gone, while it is being deleted
+    deleting: std::sync::Arc<std::sync::Mutex<Option<FileProgress>>>,
 }
 
 impl Removal {
     pub fn start(folder: PathBuf) -> Removal {
-        let removal = Removal { folder: folder.clone(), on: None, outcome: Default::default() };
-        let outcome = removal.outcome.clone();
+        let removal = Removal { folder: folder.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
+        let (outcome, deleting) = (removal.outcome.clone(), removal.deleting.clone());
         std::thread::spawn(move || {
-            let said = discard_waiting(&folder).map_err(|e| format!("{e:#}"));
+            let said = count_while(&folder, &deleting, || discard_waiting(&folder)).map_err(|e| format!("{e:#}"));
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
             }
@@ -1844,7 +1987,7 @@ impl Removal {
         if let Some(id) = host.instance.as_deref() {
             crate::e2b::let_go(id);
         }
-        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default() };
+        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = match (host.instance.as_deref(), crate::e2b::key()) {
@@ -1866,7 +2009,7 @@ impl Removal {
     /// is removed, and git refuses one with work in it whatever was asked
     /// before
     pub fn start_on_server(folder: PathBuf, host: crate::config::HostSpec) -> Removal {
-        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default() };
+        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = discard_on_server(&host, &folder.to_string_lossy()).map_err(|e| format!("{e:#}"));
@@ -1887,6 +2030,13 @@ impl Removal {
             Some(host) => Removal::start_on_server(self.folder.clone(), host.clone()),
             None => Removal::start(self.folder.clone()),
         }
+    }
+
+    /// How many of the folder's files are gone, while it is being deleted on
+    /// this PC. None elsewhere: a machine goes all at once, and git on a server
+    /// is not watched file by file
+    pub fn deleting(&self) -> Option<FileProgress> {
+        self.deleting.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// Whether it is a MicroVM's machine being deleted
@@ -3517,7 +3667,7 @@ origin/master
             instance: Some(id.into()),
             ..Default::default()
         };
-        let on_vm = Removal { folder: PathBuf::from("/home/user/site"), on: Some(vm("m1")), outcome: Default::default() };
+        let on_vm = Removal { folder: PathBuf::from("/home/user/site"), on: Some(vm("m1")), outcome: Default::default(), deleting: Default::default() };
         let cloud = |id: &str| crate::elsewhere::Elsewhere::Cloud(vm(id));
         assert!(on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m1"))));
         assert!(on_vm.takes(Path::new("/home/user/other"), Some(&cloud("m1"))), "the rest of the machine stays open");
@@ -3525,7 +3675,7 @@ origin/master
         assert!(!on_vm.takes(Path::new("/home/user/site"), None), "an editor on this PC is closed");
 
         let here = PathBuf::from(crate::local_path("D:/work/site"));
-        let local = Removal { folder: here.clone(), on: None, outcome: Default::default() };
+        let local = Removal { folder: here.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
         assert!(local.takes(&here, None));
         assert!(local.takes(&here.join("src"), None));
         assert!(!local.takes(Path::new(&crate::local_path("D:/work/site-2")), None), "a neighbour whose name starts the same goes too");
@@ -3537,7 +3687,7 @@ origin/master
         let srv = server("ssh://ubuntu@203.0.113.5:22");
         let there = crate::elsewhere::Elsewhere::of(&srv).unwrap();
         let other = crate::elsewhere::Elsewhere::of(&server("ssh://ubuntu@203.0.113.6:22")).unwrap();
-        let on_server = Removal { folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default() };
+        let on_server = Removal { folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default(), deleting: Default::default() };
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x"), Some(&there)));
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x/src"), Some(&there)));
         assert!(!on_server.takes(Path::new("/home/ubuntu/site-x2"), Some(&there)), "a neighbour whose name starts the same goes too");
@@ -4629,6 +4779,95 @@ tools/conpty.ps1"));
         unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
         let _ = crate::detach_console(&mut unhook).status();
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A copy says how far it has got, in files, from the first file to the
+    /// last, and a link copies nothing so is not counted. A folder of many
+    /// small files took six minutes to copy with the row saying only "setting
+    /// up" all that while, and it looked stuck (2026-09-30)
+    #[test]
+    fn a_copy_says_how_many_files_of_how_many() {
+        let main = repo("carry-count");
+        let deps = main.join("deps");
+        std::fs::create_dir_all(deps.join("a").join("b")).unwrap();
+        for f in ["one.js", "a/two.js", "a/b/three.js"] {
+            std::fs::write(deps.join(f), "x").unwrap();
+        }
+        std::fs::write(main.join(".env"), "KEY=1").unwrap();
+        let cut = plan(&main, "feature/count", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let carry = |name: &str, folder: bool, how: &str| Carry {
+            name: name.into(),
+            folder,
+            how: how.into(),
+            from: None,
+            replace: Vec::new(),
+            line: None,
+        };
+        let heard = std::sync::Mutex::new(Vec::<FileProgress>::new());
+        let said = carry_into_watched(
+            &cut,
+            &[carry("deps", true, "copy"), carry(".env", false, "copy")],
+            &|p| heard.lock().unwrap().push(p.clone()),
+            &|| false,
+        );
+        assert!(said.missed.is_empty(), "something did not arrive: {said:?}");
+        let heard = heard.into_inner().unwrap();
+        assert!(heard.iter().all(|p| p.of == 4), "the count of files to copy was not 4: {heard:?}");
+        let last = heard.last().expect("nothing was said while copying");
+        assert_eq!((last.done, last.name.as_str()), (4, ".env"), "the copy did not end at its last file");
+        assert!(heard.iter().any(|p| p.name == "deps" && p.done == 3), "the folder's files were not counted one by one");
+        assert!(heard.windows(2).all(|w| w[0].done <= w[1].done), "the count went backwards: {heard:?}");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A copy asked to stop stops at the next file, rather than after the
+    /// whole folder: stopping is how a person takes back a making that is
+    /// copying something they did not mean to bring
+    #[test]
+    fn a_copy_asked_to_stop_stops_at_the_next_file() {
+        let main = repo("carry-stop");
+        let deps = main.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        for n in 0..10 {
+            std::fs::write(deps.join(format!("{n}.js")), "x").unwrap();
+        }
+        let cut = plan(&main, "feature/stop", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let last = std::sync::Mutex::new(0u64);
+        let carry = Carry { name: "deps".into(), folder: true, how: "copy".into(), from: None, replace: Vec::new(), line: None };
+        carry_into_watched(&cut, &[carry], &|p| *last.lock().unwrap() = p.done, &|| *last.lock().unwrap() >= 2);
+        let copied = std::fs::read_dir(cut.folder.join("deps")).unwrap().count();
+        assert_eq!(copied, 2, "the copy went on after it was asked to stop");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A deleting says how many of the folder's files are gone while it runs,
+    /// and nothing once it is done: git removes a worktree in one command that
+    /// says nothing on the way, so what is left is counted instead
+    #[test]
+    fn a_deleting_counts_what_is_gone_and_then_says_nothing() {
+        let d = scratch("delete-count").join("folder");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("inner")).unwrap();
+        for f in ["a", "b", "inner/c"] {
+            std::fs::write(d.join(f), "x").unwrap();
+        }
+        let deleting = std::sync::Mutex::new(None);
+        let seen = std::sync::Mutex::new(Vec::new());
+        count_while(&d, &deleting, || {
+            seen.lock().unwrap().push(deleting.lock().unwrap().clone());
+            std::fs::remove_file(d.join("a")).unwrap();
+            // Long enough for the counting to look at least once
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            seen.lock().unwrap().push(deleting.lock().unwrap().clone());
+            std::fs::remove_dir_all(&d).unwrap();
+        });
+        let seen = seen.into_inner().unwrap();
+        let at = |p: &Option<FileProgress>| p.as_ref().map(|p| (p.done, p.of));
+        assert_eq!(at(&seen[0]), Some((0, 3)), "the count did not start at nothing of all of it");
+        assert_eq!(at(&seen[1]), Some((1, 3)), "a file gone was not counted");
+        assert!(deleting.lock().unwrap().is_none(), "a finished deleting still says how far it has got");
     }
 
     /// A folder that cannot be given a second name is a question, not a loss,

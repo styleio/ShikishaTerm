@@ -1195,6 +1195,30 @@ pub struct MakingState {
     /// install looks stuck. Absent for everything else
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<MakingStep>,
+    /// How many files have been copied into it, or deleted from it, of how
+    /// many: a folder of ten thousand small files takes minutes, and a row
+    /// that says only "setting up" all that while looks stuck. Absent when
+    /// no files are being copied or deleted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<MakingFiles>,
+}
+
+/// Files copied or deleted so far, of how many, and since when
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct MakingFiles {
+    /// What is being copied, as the project names it. Empty while deleting
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub done: u64,
+    pub of: u64,
+    /// When it started, in Unix seconds: the page counts the time from it
+    pub since: u64,
+}
+
+impl From<crate::worktree::FileProgress> for MakingFiles {
+    fn from(p: crate::worktree::FileProgress) -> Self {
+        MakingFiles { name: p.name, done: p.done, of: p.of, since: p.since }
+    }
 }
 
 /// Which of a row's commands is running, what it is, and since when

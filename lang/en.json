@@ -253,6 +253,8 @@
   "tui.making.step.setup": "Machine setup, line {k} of {of}",
   "tui.making.step.show": "Show the command",
   "tui.making.step.hide": "Hide the command",
+  "tui.making.files.copy": "Copying {name}: {done} of {of} files · {time}",
+  "tui.making.files.delete": "Files deleted: {done} of {of} · {time}",
   "worktree.left.title": "The folder could not be deleted",
   "worktree.left.say": "{why}. Remove it from the list anyway? The folder and what is left in it stay on disk.",
   "worktree.left.forget": "Remove from the list",

@@ -525,8 +525,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #addproj .aptabs button.on { color:var(--text); border-bottom-color:var(--brand); }
   #addproj .approg { display:flex; flex-direction:column; gap:var(--s1); }
   #addproj .apsay { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  #addproj .approg .track { height:3px; border-radius:3px; background:var(--line); overflow:hidden; }
-  #addproj .approg .fill { display:block; height:100%; width:0; background:var(--live); }
   /* Where a new project will be, said before it is: a card that opens to
      change it */
   #addproj .apcard { border:1px solid var(--line); border-radius:var(--r-card); overflow:hidden; }
@@ -1041,6 +1039,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); display:flex; flex-direction:column; gap:var(--s1); }
   .job .jq { font-size:12px; color:var(--text); overflow-wrap:anywhere; }
   .job .jbtns { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  /* How far along, as a bar (progressBar). One look for every "how far" on
+     the page: the words go beside it, and the colour stays --live to the end,
+     since a copy nearly done is good news rather than a limit nearly reached */
+  .pbar { display:block; height:3px; border-radius:3px; background:var(--line); overflow:hidden; }
+  .pbar > i { display:block; height:100%; width:0; background:var(--live); }
   .making { margin:2px var(--s2) 2px 14px; padding:6px 4px 6px 10px; border:1px solid var(--line);
     border-radius:var(--r-ctl); display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); row-gap:2px; }
   .making > .dot { flex:none; }
@@ -1056,6 +1059,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .making .mbtns { flex-basis:100%; display:flex; flex-wrap:wrap; gap:var(--s2); padding:var(--s1) 0 2px 18px; }
   .making .mstep { flex-basis:100%; padding-left:18px; font-size:11px; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .making .mfiles { flex-basis:100%; min-width:0; padding-left:18px; display:flex; flex-direction:column; gap:var(--s1); }
+  /* Wrapped rather than cut: the count and the time are the point of the line,
+     and they come last */
+  .making .mfiles .mstep { padding-left:0; flex-basis:auto; white-space:normal; overflow-wrap:anywhere; }
   .making .mstepbox { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; column-gap:var(--s2); min-width:0; }
   .making .mstepbox .mstep { flex:1 1 0; min-width:0; }
   .making .mline { flex:none; font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
@@ -1453,16 +1460,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      row: the dock stands on the bottom edge and grows upward, so a row
      appearing here never moves the input row out from under the finger that
      just pressed Send. The words come first and the bar reads as their
-     picture; track and fill are the clone's (#addproj .approg), because "how
-     far along" is one thing and should not look like two */
+     picture; the bar is the page's one bar (progressBar), because "how far
+     along" is one thing and should not look like two */
   #castsending { display:flex; align-items:center; gap:var(--s3); padding:6px 10px;
     background:var(--panel); border-top:1px solid var(--line);
     font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; }
   #castsending[hidden] { display:none; }
   #castsending .say { flex:none; }
-  #castsending .track { flex:1; min-width:40px; height:3px; border-radius:3px;
-    background:var(--line); overflow:hidden; }
-  #castsending .fill { display:block; height:100%; width:0; background:var(--live); }
+  #castsending .pbar { flex:1; min-width:40px; }
   /* Indicator shown while in control mode (tap to release) */
   /* Release banner. Placed at the top of the dock so it rides up and down
      together with the auxiliary key row and the keyboard. Avoids both
@@ -6035,13 +6040,21 @@ function apGo(label, blocker, go) {
   };
   return {btn, why, check};
 }
+// How far along, as the page's one bar: 3px, filled with --live. `set` takes
+// 0-100. Never drawn alone -- the words beside it say what, and how many
+function progressBar(pct) {
+  const fill = el("i");
+  const set = p => { fill.style.width = Math.max(0, Math.min(100, Number(p) || 0)) + "%"; };
+  if (pct != null) set(pct);
+  return {bar: el("span", {class:"pbar"}, fill), set};
+}
 // Progress under the button rather than above it, so the button does not move
 // while it fills
 function apProgress() {
-  const fill = el("span", {class:"fill"});
+  const track = progressBar();
   const said = el("div", {class:"apsay"});
-  const bar = el("div", {class:"approg", hidden:""}, said, el("div", {class:"track"}, fill));
-  return {bar, fill, said};
+  const bar = el("div", {class:"approg", hidden:""}, said, track.bar);
+  return {bar, set:track.set, said};
 }
 
 // A clone onto this PC. One onto a server is on the server's page (apSshClone)
@@ -6360,7 +6373,7 @@ function drawAddProject() {
   if (prog) {
     prog.bar.hidden = !running;
     const pct = mine && mine.percent != null ? mine.percent : 0;
-    prog.fill.style.width = pct + "%";
+    prog.set(pct);
     const phase = mine && mine.phase ? (T["tui.addproj.phase." + mine.phase] || mine.phase) : (T["tui.addproj.clone.start"] || "");
     prog.said.textContent = mine && mine.percent != null ? phase + " · " + pct + "%" : phase;
   }
@@ -7032,6 +7045,9 @@ function makingRow(m) {
   // The command running now, which of how many, and for how long: an install
   // can take many minutes, and a stop is heard once that command is done
   if (m.step && !failed) row.append(makingStep(m, stopping));
+  // Files copied in or deleted, of how many: a folder of many small files
+  // takes minutes, and "setting up" alone all that while looks stuck
+  if (m.files && m.files.of && !failed) row.append(makingFiles(m.files, leaving));
   // The branch is there and git will not go into it. The press is the same
   // one the question asks for, so a row answered here needs no dialog
   if (untrusted) {
@@ -7084,6 +7100,18 @@ function makingStep(m, stopping) {
     drawTabs();
   }}, shown ? (T["tui.making.step.hide"] || "") : (T["tui.making.step.show"] || ""));
   return el("div", {class:"mstepbox"}, line, toggle, shown ? el("code", {class:"mcmd mono"}, st.line) : null);
+}
+// How far a row's copying or deleting has got: the words, and the bar under
+// them. The time is brought up to date every second with a step's (stepText)
+function makingFiles(f, deleting) {
+  const key = deleting ? "tui.making.files.delete" : "tui.making.files.copy";
+  const line = el("div", {class:"mstep", "data-since":String(f.since)});
+  line.dataset.said = (T[key] || "")
+    .replaceAll("{done}", Number(f.done).toLocaleString()).replaceAll("{of}", Number(f.of).toLocaleString())
+    .replaceAll("{time}", "\u0000").replaceAll("{name}", () => f.name || "");
+  line.textContent = stepText(line);
+  line.title = line.textContent;
+  return el("div", {class:"mfiles"}, line, progressBar(100 * f.done / f.of).bar);
 }
 // How long the command has run, as minutes and seconds
 function stepText(line) {
@@ -17177,7 +17205,7 @@ async function attachFile(file) {
 }
 let castDock = null, castBar = null, castInput = null, castKeysEl = null, castAttEl = null, castSendEl = null;
 // The dock's "still going in" row and the two things it says (see syncSending)
-let castSendingEl = null, castSendFill = null, castSendSay = null;
+let castSendingEl = null, castSendBar = null, castSendSay = null;
 // The active tab the panels were last built for, so __state can rebuild them
 // when it changes (which panels exist depends on that tab).
 let lastCastActive = null;
@@ -20798,10 +20826,9 @@ function ensureBar() {
   modeEl.onclick = exitCast;
   // What is still going into the tab, while it goes (syncSending). Kept out of
   // the input row on purpose: that row is where the hands are.
-  castSendFill = el("span", {class:"fill"});
+  castSendBar = progressBar();
   castSendSay = el("span", {class:"say"});
-  castSendingEl = el("div", {id:"castsending", hidden:""},
-    castSendSay, el("span", {class:"track"}, castSendFill));
+  castSendingEl = el("div", {id:"castsending", hidden:""}, castSendSay, castSendBar.bar);
   // Rows top-to-bottom: what is still being sent, release banner, the
   // switchable panel, the input row.
   castDock = el("div", {id:"castdock"}, castSendingEl, modeEl, castPanelEl, castBar);
@@ -20875,7 +20902,7 @@ function syncSending() {
   castSendingEl.hidden = !s;
   if (!s) return;
   const pct = Math.max(0, Math.min(100, Math.round((s.share || 0) * 100)));
-  castSendFill.style.width = pct + "%";
+  castSendBar.set(pct);
   // The share alone is a riddle; the length beside it is what says why this
   // takes a moment at all
   castSendSay.textContent = (T["tui.cast.sending"] || "Sending {pct}% · {n} characters")
