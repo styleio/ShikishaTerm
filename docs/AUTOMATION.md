@@ -801,7 +801,7 @@ skill is written (Settings > AI agents puts it in or takes it out).
 ### Orchestration: one AI sees a job through with others
 
 `ask_tab` is one question and one answer. For a job with several steps and several tabs --
-"have <@claude> implement it and <@codex> review it until nothing is left, then merge" --
+"have <@claude> implement it and <@codex> review it until nothing is left" --
 the AI you asked becomes the job's **lead** and hands out **tasks** with the orchestration
 commands (the list is in chapter 9). The steps are not a mode of this app; the lead strings
 the commands together as your request asks, and the app keeps the record:
@@ -831,7 +831,8 @@ What keeps it going without a person in the loop:
 - **Nothing is lost.** The inbox hands the same mail over again until the reader says it has
   dealt with it, and a tab that is not waiting for its mail is told in one typed line when it
   is free to read it.
-- **The next step is always given.** Every answer carries `next`: the exact command to run.
+- **The next step is always given.** Every answer carries `next`: what to do next, as the
+  command to run wherever there is one. A refusal says what to run instead.
   `job_close` refuses while anything is left open and lists what, with the command for each.
 - **Bounded.** Work goes only to tabs you named with `@` or that the job opened itself
   (`open_ai_tab`), the number of assignments per job and how deep jobs may nest are set under
@@ -1214,8 +1215,8 @@ it; nobody has to say so.
 ### Orchestration: handing work between AI tabs
 
 A job one AI tab (the lead) hands out to others and sees through (see "Orchestration" in
-chapter 7). Answered through the pipe or MCP only; each answer carries `next`, the command to
-run next. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions `d1`.
+chapter 7). Answered through the pipe or MCP only; each answer carries `next`, what to do next
+(the command, wherever there is one), and a refusal says what to run instead. Jobs are `j1`, tasks `t1`, assignments `a1`, questions `q1`, decisions `d1`.
 
 | Command | Description |
 |---|---|

@@ -68,7 +68,8 @@ left", "split this across tabs"). You lead the job: you cut it into tasks,
 hand each to a tab, read what comes back, and decide what happens next. One
 question to one tab needs none of this: `shikisha ask_tab` does that.
 
-Every command answers with `next`, the exact command to run after it. Run it.
+Every command answers with `next`: what to do after it, as the exact command
+wherever there is one. Do it. A refusal says what to run instead.
 Lost track, or your conversation was summarised? `shikisha job_status` shows
 where everything stands.
 

@@ -663,6 +663,11 @@ pub struct Keeper {
     agreed: Option<Vec<String>>,
     /// Machines already looked over for a bridge nobody agreed to (this run)
     swept: std::collections::HashSet<String>,
+    /// Machines the person took the bridge off whose folder is not deleted
+    /// yet, by machine, with the entry's name: tried again until it is
+    unremoved: Arc<Mutex<HashMap<String, (String, crate::elsewhere::Elsewhere)>>>,
+    /// When each of those was last tried
+    remove_tried: HashMap<String, Instant>,
 }
 
 /// How long after a failed try a machine is tried again
@@ -671,6 +676,7 @@ const RETRY: Duration = Duration::from_secs(60);
 impl Keeper {
     pub fn tend(&mut self, wanted: Vec<Want>) {
         let now = Instant::now();
+        self.retry_removals(now);
         let keys: std::collections::HashSet<String> = wanted.iter().map(|w| w.at.machine_key()).collect();
         // Nothing on it wants the line any more: let go, and the bridge there exits
         let gone: Vec<String> = self.held.keys().filter(|k| !keys.contains(*k)).cloned().collect();
@@ -685,9 +691,15 @@ impl Keeper {
                 continue;
             }
             let up = is_up(&w.at);
-            let fresh: Vec<(String, String)> = {
+            // A line that is not up is a bridge that may have started over in
+            // a folder made again -- taken off and put back, or deleted by
+            // someone over there -- with none of the keys it was given. Every
+            // key goes again then; over a line that stayed up, only new ones
+            let fresh: Vec<(String, String)> = if up {
                 let given = self.given.lock().unwrap_or_else(|e| e.into_inner());
                 w.keys.iter().filter(|(t, k)| !given.contains(&format!("{key}|{t}|{k}"))).cloned().collect()
+            } else {
+                w.keys.clone()
             };
             if up && fresh.is_empty() {
                 continue;
@@ -729,21 +741,71 @@ impl Keeper {
         }
     }
 
+    /// The folders the person asked to have deleted that could not be yet,
+    /// tried again a minute apart until they are
+    fn retry_removals(&mut self, now: Instant) {
+        let due: Vec<(String, crate::elsewhere::Elsewhere)> = {
+            let pending = self.unremoved.lock().unwrap_or_else(|e| e.into_inner());
+            pending
+                .iter()
+                .filter(|(k, _)| self.remove_tried.get(*k).is_none_or(|t| now.duration_since(*t) >= RETRY))
+                .map(|(k, (_, at))| (k.clone(), at.clone()))
+                .collect()
+        };
+        for (key, at) in due {
+            if self.busy.lock().is_ok_and(|b| b.contains(&key)) {
+                continue;
+            }
+            self.remove_tried.insert(key.clone(), now);
+            self.take_off(key, at);
+        }
+    }
+
+    /// Delete the bridge's folder on a machine, on a thread. Until it is gone
+    /// the machine stays on the list to try again, and the keys it was given
+    /// are forgotten -- a bridge put back there starts with none
+    fn take_off(&self, key: String, at: crate::elsewhere::Elsewhere) {
+        if let Ok(mut g) = self.given.lock() {
+            g.retain(|k| !k.starts_with(&format!("{key}|")));
+        }
+        if let Ok(mut b) = self.busy.lock() {
+            b.insert(key.clone());
+        }
+        let (busy, unremoved) = (Arc::clone(&self.busy), Arc::clone(&self.unremoved));
+        let _ = std::thread::Builder::new().name("bridge remove".into()).spawn(move || {
+            match remove(&at) {
+                Ok(()) => {
+                    if let Ok(mut u) = unremoved.lock() {
+                        u.remove(&key);
+                    }
+                }
+                Err(e) => crate::append_hook_log(&format!("bridge: taking it off {} failed, trying again in a minute: {e:#}", at.address())),
+            }
+            if let Ok(mut b) = busy.lock() {
+                b.remove(&key);
+            }
+        });
+    }
+
     /// Machines this app is using anyway whose entry the person has not agreed
     /// to (any more): a bridge left there -- unticked while the machine was
     /// paused, or before this app last started -- is taken off. Looked at once
     /// per machine per run, and never by waking anything
-    pub fn sweep(&mut self, awake_not_agreed: Vec<crate::elsewhere::Elsewhere>) {
-        for at in awake_not_agreed {
+    pub fn sweep(&mut self, awake_not_agreed: Vec<(String, crate::elsewhere::Elsewhere)>) {
+        for (name, at) in awake_not_agreed {
             if !self.swept.insert(at.machine_key()) {
                 continue;
             }
+            let unremoved = Arc::clone(&self.unremoved);
             let _ = std::thread::Builder::new().name("bridge sweep".into()).spawn(move || {
                 match installed(&at) {
                     Ok(Installed::No) => {}
                     Ok(_) => {
                         if let Err(e) = remove(&at) {
-                            crate::append_hook_log(&format!("bridge: taking it off {} failed: {e:#}", at.address()));
+                            crate::append_hook_log(&format!("bridge: taking it off {} failed, trying again in a minute: {e:#}", at.address()));
+                            if let Ok(mut u) = unremoved.lock() {
+                                u.insert(at.machine_key(), (name, at));
+                            }
                         }
                     }
                     Err(e) => crate::append_hook_log(&format!("bridge: could not look at {}: {e:#}", at.address())),
@@ -759,6 +821,10 @@ impl Keeper {
         if let Ok(mut a) = AGREED.lock() {
             *a = agreed.to_vec();
         }
+        // Agreed to again before its folder could be deleted: it stays
+        if let Ok(mut u) = self.unremoved.lock() {
+            u.retain(|_, (name, _)| !agreed.contains(name));
+        }
         let before = self.agreed.replace(agreed.to_vec());
         let Some(before) = before else { return };
         for name in before.iter().filter(|b| !agreed.contains(b)) {
@@ -773,12 +839,13 @@ impl Keeper {
                 targets.push(at);
             }
             for at in targets {
-                self.held.remove(&at.machine_key());
-                let _ = std::thread::Builder::new().name("bridge remove".into()).spawn(move || {
-                    if let Err(e) = remove(&at) {
-                        crate::append_hook_log(&format!("bridge: taking it off {} failed: {e:#}", at.address()));
-                    }
-                });
+                let key = at.machine_key();
+                self.held.remove(&key);
+                if let Ok(mut u) = self.unremoved.lock() {
+                    u.insert(key.clone(), (name.clone(), at.clone()));
+                }
+                self.remove_tried.insert(key.clone(), Instant::now());
+                self.take_off(key, at);
             }
         }
     }
