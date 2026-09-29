@@ -12961,6 +12961,8 @@ function convoSpeaker(r) {
   }
   const n = f.job != null ? String(f.job) : "?";
   if (f.by === "tab") return (T["convo.from.tab"] || "From {tab}").replaceAll("{tab}", convoTabName(f.sender));
+  // A message another session of the CLI sent in, by the name that session goes by
+  if (f.by === "session") return (T["convo.from.session"] || "From another session ({name})").replaceAll("{name}", f.sender || "");
   if (f.by === "job" && f.via === "mail") return (T["convo.from.mail"] || "Job #{n} · new mail").replaceAll("{n}", n);
   if (f.by === "job" && f.sender) {
     return (T["convo.from.job.lead"] || "Job #{n} · {tab}").replaceAll("{n}", n).replaceAll("{tab}", convoTabName(f.sender));
@@ -15756,7 +15758,7 @@ function drawHead() {
   if (!head) return;
   const past = CV.past;
   const here = cvWhere && past && cvWhere.id === past.id ? cvWhere : null;
-  const key = JSON.stringify([past, cvFromAll, cvAll, here && [here.exists, here.folder, (here.homes || []).length]]);
+  const key = JSON.stringify([past, cvFromAll, cvAll, !!convoTab(), here && [here.exists, here.folder, (here.homes || []).length]]);
   if (head.dataset.key === key) return;
   head.dataset.key = key;
   head.textContent = "";
@@ -15764,6 +15766,16 @@ function drawHead() {
   if (cvFromAll) {
     head.append(el("button", {type:"button", class:"hback", onclick:() => convoModeTo(true)},
       "← " + (T["vault.back.list"] || "Every conversation")));
+  }
+  // A conversation opened by name stays while this tab is in front; the way
+  // back to what this tab is saying is here, not only in pressing another tab
+  if (past && convoTab()) {
+    head.append(el("button", {type:"button", class:"hback", onclick:() => {
+      CV.past = null;
+      CV.panel = null;
+      cvFromAll = false;
+      drawSide();
+    }}, T["convo.back.tab"] || "This tab's conversation"));
   }
   // Picking a conversation back up is for one no tab is having
   if (!past || !here || !here.ok) return;

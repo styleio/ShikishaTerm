@@ -84,6 +84,11 @@ pub struct Turn {
     /// pieces, when its last piece was written
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<i64>,
+    /// Another session of the CLI that sent it, by the name the record gives
+    /// it: words that reached this conversation as a message from elsewhere
+    /// rather than from the person at its prompt
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<String>,
 }
 
 /// A stretch of the conversation, oldest turn first.
@@ -690,6 +695,15 @@ fn look_at(line: &[u8]) -> Seen {
 
 /// One record, if it is somebody speaking.
 fn turn_of(record: &Value) -> Option<Turn> {
+    // Put in the person's place by the CLI itself, and marked as such: a note
+    // about a picture it was shown, a summary it carries a conversation on
+    // with, a message another session sent. Nobody typed these. The one among
+    // them that is somebody speaking -- another session -- says who
+    if put_there(record) {
+        let (name, body) = peer_of(record)?;
+        let text = body.trim().to_string();
+        return (!text.is_empty()).then(|| Turn { who: Who::You, text, at: None, when: when_of(record), peer: Some(name) });
+    }
     let message = message_of(record)?;
     let named = message.get("role").or_else(|| message.get("type")).and_then(Value::as_str)?;
     // "developer", "system", "tool", "info", "error" — written by machinery,
@@ -700,7 +714,25 @@ fn turn_of(record: &Value) -> Option<Turn> {
         Who::You => human_part(&said),
         Who::Ai => said.trim().to_string(),
     };
-    (!said.is_empty()).then_some(Turn { who, text: said, at: None, when: when_of(record) })
+    (!said.is_empty()).then_some(Turn { who, text: said, at: None, when: when_of(record), peer: None })
+}
+
+/// Whether a record says the CLI put it in the person's place itself rather
+/// than the person typing it (`isMeta`, `isCompactSummary`)
+fn put_there(record: &Value) -> bool {
+    ["isMeta", "isCompactSummary"].iter().any(|k| record.get(*k).and_then(Value::as_bool) == Some(true))
+}
+
+/// The session that sent a message from elsewhere, and what it said, where the
+/// record names one (`origin` of kind `peer`)
+fn peer_of(record: &Value) -> Option<(String, String)> {
+    let origin = record.get("origin")?;
+    if origin.get("kind").and_then(Value::as_str) != Some("peer") {
+        return None;
+    }
+    let name = origin.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or("?");
+    let body = origin.get("body").and_then(Value::as_str)?;
+    Some((name.to_string(), body.to_string()))
 }
 
 /// When a record says it was written: a `timestamp` beside the message, as
@@ -1839,6 +1871,22 @@ mod tests {
         let opened = work_at(&bytes, want.from, want.to, "");
         assert_eq!(opened.pieces.iter().filter(|p| p.kind == PieceKind::Call).count(), 2);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// What the CLI put in the person's place itself is not the person's: a
+    /// note about a picture, a summary, a message another session sent. The
+    /// last is somebody speaking, and says who
+    #[test]
+    fn what_the_cli_put_in_the_persons_place_is_not_the_persons() {
+        let image = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"[Image: original 2560x1720]"}]}}"#;
+        assert!(said(image).is_none(), "a note about a picture");
+        let summary = r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued"}}"#;
+        assert!(said(summary).is_none(), "a summary");
+        let peer = r#"{"type":"user","isMeta":true,"origin":{"kind":"peer","name":"violetear","body":"It is in main."},"message":{"role":"user","content":[{"type":"text","text":"Another Claude session sent a message:\n<cross-session-message from=\"x\">It is in main.</cross-session-message>"}]}}"#;
+        let turn = said(peer).expect("the other session's message");
+        assert_eq!((turn.who, turn.text.as_str(), turn.peer.as_deref()), (Who::You, "It is in main.", Some("violetear")));
+        let typed = r#"{"type":"user","origin":{"kind":"human"},"message":{"role":"user","content":"push it"}}"#;
+        assert_eq!(said(typed).expect("the person's line").peer, None);
     }
 
     #[test]

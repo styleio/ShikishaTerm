@@ -417,8 +417,13 @@ impl Ctx<'_> {
             }
             _ => Vec::new(),
         };
-        let persons: Vec<(Option<i64>, &str)> =
-            said.iter().filter(|(_, t)| t.who == Who::You).map(|(_, t)| (t.when, t.text.as_str())).collect();
+        // Another session's message says who sent it already; the rest are
+        // matched to what the app sent
+        let persons: Vec<(Option<i64>, &str)> = said
+            .iter()
+            .filter(|(_, t)| t.who == Who::You && t.peer.is_none())
+            .map(|(_, t)| (t.when, t.text.as_str()))
+            .collect();
         let matched = attribute(&persons, &sends);
         let mut matched = matched.into_iter();
 
@@ -453,9 +458,10 @@ impl Ctx<'_> {
         for (record, t) in said {
             let when = t.when.unwrap_or(carried);
             carried = when;
-            let from = match t.who {
-                Who::You => matched.next().flatten().map(|i| origin_json(&sends[i])),
-                Who::Ai => None,
+            let from = match (t.who, &t.peer) {
+                (Who::You, Some(name)) => Some(json!({"by": "session", "via": "peer", "sender": name})),
+                (Who::You, None) => matched.next().flatten().map(|i| origin_json(&sends[i])),
+                (Who::Ai, _) => None,
             };
             let at = t.at.unwrap_or(0);
             let mark = self.marks_of(&record).iter().find(|m| m.at == at).cloned();

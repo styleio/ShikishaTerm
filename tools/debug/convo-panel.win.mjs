@@ -346,6 +346,18 @@ try {
   check(await run(`cvAll`), 'the list stays, for the next one, and nothing says the shell is not an AI tab');
   await until(() => run(`document.getElementById("screen").textContent.includes("please review the change")`), 'the line in sight', 10000);
   check(true, 'the shell\'s terminal is scrolled to the line it was found on');
+  console.log('11b. a conversation opened from the list, and the way back to this tab\'s');
+  await run(`send({kind:"select", tab:${front}}); true`);
+  await until(() => run(`S.active === ${front}`), 'the stand-in in front');
+  const fromRecord = `[...document.querySelectorAll("#convopanel .vrow")].find(r => !r.textContent.includes(T["vault.live"]))`;
+  await until(() => run(`!!${fromRecord}`), 'a conversation from the records in the list', 30000);
+  await run(`${fromRecord}.click(); true`);
+  await until(() => run(`!!CV.past && !cvAll`), 'the conversation opened', 15000);
+  const back = `[...document.querySelectorAll("#convoHead .hback")].find(b => b.textContent === T["convo.back.tab"])`;
+  check(await run(`!!${back}`), 'there is a way back to this tab\'s conversation');
+  await run(`${back}.click(); true`);
+  await until(() => run(`!CV.past && CV.panel === "front"`), 'this tab\'s conversation again', 15000);
+  check(true, 'it goes back to this tab\'s conversation');
   await run(`send({kind:"select", tab:${front}}); convoModeTo(false); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); })(); true`);
   await until(() => run(`S.active === ${front}`), 'the stand-in in front again');
 
