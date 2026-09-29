@@ -207,8 +207,13 @@ fn now() -> u64 {
 /// rather than overwritten, since the person may go back to the build that
 /// wrote it
 fn read(file: &Path) -> Result<Store, String> {
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return Ok(Store::default());
+    // Only a file that is not there is no cards. One that is there and cannot
+    // be read -- not UTF-8, held by another program -- is refused: taken for
+    // empty, the next card typed would be written over every card in it
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Store::default()),
+        Err(e) => return Err(crate::i18n::tp("err.ideas.unreadable", &[("why", &e.to_string())])),
     };
     match serde_json::from_str::<Store>(text.trim_start_matches('\u{feff}')) {
         Ok(s) if s.version <= VERSION => Ok(s),

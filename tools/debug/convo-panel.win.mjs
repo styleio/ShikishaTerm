@@ -19,11 +19,11 @@
  * for a remote page:
  *   - the column has a Chat panel, and it says there is nothing yet
  *   - a line sent from the window's input bar reads "You · this PC"
- *   - a line sent from a remote page reads "You · remote"
+ *   - a line sent from a remote page reads "You · another device"
  *   - a line another tab sent with `shikisha send_to_tab` reads "From @shell",
  *     and is counted as sent by AI, not by the person
  *   - a question answered with a key pressed from a remote page is one row:
- *     how long it waited, and "answered by you (remote)"
+ *     how long it waited, and "answered by you (another device)"
  *   - Esc pressed at the window while the AI works is a stop "with Esc by
  *     you (this PC)"
  *   - the boxes hide and show kinds; tool runs open to what the tool was asked
@@ -247,7 +247,7 @@ try {
   console.log('3. sent from a remote page');
   check(await fromAfar({ kind: 'say', tab: front, text: 'and the docs too' }) === 200, 'the remote page is heard');
   await until(async () => !!(await row((r) => r.text === 'and the docs too')), 'the remote line');
-  check((await row((r) => r.text === 'and the docs too')).who.startsWith('You · remote'), 'it reads "You · remote"');
+  check((await row((r) => r.text === 'and the docs too')).who.startsWith('You · another device'), 'it reads "You · another device"');
 
   console.log('4. sent by another tab');
   // Automation does not type into a tab a person typed into in the last few
@@ -272,7 +272,7 @@ try {
   const answered = async () => { const w = await row((r) => r.key.startsWith('wait@')); return w && /answered by/.test(w.text) ? w : null; };
   await until(async () => !!(await answered()), 'the wait row with its answer', 20000);
   const wait = await answered();
-  check(/Waited \d+s for an answer · answered by you \(remote\)/.test(wait.text), 'it reads ' + JSON.stringify(wait.text));
+  check(/Waited \d+s for an answer · answered by you \(another device\)/.test(wait.text), 'it reads ' + JSON.stringify(wait.text));
 
   console.log('6. Esc at the window while it works');
   await run(`send({kind:"say", tab:${front}, text:"a slow job"}); true`);
@@ -317,7 +317,34 @@ try {
   await until(async () => { const r = await rows(); return r.length === 1 && r[0].text === 'fix the parser please'; }, '"Pinned only"', 15000);
   check(true, '"Pinned only" shows that row alone');
 
-  console.log('10. the record');
+  console.log('10. a word only in a note');
+  await run(`document.querySelectorAll("#convopanel .cshow input")[5].click(); true`);
+  await until(async () => (await rows()).length > 1, 'every row back');
+  await run(`CV.q = ""; convoAsk("mark", {record: CV.rows.find(r => r.text === "and the docs too").record,
+    at: CV.rows.find(r => r.text === "and the docs too").at, note: "the quokka ticket"}); true`);
+  await until(async () => JSON.parse(fs.readFileSync(MARKS, 'utf8')).marks.some((m) => m.note === 'the quokka ticket'), 'the note to be written', 10000);
+  // Reading the conversation again from nothing: only the search can find it
+  await run(`CV.rows = []; CV.rev++; (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = "quokka"; q.dispatchEvent(new Event("input")); })(); true`);
+  await until(async () => { const r = await rows(); return r.length === 1 && r[0].text === 'and the docs too'; }, 'the row the note is on', 15000);
+  check(true, 'the search finds the thing said by the words of its note');
+  await run(`(() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); convoRefresh(); })(); true`);
+
+  console.log('11. a match in the open tab, from the search of every conversation');
+  await run(`convoModeTo(true); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = "docs too"; q.dispatchEvent(new Event("input")); })(); true`);
+  await until(() => run(`!!document.querySelector("#convopanel .vrow")`), 'the list of conversations', 30000);
+  // The first row is the tab itself (found on its screen, "open")
+  await run(`document.querySelector("#convopanel .vrow").click(); true`);
+  await until(() => run(`!cvAll && CV.panel === "front" && !!CV.found`), 'the tab\'s conversation, searched for the same words', 20000);
+  check(await run(`!!document.querySelector("#convoHead .hback")`), 'the way back to the list is there');
+  const matched = await rows();
+  check(matched.length > 0 && matched.every((r) => /docs too/i.test(r.text)), 'only what holds the words: ' + matched.length + ' rows');
+  check(await run(`!!document.querySelector("#convopanel .clist mark.vmark")`), 'the words are marked');
+  await run(`document.querySelector("#convoHead .hback").click(); true`);
+  await until(() => run(`cvAll`), 'back to the list', 10000);
+  check(true, 'the way back returns to the list');
+  await run(`convoModeTo(false); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); })(); true`);
+
+  console.log('12. the record');
   const db = path.join(APP, 'data', 'conversations.db');
   check(fs.existsSync(db), 'data/conversations.db is there');
   const bytes = fs.readFileSync(db).toString('latin1') + (fs.existsSync(db + '-wal') ? fs.readFileSync(db + '-wal').toString('latin1') : '');

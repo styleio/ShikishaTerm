@@ -300,6 +300,18 @@ impl Ctx<'_> {
                 true => self.marks_of(record.id()).iter().filter(|m| m.pinned).map(|m| m.at).collect(),
                 false => HashSet::new(),
             };
+            // The notes written on this conversation hold words too: a thing
+            // said is found by what was written about it, as the panel finds
+            // it among what it has already read
+            let noted: HashSet<u64> = match q.is_empty() {
+                true => HashSet::new(),
+                false => self
+                    .marks_of(record.id())
+                    .iter()
+                    .filter(|m| crate::reader::find_in(&m.note, &q).is_some())
+                    .map(|m| m.at)
+                    .collect(),
+            };
             if pins && pinned.is_empty() {
                 continue;
             }
@@ -324,7 +336,7 @@ impl Ctx<'_> {
                     if pins && !pinned.contains(&at) {
                         continue;
                     }
-                    if !q.is_empty() && crate::reader::find_in(&t.text, &q).is_none() {
+                    if !q.is_empty() && crate::reader::find_in(&t.text, &q).is_none() && !noted.contains(&at) {
                         continue;
                     }
                     here.push((record.id().to_string(), t));
@@ -724,6 +736,16 @@ mod tests {
         assert_eq!(forgotten, vec!["gone-1", "gone-2"], "the live one is only not written yet");
     }
 
+    /// Every row of a tab's newest page
+    fn got_all(t: &Target, p: &Place) -> Value {
+        answer(t, "page", &json!({"want": 200}), &p.db(), &p.marks()).answer
+    }
+
+    /// Where the thing said with these words begins
+    fn found_at(page: &Value, text: &str) -> u64 {
+        page["rows"].as_array().unwrap().iter().find(|r| r["text"] == json!(text)).unwrap()["at"].as_u64().unwrap()
+    }
+
     #[test]
     fn a_search_finds_what_holds_the_words_and_a_pin_is_found_by_itself() {
         let p = Place::new("find");
@@ -746,6 +768,12 @@ mod tests {
         assert_eq!(pinned["rows"].as_array().unwrap().len(), 1);
         assert_eq!(pinned["rows"][0]["text"], json!("Fix the parser"));
         assert_eq!(pinned["rows"][0]["pin"], json!(true));
+        // A word only in a note finds the thing said it was written on
+        let thanks = found_at(&got_all(&t, &p), "thanks");
+        answer(&t, "mark", &json!({"record": "a", "at": thanks, "note": "Closed the Zanzibar ticket"}), &p.db(), &p.marks());
+        let by_note = answer(&t, "find", &json!({"q": "zanzibar"}), &p.db(), &p.marks()).answer;
+        assert_eq!(by_note["rows"].as_array().unwrap().len(), 1, "{by_note}");
+        assert_eq!((by_note["rows"][0]["text"].as_str(), by_note["rows"][0]["note"].as_str()), (Some("thanks"), Some("Closed the Zanzibar ticket")));
     }
 
     #[test]

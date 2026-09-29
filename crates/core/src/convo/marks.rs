@@ -58,8 +58,13 @@ pub fn path() -> PathBuf {
 static WRITING: Mutex<()> = Mutex::new(());
 
 fn read(file: &Path) -> Result<Store, String> {
-    let Ok(text) = std::fs::read_to_string(file) else {
-        return Ok(Store { version: VERSION, marks: Vec::new() });
+    // Only a file that is not there is no marks. One that is there and cannot
+    // be read -- not UTF-8, held by another program, not ours to open -- is
+    // refused: taken for empty, the next pin would be written over it
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Store { version: VERSION, marks: Vec::new() }),
+        Err(e) => return Err(crate::i18n::tp("err.marks.unreadable", &[("why", &e.to_string())])),
     };
     match serde_json::from_str::<Store>(text.trim_start_matches('\u{feff}')) {
         Ok(s) if s.version <= VERSION => Ok(s),
@@ -144,6 +149,12 @@ mod tests {
         std::fs::write(&f, "{ not json").unwrap();
         assert!(set(&f, "r", 1, Some(true), None).is_err());
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "{ not json");
+        // Not text at all: refused the same way, not taken for no marks
+        let bytes = [b'{', 0xff, 0xfe, b'}'];
+        std::fs::write(&f, bytes).unwrap();
+        assert!(on(&f, "r").is_err());
+        assert!(set(&f, "r", 1, Some(true), None).is_err());
+        assert_eq!(std::fs::read(&f).unwrap(), bytes, "what was there is still there");
         std::fs::write(&f, r#"{"version": 99, "marks": []}"#).unwrap();
         assert!(on(&f, "r").is_err(), "a later version's file is left alone");
         let _ = std::fs::remove_dir_all(f.parent().unwrap());

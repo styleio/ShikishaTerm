@@ -304,12 +304,22 @@ pub fn read_after_by(
     }
     // The end of what is there: a last line with no newline yet is still
     // being written, and is read the next time
-    let to = stop_at.unwrap_or(carried_at);
+    let end = stop_at.unwrap_or(carried_at);
     if stop_at.is_none() {
-        close(&mut open, &mut work, &waiting, to);
+        close(&mut open, &mut work, &waiting, end);
         settle(&mut found, &mut waiting);
     }
-    Ok(Later { turns: found, to, more: to < len, work })
+    // Read to the end of the record as it is now, the last exchange may still
+    // be going on -- an answer written a piece at a time, a tool still running.
+    // Reading on starts again at it, so it comes back whole (the same place,
+    // so the same thing said) rather than as the half already shown and a
+    // second half on its own
+    let reached_end = stop_at.is_none() && carried_at >= len;
+    let to = match reached_end {
+        true => found.iter().rev().find(|t| t.who == Who::You).and_then(|t| t.at).unwrap_or(end),
+        false => end,
+    };
+    Ok(Later { turns: found, to, more: !reached_end, work })
 }
 
 /// The same walk over a record read a piece at a time by `read_at` (from, how
@@ -1781,6 +1791,10 @@ mod tests {
         let rest = read_after(&path, first.to, 100, "").unwrap();
         assert_eq!(said(&rest.turns), vec!["two", "three", "done"]);
         assert!(!rest.more);
+        // The last exchange may still be going on: reading on starts at it again
+        let again = read_after(&path, rest.to, 100, "").unwrap();
+        assert_eq!(said(&again.turns), vec!["three", "done"]);
+        assert_eq!(again.turns[0].at, rest.turns[1].at, "the same place, so the same thing said");
         let both: Vec<Turn> = first.turns.into_iter().chain(rest.turns).collect();
         assert_eq!(said(&both), said(&back.turns), "forwards and backwards read the same conversation");
         let places = |ts: &[Turn]| ts.iter().map(|t| t.at).collect::<Vec<_>>();
