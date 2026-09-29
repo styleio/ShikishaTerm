@@ -17,6 +17,14 @@ once it reaches its first tagged release.
   the styles that shape it (and the source file, when the page's development
   build says). The same panel works from a phone, whose presses on the page
   pick the same way. Automation reads them with `shikisha.browser_picks`.
+- **Read a page's console.** The column on the right has a **Console** tab for
+  the page in view: what its code logs, errors nobody caught, and what the
+  browser says about it (a file that did not load, a request refused), with a
+  switch per kind, **Clear**, and **Hand to an AI** (a draft of the newest
+  lines). It starts listening when it is first opened on a page, with what the
+  page said since it last loaded -- listening to every page all the time would
+  trip sites that refuse a driven browser. The same tab works on a phone.
+  Automation reads it with `shikisha.browser_console`.
 
 ## [0.22.1] - 2026-09-29
 

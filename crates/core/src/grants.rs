@@ -208,6 +208,9 @@ pub const CATALOG: &[Entry] = &[
     // what the page said of them -- nothing the page does not already show
     e("browser_pick", Group::Browser, true, true, false),
     e("browser_picks", Group::Browser, true, true, false),
+    // What a page says on its console: the page's own words about itself,
+    // with known secrets taken out like every other read of a page
+    e("browser_console", Group::Browser, true, true, false),
     // -- Handing a run between participants ----------------------------------
     e("contract", Group::Handoff, true, true, false),
     e("exchange_new", Group::Handoff, true, true, false),

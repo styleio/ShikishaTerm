@@ -254,6 +254,9 @@ pub enum Cmd {
         user: String,
         pass: String,
     },
+    /// Start or stop hearing a page's console. While on, every line it says
+    /// comes back as `Ev::ConsoleLine`
+    Console { to: Option<String>, on: bool },
     /// Put the window away. The program, its tabs and the phone's connection
     /// go on; only the picture is gone, and the icon in the notification area
     /// is how it comes back
@@ -781,6 +784,11 @@ impl Browser {
             to: to.map(str::to_string),
             on,
         })
+    }
+
+    /// Start or stop hearing a page's console (`Ev::ConsoleLine` per line)
+    pub fn console(&self, to: Option<&str>, on: bool) -> Result<()> {
+        self.send(Cmd::Console { to: to.map(str::to_string), on })
     }
 
     /// Inject input into the screencast view (finger traces, swipes, text)
@@ -1688,6 +1696,10 @@ fn run_window(
     // Automatic handling of JS dialogs. One per child. Without this, automation freezes on things like "leave this page?" confirmations
     let mut dialogs: std::collections::HashMap<Option<String>, cdp::DialogArm> =
         std::collections::HashMap::new();
+    // Pages whose console is being heard. One per page, held until it is let
+    // go of or the page closes; the lines leave as reports
+    let mut consoles: std::collections::HashMap<Option<String>, cdp::ConsoleArm> =
+        std::collections::HashMap::new();
     // The most recent frame's CSS pixel dimensions (used to convert
     // coordinates for input injection).
     // Frame notification and input injection run on the same thread, so `Rc<Cell>` is enough
@@ -1869,6 +1881,20 @@ fn run_window(
                             )),
                         }
                     }
+                }
+                Cmd::Console { to, on } => {
+                    if !on {
+                        consoles.remove(&to);
+                    } else if !consoles.contains_key(&to)
+                        && let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
+                            let tx = ev_tx.clone();
+                            let from = to.clone();
+                            if let Some(arm) = cdp::arm_console(&cdp::webview_of(v), move |entry| {
+                                let _ = tx.send(Ev::ConsoleLine { from: from.clone(), entry });
+                            }) {
+                                consoles.insert(to, arm);
+                            }
+                        }
                 }
                 Cmd::AddChild { name, url, rect, profile, through } => {
                     // Creating a WebView2 controller runs synchronously ON THIS
@@ -2098,6 +2124,7 @@ fn run_window(
                     }
                     dialogs.remove(&Some(name.clone()));
                     auths.remove(&Some(name.clone()));
+                    consoles.remove(&Some(name.clone()));
                     // If this child was placed in private mode, clean up
                     // its throwaway folder. WebView2 can take a moment to
                     // release the lock, so this is best-effort
@@ -3230,6 +3257,47 @@ mod cdp {
         // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
         call(webview, "Page.enable", "{}");
         Some(DialogArm { receivers: vec![opening] })
+    }
+
+    /// Hearing a page's console. Only while this is held: dropping it lets go
+    /// of every subscription and turns the log reports back off
+    pub struct ConsoleArm {
+        pub receivers: Vec<(ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
+        pub webview: ICoreWebView2,
+    }
+
+    impl Drop for ConsoleArm {
+        /// `Runtime` stays on: the page's automation evaluates through it,
+        /// and turning it off would pull it out from under a run. `Log` is
+        /// only ever on for this
+        fn drop(&mut self) {
+            unhook(&self.receivers);
+            call(&self.webview, "Log.disable", "{}");
+        }
+    }
+
+    /// Start hearing a page's console: what its code logs, what it throws
+    /// and nobody catches, and what the browser says about it. Each becomes
+    /// one line (`console::entry_of`) handed to `on`
+    pub fn arm_console<F>(webview: &ICoreWebView2, on: F) -> Option<ConsoleArm>
+    where
+        F: Fn(serde_json::Value) + 'static,
+    {
+        let on = std::rc::Rc::new(on);
+        let mut receivers = Vec::new();
+        for event in shikisha_core::console::EVENTS {
+            let tell = std::rc::Rc::clone(&on);
+            let heard = subscribe(webview, event, move |v| {
+                if let Some(entry) = shikisha_core::console::entry_of(event, v, shikisha_core::sqlite::now_ms()) {
+                    tell(entry);
+                }
+            })?;
+            receivers.push(heard);
+        }
+        for domain in shikisha_core::console::DOMAINS {
+            call(webview, &format!("{domain}.enable"), "{}");
+        }
+        Some(ConsoleArm { receivers, webview: webview.clone() })
     }
 
     /// Force the current screen out as one frame (re-issues startScreencast).
@@ -4743,6 +4811,7 @@ impl BrowserHost for Browser {
         }
     }
     fn record(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::record(self, to, on) }
+    fn console(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::console(self, to, on) }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {
         pageops::find(self, to, sel, timeout_ms)

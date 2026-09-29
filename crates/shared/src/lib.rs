@@ -574,6 +574,14 @@ pub enum Ev {
     /// one, one taken out, all cleared, or all handed to an AI tab as a
     /// draft. `page` is the browser tab's key; `act` is one of a short list
     Design { page: String, act: String, args: serde_json::Value },
+    /// The column's Console panel asking about a page's console: start
+    /// listening and send what is kept (`read`), empty it (`clear`), or hand
+    /// it to an AI tab as a draft (`send`). `page` is the browser tab's key
+    Console { page: String, act: String, args: serde_json::Value },
+    /// One line a page's console said, as the browser that draws it heard it
+    /// (see `console::entry_of`). Made by the host, never read off a message:
+    /// a page cannot claim to have said something on its console
+    ConsoleLine { from: Option<String>, entry: serde_json::Value },
     /// ▶ run mode: Lua typed into the composer, to run against the shown
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
@@ -947,6 +955,12 @@ pub trait BrowserHost {
         anyhow::bail!("this browser cannot say which program plays a page")
     }
     fn record(&self, to: Option<&str>, on: bool) -> anyhow::Result<()>;
+    /// Start (or stop) hearing a page's console: from then on every line it
+    /// says arrives as an `Ev::ConsoleLine`. Answering is optional -- a browser
+    /// that cannot listen says so, and the panel says that to the person
+    fn console(&self, _to: Option<&str>, _on: bool) -> anyhow::Result<()> {
+        anyhow::bail!("this browser does not report what a page says on its console")
+    }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
     fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<OpReport>;
@@ -1341,6 +1355,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("picked") => Ev::Picked {
             from: None,
             item: v.get("item").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        Some("console") => Ev::Console {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
         },
         Some("design") => Ev::Design {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

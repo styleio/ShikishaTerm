@@ -215,6 +215,9 @@ impl BrowserHost for Placed {
     fn record(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         self.on(to, |b| b.record(to, on))
     }
+    fn console(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
+        self.on(to, |b| b.console(to, on))
+    }
     fn find(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<Found> {
         self.on(to, |b| b.find(to, sel, ms))
     }

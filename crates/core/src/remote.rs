@@ -388,6 +388,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // as it does at the window; these are only the panel's buttons, and a
         // draft is no more than the phone's own composer already types
         Ev::Pick { .. } | Ev::Design { .. } => true,
+        // The column's Console panel on the page being watched: reading what
+        // the page said, emptying the list, handing it to an AI tab as a
+        // draft -- what the window's panel does, and nothing it does not
+        Ev::Console { .. } => true,
 
         // ── Refused, each for a reason written beside it ─────────────────
         //
@@ -415,6 +419,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::JsError { .. }
         | Ev::Recorded { .. }
         | Ev::Picked { .. }
+        | Ev::ConsoleLine { .. }
         | Ev::Touched { .. }
         | Ev::Compose { .. }
         | Ev::Pen { .. } => false,
@@ -3194,7 +3199,7 @@ mod tests {
             // Kept on this machine on purpose
             "Paste", "Password",
             // What this PC's own pages report
-            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "Touched", "Compose", "Pen",
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "ConsoleLine", "Touched", "Compose", "Pen",
             // This PC's window, tray and keys
             "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own
