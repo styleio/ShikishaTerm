@@ -130,7 +130,7 @@ if [ "$VERSION" = latest ]; then
     [ -n "$VERSION" ] || die "could not find out which release is the newest"
 fi
 
-NAME="shikisha-serve-$VERSION-$ARCH-linux.tar.gz"
+NAME="shikisha-server-$VERSION-$ARCH-linux.tar.gz"
 BASE=${SHIKISHA_INSTALL_BASE:-"https://github.com/$REPO/releases/download/$VERSION"}
 
 TMP=$(mktemp -d)
@@ -170,15 +170,15 @@ say "  signature ok"
 # ── put it where it goes ──────────────────────────────────────────────────
 mkdir -p "$TMP/unpacked"
 tar -xzf "$TMP/$NAME" -C "$TMP/unpacked"
-BIN="$TMP/unpacked/shikisha-serve"
-[ -f "$BIN" ] || die "the archive does not hold shikisha-serve"
+BIN="$TMP/unpacked/shikisha-server"
+[ -f "$BIN" ] || die "the archive does not hold shikisha-server"
 chmod 755 "$BIN"
 
 mkdir -p "$PREFIX" 2>/dev/null || true
 [ -w "$PREFIX" ] ||
     die "$PREFIX is not yours to write to. Make it so, or pass --prefix somewhere that is"
-install -m 755 "$BIN" "$PREFIX/shikisha-serve"
-say "  installed $PREFIX/shikisha-serve"
+install -m 755 "$BIN" "$PREFIX/shikisha-server"
+say "  installed $PREFIX/shikisha-server"
 
 case ":$PATH:" in
     *":$PREFIX:"*) ;;
@@ -193,7 +193,7 @@ UNIT_SRC="$TMP/unpacked/shikisha.service"
 if [ "$SERVICE" != no ] && [ -f "$UNIT_SRC" ] && command -v systemctl >/dev/null 2>&1; then
     UNIT="$HOME/.config/systemd/user/shikisha.service"
     mkdir -p "$(dirname "$UNIT")"
-    sed "s|^ExecStart=.*|ExecStart=$PREFIX/shikisha-serve|" "$UNIT_SRC" > "$UNIT"
+    sed "s|^ExecStart=.*|ExecStart=$PREFIX/shikisha-server|" "$UNIT_SRC" > "$UNIT"
     systemctl --user daemon-reload 2>/dev/null || true
     say "  service file at $UNIT"
     if [ "$SERVICE" = yes ]; then
@@ -205,7 +205,7 @@ fi
 
 say ""
 say "Next:"
-say "  $PREFIX/shikisha-serve                     run it here, and see the board's address"
+say "  $PREFIX/shikisha-server                    run it here, and see the board's address"
 if [ "$SERVICE" = ask ]; then
     say "  systemctl --user enable --now shikisha    keep it running"
     say "  loginctl enable-linger \"\$USER\"            and keep it running after you log out"

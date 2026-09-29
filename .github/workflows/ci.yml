@@ -55,10 +55,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
+        run: cargo build -p shikisha-core -p shikisha-shared -p shikisha-server --locked --verbose
 
       - name: Test
-        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked --verbose
+        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-server --locked --verbose
 
       # Sending a screen as video from a system with no encoder of its own.
       # Off by default, so without this step it would compile on nobody's
@@ -78,9 +78,9 @@ jobs:
           rustup target add x86_64-unknown-linux-musl
           CC_x86_64_unknown_linux_musl=musl-gcc \
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc \
-            cargo build --release -p shikisha-serve -p shikisha-bridge --locked \
+            cargo build --release -p shikisha-server -p shikisha-bridge --locked \
                         --target x86_64-unknown-linux-musl
-          for b in shikisha-serve shikisha-bridge; do
+          for b in shikisha-server shikisha-bridge; do
             file target/x86_64-unknown-linux-musl/release/$b > /tmp/what
             cat /tmp/what
             grep -qE "static-pie linked|statically linked" /tmp/what
@@ -119,12 +119,12 @@ jobs:
         run: |
           sudo apt-get install -y rpm
           mkdir -p /tmp/pkg
-          sh packaging/linux/mkpkg.sh              target/x86_64-unknown-linux-musl/release/shikisha-serve v0.0.0 x86_64 /tmp/pkg
+          sh packaging/linux/mkpkg.sh              target/x86_64-unknown-linux-musl/release/shikisha-server v0.0.0 x86_64 /tmp/pkg
           dpkg-deb -c /tmp/pkg/*.deb > /tmp/deb.list
-          grep -q usr/bin/shikisha-serve /tmp/deb.list
+          grep -q usr/bin/shikisha-server /tmp/deb.list
           grep -q usr/lib/systemd/user/shikisha.service /tmp/deb.list
           rpm -qpl /tmp/pkg/*.rpm > /tmp/rpm.list 2>/dev/null
-          grep -q /usr/bin/shikisha-serve /tmp/rpm.list
+          grep -q /usr/bin/shikisha-server /tmp/rpm.list
 
       # The repository tree. There is no key here, so nothing is signed, but
       # this shows which files come out, where, and under what names

@@ -1,12 +1,12 @@
 [package]
-name = "shikisha-serve"
+name = "shikisha-server"
 version = "0.22.0"
 edition = "2024"
 description = "SHIKISHA with no window: the runtime, serving its board over the network."
 license = "MIT"
 
 [[bin]]
-name = "shikisha-serve"
+name = "shikisha-server"
 path = "src/main.rs"
 
 [features]

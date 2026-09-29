@@ -7,9 +7,9 @@
 
 /// What it answers when asked, rather than starting up.
 const HELP: &str = "\
-shikisha-serve -- SHIKISHA with no window
+shikisha-server -- SHIKISHA with no window
 
-  shikisha-serve            open the tabs in the settings and serve the board
+  shikisha-server           open the tabs in the settings and serve the board
 
 It reads its settings, and keeps everything it is given, under one folder:
 
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
         match arg.as_str() {
             "-V" | "--version" => {
                 println!(
-                    "shikisha-serve {} ({})",
+                    "shikisha-server {} ({})",
                     env!("CARGO_PKG_VERSION"),
                     shikisha_core::build_rev()
                 );
@@ -41,8 +41,8 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             other => {
-                eprintln!("shikisha-serve: unknown option: {other}");
-                eprintln!("try: shikisha-serve --help");
+                eprintln!("shikisha-server: unknown option: {other}");
+                eprintln!("try: shikisha-server --help");
                 std::process::exit(2);
             }
         }

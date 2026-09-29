@@ -371,7 +371,7 @@ fn run_split() -> Result<()> {
 
 /// Nowhere else yet. The pieces that make the pair work -- the icon, and the
 /// invisible window it hangs on -- are Windows' own, and a runtime on a server
-/// is already what `shikisha-serve` is
+/// is already what `shikisha-server` is
 #[cfg(not(windows))]
 fn run_split() -> Result<()> {
     anyhow::bail!("running as two programs is only available on Windows")

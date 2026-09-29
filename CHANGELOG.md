@@ -8,6 +8,12 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The program with no window is called `shikisha-server`.** It was
+  `shikisha-serve`; the program, its manual page (`man shikisha-server`) and
+  the Linux downloads carry the new name. The package is still `shikisha`, and
+  the service is still `systemctl --user … shikisha`.
+
 ## [0.22.0] - 2026-09-29
 
 ### Added

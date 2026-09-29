@@ -35,12 +35,12 @@ esac
 root="$WORK/root"
 mkdir -p "$root/usr/bin" "$root/usr/lib/systemd/user" "$root/usr/lib/systemd/user-preset" \
          "$root/usr/share/man/man1" "$root/usr/share/doc/shikisha"
-install -m 755 "$BIN" "$root/usr/bin/shikisha-serve"
+install -m 755 "$BIN" "$root/usr/bin/shikisha-server"
 install -m 644 "$HERE/shikisha.service" "$root/usr/lib/systemd/user/shikisha.service"
 install -m 644 "$HERE/90-shikisha.preset" "$root/usr/lib/systemd/user-preset/90-shikisha.preset"
-sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/shikisha-serve|' "$root/usr/lib/systemd/user/shikisha.service"
-gzip -9nc "$HERE/shikisha-serve.1" > "$root/usr/share/man/man1/shikisha-serve.1.gz"
-chmod 644 "$root/usr/share/man/man1/shikisha-serve.1.gz"
+sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/shikisha-server|' "$root/usr/lib/systemd/user/shikisha.service"
+gzip -9nc "$HERE/shikisha-server.1" > "$root/usr/share/man/man1/shikisha-server.1.gz"
+chmod 644 "$root/usr/share/man/man1/shikisha-server.1.gz"
 install -m 644 "$HERE/../../LICENSE" "$root/usr/share/doc/shikisha/copyright"
 
 DESCRIPTION="Run several AI coding agents side by side, and watch them from anywhere.
@@ -100,10 +100,10 @@ no window: one static binary and a systemd user service.
 cp -a $root/. %{buildroot}/
 
 %files
-/usr/bin/shikisha-serve
+/usr/bin/shikisha-server
 /usr/lib/systemd/user/shikisha.service
 /usr/lib/systemd/user-preset/90-shikisha.preset
-/usr/share/man/man1/shikisha-serve.1.gz
+/usr/share/man/man1/shikisha-server.1.gz
 %license /usr/share/doc/shikisha/copyright
 
 %changelog

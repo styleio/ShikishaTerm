@@ -4443,7 +4443,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "shikisha-serve"
+name = "shikisha-server"
 version = "0.22.0"
 dependencies = [
  "anyhow",

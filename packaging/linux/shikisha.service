@@ -36,7 +36,7 @@ Type=simple
 # started by hand from a terminal, it asks instead.
 #
 #LoadCredential=shikisha-master:/etc/shikisha/master
-ExecStart=/usr/local/bin/shikisha-serve
+ExecStart=/usr/local/bin/shikisha-server
 WorkingDirectory=%h
 
 # A service is started with almost nothing in its environment, and the tools it

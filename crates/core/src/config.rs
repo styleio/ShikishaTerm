@@ -5956,7 +5956,7 @@ pub fn root_dir() -> std::path::PathBuf {
 ///
 /// A folder someone unpacked and runs out of keeps the portable promise: its
 /// settings are the ones sitting beside it. A copy installed by `install.sh`
-/// is at `/usr/local/bin/shikisha-serve`, which belongs to root, so its things
+/// is at `/usr/local/bin/shikisha-server`, which belongs to root, so its things
 /// go where a person's things go on this system -- `XDG_DATA_HOME`, and
 /// `~/.local/share` when that is not set. `SHIKISHA_HOME` overrides both, for
 /// running several boxes on one machine.

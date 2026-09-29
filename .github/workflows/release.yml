@@ -187,13 +187,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Test
-        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-serve --locked
+        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-server --locked
 
       - name: Build
         run: |
           sudo apt-get update -qq && sudo apt-get install -y musl-tools
           rustup target add ${{ matrix.target }}
-          cargo build --release --locked -p shikisha-serve -p shikisha-bridge --target ${{ matrix.target }}
+          cargo build --release --locked -p shikisha-server -p shikisha-bridge --target ${{ matrix.target }}
         # Named per target rather than as a bare CC: a bare one is also handed
         # to the build scripts, which are compiled for this machine and not for
         # what is being built
@@ -207,7 +207,7 @@ jobs:
       # something has fallen back to dynamic linking
       - name: It is one file that needs nothing
         run: |
-          BIN=target/${{ matrix.target }}/release/shikisha-serve
+          BIN=target/${{ matrix.target }}/release/shikisha-server
           file "$BIN" > /tmp/what
           cat /tmp/what
           grep -qE "static-pie linked|statically linked" /tmp/what
@@ -226,11 +226,11 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           case "$VERSION" in v*) ;; *) VERSION=v0.0.0-dryrun ;; esac
-          BIN=target/${{ matrix.target }}/release/shikisha-serve
+          BIN=target/${{ matrix.target }}/release/shikisha-server
           mkdir -p tar out
           cp "$BIN" packaging/linux/shikisha.service tar/
-          tar -czf "out/shikisha-serve-$VERSION-${{ matrix.arch }}-linux.tar.gz" \
-              -C tar shikisha-serve shikisha.service
+          tar -czf "out/shikisha-server-$VERSION-${{ matrix.arch }}-linux.tar.gz" \
+              -C tar shikisha-server shikisha.service
           sudo apt-get install -y rpm
           sh packaging/linux/mkpkg.sh "$BIN" "$VERSION" "${{ matrix.arch }}" out
           ls -la out
