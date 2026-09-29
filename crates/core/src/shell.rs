@@ -4249,6 +4249,13 @@ const REMOTE = {{REMOTE}};
 // the wire. Answered from the channel a window of ours always has and a
 // browser never does, so nothing has to be told and nothing can be claimed
 const OURS = !!(window.ipc && window.ipc.postMessage);
+// ...and a third: whether the person looking is at the PC the tabs run on.
+// The window the program draws always is; a phone never is; and the window of
+// a program split in two is, though its state comes over the wire like a
+// phone's. What opens something on this PC -- a program, Explorer, this PC's
+// browser -- is offered only where this is true. Said by the app when it
+// serves the page, because only the app knows who it handed its key to
+const AT_PC = {{AT_PC}};
 // A page not in a window of ours draws no frame for one: there is nothing
 // there to take hold of, and a ✕ that closed somebody else's window would be
 // a surprise. The class does it once, before the first frame is drawn
@@ -4699,7 +4706,7 @@ function drawTabs() {
   }
   // Once, after the first answer an AI has finished here: a star, if you
   // like it. On the window only -- the page it opens is this PC's
-  if (S.thanks && OURS) {
+  if (S.thanks && OURS && AT_PC) {
     const kind = S.thanks;
     nav.append(el("div", {class:"thanks"},
       el("div", {class:"tt"}, T["tui.thanks.title"] || ""),
@@ -5679,7 +5686,7 @@ function drawFailed(t) {
     // The ordinary restart: for this kind of tab it tries to start it again
     el("button", {class:"go", onclick:() => send({kind:"restart"})}, T["tui.failed.retry"] || ""),
     f.install_url
-      ? (REMOTE
+      ? (!AT_PC
           ? el("a", {href:f.install_url, target:"_blank", rel:"noopener"}, T["tui.failed.install"] || "")
           : el("button", {onclick:() => send({kind:"installhelp"})}, T["tui.failed.install"] || ""))
       : null,
@@ -10800,7 +10807,7 @@ function drawStatus() {
     // the name matches the deed. A fixed token says so: the cut is just as real,
     // but that phone can open the link again, and the button must not pretend
     // otherwise.
-    (!REMOTE && S.remote_conn) ? el("span",
+    (AT_PC && S.remote_conn) ? el("span",
       {class:"pill live", id:"remotecut",
        title:(S.remote_sticky
          ? (T["tui.remote.cut.title.sticky"] || "A phone is connected — click to disconnect (the fixed token stays, so that phone can reconnect from the link)")
@@ -14933,7 +14940,7 @@ function linkChoices(w, d) {
     out.push({label: T["tui.link.page"], run: () => linkDo(w, "page")});
     // The PC's browser opens on the PC. From a phone the same wish is this
     // device's own browser -- one it can see
-    if (REMOTE) out.push({label: T["tui.link.here"], run: () => window.open(w.go, "_blank", "noopener")});
+    if (!AT_PC) out.push({label: T["tui.link.here"], run: () => window.open(w.go, "_blank", "noopener")});
     else out.push({label: T["tui.link.pc"], run: () => linkDo(w, "pc")});
     copy(T["tui.link.copy_url"], w.go, "tui.urls.copied");
     return out;
@@ -14948,7 +14955,7 @@ function linkChoices(w, d) {
   if (d.found && !d.dir) out.push(linkEdit(w, d));
   // Programs and folders of this PC open on this PC's screen: from a phone
   // there would be nothing to see, so they are not offered there
-  if (!REMOTE && d.found) {
+  if (AT_PC && d.found) {
     if (d.dir) out.push({label: T["tui.link.open_dir"], run: () => linkDo(w, "reveal")});
     else {
       if (!d.runs) out.push({label: T["tui.link.app"], run: () => linkDo(w, "app")});
@@ -14972,7 +14979,7 @@ function linkNote(w, d) {
   if (w.lk === "web" || d.far) return "";
   if (!d.ok) return T["tui.link.nowhere"] || "";
   if (!d.found) return T["tui.link.missing"] || "";
-  if (d.runs && !REMOTE) return T["tui.link.runs"] || "";
+  if (d.runs && AT_PC) return T["tui.link.runs"] || "";
   return "";
 }
 function linkShow(w, d) {
@@ -21713,6 +21720,10 @@ pub enum Served {
     /// By a runtime somewhere else. The page opens the socket itself, and asks
     /// the process showing it for nothing
     Remote,
+    /// Over the socket like `Remote`, to this PC's own window of a program
+    /// split in two: the person looking is at the PC the tabs run on, so what
+    /// opens on this PC is theirs to open (see `remote::allowed_from_here`)
+    Here,
 }
 
 /// The shell with the phone's pairing mode baked in (sticky: keep the
@@ -21808,8 +21819,12 @@ fn built(sticky: bool, by: Served) -> String {
         .replace("{{ACTIONS}}", &actions_json())
         .replace("{{STICKY}}", if sticky { "true" } else { "false" })
         .replace("{{REMOTE}}", match by {
-            Served::Remote => "true",
+            Served::Remote | Served::Here => "true",
             Served::Window => "false",
+        })
+        .replace("{{AT_PC}}", match by {
+            Served::Window | Served::Here => "true",
+            Served::Remote => "false",
         })
         .replace("{{PWA}}", &crate::pwa::head(sticky))
         .replace(
@@ -23836,7 +23851,7 @@ mod tests {
         );
         assert!(PAGE.contains("if (t.textContent !== text) t.textContent = text;"), "it rebuilds every frame");
         assert!(PAGE.contains(r#"const next = (S.coach || 0) === 2 ? " pulse" : "";"#), "the + does not light up on step 2");
-        assert!(PAGE.contains("if (S.thanks && OURS) {"), "the thank-you pill shows where nobody is sitting");
+        assert!(PAGE.contains("if (S.thanks && OURS && AT_PC) {"), "the thank-you pill shows where nobody is sitting");
         assert!(PAGE.contains(r#"send({kind:"thanks", open:true})"#) && PAGE.contains(r#"send({kind:"thanks", open:false})"#));
         // The update card: the same part, both buttons answer, neither installs
         assert!(PAGE.contains("if (S.update) {"), "there is no update pill");

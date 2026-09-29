@@ -24,6 +24,12 @@
  *     cargo build
  *     node tools/debug/term-links.win.mjs
  *
+ * `LINKS_SPLIT=1` runs the same with the program split in two (Settings >
+ * Basic > Screen and work): the window is then a page on the board like the
+ * phone's, and is checked to be known as this PC's own window -- offered what
+ * opens on this PC, let through a press only it may make, and kept out of the
+ * list of devices.
+ *
  * Needs Windows, Node and Chrome (for the phone). Isolated the way a new-user
  * run is: its own folder and LOCALAPPDATA. What would open on this PC's screen
  * (the default app, Explorer, this PC's browser) is not pressed. Photographs
@@ -47,6 +53,7 @@ const CONFIG = path.join(APP, 'config', 'config.json');
 // The words the screen uses, in the language asked for (`LINKS_LANG=ja`): the
 // checks read the lists by what they say, so they read them in that language
 const LANG = process.env.LINKS_LANG || 'en';
+const SPLIT = process.env.LINKS_SPLIT === '1';
 const readLang = (l) => JSON.parse(fs.readFileSync(path.join(ROOT, 'lang', l + '.json'), 'utf8'));
 const L = { ...readLang('en'), ...(LANG === 'en' ? {} : readLang(LANG)) };
 const AT12 = L['tui.link.edit_line'].replaceAll('{line}', '12');
@@ -109,7 +116,11 @@ const PHONE_KEY = 'linkphone0123456789abcd';
 const writeConfig = (more = {}) => fs.writeFileSync(CONFIG, JSON.stringify({
   language: LANG,
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
-  desks: [{ name: 'Check', id: 'check', folders: [{ cwd: WORK, tabs: [{ name: 'shell', id: 'shell', command: 'node say.mjs' }] }] }],
+  desks: [{ name: 'Check', id: 'check', folders: [{ cwd: WORK, tabs: [{ name: 'shell', id: 'shell', command: 'node say.mjs' },
+    // Split, a prompt to paste into: the right-click paste is the other press
+    // only this PC's window may make
+    ...(SPLIT ? [{ name: 'typing', id: 'typing', command: 'cmd.exe' }] : [])] }] }],
+  ...(SPLIT ? { split: true } : {}),
   ...more,
 }, null, 2));
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
@@ -149,7 +160,7 @@ async function connect(target, name) {
   };
   const shot = async (label) => {
     const r = await send('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(SHOTS, `term-links-${LANG}-${label}.png`), Buffer.from(r.data, 'base64'));
+    fs.writeFileSync(path.join(SHOTS, `term-links-${LANG}${SPLIT ? '-split' : ''}-${label}.png`), Buffer.from(r.data, 'base64'));
   };
   // The middle of the first element of a place, found by what it opens
   const placeAt = (go) => run(`(() => { const e = [...document.querySelectorAll("#screen .lk")].find(x => x.dataset.go === ${JSON.stringify(go)});
@@ -196,12 +207,21 @@ function findChrome() {
 
 let boardTarget;
 try {
+  // Split in two, the window is a process of its own showing the board's
+  // page, opened with the key it was handed (`here=`); otherwise it is the
+  // window's own page. Looked for in every browser this copy started
   await until(async () => {
-    const p = portOf('shell');
-    if (!p) return false;
-    boardTarget = (await targetsOf(p)).find((t) => t.type === 'page');
-    return !!boardTarget;
-  }, 'the window\'s page', 40000);
+    const base = path.join(LOCAL, 'ShikishaTerm', 'webview2');
+    if (!fs.existsSync(base)) return false;
+    for (const envName of fs.readdirSync(base)) {
+      const p = portOf(envName);
+      if (!p) continue;
+      const pages = (await targetsOf(p).catch(() => [])).filter((t) => t.type === 'page');
+      boardTarget = pages.find((t) => (SPLIT ? /[?&]here=/.test(t.url) : envName === 'shell'));
+      if (boardTarget) return true;
+    }
+    return false;
+  }, 'the window\'s page', 60000);
 } catch (e) { stopApp(); die(e.message); }
 const board = await connect(boardTarget, 'the board');
 const backToShell = async () => {
@@ -212,6 +232,41 @@ const texts = (m) => (m ? m.rows.filter((r) => !r.hidden).map((r) => r.text) : [
 
 try {
   await until(() => board.run('!!S && document.querySelectorAll("#screen .lk").length >= 6'), 'the places on the screen', 30000);
+
+  if (SPLIT) {
+    console.log('0. the window of a program split in two is this PC\'s own window');
+    check(await board.run('REMOTE === true && AT_PC === true'), 'its page comes from the board and knows it is at this PC');
+    const devices = () => {
+      const b = path.join(APP, 'data', 'clients.json');
+      return fs.existsSync(b) ? (JSON.parse(fs.readFileSync(b, 'utf8')).clients || []).length : 0;
+    };
+    check(devices() === 0, 'it is not written into the list of devices');
+    check(!(await board.run('!!document.getElementById("remotecut")')), 'it is not taken for a phone ("a phone is connected" is not up)');
+    // A press a phone is refused, with an effect that can be read without
+    // opening anything on this PC's screen: "not now" on the star card
+    const asked = path.join(APP, 'data', 'thanks-asked');
+    await board.run('send({kind:"thanks", open:false}); true');
+    await until(() => fs.existsSync(asked), 'the answer to be written down', 10000).catch(() => {});
+    check(fs.existsSync(asked), 'a press only this PC\'s window may make reached the app');
+    // This PC's clipboard, pasted by a right-click on the window. Whatever
+    // was on the clipboard is put back afterwards
+    const kept = path.join(RUN, 'clipboard.txt');
+    ps('-Command', `Get-Clipboard -Raw | Set-Content -NoNewline -Encoding utf8 -LiteralPath '${kept}'`);
+    const word = 'pasted' + Math.random().toString(36).slice(2, 8);
+    ps('-Command', `Set-Clipboard -Value '${word}'`);
+    try {
+      await board.run('send({kind:"select", tab: S.tabs.find(t => t.name === "typing").index}); true');
+      await until(() => board.run('S.tabs.find(t => t.index === S.active).name === "typing"'), 'the prompt in front');
+      await sleep(1500);
+      await board.run('send({kind:"paste"}); true');
+      await until(() => board.run(`document.getElementById("screen").textContent.includes(${JSON.stringify(word)})`), 'the paste on screen', 10000).catch(() => {});
+      check(await board.run(`document.getElementById("screen").textContent.includes(${JSON.stringify(word)})`), 'a right-click pasted this PC\'s clipboard into the tab');
+    } finally {
+      ps('-Command', `if (Test-Path -LiteralPath '${kept}') { Get-Content -Raw -Encoding utf8 -LiteralPath '${kept}' | Set-Clipboard }`);
+    }
+    await board.run('send({kind:"select", tab: S.tabs.find(t => t.name === "shell").index}); true');
+    await until(() => board.run('S.tabs.find(t => t.index === S.active).name === "shell"'), 'the terminal in front again');
+  }
 
   console.log('1. every place on the screen is one place');
   const places = await board.run('[...document.querySelectorAll("#screen .lk")].map(e => ({ go: e.dataset.go, lk: e.dataset.lk, at: e.dataset.at, text: e.textContent }))');
@@ -286,6 +341,12 @@ try {
   check(served > 0, 'and the page was loaded (' + served + ' requests)');
   const count = () => JSON.parse(fs.readFileSync(CONFIG, 'utf8')).desks[0].folders[0].tabs.length;
   const before = count();
+  // The new tab is brought to the front once it is up; back to the terminal
+  // only after that, or the bringing lands on top of the going back
+  const pageInFront = `(() => { const t = S.tabs.find(x => x.index === S.active); return !!t && t.kind === "browser"; })()`;
+  await until(() => board.run(pageInFront), 'the browser tab in front', 20000).catch(() => {});
+  check(await board.run(pageInFront), 'the browser tab was brought to the front');
+  await sleep(1000);
   await board.run('send({kind:"select", tab: S.tabs.find(t => t.name === "shell").index}); true');
   await backToShell();
 
