@@ -1,8 +1,83 @@
-//! Codex's allowance, read off the session records Codex writes on this PC.
-//! It puts the reading into every turn's record, so nothing is sent anywhere,
-//! and the reading is as new as the last turn Codex took here.
+//! Codex's allowance: asked of the service the Codex CLI signs in to, with
+//! the sign-in Codex keeps on this PC, and -- when that cannot be had --
+//! read off the session records Codex writes on this PC, which carry a
+//! reading in every turn and are as new as the last turn Codex took here.
 
 use super::{Allowance, Limits, Span, Window};
+
+/// The sign-in Codex keeps on this PC: the token, and the account it picks
+/// when the sign-in has more than one. Read, never written -- Codex renews it
+fn sign_in(now: i64) -> Option<(String, Option<String>)> {
+    let v = super::read_json(&codex_home()?.join("auth.json"))?;
+    sign_in_of(&v, now)
+}
+
+fn sign_in_of(v: &serde_json::Value, now: i64) -> Option<(String, Option<String>)> {
+    let t = v.get("tokens")?;
+    let token = t.get("access_token")?.as_str()?.trim();
+    if token.is_empty() {
+        return None;
+    }
+    let expires = super::token_claims(token).and_then(|c| c.get("exp").and_then(|e| e.as_i64()));
+    if expires.is_some_and(|e| e - now <= super::SPARE) {
+        return None;
+    }
+    Some((token.to_string(), t.get("account_id").and_then(|a| a.as_str()).map(str::to_string)))
+}
+
+/// One ask of the service, the question the CLI's own status asks
+pub(super) fn ask() -> Option<Limits> {
+    let (token, account) = sign_in(super::now_ms() / 1000)?;
+    let mut req = super::client()
+        .get("https://chatgpt.com/backend-api/wham/usage")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Accept", "application/json");
+    if let Some(a) = &account {
+        req = req.header("ChatGPT-Account-Id", a);
+    }
+    let mut resp = req.call().ok()?;
+    parse_live(&resp.body_mut().read_json().ok()?)
+}
+
+/// The service's answer: the subscription's windows under `rate_limit`, and
+/// allowances of their own for some models under `additional_rate_limits`,
+/// each named. A window is placed by its length in seconds
+fn parse_live(v: &serde_json::Value) -> Option<Limits> {
+    // The account's plan is what says this is a reading at all
+    v.get("plan_type")?.as_str()?;
+    let windows = |rl: &serde_json::Value, only: Option<&str>, wins: &mut Vec<Allowance>| {
+        for key in ["primary_window", "secondary_window"] {
+            let Some(w) = rl.get(key).filter(|w| w.is_object()) else { continue };
+            let Some(pct) = super::number(w.get("used_percent")) else { continue };
+            let span = super::number(w.get("limit_window_seconds")).and_then(|s| Span::of_minutes((s / 60.0).round() as i64));
+            let Some(span) = span else { continue };
+            let window = Window::of_percent(pct, super::instant_of(w.get("reset_at")));
+            wins.push(Allowance { span: Some(span), only: only.map(str::to_string), window });
+        }
+    };
+    let mut wins = Vec::new();
+    if let Some(rl) = v.get("rate_limit") {
+        windows(rl, None, &mut wins);
+    }
+    for extra in v.get("additional_rate_limits").and_then(|a| a.as_array()).into_iter().flatten() {
+        let (Some(name), Some(rl)) = (extra.get("limit_name").and_then(|n| n.as_str()), extra.get("rate_limit")) else { continue };
+        windows(rl, Some(name), &mut wins);
+    }
+    Limits::of(wins, None)
+}
+
+/// The newer of the service's reading and the records' -- the service's
+/// when it answered just now, the records' when they were written after the
+/// service last answered
+pub(super) fn newest(live: Option<Limits>, record: Option<Limits>) -> Option<Limits> {
+    match (live, record) {
+        (Some(l), Some(r)) => {
+            let at = |x: &Limits| x.taken.unwrap_or(i64::MAX);
+            Some(if at(&r) > at(&l) { r } else { l })
+        }
+        (l, r) => l.or(r),
+    }
+}
 
 /// Where Codex keeps its things: `CODEX_HOME` when it is set, as Codex
 /// itself reads it, and `.codex` in the home folder otherwise.
@@ -11,7 +86,7 @@ fn codex_home() -> Option<std::path::PathBuf> {
 }
 
 pub(super) fn used_here() -> bool {
-    codex_home().is_some_and(|h| h.join("sessions").is_dir())
+    codex_home().is_some_and(|h| h.join("sessions").is_dir() || h.join("auth.json").is_file())
 }
 
 /// How many of the newest session records are looked into for a reading.
@@ -94,10 +169,9 @@ fn last_reading_in(path: &std::path::Path, now: i64) -> Option<Limits> {
 /// counted from the line's own `timestamp`, and that is read too.
 ///
 /// A window is placed by its length, not by being first or second (see
-/// [`Span::of_minutes`]). A window whose reset has already passed has started
-/// again since the line was written, so it is shown as unused -- which it
-/// is, unless Codex ran on another PC, and then this PC has no way to know
-fn parse_line(line: &str, now: i64) -> Option<Limits> {
+/// [`Span::of_minutes`]). A window whose reset has passed since the line was
+/// written keeps the number it had then, and says so ([`Window::reset_by`])
+fn parse_line(line: &str, _now: i64) -> Option<Limits> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let rl = v.pointer("/payload/rate_limits")?;
     // A reading for some other allowance than Codex's own
@@ -112,12 +186,12 @@ fn parse_line(line: &str, now: i64) -> Option<Limits> {
         let resets_at = w.get("resets_at").and_then(|r| r.as_i64()).or_else(|| {
             Some(written? + w.get("resets_in_seconds")?.as_i64()?)
         });
-        let window = Window::of_percent(pct, resets_at).at(now);
+        let window = Window::of_percent(pct, resets_at);
         if let Some(span) = w.get("window_minutes").and_then(|m| m.as_i64()).and_then(Span::of_minutes) {
             wins.push(Allowance::whole(span, window));
         }
     }
-    Limits::of(wins, written)
+    Limits::of(wins, written).map(|l| Limits { from_record: true, ..l })
 }
 
 #[cfg(test)]
@@ -166,8 +240,10 @@ mod tests {
             r#"{"used_percent":18.0,"window_minutes":10080,"resets_at":1789805685}"#,
         );
         let l = parse_line(&line, 1_789_751_640).unwrap();
-        assert_eq!(l.whole(Span::Hours5), Some(&Window { pct: 0, resets_at: None }), "a window already reset still shows as used");
-        assert_eq!(l.whole(Span::Days7).map(|w| w.pct), Some(18));
+        let five = l.whole(Span::Hours5).unwrap();
+        assert!(five.reset_by(1_789_751_640), "a window whose reset has passed was not said to have reset");
+        assert_eq!(five.pct, 90, "a number nobody read was made up for the new window");
+        assert!(!l.whole(Span::Days7).unwrap().reset_by(1_789_751_640));
     }
 
     /// Earlier builds wrote the time left rather than the time of the reset.
@@ -177,6 +253,56 @@ mod tests {
         let l = parse_line(&line, WRITTEN).unwrap();
         assert_eq!(l.whole(Span::Hours5), Some(&Window { pct: 3, resets_at: Some(WRITTEN + 600) }));
         assert_eq!(l.whole(Span::Days7), None);
+    }
+
+    /// The service's answer, shaped as it answered on 2026-09-30 (a plan
+    /// with a 7-day window only, and one model with an allowance of its own).
+    #[test]
+    fn the_live_reading_is_read_by_window_length() {
+        let v = serde_json::json!({
+            "plan_type": "plus",
+            "rate_limit": {"allowed": true,
+                "primary_window": {"used_percent": 8, "limit_window_seconds": 604_800, "reset_at": 1_791_087_165},
+                "secondary_window": null},
+            "additional_rate_limits": [{"limit_name": "reserve-model", "rate_limit": {
+                "primary_window": {"used_percent": 0, "limit_window_seconds": 604_800, "reset_at": 1_791_298_871}}}]
+        });
+        let l = parse_live(&v).unwrap();
+        assert_eq!(l.whole(Span::Days7), Some(&Window { pct: 8, resets_at: Some(1_791_087_165) }));
+        assert_eq!(l.whole(Span::Hours5), None);
+        assert_eq!(l.wins.last().and_then(|a| a.only.as_deref()), Some("reserve-model"));
+        assert_eq!(parse_live(&serde_json::json!({"rate_limit": {}})), None, "a body with no plan was taken for a reading");
+        // Five hours and a week, whichever order they come in
+        let both = serde_json::json!({"plan_type": "pro", "rate_limit": {
+            "primary_window": {"used_percent": 40, "limit_window_seconds": 604_800},
+            "secondary_window": {"used_percent": 12.4, "limit_window_seconds": 18_000}}});
+        let l = parse_live(&both).unwrap();
+        assert_eq!((l.whole(Span::Hours5).map(|w| w.pct), l.whole(Span::Days7).map(|w| w.pct)), (Some(12), Some(40)));
+    }
+
+    #[test]
+    fn the_sign_in_is_used_only_while_it_is_good() {
+        use base64::Engine as _;
+        let token = |exp: i64| format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#)));
+        let v = serde_json::json!({"tokens": {"access_token": token(1_000), "account_id": "acct"}});
+        assert_eq!(sign_in_of(&v, 500).map(|(_, a)| a), Some(Some("acct".into())));
+        assert_eq!(sign_in_of(&v, 1_000), None, "a sign-in that has run out was sent");
+        assert_eq!(sign_in_of(&serde_json::json!({"OPENAI_API_KEY": "sk"}), 0), None, "an API key was taken for a sign-in");
+    }
+
+    /// The service's reading wins unless the records were written after it.
+    #[test]
+    fn the_newer_reading_is_the_one_shown() {
+        let at = |taken: Option<i64>, pct| Limits {
+            wins: vec![Allowance::whole(Span::Days7, Window { pct, resets_at: None })],
+            as_of: taken,
+            taken,
+            from_record: false,
+        };
+        assert_eq!(newest(Some(at(None, 1)), Some(at(Some(50), 2))).unwrap().wins[0].window.pct, 1, "a reading from just now lost to an old record");
+        assert_eq!(newest(Some(at(Some(10), 1)), Some(at(Some(50), 2))).unwrap().wins[0].window.pct, 2, "a record written after the service last answered lost");
+        assert_eq!(newest(None, Some(at(Some(50), 2))).unwrap().wins[0].window.pct, 2);
+        assert_eq!(newest(None, None), None);
     }
 
     #[test]

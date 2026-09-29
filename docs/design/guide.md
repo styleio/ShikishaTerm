@@ -149,11 +149,11 @@ How it goes (2026-09-29):
 - **Read-only**: the assistant AI is started with tools that find, search and
   read files and nothing else (`webui::ask_reading`), and told to answer in the
   words of the screen, never of the code
-- **What only the code answered is offered back**, so the manual can say it next
-  time: a form in the panel where the question and the answer can be read and
-  changed, then GitHub's own new-issue page, filled in from the
-  `guide_question.yml` template. Nothing is sent by the app; the second press
-  is on GitHub, as the person signed in there
+- **Nothing of a question leaves this PC but for the AI that answers it.** An
+  earlier build offered to send a question the source answered to GitHub as an
+  issue, for the manual to learn from; it was taken out (2026-09-30): a question
+  and its answer can carry names, paths and work that are nobody else's, and an
+  issue is public
 - The ?'s questions are asked on the assistant AI's own model, never the
   smallest one: that setting is about names, and the smallest model reading
   the whole manual lost a long question (measured: it said the manual did not

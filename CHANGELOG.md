@@ -8,6 +8,24 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Removed
+- **The ? no longer offers to send a question to GitHub as an issue.** A
+  question and its answer can hold names, paths and work of your own, and an
+  issue is public. Nothing you ask the ? leaves this PC except for the AI that
+  answers it.
+
+### Changed
+- **An answer from the source code says which code it was read in.** When this
+  build's own code is not public, the release of the same version is read
+  before the newest code, and the answer names the one it used.
+- **Codex's allowance is asked of Codex's service,** with the sign-in Codex
+  keeps on this PC, and read off Codex's records only when that cannot be had.
+  A window that has reset since it was read says so instead of showing 0%, and
+  every reading says when it was taken.
+- **Keeping the PC awake counts the AIs on every desk.** A desk you are not
+  looking at keeps its tabs' state current, so an AI working there keeps the PC
+  awake for as long as it works.
+
 ### Added
 - **Keep the PC awake while an AI works.** Settings > Basic > "Keep the PC
   awake": off (the default), while an AI is working, or always while the

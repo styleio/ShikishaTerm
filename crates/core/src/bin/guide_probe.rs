@@ -53,13 +53,11 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        println!("source:  {} at {}{} ({:.1}s)", at.folder.display(), at.commit, if at.instead { " (main, instead)" } else { "" }, began.elapsed().as_secs_f32());
+        println!("source:  {} at {} ({:?}) ({:.1}s)", at.folder.display(), at.commit, at.read, began.elapsed().as_secs_f32());
         match shikisha_core::guide::ask_source(&question, &[], &at) {
             Ok(a) => {
                 println!("took:    {:.1}s", began.elapsed().as_secs_f32());
-                println!("found:   {}", a.found);
                 println!("said:    {}", a.say);
-                println!("issue:   {}", shikisha_core::guide::issue_url(&question, &a.say));
             }
             Err(e) => {
                 eprintln!("nothing came back: {e:#}");

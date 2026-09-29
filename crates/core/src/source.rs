@@ -15,7 +15,9 @@
 //! commit to and nothing to merge.
 //!
 //! A build whose commit is not in the public repository (a build of work not
-//! pushed yet) reads `main` instead, and says so.
+//! pushed yet) reads the release of the same version instead -- the tag
+//! `v<version>` -- and only when that is not there either, the newest `main`.
+//! Which of the three was read is said beside every answer ([`Read`]).
 //!
 //! Read-only from start to end: the AI that searches it is given tools that
 //! read and nothing else (`webui::ask_reading`).
@@ -40,15 +42,33 @@ pub fn folder() -> PathBuf {
     crate::config::state_path("source")
 }
 
+/// Which code was checked out, from the nearest to what runs to the furthest
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "which", content = "name", rename_all = "lowercase")]
+pub enum Read {
+    /// The commit this build was made from: the code that runs
+    Build,
+    /// The release of this version (`v<version>`), when this build's own
+    /// commit is not public: the same version, perhaps not the same commit
+    Tag(String),
+    /// The newest code, when neither of the above could be had: possibly
+    /// another version altogether
+    Main,
+}
+
 /// The source, checked out at a commit
 #[derive(Clone, Debug)]
 pub struct Checkout {
     pub folder: PathBuf,
     /// The commit that is checked out
     pub commit: String,
-    /// Whether that is not the commit this build was made from, but `main`:
-    /// this build's commit is not in the public repository
-    pub instead: bool,
+    /// Which code that is
+    pub read: Read,
+}
+
+/// The release tag of the version that is running
+pub fn release_tag() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// The source of this version, fetched if it is not here yet or is another
@@ -65,19 +85,52 @@ pub fn ready() -> Result<Checkout> {
     }
     // Already this version: nothing to fetch
     if !want.is_empty() && head(&git, &dir).as_deref() == Some(want) {
-        return Ok(Checkout { folder: dir, commit: want.to_string(), instead: false });
+        return Ok(Checkout { folder: dir, commit: want.to_string(), read: Read::Build });
     }
-    // This version, when the repository has it; otherwise the newest main
-    let fetched = !want.is_empty() && run(&git, &dir, &["fetch", "--quiet", "--depth", "1", "origin", want], FETCH_TIMEOUT).is_ok();
-    if !fetched {
-        run(&git, &dir, &["fetch", "--quiet", "--depth", "1", "origin", "main"], FETCH_TIMEOUT)
-            .context(crate::i18n::t("guide.source.fetch_failed"))?;
+    // The nearest to what runs that the repository has: this build's commit,
+    // this version's release, the newest main
+    let tag = release_tag();
+    let tries: Vec<(Read, String)> = [
+        (!want.is_empty()).then(|| (Read::Build, want.to_string())),
+        Some((Read::Tag(tag.clone()), format!("refs/tags/{tag}"))),
+        Some((Read::Main, "main".to_string())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut got = None;
+    let mut last_err = None;
+    for (read, what) in tries {
+        match run(&git, &dir, &["fetch", "--quiet", "--no-tags", "--depth", "1", "origin", &what], FETCH_TIMEOUT) {
+            Ok(_) => {
+                got = Some(read);
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
     }
+    let Some(read) = got else {
+        return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("git fetch"))).context(crate::i18n::t("guide.source.fetch_failed"));
+    };
     run(&git, &dir, &["-c", "advice.detachedHead=false", "checkout", "--quiet", "--force", "FETCH_HEAD"], FETCH_TIMEOUT)?;
     // What an earlier version left behind is not kept around
     let _ = run(&git, &dir, &["clean", "-fdq"], FETCH_TIMEOUT);
     let commit = head(&git, &dir).unwrap_or_default();
-    Ok(Checkout { folder: dir, commit, instead: !fetched })
+    Ok(Checkout { folder: dir, commit, read })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The page is told which code an answer was read in, by name
+    #[test]
+    fn which_code_was_read_is_said_by_name() {
+        assert_eq!(serde_json::to_value(Read::Build).unwrap(), serde_json::json!({"which": "build"}));
+        assert_eq!(serde_json::to_value(Read::Tag(release_tag())).unwrap(), serde_json::json!({"which": "tag", "name": release_tag()}));
+        assert_eq!(serde_json::to_value(Read::Main).unwrap(), serde_json::json!({"which": "main"}));
+        assert!(release_tag().starts_with('v') && release_tag().contains('.'));
+    }
 }
 
 /// The commit a folder has checked out

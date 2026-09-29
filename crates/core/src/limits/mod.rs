@@ -56,15 +56,13 @@ impl Window {
         Window { pct: pct.round().clamp(0.0, 100.0) as u32, resets_at }
     }
 
-    /// The window as it stands at `now`. One whose reset has passed since
-    /// it was read has started again, so it is unused and its next reset is
-    /// unknown -- unless the AI ran somewhere this program cannot see, and
-    /// then there is no way to know
-    fn at(self, now: i64) -> Window {
-        match self.resets_at {
-            Some(at) if at <= now => Window { pct: 0, resets_at: None },
-            _ => self,
-        }
+    /// Whether the window has started again since it was read. Its number
+    /// then belongs to the window before, and what the new one holds is not
+    /// known until the next reading -- the AI may have run since, here or
+    /// somewhere this program cannot see. The number is kept as read; saying
+    /// what it is now is for the next reading, not a guess
+    pub fn reset_by(&self, now: i64) -> bool {
+        self.resets_at.is_some_and(|at| at <= now)
     }
 }
 
@@ -132,6 +130,12 @@ pub struct Limits {
     /// not "just now". A Codex reading is as old as the last turn Codex took
     /// on this PC, and a reading that could be hours old says so
     pub as_of: Option<i64>,
+    /// When the reading was taken, however new: every number shown says
+    /// when it was read
+    pub taken: Option<i64>,
+    /// Read off a record the CLI wrote rather than asked of a service: its
+    /// time is when the CLI last ran here, not when this program asked
+    pub from_record: bool,
 }
 
 impl Limits {
@@ -151,24 +155,12 @@ impl Limits {
             (a.only.is_some(), span)
         };
         wins.sort_by_key(rank);
-        Some(Limits { wins, as_of })
+        Some(Limits { wins, as_of, taken: as_of, from_record: false })
     }
 
     /// The whole subscription's window of this length
     pub fn whole(&self, span: Span) -> Option<&Window> {
         self.wins.iter().find(|a| a.only.is_none() && a.span == Some(span)).map(|a| &a.window)
-    }
-
-    /// The reading as it stands at `now` (see [`Window::at`])
-    fn at(&self, now: i64) -> Limits {
-        Limits {
-            wins: self
-                .wins
-                .iter()
-                .map(|a| Allowance { window: a.window.clone().at(now), ..a.clone() })
-                .collect(),
-            as_of: self.as_of,
-        }
     }
 }
 
@@ -242,7 +234,7 @@ impl Source {
         let now = now_ms() / 1000;
         match self {
             // A panic anywhere in the reading is one more "no answer"
-            Source::Codex => std::panic::catch_unwind(|| codex::reading(now)).unwrap_or(None),
+            Source::Codex => codex::newest(asked(self, now, codex::ask), std::panic::catch_unwind(|| codex::reading(now)).unwrap_or(None)),
             Source::Claude => asked(self, now, claude::ask),
             Source::Kimi => asked(self, now, kimi::ask),
             Source::Grok => asked(self, now, grok::ask),
@@ -415,6 +407,16 @@ fn instant_of(v: Option<&serde_json::Value>) -> Option<i64> {
     }
 }
 
+/// What a sign-in token says about itself: the middle of a JWT is JSON,
+/// read for who the sign-in is for and until when. Never checked for a
+/// signature -- the service does that; this only decides whether to ask
+fn token_claims(token: &str) -> Option<serde_json::Value> {
+    use base64::Engine as _;
+    let middle = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(middle.trim_end_matches('=')).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// One HTTP client for one ask: the app's name, a bounded wait, and no
 /// following a service that sends the ask elsewhere -- a sign-in page
 /// answered in place of a reading is not a reading
@@ -482,7 +484,7 @@ impl Book {
     /// The last good reading as it stands at `now`, dated when it is not
     /// from just now
     fn answer(&self, now: i64) -> Option<Limits> {
-        self.last.as_ref().map(|(l, at)| Limits { as_of: (now - at >= DATED).then_some(*at), ..l.at(now) })
+        self.last.as_ref().map(|(l, at)| Limits { as_of: (now - at >= DATED).then_some(*at), taken: Some(*at), ..l.clone() })
     }
 }
 
@@ -642,7 +644,9 @@ mod tests {
         let l = Limits::of(vec![Allowance::whole(Span::Hours5, Window { pct: 6, resets_at: Some(9_000) })], None).unwrap();
         b.record(Some(l.clone()), 1_000);
         assert!(!b.should_ask(1_030), "asked again within the minute");
-        assert_eq!(b.answer(1_030), Some(l.clone()), "a reading from just now was dated");
+        let fresh = b.answer(1_030).unwrap();
+        assert_eq!((fresh.as_of, fresh.taken), (None, Some(1_000)), "a reading from just now was dated, or lost its time");
+        assert_eq!(fresh.wins, l.wins);
         assert!(b.should_ask(1_060));
         // Turned away: left alone 1, 2, 4 ... minutes, never more than 15
         b.record(None, 1_060);
@@ -657,8 +661,11 @@ mod tests {
         let seen = b.answer(1_240).unwrap();
         assert_eq!(seen.as_of, Some(1_000), "an old reading was handed out as new");
         assert_eq!(seen.whole(Span::Hours5).map(|w| w.pct), Some(6));
-        // Past its reset, the window has started again
-        assert_eq!(b.answer(9_000).unwrap().whole(Span::Hours5), Some(&Window { pct: 0, resets_at: None }));
+        // Past its reset, the number read is kept and said to have reset --
+        // not replaced by a number nobody read
+        let past = b.answer(9_000).unwrap();
+        assert!(past.whole(Span::Hours5).unwrap().reset_by(9_000));
+        assert_eq!(past.whole(Span::Hours5).map(|w| w.pct), Some(6));
         // An answer puts everything back
         b.record(Some(l), 3_000);
         assert_eq!((b.quiet, b.quiet_until), (0, 0));

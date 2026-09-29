@@ -1008,6 +1008,10 @@ pub struct UsageWindow {
     /// there is room. Absent when the service did not say when
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets: Option<String>,
+    /// The window has started again since it was read, and what it holds now
+    /// comes with the next reading. The page draws no bar for it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reset: bool,
 }
 
 /// Keeping the PC from sleeping, as the lower row says it.
@@ -1050,20 +1054,33 @@ impl UsageState {
                     (None, Some(span)) => span,
                     (None, None) => crate::i18n::t("tui.usage.unknown"),
                 };
+                // A window that has started again since it was read: its
+                // number is the old window's, so it is not given as this one's
+                let reset = a.window.reset_by(now);
                 let w = UsageWindow {
                     name,
                     pct: a.window.pct,
-                    used: crate::i18n::tp("tui.usage.used", &[("pct", &a.window.pct.to_string())]),
-                    resets: a.window.resets_at.map(|at| until(at - now)),
+                    used: if reset {
+                        crate::i18n::t("tui.usage.reset")
+                    } else {
+                        crate::i18n::tp("tui.usage.used", &[("pct", &a.window.pct.to_string())])
+                    },
+                    resets: a.window.resets_at.filter(|_| !reset).map(|at| until(at - now)),
+                    reset,
                 };
-                (a.only.is_none() || !has_whole || a.window.pct >= USAGE_NEARLY_SPENT, w)
+                (a.only.is_none() || !has_whole || (!reset && a.window.pct >= USAGE_NEARLY_SPENT), w)
             })
             .collect();
         let say = |w: &UsageWindow| match &w.resets {
             Some(r) => format!("{}: {} · {}", w.name, w.used, crate::i18n::tp("tui.usage.resets", &[("t", r)])),
             None => format!("{}: {}", w.name, w.used),
         };
-        let every = all.iter().map(|(_, w)| say(w)).collect::<Vec<_>>().join(" / ");
+        let mut every = all.iter().map(|(_, w)| say(w)).collect::<Vec<_>>().join(" / ");
+        // When it was read, so no number stands without its time
+        if let Some(at) = l.taken {
+            every.push_str(" · ");
+            every.push_str(&crate::i18n::tp("tui.usage.taken", &[("t", &until(now - at))]));
+        }
         UsageState {
             title: crate::i18n::tp("tui.usage.title", &[("who", who), ("wins", &every)]),
             who: who.to_string(),
@@ -2746,6 +2763,8 @@ mod tests {
                 whole(Span::Days7, 83, Some(1_000 + 4 * 86_400 + 10 * 3600)),
             ],
             as_of: None,
+            taken: Some(1_000 - 120),
+            from_record: false,
         };
         let u = UsageState::of("Claude", &l, 1_000);
         let five = &u.wins[0];
@@ -2758,14 +2777,17 @@ mod tests {
         assert_eq!(week.resets.as_deref(), Some("4d 10h"));
         assert!(u.title.contains("19") && u.title.contains("83"), "{}", u.title);
         assert!(u.title.contains("resets in 3h 45m"), "{}", u.title);
-        // A window the service withheld is absent, and a reset already past
-        // never goes negative
-        let l = Limits { wins: vec![whole(Span::Days7, 2, Some(0))], as_of: None };
+        assert!(u.title.contains("2m"), "the hover does not say when it was read: {}", u.title);
+        // A window the service withheld is absent. One whose reset has passed
+        // since it was read says it has reset, and makes up no number
+        let l = Limits { wins: vec![whole(Span::Days7, 2, Some(0))], as_of: None, taken: None, from_record: false };
         let u = UsageState::of("Claude", &l, 5_000);
         assert_eq!(u.wins.len(), 1);
-        assert_eq!(u.wins[0].resets.as_deref(), Some("0m"));
+        assert!(u.wins[0].reset, "a window past its reset was not said to have reset");
+        assert_eq!(u.wins[0].resets, None);
+        assert!(!u.wins[0].used.contains('%'), "a percentage was given for a window nobody has read: {}", u.wins[0].used);
         // No time at all: the words say how much, and nothing about when
-        let l = Limits { wins: vec![whole(Span::Hours5, 7, None)], as_of: None };
+        let l = Limits { wins: vec![whole(Span::Hours5, 7, None)], as_of: None, taken: None, from_record: false };
         assert_eq!(UsageState::of("Claude", &l, 0).wins[0].resets, None);
     }
 
@@ -2776,14 +2798,14 @@ mod tests {
         use crate::limits::{Allowance, Limits, Span, Window};
         let fable = |pct| Allowance { span: Some(Span::Days7), only: Some("Fable".into()), window: Window { pct, resets_at: None } };
         let week = Allowance { span: Some(Span::Days7), only: None, window: Window { pct: 30, resets_at: None } };
-        let quiet = UsageState::of("Claude", &Limits { wins: vec![week.clone(), fable(40)], as_of: None }, 0);
+        let quiet = UsageState::of("Claude", &Limits { wins: vec![week.clone(), fable(40)], as_of: None, taken: None, from_record: false }, 0);
         assert_eq!(quiet.wins.len(), 1, "a model's allowance with plenty left took room on the row");
         assert!(quiet.title.contains("Fable 7d"), "{}", quiet.title);
-        let near = UsageState::of("Claude", &Limits { wins: vec![week, fable(USAGE_NEARLY_SPENT)], as_of: None }, 0);
+        let near = UsageState::of("Claude", &Limits { wins: vec![week, fable(USAGE_NEARLY_SPENT)], as_of: None, taken: None, from_record: false }, 0);
         assert_eq!(near.wins.last().map(|w| w.name.as_str()), Some("Fable 7d"));
         // A window of no known length is named by its model alone
         let gemini = Allowance { span: None, only: Some("gemini-2.5-pro".into()), window: Window { pct: 10, resets_at: None } };
-        assert_eq!(UsageState::of("Gemini", &Limits { wins: vec![gemini], as_of: None }, 0).wins[0].name, "gemini-2.5-pro");
+        assert_eq!(UsageState::of("Gemini", &Limits { wins: vec![gemini], as_of: None, taken: None, from_record: false }, 0).wins[0].name, "gemini-2.5-pro");
     }
 
     /// No leading zero in a span: the row is paid for by the character, and

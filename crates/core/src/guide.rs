@@ -1022,16 +1022,6 @@ button.go{border-color:var(--brand)}
 .further{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2);font-size:11.5px;color:var(--dim)}
 /* An answer the source gave, said to be one */
 .from{font-size:11px;color:var(--faint)}
-/* Sending a question in: what goes, and the two presses before it is sent */
-.send{display:flex;flex-direction:column;gap:var(--s2);padding:var(--s3);border:1px solid var(--line);
-      border-radius:10px;background:var(--bg)}
-.send p{margin:0;font-size:11.5px;color:var(--dim)}
-.send label{font-size:12px;color:var(--text)}
-.send textarea{font:12.5px var(--ui);color:var(--text);background:var(--panel);border:1px solid var(--edge);
-      border-radius:6px;padding:var(--s2) var(--s3);resize:vertical;min-height:52px}
-.send textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent)}
-.send .warn{color:var(--text);background:color-mix(in srgb, var(--warn) 9%, transparent);
-      border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);border-radius:6px;padding:var(--s2) var(--s3)}
 </style></head><body>
 <div id="head"><span id="title">{{guide.title}}</span>
   <button class="icon" id="shut" title="{{common.close}}">✕</button></div>
@@ -1093,7 +1083,7 @@ function draw() {
     if (turn.asked) box.append(el("div", {class:"mine"}, turn.asked));
     if (turn.source) {
       box.append(el("div", {class:"from"},
-        T[turn.instead ? "guide.source.from.main" : "guide.source.from"] || ""));
+        sourceSaid(turn.read)));
     }
     box.append(el("div", {class:"theirs" + (turn.bad ? " bad" : "")}, turn.said));
     const acts = el("div", {class:"acts"});
@@ -1111,8 +1101,6 @@ function draw() {
         el("span", {}, T["guide.source.ask"] || ""),
         el("button", {onclick:() => searchSource(turn)}, T["guide.source.go"] || "")));
     }
-    // What only the code could answer, offered for the manual
-    if (turn.source && turn.found && !turn.bad) box.append(offer(turn));
     if (turn.needsGit) {
       box.append(el("div", {class:"acts"}, INSIDE
         ? el("a", {href:"https://git-scm.com/downloads", target:"_blank", rel:"noopener"}, T["guide.source.get_git"] || "")
@@ -1123,6 +1111,17 @@ function draw() {
   }
   if (asking) talk.append(el("div", {class:"waiting"}, asking === true ? (T["guide.thinking"] || "") : asking));
   talk.scrollTop = talk.scrollHeight;
+}
+
+// Which code an answer from the source was read in: this build's own, the
+// release of this version when this build's commit is not public, or the
+// newest code when neither could be had. Said every time, so an answer read
+// in other code than what runs is never taken for this version's
+function sourceSaid(read) {
+  const which = (read && read.which) || "build";
+  if (which === "tag") return (T["guide.source.from.tag"] || "").replaceAll("{tag}", read.name || "");
+  if (which === "main") return T["guide.source.from.main"] || "";
+  return T["guide.source.from"] || "";
 }
 
 async function ask() {
@@ -1173,47 +1172,7 @@ async function searchSource(turn) {
   asking = false;
   said.push(r.error
     ? {said: r.error, bad: true}
-    : {said: r.say || "", source: true, found: !!r.found, instead: !!r.instead, question});
-  draw();
-}
-
-// A question only the code could answer, sent in so the manual can say it
-// next time. Nothing leaves until two presses: this form, where every word
-// that would go can be read and changed, and GitHub's own button after it
-function offer(turn) {
-  const box = el("div", {class:"send"});
-  if (!turn.sending) {
-    box.append(el("p", {}, T["guide.issue.say"] || ""));
-    box.append(el("div", {class:"acts"}, el("button", {onclick:() => {
-      turn.sending = {question: turn.question, answer: turn.said};
-      draw();
-    }}, T["guide.issue.write"] || "")));
-    return box;
-  }
-  if (turn.sent) {
-    box.append(el("p", {}, T["guide.issue.opened"] || ""));
-    return box;
-  }
-  const field = (key, label) => {
-    const area = el("textarea", {rows: key === "answer" ? "5" : "2"});
-    area.value = turn.sending[key];
-    area.oninput = () => { turn.sending[key] = area.value; };
-    return [el("label", {}, label), area];
-  };
-  box.append(el("p", {class:"warn"}, T["guide.issue.careful"] || ""));
-  box.append(...field("question", T["guide.issue.question"] || ""));
-  box.append(...field("answer", T["guide.issue.answer"] || ""));
-  box.append(el("div", {class:"acts"},
-    el("button", {class:"go", onclick:() => openIssue(turn)}, T["guide.issue.open"] || ""),
-    el("button", {onclick:() => { turn.sending = null; draw(); }}, T["common.cancel"] || "")));
-  return box;
-}
-async function openIssue(turn) {
-  const r = await post("/issue", {question: turn.sending.question, answer: turn.sending.answer, open: !INSIDE});
-  // Framed on a phone, the page in front of the person opens it: the app
-  // would open it on the PC's screen, where nobody is standing
-  if (INSIDE && r && r.url) window.open(r.url, "_blank", "noopener");
-  turn.sent = true;
+    : {said: r.say || "", source: true, read: r.read || {}});
   draw();
 }
 
@@ -1807,18 +1766,14 @@ const SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(420);
 pub struct SourceAnswer {
     #[serde(default)]
     pub say: String,
-    /// Whether the code showed the answer. What is worth sending in to be
-    /// written into the manual is only what was found
-    #[serde(default)]
-    pub found: bool,
 }
 
 /// The shape a search of the source answers in
 fn source_shape() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
-        "properties": {"say": {"type": "string"}, "found": {"type": "boolean"}},
-        "required": ["say", "found"],
+        "properties": {"say": {"type": "string"}},
+        "required": ["say"],
         "additionalProperties": false,
     })
 }
@@ -1839,37 +1794,7 @@ pub fn ask_source(question: &str, so_far: &[Said], at: &crate::source::Checkout)
     system.push_str(&crate::asking::answer_in(&crate::i18n::language_name()));
     let said = crate::webui::ask_reading(&at.folder, &prompt, &system, &source_shape().to_string(), SOURCE_TIMEOUT)?;
     Ok(first_shaped(&said, |a: &SourceAnswer| !a.say.trim().is_empty())
-        .unwrap_or(SourceAnswer { say: said.trim().to_string(), found: false }))
-}
-
-/// How much of a question and of an answer go into a new issue's address. An
-/// address much past eight thousand characters is refused by some browsers;
-/// every character outside plain ASCII is nine once written into it
-const ISSUE_QUESTION_MOST: usize = 600;
-const ISSUE_ANSWER_MOST: usize = 1200;
-
-/// The address of a new issue in the program's repository, filled in with a
-/// question the manual did not answer and what the source said: the form a
-/// person reads, changes and sends themselves on GitHub
-pub fn issue_url(question: &str, answer: &str) -> String {
-    let cut = |s: &str, most: usize| -> String {
-        let s = s.trim();
-        match s.chars().count() > most {
-            true => format!("{}…", s.chars().take(most).collect::<String>()),
-            false => s.to_string(),
-        }
-    };
-    let question = cut(question, ISSUE_QUESTION_MOST);
-    let title = format!("{}{}", crate::i18n::t("guide.issue.title"), cut(&question, 60));
-    let version = format!("v{} ({})", env!("CARGO_PKG_VERSION"), crate::build_rev());
-    let pct = crate::webui::pct;
-    format!(
-        "https://github.com/styleio/ShikishaTerm/issues/new?template=guide_question.yml&title={}&question={}&answer={}&version={}",
-        pct(&title),
-        pct(&question),
-        pct(&cut(answer, ISSUE_ANSWER_MOST)),
-        pct(&version)
-    )
+        .unwrap_or(SourceAnswer { say: said.trim().to_string() }))
 }
 
 #[cfg(test)]
@@ -2027,31 +1952,12 @@ mod tests {
 mod source_tests {
     use super::*;
 
-    /// A question sent in lands on the issue form made for it, with every
-    /// field filled, and stays an address a browser takes however long the
-    /// answer was
-    #[test]
-    fn a_question_sent_in_fills_the_form_made_for_it() {
-        let long = "あ".repeat(5000);
-        let url = issue_url("閉じたタブを戻したい", &long);
-        assert!(url.starts_with("https://github.com/styleio/ShikishaTerm/issues/new?template=guide_question.yml&"), "{url}");
-        for field in ["&title=", "&question=", "&answer=", "&version="] {
-            assert!(url.contains(field), "{field} is missing");
-        }
-        assert!(url.len() < 16_000, "{} characters is more than a browser takes", url.len());
-        let template = crate::repo_root().join(".github/ISSUE_TEMPLATE/guide_question.yml");
-        let form = std::fs::read_to_string(template).expect("the form the address names is there");
-        for id in ["id: question", "id: answer", "id: version"] {
-            assert!(form.contains(id), "the form has no {id}, which the address fills");
-        }
-    }
-
     /// What a search of the source printed is read however the AI wrapped it
     #[test]
     fn a_search_of_the_source_is_read_however_it_was_printed() {
-        let fenced = "Here it is:\n```json\n{\"say\": \"Press the ▾\", \"found\": true}\n```";
+        let fenced = "Here it is:\n```json\n{\"say\": \"Press the ▾\"}\n```";
         let a = first_shaped(fenced, |a: &SourceAnswer| !a.say.trim().is_empty()).unwrap();
-        assert_eq!((a.say.as_str(), a.found), ("Press the ▾", true));
+        assert_eq!(a.say.as_str(), "Press the ▾");
     }
 }
 

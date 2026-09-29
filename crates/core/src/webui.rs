@@ -1974,7 +1974,7 @@ fn handle(
                 let _ = tx.send(crate::source::ready());
             });
             let body = match rx.recv() {
-                Ok(Ok(at)) => serde_json::json!({"ok": true, "instead": at.instead}),
+                Ok(Ok(at)) => serde_json::json!({"ok": true, "read": at.read}),
                 Ok(Err(e)) => serde_json::json!({
                     "error": format!("{e:#}"),
                     // What to do about it, when the answer is to install git
@@ -2000,32 +2000,15 @@ fn handle(
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let _ = tx.send(crate::source::ready().and_then(|at| {
-                    crate::guide::ask_source(&question, &so_far, &at).map(|a| (a, at.instead))
+                    crate::guide::ask_source(&question, &so_far, &at).map(|a| (a, at.read))
                 }));
             });
             let body = match rx.recv() {
-                Ok(Ok((a, instead))) => serde_json::json!({"say": a.say, "found": a.found, "instead": instead}),
+                Ok(Ok((a, read))) => serde_json::json!({"say": a.say, "read": read}),
                 Ok(Err(e)) => serde_json::json!({"error": format!("{e:#}")}),
                 Err(e) => serde_json::json!({"error": e.to_string()}),
             };
             req.respond(json_resp(body))?;
-        }
-        // A new issue in the program's repository, filled in with a question
-        // the manual did not answer and what the source said. Only the
-        // address: the person reads it, changes it and sends it on GitHub.
-        // Opened on this PC when asked; a phone opens the address itself
-        ("POST", "/api/guide/issue") => {
-            let mut req = req;
-            let Some(body) = read_body(&mut req, MAX_BODY)? else {
-                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
-            };
-            let ask: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let text = |k: &str| ask.get(k).and_then(|q| q.as_str()).unwrap_or("").to_string();
-            let url = crate::guide::issue_url(&text("question"), &text("answer"));
-            if ask.get("open").and_then(|o| o.as_bool()) == Some(true) {
-                open_external(&url);
-            }
-            req.respond(json_resp(serde_json::json!({"url": url})))?;
         }
         // The box somebody picked on the settings screen, and putting one down
         ("GET", "/api/guide/picked") => {
@@ -4035,7 +4018,7 @@ fn handle(
                                     })
                                 })
                                 .collect();
-                            serde_json::json!({"wins": wins, "as_of": l.as_of})
+                            serde_json::json!({"wins": wins, "as_of": l.as_of, "taken": l.taken, "record": l.from_record})
                         });
                         serde_json::json!({"key": s.key(), "name": s.name(), "ready": ready, "reading": reading})
                     })
@@ -9526,6 +9509,12 @@ function wordsRows(holder, under, adopt) {
 function aiUsageCard() {
   const box = el("div", {}, el("div", {class:"hint"}, T["settings.ai_usage.checking"]));
   const windowRow = (name, w) => {
+    // Started again since it was read: the number was the window before's,
+    // so it is not shown as this one's -- the next reading brings it
+    if (w.resets_at && w.resets_at * 1000 <= Date.now()) {
+      return el("div", {class:"usewin"}, el("span", {class:"wname"}, name), el("span", {class:"meter"}),
+        el("span", {}, fill(T["settings.ai_usage.renewed"], {when: clock(w.resets_at)})));
+    }
     const pct = Math.max(0, Math.min(100, w.pct));
     const level = el("i", {class: pct >= 95 ? "hot" : pct >= 80 ? "near" : ""});
     level.style.width = pct + "%";
@@ -9554,7 +9543,12 @@ function aiUsageCard() {
     for (const w of r.wins || []) part.append(windowRow(winName(w), w));
     // A reading that is not from just now says how old it is: Codex's is as
     // old as its record, and a service's is the last one it gave
-    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage." + key + ".as_of"] || T["settings.ai_usage.dated"], {when: clock(r.as_of), who: a.name})));
+    // When it was read, always. A reading that is not from just now says why:
+    // a record is as old as the CLI's last turn here, and a service's is the
+    // last one it gave
+    const said = !r.as_of ? (r.taken ? fill(T["settings.ai_usage.taken"], {when: clock(r.taken)}) : "")
+      : fill((r.record && T["settings.ai_usage." + key + ".as_of"]) || T["settings.ai_usage.dated"], {when: clock(r.as_of), who: a.name});
+    if (said) part.append(el("div", {class:"hint"}, said));
     return part;
   };
   fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(list => {

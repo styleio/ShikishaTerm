@@ -43,10 +43,7 @@ fn token_in_editor(dir: &std::path::Path) -> Option<String> {
 /// Who the sign-in is for and until when, out of the token itself (its
 /// middle part is JSON). The account's id is half of the dashboard's cookie
 fn subject_of(token: &str) -> Option<(String, Option<i64>)> {
-    use base64::Engine as _;
-    let middle = token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(middle.trim_end_matches('=')).ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let v = super::token_claims(token)?;
     let sub = v.get("sub")?.as_str()?.trim();
     (!sub.is_empty()).then(|| (sub.to_string(), v.get("exp").and_then(|e| e.as_i64())))
 }

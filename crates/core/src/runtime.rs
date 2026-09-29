@@ -3136,23 +3136,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
             }
+            // The other desks' tabs are running too, and their state is kept
+            // as true as these: what their desk does about a change waits
+            // for the desk to come back (see Tab::tick_away)
+            for t in desk_tabs.iter_mut().flatten() {
+                t.tick_away(start);
+            }
             // Keep the PC up or let it sleep, by the setting and by what the
-            // AI tabs are doing. Tabs on other desks are not read again until
-            // their desk comes back, so theirs is believed for a while only
+            // AI tabs on every desk are doing
             {
-                let now_ms = start.elapsed().as_millis() as u64;
                 let working = |t: &&Tab| t.is_ai() && t.state == TabState::Busy;
                 let here = tabs.iter().filter(working).count();
-                let parked: Vec<u64> =
-                    desk_tabs.iter().flatten().filter(working).map(|t| t.ms_since_change(now_ms)).collect();
-                let want = crate::awake::wanted(stay_awake, here, &parked);
+                let away = desk_tabs.iter().flatten().filter(working).count();
+                let want = crate::awake::wanted(stay_awake, here + away);
                 if awake.hold(want) {
                     append_hook_log(&format!(
                         "stay awake: {} ({}, {} working here, {} on other desks)",
                         if want { "holding the PC up" } else { "letting it sleep" },
                         stay_awake.key(),
                         here,
-                        parked.len()
+                        away
                     ));
                 }
             }

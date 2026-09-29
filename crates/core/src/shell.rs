@@ -10724,6 +10724,12 @@ function usagePill() {
   // The bar's colour says how close to the end it is; nothing here moves
   const win = w => {
     if (!w) return null;
+    // Started again since it was read: its words say so, and no bar is drawn
+    // for a number nobody has read yet
+    if (w.reset) {
+      return el("span", {class:"win"}, el("span", {class:"wname"}, w.name),
+        el("span", {class:"wsay"}, w.used), el("span", {class:"wpct"}, "(" + w.used + ")"));
+    }
     const fill = el("i", {class: w.pct >= 95 ? "hot" : w.pct >= 80 ? "warn" : ""});
     fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";
     return el("span", {class:"win"},

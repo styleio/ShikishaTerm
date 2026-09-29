@@ -2069,6 +2069,35 @@ mod tests {
         assert!(!spotted.detector.interrupt().is_empty(), "the emergency stop has nothing to press");
     }
 
+    /// A desk that is away keeps its tabs' state true, and hears about a
+    /// change once, when it comes back, as one step from what it last knew.
+    #[test]
+    fn a_desk_away_is_kept_current_and_told_on_return() {
+        use crate::detect::TabState;
+        use std::time::{Duration, Instant};
+        let mut t = shell_judged_as("claude", 12, 60);
+        let start = Instant::now();
+        // Until it has gone quiet at its prompt (the profile waits out a
+        // silence before it calls a turn over)
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(50));
+            if t.tick(start).1 != TabState::Busy {
+                break;
+            }
+        }
+        let settled = t.state;
+        assert_ne!(settled, TabState::Busy, "a shell at its prompt reads as working");
+        // The desk was put away while this tab was working; it has since
+        // finished, and the state says so while the desk is still away
+        t.state = TabState::Busy;
+        t.tick_away(start);
+        t.tick_away(start);
+        assert_eq!(t.state, settled, "the state of a tab on a desk away went stale");
+        // Back in front: one step from what the desk last heard, then quiet
+        assert_eq!(t.tick(start), (TabState::Busy, settled), "the desk never heard the turn end");
+        assert_eq!(t.tick(start), (settled, settled), "the desk heard the same change twice");
+    }
+
     #[test]
     fn an_answer_requires_the_ai_to_have_started_working() {
         use std::sync::atomic::Ordering;
@@ -3118,6 +3147,9 @@ pub struct Tab {
     record_reply: Option<RecordReply>,
     /// When the state last changed, for saying how long ago a tab finished
     pub state_since: std::time::SystemTime,
+    /// The state this tab's desk last heard about, while the desk is not in
+    /// front and the state has moved on since (see [`Tab::tick_away`])
+    told: Option<crate::detect::TabState>,
     /// Start position of the response (scrollback accumulation amount). u64::MAX = unset.
     ///
     /// What matters is "the position where execution happened," not "the
@@ -3866,6 +3898,7 @@ impl Tab {
             last_hash: 0,
             last_change_ms: 0,
             state_since: std::time::SystemTime::now(),
+            told: None,
             last_response: None,
             record_reply: None,
             response_marker: AtomicU64::new(u64::MAX),
@@ -4414,6 +4447,34 @@ impl Tab {
     /// Activity is judged by "screen content change" (excluding the bottom status row).
     /// Returns (old state, new state) for firing hooks
     pub fn tick(&mut self, start: Instant) -> (TabState, TabState) {
+        let turned = self.read_state(start);
+        // A change that happened while the desk was away reaches the desk
+        // now, as one step from what it last heard to what is true
+        match self.told.take() {
+            Some(heard) => (heard, turned.1),
+            None => turned,
+        }
+    }
+
+    /// The state kept true on a desk that is not in front.
+    ///
+    /// The terminal goes on running there, and what depends on whether it is
+    /// at work -- keeping the PC awake, asking before quitting, keeping a
+    /// machine up -- has to see the state as it is, not as it was when the
+    /// desk was put away. What the desk *does* about a change (its automation,
+    /// its notifications, its records) belongs to the desk and its own
+    /// automation, which is parked with it: that is told when the desk comes
+    /// back, by the next [`Tab::tick`], as a single step from the state it
+    /// last heard of. So nothing a desk would have done is lost, and nothing
+    /// is done twice
+    pub fn tick_away(&mut self, start: Instant) {
+        let (old, new) = self.read_state(start);
+        if old != new && self.told.is_none() {
+            self.told = Some(old);
+        }
+    }
+
+    fn read_state(&mut self, start: Instant) -> (TabState, TabState) {
         let turned = self.tick_state(start);
         // Written down here, the one place every change passes through, so
         // "done, 5 minutes ago" is counted from the change and not from a guess

@@ -15,8 +15,6 @@
 //! down means changing the power plan the whole machine runs on, and that is
 //! not a setting for this program to change behind somebody's back.
 
-use std::time::Duration;
-
 /// When to keep the PC up (`stay_awake` in the settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Stay {
@@ -49,30 +47,13 @@ impl Stay {
     }
 }
 
-/// How long a BUSY on a desk that is not in front is believed.
-///
-/// Tabs on those desks keep running, but their state is not read again until
-/// the desk comes back, so a BUSY there is the state they were in when the
-/// desk was put away. Believed for a while after it last changed and then no
-/// longer: an AI's turn seldom goes an hour and a half without either
-/// answering or asking something, and a BUSY older than that is more likely a
-/// reading nobody refreshed than work. The cost of being wrong is a laptop
-/// that sleeps under a very long turn on a desk nobody is looking at, which
-/// the "always" choice exists for
-pub const PARKED_BUSY_TRUST: Duration = Duration::from_secs(90 * 60);
-
-/// Whether to keep the PC up now.
-///
-/// `working_here`: AI tabs on the desk in front that are working on a turn.
-/// `parked_quiet_ms`: for each working AI tab on the other desks, how long
-/// since its state last changed
-pub fn wanted(stay: Stay, working_here: usize, parked_quiet_ms: &[u64]) -> bool {
+/// Whether to keep the PC up now, with `working` AI tabs working on a turn
+/// on any desk (every desk's state is kept current: `Tab::tick_away`)
+pub fn wanted(stay: Stay, working: usize) -> bool {
     match stay {
         Stay::Off => false,
         Stay::Always => true,
-        Stay::WhileAi => {
-            working_here > 0 || parked_quiet_ms.iter().any(|&ms| ms < PARKED_BUSY_TRUST.as_millis() as u64)
-        }
+        Stay::WhileAi => working > 0,
     }
 }
 
@@ -146,13 +127,10 @@ mod tests {
 
     #[test]
     fn the_pc_is_kept_up_only_when_the_setting_and_the_tabs_say_so() {
-        let trust = PARKED_BUSY_TRUST.as_millis() as u64;
-        assert!(!wanted(Stay::Off, 3, &[0]), "off kept the PC up");
-        assert!(wanted(Stay::Always, 0, &[]), "always let it sleep");
-        assert!(wanted(Stay::WhileAi, 1, &[]));
-        assert!(!wanted(Stay::WhileAi, 0, &[]), "nothing at work, and it stayed up");
-        assert!(wanted(Stay::WhileAi, 0, &[trust - 1]), "work on another desk was ignored");
-        assert!(!wanted(Stay::WhileAi, 0, &[trust]), "a stale reading on another desk kept it up");
+        assert!(!wanted(Stay::Off, 3), "off kept the PC up");
+        assert!(wanted(Stay::Always, 0), "always let it sleep");
+        assert!(wanted(Stay::WhileAi, 1));
+        assert!(!wanted(Stay::WhileAi, 0), "nothing at work, and it stayed up");
     }
 
     #[test]
