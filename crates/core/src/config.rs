@@ -930,6 +930,10 @@ pub struct Config {
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is
     pub resident: Option<bool>,
+    /// When to keep this PC from going to sleep: "off" (the default), "ai"
+    /// while an AI tab is working on a turn, "always" while this program
+    /// runs (see [`crate::awake`]). What a closed lid does stays Windows's
+    pub stay_awake: Option<String>,
     /// Whether the window and the runtime run as two programs (default: no).
     ///
     /// Together, they fail together: nearly all the memory is the window's

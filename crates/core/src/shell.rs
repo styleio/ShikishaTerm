@@ -1515,6 +1515,33 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castlua::-webkit-scrollbar { display:none; }
+  /* 🎯 pick: the switch, one chip per element picked (its number, what it is,
+     a note), and what to do with them. One row that scrolls sideways, as 📼's */
+  #castpick { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
+    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #castpick::-webkit-scrollbar { display:none; }
+  /* The board speaks in the terminal's face (STYLEGUIDE §3), and a button here
+     is one of its buttons */
+  #castpick button { font:inherit; font-size:12.5px; }
+  #castpick .castgear.on { background:var(--raise); border-color:var(--brand); }
+  #castpick .castgear.pquiet { border-color:transparent; background:none; color:var(--dim); }
+  #castpick .castgear.pquiet:hover { color:var(--text); }
+  /* The way on, told the way 🗣's "agree and run" is: the brand's edge and letters.
+     Filled would make a second main button beside the input row's Send */
+  #castpick .castgear.pgo { border-color:var(--brand); color:var(--brand); }
+  #castpick .pchip { flex:none; display:flex; align-items:center; gap:var(--s1); height:32px;
+    box-sizing:border-box; padding:0 var(--s1) 0 var(--s2); border:1px solid var(--edge);
+    border-radius:var(--r-chip); background:var(--raise); font-size:12px; color:var(--text); }
+  #castpick .pchip .pn { color:var(--dim); font-variant-numeric:tabular-nums; }
+  #castpick .pchip .pl { max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+  #castpick .pchip input { width:128px; height:24px; box-sizing:border-box; padding:0 var(--s2);
+    font:inherit; font-size:12px; color:var(--text); background:var(--bg);
+    border:1px solid var(--edge); border-radius:var(--r-chip); }
+  #castpick .pchip input:focus { outline:none; border-color:var(--brand); }
+  #castpick .pchip .px { width:22px; height:22px; padding:0; border:0; background:none;
+    color:var(--dim); cursor:pointer; font-size:12px; }
+  #castpick .pchip .px:hover { color:var(--stop); }
+  .fmenu.picksend { min-width:220px; }
   .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
@@ -2540,6 +2567,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pill.limit { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); cursor:pointer;
     max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap !important; }
   .pill.limit:hover { background:var(--tint); }
+  /* Keeping the PC awake. Not a state colour: holding the PC up is not an AI
+     at work (the "always" choice holds it with nothing running), so held is
+     plain text and waiting is dim, the way AUTO OFF is */
+  .pill.awake { cursor:pointer; }
+  .pill.awake.held { color:var(--text); }
+  .pill.awake:hover { background:var(--tint); }
   /* What the subscription has left: the AI's name in its own colour, then a
      bar and a sentence per window. The bar is the number; the words say what
      the number is of and when it goes back to zero. Nothing here moves */
@@ -3762,6 +3795,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #status .pill.auto, #status .pill.remote { font-size:0; }
     #status .pill.auto::after { content:"A"; font-size:12px; }
     #status .pill.remote::after { content:"R"; font-size:12px; }
+    #status .pill.awake { font-size:0; }
+    #status .pill.awake::after { content:attr(data-short); font-size:12px; }
     /* Claude's name, as the mark its own tabs wear, in its own colour */
     #status .usage .who { display:none; }
     #status .usage .aim { display:inline-block; }
@@ -10663,8 +10698,27 @@ function usagePill() {
     // the AI's own tabs wear — built by the one thing that builds those marks
     el("span", {class:"who"}, u.who),
     aiMark(t.ai),
-    win(u.five),
-    win(u.week));
+    ...(u.wins || []).map(win));
+}
+// Whether the PC is being kept from sleeping, while the setting is on. Says
+// the one fact that changes -- held now or not -- and the setting in full on
+// hover. Pressing it is where the choice is changed, from the window or the
+// phone: somebody walking away from a long turn is who reaches for it
+const AWAKE_MODES = ["off", "ai", "always"];
+function awakePill() {
+  const a = S && S.awake;
+  if (!a) return null;
+  const now = T[a.held ? "tui.awake.now.held" : "tui.awake.now.free"] || "";
+  const p = el("span", {class:"pill awake " + (a.held ? "held" : "off"),
+      "data-short":T["tui.awake.short"] || "",
+      title:(T["tui.awake.title"] || "{mode}: {now}").replaceAll("{mode}", T["tui.awake.mode." + a.mode] || a.mode).replaceAll("{now}", now)},
+    T[a.held ? "tui.awake.held" : "tui.awake.free"] || "");
+  p.onclick = e => {
+    e.stopPropagation();
+    openList(p, AWAKE_MODES.map(m => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); send({kind:"stay_awake", mode:m}); }},
+      el("span", {class:"ck"}, m === a.mode ? "✓" : ""), el("span", {class:"nm"}, T["tui.awake.mode." + m] || m))));
+  };
+  return p;
 }
 // The build stamp. It is the answer to "which build are you looking at?", and
 // that question is always asked of somebody who is looking at it and has to
@@ -10720,6 +10774,7 @@ function drawStatus() {
     // said "Claude" over a Codex tab would be a bar nobody believed
     limitPill(),
     usagePill(),
+    awakePill(),
   ].forEach(x => { if (x) mid.append(x); });
   [
     mid,
@@ -11332,6 +11387,9 @@ window.__state = function (json) {
     lastWordsUnset = wordsUnsetHere();
     if (castPanel === "lua" && castDock && castDock.style.display === "flex") renderPanel();
   }
+  // 🎯's list and switch are the app's; a pick made on the page, or a press
+  // on the phone, changes them here
+  syncPickPanel();
   // The panel area follows the active tab: which panels exist depends on it (a
   // browser tab gains 📼, a terminal 🤖). If the active tab changed while the
   // dock is open, rebuild whatever is showing so none of it goes stale.
@@ -17177,7 +17235,7 @@ function panelOptionsHere() {
   if (gitSurfaceTab()) return base;
   // A browser tab gains 📼 (record page actions as Lua / run composer Lua on
   // the page). Otherwise it's the same sub-input bar as an AI tab.
-  if (onBrowserTab()) return base.concat("lua");
+  if (onBrowserTab()) return base.concat("lua", "pick");
   const t = activeTab();
   // A model pane is a conversation, not a command line. There is nothing to
   // suggest a command into, and Send is the message itself — so it keeps the
@@ -17262,6 +17320,7 @@ function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
+    : p === "pick" ? (T["tui.cast.panel.pick"] || "Pick parts of the page for an AI")
     : (T["tui.cast.panel.suggest"] || "AI command suggest");
 }
 // The bar's gear: one shape, wherever it points
@@ -17292,14 +17351,98 @@ function directBtn() {
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
   return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
-    : "🤖";
+    : p === "pick" ? "🎯" : "🤖";
 }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "lua") { return buildLuaPanel(); }
+  if (p === "pick") { return buildPickPanel(); }
   if (p === "suggest") { return buildSuggestPanel(); }
   return null;
+}
+// The 🎯 panel: point at parts of the page, then hand them to an AI. The
+// switch arms the page (a press on it then picks instead of doing what it
+// would); each pick is a chip with room for a note; "Hand to an AI" puts them
+// all into that tab's input as a draft. What is picked lives in the app, not
+// here -- the phone and the window show the same list, and a script reads it
+function pickHere() {
+  const t = activeTab();
+  return (t && t.kind === "browser" && t.picks) || {on: false, items: []};
+}
+// What the panel is drawn from, so it is drawn again only when that changes:
+// a note being typed must not be thrown away by a state push about nothing
+let pickSig = "";
+function pickSigNow() {
+  const t = activeTab();
+  const p = pickHere();
+  return (t ? t.index : "") + "|" + p.on + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
+}
+function pickAsk(act, args) {
+  const t = activeTab();
+  if (!t || t.kind !== "browser") return;
+  send({kind:"design", page: t.id || t.name, act, args: args || {}});
+}
+function buildPickPanel() {
+  const p = pickHere();
+  pickSig = pickSigNow();
+  const wrap = el("div", {id:"castpick"});
+  wrap.append(el("button", {class:"castgear" + (p.on ? " on" : ""),
+    title: T["tui.pick.hint"] || "",
+    onclick: () => send({kind:"pick", on: !p.on})},
+    p.on ? "■ " + (T["tui.pick.stop"] || "Stop picking") : "🎯 " + (T["tui.pick.start"] || "Pick")));
+  if (!p.items.length) {
+    wrap.append(el("span", {class:"castpanelhint"},
+      p.on ? (T["tui.pick.armed"] || "") : (T["tui.pick.empty"] || "")));
+    return wrap;
+  }
+  for (const it of p.items) {
+    const note = el("input", {type:"text", value: it.note || "", "data-n": it.n,
+      placeholder: T["tui.pick.note"] || "Note", maxlength: 400});
+    // Said when the person is done with it, not at every letter: the app
+    // keeps the note, and a note written on the phone shows at the window
+    note.addEventListener("change", () => pickAsk("note", {n: it.n, text: note.value}));
+    note.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) note.blur(); });
+    wrap.append(el("span", {class:"pchip", title: it.label},
+      el("span", {class:"pn"}, String(it.n)),
+      el("span", {class:"pl"}, it.label),
+      note,
+      el("button", {class:"px", title: T["tui.pick.drop"] || "", onclick: () => pickAsk("drop", {n: it.n})}, "✕")));
+  }
+  const go = el("button", {class:"castgear pgo"}, (T["tui.pick.send"] || "Hand to an AI") + " ▾");
+  go.onclick = () => {
+    const ais = mentionCandidates().filter(t => t.ai);
+    const rows = ais.length ? ais.map(t => {
+      const g = t.group != null && S.groups ? S.groups[t.group] : null;
+      return el("div", {class:"mrow", onclick: () => {
+        closeFolderMenu();
+        // A note still being typed goes first, so it rides along
+        const typing = document.activeElement;
+        if (typing && typing.dataset && typing.dataset.n) pickAsk("note", {n: Number(typing.dataset.n), text: typing.value});
+        pickAsk("send", {to: t.id});
+      }}, markFor(t) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, t.name || t.id),
+        el("span", {class:"at"}, (g && g.name) || ""));
+    }) : [el("div", {class:"mnone"}, T["tui.pick.no_ai"] || "")];
+    openList(go, rows, false, null, "picksend");
+  };
+  wrap.append(go, el("button", {class:"castgear pquiet", onclick: () => pickAsk("clear")},
+    T["tui.pick.clear"] || "Clear"));
+  return wrap;
+}
+// Drawn again when what it shows changed, keeping the place of a note being
+// typed: a pick landing while somebody writes about the previous one must not
+// take the caret away
+function syncPickPanel() {
+  if (castPanel !== "pick" || !castDock || castDock.style.display !== "flex") return;
+  if (pickSigNow() === pickSig) return;
+  const typing = document.activeElement;
+  const n = typing && typing.dataset ? typing.dataset.n : null;
+  const at = n ? typing.selectionStart : null;
+  renderPanel();
+  if (n) {
+    const again = document.querySelector('#castpick input[data-n="' + n + '"]');
+    if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch (e) {} }
+  }
 }
 // The ✨ panel: natural language in, ONE command out — drafted into the
 // composer for the person to review and Send. Nothing runs on its own.
@@ -23394,7 +23537,7 @@ mod tests {
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "there is no bar");
         assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "there are no words");
         assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "there is no dot between the windows");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "it is not in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    awakePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "it is not in the lower row");
         // The row must stay the width of its column, or the reading pushes
         // STOP off the right edge (it did, at 1280px, on 2026-09-09)
         assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "the lower row grows wider than the window");
@@ -23446,7 +23589,7 @@ mod tests {
         assert!(PAGE.contains("#status .pill.auto, #status .pill.remote { font-size:0; }"), "the words are taken out rather than made small");
         // Claude's name becomes the mark its own tabs wear -- built by the one
         // builder for those marks, not a second copy of the table
-        assert!(PAGE.contains("    aiMark(t.ai),\n    win(u.five),"), "the mark is not the one the tabs wear");
+        assert!(PAGE.contains("    aiMark(t.ai),\n    ...(u.wins || []).map(win));"), "the mark is not the one the tabs wear");
         assert!(PAGE.contains("#status .usage .who { display:none; }\n    #status .usage .aim { display:inline-block; }"), "the name does not give way to the mark");
         // "5h(5%)": the number alone, with the bar and the sentence away
         assert!(PAGE.contains(r#"el("span", {class:"wpct"}, "(" + w.pct + "%)")"#), "there is no short reading to fall back to");
@@ -23457,13 +23600,24 @@ mod tests {
         assert!(PAGE.contains("#status .usage .aim, #status .usage .wpct { display:none; }"), "the short forms show at every width");
     }
 
+    /// Keeping the PC awake is said on the lower row while the setting is
+    /// on, and changed there: the list sends the choice the settings screen
+    /// would write, from the window or the phone alike.
+    #[test]
+    fn awake_pill_changes_the_setting_from_the_row() {
+        assert!(PAGE.contains("const a = S && S.awake;\n  if (!a) return null;"), "the pill shows while the setting is off");
+        assert!(PAGE.contains(r#"send({kind:"stay_awake", mode:m})"#), "choosing on the row changes nothing");
+        assert!(PAGE.contains(r#"const AWAKE_MODES = ["off", "ai", "always"];"#), "the row offers other choices than the settings screen");
+        assert!(PAGE.contains("#status .pill.awake::after { content:attr(data-short); font-size:12px; }"), "a narrow bar keeps the whole word");
+    }
+
     /// A usage-limit notice is the tab's own, so it is shown only over the
     /// tab being looked at, and pressing it puts it away.
     #[test]
     fn the_limit_notice_follows_the_tab_in_view() {
         assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "it shows notices for tabs other than the one being looked at");
         assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "pressing it does not make it go away");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "there is no pill in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    awakePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "there is no pill in the lower row");
     }
 
     /// Two pointers and no more, each beside the thing it names, closed by

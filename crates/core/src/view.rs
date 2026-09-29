@@ -614,6 +614,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
         usage: ui.usage.clone(),
+        awake: ui.awake.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -660,6 +661,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                     // What a script is asking the person about this page, if
                     // anything. The board draws the bar under the page from it
                     t.ask = ui.asks.iter().find(|(k, _)| k == key).map(|(_, a)| a.clone());
+                    // What the 🎯 panel lists for it, and whether presses pick
+                    t.picks = ui.picks.iter().find(|(k, _)| k == key).map(|(_, p)| p.clone());
                     // And, when the page is not drawn here at all, the device
                     // it is drawn on. Filled in here with everything else about
                     // the tab, so no second pass can disagree about it
@@ -1674,6 +1677,8 @@ pub struct Ui {
     /// What each page of this desk is asking the person, by the name
     /// automation gives it. Drawn as a bar under that page
     pub asks: Vec<(String, crate::uistate::AskState)>,
+    /// What has been picked on each page for an AI (🎯), by page key
+    pub picks: Vec<(String, crate::pick::PickState)>,
     /// Which of this desk's pages are drawn on the connected device
     /// rather than here, by the same name, each with what that device is
     /// called (`caps::drawn_away`)
@@ -1733,6 +1738,8 @@ pub struct Ui {
     pub assistant: String,
     /// What each AI's subscription has left, by AI kind, for those known
     pub usage: std::collections::BTreeMap<String, crate::uistate::UsageState>,
+    /// Keeping the PC up (see `awake`), while the setting is on
+    pub awake: Option<crate::uistate::AwakeState>,
     /// The thanks card, when it is up: which page it would open
     pub thanks: Option<String>,
     /// The newer version the update card asks about, when it is up

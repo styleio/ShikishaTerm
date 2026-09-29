@@ -1964,6 +1964,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
+    // When to keep the PC up, and the ask to Windows itself. Made from this
+    // thread because the ask is the thread's and ends with it (see awake.rs)
+    let mut stay_awake = crate::awake::Stay::parse(cfg.as_ref().and_then(|c| c.stay_awake.as_deref()));
+    let mut awake = crate::awake::Awake::default();
     // What each AI's subscription has left, each on a thread of its own.
     // Nothing is read until a tab of that AI exists (limits::Meter::want)
     let limits: Vec<(crate::limits::Source, crate::limits::Meter)> = crate::limits::Source::ALL
@@ -2876,6 +2880,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ssh_aliases = crate::discover::ssh_aliases();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
+                stay_awake = crate::awake::Stay::parse(newcfg.stay_awake.as_deref());
                 ai_usage_on = newcfg.ai_usage.unwrap_or(true);
                 update::set_auto(newcfg.update_check.unwrap_or(true));
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
@@ -3069,6 +3074,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+            // Keep the PC up or let it sleep, by the setting and by what the
+            // AI tabs are doing. Tabs on other desks are not read again until
+            // their desk comes back, so theirs is believed for a while only
+            {
+                let now_ms = start.elapsed().as_millis() as u64;
+                let working = |t: &&Tab| t.is_ai() && t.state == TabState::Busy;
+                let here = tabs.iter().filter(working).count();
+                let parked: Vec<u64> =
+                    desk_tabs.iter().flatten().filter(working).map(|t| t.ms_since_change(now_ms)).collect();
+                let want = crate::awake::wanted(stay_awake, here, &parked);
+                if awake.hold(want) {
+                    append_hook_log(&format!(
+                        "stay awake: {} ({}, {} working here, {} on other desks)",
+                        if want { "holding the PC up" } else { "letting it sleep" },
+                        stay_awake.key(),
+                        here,
+                        parked.len()
+                    ));
+                }
             }
             // Which conversation each AI tab is on, and every change of state,
             // for the record of conversations. A model bridge keeps no record
@@ -4638,6 +4663,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Record { on }) => {
                         shell.mail().record_arms.push(on);
                     }
+                    // 🎯 from the phone's composer: the same queues as the window's
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Pick { on }) => {
+                        shell.mail().pick_arms.push(on);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Design { page, act, args }) => {
+                        shell.mail().designs.push((page, act, args));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
@@ -4753,6 +4785,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // where, until now, putting it away put nothing away
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::LimitAck { tab }) => {
                         shell.mail().limit_acks.push(tab);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::StayAwake { mode }) => {
+                        shell.mail().stay_awake = Some(mode);
                     }
                     // Picking a tab from afar. By number, as at the window
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
@@ -5252,6 +5287,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .unwrap_or_default(),
             usage,
+            awake: (stay_awake != crate::awake::Stay::Off).then(|| crate::uistate::AwakeState {
+                mode: stay_awake.key().to_string(),
+                held: awake.held(),
+            }),
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
             close_ask: close_ask.clone(),
@@ -5443,6 +5482,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             nav,
             asks: caps.asks_now(),
+            picks: caps.picks_now(),
             away: caps.drawn_away(),
             // Worked out from the same settings a run is started from, so the
             // board's "choose a model first" and the refusal cannot disagree
@@ -6243,6 +6283,50 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // "Off" must land even when the browser tab is no longer shown
                 // (e.g. the tab switch that caused it) — it names no page.
                 let _ = caps.browser_record("", false);
+            }
+        }
+
+        // 🎯 picking armed or put away, on the page being shown. Off with no
+        // page shown still has to land: it names the page it was armed on
+        for on in shell.mail().take_pick_arms() {
+            let shown = match surfaces.get(active.wrapping_sub(1)) {
+                Some(Surface::Browser { key, .. }) => Some(key.clone()),
+                _ => None,
+            };
+            let Some(key) = shown else { continue };
+            if let Err(e) = caps.browser_pick(&key, on) {
+                flash = Some(e.to_string());
+            }
+        }
+        // What pages said was picked on them: kept only where picking is armed
+        for (child, item) in shell.mail().take_picked() {
+            let ended = item.is_null();
+            match caps.note_picked(&child, item) {
+                Some(name) if ended => append_hook_log(&format!("pick: {name} put away from the page")),
+                Some(name) => append_hook_log(&format!("pick: one more on {name}")),
+                None => append_hook_log(&format!("pick: dropped a report from {child}, which was not picking")),
+            }
+        }
+        // What the 🎯 panel asked for
+        for (page, act, args) in shell.mail().take_designs() {
+            if act != "send" {
+                if let Err(e) = caps.pick_edit(&page, &act, &args) {
+                    append_hook_log(&format!("pick: {e}"));
+                }
+                continue;
+            }
+            let to = args.get("to").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let picks = caps.browser_picks(&page, false);
+            let now_ms = start.elapsed().as_millis() as u64;
+            match draft_picks(&tabs, &surfaces, to, &picks, now_ms, &mut pending_send) {
+                Ok(title) => {
+                    caps.browser_picks(&page, true);
+                    // Where the words went is where the person is going next:
+                    // a draft is finished off by a person, in that tab
+                    reveal = Some((to.to_string(), Instant::now() + Duration::from_secs(10)));
+                    flash = Some(i18n::tp("msg.pick.drafted", &[("tab", &title), ("n", &picks.len().to_string())]));
+                }
+                Err(why) => flash = Some(why),
             }
         }
 
@@ -11315,6 +11399,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }
+        // When to keep the PC up, chosen on the lower row: written where
+        // the settings screen writes it, and in force from this frame
+        if let Some(mode) = shell.mail().stay_awake.take() {
+            let chosen = crate::awake::Stay::parse(Some(&mode));
+            if chosen != stay_awake {
+                stay_awake = chosen;
+                config::save_setting(&["stay_awake"], serde_json::json!(chosen.key()));
+                append_hook_log(&format!("stay awake: set to {} from the lower row", chosen.key()));
+            }
+        }
         for idx in shell.mail().take_limit_acks() {
             if let Some(i) = session_at(&surfaces, idx)
                 && let Some(t) = tabs.get_mut(i) {
@@ -11407,6 +11501,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Load start/end likewise gets converted to the id before caching.
         // Update the start time, used for the top bar's "in progress" indicator.
         for (child, busy) in shell.mail().take_loading() {
+            // A new document is on its way: whatever drew the 🎯 picking goes
+            // with the old one, and the new one has not been armed by anybody
+            if busy {
+                caps.note_page_loaded(&child);
+            }
             if let Some(name) = caps.name_of_child(&child) {
                 let now = std::time::Instant::now();
                 let e = loading_now.entry(name).or_insert((false, now));
@@ -14019,6 +14118,69 @@ pub fn tab_cwd_abs(t: &Tab) -> String {
         None => reported(),
     };
     abs.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// The machine a tab runs on and its folder there, when that is not this PC.
+/// A file meant for the AI in it has to be put there: that is where it reads
+pub fn tab_far(t: &Tab) -> Option<(crate::elsewhere::Elsewhere, String)> {
+    let machine = match (t.remote(), t.cloud()) {
+        (Some(spec), _) => crate::elsewhere::Elsewhere::Ssh(spec.clone()),
+        (None, Some(host)) => crate::elsewhere::Elsewhere::Cloud(host.clone()),
+        (None, None) => return None,
+    };
+    Some((machine, t.remote_cwd().unwrap_or_default().to_string()))
+}
+
+/// Hand what was picked on a page (🎯) to the AI tab named `to` (its id), as a
+/// draft: the words go into its input and stop there, for the person to add
+/// to and send. Too long to read there, the words go into a file in the tab's
+/// folder and the input is given its path. Answers the tab's title, or why not
+fn draft_picks(
+    tabs: &[Tab],
+    surfaces: &[Surface],
+    to: &str,
+    picks: &[crate::pick::Picked],
+    now_ms: u64,
+    pending_send: &mut Vec<PendingSend>,
+) -> Result<String, String> {
+    if picks.is_empty() {
+        return Err(i18n::t("msg.pick.none"));
+    }
+    let n = crate::closed::row_named(surfaces, tabs, to)
+        .ok_or_else(|| i18n::tp("msg.tab_not_found", &[("target", to)]))?;
+    let t = session_at(surfaces, n)
+        .and_then(|i| tabs.get(i))
+        .ok_or_else(|| i18n::tp("msg.tab_not_found", &[("target", to)]))?;
+    if !t.accepts_bracketed_paste() {
+        return Err(i18n::tp("msg.draft_unsupported", &[("tab", &t.title)]));
+    }
+    let full = crate::pick::describe(picks);
+    let text = if full.chars().count() <= crate::pick::INLINE_MAX {
+        full
+    } else {
+        // Ours, so the list of what a person may attach does not apply: only
+        // text is written, a page's worth of markup at most
+        let limits = crate::attach::Limits { max_bytes: 1024 * 1024, allowed_ext: vec!["txt".into()] };
+        let name = format!("picked-{}.txt", crate::sqlite::now_ms());
+        let saved = match tab_far(t).filter(|(_, there)| !there.trim().is_empty()) {
+            Some((at, there)) => crate::attach::send_up(&at, &there, &name, full.as_bytes(), &limits),
+            None => {
+                let cwd = tab_cwd_abs(t);
+                if cwd.is_empty() {
+                    return Err(i18n::t("attach.err.no_folder"));
+                }
+                crate::attach::save(std::path::Path::new(&cwd), &name, full.as_bytes(), &limits)
+                    .map(|p| p.to_string_lossy().into_owned())
+            }
+        }
+        .map_err(|e| format!("{e:#}"))?;
+        crate::pick::pointer(&saved, picks.len())
+    };
+    let seen = t.output_count();
+    let chunks = paste_chunks(t, &text);
+    pending_send.push(PendingSend::new(n, chunks, false, seen, now_ms, text.chars().count()));
+    append_hook_log(&format!("pick: {} element(s) drafted into {}", picks.len(), t.title));
+    Ok(t.title.clone())
 }
 /// Ensure the local settings/result web server is running and hand back its
 /// base URL (`http://127.0.0.1:<port>/?token=<token>`). Started lazily on first

@@ -4334,7 +4334,7 @@ impl Tab {
             .and_then(|s| s.to_str())
             .unwrap_or(head)
             .to_ascii_lowercase();
-        matches!(head.as_str(), "claude" | "codex" | "gemini" | "aider" | "kimi")
+        matches!(head.as_str(), "claude" | "codex" | "gemini" | "aider" | "kimi" | "grok" | "opencode" | "cursor-agent")
             .then_some(head)
     }
 

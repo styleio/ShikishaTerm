@@ -4010,24 +4010,37 @@ fn handle(
         // wait behind it
         ("GET", "/api/usage") => {
             std::thread::spawn(move || {
-                let window = |w: &Option<crate::limits::Window>| {
-                    w.as_ref().map(|w| serde_json::json!({"pct": w.pct, "resets_at": w.resets_at}))
-                };
-                let mut out = serde_json::Map::new();
-                for s in crate::limits::Source::ALL {
-                    let reading = s.read().map(|l| {
-                        serde_json::json!({
-                            "five": window(&l.five_hour),
-                            "week": window(&l.seven_day),
-                            "as_of": l.as_of,
-                        })
-                    });
-                    out.insert(
-                        s.key().to_string(),
-                        serde_json::json!({"name": s.name(), "ready": s.ready(), "reading": reading}),
-                    );
-                }
-                let _ = req.respond(json_resp(serde_json::Value::Object(out)));
+                // Every AI at once, each on a thread of its own: one service
+                // slow to answer must not hold up the others' lines
+                let asks: Vec<_> = crate::limits::Source::ALL
+                    .into_iter()
+                    .map(|s| std::thread::spawn(move || (s, s.ready(), s.read())))
+                    .collect();
+                // An array, in the order of the list: the screen shows them in
+                // the order they come
+                let out: Vec<serde_json::Value> = asks
+                    .into_iter()
+                    .filter_map(|h| h.join().ok())
+                    .map(|(s, ready, got)| {
+                        let reading = got.map(|l| {
+                            let wins: Vec<serde_json::Value> = l
+                                .wins
+                                .iter()
+                                .map(|a| {
+                                    serde_json::json!({
+                                        "span": a.span.map(|s| s.key()),
+                                        "model": a.only,
+                                        "pct": a.window.pct,
+                                        "resets_at": a.window.resets_at,
+                                    })
+                                })
+                                .collect();
+                            serde_json::json!({"wins": wins, "as_of": l.as_of})
+                        });
+                        serde_json::json!({"key": s.key(), "name": s.name(), "ready": ready, "reading": reading})
+                    })
+                    .collect();
+                let _ = req.respond(json_resp(serde_json::Value::Array(out)));
             });
         }
         // What this machine already offers to open a tab on: the installed WSL
@@ -6361,7 +6374,7 @@ const SHELL_CMDS = [
 const COMMON_COMMANDS = AI_CLIS.concat(SHELL_CMDS);
 // A "cmd" tab whose head is one of these is an AI CLI, so it groups under the
 // AI category rather than the plain-shell one.
-const AI_CLI_HEADS = ["claude", "codex", "gemini", "aider", "kimi"];
+const AI_CLI_HEADS = ["claude", "codex", "gemini", "aider", "kimi", "grok", "opencode", "cursor-agent"];
 const headOf = c => (cmdToText(c).trim().split(/\s+/)[0] || "").toLowerCase().replace(/\.exe$/, "");
 const isAiCli = c => AI_CLI_HEADS.includes(headOf(c));
 
@@ -7294,6 +7307,14 @@ function worktreesCard() {
           T["settings.worktrees.markers.reset"])) : null));
 }
 
+// When to keep the PC from sleeping. A file that never chose says "off" --
+// shown as the value it is, not as an empty box -- and nothing is written
+// until somebody picks something (the lower row changes the same key)
+function stayAwakeChoice() {
+  const s = choose(current, "stay_awake", ["off", "ai", "always"].map(m => [m, T["settings.stay_awake." + m]]));
+  if (!current.stay_awake) s.value = "off";
+  return s;
+}
 function basicCard() {
   return card(T["settings.tab.basic"],
     row(T["settings.tabbar_width"], field(current, "tab_bar_width", T["settings.tab.automation_dir.ph"], {type:"number", width:110, grow:false}),
@@ -7317,6 +7338,8 @@ function basicCard() {
     // window is the program at all
     row(T["settings.split"], check(current, "split", T["settings.split.label"]),
         el("span", {class:"hint"}, T["settings.split.hint"])),
+    row(T["settings.stay_awake"], stayAwakeChoice(),
+        el("span", {class:"hint"}, T["settings.stay_awake.hint"])),
     row(T["settings.tui_clipboard"], checkDefaultOn(current, "tui_clipboard", T["settings.tui_clipboard.label"]),
         el("span", {class:"hint"}, T["settings.tui_clipboard.hint"])),
     // Beside the clipboard: both are what a press or a copy inside a terminal does
@@ -9511,6 +9534,13 @@ function aiUsageCard() {
     return el("div", {class:"usewin"},
       el("span", {class:"wname"}, name), el("span", {class:"meter"}, level), el("span", {}, said));
   };
+  // A window's name: its length ("7 days"), after the model it is limited
+  // to when it is one model's own ("Fable 7 days"), or the model alone when
+  // the service does not say how long
+  const winName = w => {
+    const span = w.span ? T["settings.ai_usage." + w.span] : "";
+    return w.model ? (span ? w.model + " " + span : w.model) : span;
+  };
   const one = (key, a) => {
     const dot = el("span", {class:"dot" + (a.reading ? " on" : "")});
     const part = el("div", {class:"useai"}, el("div", {class:"row"}, dot, el("span", {}, a.name)));
@@ -9521,16 +9551,15 @@ function aiUsageCard() {
       part.append(el("div", {class:"hint"}, T[why]));
       return part;
     }
-    if (r.five) part.append(windowRow(T["settings.ai_usage.five"], r.five));
-    if (r.week) part.append(windowRow(T["settings.ai_usage.week"], r.week));
+    for (const w of r.wins || []) part.append(windowRow(winName(w), w));
     // A reading that is not from just now says how old it is: Codex's is as
-    // old as its record, and Claude's is the last one the service gave
-    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage." + key + ".as_of"], {when: clock(r.as_of)})));
+    // old as its record, and a service's is the last one it gave
+    if (r.as_of) part.append(el("div", {class:"hint"}, fill(T["settings.ai_usage." + key + ".as_of"] || T["settings.ai_usage.dated"], {when: clock(r.as_of), who: a.name})));
     return part;
   };
-  fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(j => {
+  fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(list => {
     box.textContent = "";
-    for (const key of ["claude", "codex"]) if (j[key]) box.append(one(key, j[key]));
+    for (const a of list) box.append(one(a.key, a));
   }).catch(() => { box.textContent = ""; box.append(el("div", {class:"hint"}, T["settings.ai_usage.unknown"])); });
   // The key in the file is still "claude_usage": it began as Claude's alone,
   // and a file that turned it off goes on turning off both (see config.rs)
