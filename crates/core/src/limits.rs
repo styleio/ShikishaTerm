@@ -528,6 +528,14 @@ fn parse_codex(line: &str, now: i64) -> Option<Limits> {
 /// `Z` or a `+HH:MM` offset. Anything else is "no reset time", which the
 /// pill shows as the percentage alone
 fn epoch_of(s: &str) -> Option<i64> {
+    epoch_ms_of(s).map(|ms| ms.div_euclid(1000))
+}
+
+/// `2026-09-08T16:19:59.874255+00:00` as milliseconds since the epoch: the
+/// shape the CLIs write their own times in (`timestamp` in a record). Date,
+/// time, an optional fraction, and `Z` or a `+HH:MM` offset; anything else
+/// is `None`
+pub fn epoch_ms_of(s: &str) -> Option<i64> {
     let s = s.trim();
     let (date, rest) = s.split_once('T')?;
     let mut d = date.split('-').map(|p| p.parse::<i64>());
@@ -537,9 +545,15 @@ fn epoch_of(s: &str) -> Option<i64> {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "Z"),
     };
-    let time = time.split('.').next()?;
+    let (time, fraction) = time.split_once('.').unwrap_or((time, ""));
     let mut t = time.split(':').map(|p| p.parse::<i64>());
     let (hh, mm, ss) = (t.next()?.ok()?, t.next()?.ok()?, t.next().unwrap_or(Ok(0)).ok()?);
+    // The first three digits of the fraction are the milliseconds
+    let digits: String = fraction.chars().take_while(char::is_ascii_digit).take(3).collect();
+    let ms = match digits.len() {
+        0 => 0,
+        n => digits.parse::<i64>().ok()? * 10_i64.pow(3 - n as u32),
+    };
     let shift = match offset {
         "Z" | "" => 0,
         o => {
@@ -549,7 +563,7 @@ fn epoch_of(s: &str) -> Option<i64> {
             sign * (oh * 3600 + om * 60)
         }
     };
-    Some(days_from_civil(y, m, day) * 86_400 + hh * 3600 + mm * 60 + ss - shift)
+    Some((days_from_civil(y, m, day) * 86_400 + hh * 3600 + mm * 60 + ss - shift) * 1000 + ms)
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's).
@@ -597,6 +611,8 @@ mod tests {
         assert_eq!(epoch_of("1970-01-01T09:00:00+09:00"), Some(0), "the offset is not subtracted");
         assert_eq!(epoch_of("2026-09-08T16:19:59.874255+00:00"), Some(1_788_884_399));
         assert_eq!(epoch_of("2026-09-12T04:59:59.874275+00:00"), Some(1_789_189_199));
+        assert_eq!(epoch_ms_of("2026-09-28T02:12:30.055Z"), Some(1_790_561_550_055));
+        assert_eq!(epoch_ms_of("1970-01-01T00:00:01.5Z"), Some(1_500));
         assert_eq!(epoch_of("soon"), None);
         assert_eq!(epoch_of(""), None);
     }

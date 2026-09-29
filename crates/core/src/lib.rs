@@ -95,6 +95,7 @@ pub mod send;
 pub mod serve;
 pub mod serverai;
 pub mod sessionfind;
+pub mod sqlite;
 pub mod shell;
 pub mod skill;
 pub mod hotkeys;

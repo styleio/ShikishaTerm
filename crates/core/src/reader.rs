@@ -70,6 +70,16 @@ pub enum Who {
 pub struct Turn {
     pub who: Who,
     pub text: String,
+    /// Where in the record it begins: the byte its first line starts at. The
+    /// same place in the same record is the same thing said, which is what a
+    /// pin or a note is kept against. Set by the walk that found it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+    /// When it was said, in milliseconds since the epoch, where the record
+    /// says (a `timestamp` beside the message). For an answer said in several
+    /// pieces, when its last piece was written
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<i64>,
 }
 
 /// A stretch of the conversation, oldest turn first.
@@ -206,7 +216,7 @@ pub fn read_back_by(
             // whole rather than beheaded
             if let Some(turn) = &said
                 && found.len() >= want
-                && found.last().is_none_or(|last| last.who != turn.who)
+                && !found.last().is_some_and(|last| joins(last, turn))
             {
                 enough = true;
                 break;
@@ -218,10 +228,15 @@ pub fn read_back_by(
             match (said, found.last_mut()) {
                 // Older words from the same speaker join the block already
                 // being built — in FRONT of it, because this walk goes backwards
-                (Some(turn), Some(last)) if last.who == turn.who => {
+                (Some(turn), Some(last)) if joins(last, &turn) => {
                     last.text = format!("{}\n\n{}", turn.text, last.text);
+                    last.at = Some(start + at as u64);
+                    last.when = last.when.or(turn.when);
                 }
-                (Some(turn), _) => found.push(turn),
+                (Some(mut turn), _) => {
+                    turn.at = Some(start + at as u64);
+                    found.push(turn);
+                }
                 (None, _) => {}
             }
         }
@@ -241,6 +256,15 @@ pub fn read_back_by(
         from,
         more: from > 0,
     })
+}
+
+/// Whether `older`, met walking back, belongs to the block `newer` began.
+/// An answer said in pieces is one answer. What a person sent is never
+/// joined: two things sent one after the other can have come from two
+/// different senders -- the person, then a job -- and are told apart one by
+/// one (`convo`)
+fn joins(newer: &Turn, older: &Turn) -> bool {
+    newer.who == Who::Ai && older.who == Who::Ai
 }
 
 /// Where a tab's CLI keeps its record of the conversation: the pattern that
@@ -403,7 +427,21 @@ fn turn_of(record: &Value) -> Option<Turn> {
         Who::You => human_part(&said),
         Who::Ai => said.trim().to_string(),
     };
-    (!said.is_empty()).then_some(Turn { who, text: said })
+    (!said.is_empty()).then_some(Turn { who, text: said, at: None, when: when_of(record) })
+}
+
+/// When a record says it was written: a `timestamp` beside the message, as
+/// every CLI that keeps one spells it -- an ISO 8601 time, or a number of
+/// milliseconds
+fn when_of(record: &Value) -> Option<i64> {
+    let stamp = record
+        .get("timestamp")
+        .or_else(|| ["message", "payload"].iter().find_map(|k| record.get(*k)?.get("timestamp")))?;
+    match stamp {
+        Value::String(s) => crate::limits::epoch_ms_of(s),
+        Value::Number(n) => n.as_i64(),
+        _ => None,
+    }
 }
 
 /// Whether this record is the AI reaching for a tool.
@@ -1593,6 +1631,42 @@ mod tests {
         assert_eq!(work.more, 49);
         let shown = work.pieces.len() + work.pieces.iter().map(|p| p.skipped).sum::<usize>() + work.more;
         assert_eq!(shown, 500, "every piece is either shown or counted");
+    }
+
+    /// Two things sent one after the other stay two -- they may have come
+    /// from two senders -- while an answer said in pieces is one answer. Each
+    /// says where in the record it begins and when it was said
+    #[test]
+    fn what_was_sent_is_kept_apart_and_says_where_and_when() {
+        let path = tmp("apart");
+        let at = |who: &str, text: &str, stamp: &str| {
+            format!(
+                "{{\"timestamp\":\"{stamp}\",\"message\":{{\"role\":\"{who}\",\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
+            )
+        };
+        let lines = [
+            at("user", "fix the test", "2026-09-28T02:00:00Z"),
+            at("user", "and the docs", "2026-09-28T02:00:05Z"),
+            at("assistant", "First part.", "2026-09-28T02:01:00Z"),
+            at("assistant", "Second part.", "2026-09-28T02:02:00.250Z"),
+        ];
+        std::fs::write(&path, lines.concat()).unwrap();
+        let page = read_back(&path, u64::MAX, 10).unwrap();
+        let said: Vec<(Who, &str)> = page.turns.iter().map(|t| (t.who, t.text.as_str())).collect();
+        assert_eq!(
+            said,
+            vec![(Who::You, "fix the test"), (Who::You, "and the docs"), (Who::Ai, "First part.\n\nSecond part.")]
+        );
+        let starts: Vec<u64> = page.turns.iter().map(|t| t.at.unwrap()).collect();
+        let first = lines[0].len() as u64;
+        assert_eq!(starts, vec![0, first, first + lines[1].len() as u64], "an answer begins where its first piece does");
+        assert_eq!(page.turns[1].when, crate::limits::epoch_ms_of("2026-09-28T02:00:05Z"));
+        assert_eq!(page.turns[2].when, crate::limits::epoch_ms_of("2026-09-28T02:02:00.250Z"), "an answer is as late as its last piece");
+        // Asking for one thing gives one person's line, not both
+        let last_asked = read_back(&path, page.turns[2].at.unwrap(), 1).unwrap();
+        assert_eq!(last_asked.turns.len(), 1);
+        assert_eq!(last_asked.turns[0].text, "and the docs");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
