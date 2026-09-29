@@ -944,14 +944,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .job .jtask { display:flex; align-items:center; gap:var(--s2); min-width:0; min-height:24px; padding-left:18px; font-size:11px; }
   .job .jst { flex:none; min-width:4.5em; color:var(--dim); }
   .job .jst.failed { color:var(--stop); }
-  .job .jst.blocked { color:var(--warn); }
+  .job .jst.held { color:var(--warn); }
   .job .jn { flex:1 1 0; min-width:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .job .jtry { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
   .job button { font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; flex:none; }
   .job button:hover { border-color:var(--edge-hi); }
   .job .jwho { max-width:7em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--dim); }
-  .job .jgate { margin:2px 0 0 18px; padding:var(--s1) var(--s2); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  .job .jdecide { margin:2px 0 0 18px; padding:var(--s1) var(--s2); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent);
     border-radius:var(--r-ctl); display:flex; flex-direction:column; gap:var(--s1); }
   .job .jq { font-size:12px; color:var(--text); overflow-wrap:anywhere; }
   .job .jbtns { display:flex; flex-wrap:wrap; gap:var(--s2); }
@@ -7293,22 +7293,22 @@ function jobsOf(t) {
 // way to stop it all. Stopping cuts AIs off mid-work, so it is asked first
 function jobRow(j) {
   const tabOf = id => (S.tabs || []).find(t => (t.id || t.name) === id);
-  const waiting = (j.decisions || []).some(g => g.who === "person");
+  const waiting = (j.decisions || []).some(d => d.who === "person");
   const box = el("div", {class:"job"});
   box.append(el("div", {class:"jhead"},
     el("span", {class:"dot " + (waiting ? "QUESTION" : j.working ? "BUSY" : "DONE")}),
     el("span", {class:"jlabel"}, T["tui.job.label"] || ""),
-    el("span", {class:"jt", title:j.objective}, j.objective),
+    el("span", {class:"jt", title:j.goal}, j.goal),
     j.working
       ? el("button", {onclick:e => {
           e.stopPropagation();
           askQuestion({
             title:T["tui.job.stop.title"] || "",
             say:T["tui.job.stop.say"] || "",
-            what:j.objective,
+            what:j.goal,
             label:T["tui.job.stop"] || "",
             danger:true,
-            go:() => send({kind:"orch", act:"stop", run:j.id}),
+            go:() => send({kind:"orch", act:"stop", job:j.id}),
           });
         }}, T["tui.job.stop"] || "")
       : null));
@@ -7316,19 +7316,19 @@ function jobRow(j) {
     const w = task.tab ? tabOf(task.tab) : null;
     box.append(el("div", {class:"jtask"},
       el("span", {class:"jst " + task.state}, T["tui.job.state." + task.state] || task.state),
-      el("span", {class:"jn", title:task.note ? task.title + " · " + task.note : task.title}, task.title),
+      el("span", {class:"jn", title:task.why ? task.title + " · " + task.why : task.title}, task.title),
       task.tries > 1 ? el("span", {class:"jtry"}, (T["tui.job.tries"] || "{n}").replaceAll("{n}", String(task.tries))) : null,
       w ? el("button", {class:"jwho", title:T["tui.job.go"] || "",
             onclick:e => { e.stopPropagation(); send({kind:"select", tab:w.index}); }}, tabName(w, "tabs", "")) : null));
   }
-  for (const g of j.decisions || []) {
-    if (g.who !== "person") continue;
-    const choices = g.options && g.options.length ? g.options : [T["tui.job.ok"] || "OK"];
-    box.append(el("div", {class:"jgate"},
-      el("div", {class:"jq"}, g.question),
+  for (const d of j.decisions || []) {
+    if (d.who !== "person") continue;
+    const choices = d.choices && d.choices.length ? d.choices : [T["tui.job.ok"] || "OK"];
+    box.append(el("div", {class:"jdecide"},
+      el("div", {class:"jq"}, d.question),
       el("div", {class:"jbtns"}, ...choices.map(c => el("button", {onclick:e => {
         e.stopPropagation();
-        send({kind:"orch", act:"decide", gate:g.id, choice:c});
+        send({kind:"orch", act:"decide", decision:d.id, choice:c});
       }}, c)))));
   }
   return box;

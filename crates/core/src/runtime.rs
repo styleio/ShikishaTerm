@@ -4016,7 +4016,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
                         .unwrap_or_default();
                     let op = config::operate();
-                    let limits = crate::orch::Limits { max_dispatches: op.max_rounds, max_depth: op.depth() };
+                    let limits = crate::orch::Limits { max_assignments: op.max_rounds, max_depth: op.depth() };
                     let fx = orchestra.call(
                         crate::orch::Call {
                             caller: call.caller,
@@ -4804,8 +4804,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Skill { ai, act }) => {
                         shell.mail().skills.push((ai, act));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Orch { act, run, gate, choice }) => {
-                        shell.mail().orch.push((act, run, gate, choice));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Orch { act, job, decision, choice }) => {
+                        shell.mail().orch.push((act, job, decision, choice));
                     }
                     // The add-a-project dialog, from a phone: the same queues
                     // the window's dialog fills (see `main.rs`)
@@ -10740,17 +10740,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             git_signin = None;
         }
         // A job's card, pressed: here or on a phone
-        for (act, run, gate, choice) in shell.mail().take_orch() {
+        for (act, job, decision, choice) in shell.mail().take_orch() {
             let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
             match act.as_str() {
                 "stop" => {
-                    let fx = orchestra.stop_run(run, &scene);
+                    let fx = orchestra.stop_job(job, &scene);
                     let now_ms = start.elapsed().as_millis() as u64;
                     crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
-                    append_hook_log(&format!("orchestration: the person stopped r{run}"));
+                    append_hook_log(&format!("orchestration: the person stopped j{job}"));
                 }
-                "decide" => match orchestra.decide_gate(gate, &choice, "person") {
-                    Ok(_) => append_hook_log(&format!("orchestration: the person decided g{gate}: {choice}")),
+                "decide" => match orchestra.make_decision(decision, &choice, "person") {
+                    Ok(_) => append_hook_log(&format!("orchestration: the person decided d{decision}: {choice}")),
                     Err(e) => flash = Some(e),
                 },
                 _ => {}

@@ -296,13 +296,14 @@ mod tests {
     #[test]
     fn what_the_app_typed_is_not_taken_for_the_person() {
         let mut t = Typed::default();
-        t.note("lead", "[shikisha] You have 2 messages. Run: shikisha inbox");
-        assert!(t.is_ours("lead", "[shikisha] You have 2 messages. Run: shikisha inbox"));
+        let line = super::super::text::mail_line(2);
+        t.note("lead", &line);
+        assert!(t.is_ours("lead", &line));
         assert!(!t.is_ours("lead", "Have <@codex> review it"));
-        assert!(!t.is_ours("other", "[shikisha] You have 2 messages. Run: shikisha inbox"));
+        assert!(!t.is_ours("other", &line));
         // A long brief, trimmed or wrapped differently by the CLI
-        let brief = "You are a worker in SHIKISHA-TERM, on assignment d5 (task t3).\nThe tab that assigned it cannot see this terminal.";
-        t.note("w", brief);
+        let brief = super::super::text::brief(5, 3, "Fix the parser.", false);
+        t.note("w", &brief);
         assert!(t.is_ours("w", &brief.replace('\n', " ")));
     }
 }

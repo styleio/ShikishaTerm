@@ -9,12 +9,15 @@
  * which sits in the folder as a project skill.
  *
  *     cargo build
- *     node tools/debug/orch-real.win.mjs [--trials=2] [--keep]
+ *     node tools/debug/orch-real.win.mjs [--trials=2] [--kind=once|loop] [--exe=<path>] [--keep]
  *
  * A trial passes when: tests the AIs never see pass, the lead handed the work
- * out with dispatch (the fix and at least one review), every assignment was
- * reported, the job was closed, and the lead ended with the mark it was asked
- * for. Results go to target/orch-real/results.json.
+ * out in rounds, each after the one before reported -- a fix and its review
+ * (once), or a fix, its review, a fix of what it found and a review of that
+ * (loop) -- every assignment was reported, the job was closed, and the lead
+ * ended with the mark it was asked for. Results go to
+ * target/orch-real/results-<kind>.json. With --exe, the app and what it reads
+ * beside itself come from that installed copy, not from this checkout.
  *
  * Needs Windows, Node, git, and `claude` and `codex` signed in. Spends real
  * turns of both accounts: a handful of trials needs no asking, a hundred does.
@@ -34,6 +37,10 @@ const arg = (name, dflt) => {
   return a ? a.slice(name.length + 3) : dflt;
 };
 const TRIALS = Number(arg('trials', 2));
+// once: the fix is asked for whole, and one review usually finds nothing.
+// loop: the first fix is asked for one function only, so the review finds the
+// rest and the job has to go round again -- fix, review, fix, review
+const KIND = arg('kind', 'once');
 const RUN = path.join(os.tmpdir(), 'sk-orch-real');
 const APP = path.join(RUN, 'app');
 const REPO = path.join(RUN, 'repo');
@@ -55,7 +62,12 @@ const git = (...args) => {
 };
 const nonce = () => Math.random().toString(36).slice(2, 8).toUpperCase();
 
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+// --exe=<path> runs another build instead of this checkout's: the one
+// installed, say, to try exactly what people will run. What it reads beside
+// itself then comes from beside it too, not from this checkout
+const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
+const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+const from = installed ? ['-From', path.dirname(installed)] : [];
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 for (const cli of ['claude', 'codex']) {
   if (spawnSync('where.exe', [cli], { encoding: 'utf8' }).status !== 0) die(`${cli} is not on PATH`);
@@ -66,7 +78,7 @@ stopApp();
 await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, REPO, path.join(RUN, 'localappdata'), OUT]) fs.mkdirSync(d, { recursive: true });
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
+const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
 
@@ -199,7 +211,10 @@ const trial = async (n) => {
   git('clean', '-qfd');
   const mark = `JOB${nonce()}`;
   const said = new RegExp(`${mark}-\\d`);
-  const ask = `Have <@coder> fix the bugs in calc.js in this folder, and have <@reviewer> review the fix. ` +
+  const first = KIND === 'loop'
+    ? `Have <@coder> fix only the bug in sum() in calc.js in this folder (nothing else yet), and have <@reviewer> review the whole of calc.js. `
+    : `Have <@coder> fix the bugs in calc.js in this folder, and have <@reviewer> review the fix. `;
+  const ask = first +
     `If the review finds anything, have <@coder> fix it and <@reviewer> review again, until the review finds nothing. ` +
     `See the whole job through. When it is done, reply to me with only ${mark}- followed by how many reviews there were, like ${mark}-N.`;
   const from = logLines().length;
@@ -212,7 +227,7 @@ const trial = async (n) => {
     if (['QUESTION', 'EXIT', 'FAILED', 'LIMIT'].includes(st)) { ended = st; break; }
     const out = await screen('lead');
     const log = logLines().slice(from);
-    const open = log.some((l) => /orchestration: t\d+ added/.test(l)) && !log.some((l) => /orchestration: r\d+ closed/.test(l));
+    const open = log.some((l) => /orchestration: t\d+ added/.test(l)) && !log.some((l) => /orchestration: j\d+ closed/.test(l));
     if (said.test(out) && ['DONE', 'WAIT'].includes(st)) { ended = 'DONE'; break; }
     // Quiet with the job open is a lead waiting for the line that says mail came
     if (['DONE', 'WAIT'].includes(st) && !open && log.length) { quietSince ??= Date.now(); if (Date.now() - quietSince > 180000) { ended = 'QUIET'; break; } }
@@ -222,22 +237,35 @@ const trial = async (n) => {
   const out = await screen('lead');
   const log = logLines().slice(from);
   const events = log.filter((l) => l.includes('orchestration:'));
-  const dispatched = events.filter((l) => / -> /.test(l)).length;
+  const assigned = events.filter((l) => / -> /.test(l)).length;
   const reported = events.filter((l) => /reported/.test(l)).length;
   const closed = events.some((l) => /closed/.test(l));
   const reviews = events.filter((l) => / -> reviewer/.test(l)).length;
+  // The rounds in the order they happened: each handed out only after the one
+  // before it reported. A loop is a fix, its review, a fix of what the review
+  // found, and a review of that -- two reviews of one fix are not a loop
+  const want = KIND === 'loop' ? ['coder', 'reviewer', 'coder', 'reviewer'] : ['coder', 'reviewer'];
+  let step = 0;
+  let waiting = null;
+  for (const l of events) {
+    const given = / a(\d+) t\d+ -> (\S+) /.exec(l);
+    const back = / a(\d+) reported /.exec(l);
+    if (back && back[1] === waiting) waiting = null;
+    else if (given && waiting === null && step < want.length && given[2] === want[step]) { waiting = given[1]; step += 1; }
+  }
+  const inOrder = step === want.length && waiting === null;
   const tests = spawnSync('node', [HIDDEN], { encoding: 'utf8' });
   const fixed = tests.status === 0;
-  const pass = fixed && dispatched >= 2 && reviews >= 1 && reported >= dispatched && closed && said.test(out);
+  const pass = fixed && inOrder && reported >= assigned && closed && said.test(out);
   const why = pass ? '' : [ended !== 'DONE' && `lead ended ${ended}`, !fixed && 'hidden tests fail',
-    dispatched < 2 && `only ${dispatched} dispatch(es)`, reviews < 1 && 'no review dispatched',
-    reported < dispatched && `${dispatched - reported} unreported`, !closed && 'job not closed', !said.test(out) && 'no final mark']
+    !inOrder && `the rounds did not go ${want.join(' > ')}, each after the last reported (got ${step} of ${want.length})`,
+    reported < assigned && `${assigned - reported} unreported`, !closed && 'job not closed', !said.test(out) && 'no final mark']
     .filter(Boolean).join('; ');
-  const r = { n, pass, why, ms: Date.now() - t0, dispatched, reviews, reported, closed, events };
+  const r = { kind: KIND, n, pass, why, ms: Date.now() - t0, assigned, reviews, reported, closed, events };
   results.push(r);
-  fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify(results, null, 2));
-  fs.writeFileSync(path.join(OUT, `lead-${n}.txt`), out);
-  console.log(`${pass ? 'PASS' : 'FAIL'} #${n} ${Math.round(r.ms / 1000)}s dispatched=${dispatched} reviews=${reviews} reported=${reported} closed=${closed}` + (pass ? '' : ` -- ${why}`));
+  fs.writeFileSync(path.join(OUT, `results-${KIND}.json`), JSON.stringify(results, null, 2));
+  fs.writeFileSync(path.join(OUT, `lead-${KIND}-${n}.txt`), out);
+  console.log(`${pass ? 'PASS' : 'FAIL'} #${n} ${Math.round(r.ms / 1000)}s assigned=${assigned} reviews=${reviews} reported=${reported} closed=${closed}` + (pass ? '' : ` -- ${why}`));
   for (const e of events) console.log('    ' + e.replace(/^.*orchestration: /, ''));
 };
 

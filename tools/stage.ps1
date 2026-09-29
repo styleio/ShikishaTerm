@@ -9,12 +9,19 @@
 
     -Dest      where to stage into (created if absent)
     -Package   also carry the [package] section (the download; not the dev machine)
-    -Exe       an exe to place at the root of it
+    -Exe       an exe to place at the root of it, as SHIKISHA-TERM.exe whatever
+               it was called (the name everything that starts it looks for)
+    -From      an installed copy to take what the app reads beside itself from,
+               instead of this checkout: a check of what people run then runs
+               with what they have, and a file missing there stops it here.
+               [package] still comes from the checkout -- the app reads none
+               of it, and an installed desks/ holds the person's own desks
 #>
 param(
     [Parameter(Mandatory)][string]$Dest,
     [switch]$Package,
-    [string]$Exe
+    [string]$Exe,
+    [string]$From
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -37,14 +44,20 @@ $sections = @('beside-exe', 'beside-exe-flat')
 if ($Package) { $sections += 'package' }
 
 New-Item -ItemType Directory -Force $Dest | Out-Null
-if ($Exe) { Copy-Item $Exe (Join-Path $Dest (Split-Path $Exe -Leaf)) -Force }
+if ($Exe) { Copy-Item $Exe (Join-Path $Dest 'SHIKISHA-TERM.exe') -Force }
+if ($From -and -not (Test-Path $From)) { throw "no installed copy at $From" }
 
 $staged = 0
 foreach ($s in $sections) {
     foreach ($pattern in $want[$s]) {
         $recurse = $pattern.EndsWith('/**')
         $rel = if ($recurse) { $pattern.Substring(0, $pattern.Length - 3) } else { $pattern }
-        $src = Join-Path $root ($rel -replace '/', '\')
+        # From an installed copy, what the app reads is where the app finds
+        # it: beside the exe, the flat files at its root
+        $installed = $From -and $s -ne 'package'
+        $src = if (-not $installed) { Join-Path $root ($rel -replace '/', '\') }
+               elseif ($s -eq 'beside-exe-flat') { Join-Path $From (Split-Path $rel -Leaf) }
+               else { Join-Path $From ($rel -replace '/', '\') }
         # beside-exe-flat drops the folder the file came from: it has to end up
         # next to the executable itself, because that is the only place Windows
         # looks (conpty.dll). Everywhere else keeps the shape it is written in.
@@ -52,14 +65,20 @@ foreach ($s in $sections) {
         $to  = if ($sub) { Join-Path $Dest $sub } else { $Dest }
 
         if ($recurse) {
-            if (-not (Test-Path $src)) { Write-Host "  (absent, skipped) $pattern"; continue }
+            if (-not (Test-Path $src)) {
+                if ($installed) { throw "the installed copy at $From has no $pattern" }
+                Write-Host "  (absent, skipped) $pattern"; continue
+            }
             New-Item -ItemType Directory -Force (Join-Path $Dest $rel) | Out-Null
             Copy-Item "$src\*" (Join-Path $Dest $rel) -Recurse -Force
             $staged++
             continue
         }
         $hits = @(Get-ChildItem $src -File -ErrorAction SilentlyContinue)
-        if ($hits.Count -eq 0) { Write-Host "  (nothing matched, skipped) $pattern"; continue }
+        if ($hits.Count -eq 0) {
+            if ($installed) { throw "the installed copy at $From has no $pattern" }
+            Write-Host "  (nothing matched, skipped) $pattern"; continue
+        }
         New-Item -ItemType Directory -Force $to | Out-Null
         # A file already there with the same bytes is left alone. The running
         # app holds some of these open (conpty.dll, OpenConsole.exe), and
