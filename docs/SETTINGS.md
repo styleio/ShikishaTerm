@@ -160,7 +160,7 @@ How far an AI may go when it hands work to other tabs or drives a page
 
 ### AI allowance
 
-The 5-hour and 7-day windows of Claude and Codex
+Each AI subscription's allowances, and when they come back
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
