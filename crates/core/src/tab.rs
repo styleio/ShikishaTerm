@@ -2740,11 +2740,12 @@ pub fn bypass_flag(head: &str) -> Option<&'static str> {
 /// something only to the program it belongs to
 pub fn runs_without_asking(argv: &[String]) -> bool {
     let Some(head) = argv.first() else { return false };
-    let head = std::path::Path::new(head)
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    bypass_flag(&head).is_some_and(|flag| argv.iter().skip(1).any(|a| a == flag))
+    // The program's own name, whichever way its path is written: a command
+    // written on Windows is read on a Linux server too, where `\` is no
+    // separator to `Path`
+    let name = head.rsplit(['/', '\\']).next().unwrap_or(head).to_lowercase();
+    let head = name.strip_suffix(".exe").or_else(|| name.strip_suffix(".cmd")).unwrap_or(&name);
+    bypass_flag(head).is_some_and(|flag| argv.iter().skip(1).any(|a| a == flag))
 }
 
 /// How much of what another tab sent a model tab is shown on its screen. A
