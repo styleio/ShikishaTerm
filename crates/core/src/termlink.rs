@@ -158,6 +158,20 @@ fn path_char(c: char) -> bool {
         || matches!(c, '・' | '･' | '〜' | '～')
 }
 
+/// Whether the last character of a full row and the first of the next can be
+/// the two sides of one address or path broken by the edge of the screen.
+///
+/// A pseudo console that draws a screen again places each row itself, with
+/// a line break of its own, and the terminal is never told that a row ran on
+/// past the edge. So a row that is full to its last column, ending in
+/// something an address or a path is made of, followed by a row that starts
+/// with the same, is read as one line. What a sentence ends with (a full stop,
+/// a comma, a closing bracket) is not taken for a break in the middle of one
+pub fn runs_on(last: char, first: char) -> bool {
+    let inside = |c: char| !c.is_whitespace() && (!web_stops_at(c) || path_char(c));
+    inside(last) && inside(first) && !matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '\'' | '"')
+}
+
 fn path_leaves(c: char) -> bool {
     matches!(c, '.' | ',' | ';' | ':')
 }

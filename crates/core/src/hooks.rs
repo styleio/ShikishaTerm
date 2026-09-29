@@ -2766,7 +2766,7 @@ impl HookEngine {
                 .set(
                     "browser_pick",
                     lua.create_function(move |_, (name, on): (String, bool)| {
-                        c.browser_pick(&name, on)
+                        c.browser_pick(&name, on, false)
                             .map_err(|e| mlua::Error::runtime(e.to_string()))
                     })
                     .map_err(lerr)?,

@@ -433,6 +433,8 @@
   "tui.pick.clear": "すべて外す",
   "tui.pick.no_ai": "このデスクに、渡せる AI のタブがありません。先に AI のタブを開きます。",
   "tui.pick.page_hint": "AI に見せる要素を押す · {n} 件 · Esc で終わる",
+  "tui.pick.page_hint_touch": "AI に見せる要素をタップ · {n} 件 · 下の［選ぶのをやめる］で終わる",
+  "tui.pick.hidden": "鍵らしい値を {n} 件伏せました",
   "tui.cast.lua.rec": "記録",
   "tui.cast.lua.run": "実行",
   "tui.cast.lua.copy": "記録した Lua をコピー",

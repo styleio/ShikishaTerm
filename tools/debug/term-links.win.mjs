@@ -86,6 +86,9 @@ const site = http.createServer((q, s) => { served += 1; s.writeHead(200, { 'cont
 await new Promise((r) => site.listen(0, '127.0.0.1', r));
 const ADDRESS = `http://127.0.0.1:${site.address().port}/hello?x=1`;
 const LONG = 'https://example.com/' + 'abcdefghij'.repeat(26);
+// The same length again, broken at the edge by a line break rather than run
+// on past it: the shape a screen drawn again by the pseudo console comes in
+const BROKEN = 'https://example.net/' + 'klmnopqrst'.repeat(26);
 
 console.log('starting this checkout\'s build, isolated');
 stopApp();
@@ -101,6 +104,7 @@ const OUTSIDE = path.join(ELSEWHERE, 'notes.txt');
 fs.writeFileSync(OUTSIDE, 'outside\n');
 // What the terminal prints, one place per line, then waits so the screen stays
 fs.writeFileSync(path.join(WORK, 'say.mjs'), [
+  `import fs from 'node:fs';`,
   `console.log('page: ${ADDRESS}');`,
   `console.log('error at src/main.rs:12:5');`,
   `console.log('memo 資料/議事録・秋.md');`,
@@ -108,6 +112,11 @@ fs.writeFileSync(path.join(WORK, 'say.mjs'), [
   `console.log('far ' + ${JSON.stringify(OUTSIDE)});`,
   `console.log('long ${LONG}');`,
   `process.stdout.write('\\x1b]8;;https://example.org/osc\\x1b\\\\labelled link\\x1b]8;;\\x1b\\\\ after\\n');`,
+  // Cut at exactly the width the screen is drawn at, once the check has
+  // measured it there and left it in width.txt. Not the console's own idea
+  // of its width: that is read once when the program starts, and the
+  // terminal is sized again after -- the very difference this is about
+  `const cut = setInterval(() => { let w = 0; try { w = Number(fs.readFileSync('width.txt', 'utf8')); } catch {} if (!(w > 0)) return; clearInterval(cut); const s = 'cut ${BROKEN}'; const out = []; for (let i = 0; i < s.length; i += w) out.push(s.slice(i, i + w)); process.stdout.write(out.join('\\r\\n') + '\\r\\n'); }, 200);`,
   `setInterval(() => {}, 1 << 30);`,
 ].join('\n'));
 
@@ -269,18 +278,53 @@ try {
   }
 
   console.log('1. every place on the screen is one place');
+  // The width the screen is drawn at: the first row of the long address runs
+  // to the edge, and all of it is plain ASCII, one character to a column
+  const cols = await board.run(`(() => { const rows = [...document.getElementById("screen").children];
+    const at = rows.filter(r => [...r.querySelectorAll(".lk")].some(e => e.dataset.go.startsWith("https://example.com/")));
+    return at.length >= 2 ? at[0].textContent.replace(/\\s+$/, "").length : 0; })()`);
+  check(cols > 20, 'the screen is ' + cols + ' columns wide');
+  fs.writeFileSync(path.join(WORK, 'width.txt'), String(cols));
+  // The address cut at the edge is printed as soon as the width is there
+  await until(() => board.run(`[...document.querySelectorAll("#screen .lk")].some(e => e.dataset.go.startsWith("https://example.net/"))`), 'the address cut at the edge', 20000).catch(() => {});
+  await sleep(500);
   const places = await board.run('[...document.querySelectorAll("#screen .lk")].map(e => ({ go: e.dataset.go, lk: e.dataset.lk, at: e.dataset.at, text: e.textContent }))');
   const gos = new Set(places.map((p) => p.go));
-  for (const go of [ADDRESS, 'src/main.rs:12:5', '資料/議事録・秋.md', './src/nothere.rs:3', OUTSIDE, LONG, 'https://example.org/osc']) {
+  for (const go of [ADDRESS, 'src/main.rs:12:5', '資料/議事録・秋.md', './src/nothere.rs:3', OUTSIDE, LONG, BROKEN, 'https://example.org/osc']) {
     check(gos.has(go), 'found: ' + go.slice(0, 60));
   }
-  const long = places.filter((p) => p.go === LONG);
-  check(long.length >= 2 && new Set(long.map((p) => p.at)).size === 1 && new Set(long.map((p) => p.at.split('.')[0])).size === 1,
-    'the long address is one place over ' + new Set(long.map((p) => p.text.length)).size + ' pieces');
+  // Counted by the rows its pieces stand in, and all starting at one place
+  const rowsOf = (list) => new Set(list.map((p) => p.row)).size;
+  const placesWithRows = () => board.run('[...document.querySelectorAll("#screen .lk")].map(e => ({ go: e.dataset.go, at: e.dataset.at, row: [...e.parentNode.parentNode.children].indexOf(e.parentNode) }))');
+  const onePlace = async (go) => {
+    const list = (await placesWithRows()).filter((p) => p.go === go);
+    return { ok: rowsOf(list) >= 2 && new Set(list.map((p) => p.at)).size === 1, rows: rowsOf(list) };
+  };
+  let one = await onePlace(LONG);
+  check(one.ok, 'the long address is one place over ' + one.rows + ' rows');
+  one = await onePlace(BROKEN);
+  check(one.ok, 'the address broken at the edge by a line break is one place over ' + one.rows + ' rows');
   const osc = places.filter((p) => p.go === 'https://example.org/osc').map((p) => p.text).join('');
   check(osc === 'labelled link', 'the program\'s own link covers its words and nothing after: "' + osc + '"');
   check(!gos.has('page:'), 'the words around a place are not part of it');
   await board.shot('1-screen');
+
+  // The window made narrower, and wider again, after the text is out: the
+  // terminal is drawn again at each width. The address that ran on past the
+  // edge must still be one address -- how wide the window happens to be when
+  // the tool starts is not something to depend on. (The one cut by hand is
+  // not asked about here: at another width its cut is no longer at the edge,
+  // and it is two lines, as the program wrote it)
+  console.log('1b. the long address after the terminal is made narrower and wider');
+  const wide = await board.run('({ w: innerWidth, h: innerHeight })');
+  await board.send('Emulation.setDeviceMetricsOverride', { width: Math.max(700, Math.round(wide.w * 0.7)), height: wide.h, deviceScaleFactor: 1, mobile: false });
+  await sleep(2500);
+  one = await onePlace(LONG);
+  check(one.ok, 'narrower: still one place, over ' + one.rows + ' rows');
+  await board.send('Emulation.clearDeviceMetricsOverride');
+  await sleep(2500);
+  one = await onePlace(LONG);
+  check(one.ok, 'wider again: still one place, over ' + one.rows + ' rows');
 
   console.log('2. a compiler\'s place opens the editor on that line');
   await board.press('src/main.rs:12:5');

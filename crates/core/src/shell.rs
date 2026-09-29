@@ -1575,6 +1575,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--dim); cursor:pointer; font-size:12px; }
   #castpick .pchip .px:hover { color:var(--stop); }
   .fmenu.picksend { min-width:220px; }
+  /* How many values were hidden: a person has to do something (read the
+     draft), so it is said in the colour for that */
+  .castnote.warn { color:var(--warn); }
   .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
@@ -17530,7 +17533,7 @@ let pickSig = "";
 function pickSigNow() {
   const t = activeTab();
   const p = pickHere();
-  return (t ? t.index : "") + "|" + p.on + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
+  return (t ? t.index : "") + "|" + p.on + "|" + (p.hidden || 0) + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
 }
 function pickAsk(act, args) {
   const t = activeTab();
@@ -17543,7 +17546,7 @@ function buildPickPanel() {
   const wrap = el("div", {id:"castpick"});
   wrap.append(el("button", {class:"castgear" + (p.on ? " on" : ""),
     title: T["tui.pick.hint"] || "",
-    onclick: () => send({kind:"pick", on: !p.on})},
+    onclick: () => send({kind:"pick", on: !p.on, touch: window.matchMedia("(hover: none)").matches})},
     p.on ? "■ " + (T["tui.pick.stop"] || "Stop picking") : "🎯 " + (T["tui.pick.start"] || "Pick")));
   if (!p.items.length) {
     wrap.append(el("span", {class:"castpanelhint"},
@@ -17581,7 +17584,14 @@ function buildPickPanel() {
   };
   wrap.append(go, el("button", {class:"castgear pquiet", onclick: () => pickAsk("clear")},
     T["tui.pick.clear"] || "Clear"));
-  return wrap;
+  // Said before anything is sent: the hiding is a net, not a promise, and the
+  // draft is the person's to read. On a line of its own under the row, as
+  // 📼's sentences are -- at the end of a row that scrolls sideways it would
+  // be past the edge exactly when it matters
+  if (!p.hidden) return wrap;
+  const both = document.createDocumentFragment();
+  both.append(wrap, el("span", {class:"castnote warn phidden"}, (T["tui.pick.hidden"] || "{n}").replaceAll("{n}", p.hidden)));
+  return both;
 }
 // Drawn again when what it shows changed, keeping the place of a note being
 // typed: a pick landing while somebody writes about the previous one must not
@@ -21440,6 +21450,27 @@ struct Spot {
     starts: String,
 }
 
+/// Whether row `r` runs on into the next without saying so: full to its last
+/// column, and the next row starting where it left off (`termlink::runs_on`).
+///
+/// The wrap mark alone is not enough. It is set only when the text itself ran
+/// past the edge, and a pseudo console drawing the screen again puts every
+/// row in place with a line break of its own -- after a resize, or whenever
+/// its idea of the width and ours are a column apart -- so an address that
+/// was one line comes back as two rows with nothing saying they belong together
+fn broken_at_edge(screen: &vt100::Screen, r: u16, cols: u16) -> bool {
+    let first_of = |cell: Option<&vt100::Cell>| cell.and_then(|c| c.contents().chars().next());
+    // A wide character's right half holds nothing; the character is left of it
+    let end = match screen.cell(r, cols.saturating_sub(1)) {
+        Some(c) if c.is_wide_continuation() => screen.cell(r, cols.saturating_sub(2)),
+        other => other,
+    };
+    match (first_of(end), first_of(screen.cell(r + 1, 0))) {
+        (Some(last), Some(first)) => crate::termlink::runs_on(last, first),
+        _ => false,
+    }
+}
+
 /// Every place worth pressing on the screen, and which of them each cell
 /// (`row * cols + col`) belongs to.
 ///
@@ -21455,7 +21486,7 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
     let mut r = 0u16;
     while r < rows {
         let mut last = r;
-        while last + 1 < rows && screen.row_wrapped(last) {
+        while last + 1 < rows && (screen.row_wrapped(last) || broken_at_edge(screen, last, cols)) {
             last += 1;
         }
         // The line's characters, where each one is drawn, and the program's
@@ -25033,6 +25064,32 @@ mod tests {
             assert!(r.contains(r#"data-go="https://example.com/abcdefghijk" data-at="0.0""#), "{rows:?}");
         }
         assert!(!rows[2].contains("data-go"), "{rows:?}");
+    }
+
+    /// The same address, broken at the edge by the pseudo console with a line
+    /// break of its own rather than run on past it -- which is how a screen
+    /// drawn again comes (after a resize, or when the console's width and
+    /// ours differ by a column). No row says it was wrapped; the address
+    /// reaching the edge and going on at the start of the next row is all
+    /// there is, and it is still one address
+    #[test]
+    fn an_address_broken_at_the_edge_by_a_line_break_is_one_place() {
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"https://example.com/\r\nabcdefghijk");
+        assert!(!p.screen().row_wrapped(0), "the shape under test is a row that says nothing");
+        let rows = screen_rows(p.screen());
+        for r in &rows[..2] {
+            assert!(r.contains(r#"data-go="https://example.com/abcdefghijk" data-at="0.0""#), "{rows:?}");
+        }
+        // A sentence that happens to end at the edge is not run into the next
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"see src/lib/a.rs.  \r\nThen more");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#), "{rows:?}");
+        let mut p: vt100::Parser = vt100::Parser::new(3, 20, 0);
+        p.process(b"xx see src/lib/a.rs.\r\nThen more");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#) && !rows[1].contains("data-go"), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of
