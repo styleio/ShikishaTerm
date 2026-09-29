@@ -87,6 +87,10 @@ pub struct Hit {
     /// this is the present, not the past
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab: Option<usize>,
+    /// For a line in an open tab: how far back in its terminal the line is,
+    /// counted from the newest (0) -- what brings it into sight when pressed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
     /// The machine the record is on, by its settings entry: none is this PC.
     /// What reopening it goes by, with the folder
     #[serde(default, skip_serializing_if = "Option::is_none")]

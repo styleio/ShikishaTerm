@@ -144,6 +144,9 @@ pub struct Mailbox {
     /// would be, because a keystroke is one digit and a desk can hold more
     /// than nine things
     pub selects: Vec<usize>,
+    /// Lines of a tab's terminal to bring into sight once the tab is viewed
+    /// (`Ev::Reveal`): the tab by number, the line by how far back it is
+    pub reveals: Vec<(usize, usize)>,
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay, each saying which it was
@@ -451,6 +454,9 @@ impl Mailbox {
     }
     pub fn take_selects(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.selects)
+    }
+    pub fn take_reveals(&mut self) -> Vec<(usize, usize)> {
+        std::mem::take(&mut self.reveals)
     }
     pub fn take_limit_acks(&mut self) -> Vec<usize> {
         std::mem::take(&mut self.limit_acks)

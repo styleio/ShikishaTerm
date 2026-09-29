@@ -4221,6 +4221,21 @@ impl Tab {
         out
     }
 
+    /// Scroll the terminal so the line `back` lines from the newest (as
+    /// [`Tab::search_lines`] counts them) is in sight, near the middle. A line
+    /// already on the screen needs no scrolling; one further back than the
+    /// kept history is as far back as it goes
+    pub fn reveal_line(&self, back: usize) {
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let rows = p.screen().size().0 as usize;
+        let max = furthest_back(&mut p);
+        let to = match back < rows {
+            true => 0,
+            false => back.saturating_sub(rows / 2).min(max),
+        };
+        p.screen_mut().set_scrollback(to);
+    }
+
     /// Take whatever the program asked us to notice since last time.
     ///
     /// This is the one way in that needs nothing set up: a CLI that has never

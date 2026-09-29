@@ -182,6 +182,11 @@ pub enum Ev {
     SideWidth { px: u16 },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
+    /// Wants to view this tab with one line of its terminal in sight: a line
+    /// the search of every tab found on its screen, `line` lines back from the
+    /// newest (0). Viewing the tab is the same as `Select`; the terminal is
+    /// then scrolled back to the line
+    Reveal { tab: usize, line: usize },
     /// A tab has been asked for: the + on the tab bar, or the invitation in a
     /// pane with nothing in it. `pane` is that pane, when one asked -- the new
     /// tab goes there rather than wherever focus has wandered to by the time
@@ -1029,6 +1034,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("select") => Ev::Select {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        Some("reveal") => Ev::Reveal {
+            tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            line: v.get("line").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
         },
         Some("addtab") => Ev::AddTab {
             pane: v.get("pane").and_then(|x| x.as_u64()).map(|n| n as u32),

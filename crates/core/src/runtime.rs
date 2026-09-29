@@ -4755,6 +4755,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
                         shell.mail().selects.push(tab);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Reveal { tab, line }) => {
+                        shell.mail().selects.push(tab);
+                        shell.mail().reveals.push((tab, line));
+                    }
                     // A working folder pressed in the list, from afar: the same
                     // queue as the window's
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderView { folder }) => {
@@ -8043,7 +8047,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let mut hits: Vec<crate::vault::Hit> = Vec::new();
             if !query.trim().is_empty() {
                 for (i, t) in tabs.iter().enumerate() {
-                    for (_, line) in t.search_lines(&query, 6) {
+                    // The number a person presses for this tab: where it
+                    // stands among everything on screen, pages included
+                    let Some(shown) = surfaces.iter().position(|s| matches!(s, Surface::Session(j) if *j == i)) else {
+                        continue;
+                    };
+                    for (back, line) in t.search_lines(&query, 6) {
                         hits.push(crate::vault::Hit {
                             program: String::new(),
                             id: String::new(),
@@ -8052,9 +8061,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             snippet: line,
                             when: 0,
                             // The display number, not the tabs index: INDEX is
-                            // surface 0, so tab i sits at i + 1 -- the number
-                            // Select expects and a person presses
-                            tab: Some(i + 1),
+                            // surface 0, so the surface at position p is p + 1
+                            // -- the number Select expects and a person presses
+                            tab: Some(shown + 1),
+                            line: Some(back),
                             host: None,
                             ..crate::vault::Hit::default()
                         });
@@ -11268,6 +11278,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Moving between the panes is done in the panes -- that is what
                 // they are, rectangles to point at
                 left_split = true;
+                view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
+        // A line the search found on a tab's screen, brought into sight now the
+        // tab is in view
+        for (n, line) in shell.mail().take_reveals() {
+            if let Some(t) = session_at(&surfaces, n).and_then(|i| tabs.get(i)) {
+                t.reveal_line(line);
                 view_touched_ms = start.elapsed().as_millis() as u64;
             }
         }

@@ -329,20 +329,25 @@ try {
   check(true, 'the search finds the thing said by the words of its note');
   await run(`(() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); convoRefresh(); })(); true`);
 
-  console.log('11. a match in the open tab, from the search of every conversation');
-  await run(`convoModeTo(true); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = "docs too"; q.dispatchEvent(new Event("input")); })(); true`);
-  await until(() => run(`!!document.querySelector("#convopanel .vrow")`), 'the list of conversations', 30000);
-  // The first row is the tab itself (found on its screen, "open")
-  await run(`document.querySelector("#convopanel .vrow").click(); true`);
-  await until(() => run(`!cvAll && CV.panel === "front" && !!CV.found`), 'the tab\'s conversation, searched for the same words', 20000);
-  check(await run(`!!document.querySelector("#convoHead .hback")`), 'the way back to the list is there');
-  const matched = await rows();
-  check(matched.length > 0 && matched.every((r) => /docs too/i.test(r.text)), 'only what holds the words: ' + matched.length + ' rows');
-  check(await run(`!!document.querySelector("#convopanel .clist mark.vmark")`), 'the words are marked');
-  await run(`document.querySelector("#convoHead .hback").click(); true`);
-  await until(() => run(`cvAll`), 'back to the list', 10000);
-  check(true, 'the way back returns to the list');
-  await run(`convoModeTo(false); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); })(); true`);
+  console.log('11. a line found on a tab\'s screen, from the search of every conversation');
+  // The shell's own line, pushed well up its history
+  await run(`send({kind:"say", tab:${shell}, text:"for /l %i in (1,1,90) do @echo filler %i"}); true`);
+  await sleep(3000);
+  await run(`send({kind:"select", tab:${shell}}); true`);
+  await until(() => run(`S.active === ${shell} && document.getElementById("screen").textContent.includes("filler 90")`), 'the shell at its newest line', 10000);
+  check(!(await run(`document.getElementById("screen").textContent.includes("please review the change")`)), 'the line has scrolled out of sight');
+  await run(`send({kind:"select", tab:${front}}); true`);
+  await until(() => run(`S.active === ${front}`), 'the stand-in in front');
+  await run(`convoModeTo(true); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = "please review the change"; q.dispatchEvent(new Event("input")); })(); true`);
+  const onScreen = `[...document.querySelectorAll("#convopanel .vrow")].find(r => r.textContent.includes("shell") && r.textContent.includes(T["vault.live"]))`;
+  await until(() => run(`!!${onScreen}`), 'the shell\'s screen in the list', 30000);
+  await run(`${onScreen}.click(); true`);
+  await until(() => run(`S.active === ${shell}`), 'the shell in front', 10000);
+  check(await run(`cvAll`), 'the list stays, for the next one, and nothing says the shell is not an AI tab');
+  await until(() => run(`document.getElementById("screen").textContent.includes("please review the change")`), 'the line in sight', 10000);
+  check(true, 'the shell\'s terminal is scrolled to the line it was found on');
+  await run(`send({kind:"select", tab:${front}}); convoModeTo(false); (() => { const q = document.querySelector("#convopanel .fsearch input"); q.value = ""; q.dispatchEvent(new Event("input")); })(); true`);
+  await until(() => run(`S.active === ${front}`), 'the stand-in in front again');
 
   console.log('12. the record');
   const db = path.join(APP, 'data', 'conversations.db');

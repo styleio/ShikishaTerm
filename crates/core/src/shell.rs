@@ -12753,9 +12753,6 @@ const CV = {
   rev: 0,
 };
 let cvUi = null, cvTimer = 0, cvAgain = 0;
-// A match found in a tab's conversation, to open that conversation at when
-// the panel follows the tab there (openFound)
-let cvOpenAt = null;
 // What the boxes were left as, per viewer. A convenience: without it every
 // box starts as it is written above
 (function () {
@@ -12799,14 +12796,8 @@ function convoReset(panel, past) {
   const head = document.getElementById("convoHead");
   if (head) head.textContent = "";
 }
-// The newest page again: something was said since it was read. A
-// conversation opened at a place reads on from where it was read to instead,
-// once it has been read to the end, and stays where it was opened
+// The newest page again: something was said since it was read
 function convoRefresh() {
-  if (CV.newer) {
-    if (CV.newer.end) convoAsk("newer", {newer: CV.newer});
-    return;
-  }
   CV.loading = !CV.rows.length;
   convoAsk("page", {});
 }
@@ -13216,18 +13207,8 @@ function convoFollow() {
     convoReset(key, null);
     CV.pastFrom = null;
     CV.state = moved;
-    // Brought here by a match found in this tab's conversation: opened at the
-    // match, with the way back to the list. Brought here any other way, it is
-    // this tab's conversation from its newest
-    const opening = cvOpenAt && cvOpenAt.key === key ? cvOpenAt : null;
-    cvOpenAt = null;
-    if (!opening) cvFromAll = false;
-    if (opening) {
-      CV.q = opening.q || "";
-      if (cvUi) cvUi.q.value = CV.q;
-    }
-    if (opening && opening.at != null) convoAsk("open", {at: opening.at});
-    else convoRefresh();
+    cvFromAll = false;
+    convoRefresh();
     if (CV.q || CV.pins) convoFindSoon();
   }
   else if (CV.state !== moved) {
@@ -15609,26 +15590,13 @@ function vaultRow(h, query) {
   }
   return row;
 }
-// A match in a conversation a tab is having now opens in that tab, at the
-// match: the tab comes to the front, and the panel follows it there (cvOpenAt)
 function openFound(h) {
+  // Found on a tab's screen, which is not the record of a conversation -- a
+  // shell has none, and an AI's screen shows lines its record keeps otherwise
+  // or not at all. It is opened where it was found: that tab, its terminal
+  // scrolled to the line. The list stays, for the next one
   if (h.tab !== undefined && h.tab !== null) {
-    const t = ((S && S.tabs) || []).find(t => t.index === h.tab);
-    cvAll = false;
-    cvFromAll = true;
-    cvWhere = null;
-    if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; }
-    if (t) {
-      // Where in the record it was found, when the search read the record; a
-      // match found on the tab's screen has no such place, and is found again
-      // by the same words in this conversation
-      cvOpenAt = {key: t.id || t.name, at: h.at, q: CV.q};
-      // Already the tab this panel is on: open it at the match now
-      if (CV.panel === cvOpenAt.key && !CV.past) CV.panel = null;
-    }
-    send({kind:"select", tab:h.tab});
-    drawSide();
-    drawHead();
+    send({kind:"reveal", tab:h.tab, line:h.line || 0});
     return;
   }
   cvAll = false;
