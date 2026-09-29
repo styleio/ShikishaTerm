@@ -43,7 +43,9 @@ once it reaches its first tagged release.
   any page. They reach their page through the app, on a key made at each
   start, so no debugging port is opened for other programs on the PC. When the
   app starts again, a split that had DevTools in it comes back with them,
-  opened afresh for the same page.
+  opened afresh for the same page. With the window and the work running as two
+  programs, the console and DevTools work as well, on the browser the work
+  runs its pages in.
   `shikisha.browser_devtools` opens them from automation.
 
 ## [0.22.1] - 2026-09-29

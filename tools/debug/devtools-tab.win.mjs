@@ -42,6 +42,8 @@ const LOCAL = path.join(RUN, 'localappdata');
 const CONFIG = path.join(APP, 'config', 'config.json');
 const HOOKS_LOG = path.join(APP, 'logs', 'hooks.log');
 const JA = process.argv.includes('--ja');
+// --split runs the same checks with the window and the runtime as two programs
+const SPLIT_MODE = process.argv.includes('--split');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -83,6 +85,7 @@ const PHONE_KEY = 'devtoolsphone0123456789a';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
+  ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'DevTools', id: 'devtools', folders: [{ cwd: WORK, tabs: [
     { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/` },
@@ -96,6 +99,15 @@ launch();
 
 const portOf = (envName) => {
   const f = path.join(LOCAL, 'ShikishaTerm', 'webview2', envName, 'EBWebView', 'DevToolsActivePort');
+  if (!fs.existsSync(f)) return null;
+  const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+// Where the pages are drawn: the window's own engine, or -- the window and
+// the runtime being two programs -- a browser the runtime started
+const pagesPort = () => {
+  if (!SPLIT_MODE) return portOf(path.join('profiles', 'default'));
+  const f = path.join(LOCAL, 'ShikishaTerm', 'chromium', 'default', 'DevToolsActivePort');
   if (!fs.existsSync(f)) return null;
   const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -183,7 +195,7 @@ try {
 
   let screenTarget;
   await until(async () => {
-    const p = portOf(path.join('profiles', 'default'));
+    const p = pagesPort();
     return p && (screenTarget = (await targetsOf(p)).find((t) => t.url.startsWith('devtools://devtools/bundled/devtools_app.html')));
   }, 'the DevTools screen', 30000);
   const screen = await connect(screenTarget);
@@ -219,12 +231,17 @@ try {
   const bport = Number(host.split(':')[1]);
   const good = '/' + rest.join('/');
   const noKey = good.replace(/\/devtools\/[0-9a-f]+\//, '/devtools/0000/');
-  check((await knock(bport, noKey, 'devtools://devtools')).includes('403'), 'a wrong key is refused');
-  check((await knock(bport, good, 'http://evil.example')).includes('403'), 'the right key from a web page is refused');
-  check((await knock(bport, good, '')).includes('403'), 'the right key with no origin is refused');
-  const key = rest[1];
-  const log = fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8') : '';
-  check(!log.includes(key), 'the key is not in the log');
+  // Two programs: the screen is a page of the browser the runtime started,
+  // pointed at that browser's own port -- there is no bridge and no key. What
+  // still has to hold is that a web page's origin is not let in
+  const key = SPLIT_MODE ? null : rest[1];
+  if (!SPLIT_MODE) check((await knock(bport, noKey, 'devtools://devtools')).includes('403'), 'a wrong key is refused');
+  check(/40[03]/.test(await knock(bport, good, 'http://evil.example')), 'the right address from a web page is refused');
+  if (!SPLIT_MODE) {
+    check((await knock(bport, good, '')).includes('403'), 'the right key with no origin is refused');
+    const log = fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8') : '';
+    check(!log.includes(key), 'the key is not in the log');
+  }
 
   console.log('5. the app started again');
   // The division is written down a moment after it is made
@@ -250,10 +267,10 @@ try {
     'the split comes back with both halves: ' + await board2.run('JSON.stringify(S.panes.panes.map(p => p.surface))'));
   let screen2Target;
   await until(async () => {
-    const p = portOf(path.join('profiles', 'default'));
+    const p = pagesPort();
     return p && (screen2Target = (await targetsOf(p)).find((t) => t.url.startsWith('devtools://devtools/bundled/devtools_app.html')));
   }, 'the screen\'s page again', 30000);
-  check(!screen2Target.url.includes(key), 'with a key of this run');
+  if (key) check(!screen2Target.url.includes(key), 'with a key of this run');
   const screen2 = await connect(screen2Target);
   const again = () => screen2.run(`(async () => { const m = await import("./core/sdk/sdk.js");
     const t = m.TargetManager.TargetManager.instance().primaryPageTarget(); return t ? t.inspectedURL() : ""; })()`);

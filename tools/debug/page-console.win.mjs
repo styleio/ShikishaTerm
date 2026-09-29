@@ -40,6 +40,8 @@ const LOCAL = path.join(RUN, 'localappdata');
 const CONFIG = path.join(APP, 'config', 'config.json');
 const HEARD = path.join(RUN, 'heard.bin');
 const JA = process.argv.includes('--ja');
+// --split runs the same checks with the window and the runtime as two programs
+const SPLIT_MODE = process.argv.includes('--split');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -91,6 +93,7 @@ const PHONE_KEY = 'consolephone0123456789ab';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
+  ...(SPLIT_MODE ? { split: true } : {}),
   external_api: { access: 'user' },
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'Console', id: 'console', folders: [{ cwd: WORK, tabs: [
@@ -107,6 +110,15 @@ child.unref();
 
 const portOf = (envName) => {
   const f = path.join(LOCAL, 'ShikishaTerm', 'webview2', envName, 'EBWebView', 'DevToolsActivePort');
+  if (!fs.existsSync(f)) return null;
+  const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+// Where the pages are drawn: the window's own engine, or -- the window and
+// the runtime being two programs -- a browser the runtime started
+const pagesPort = () => {
+  if (!SPLIT_MODE) return portOf(path.join('profiles', 'default'));
+  const f = path.join(LOCAL, 'ShikishaTerm', 'chromium', 'default', 'DevToolsActivePort');
   if (!fs.existsSync(f)) return null;
   const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -184,7 +196,7 @@ try {
   await board.run(`send({kind:"select", tab:${pageTab}})`);
   await until(() => board.run(`S.active === ${pageTab}`), 'the page in front');
   await until(async () => {
-    const p = portOf(path.join('profiles', 'default'));
+    const p = pagesPort();
     return p && (pageTarget = (await targetsOf(p)).find((t) => t.type === 'page' && t.url.includes(String(pagePort))));
   }, 'the page\'s own browser', 30000);
   const page = await connect(pageTarget);

@@ -40,6 +40,8 @@ const CONFIG = path.join(APP, 'config', 'config.json');
 const HEARD = path.join(RUN, 'heard.bin');
 // --ja runs the same checks with the screen in Japanese, for the photographs
 const JA = process.argv.includes('--ja');
+// --split runs the same checks with the window and the runtime as two programs
+const SPLIT_MODE = process.argv.includes('--split');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -100,6 +102,7 @@ const PHONE_KEY = 'pickphone0123456789abcdef';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
+  ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'Pick', id: 'pick', folders: [{ cwd: WORK, tabs: [
     { name: 'claude', id: 'ai', command: path.join(WORK, 'claude.cmd') },
@@ -113,6 +116,15 @@ spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detach
 
 const portOf = (envName) => {
   const f = path.join(LOCAL, 'ShikishaTerm', 'webview2', envName, 'EBWebView', 'DevToolsActivePort');
+  if (!fs.existsSync(f)) return null;
+  const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+// Where the pages are drawn: the window's own engine, or -- the window and
+// the runtime being two programs -- a browser the runtime started
+const pagesPort = () => {
+  if (!SPLIT_MODE) return portOf(path.join('profiles', 'default'));
+  const f = path.join(LOCAL, 'ShikishaTerm', 'chromium', 'default', 'DevToolsActivePort');
   if (!fs.existsSync(f)) return null;
   const n = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -174,7 +186,7 @@ try {
   await board.run(`send({kind:"select", tab:${pageTab}})`);
   await until(() => board.run(`S.active === ${pageTab}`), 'the page in front');
   await until(async () => {
-    const p = portOf(path.join('profiles', 'default'));
+    const p = pagesPort();
     return p && (pageTarget = (await targetsOf(p)).find((t) => t.type === 'page' && t.url.includes(String(pagePort))));
   }, 'the page\'s own browser', 30000);
   const page = await connect(pageTarget);
@@ -188,7 +200,9 @@ try {
   check((await picks()) === null, 'nothing is listed for the page');
 
   console.log('2. armed from the panel, and a press on the button');
-  await board.run('ensureBar(); openTermBar(); castPanel = "pick"; userPanel = "pick"; renderPanel();');
+  // A window over a runtime of its own is served the page a far device is,
+  // and opens the bar over a page the way a phone does
+  await board.run('ensureBar(); if (typeof REMOTE !== "undefined" && REMOTE) enterCast(); else openTermBar(); castPanel = "pick"; userPanel = "pick"; renderPanel();');
   await board.run('send({kind:"pick", on:true})');
   await until(async () => (await picks())?.on === true, 'the page armed');
   await until(() => page.run('!!document.documentElement.lastElementChild && getComputedStyle(document.documentElement.lastElementChild).position === "fixed"'), 'the drawing on the page');

@@ -280,6 +280,10 @@ pub struct Chrome {
     /// left behind is somebody's cookies sitting in a temporary folder
     temporary: bool,
     cdp: Cdp,
+    /// The port its DevTools protocol answers on, on the loopback. This
+    /// program's own line to it; a page's DevTools screen, opened in this same
+    /// browser, is pointed at it too
+    port: u16,
 }
 
 impl Chrome {
@@ -301,6 +305,11 @@ impl Chrome {
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("--headless=new")
             .arg("--remote-debugging-port=0")
+            // The one caller with an origin let in: the browser's own DevTools
+            // screen, opened for a page by this program. A web page cannot
+            // speak from that origin, and a program on the machine could
+            // already reach this port without one
+            .arg("--remote-allow-origins=devtools://devtools")
             .arg(format!("--user-data-dir={}", profile.display()))
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
@@ -326,8 +335,18 @@ impl Chrome {
         // The port it chose is announced on its error stream, once, before
         // anything else. Asked for as 0 rather than picked by us: two runtimes
         // on one machine picking the same number is a collision nobody debugs
-        let started = read_ws_endpoint(&mut child).and_then(|ws| Cdp::connect(&ws));
-        let cdp = match started {
+        let started = read_ws_endpoint(&mut child).and_then(|ws| {
+            // ws://127.0.0.1:<port>/devtools/browser/<id>
+            let port = ws
+                .split("://")
+                .nth(1)
+                .and_then(|rest| rest.split('/').next())
+                .and_then(|host| host.rsplit(':').next())
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or(0);
+            Cdp::connect(&ws).map(|c| (c, port))
+        });
+        let (cdp, port) = match started {
             Ok(c) => c,
             Err(e) => {
                 let _ = child.kill();
@@ -337,7 +356,19 @@ impl Chrome {
                 return Err(e);
             }
         };
-        Ok(Self { child, profile, temporary, cdp })
+        Ok(Self { child, profile, temporary, cdp, port })
+    }
+
+    /// Where a DevTools screen for the page `target` is opened, in this same
+    /// browser: its own screen, pointed at its own protocol. Nothing is opened
+    /// that was not already open -- the browser's port is this program's line
+    /// to it from the moment it started
+    pub fn devtools_screen(&self, target: &str) -> String {
+        format!("{}{target}", self.screen_prefix())
+    }
+
+    fn screen_prefix(&self) -> String {
+        format!("devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:{}/devtools/page/", self.port)
     }
 
     /// Say something to the browser itself, rather than to a page in it.
@@ -823,6 +854,13 @@ struct Seen {
     cast: std::collections::HashMap<String, (f64, f64)>,
     /// Credentials armed for a page's 401s, by page
     auth: std::collections::HashMap<String, (String, String)>,
+    /// Pages whose console somebody is listening to
+    console: std::collections::HashSet<String>,
+    /// What the other pages have said since they last loaded. A page here
+    /// has the protocol's `Runtime` on from the start (its bindings need it),
+    /// so this is heard anyway, and kept so that listening begins with what
+    /// the page in view has already said -- as it does in the window
+    early: std::collections::HashMap<String, std::collections::VecDeque<serde_json::Value>>,
 }
 
 /// Every page the runtime has open in the browser on this machine.
@@ -997,6 +1035,29 @@ impl Pages {
                             "authChallengeResponse": answer,
                         }),
                     );
+                }
+                // What the page said on its console, for a page somebody is
+                // listening to (`crate::console`)
+                m if crate::console::EVENTS.contains(&m) => {
+                    let Some(entry) = crate::console::entry_of(m, &ev.params, crate::sqlite::now_ms()) else {
+                        return;
+                    };
+                    if book.console.contains(&page) {
+                        book.mail.push(shikisha_shared::Ev::ConsoleLine { from: Some(page), entry });
+                    } else {
+                        let kept = book.early.entry(page).or_default();
+                        kept.push_back(entry);
+                        while kept.len() > crate::console::KEPT {
+                            kept.pop_front();
+                        }
+                    }
+                }
+                // A new document in the page itself (not in a frame inside
+                // it): what the old one said is not what "since it loaded" means
+                "Page.frameNavigated" => {
+                    if ev.params.pointer("/frame/parentId").is_none() {
+                        book.early.remove(&page);
+                    }
                 }
                 // Arming the credentials above holds every request of this
                 // page until it is let through. Nothing here inspects them
@@ -1440,7 +1501,10 @@ impl shikisha_shared::BrowserHost for Pages {
         rect: (i32, i32, i32, i32),
         profile: shikisha_shared::BrowserProfile,
     ) -> anyhow::Result<()> {
-        if !shikisha_shared::is_openable(url) {
+        // The web, or the DevTools screen of a page in one of this program's
+        // own browsers -- no other `devtools://` address
+        let own_screen = self.browsers.borrow().values().any(|c| url.starts_with(&c.screen_prefix()));
+        if !shikisha_shared::is_openable(url) && !own_screen {
             anyhow::bail!(crate::i18n::tp("err.browser.bad_url", &[("url", url)]));
         }
         let chrome = self.browser_for(&profile)?;
@@ -1576,6 +1640,40 @@ impl shikisha_shared::BrowserHost for Pages {
             CALL_MS,
         )
         .map(|_| ())
+    }
+
+    /// A page here already has `Runtime` on (its bindings need it); hearing
+    /// its console adds the browser's own log, and marks it listened to
+    fn console(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
+        let (chrome, session) = self.at(to)?;
+        let name = to.unwrap_or_default().to_string();
+        if on {
+            // What the page said since it loaded goes first, then everything
+            // from now on. The browser's own word (`Log`) is only heard from
+            // here -- turning it on hands over what it had kept as well
+            {
+                let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+                let early = book.early.remove(&name).unwrap_or_default();
+                for entry in early {
+                    book.mail.push(shikisha_shared::Ev::ConsoleLine { from: Some(name.clone()), entry });
+                }
+                book.console.insert(name);
+            }
+            chrome.call_page(&session, "Log.enable", serde_json::json!({}))?;
+        } else {
+            self.seen.lock().unwrap_or_else(|e| e.into_inner()).console.remove(&name);
+            let _ = chrome.call_page(&session, "Log.disable", serde_json::json!({}));
+        }
+        Ok(())
+    }
+
+    fn devtools_url(&self, to: Option<&str>) -> anyhow::Result<String> {
+        let name = to.ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.chrome.no_front")))?;
+        let open = self.open.borrow();
+        let page = open.get(name).ok_or_else(|| {
+            anyhow::anyhow!(crate::i18n::tp("err.chrome.no_such_page", &[("name", name)]))
+        })?;
+        Ok(page.browser.devtools_screen(&page.target))
     }
 
     /// There is only ever one recorder, so arming a page silences the rest.
