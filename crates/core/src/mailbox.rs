@@ -176,6 +176,13 @@ pub struct Mailbox {
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,
+    /// 🎯 picking armed (true) or put away on the shown browser
+    pub pick_arms: Vec<bool>,
+    /// Elements pages reported picked: (the page's in-window name, what it
+    /// said). Null is the person's Escape on that page
+    pub picked: Vec<(String, serde_json::Value)>,
+    /// What the 🎯 panel asked for: (page key, act, args)
+    pub designs: Vec<(String, String, serde_json::Value)>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     pub run_luas: Vec<String>,
@@ -344,6 +351,7 @@ impl Mailbox {
             Ev::Recorded { from: Some(child), act, sel, value, xpath, hint } => {
                 self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint });
             }
+            Ev::Picked { from: Some(child), item } => self.picked.push((child, item)),
             // A frame of a page being watched from somewhere else. Decoded
             // here because what goes out to a phone is bytes
             Ev::Frame { data, .. } => {
@@ -507,6 +515,15 @@ impl Mailbox {
     /// Takes the 📼 record-mode toggles since the last drain.
     pub fn take_record_arms(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.record_arms)
+    }
+    pub fn take_pick_arms(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.pick_arms)
+    }
+    pub fn take_picked(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.picked)
+    }
+    pub fn take_designs(&mut self) -> Vec<(String, String, serde_json::Value)> {
+        std::mem::take(&mut self.designs)
     }
     /// Takes what the 🗣 panel has asked for since the last drain
     pub fn take_words(&mut self) -> Vec<(bool, String, bool)> {

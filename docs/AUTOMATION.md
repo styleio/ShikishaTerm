@@ -1097,6 +1097,8 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_pressed(id)` | Has it been pressed? |
 | `shikisha.browser_unask(id)` | Take the banner away |
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
+| `shikisha.browser_pick(id, true)` | Arm picking on a page: until it is put away (`false`, or Esc on the page), a person pressing a part of the page picks that element instead of pressing it. The same switch as the input bar's 🎯 panel |
+| `shikisha.browser_picks(id, clear)` | What has been picked on a page, oldest first: a table per element (`n`, `note`, `tag`, `role`, `name`, `sel`, `path`, `source`, `box`, `view`, `url`, `style`, `html`), and as a second value the same list written out the way the 🎯 panel hands it to an AI. `clear = true` empties the list as it is read |
 
 ### Asking a model
 

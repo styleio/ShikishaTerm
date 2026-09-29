@@ -410,6 +410,7 @@ pub fn heard(
         Ev::Recorded { act, sel, value, xpath, hint, .. } => {
             Ev::Recorded { from, act, sel, value, xpath, hint }
         }
+        Ev::Picked { item, .. } => Ev::Picked { from, item },
         Ev::Ready { url, complete, .. } => Ev::Ready { from, url, complete },
         Ev::Loading { busy, .. } => Ev::Loading { from, busy },
         other => other,

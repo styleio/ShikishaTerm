@@ -185,6 +185,10 @@ pub struct Capabilities {
     /// a page could press a bar of its own for the person. Remembered here
     /// like `nav`, so it survives the page navigating
     asks: std::cell::RefCell<HashMap<String, (String, String)>>,
+    /// What each page has had picked on it for an AI (🎯), and whether presses
+    /// on it pick right now (per in-window name). Held here, not in the page:
+    /// a page says what was pressed, and is believed only while it is armed
+    picks: std::cell::RefCell<HashMap<String, crate::pick::Picking>>,
     /// Whether to overlay the terminal
     /// If we have a host window, its handle. Keeping it here means it doesn't become a separate window
     host: std::cell::RefCell<Option<std::rc::Rc<dyn shikisha_shared::BrowserHost>>>,
@@ -286,6 +290,7 @@ impl Capabilities {
             tx: std::cell::RefCell::new(None),
             pressed: std::cell::RefCell::new(HashMap::new()),
             asks: std::cell::RefCell::new(HashMap::new()),
+            picks: std::cell::RefCell::new(HashMap::new()),
             host: std::cell::RefCell::new(None),
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
@@ -1070,6 +1075,112 @@ impl Capabilities {
         }
     }
 
+    /// Arm or put away picking (🎯) on a page. One page picks at a time: arming
+    /// one puts every other away first, so a press on a page left behind in
+    /// another pane does what it always did. Off names the page it is for; the
+    /// page's own Escape arrives as a pick of nothing (see `note_picked`)
+    pub fn browser_pick(&self, name: &str, on: bool) -> Result<()> {
+        let key = Self::key(self.desk.get(), name);
+        if on {
+            let others: Vec<String> = self
+                .picks
+                .borrow()
+                .iter()
+                .filter(|(k, p)| p.armed && **k != key)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for k in others {
+                self.disarm_key(&k);
+            }
+            let hint = serde_json::Value::String(crate::i18n::t("tui.pick.page_hint"));
+            self.with(name, |b, to| b.eval_in(to, &format!("window.__shikisha_pick && window.__shikisha_pick(true, {hint});")).map(|_| ()))?;
+            self.picks.borrow_mut().entry(key).or_default().armed = true;
+            Ok(())
+        } else {
+            self.disarm_key(&key);
+            Ok(())
+        }
+    }
+
+    /// Put picking away on a page by its in-window name, telling the page when
+    /// it is still there to be told
+    fn disarm_key(&self, key: &str) {
+        if let Some(p) = self.picks.borrow_mut().get_mut(key) {
+            p.armed = false;
+        }
+        if let Some(h) = self.host.borrow().as_ref() {
+            let _ = h.eval_in(Some(key), "window.__shikisha_pick && window.__shikisha_pick(false);");
+        }
+    }
+
+    /// A page said an element was picked on it. Kept only when that page is
+    /// armed -- otherwise it is a page talking unasked, and is dropped. A pick
+    /// of nothing is the person's Escape: picking ends there. Answers the page's
+    /// display name when something changed, for the log
+    pub fn note_picked(&self, child: &str, item: serde_json::Value) -> Option<String> {
+        let name = self.name_of_child(child)?;
+        let mut picks = self.picks.borrow_mut();
+        let p = picks.get_mut(child).filter(|p| p.armed)?;
+        if item.is_null() {
+            p.armed = false;
+        } else {
+            p.add(item)?;
+        }
+        Some(name)
+    }
+
+    /// A page began a new document. Whatever was drawing the picking went with
+    /// the old one, so the page is no longer armed; what was picked stays
+    pub fn note_page_loaded(&self, child: &str) {
+        if let Some(p) = self.picks.borrow_mut().get_mut(child) {
+            p.armed = false;
+        }
+    }
+
+    /// What the 🎯 panel does to a page's picks: `note` (with `n` and `text`),
+    /// `drop` (with `n`), `clear`. Anything else is refused
+    pub fn pick_edit(&self, name: &str, act: &str, args: &serde_json::Value) -> Result<()> {
+        let key = Self::key(self.desk.get(), name);
+        let n = args.get("n").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+        let mut picks = self.picks.borrow_mut();
+        let p = picks.entry(key).or_default();
+        match act {
+            "note" => {
+                p.note(n, args.get("text").and_then(serde_json::Value::as_str).unwrap_or_default());
+            }
+            "drop" => {
+                p.drop_one(n);
+            }
+            "clear" => p.clear(),
+            other => bail!("unknown pick act: {other}"),
+        }
+        Ok(())
+    }
+
+    /// Everything picked on a page, oldest first. `clear` empties the list as
+    /// it is read, for a script that takes what was picked and moves on
+    pub fn browser_picks(&self, name: &str, clear: bool) -> Vec<crate::pick::Picked> {
+        let key = Self::key(self.desk.get(), name);
+        let mut picks = self.picks.borrow_mut();
+        let Some(p) = picks.get_mut(&key) else { return Vec::new() };
+        let out = p.items.iter().cloned().collect();
+        if clear {
+            p.clear();
+        }
+        out
+    }
+
+    /// The 🎯 panel's view of the desk in view, by display name
+    pub fn picks_now(&self) -> Vec<(String, crate::pick::PickState)> {
+        let head = format!("{}/", self.desk.get());
+        self.picks
+            .borrow()
+            .iter()
+            .filter(|(_, p)| p.armed || !p.items.is_empty())
+            .filter_map(|(k, p)| Some((k.strip_prefix(&head)?.to_string(), p.state())))
+            .collect()
+    }
+
     /// Show controls above a page. If there's nothing to show, it's as if nothing were shown at all
     pub fn browser_nav(&self, name: &str, spec: crate::config::NavSpec) -> Result<()> {
         // Can't show controls on a page that isn't open. Rejected here
@@ -1256,6 +1367,7 @@ impl Capabilities {
         self.hosted.borrow_mut().retain(|(w, x)| !(*w == desk && x == name));
         self.pressed.borrow_mut().remove(&key);
         self.asks.borrow_mut().remove(&key);
+        self.picks.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = None;

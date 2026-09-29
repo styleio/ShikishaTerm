@@ -386,6 +386,12 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // ignore lines the worktree dialog already keeps from here
         // (`Ev::BringLines`), and the offer is worked out again on this side
         Ev::KeepEnv { .. } => true,
+        // 🎯 picking elements on the page being watched, and handing them to
+        // an AI tab as a draft. The phone presses the page through the relay
+        // with real input, so the picking itself happens on the page exactly
+        // as it does at the window; these are only the panel's buttons, and a
+        // draft is no more than the phone's own composer already types
+        Ev::Pick { .. } | Ev::Design { .. } => true,
 
         // ── Refused, each for a reason written beside it ─────────────────
         //
@@ -412,6 +418,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::Loading { .. }
         | Ev::JsError { .. }
         | Ev::Recorded { .. }
+        | Ev::Picked { .. }
         | Ev::Touched { .. }
         | Ev::Compose { .. }
         | Ev::Pen { .. } => false,
@@ -3191,7 +3198,7 @@ mod tests {
             // Kept on this machine on purpose
             "Paste", "Password",
             // What this PC's own pages report
-            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Touched", "Compose", "Pen",
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "Touched", "Compose", "Pen",
             // This PC's window, tray and keys
             "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own

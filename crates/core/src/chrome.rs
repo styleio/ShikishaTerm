@@ -1065,6 +1065,7 @@ fn from_page(ev: shikisha_shared::Ev, page: &str) -> Option<shikisha_shared::Ev>
         Ev::Recorded { act, sel, value, xpath, hint, .. } => {
             Ev::Recorded { from, act, sel, value, xpath, hint }
         }
+        Ev::Picked { item, .. } => Ev::Picked { from, item },
         // An answer to an evaluation. Nothing here asks through the binding
         // -- an evaluation is answered by the protocol call that made it --
         // so one arriving is a page volunteering an answer to a question that

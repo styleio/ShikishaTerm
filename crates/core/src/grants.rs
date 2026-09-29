@@ -203,6 +203,11 @@ pub const CATALOG: &[Entry] = &[
     e("browser_pressed", Group::Browser, true, true, true),
     e("browser_unask", Group::Browser, true, true, true),
     e("browser_wait", Group::Browser, true, true, false),
+    // Picking elements on a page for an AI: arming changes what a person's
+    // press on that page does until it is put away, and reading hands out
+    // what the page said of them -- nothing the page does not already show
+    e("browser_pick", Group::Browser, true, true, false),
+    e("browser_picks", Group::Browser, true, true, false),
     // -- Handing a run between participants ----------------------------------
     e("contract", Group::Handoff, true, true, false),
     e("exchange_new", Group::Handoff, true, true, false),

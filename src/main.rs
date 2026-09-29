@@ -860,6 +860,10 @@ impl WinSurface {
                 // 📼 / ▶ from the composer, and recorded steps from pages. All
                 // resolved by the loop (it knows the shown browser and the engine).
                 Ev::Record { on } => self.mail.record_arms.push(on),
+                // 🎯: the same resolution as 📼 (the loop knows the shown page)
+                Ev::Pick { on } => self.mail.pick_arms.push(on),
+                Ev::Picked { from: Some(child), item } => self.mail.picked.push((child, item)),
+                Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::RunLua { code } => self.mail.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
                 Ev::GitAccount { panel, account } => self.mail.git_accounts.push((panel, account)),
@@ -887,14 +891,7 @@ impl WinSurface {
                     let cwd = active_tab.map(tab_cwd_abs).unwrap_or_default();
                     // A tab on another machine gets the file there, in its
                     // folder there: the AI reading it runs on that machine
-                    let far = active_tab.and_then(|t| {
-                        let machine = match (t.remote(), t.cloud()) {
-                            (Some(spec), _) => shikisha_core::elsewhere::Elsewhere::Ssh(spec.clone()),
-                            (None, Some(host)) => shikisha_core::elsewhere::Elsewhere::Cloud(host.clone()),
-                            (None, None) => return None,
-                        };
-                        Some((machine, t.remote_cwd().unwrap_or_default().to_string()))
-                    });
+                    let far = active_tab.and_then(shikisha_core::runtime::tab_far);
                     let result = shikisha_core::remote::attach_save_at(
                         &cwd,
                         far.as_ref().map(|(m, at)| (m, at.as_str())),

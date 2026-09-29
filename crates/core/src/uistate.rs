@@ -55,6 +55,10 @@ pub struct TabState {
     /// and the 🗣 panel says so beside its ⚙ ([低速] / [高速])
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub words_fast: bool,
+    /// A page: what the 🎯 panel has picked on it, and whether a press on it
+    /// picks right now. Absent while nothing has been picked and it is not armed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picks: Option<crate::pick::PickState>,
     /// This pty tab is a model bridge (OpenAI-compatible API). The shell offers
     /// a chat input box for it instead of leaving it as a silent idle screen.
     #[serde(default)]
@@ -2334,6 +2338,7 @@ impl TabState {
             kind: "pty".into(),
             words_unset: false,
             words_fast: false,
+            picks: None,
             restartable: true,
             past: t.past_here && (!t.spoke() || t.lost),
             lost: t.lost,
@@ -2473,6 +2478,7 @@ impl TabState {
             kind: "browser".into(),
             words_unset: false,
             words_fast: false,
+            picks: None,
             // A page has no conversation to have been having
             past: false,
             lost: false,
@@ -2952,6 +2958,7 @@ mod tests {
             kind: "pty".into(),
             words_unset: false,
             words_fast: false,
+            picks: None,
             restartable: true,
             model: false,
             busy: false,

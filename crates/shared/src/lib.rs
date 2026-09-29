@@ -564,6 +564,20 @@ pub enum Ev {
     /// shown browser (the loop resolves which one that is); off silences it
     /// everywhere — there's only ever one recorder.
     Record { on: bool },
+    /// 🎯 pick elements on the shown page for an AI: `on` arms the page so
+    /// the next presses on it pick instead of doing what they would do, and
+    /// off puts it back. Which page is the loop's to resolve, like `Record`
+    Pick { on: bool },
+    /// One element a page reports picked, as the page described it (see
+    /// `pagejs` `pickDescribe`). `item` is null when the person pressed Escape
+    /// on the page, which ends the picking. `from` is stamped by whoever heard
+    /// the page, never taken from the message; believed only while that page
+    /// was armed (the loop checks), so a page cannot fill a composer unasked
+    Picked { from: Option<String>, item: serde_json::Value },
+    /// The 🎯 panel asking for something done to what was picked: a note on
+    /// one, one taken out, all cleared, or all handed to an AI tab as a
+    /// draft. `page` is the browser tab's key; `act` is one of a short list
+    Design { page: String, act: String, args: serde_json::Value },
     /// ▶ run mode: Lua typed into the composer, to run against the shown
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
@@ -1325,6 +1339,21 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("record") => Ev::Record {
             on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
         },
+        // 🎯 picking armed or put away (see `Ev::Pick`)
+        Some("pick") => Ev::Pick {
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        // An element a page picked (who it came from is stamped by the side
+        // that heard it, as with "recorded")
+        Some("picked") => Ev::Picked {
+            from: None,
+            item: v.get("item").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        Some("design") => Ev::Design {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
         // ▶ composer Lua to run sandboxed against the shown browser (see `Ev::RunLua`).
         Some("runlua") => Ev::RunLua {
             code: v
@@ -1682,6 +1711,10 @@ pub fn allowed_from_page(ev: &Ev) -> bool {
             | Ev::Touched { .. }
             | Ev::Compose { .. }
             | Ev::Recorded { .. }
+            // An element the person picked on it. A report like a recorded
+            // step, and like one it is believed only while the page was
+            // armed -- the loop drops it otherwise
+            | Ev::Picked { .. }
             | Ev::Result { .. }
     )
 }

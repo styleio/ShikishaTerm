@@ -1515,6 +1515,33 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castlua::-webkit-scrollbar { display:none; }
+  /* 🎯 pick: the switch, one chip per element picked (its number, what it is,
+     a note), and what to do with them. One row that scrolls sideways, as 📼's */
+  #castpick { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
+    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
+  #castpick::-webkit-scrollbar { display:none; }
+  /* The board speaks in the terminal's face (STYLEGUIDE §3), and a button here
+     is one of its buttons */
+  #castpick button { font:inherit; font-size:12.5px; }
+  #castpick .castgear.on { background:var(--raise); border-color:var(--brand); }
+  #castpick .castgear.pquiet { border-color:transparent; background:none; color:var(--dim); }
+  #castpick .castgear.pquiet:hover { color:var(--text); }
+  /* The way on, told the way 🗣's "agree and run" is: the brand's edge and letters.
+     Filled would make a second main button beside the input row's Send */
+  #castpick .castgear.pgo { border-color:var(--brand); color:var(--brand); }
+  #castpick .pchip { flex:none; display:flex; align-items:center; gap:var(--s1); height:32px;
+    box-sizing:border-box; padding:0 var(--s1) 0 var(--s2); border:1px solid var(--edge);
+    border-radius:var(--r-chip); background:var(--raise); font-size:12px; color:var(--text); }
+  #castpick .pchip .pn { color:var(--dim); font-variant-numeric:tabular-nums; }
+  #castpick .pchip .pl { max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+  #castpick .pchip input { width:128px; height:24px; box-sizing:border-box; padding:0 var(--s2);
+    font:inherit; font-size:12px; color:var(--text); background:var(--bg);
+    border:1px solid var(--edge); border-radius:var(--r-chip); }
+  #castpick .pchip input:focus { outline:none; border-color:var(--brand); }
+  #castpick .pchip .px { width:22px; height:22px; padding:0; border:0; background:none;
+    color:var(--dim); cursor:pointer; font-size:12px; }
+  #castpick .pchip .px:hover { color:var(--stop); }
+  .fmenu.picksend { min-width:220px; }
   .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
@@ -11345,6 +11372,9 @@ window.__state = function (json) {
     lastWordsUnset = wordsUnsetHere();
     if (castPanel === "lua" && castDock && castDock.style.display === "flex") renderPanel();
   }
+  // 🎯's list and switch are the app's; a pick made on the page, or a press
+  // on the phone, changes them here
+  syncPickPanel();
   // The panel area follows the active tab: which panels exist depends on it (a
   // browser tab gains 📼, a terminal 🤖). If the active tab changed while the
   // dock is open, rebuild whatever is showing so none of it goes stale.
@@ -17023,7 +17053,7 @@ function panelOptionsHere() {
   if (gitSurfaceTab()) return base;
   // A browser tab gains 📼 (record page actions as Lua / run composer Lua on
   // the page). Otherwise it's the same sub-input bar as an AI tab.
-  if (onBrowserTab()) return base.concat("lua");
+  if (onBrowserTab()) return base.concat("lua", "pick");
   const t = activeTab();
   // A model pane is a conversation, not a command line. There is nothing to
   // suggest a command into, and Send is the message itself — so it keeps the
@@ -17108,6 +17138,7 @@ function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
+    : p === "pick" ? (T["tui.cast.panel.pick"] || "Pick parts of the page for an AI")
     : (T["tui.cast.panel.suggest"] || "AI command suggest");
 }
 // The bar's gear: one shape, wherever it points
@@ -17138,14 +17169,98 @@ function directBtn() {
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
   return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
-    : "🤖";
+    : p === "pick" ? "🎯" : "🤖";
 }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "lua") { return buildLuaPanel(); }
+  if (p === "pick") { return buildPickPanel(); }
   if (p === "suggest") { return buildSuggestPanel(); }
   return null;
+}
+// The 🎯 panel: point at parts of the page, then hand them to an AI. The
+// switch arms the page (a press on it then picks instead of doing what it
+// would); each pick is a chip with room for a note; "Hand to an AI" puts them
+// all into that tab's input as a draft. What is picked lives in the app, not
+// here -- the phone and the window show the same list, and a script reads it
+function pickHere() {
+  const t = activeTab();
+  return (t && t.kind === "browser" && t.picks) || {on: false, items: []};
+}
+// What the panel is drawn from, so it is drawn again only when that changes:
+// a note being typed must not be thrown away by a state push about nothing
+let pickSig = "";
+function pickSigNow() {
+  const t = activeTab();
+  const p = pickHere();
+  return (t ? t.index : "") + "|" + p.on + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
+}
+function pickAsk(act, args) {
+  const t = activeTab();
+  if (!t || t.kind !== "browser") return;
+  send({kind:"design", page: t.id || t.name, act, args: args || {}});
+}
+function buildPickPanel() {
+  const p = pickHere();
+  pickSig = pickSigNow();
+  const wrap = el("div", {id:"castpick"});
+  wrap.append(el("button", {class:"castgear" + (p.on ? " on" : ""),
+    title: T["tui.pick.hint"] || "",
+    onclick: () => send({kind:"pick", on: !p.on})},
+    p.on ? "■ " + (T["tui.pick.stop"] || "Stop picking") : "🎯 " + (T["tui.pick.start"] || "Pick")));
+  if (!p.items.length) {
+    wrap.append(el("span", {class:"castpanelhint"},
+      p.on ? (T["tui.pick.armed"] || "") : (T["tui.pick.empty"] || "")));
+    return wrap;
+  }
+  for (const it of p.items) {
+    const note = el("input", {type:"text", value: it.note || "", "data-n": it.n,
+      placeholder: T["tui.pick.note"] || "Note", maxlength: 400});
+    // Said when the person is done with it, not at every letter: the app
+    // keeps the note, and a note written on the phone shows at the window
+    note.addEventListener("change", () => pickAsk("note", {n: it.n, text: note.value}));
+    note.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) note.blur(); });
+    wrap.append(el("span", {class:"pchip", title: it.label},
+      el("span", {class:"pn"}, String(it.n)),
+      el("span", {class:"pl"}, it.label),
+      note,
+      el("button", {class:"px", title: T["tui.pick.drop"] || "", onclick: () => pickAsk("drop", {n: it.n})}, "✕")));
+  }
+  const go = el("button", {class:"castgear pgo"}, (T["tui.pick.send"] || "Hand to an AI") + " ▾");
+  go.onclick = () => {
+    const ais = mentionCandidates().filter(t => t.ai);
+    const rows = ais.length ? ais.map(t => {
+      const g = t.group != null && S.groups ? S.groups[t.group] : null;
+      return el("div", {class:"mrow", onclick: () => {
+        closeFolderMenu();
+        // A note still being typed goes first, so it rides along
+        const typing = document.activeElement;
+        if (typing && typing.dataset && typing.dataset.n) pickAsk("note", {n: Number(typing.dataset.n), text: typing.value});
+        pickAsk("send", {to: t.id});
+      }}, markFor(t) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, t.name || t.id),
+        el("span", {class:"at"}, (g && g.name) || ""));
+    }) : [el("div", {class:"mnone"}, T["tui.pick.no_ai"] || "")];
+    openList(go, rows, false, null, "picksend");
+  };
+  wrap.append(go, el("button", {class:"castgear pquiet", onclick: () => pickAsk("clear")},
+    T["tui.pick.clear"] || "Clear"));
+  return wrap;
+}
+// Drawn again when what it shows changed, keeping the place of a note being
+// typed: a pick landing while somebody writes about the previous one must not
+// take the caret away
+function syncPickPanel() {
+  if (castPanel !== "pick" || !castDock || castDock.style.display !== "flex") return;
+  if (pickSigNow() === pickSig) return;
+  const typing = document.activeElement;
+  const n = typing && typing.dataset ? typing.dataset.n : null;
+  const at = n ? typing.selectionStart : null;
+  renderPanel();
+  if (n) {
+    const again = document.querySelector('#castpick input[data-n="' + n + '"]');
+    if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch (e) {} }
+  }
 }
 // The ✨ panel: natural language in, ONE command out — drafted into the
 // composer for the person to review and Send. Nothing runs on its own.
