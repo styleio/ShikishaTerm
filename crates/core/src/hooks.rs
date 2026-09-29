@@ -2758,6 +2758,52 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // 🎯 arm or put away picking on a page: while armed, a person's
+            // press on it picks the element under it instead of doing what it
+            // would do (the same as the panel's button)
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_pick",
+                    lua.create_function(move |_, (name, on): (String, bool)| {
+                        c.browser_pick(&name, on)
+                            .map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // What has been picked on a page, oldest first: one table per
+            // element (its number, the person's note, and what the page said
+            // of it), and the same list written out the way an AI is handed
+            // it. `clear` empties the list as it is read
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_picks",
+                    lua.create_function(move |lua_, (name, clear): (String, Option<bool>)| {
+                        let picks = c.browser_picks(&name, clear.unwrap_or(false));
+                        let text = crate::pick::describe(&picks);
+                        let rows: Vec<serde_json::Value> = picks
+                            .into_iter()
+                            .map(|p| {
+                                let mut v = p.item;
+                                if let Some(o) = v.as_object_mut() {
+                                    o.insert("n".into(), p.n.into());
+                                    o.insert("note".into(), p.note.into());
+                                }
+                                v
+                            })
+                            .collect();
+                        let t = json_to_lua(lua_, &serde_json::Value::Array(rows))?;
+                        Ok((t, c.redact(&text)))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             let c = Caps::clone(&caps);
             shikisha
                 .set(

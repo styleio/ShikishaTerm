@@ -530,6 +530,230 @@ pub const AUTOMATION: &str = r##"
     }
   }, true);
 
+  // ---- Picking elements for an AI (🎯) --------------------------------------
+  // A person points at a part of the page and it is described for an AI: what
+  // it is, where it sits, the markup and the styles that shape it. Armed and
+  // disarmed by the Rust side, which is also the only side that believes a
+  // pick -- a page reporting one while nobody asked is dropped there. Only a
+  // trusted press picks (a person's, or the phone's relayed one), so a script
+  // clicking through a form never picks by accident.
+  //
+  // Nothing covers the page while picking: the presses are stopped on their
+  // way down instead, so the wheel and a finger's scroll still move the page
+  // and the thing wanted can be brought into view first.
+  let pickOn = false, pickHost = null, pickRoot = null, pickFrame = null, pickTag = null, pickSay = null;
+  let pickHint = "", pickCount = 0, pickUnder = null;
+  // What the markup and the words are cut to. One component's markup fits in
+  // 3000 characters, and a handful of picks together stay far below what an
+  // AI's input takes in one paste. 160 characters is two lines of a button's
+  // or a heading's words -- more is page copy, not a name
+  const PICK_HTML = 3000, PICK_WORDS = 160;
+  // How many ancestors say where it sits. Five usually crosses the edge of the
+  // component the element belongs to; longer chains are read past
+  const PICK_UP = 5;
+  // The styles a conversation about how something looks actually turns on, in
+  // the order a person reads a box: its size, how it lays out what is inside,
+  // its type, its colours, and what it sits over
+  const PICK_STYLE = [
+    "display", "position", "box-sizing", "width", "height", "margin", "padding", "border", "border-radius",
+    "flex-direction", "justify-content", "align-items", "gap", "grid-template-columns",
+    "font-family", "font-size", "font-weight", "line-height", "letter-spacing", "text-align",
+    "color", "background-color", "box-shadow", "opacity", "overflow", "z-index",
+  ];
+  // Values that say nothing: the browser's own starting point for that style
+  const pickUnsaid = (k, v) => !v || v === "auto" || v === "normal" || v === "none" ||
+    v === "0px" || v === "rgba(0, 0, 0, 0)" || (k === "opacity" && v === "1") ||
+    (k === "position" && v === "static") || (k === "overflow" && v === "visible") ||
+    (k === "box-sizing" && v === "content-box") || (k === "text-align" && v === "start") ||
+    (k === "border" && /^0px /.test(v));
+  // An attribute that may carry a key to somebody's account keeps its name
+  // and loses its value: a pick is pasted into a conversation that is kept
+  const pickSecret = /pass|secret|token|auth|session|csrf|nonce|sig|key|otp|credential/i;
+  const pickBare = (u) => { try { const x = new URL(u, location.href); return x.origin + x.pathname; } catch (e) { return ""; } };
+  function pickScrub(el) {
+    for (const a of Array.from(el.attributes || [])) {
+      const n = a.name.toLowerCase();
+      if (n === "value" || n.startsWith("on")) el.removeAttribute(a.name);
+      else if (n === "href" || n === "src" || n === "action" || n === "poster") el.setAttribute(a.name, pickBare(a.value));
+      else if (pickSecret.test(n) && a.value) el.setAttribute(a.name, "…");
+    }
+  }
+  function pickMarkup(el) {
+    const copy = el.cloneNode(true);
+    for (const x of copy.querySelectorAll("script,style,noscript,template")) x.remove();
+    pickScrub(copy);
+    for (const x of copy.querySelectorAll("*")) pickScrub(x);
+    // A password field's typed text is not in the markup, but a value the page
+    // wrote back into the attribute would be; scrubbing dropped every `value`
+    let s = copy.outerHTML.replace(/\s+\n/g, "\n");
+    if (s.length > PICK_HTML) s = s.slice(0, PICK_HTML) + "…";
+    return s;
+  }
+  // A class a build tool made up (css-1x2y3z, sc-AbCdE, a hash) names nothing
+  // a person wrote, and is different on the next build
+  const pickMadeUp = (c) => /^(css|sc|jsx|emotion|svelte|astro|_)[-_]/i.test(c) ||
+    (/\d/.test(c) && /[a-z]/i.test(c) && c.length >= 6 && !/[-_]/.test(c));
+  function pickStep(el) {
+    let s = el.tagName.toLowerCase();
+    if (el.id && !recGenId(el.id)) return s + "#" + el.id;
+    const cls = Array.from(el.classList || []).filter((c) => !pickMadeUp(c)).slice(0, 2);
+    return cls.length ? s + "." + cls.join(".") : s;
+  }
+  function pickWhere(el) {
+    const out = [];
+    for (let up = el.parentElement; up && up.tagName !== "HTML" && out.length < PICK_UP; up = up.parentElement) {
+      out.unshift(pickStep(up));
+      if (up.tagName === "BODY") break;
+    }
+    return out;
+  }
+  // Which file drew it, when the page was built to say so. React's development
+  // build keeps it on the fiber (up to version 18); Vue's keeps the file on the
+  // component; Svelte's on the element; and the inspector plugins of several
+  // build tools write it into an attribute. Whatever is found first
+  function pickSource(el) {
+    for (let cur = el, hops = 0; cur && hops < 12; cur = cur.parentElement, hops++) {
+      const said = cur.getAttribute && (cur.getAttribute("data-v-inspector") ||
+        cur.getAttribute("data-inspector-relative-path") && (cur.getAttribute("data-inspector-relative-path") +
+          ":" + (cur.getAttribute("data-inspector-line") || "")));
+      if (said) return said;
+      const sv = cur.__svelte_meta && cur.__svelte_meta.loc;
+      if (sv && sv.file) return sv.file + ":" + (sv.line + 1) + ":" + (sv.column + 1);
+      const vue = cur.__vueParentComponent && cur.__vueParentComponent.type;
+      if (vue && vue.__file) return vue.__file;
+      const fk = Object.keys(cur).find((k) => k.startsWith("__reactFiber$") || k.startsWith("__reactInternalInstance$"));
+      for (let f = fk && cur[fk], n = 0; f && n < 30; f = f.return, n++) {
+        const d = f._debugSource;
+        if (d && d.fileName) {
+          return d.fileName.replace(/^(webpack|turbopack|vite):\/\/\/?(\.\/)?/, "") + ":" + d.lineNumber +
+            (d.columnNumber ? ":" + d.columnNumber : "");
+        }
+      }
+    }
+    return "";
+  }
+  function pickName(el) {
+    const said = el.getAttribute("aria-label") || el.getAttribute("title") || el.getAttribute("alt") ||
+      el.getAttribute("placeholder") || recText(el);
+    return (said || "").replace(/\s+/g, " ").trim().slice(0, PICK_WORDS);
+  }
+  function pickDescribe(el) {
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const style = [];
+    for (const k of PICK_STYLE) {
+      const v = cs.getPropertyValue(k);
+      if (!pickUnsaid(k, v)) style.push(k + ": " + v);
+    }
+    return {
+      tag: el.tagName.toLowerCase(),
+      role: el.getAttribute("role") || "",
+      name: pickName(el),
+      sel: recSel(el),
+      path: pickWhere(el),
+      source: pickSource(el),
+      box: { x: Math.round(r.left + scrollX), y: Math.round(r.top + scrollY), w: Math.round(r.width), h: Math.round(r.height) },
+      view: { w: innerWidth, h: innerHeight },
+      url: pickBare(location.href),
+      style: style.join("; "),
+      html: pickMarkup(el),
+    };
+  }
+  // The element under a point, looking into open shadow roots, and never our
+  // own drawing
+  function pickAt(x, y) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit && hit.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (hit === pickHost || hit === document.documentElement || hit === document.body) return null;
+    return hit;
+  }
+  function pickDraw(el) {
+    pickUnder = el;
+    if (!pickFrame) return;
+    if (!el) { pickFrame.style.display = "none"; pickTag.style.display = "none"; return; }
+    const r = el.getBoundingClientRect();
+    Object.assign(pickFrame.style, { display: "block", left: r.left + "px", top: r.top + "px",
+      width: r.width + "px", height: r.height + "px" });
+    pickTag.textContent = pickStep(el) + "  " + Math.round(r.width) + "×" + Math.round(r.height);
+    Object.assign(pickTag.style, { display: "block", left: Math.max(0, r.left) + "px",
+      top: (r.top > 22 ? r.top - 22 : r.bottom + 2) + "px" });
+  }
+  function pickSayNow() {
+    if (pickSay) pickSay.textContent = pickHint.replace("{n}", String(pickCount));
+  }
+  function pickBuild() {
+    if (pickHost) return;
+    pickHost = document.createElement("div");
+    // Nothing of ours takes a press: the page underneath has to be found
+    // by the pointer, and the wheel has to reach it
+    pickHost.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none";
+    pickRoot = pickHost.attachShadow({ mode: "closed" });
+    const mk = (css) => { const d = document.createElement("div"); d.style.cssText = css; pickRoot.appendChild(d); return d; };
+    pickFrame = mk("position:fixed;display:none;box-sizing:border-box;border:2px solid #3fa7ff;" +
+      "background:rgba(63,167,255,.12);border-radius:2px");
+    pickTag = mk("position:fixed;display:none;padding:2px 6px;border-radius:4px;background:#0a0c0e;" +
+      "color:#e6edf3;font:11px/16px ui-monospace,Consolas,monospace;white-space:nowrap");
+    pickSay = mk("position:fixed;left:50%;top:10px;transform:translateX(-50%);padding:6px 12px;" +
+      "border-radius:999px;background:#0a0c0e;color:#e6edf3;border:1px solid #3fa7ff;" +
+      "font:12px/18px system-ui,sans-serif;white-space:nowrap;box-shadow:0 8px 24px #0007");
+    (document.documentElement).appendChild(pickHost);
+  }
+  function pickStop(told) {
+    pickOn = false;
+    pickDraw(null);
+    if (pickHost) { pickHost.remove(); pickHost = null; pickFrame = pickTag = pickSay = null; }
+    if (told) send({ kind: "picked", item: null });
+  }
+  // `hint` is the line shown at the top, in the person's language; `{n}` in it
+  // becomes how many have been picked since arming
+  window.__shikisha_pick = function (on, hint) {
+    if (!on) { pickStop(false); return; }
+    pickOn = true;
+    pickCount = 0;
+    pickHint = hint || "";
+    pickBuild();
+    pickSayNow();
+  };
+  const pickSwallow = (e) => {
+    if (!pickOn || !e.isTrusted) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  for (const t of ["pointerdown", "pointerup", "mousedown", "mouseup", "dblclick", "auxclick", "contextmenu"]) {
+    addEventListener(t, pickSwallow, true);
+  }
+  addEventListener("pointermove", (e) => {
+    if (!pickOn || !e.isTrusted) return;
+    pickDraw(pickAt(e.clientX, e.clientY));
+  }, true);
+  addEventListener("scroll", () => { if (pickOn && pickUnder) pickDraw(pickUnder); }, true);
+  addEventListener("click", (e) => {
+    if (!pickOn || !e.isTrusted) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    // A tap arrives without a move before it, so the point is looked at again
+    const el = pickAt(e.clientX, e.clientY);
+    if (!el) return;
+    pickDraw(el);
+    pickCount++;
+    pickSayNow();
+    if (pickFrame) {
+      pickFrame.style.background = "rgba(63,167,255,.35)";
+      setTimeout(() => { if (pickFrame) pickFrame.style.background = "rgba(63,167,255,.12)"; }, 250);
+    }
+    send({ kind: "picked", item: pickDescribe(el) });
+  }, true);
+  addEventListener("keydown", (e) => {
+    if (!pickOn || !e.isTrusted || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pickStop(true);
+  }, true);
+
   window.__shikisha = true;
 
   // "Loading finished" waits for `load`. At DOMContentLoaded, images and

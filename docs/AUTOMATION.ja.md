@@ -1079,6 +1079,8 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_pressed(id)` | 押されたか |
 | `shikisha.browser_unask(id)` | 帯を消す |
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
+| `shikisha.browser_pick(id, true)` | ページで要素を選べる状態にする。`false` を渡すか、ページで Esc を押すまで、人がページの要素を押すと、押す代わりにその要素を選ぶ。入力欄の 🎯 パネルのスイッチと同じ |
+| `shikisha.browser_picks(id, clear)` | ページで選んだ要素を古い順に返す。1 要素 1 テーブル（`n`・`note`・`tag`・`role`・`name`・`sel`・`path`・`source`・`box`・`view`・`url`・`style`・`html`）。2 つ目の戻り値は、🎯 パネルが AI に渡すときと同じ書き方の文章。`clear = true` なら、読んだあとに一覧を空にする |
 
 ### モデルに尋ねる
 

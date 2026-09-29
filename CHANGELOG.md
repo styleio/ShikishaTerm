@@ -8,6 +8,16 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Point at parts of a page and hand them to an AI.** On a browser tab the
+  input bar's picker has 🎯: press **Pick**, then press the button, card or
+  heading an AI should look at. Each one becomes a chip with room for a note,
+  and **Hand to an AI** puts them into that AI's input as a draft, not sent:
+  what each one is, where it sits on the page, its selector, its markup and
+  the styles that shape it (and the source file, when the page's development
+  build says). The same panel works from a phone, whose presses on the page
+  pick the same way. Automation reads them with `shikisha.browser_picks`.
+
 ## [0.22.1] - 2026-09-29
 
 ### Added
