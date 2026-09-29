@@ -2525,6 +2525,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pill.limit { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); cursor:pointer;
     max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap !important; }
   .pill.limit:hover { background:var(--tint); }
+  /* Keeping the PC awake. Not a state colour: holding the PC up is not an AI
+     at work (the "always" choice holds it with nothing running), so held is
+     plain text and waiting is dim, the way AUTO OFF is */
+  .pill.awake { cursor:pointer; }
+  .pill.awake.held { color:var(--text); }
+  .pill.awake:hover { background:var(--tint); }
   /* What the subscription has left: the AI's name in its own colour, then a
      bar and a sentence per window. The bar is the number; the words say what
      the number is of and when it goes back to zero. Nothing here moves */
@@ -3747,6 +3753,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #status .pill.auto, #status .pill.remote { font-size:0; }
     #status .pill.auto::after { content:"A"; font-size:12px; }
     #status .pill.remote::after { content:"R"; font-size:12px; }
+    #status .pill.awake { font-size:0; }
+    #status .pill.awake::after { content:attr(data-short); font-size:12px; }
     /* Claude's name, as the mark its own tabs wear, in its own colour */
     #status .usage .who { display:none; }
     #status .usage .aim { display:inline-block; }
@@ -10648,8 +10656,27 @@ function usagePill() {
     // the AI's own tabs wear — built by the one thing that builds those marks
     el("span", {class:"who"}, u.who),
     aiMark(t.ai),
-    win(u.five),
-    win(u.week));
+    ...(u.wins || []).map(win));
+}
+// Whether the PC is being kept from sleeping, while the setting is on. Says
+// the one fact that changes -- held now or not -- and the setting in full on
+// hover. Pressing it is where the choice is changed, from the window or the
+// phone: somebody walking away from a long turn is who reaches for it
+const AWAKE_MODES = ["off", "ai", "always"];
+function awakePill() {
+  const a = S && S.awake;
+  if (!a) return null;
+  const now = T[a.held ? "tui.awake.now.held" : "tui.awake.now.free"] || "";
+  const p = el("span", {class:"pill awake " + (a.held ? "held" : "off"),
+      "data-short":T["tui.awake.short"] || "",
+      title:(T["tui.awake.title"] || "{mode}: {now}").replaceAll("{mode}", T["tui.awake.mode." + a.mode] || a.mode).replaceAll("{now}", now)},
+    T[a.held ? "tui.awake.held" : "tui.awake.free"] || "");
+  p.onclick = e => {
+    e.stopPropagation();
+    openList(p, AWAKE_MODES.map(m => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); send({kind:"stay_awake", mode:m}); }},
+      el("span", {class:"ck"}, m === a.mode ? "✓" : ""), el("span", {class:"nm"}, T["tui.awake.mode." + m] || m))));
+  };
+  return p;
 }
 // The build stamp. It is the answer to "which build are you looking at?", and
 // that question is always asked of somebody who is looking at it and has to
@@ -10705,6 +10732,7 @@ function drawStatus() {
     // said "Claude" over a Codex tab would be a bar nobody believed
     limitPill(),
     usagePill(),
+    awakePill(),
   ].forEach(x => { if (x) mid.append(x); });
   [
     mid,
@@ -23073,7 +23101,7 @@ mod tests {
         assert!(PAGE.contains(r#"fill.style.width = Math.max(0, Math.min(100, w.pct)) + "%";"#), "there is no bar");
         assert!(PAGE.contains(r#"el("span", {class:"wsay"}, w.used + (w.resets ? " " + w.resets : ""))"#), "there are no words");
         assert!(PAGE.contains(r#"#status .usage .win + .win::before { content:"·";"#), "there is no dot between the windows");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "it is not in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    awakePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "it is not in the lower row");
         // The row must stay the width of its column, or the reading pushes
         // STOP off the right edge (it did, at 1280px, on 2026-09-09)
         assert!(PAGE.contains("flex-wrap:nowrap; min-width:0; overflow:hidden; }"), "the lower row grows wider than the window");
@@ -23125,7 +23153,7 @@ mod tests {
         assert!(PAGE.contains("#status .pill.auto, #status .pill.remote { font-size:0; }"), "the words are taken out rather than made small");
         // Claude's name becomes the mark its own tabs wear -- built by the one
         // builder for those marks, not a second copy of the table
-        assert!(PAGE.contains("    aiMark(t.ai),\n    win(u.five),"), "the mark is not the one the tabs wear");
+        assert!(PAGE.contains("    aiMark(t.ai),\n    ...(u.wins || []).map(win));"), "the mark is not the one the tabs wear");
         assert!(PAGE.contains("#status .usage .who { display:none; }\n    #status .usage .aim { display:inline-block; }"), "the name does not give way to the mark");
         // "5h(5%)": the number alone, with the bar and the sentence away
         assert!(PAGE.contains(r#"el("span", {class:"wpct"}, "(" + w.pct + "%)")"#), "there is no short reading to fall back to");
@@ -23136,13 +23164,24 @@ mod tests {
         assert!(PAGE.contains("#status .usage .aim, #status .usage .wpct { display:none; }"), "the short forms show at every width");
     }
 
+    /// Keeping the PC awake is said on the lower row while the setting is
+    /// on, and changed there: the list sends the choice the settings screen
+    /// would write, from the window or the phone alike.
+    #[test]
+    fn awake_pill_changes_the_setting_from_the_row() {
+        assert!(PAGE.contains("const a = S && S.awake;\n  if (!a) return null;"), "the pill shows while the setting is off");
+        assert!(PAGE.contains(r#"send({kind:"stay_awake", mode:m})"#), "choosing on the row changes nothing");
+        assert!(PAGE.contains(r#"const AWAKE_MODES = ["off", "ai", "always"];"#), "the row offers other choices than the settings screen");
+        assert!(PAGE.contains("#status .pill.awake::after { content:attr(data-short); font-size:12px; }"), "a narrow bar keeps the whole word");
+    }
+
     /// A usage-limit notice is the tab's own, so it is shown only over the
     /// tab being looked at, and pressing it puts it away.
     #[test]
     fn the_limit_notice_follows_the_tab_in_view() {
         assert!(PAGE.contains("const t = (S && S.tabs || []).find(t => t.index === S.active);\n  if (!t || !t.limit) return null;"), "it shows notices for tabs other than the one being looked at");
         assert!(PAGE.contains(r#"send({kind:"limit_ack", tab:t.index})"#), "pressing it does not make it go away");
-        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "there is no pill in the lower row");
+        assert!(PAGE.contains("    limitPill(),\n    usagePill(),\n    awakePill(),\n  ].forEach(x => { if (x) mid.append(x); });"), "there is no pill in the lower row");
     }
 
     /// Two pointers and no more, each beside the thing it names, closed by

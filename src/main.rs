@@ -837,6 +837,7 @@ impl WinSurface {
                     });
                 }
                 Ev::LimitAck { tab } => self.mail.limit_acks.push(tab),
+                Ev::StayAwake { mode } => self.mail.stay_awake = Some(mode),
                 Ev::Select { tab } => self.mail.selects.push(tab),
                 Ev::Reveal { tab, line } => {
                     self.mail.selects.push(tab);

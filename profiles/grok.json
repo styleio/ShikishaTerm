@@ -1,0 +1,4 @@
+{
+  "name": "Grok CLI",
+  "command_match": ["grok"]
+}

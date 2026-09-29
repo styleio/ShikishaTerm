@@ -293,6 +293,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         Ev::Update { .. } => true,
         // Putting away a tab's usage-limit notice. Reading it is the whole act
         Ev::LimitAck { .. } => true,
+        // When to keep the PC up. A person away from the PC is exactly who
+        // wants it not to sleep under a long turn -- and the same choice is
+        // on the settings screen the phone already reaches
+        Ev::StayAwake { .. } => true,
         // Walking this PC's folders to open another one. The list exists
         // precisely because a phone has no folder dialog of its own
         // (uistate::BrowseState) -- refusing it here left the phone a dialog

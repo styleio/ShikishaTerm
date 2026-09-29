@@ -613,6 +613,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         thanks: ui.thanks.clone(),
         update: ui.update.clone(),
         usage: ui.usage.clone(),
+        awake: ui.awake.clone(),
         // Keep the order exactly as written in the config.
         // Listing sessions and browsers separately would push the browser
         // written first to the back.
@@ -1729,6 +1730,8 @@ pub struct Ui {
     pub assistant: String,
     /// What each AI's subscription has left, by AI kind, for those known
     pub usage: std::collections::BTreeMap<String, crate::uistate::UsageState>,
+    /// Keeping the PC up (see `awake`), while the setting is on
+    pub awake: Option<crate::uistate::AwakeState>,
     /// The thanks card, when it is up: which page it would open
     pub thanks: Option<String>,
     /// The newer version the update card asks about, when it is up

@@ -3,10 +3,10 @@
  *
  *     node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-ai-usage.mjs
  *
- * Claude's and Codex's allowance, each with its 5-hour and 7-day window: a
- * bar, how much is used and when it comes back, and for Codex how old the
- * reading is. The readings are this PC's own, so what is judged is whether
- * each AI says either its numbers or, when it has none, why and what to do.
+ * Every AI's allowance, each window with a bar, how much is used and when it
+ * comes back, and how old the reading is when it is not new. The readings are
+ * this PC's own, so what is judged is whether each AI says either its numbers
+ * or, when it has none, why and what to do.
  */
 
 const wait = (ms) => 'new Promise(r => setTimeout(r, ' + ms + '))';
