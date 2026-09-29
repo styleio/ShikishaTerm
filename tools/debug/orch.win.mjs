@@ -61,7 +61,7 @@ const stopApp = () => ps('-Command',
 // itself then comes from beside it too, not from this checkout
 const installed = (process.argv.find((a) => a.startsWith('--exe=')) || '').slice(6);
 const exe = installed || path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
-const from = installed ? ['-From', path.dirname(installed)] : [];
+const fromCopy = installed ? ['-From', path.dirname(installed)] : [];
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
 console.log('starting this checkout\'s build, isolated');
@@ -188,7 +188,7 @@ const standIn = (role, cli) => {
   return [cmd];
 };
 
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...from);
+const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...fromCopy);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
