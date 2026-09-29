@@ -3486,11 +3486,14 @@ impl Tab {
         let far_key = (!local)
             .then(|| api_env.iter().find(|(k, _)| k == crate::api::ENV_TOKEN).map(|(_, v)| v.clone()))
             .flatten();
-        // ...and the program started there is told where `shikisha` is, on
-        // a machine the person agreed to put the bridge on. Typed in front of
-        // the program, like the rest of what is typed there
+        // ...and the program started there is told where `shikisha` will be.
+        // Told whether or not the bridge is there yet: a program's environment
+        // is set once, as it starts, so a tab told only after the person put
+        // the bridge there would never have it. Until the bridge is there, the
+        // names point at nothing and nothing on the machine is touched. Typed
+        // in front of the program, like the rest of what is typed there
         let far_typed = match (far_typed, opts.host.as_deref()) {
-            (Some(line), Some(host)) if api_on && crate::config::bridge_agreed(host) => {
+            (Some(line), Some(_)) if api_on => {
                 let home = format!("$HOME/{}", crate::farlink::HOME_DIR);
                 let env: Vec<String> = crate::farlink::tab_env(&home, opts.called(&title))
                     .into_iter()

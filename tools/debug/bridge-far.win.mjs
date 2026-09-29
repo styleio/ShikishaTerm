@@ -99,6 +99,9 @@ while read -r line; do
       echo "report exit $?" >> "$log"
       printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\\n' "reported from far" >> "$rec"
       echo "DONE-FAR";;
+    *"PING-BRIDGE"*)
+      shikisha tab_list >> "$log" 2>&1
+      echo "ping exit $?" >> "$log";;
   esac
 done
 `;
@@ -368,6 +371,38 @@ try {
   await until(async () => !(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the folder to go', 180000)
     .catch(() => {});
   check(!(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the bridge\'s folder is deleted');
+
+  // The far AI's tab was started while the bridge was not agreed to. Put
+  // there now, the same tab -- not started again -- reaches this app; taken
+  // off and put back in the same run, it still does
+  const b3 = await boardOf();
+  await until(() => b3('!!(S && S.tabs && S.tabs.some(t => t.id === "farai"))'), 'the far tab', 60000);
+  const fa = await b3('S.tabs.find(t => t.id === "farai").index');
+  const pinged = async (what) => {
+    const before = (await there(`grep -c "ping exit" ${DIR}/said.txt 2>/dev/null`)).trim() || '0';
+    await b3(`(send({kind:"say", tab:${fa}, text:"PING-BRIDGE"}), true)`);
+    await until(async () => ((await there(`grep -c "ping exit" ${DIR}/said.txt 2>/dev/null`)).trim() || '0') !== before, what, 60000).catch(() => {});
+    return (await there(`grep "ping exit" ${DIR}/said.txt | tail -1`)).trim();
+  };
+  const connected = () => logSince(0).filter((l) => l.includes('bridge: connected to')).length;
+
+  console.log('7. put there while its tab is open, that tab reaches this app');
+  let lines = connected();
+  writeConfig([farHost.name]);
+  await until(() => connected() > lines, 'the bridge to connect again', 180000).catch(() => {});
+  await sleep(3000);
+  let said = await pinged('the far tab to call home');
+  check(said === 'ping exit 0', 'a tab opened before the bridge was there uses it: ' + said);
+
+  console.log('8. taken off and put back in the same run, it still does');
+  writeConfig([]);
+  await until(async () => !(await there(`test -d ${HOME}/${BRIDGE_DIR} && echo yes`)).includes('yes'), 'the folder to go again', 180000).catch(() => {});
+  lines = connected();
+  writeConfig([farHost.name]);
+  await until(() => connected() > lines, 'the bridge to connect a third time', 180000).catch(() => {});
+  await sleep(3000);
+  said = await pinged('the far tab to call home again');
+  check(said === 'ping exit 0', 'its key was handed to the bridge put back: ' + said);
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + e.message);
