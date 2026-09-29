@@ -2138,6 +2138,10 @@ pub struct UiState {
     /// A worktree is deleted from the list without asking first
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub discard_unasked: bool,
+    /// What a plain press on an address or a path in a terminal does: empty
+    /// shows what can be done with it, `straight` does the first, `off` nothing
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub link_press: String,
     /// How many folders are put out of sight until the next launch. A number
     /// rather than the list: one line brings all of them back, and a line for
     /// each would take the width the list is drawn in

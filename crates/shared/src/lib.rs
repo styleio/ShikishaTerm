@@ -577,6 +577,22 @@ pub enum Ev {
         /// `commit:<hash>`. Empty opens the file to edit
         diff: String,
     },
+    /// A place on a terminal's screen was pressed: a web address or a file
+    /// path (see `termlink` and `shell::screen_rows`). `tab` is the terminal it
+    /// was on, `target` exactly what the element said. `act` is what to do:
+    /// `look` asks what it is (does it exist, is it inside the tab's folder --
+    /// the answer comes back to the page as `termlink`, tagged with `ask`), and
+    /// the rest do it: `app` (open with this PC's program for it), `reveal`
+    /// (show it in its folder on this PC), `page` (a browser tab in the tab's
+    /// folder), `pc` (this PC's own browser). The page is not trusted with the
+    /// path: every act works it out again from the tab and the target
+    LinkPress {
+        tab: String,
+        target: String,
+        kind: String,
+        act: String,
+        ask: String,
+    },
     /// The window's own bar, which the page draws now that the frame is ours:
     /// "drag" (the bar was taken hold of), "minimize", "maximize" (toggles),
     /// "close". Answered where the window is, not in the loop -- the page is
@@ -1338,6 +1354,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             path: v.get("path").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             diff: v.get("diff").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
+        // A place on a terminal's screen pressed (see `Ev::LinkPress`).
+        Some("linkpress") => {
+            let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            Ev::LinkPress { tab: s("tab"), target: s("target"), kind: s("lk"), act: s("act"), ask: s("ask") }
+        }
         // The window's own bar (see `Ev::Window`).
         Some("window") => Ev::Window {
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

@@ -591,6 +591,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ais: ui.ais.clone(),
         coach: ui.coach,
         discard_unasked: ui.discard_unasked,
+        link_press: ui.link_press.clone(),
         hidden: put_away.len(),
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
@@ -1693,6 +1694,9 @@ pub struct Ui {
     /// A worktree is deleted from the list without asking first (Basic >
     /// Ask before deleting a worktree, turned off)
     pub discard_unasked: bool,
+    /// What a plain press on a place in a terminal does (Basic > Pressing an
+    /// address or a path): empty shows the list, `straight` or `off`
+    pub link_press: String,
     /// The first-start setup, while it has not been answered
     pub setup: Option<crate::uistate::SetupState>,
     /// A project being cloned or made new

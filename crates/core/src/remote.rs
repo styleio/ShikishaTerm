@@ -207,6 +207,15 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Pressing a file in that list. It opens a reader on this machine's
         // own folder -- the same folder the list is already showing
         Ev::EditOpen { .. } => true,
+        // A place pressed on a terminal's screen. Asking what it is, and
+        // opening an address in a browser tab (which the phone is shown like
+        // any other page), are the phone's to do. Opening a file with this
+        // PC's program for it, showing it in a folder here, or handing an
+        // address to this PC's browser put something on a screen the person
+        // at the phone cannot see -- and a file's program may be the file
+        // itself. The phone's page never offers those; one arriving is not
+        // from it
+        Ev::LinkPress { act, .. } => matches!(act.as_str(), "look" | "page"),
         // The window's own bar is not a thing a phone has. Refused rather than
         // ignored: a page somewhere else must not be able to close this window
         Ev::Window { .. } => false,

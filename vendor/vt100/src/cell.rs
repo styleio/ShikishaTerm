@@ -1,7 +1,9 @@
 use unicode_width::UnicodeWidthChar as _;
 
 // chosen to make the size of the cell struct 32 bytes
-const CONTENT_BYTES: usize = 22;
+// NOTE (vendored patch): 20 rather than 22, to make room for the hyperlink
+// number in `Attrs`. Still a character and four combining marks
+const CONTENT_BYTES: usize = 20;
 
 const IS_WIDE: u8 = 0b1000_0000;
 const IS_WIDE_CONTINUATION: u8 = 0b0100_0000;
@@ -75,7 +77,9 @@ impl Cell {
 
     pub(crate) fn clear(&mut self, attrs: crate::attrs::Attrs) {
         self.len = 0;
-        self.attrs = attrs;
+        // NOTE (vendored patch): an erased cell keeps the colours it was
+        // erased with, never the hyperlink
+        self.attrs = attrs.unlinked();
     }
 
     /// Returns the text contents of the cell.
@@ -128,6 +132,14 @@ impl Cell {
 
     pub(crate) fn attrs(&self) -> &crate::attrs::Attrs {
         &self.attrs
+    }
+
+    // NOTE (vendored patch): OSC 8 hyperlinks.
+    /// The hyperlink this cell was written under (0 = none). Its address is
+    /// [`Screen::link_target`](crate::Screen::link_target)
+    #[must_use]
+    pub fn link(&self) -> u16 {
+        self.attrs.link()
     }
 
     /// Returns the foreground color of the cell.

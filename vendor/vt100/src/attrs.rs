@@ -26,9 +26,31 @@ pub struct Attrs {
     pub fgcolor: Color,
     pub bgcolor: Color,
     pub mode: u8,
+    // NOTE (vendored patch): the hyperlink (OSC 8) a cell was written under,
+    // as a number into the screen's table (0 = none). Two bytes rather than a
+    // u16 so the struct keeps an alignment of one and a cell stays 32 bytes
+    link: [u8; 2],
 }
 
 impl Attrs {
+    /// The hyperlink (OSC 8) this was written under, or 0. Look it up with
+    /// [`Screen::link_target`](crate::Screen::link_target)
+    #[must_use]
+    pub fn link(&self) -> u16 {
+        u16::from_le_bytes(self.link)
+    }
+
+    pub(crate) fn set_link(&mut self, id: u16) {
+        self.link = id.to_le_bytes();
+    }
+
+    /// The same, with no hyperlink: what an erased cell is left with, so the
+    /// blanks after a link are not part of it
+    pub(crate) fn unlinked(mut self) -> Self {
+        self.link = [0; 2];
+        self
+    }
+
     pub fn bold(&self) -> bool {
         self.mode & TEXT_MODE_BOLD != 0
     }
@@ -96,6 +118,13 @@ impl Attrs {
         contents: &mut Vec<u8>,
         other: &Self,
     ) {
+        // NOTE (vendored patch): a hyperlink is not drawn with SGR, so it takes
+        // no part in deciding what to write
+        if self.link() != 0 || other.link() != 0 {
+            self.unlinked()
+                .write_escape_code_diff(contents, &other.unlinked());
+            return;
+        }
         if self != other && self == &Self::default() {
             crate::term::ClearAttrs.write_buf(contents);
             return;

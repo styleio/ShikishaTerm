@@ -608,6 +608,11 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__sftp && window.__sftp({json});"));
     }
 
+    /// Say what a place pressed on the terminal turned out to be (already JSON-encoded)
+    fn push_link(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__linkSaid && window.__linkSaid({json});"));
+    }
+
 
     /// Deliver one recorded Lua line (already JSON-encoded) to the composer.
     fn push_recorded(&self, line_json: &str) {
@@ -866,6 +871,9 @@ impl WinSurface {
                 Ev::Issues { act, args } => self.mail.issues.push((act, args)),
                 Ev::OpenIssues => self.mail.open_issues = true,
                 Ev::EditOpen { panel, path, diff } => self.mail.edits.push((panel, path, diff)),
+                Ev::LinkPress { tab, target, kind, act, ask } => {
+                    self.mail.link_presses.push(shikisha_core::mailbox::LinkPress { tab, target, kind, act, ask })
+                }
                 Ev::Sftp { panel, act, args } => self.mail.sftps.push((panel, act, args)),
                 Ev::Recorded {
                     from: Some(child),
@@ -2082,6 +2090,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
     fn push_vault_where(&self, json: &str) { WinSurface::push_vault_where(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
+    fn push_link(&self, json: &str) { WinSurface::push_link(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_ui(self, ev) }
