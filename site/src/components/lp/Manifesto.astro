@@ -1,0 +1,27 @@
+---
+import type { LpCopy } from "../../lp/types";
+
+interface Props {
+  copy: LpCopy;
+}
+const { manifesto } = Astro.props.copy;
+const lines = manifesto.title;
+// A 「quoted phrase」 with the particles and stop that close it, kept on one line
+const pieces = (line: string) => line.split(/(「[^」]*」[ぁ-ん]*[、。]?)/).filter(Boolean);
+---
+
+<section class="manifesto" id="manifesto">
+  <div class="container">
+    <figure class="nb-lg manifesto-card">
+      <blockquote>
+      <h2>
+        {lines.map((line) => (
+          <span class="line">{pieces(line).map((p) => (p.startsWith("「") ? <span class="nobr">{p}</span> : p))}</span>
+        ))}
+      </h2>
+      {manifesto.body.map((b) => <p>{b}</p>)}
+      </blockquote>
+      <figcaption>— {manifesto.sign}</figcaption>
+    </figure>
+  </div>
+</section>

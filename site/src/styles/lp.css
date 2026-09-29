@@ -686,6 +686,124 @@ ol {
   }
 }
 
+/* ─── manifesto: the stance, one card under the hero ─── */
+
+.manifesto {
+  padding-bottom: 120px;
+}
+.manifesto-card {
+  position: relative;
+  max-width: none;
+  margin: 0 auto;
+  padding: 72px 88px 56px;
+  text-align: center;
+}
+.manifesto-card blockquote {
+  margin: 0;
+}
+/* Said, not listed: a pair of big coral quotation marks in the card's corners */
+.manifesto-card::before,
+.manifesto-card::after {
+  position: absolute;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 160px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--coral);
+  pointer-events: none;
+}
+.manifesto-card::before {
+  content: "“";
+  top: 16px;
+  left: 32px;
+}
+.manifesto-card::after {
+  content: "”";
+  right: 32px;
+  bottom: -48px;
+}
+/* The words set the way a famous saying is: a serif face (Mincho for
+   Japanese, an italic serif for English), and the source signed below */
+.manifesto-card blockquote {
+  font-family: "Playfair Display", Georgia, "Times New Roman", serif;
+}
+.manifesto-card blockquote:lang(ja) {
+  font-family: "Shippori Mincho", "Yu Mincho", "Hiragino Mincho ProN", serif;
+}
+.manifesto-card h2 {
+  font-family: inherit;
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1.45;
+  letter-spacing: 0.02em;
+}
+.manifesto-card blockquote:not(:lang(ja)) h2 {
+  font-style: italic;
+  font-weight: 600;
+}
+.manifesto-card h2 .line {
+  display: block;
+}
+.manifesto-card p {
+  max-width: 860px;
+  margin: 28px auto 0;
+  font-size: 18px;
+  line-height: 2;
+  color: var(--ink-soft);
+}
+.manifesto-card p + p {
+  margin-top: 12px;
+}
+/* Japanese runs wider per word; the title keeps its two lines on a PC */
+.manifesto-card blockquote:lang(ja) h2 {
+  font-size: 44px;
+}
+/* A 「quoted phrase」 and what closes it never break apart */
+.manifesto-card .nobr {
+  white-space: nowrap;
+}
+.manifesto-card figcaption {
+  max-width: 860px;
+  margin: 28px auto 0;
+  text-align: right;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  padding-right: 88px;
+}
+@media (max-width: 768px) {
+  .manifesto {
+    padding-bottom: 72px;
+  }
+  .manifesto-card {
+    padding: 64px 24px 48px;
+  }
+  .manifesto-card::before,
+  .manifesto-card::after {
+    font-size: 96px;
+  }
+  .manifesto-card::before {
+    top: 8px;
+    left: 16px;
+  }
+  .manifesto-card::after {
+    right: 16px;
+    bottom: -28px;
+  }
+  .manifesto-card figcaption {
+    padding-right: 56px;
+  }
+  .manifesto-card h2,
+  .manifesto-card blockquote:lang(ja) h2 {
+    font-size: 26px;
+  }
+  .manifesto-card p {
+    font-size: 16px;
+    text-align: left;
+  }
+}
+
 /* ─── scenes (coral) ─── */
 
 .scenes {

@@ -66,6 +66,14 @@ export const en: LpCopy = {
     },
     image: { src: "/lp/hero.webp", alt: "A conductor with a baton directing four small robots, each at a laptop" },
   },
+  manifesto: {
+    sign: "SHIKISHA-TERM",
+    title: ["From writing code", "to conducting AI."],
+    body: [
+      "We are not building an IDE. In the AI era, development tools should no longer be about manually editing files; they should be platforms for orchestrating and guiding multiple AIs.",
+      "While we refer to our tool as a \"terminal,\" if we were to define it as a new category, it would best be described as an ADE (Agentic Development Environment).",
+    ],
+  },
   scenes: {
     eyebrow: "For any workflow",
     title: "On your PC, as cloud agents, or from your phone.",

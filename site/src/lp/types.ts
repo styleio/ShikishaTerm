@@ -40,6 +40,8 @@ export type LpCopy = {
     works: { label: string; names: { name: string; logo: string }[] };
     image: { src: string; alt: string };
   };
+  // The stance, in one card under the hero, said as a quote and signed
+  manifesto: { title: string[]; body: string[]; sign: string };
   scenes: { eyebrow: string; title: string; items: Scene[] };
   problem: {
     eyebrow: string;

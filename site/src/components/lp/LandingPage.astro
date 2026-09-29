@@ -13,6 +13,7 @@ import { beacon } from "../../analytics.mjs";
 import "../../styles/lp.css";
 import Nav from "./Nav.astro";
 import Hero from "./Hero.astro";
+import Manifesto from "./Manifesto.astro";
 import Scenes from "./Scenes.astro";
 import ProblemSolution from "./ProblemSolution.astro";
 import Features from "./Features.astro";
@@ -60,7 +61,7 @@ const canonical = new URL(path, site).href;
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700;900&family=Shippori+Mincho:wght@500;800&family=Playfair+Display:ital,wght@1,600&display=swap"
     />
     <script src="/store-tab.js" defer is:inline></script>
     {beacon && <script is:inline {...beacon}></script>}
@@ -69,6 +70,7 @@ const canonical = new URL(path, site).href;
     <Nav copy={copy} />
     <main>
       <Hero copy={copy} />
+      <Manifesto copy={copy} />
       <Scenes copy={copy} />
       <ProblemSolution copy={copy} />
       <Features copy={copy} />
