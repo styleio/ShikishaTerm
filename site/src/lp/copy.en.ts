@@ -272,7 +272,7 @@ export const en: LpCopy = {
       },
       {
         q: "Is it a terminal or an IDE?",
-        a: "A terminal. It has a git panel and a browser because agents need them, but it is not trying to become your editor.",
+        a: "We don't call this an IDE; we call it a terminal. Today, developers no longer write code—we have evolved into SHIKISHA (Japanese for \"orchestra conductor\"), directing and harmonizing AI. Because it isn't built for traditional manual file editing, the \"IDE\" label just doesn't fit. If we had to put it into a specific genre, the most accurate term would probably be an ADE (Agentic Development Environment).",
       },
       {
         q: "Store copy or portable zip?",
