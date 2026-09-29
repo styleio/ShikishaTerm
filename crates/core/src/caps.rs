@@ -667,9 +667,15 @@ impl Capabilities {
         }
         // Newly placed items get their position decided on the next redraw
         *self.shown.borrow_mut() = None;
+        // A DevTools screen's address carries the key to its bridge, and a
+        // log is read by more than whoever opened it
+        let said = match url.starts_with("devtools://") {
+            true => url.split('?').next().unwrap_or(url),
+            false => url,
+        };
         crate::append_hook_log(&crate::i18n::tp(
             "err.caps.log_browser_open",
-            &[("name", name), ("url", url)],
+            &[("name", name), ("url", said)],
         ));
         Ok(())
     }
@@ -1183,6 +1189,25 @@ impl Capabilities {
             .filter(|(_, p)| p.armed || !p.items.is_empty())
             .filter_map(|(k, p)| Some((k.strip_prefix(&head)?.to_string(), p.state())))
             .collect()
+    }
+
+    /// Open the DevTools of a page as a page of its own, named after it, and
+    /// answer that name and whether it was opened just now. Open already, it
+    /// is left as it is: a second screen on the same page would be a second
+    /// session speaking to it
+    pub fn browser_devtools(&self, name: &str) -> Result<(String, bool)> {
+        let screen = format!("{name}-devtools");
+        let desk = self.desk.get();
+        if self.hosted.borrow().iter().any(|(w, x)| *w == desk && *x == screen) {
+            return Ok((screen, false));
+        }
+        let url = self.with(name, |b, to| b.devtools_url(to))?;
+        // A refusal says the address it refused; this one carries the key to
+        // the bridge, and an error is logged and shown
+        let bare = url.split('?').next().unwrap_or_default().to_string();
+        self.browser_open(&screen, &url, shikisha_shared::BrowserProfile::shared_default())
+            .map_err(|e| anyhow::anyhow!(e.to_string().replace(&url, &bare)))?;
+        Ok((screen, true))
     }
 
     /// Start hearing a page's console, if nobody has yet. Asked by the Console

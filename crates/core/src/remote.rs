@@ -405,6 +405,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the page said, emptying the list, handing it to an AI tab as a
         // draft -- what the window's panel does, and nothing it does not
         Ev::Console { .. } => true,
+        // A page's DevTools, opened beside it as a page of this machine's own:
+        // the phone is shown it by the relay like any other page, and works it
+        // with the same real input. Nothing reaches past the page it is on
+        Ev::DevTools { .. } => true,
 
         // ── Refused, each for a reason written beside it ─────────────────
         //

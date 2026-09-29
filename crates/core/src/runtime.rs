@@ -4680,6 +4680,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Console { page, act, args }) => {
                         shell.mail().console_asks.push((page, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::DevTools { page }) => {
+                        shell.mail().devtools.push(page);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
@@ -6281,6 +6284,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             if let Some(eng) = engine.as_mut() {
                 eng.fire_action(&code, &ctx);
+            }
+        }
+
+        // "Open DevTools" on a page's tab: the same three primitives a script
+        // would put together -- open the screen, divide the pane, show it in
+        // the new half -- run as a person's own automation is. Already open,
+        // it is only shown
+        for page in std::mem::take(&mut shell.mail().devtools) {
+            let Some(n) = crate::closed::row_named(&surfaces, &tabs, &page) else { continue };
+            let code = format!(
+                "local screen, fresh = shikisha.browser_devtools({page})\n\
+                 if fresh then shikisha.split_pane(\"right\") end\n\
+                 shikisha.show(screen)\n",
+                page = serde_json::Value::String(page.clone())
+            );
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            if let Some(eng) = engine.as_mut() {
+                eng.fire_action(&code, &browser_ctx(n, &page));
             }
         }
 

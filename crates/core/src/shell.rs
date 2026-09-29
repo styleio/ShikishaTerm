@@ -7829,6 +7829,9 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // The page's DevTools, beside it. The window and a phone alike: the
+    // screen is a page, relayed like any other
+    t.kind === "browser" ? item(T["tui.menu.devtools"] || "", () => send({kind:"devtools", page: t.id || t.name})) : null,
   ], false, e);
 }
 function folderMenu(e, g) {

@@ -187,6 +187,8 @@ pub struct Mailbox {
     pub console_lines: Vec<(String, serde_json::Value)>,
     /// What the Console panel asked for: (page key, act, args)
     pub console_asks: Vec<(String, String, serde_json::Value)>,
+    /// Pages whose DevTools were asked for, by key
+    pub devtools: Vec<String>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     pub run_luas: Vec<String>,

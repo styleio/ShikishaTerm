@@ -211,6 +211,9 @@ pub const CATALOG: &[Entry] = &[
     // What a page says on its console: the page's own words about itself,
     // with known secrets taken out like every other read of a page
     e("browser_console", Group::Browser, true, true, false),
+    // A screen for a person: everything the page holds, its cookies included,
+    // can be read and changed from it. An AI has its own ways into a page
+    e("browser_devtools", Group::Browser, true, false, false),
     // -- Handing a run between participants ----------------------------------
     e("contract", Group::Handoff, true, true, false),
     e("exchange_new", Group::Handoff, true, true, false),
@@ -499,6 +502,9 @@ mod tests {
                 "open_tab",
                 "close_tab",
                 "reply_url",
+                // A person's screen onto everything a page holds, its cookies
+                // included
+                "browser_devtools",
                 "close_pane",
                 // Rearranging and deleting files on another machine. Reading
                 // them and sending them are open; there is no undo over there

@@ -78,7 +78,10 @@ where it sits, its markup and its styles. What a page says on its console -- its
 own logging, errors nobody caught, files that did not load -- is on the **Console**
 tab of the column on the right, once it has been opened on that page (with what the page
 said since it last loaded); it
-can be filtered by kind, cleared, and handed to an AI the same way. To hand work to another tab, name it
+can be filtered by kind, cleared, and handed to an AI the same way. For the whole of
+the browser's DevTools, right-click the page's tab (hold it on a phone) and choose
+**Open DevTools beside it**: they open as a page of their own in the other half of
+the pane, and a phone is shown them and works them like any page. To hand work to another tab, name it
 with @ in the input box.
 
 **The input box** at the bottom is where you type to the tab in view. On a phone

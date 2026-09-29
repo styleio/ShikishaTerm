@@ -2774,6 +2774,21 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // A page's DevTools as a page of its own: answers its name (to
+            // `show`, or to put beside the page with `split_pane`) and whether
+            // it was opened just now
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_devtools",
+                    lua.create_function(move |_, name: String| {
+                        c.browser_devtools(&name).map_err(|e| mlua::Error::runtime(e.to_string()))
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // What a page said on its console after line `since` (0 or
             // nothing: everything kept), and the number of its newest line to
             // ask after next time. The first call starts listening, so a page

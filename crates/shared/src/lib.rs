@@ -586,6 +586,9 @@ pub enum Ev {
     /// (see `console::entry_of`). Made by the host, never read off a message:
     /// a page cannot claim to have said something on its console
     ConsoleLine { from: Option<String>, entry: serde_json::Value },
+    /// "Open DevTools" on a page's tab: the page's DevTools, opened as a page
+    /// of its own beside it. `page` is the browser tab's key
+    DevTools { page: String },
     /// ▶ run mode: Lua typed into the composer, to run against the shown
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
@@ -980,6 +983,12 @@ pub trait BrowserHost {
     /// that cannot listen says so, and the panel says that to the person
     fn console(&self, _to: Option<&str>, _on: bool) -> anyhow::Result<()> {
         anyhow::bail!("this browser does not report what a page says on its console")
+    }
+    /// Where the DevTools of a page can be opened from: an address of the
+    /// browser's own DevTools screen, connected to that page through this
+    /// host. Answering is optional, as for the console
+    fn devtools_url(&self, _to: Option<&str>) -> anyhow::Result<String> {
+        anyhow::bail!("this browser cannot open the DevTools of a page")
     }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
@@ -1378,6 +1387,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("picked") => Ev::Picked {
             from: None,
             item: v.get("item").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        Some("devtools") => Ev::DevTools {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("console") => Ev::Console {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

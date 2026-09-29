@@ -44,6 +44,7 @@ use shikisha_core::{
     webui,
 };
 mod browser;
+mod devtools;
 mod picker;
 mod hotkeys;
 mod snip;
@@ -873,6 +874,7 @@ impl WinSurface {
                 Ev::Picked { from: Some(child), item } => self.mail.picked.push((child, item)),
                 Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::Console { page, act, args } => self.mail.console_asks.push((page, act, args)),
+                Ev::DevTools { page } => self.mail.devtools.push(page),
                 Ev::ConsoleLine { from: Some(child), entry } => self.mail.console_lines.push((child, entry)),
                 Ev::RunLua { code } => self.mail.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
