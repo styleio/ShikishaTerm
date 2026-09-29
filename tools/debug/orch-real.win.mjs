@@ -80,7 +80,7 @@ fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, REPO, path.join(RUN, 'localappdata'), OUT]) fs.mkdirSync(d, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe, ...fromCopy);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
-if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
+if (staged.status !== 0 || !fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
 
 // Three bugs, and tests kept outside the folder the AIs work in
 const CALC = [

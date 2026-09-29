@@ -1630,6 +1630,7 @@ function shikisha.job_status(opts) return { accepted = true } end
 function shikisha.job_close(outcome, opts) return { accepted = true } end
 function shikisha.task_add(task, opts) return { accepted = true } end
 function shikisha.task_list(opts) return { accepted = true } end
+function shikisha.task_drop(task, why) return { accepted = true } end
 function shikisha.assign(task, tab, opts) return { accepted = true } end
 function shikisha.report(outcome, did, found, left, opts) return { accepted = true } end
 function shikisha.ask_lead(question, opts) return { accepted = true } end

@@ -307,6 +307,7 @@ pub const CATALOG: &[Entry] = &[
     e("job_close", Group::Orch, true, true, false),
     e("task_add", Group::Orch, true, true, false),
     e("task_list", Group::Orch, true, true, false),
+    e("task_drop", Group::Orch, true, true, false),
     e("assign", Group::Orch, true, true, false),
     e("report", Group::Orch, true, true, false),
     e("ask_lead", Group::Orch, true, true, false),
