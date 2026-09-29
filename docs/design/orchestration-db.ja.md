@@ -1,6 +1,7 @@
 # 配った仕事の記録（orchestration.db）
 
 > English version: [orchestration-db.md](orchestration-db.md).
+> このアプリの SQLite のファイルすべてが従う規則: [sqlite.md](sqlite.md)（英語）。
 > 今のテーブルの定義: [orchestration-db.sql](orchestration-db.sql)（テストが書き出します。手で直さないでください）。
 
 1つの AI のタブが、仕事の一部をほかの AI のタブに配るとき（`shikisha job_open`・`assign`・`report`・`inbox` など。[AUTOMATION.ja.md](../AUTOMATION.ja.md) の「オーケストレーション」を参照）、アプリは「誰に何を配ったか」「何が返ってきたか」「何がまだ残っているか」を SQLite のファイルに記録します。ファイルはアプリの状態フォルダの `orchestration.db` です。コードは `crates/core/src/orch/db.rs` にあります。

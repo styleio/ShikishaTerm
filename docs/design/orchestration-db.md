@@ -1,6 +1,7 @@
 # The record of handed work (orchestration.db)
 
 > Japanese version: [orchestration-db.ja.md](orchestration-db.ja.md).
+> The rules every SQLite file in this app follows: [sqlite.md](sqlite.md).
 > The tables as they are now: [orchestration-db.sql](orchestration-db.sql) (written by a test; do not edit).
 
 When one AI tab hands parts of a job to other AI tabs (`shikisha job_open`, `assign`,
