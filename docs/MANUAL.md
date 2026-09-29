@@ -285,7 +285,7 @@ settings screen, so it cannot fall behind.
 - **Where it runs** — Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 - **Server names** — Tell production from staging at a glance
 - **Limits on handing work** — How far an AI may go when it hands work to other tabs or drives a page
-- **AI allowance** — The 5-hour and 7-day windows of Claude and Codex
+- **AI allowance** — Each AI subscription's allowances, and when they come back
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
 - **Files** — Automation & secrets paths

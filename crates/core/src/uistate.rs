@@ -985,13 +985,12 @@ pub struct BranchInUse {
 pub struct UsageState {
     /// Whose allowance: "Claude", "Codex"
     pub who: String,
-    /// The 5-hour window
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub five: Option<UsageWindow>,
-    /// The 7-day window
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub week: Option<UsageWindow>,
-    /// The whole reading in one sentence, for hover
+    /// The windows the row draws, in reading order: every window of the
+    /// whole subscription, and a model's own allowance only once it is
+    /// nearly spent (see [`UsageState::of`])
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wins: Vec<UsageWindow>,
+    /// The whole reading in one sentence, every window in it, for hover
     pub title: String,
 }
 
@@ -1011,6 +1010,15 @@ pub struct UsageWindow {
     pub resets: Option<String>,
 }
 
+/// Keeping the PC from sleeping, as the lower row says it.
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct AwakeState {
+    /// The setting: "ai" or "always" (the row says nothing while it is off)
+    pub mode: String,
+    /// Whether Windows is being asked to stay up right now
+    pub held: bool,
+}
+
 impl UsageState {
     /// Worded from a reading, at `now` (seconds since the epoch).
     ///
@@ -1023,41 +1031,50 @@ impl UsageState {
     /// is a decision to make the row wider
     ///
     /// `who` is the AI's name as the hover says it: "Claude", "Codex"
+    ///
+    /// A model's own allowance ("Fable 7d") is in the hover always, and on
+    /// the row only from the point its bar turns amber: the row has room for
+    /// the subscription's windows and a warning, not for every model's count.
+    /// An AI whose allowances are all per model (Gemini's) shows them anyway:
+    /// there is nothing else to show
     pub fn of(who: &str, l: &crate::limits::Limits, now: i64) -> Self {
-        let window = |w: &Option<crate::limits::Window>, name_key: &str| {
-            w.as_ref().map(|w| UsageWindow {
-                name: crate::i18n::t(name_key),
-                pct: w.pct,
-                used: crate::i18n::tp("tui.usage.used", &[("pct", &w.pct.to_string())]),
-                resets: w.resets_at.map(|at| until(at - now)),
+        let has_whole = l.wins.iter().any(|a| a.only.is_none());
+        let all: Vec<(bool, UsageWindow)> = l
+            .wins
+            .iter()
+            .map(|a| {
+                let span = a.span.map(|s| crate::i18n::t(&format!("tui.usage.{}", s.key())));
+                let name = match (&a.only, span) {
+                    (Some(model), Some(span)) => format!("{model} {span}"),
+                    (Some(model), None) => model.clone(),
+                    (None, Some(span)) => span,
+                    (None, None) => crate::i18n::t("tui.usage.unknown"),
+                };
+                let w = UsageWindow {
+                    name,
+                    pct: a.window.pct,
+                    used: crate::i18n::tp("tui.usage.used", &[("pct", &a.window.pct.to_string())]),
+                    resets: a.window.resets_at.map(|at| until(at - now)),
+                };
+                (a.only.is_none() || !has_whole || a.window.pct >= USAGE_NEARLY_SPENT, w)
             })
+            .collect();
+        let say = |w: &UsageWindow| match &w.resets {
+            Some(r) => format!("{}: {} · {}", w.name, w.used, crate::i18n::tp("tui.usage.resets", &[("t", r)])),
+            None => format!("{}: {}", w.name, w.used),
         };
-        let five = window(&l.five_hour, "tui.usage.five");
-        let week = window(&l.seven_day, "tui.usage.week");
-        let say = |w: &Option<UsageWindow>| {
-            w.as_ref()
-                .map(|w| match &w.resets {
-                    Some(r) => format!(
-                        "{}: {} · {}",
-                        w.name,
-                        w.used,
-                        crate::i18n::tp("tui.usage.resets", &[("t", r)])
-                    ),
-                    None => format!("{}: {}", w.name, w.used),
-                })
-                .unwrap_or_else(|| crate::i18n::t("tui.usage.unknown"))
-        };
+        let every = all.iter().map(|(_, w)| say(w)).collect::<Vec<_>>().join(" / ");
         UsageState {
-            title: crate::i18n::tp(
-                "tui.usage.title",
-                &[("who", who), ("five", &say(&five)), ("week", &say(&week))],
-            ),
+            title: crate::i18n::tp("tui.usage.title", &[("who", who), ("wins", &every)]),
             who: who.to_string(),
-            five,
-            week,
+            wins: all.into_iter().filter(|(shown, _)| *shown).map(|(_, w)| w).collect(),
         }
     }
 }
+
+/// Where a window's bar turns amber (STYLEGUIDE: 80%), and so where a
+/// model's own allowance earns a place on the row
+const USAGE_NEARLY_SPENT: u32 = 80;
 
 /// A span of seconds as a person reads it: days and hours, or hours and
 /// minutes, and never a zero in front ("9m", not "0h 9m" -- the zero is a
@@ -2136,6 +2153,9 @@ pub struct UiState {
     /// to the tab in view, and nothing over a tab of any other kind
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub usage: std::collections::BTreeMap<String, UsageState>,
+    /// Keeping the PC from sleeping, while the setting is anything but off
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awake: Option<AwakeState>,
     /// The first-run pointer that is up: 1 = add a folder, 2 = press its +
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coach: Option<u8>,
@@ -2714,32 +2734,52 @@ mod tests {
     /// with the time to reset in days and hours or hours and minutes.
     #[test]
     fn the_usage_reading_is_worded_for_the_status_line() {
-        use crate::limits::{Limits, Window};
+        use crate::limits::{Allowance, Limits, Span, Window};
+        let whole = |span, pct, resets_at| Allowance { span: Some(span), only: None, window: Window { pct, resets_at } };
         let l = Limits {
-            five_hour: Some(Window { pct: 19, resets_at: Some(1_000 + 3 * 3600 + 45 * 60) }),
-            seven_day: Some(Window { pct: 83, resets_at: Some(1_000 + 4 * 86_400 + 10 * 3600) }),
+            wins: vec![
+                whole(Span::Hours5, 19, Some(1_000 + 3 * 3600 + 45 * 60)),
+                whole(Span::Days7, 83, Some(1_000 + 4 * 86_400 + 10 * 3600)),
+            ],
             as_of: None,
         };
         let u = UsageState::of("Claude", &l, 1_000);
-        let five = u.five.as_ref().unwrap();
-        assert_eq!(five.pct, 19);
+        let five = &u.wins[0];
+        assert_eq!((five.name.as_str(), five.pct), ("5h", 19));
         assert!(five.used.contains("19"), "{}", five.used);
         // Beside the bar the span stands bare; "resets in" is for the hover
         assert_eq!(five.resets.as_deref(), Some("3h 45m"));
-        let week = u.week.as_ref().unwrap();
-        assert_eq!(week.pct, 83);
+        let week = &u.wins[1];
+        assert_eq!((week.name.as_str(), week.pct), ("7d", 83));
         assert_eq!(week.resets.as_deref(), Some("4d 10h"));
         assert!(u.title.contains("19") && u.title.contains("83"), "{}", u.title);
         assert!(u.title.contains("resets in 3h 45m"), "{}", u.title);
         // A window the service withheld is absent, and a reset already past
         // never goes negative
-        let l = Limits { five_hour: None, seven_day: Some(Window { pct: 2, resets_at: Some(0) }), as_of: None };
+        let l = Limits { wins: vec![whole(Span::Days7, 2, Some(0))], as_of: None };
         let u = UsageState::of("Claude", &l, 5_000);
-        assert!(u.five.is_none());
-        assert_eq!(u.week.as_ref().unwrap().resets.as_deref(), Some("0m"));
+        assert_eq!(u.wins.len(), 1);
+        assert_eq!(u.wins[0].resets.as_deref(), Some("0m"));
         // No time at all: the words say how much, and nothing about when
-        let l = Limits { five_hour: Some(Window { pct: 7, resets_at: None }), seven_day: None, as_of: None };
-        assert_eq!(UsageState::of("Claude", &l, 0).five.unwrap().resets, None);
+        let l = Limits { wins: vec![whole(Span::Hours5, 7, None)], as_of: None };
+        assert_eq!(UsageState::of("Claude", &l, 0).wins[0].resets, None);
+    }
+
+    /// A model's own allowance is always in the hover, and on the row only
+    /// once its bar would be amber.
+    #[test]
+    fn a_model_s_own_allowance_reaches_the_row_only_when_nearly_spent() {
+        use crate::limits::{Allowance, Limits, Span, Window};
+        let fable = |pct| Allowance { span: Some(Span::Days7), only: Some("Fable".into()), window: Window { pct, resets_at: None } };
+        let week = Allowance { span: Some(Span::Days7), only: None, window: Window { pct: 30, resets_at: None } };
+        let quiet = UsageState::of("Claude", &Limits { wins: vec![week.clone(), fable(40)], as_of: None }, 0);
+        assert_eq!(quiet.wins.len(), 1, "a model's allowance with plenty left took room on the row");
+        assert!(quiet.title.contains("Fable 7d"), "{}", quiet.title);
+        let near = UsageState::of("Claude", &Limits { wins: vec![week, fable(USAGE_NEARLY_SPENT)], as_of: None }, 0);
+        assert_eq!(near.wins.last().map(|w| w.name.as_str()), Some("Fable 7d"));
+        // A window of no known length is named by its model alone
+        let gemini = Allowance { span: None, only: Some("gemini-2.5-pro".into()), window: Window { pct: 10, resets_at: None } };
+        assert_eq!(UsageState::of("Gemini", &Limits { wins: vec![gemini], as_of: None }, 0).wins[0].name, "gemini-2.5-pro");
     }
 
     /// No leading zero in a span: the row is paid for by the character, and

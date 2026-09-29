@@ -1964,6 +1964,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
+    // When to keep the PC up, and the ask to Windows itself. Made from this
+    // thread because the ask is the thread's and ends with it (see awake.rs)
+    let mut stay_awake = crate::awake::Stay::parse(cfg.as_ref().and_then(|c| c.stay_awake.as_deref()));
+    let mut awake = crate::awake::Awake::default();
     // What each AI's subscription has left, each on a thread of its own.
     // Nothing is read until a tab of that AI exists (limits::Meter::want)
     let limits: Vec<(crate::limits::Source, crate::limits::Meter)> = crate::limits::Source::ALL
@@ -2883,6 +2887,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ssh_aliases = crate::discover::ssh_aliases();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
+                stay_awake = crate::awake::Stay::parse(newcfg.stay_awake.as_deref());
                 ai_usage_on = newcfg.ai_usage.unwrap_or(true);
                 update::set_auto(newcfg.update_check.unwrap_or(true));
                 busy_repeat_ms = newcfg.busy_repeat_sec.filter(|s| *s > 0).map(|s| s * 1000);
@@ -3076,6 +3081,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+            // Keep the PC up or let it sleep, by the setting and by what the
+            // AI tabs are doing. Tabs on other desks are not read again until
+            // their desk comes back, so theirs is believed for a while only
+            {
+                let now_ms = start.elapsed().as_millis() as u64;
+                let working = |t: &&Tab| t.is_ai() && t.state == TabState::Busy;
+                let here = tabs.iter().filter(working).count();
+                let parked: Vec<u64> =
+                    desk_tabs.iter().flatten().filter(working).map(|t| t.ms_since_change(now_ms)).collect();
+                let want = crate::awake::wanted(stay_awake, here, &parked);
+                if awake.hold(want) {
+                    append_hook_log(&format!(
+                        "stay awake: {} ({}, {} working here, {} on other desks)",
+                        if want { "holding the PC up" } else { "letting it sleep" },
+                        stay_awake.key(),
+                        here,
+                        parked.len()
+                    ));
+                }
             }
             // Which conversation each AI tab is on, and every change of state,
             // for the record of conversations. A model bridge keeps no record
@@ -4768,6 +4793,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::LimitAck { tab }) => {
                         shell.mail().limit_acks.push(tab);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::StayAwake { mode }) => {
+                        shell.mail().stay_awake = Some(mode);
+                    }
                     // Picking a tab from afar. By number, as at the window
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Select { tab }) => {
                         shell.mail().selects.push(tab);
@@ -5265,6 +5293,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 })
                 .unwrap_or_default(),
             usage,
+            awake: (stay_awake != crate::awake::Stay::Off).then(|| crate::uistate::AwakeState {
+                mode: stay_awake.key().to_string(),
+                held: awake.held(),
+            }),
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
             close_ask: close_ask.clone(),
@@ -11426,6 +11458,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(t) = session_at(&surfaces, n).and_then(|i| tabs.get(i)) {
                 t.reveal_line(line);
                 view_touched_ms = start.elapsed().as_millis() as u64;
+            }
+        }
+        // When to keep the PC up, chosen on the lower row: written where
+        // the settings screen writes it, and in force from this frame
+        if let Some(mode) = shell.mail().stay_awake.take() {
+            let chosen = crate::awake::Stay::parse(Some(&mode));
+            if chosen != stay_awake {
+                stay_awake = chosen;
+                config::save_setting(&["stay_awake"], serde_json::json!(chosen.key()));
+                append_hook_log(&format!("stay awake: set to {} from the lower row", chosen.key()));
             }
         }
         for idx in shell.mail().take_limit_acks() {

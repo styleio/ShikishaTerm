@@ -9,6 +9,17 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Keep the PC awake while an AI works.** Settings > Basic > "Keep the PC
+  awake": off (the default), while an AI is working, or always while the
+  program runs. While it is on, the lower row says whether the PC is being
+  kept awake right now, and pressing it changes the choice -- from the phone
+  too. What a closed laptop lid does still follows Windows's power settings.
+- **The AI allowance covers more AIs.** Gemini (signed in with a Google
+  account), Kimi, Grok, OpenCode Go and Cursor join Claude and Codex, on the
+  lower row and in Settings > AI allowance. A monthly allowance is shown for
+  the AIs billed by the month, and Claude's allowance for a single model (such
+  as Fable) is listed, and reaches the lower row once it is nearly spent. Each
+  AI's own sign-in on this PC is read and never changed.
 - **Point at parts of a page and hand them to an AI.** On a browser tab the
   input bar's picker has 🎯: press **Pick**, then press the button, card or
   heading an AI should look at. Each one becomes a chip with room for a note,

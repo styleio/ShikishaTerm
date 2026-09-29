@@ -16,6 +16,7 @@ pub mod asks;
 pub mod asktab;
 pub mod cli;
 pub mod attach;
+pub mod awake;
 pub mod ball;
 pub mod bridge;
 pub mod browserstate;

@@ -466,6 +466,10 @@ pub enum Ev {
     Update { open: bool },
     /// The usage-limit notice on a tab was read. `tab` is the screen number
     LimitAck { tab: usize },
+    /// When to keep the PC from sleeping was chosen on the lower row:
+    /// "off", "ai" or "always". Written into the settings, where the same
+    /// choice lives on the settings screen
+    StayAwake { mode: String },
     /// The `?` beside the gear: the manual on the site, in the PC's browser.
     /// Window-only -- a phone reaches the same page through a plain link
     Help,
@@ -1330,6 +1334,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("limit_ack") => Ev::LimitAck {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        Some("stay_awake") => Ev::StayAwake {
+            mode: v.get("mode").and_then(|m| m.as_str()).unwrap_or_default().to_string(),
         },
         // A quick-action chip whose payload is Lua (the code stays server-side --
         // the page only knows where the action stands: the folders down to it,

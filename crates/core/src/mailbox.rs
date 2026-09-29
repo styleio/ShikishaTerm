@@ -138,6 +138,8 @@ pub struct Mailbox {
     pub makings: Vec<(u64, String)>,
     /// Tabs whose usage-limit notice was read, by screen number
     pub limit_acks: Vec<usize>,
+    /// When to keep the PC up, as chosen on the lower row (the last choice)
+    pub stay_awake: Option<String>,
     /// Tabs somebody asked to look at, by screen number (0 is the board): a
     /// row pressed in the list or the bar, a notification clicked, a number
     /// pressed after the prefix. By number rather than as the keystroke it

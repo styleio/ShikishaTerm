@@ -1,0 +1,4 @@
+{
+  "name": "Kimi CLI",
+  "command_match": ["kimi"]
+}

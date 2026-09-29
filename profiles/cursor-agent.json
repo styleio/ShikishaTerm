@@ -1,0 +1,4 @@
+{
+  "name": "Cursor CLI",
+  "command_match": ["cursor-agent"]
+}

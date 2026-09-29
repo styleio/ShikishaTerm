@@ -140,6 +140,24 @@ pub fn open(path: &Path, steps: &[(i64, &str, Step)], what: &str) -> Result<Conn
     ready(conn, steps, Some(&backup), what)
 }
 
+/// Another program's SQLite file, opened to be looked into and nothing else.
+///
+/// Not one of ours, so none of the above applies: no steps, no WAL switch, no
+/// backup -- changing its journal mode alone would be writing to it. Opened
+/// read-only and refused anything that writes, and a lock is waited on only
+/// briefly: the program that owns it is at work in it, and a glance that
+/// cannot be had now can be had on the next reading
+pub fn peek(path: &Path) -> Result<Connection> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .with_context(|| format!("opening {} to read", path.display()))?;
+    conn.pragma_update(None, "query_only", "ON")?;
+    // A third of a second: long enough to step past a write in progress,
+    // short enough that the thread asking is back before its next turn
+    conn.busy_timeout(Duration::from_millis(300))?;
+    Ok(conn)
+}
+
 /// A record that lives only as long as the connection (tests)
 pub fn in_memory(steps: &[(i64, &str, Step)], what: &str) -> Result<Connection> {
     ready(Connection::open_in_memory()?, steps, None, what)
