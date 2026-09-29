@@ -61,6 +61,10 @@ const until = async (test, what, ms = 20000) => {
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
+// A key in the shape a big issuer gives them, made up here, and a value the
+// app holds in its own secrets: both are on the page, and neither may leave
+const SHOWN_KEY = 'ghp_' + 'aB3cD9eF1gH7iJ5kL0mN2oP4qR6sT8uVwXy';
+const HELD = 'plain-words-held-9';
 // ── The page ──────────────────────────────────
 let pressed = 0;
 const server = http.createServer((req, res) => {
@@ -70,7 +74,8 @@ const server = http.createServer((req, res) => {
 <style>.card{display:flex;gap:12px;padding:16px;border-radius:8px;background:#f3f5f8;margin:40px}
 #save{padding:6px 14px;font-size:15px;background:#2266dd;color:#fff;border:0;border-radius:6px}</style></head>
 <body><main><section class="card"><h2>Profile</h2>
-<button id="save" data-token="secret123" onclick="fetch('/pressed')">Save changes</button></section></main></body></html>`);
+<button id="save" data-token="secret123" onclick="fetch('/pressed')">Save changes</button></section>
+<p id="keys">Your key: ${SHOWN_KEY} (and ${HELD})</p></main></body></html>`);
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const pagePort = server.address().port;
@@ -100,7 +105,9 @@ const freePort = () => new Promise((res) => {
 const PHONE_PORT = await freePort();
 const PHONE_KEY = 'pickphone0123456789abcdef';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
+fs.writeFileSync(path.join(APP, 'config', 'secrets.json'), JSON.stringify({ tokens: { 'notify/pick/held': HELD } }));
 fs.writeFileSync(CONFIG, JSON.stringify({
+  secrets: 'secrets.json',
   language: JA ? 'ja' : 'en',
   ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
@@ -209,11 +216,18 @@ try {
   const c = await centre();
   await page.press(c.x, c.y);
   await until(async () => (await picks())?.items?.length === 1, 'the pick listed');
+  // ...and the line showing a key
+  const k = await page.run('(() => { const r = document.getElementById("keys").getBoundingClientRect(); return {x: r.left + 5, y: r.top + r.height/2}; })()');
+  await page.press(k.x, k.y);
+  await until(async () => (await picks())?.items?.length === 2, 'the second pick listed');
+  check((await picks()).hidden >= 2, 'the key and the held value are counted as hidden: ' + (await picks()).hidden);
+  await until(() => board.run('!!document.querySelector("#castpanel .phidden")'), 'the count on the panel', 5000).catch(() => {});
+  check(await board.run('!!document.querySelector("#castpanel .phidden")'), 'the panel says how many were hidden');
   const got = await picks();
   check(got.items[0].label === 'button "Save changes"', 'the chip names it: ' + got.items[0].label);
   await sleep(600);
   check(pressed === 0, 'the button itself was not pressed');
-  await until(() => board.run('document.querySelectorAll("#castpick .pchip").length === 1'), 'the chip on the panel');
+  await until(() => board.run('document.querySelectorAll("#castpick .pchip").length === 2'), 'the chips on the panel');
   await page.shot('1-armed-page');
 
   console.log('3. a note on the chip');
@@ -226,7 +240,7 @@ try {
   await page.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await page.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
   await until(async () => (await picks())?.on === false, 'picking put away');
-  check((await picks()).items.length === 1, 'what was picked stays');
+  check((await picks()).items.length === 2, 'what was picked stays');
   await page.press(c.x, c.y);
   await until(() => pressed === 1, 'the button pressed as usual', 5000).catch(() => {});
   check(pressed === 1, 'with picking away, a press presses again');
@@ -241,6 +255,7 @@ try {
   check(heard.includes('Elements I picked') && heard.includes('Save changes') && heard.includes('make it green'), 'with the element and the note');
   check(heard.includes('Selector: #save'), 'with its selector');
   check(!heard.includes('secret123'), 'a secret-looking attribute is not handed over');
+  check(!heard.includes(SHOWN_KEY) && !heard.includes(HELD) && heard.includes('[hidden]'), 'a key on the page and a held secret are not handed over');
   check(heard.endsWith('\x1b[201~'), 'and nothing after it (no Enter)');
   await until(async () => (await picks()) === null, 'the list emptied once handed');
   check(true, 'handed picks leave the list');
@@ -256,23 +271,30 @@ try {
   await until(async () => (pt = (await targetsOf(pport)).find((t) => t.type === 'page')), 'the phone\'s page');
   const phone = await connect(pt);
   await phone.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  // A finger, not a pointer that hovers: what makes the page say how to stop
+  // with the panel rather than with Escape
+  await phone.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${PHONE_PORT}/?t=${PHONE_KEY}` });
   await until(() => phone.run('typeof panelOptions === "function" && !!S && S.active != null'), 'the phone\'s board', 30000);
   await phone.run(`send({kind:"select", tab:${pageTab}})`);
   await until(() => phone.run(`S.active === ${pageTab}`), 'the page in front on the phone');
   check((await phone.run('panelOptions()')).includes('pick'), 'the phone offers 🎯 on a page');
-  await phone.run('send({kind:"pick", on:true})');
+  check(await phone.run('window.matchMedia("(hover: none)").matches'), 'the phone is a screen with no hover');
+  await phone.run('enterCast(); castPanel = "pick"; userPanel = "pick"; renderPanel(); document.querySelector("#castpick .castgear").click();');
   await until(async () => (await picks())?.on === true, 'armed from the phone');
   check(true, 'the phone arms the page');
   const c2 = await centre();
   await page.press(c2.x, c2.y);
   await until(async () => (await picks())?.items?.length === 1, 'a pick made while the phone armed it');
-  await phone.run('enterCast(); castPanel = "pick"; userPanel = "pick"; renderPanel();');
+  await phone.run('renderPanel();');
   await until(() => phone.run('document.querySelectorAll("#castpick .pchip").length === 1'), 'the chip on the phone');
   check(true, 'the phone lists the same pick');
   await sleep(500);
   await phone.shot('3-phone');
-  await phone.run('send({kind:"pick", on:false})');
+  await phone.shot('4-phone-page');
+  await phone.run('document.querySelector("#castpick .castgear").click()');
+  await until(async () => (await picks())?.on === false, 'stopped from the phone\'s panel');
+  check(true, 'the phone stops picking with the panel\'s button');
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);

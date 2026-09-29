@@ -177,7 +177,8 @@ pub struct Mailbox {
     /// recorder, false = silence recording everywhere).
     pub record_arms: Vec<bool>,
     /// 🎯 picking armed (true) or put away on the shown browser
-    pub pick_arms: Vec<bool>,
+    /// (on, pressed on a touch screen)
+    pub pick_arms: Vec<(bool, bool)>,
     /// Elements pages reported picked: (the page's in-window name, what it
     /// said). Null is the person's Escape on that page
     pub picked: Vec<(String, serde_json::Value)>,
@@ -536,7 +537,7 @@ impl Mailbox {
     pub fn take_record_arms(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.record_arms)
     }
-    pub fn take_pick_arms(&mut self) -> Vec<bool> {
+    pub fn take_pick_arms(&mut self) -> Vec<(bool, bool)> {
         std::mem::take(&mut self.pick_arms)
     }
     pub fn take_picked(&mut self) -> Vec<(String, serde_json::Value)> {

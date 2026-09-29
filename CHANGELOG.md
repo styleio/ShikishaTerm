@@ -28,6 +28,12 @@ once it reaches its first tagged release.
   the styles that shape it (and the source file, when the page's development
   build says). The same panel works from a phone, whose presses on the page
   pick the same way. Automation reads them with `shikisha.browser_picks`.
+  Before anything picked is kept, values that look like keys (the shapes
+  GitHub, OpenAI, Anthropic, AWS, Slack, Google and Stripe give theirs, JSON
+  Web Tokens, private keys, bearer headers, long random strings) and every
+  secret the app itself holds are replaced with `[hidden]`, and the panel says
+  how many were -- the draft is still yours to read. On a phone the page says
+  to stop with the panel's button, since there is no Escape key.
 - **Read a page's console.** The column on the right has a **Console** tab for
   the page in view: what its code logs, errors nobody caught, and what the
   browser says about it (a file that did not load, a request refused), with a

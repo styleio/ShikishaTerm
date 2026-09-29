@@ -1100,7 +1100,9 @@ impl Capabilities {
     /// one puts every other away first, so a press on a page left behind in
     /// another pane does what it always did. Off names the page it is for; the
     /// page's own Escape arrives as a pick of nothing (see `note_picked`)
-    pub fn browser_pick(&self, name: &str, on: bool) -> Result<()> {
+    /// `touch`: asked from a screen with no Escape key, so the line the page
+    /// shows says to stop with the panel's button instead
+    pub fn browser_pick(&self, name: &str, on: bool, touch: bool) -> Result<()> {
         let key = Self::key(self.desk.get(), name);
         if on {
             let others: Vec<String> = self
@@ -1113,7 +1115,10 @@ impl Capabilities {
             for k in others {
                 self.disarm_key(&k);
             }
-            let hint = serde_json::Value::String(crate::i18n::t("tui.pick.page_hint"));
+            let hint = serde_json::Value::String(crate::i18n::t(match touch {
+                true => "tui.pick.page_hint_touch",
+                false => "tui.pick.page_hint",
+            }));
             self.with(name, |b, to| b.eval_in(to, &format!("window.__shikisha_pick && window.__shikisha_pick(true, {hint});")).map(|_| ()))?;
             self.picks.borrow_mut().entry(key).or_default().armed = true;
             Ok(())
@@ -1145,7 +1150,11 @@ impl Capabilities {
         if item.is_null() {
             p.armed = false;
         } else {
-            p.add(item)?;
+            // Before it is kept anywhere: what looks like a key, and every
+            // secret this program holds, is hidden here (`crate::secretscan`)
+            let tokens = self.tokens.borrow();
+            let (item, hidden) = crate::pick::scrub(item, || tokens.values().map(String::as_str).collect());
+            p.add(item, hidden)?;
         }
         Some(name)
     }
