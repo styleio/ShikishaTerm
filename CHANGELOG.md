@@ -8,13 +8,7 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
-### Changed
-- **The program with no window is called `shikisha-server`.** It was
-  `shikisha-serve`; the program, its manual page (`man shikisha-server`) and
-  the Linux downloads carry the new name. The package is still `shikisha`, and
-  the service is still `systemctl --user … shikisha`.
-
-## [0.22.0] - 2026-09-29
+## [0.22.1] - 2026-09-29
 
 ### Added
 - **The ? answers from the manual, and can search the source code when that is
@@ -24,6 +18,16 @@ once it reaches its first tagged release.
   source once and has the assistant AI read it (read-only). What only the code
   could answer can be sent in as a GitHub issue, from a form you read and change
   first and GitHub's own page after it.
+
+### Changed
+- **The program with no window is called `shikisha-server`.** It was
+  `shikisha-serve`; the program, its manual page (`man shikisha-server`) and
+  the Linux downloads carry the new name. The package is still `shikisha`, and
+  the service is still `systemctl --user … shikisha`.
+
+## [0.22.0] - 2026-09-29
+
+### Added
 - **One AI tab can hand a job out to others and see it through.** Ask an AI
   to, say, have <@claude> implement something and <@codex> review it until
   nothing is left, and it becomes the job's lead: it adds tasks, assigns them
@@ -3778,7 +3782,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/styleio/ShikishaTerm/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/styleio/ShikishaTerm/compare/v0.19.0...v0.20.0
