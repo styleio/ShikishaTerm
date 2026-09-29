@@ -1575,6 +1575,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--dim); cursor:pointer; font-size:12px; }
   #castpick .pchip .px:hover { color:var(--stop); }
   .fmenu.picksend { min-width:220px; }
+  /* How many values were hidden: a person has to do something (read the
+     draft), so it is said in the colour for that */
+  .castnote.warn { color:var(--warn); }
   .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
@@ -17524,7 +17527,7 @@ let pickSig = "";
 function pickSigNow() {
   const t = activeTab();
   const p = pickHere();
-  return (t ? t.index : "") + "|" + p.on + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
+  return (t ? t.index : "") + "|" + p.on + "|" + (p.hidden || 0) + "|" + p.items.map(i => i.n + ":" + i.label).join(",");
 }
 function pickAsk(act, args) {
   const t = activeTab();
@@ -17537,7 +17540,7 @@ function buildPickPanel() {
   const wrap = el("div", {id:"castpick"});
   wrap.append(el("button", {class:"castgear" + (p.on ? " on" : ""),
     title: T["tui.pick.hint"] || "",
-    onclick: () => send({kind:"pick", on: !p.on})},
+    onclick: () => send({kind:"pick", on: !p.on, touch: window.matchMedia("(hover: none)").matches})},
     p.on ? "■ " + (T["tui.pick.stop"] || "Stop picking") : "🎯 " + (T["tui.pick.start"] || "Pick")));
   if (!p.items.length) {
     wrap.append(el("span", {class:"castpanelhint"},
@@ -17575,7 +17578,14 @@ function buildPickPanel() {
   };
   wrap.append(go, el("button", {class:"castgear pquiet", onclick: () => pickAsk("clear")},
     T["tui.pick.clear"] || "Clear"));
-  return wrap;
+  // Said before anything is sent: the hiding is a net, not a promise, and the
+  // draft is the person's to read. On a line of its own under the row, as
+  // 📼's sentences are -- at the end of a row that scrolls sideways it would
+  // be past the edge exactly when it matters
+  if (!p.hidden) return wrap;
+  const both = document.createDocumentFragment();
+  both.append(wrap, el("span", {class:"castnote warn phidden"}, (T["tui.pick.hidden"] || "{n}").replaceAll("{n}", p.hidden)));
+  return both;
 }
 // Drawn again when what it shows changed, keeping the place of a note being
 // typed: a pick landing while somebody writes about the previous one must not

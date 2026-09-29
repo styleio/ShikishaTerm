@@ -35,6 +35,9 @@ pub struct Picked {
     pub n: u32,
     pub item: Value,
     pub note: String,
+    /// How many values in what the page said were hidden before it was kept
+    /// (`scrub`). Said on the panel, because the draft is the person's to check
+    pub hidden: usize,
 }
 
 /// What one page holds: whether presses on it pick right now, and what has
@@ -50,13 +53,13 @@ impl Picking {
     /// Keep one more. Whatever the page sent is kept only if it is an object
     /// with a tag -- a page's script can post anything, and a pick that
     /// describes nothing is not worth a place in somebody's list
-    pub fn add(&mut self, item: Value) -> Option<u32> {
+    pub fn add(&mut self, item: Value, hidden: usize) -> Option<u32> {
         if !item.is_object() || item.get("tag").and_then(Value::as_str).is_none_or(str::is_empty) {
             return None;
         }
         self.next += 1;
         let n = self.next;
-        self.items.push_back(Picked { n, item, note: String::new() });
+        self.items.push_back(Picked { n, item, note: String::new(), hidden });
         while self.items.len() > KEPT {
             self.items.pop_front();
         }
@@ -83,6 +86,7 @@ impl Picking {
     pub fn state(&self) -> PickState {
         PickState {
             on: self.armed,
+            hidden: self.items.iter().map(|p| p.hidden).sum(),
             items: self
                 .items
                 .iter()
@@ -98,6 +102,8 @@ pub struct PickState {
     /// Presses on the page pick right now
     pub on: bool,
     pub items: Vec<PickRow>,
+    /// How many values were hidden across everything listed
+    pub hidden: usize,
 }
 
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
@@ -106,6 +112,29 @@ pub struct PickRow {
     /// How it is named in a chip: its tag, and the words it shows
     pub label: String,
     pub note: String,
+}
+
+/// Everything a page said about an element, with the values that look like
+/// keys -- or are keys this program holds -- hidden, and how many were. Every
+/// string that leaves is looked at: the markup, the words, the selector, where
+/// it sits, its styles, its source and its address
+pub fn scrub<'a>(item: Value, known: impl Fn() -> Vec<&'a str>) -> (Value, usize) {
+    fn walk<'a>(v: Value, known: &dyn Fn() -> Vec<&'a str>, hidden: &mut usize) -> Value {
+        match v {
+            Value::String(s) => {
+                let (s, a) = crate::secretscan::hide(&s);
+                let (s, b) = crate::secretscan::hide_known(&s, known());
+                *hidden += a + b;
+                Value::String(s)
+            }
+            Value::Array(a) => Value::Array(a.into_iter().map(|x| walk(x, known, hidden)).collect()),
+            Value::Object(o) => Value::Object(o.into_iter().map(|(k, x)| (k, walk(x, known, hidden))).collect()),
+            other => other,
+        }
+    }
+    let mut hidden = 0;
+    let out = walk(item, &known, &mut hidden);
+    (out, hidden)
 }
 
 fn text<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -201,6 +230,28 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    impl Picking {
+        fn add_plain(&mut self, item: Value) -> Option<u32> {
+            self.add(item, 0)
+        }
+    }
+
+    #[test]
+    fn everything_a_page_said_is_scrubbed_and_counted() {
+        let key = "ghp_aB3cD9eF1gH7iJ5kL0mN2oP4qR6sT8uVwXy";
+        let item = json!({"tag": "div", "name": format!("token {key}"),
+            "html": format!("<pre>{key}</pre><span>mine-secret-9</span>"), "path": ["main", "section"],
+            "box": {"x": 1}});
+        let (out, n) = scrub(item, || vec!["mine-secret-9"]);
+        let s = out.to_string();
+        assert!(!s.contains(key) && !s.contains("mine-secret-9"), "{s}");
+        assert_eq!(n, 3);
+        assert_eq!(out["box"]["x"], 1, "numbers are left as they are");
+        let mut p = Picking::default();
+        p.add(out, n);
+        assert_eq!(p.state().hidden, 3);
+    }
+
     fn item(tag: &str, name: &str) -> Value {
         json!({"tag": tag, "name": name, "sel": "#x", "url": "http://a.test/p",
                "view": {"w": 800, "h": 600}, "box": {"x": 1, "y": 2, "w": 3, "h": 4},
@@ -210,28 +261,28 @@ mod tests {
     #[test]
     fn a_pick_that_describes_nothing_is_not_kept() {
         let mut p = Picking::default();
-        assert_eq!(p.add(json!("hello")), None);
-        assert_eq!(p.add(json!({"name": "x"})), None);
-        assert_eq!(p.add(json!({"tag": ""})), None);
-        assert_eq!(p.add(item("button", "Save")), Some(1));
+        assert_eq!(p.add_plain(json!("hello")), None);
+        assert_eq!(p.add_plain(json!({"name": "x"})), None);
+        assert_eq!(p.add_plain(json!({"tag": ""})), None);
+        assert_eq!(p.add_plain(item("button", "Save")), Some(1));
     }
 
     #[test]
     fn the_oldest_makes_room_and_numbers_are_not_reused() {
         let mut p = Picking::default();
         for i in 0..KEPT + 3 {
-            p.add(item("a", &i.to_string()));
+            p.add_plain(item("a", &i.to_string()));
         }
         assert_eq!(p.items.len(), KEPT);
         assert_eq!(p.items.front().unwrap().n, 4);
         assert!(p.drop_one(5));
-        assert_eq!(p.add(item("b", "")), Some(KEPT as u32 + 4));
+        assert_eq!(p.add_plain(item("b", "")), Some(KEPT as u32 + 4));
     }
 
     #[test]
     fn a_note_is_one_line_and_bounded() {
         let mut p = Picking::default();
-        p.add(item("a", ""));
+        p.add_plain(item("a", ""));
         assert!(p.note(1, &format!("line\none{}", "x".repeat(NOTE_MAX))));
         let n = &p.items[0].note;
         assert!(!n.contains('\n'));
@@ -242,8 +293,8 @@ mod tests {
     #[test]
     fn the_description_names_the_page_once_and_indents_markup() {
         let mut p = Picking::default();
-        p.add(item("button", "Save"));
-        p.add(item("div", ""));
+        p.add_plain(item("button", "Save"));
+        p.add_plain(item("div", ""));
         p.note(1, "make it blue");
         let items: Vec<Picked> = p.items.iter().cloned().collect();
         let s = describe(&items);

@@ -433,6 +433,8 @@
   "tui.pick.clear": "Clear",
   "tui.pick.no_ai": "No AI tab on this desk to hand these to. Open one first.",
   "tui.pick.page_hint": "Press what the AI should look at · {n} picked · Esc to stop",
+  "tui.pick.page_hint_touch": "Tap what the AI should look at · {n} picked · Stop picking in the bar below to stop",
+  "tui.pick.hidden": "Hid {n} value(s) that looked like keys",
   "tui.cast.lua.rec": "Record",
   "tui.cast.lua.run": "Run",
   "tui.cast.lua.copy": "Copy the recorded Lua",

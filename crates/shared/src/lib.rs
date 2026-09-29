@@ -567,7 +567,13 @@ pub enum Ev {
     /// 🎯 pick elements on the shown page for an AI: `on` arms the page so
     /// the next presses on it pick instead of doing what they would do, and
     /// off puts it back. Which page is the loop's to resolve, like `Record`
-    Pick { on: bool },
+    Pick {
+        on: bool,
+        /// Pressed on a screen with no pointer that hovers (a phone, a
+        /// tablet): the page then says to stop with the panel's button, since
+        /// there is no Escape key on it
+        touch: bool,
+    },
     /// One element a page reports picked, as the page described it (see
     /// `pagejs` `pickDescribe`). `item` is null when the person pressed Escape
     /// on the page, which ends the picking. `from` is stamped by whoever heard
@@ -1381,6 +1387,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // 🎯 picking armed or put away (see `Ev::Pick`)
         Some("pick") => Ev::Pick {
             on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
+            touch: v.get("touch").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         // An element a page picked (who it came from is stamped by the side
         // that heard it, as with "recorded")

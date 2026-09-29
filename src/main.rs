@@ -870,7 +870,7 @@ impl WinSurface {
                 // resolved by the loop (it knows the shown browser and the engine).
                 Ev::Record { on } => self.mail.record_arms.push(on),
                 // 🎯: the same resolution as 📼 (the loop knows the shown page)
-                Ev::Pick { on } => self.mail.pick_arms.push(on),
+                Ev::Pick { on, touch } => self.mail.pick_arms.push((on, touch)),
                 Ev::Picked { from: Some(child), item } => self.mail.picked.push((child, item)),
                 Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::Console { page, act, args } => self.mail.console_asks.push((page, act, args)),

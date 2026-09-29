@@ -94,6 +94,7 @@ pub mod resident;
 pub mod revive;
 pub mod reply;
 pub mod repo;
+pub mod secretscan;
 pub mod session_log;
 pub mod runtime;
 pub mod send;

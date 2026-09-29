@@ -4725,8 +4725,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         shell.mail().record_arms.push(on);
                     }
                     // 🎯 from the phone's composer: the same queues as the window's
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Pick { on }) => {
-                        shell.mail().pick_arms.push(on);
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Pick { on, touch }) => {
+                        shell.mail().pick_arms.push((on, touch));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Design { page, act, args }) => {
                         shell.mail().designs.push((page, act, args));
@@ -6418,13 +6418,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // 🎯 picking armed or put away, on the page being shown. Off with no
         // page shown still has to land: it names the page it was armed on
-        for on in shell.mail().take_pick_arms() {
+        for (on, touch) in shell.mail().take_pick_arms() {
             let shown = match surfaces.get(active.wrapping_sub(1)) {
                 Some(Surface::Browser { key, .. }) => Some(key.clone()),
                 _ => None,
             };
             let Some(key) = shown else { continue };
-            if let Err(e) = caps.browser_pick(&key, on) {
+            if let Err(e) = caps.browser_pick(&key, on, touch) {
                 flash = Some(e.to_string());
             }
         }
