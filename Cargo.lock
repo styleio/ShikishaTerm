@@ -4399,6 +4399,7 @@ version = "0.22.1"
 dependencies = [
  "aes-gcm 0.11.0",
  "anyhow",
+ "arboard",
  "argon2 0.5.3",
  "base64 0.23.1",
  "chardetng",
@@ -4410,6 +4411,7 @@ dependencies = [
  "mlua",
  "p256 0.14.0",
  "petname",
+ "png",
  "portable-pty",
  "qrcode",
  "rand 0.10.2",

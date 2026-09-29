@@ -74,6 +74,7 @@ pub mod pagejs;
 pub mod pagelint;
 pub mod pageops;
 pub mod pick;
+pub mod paste;
 pub mod placed;
 pub mod pr;
 pub mod pressure;

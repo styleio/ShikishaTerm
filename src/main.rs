@@ -992,7 +992,7 @@ impl WinSurface {
                 }
                 Ev::Paste => {
                     if let Some(t) = active_tab {
-                        let _ = paste_clipboard(t);
+                        let _ = shikisha_core::paste::clipboard_into(t);
                     }
                 }
                 // A relay frame. Decode the base64 into a byte buffer and stash it;
@@ -1641,69 +1641,6 @@ pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
     Vec::new()
 }
 
-/// Pastes clipboard contents into the child process.
-/// Wraps it in \x1b[200~ ... \x1b[201~ if the child is in bracketed paste mode
-fn paste_clipboard(t: &Tab) -> Result<Option<String>> {
-    let got = arboard::Clipboard::new().and_then(|mut c| c.get_text());
-    // A picture, into a tab on another machine: an AI there cannot read this
-    // PC's clipboard, as one here does. Sent up to the folder there as 📎
-    // sends a file, and its path typed in its place
-    if got.is_err()
-        && let Some(said) = paste_image_far(t)
-    {
-        return said;
-    }
-    match got {
-        Ok(text) => {
-            let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
-            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-            if bracketed {
-                let mut bytes = b"\x1b[200~".to_vec();
-                bytes.extend_from_slice(normalized.as_bytes());
-                bytes.extend_from_slice(b"\x1b[201~");
-                t.write_bytes(&bytes)?;
-            } else {
-                t.write_bytes(normalized.as_bytes())?;
-            }
-            Ok(None)
-        }
-        Err(e) => Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))),
-    }
-}
-
-/// The picture on the clipboard sent up to the folder of a tab on another
-/// machine, and its path there typed into the tab. `None` when the tab is on
-/// this PC or the clipboard holds no picture: pasted as before
-fn paste_image_far(t: &Tab) -> Option<Result<Option<String>>> {
-    let machine = match (t.remote(), t.cloud()) {
-        (Some(spec), _) => shikisha_core::elsewhere::Elsewhere::Ssh(spec.clone()),
-        (None, Some(host)) => shikisha_core::elsewhere::Elsewhere::Cloud(host.clone()),
-        (None, None) => return None,
-    };
-    let there = t.remote_cwd()?.to_string();
-    let image = arboard::Clipboard::new().and_then(|mut c| c.get_image()).ok()?;
-    let mut png = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut png, image.width as u32, image.height as u32);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        let written = enc.write_header().and_then(|mut w| w.write_image_data(&image.bytes));
-        if let Err(e) = written {
-            return Some(Ok(Some(i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))));
-        }
-    }
-    use base64::Engine as _;
-    let data = base64::engine::general_purpose::STANDARD.encode(&png);
-    let said = shikisha_core::remote::attach_save_at("", Some((&machine, &there)), "pasted.png", &data);
-    Some(match said.get("path").and_then(|p| p.as_str()) {
-        Some(path) => t.write_bytes(path.as_bytes()).map(|_| None),
-        None => Ok(Some(i18n::tp(
-            "msg.paste_failed",
-            &[("error", said.get("error").and_then(|e| e.as_str()).unwrap_or_default())],
-        ))),
-    })
-}
-
 /// How long a burst of output takes to reach the rows the window is handed.
 ///
 /// The published figures for the two pseudo consoles were measured at the PTY
@@ -2137,7 +2074,18 @@ fn connect_to(url: &str) -> Result<()> {
     if !shikisha_shared::is_openable(url) {
         anyhow::bail!(i18n::tp("err.connect.bad_url", &[("url", url)]));
     }
-    let win = std::sync::Arc::new(browser::Browser::spawn(url, "SHIKISHA-TERM")?);
+    // Started by the runtime of a program split in two, this window is that
+    // PC's own screen, and it was handed the key that says so. Read once and
+    // taken out of the environment, so nothing this window starts inherits it
+    let here = std::env::var(shikisha_core::split::HERE_KEY_ENV).unwrap_or_default();
+    // SAFETY: nothing else is running yet -- the window and its threads are
+    // started below -- so nobody is reading the environment while it changes
+    unsafe { std::env::remove_var(shikisha_core::split::HERE_KEY_ENV) };
+    let opened = match here.trim() {
+        "" => url.to_string(),
+        key => format!("{url}{}here={key}", if url.contains('?') { "&" } else { "?" }),
+    };
+    let win = std::sync::Arc::new(browser::Browser::spawn(&opened, "SHIKISHA-TERM")?);
     // Named without its query, because the query is the key to the board and
     // this line goes to a console somebody may well be sharing a screen of
     let host = url.split('?').next().unwrap_or(url);
@@ -2150,7 +2098,7 @@ fn connect_to(url: &str) -> Result<()> {
     // whoever reads it takes what they read. Reports about pages are passed
     // on to the line that is drawing them
     let (reports, arriving) = std::sync::mpsc::channel::<Ev>();
-    draw_for_server(url, &win, &stop, arriving);
+    draw_for_server(url, here.trim(), &win, &stop, arriving);
 
     // The window runs its own event loop on its own thread. This only waits for
     // it to be closed, because a `main` that returned would take it along
@@ -2191,6 +2139,7 @@ fn connect_to(url: &str) -> Result<()> {
 /// worth anything -- `localhost` has to mean the same thing on both sides.
 fn draw_for_server(
     url: &str,
+    here: &str,
     win: &std::sync::Arc<browser::Browser>,
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     arriving: std::sync::mpsc::Receiver<shikisha_shared::Ev>,
@@ -2205,10 +2154,11 @@ fn draw_for_server(
         // this side cannot read. Nothing to offer
         None => return,
     };
+    let here = here.to_string();
     let win = std::sync::Arc::clone(win);
     let stop = std::sync::Arc::clone(stop);
     std::thread::spawn(move || {
-        let joined = match shikisha_core::faraway::join(&base, &token) {
+        let joined = match shikisha_core::faraway::join(&base, &token, &here) {
             Ok(cookie) => cookie,
             Err(e) => {
                 append_hook_log(&format!("pages: not let in by {base}: {e}"));

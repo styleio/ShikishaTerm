@@ -58,11 +58,20 @@ fn window_program_in(dir: &std::path::Path, current: std::path::PathBuf) -> std:
     if beside.is_file() { beside } else { current }
 }
 
+/// Where the window finds the key that makes it this PC's own window on the
+/// board (see `Split::here_key`). The window takes it out of its environment
+/// as soon as it has read it
+pub const HERE_KEY_ENV: &str = "SHIKISHA_HERE_KEY";
+
 /// The runtime's half of the pair
 pub struct Split {
     /// Where the board is reached, once it is listening. Empty until then,
     /// which is why no window is started before it
     board: RefCell<String>,
+    /// What the window shows the board to be known as this PC's own window
+    /// (`remote::RemoteUi::here_key`). Handed to it in its environment, not on
+    /// its command line, which any program on this PC can read
+    here_key: RefCell<String>,
     /// The window, while there is one
     window: RefCell<Option<std::process::Child>>,
     /// What has been tried and when to look again
@@ -109,6 +118,7 @@ impl Split {
         });
         Self {
             board: RefCell::default(),
+            here_key: RefCell::default(),
             window: RefCell::default(),
             keep: RefCell::new(Keeper::new()),
             icon,
@@ -132,6 +142,7 @@ impl Split {
         let program = window_program();
         let mut window = std::process::Command::new(&program);
         window.arg("--connect").arg(&board);
+        window.env(HERE_KEY_ENV, self.here_key.borrow().as_str());
         // The window is the half that would take the front, so it is the half
         // that has to be told
         if crate::stays_behind() {
@@ -217,8 +228,9 @@ impl Drop for Split {
 }
 
 impl Minder for Split {
-    fn board_is_at(&self, url: &str) {
+    fn board_is_at(&self, url: &str, here_key: &str) {
         *self.board.borrow_mut() = url.to_string();
+        *self.here_key.borrow_mut() = here_key.to_string();
         crate::append_hook_log("split: the board is listening; opening a window on it");
         self.open();
     }
@@ -349,6 +361,7 @@ mod tests {
     fn bare() -> Split {
         Split {
             board: RefCell::default(),
+            here_key: RefCell::default(),
             window: RefCell::default(),
             keep: RefCell::new(Keeper::new()),
             icon: None,

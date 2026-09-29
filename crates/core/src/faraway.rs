@@ -465,15 +465,22 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
 /// from, and offered again next time. Without that, every launch would add a
 /// row to the person's list of devices -- the same laptop, over and over,
 /// none of which they could tell apart.
-pub fn join(base: &str, token: &str) -> anyhow::Result<String> {
+///
+/// `here` is the key this PC's own window of a program split in two was
+/// handed (`remote::RemoteUi::here_key`), or empty. With it the board knows
+/// this for its own screen and writes no device down at all
+pub fn join(base: &str, token: &str, here: &str) -> anyhow::Result<String> {
     let known = keys();
     // Asked for every time even when the key is already known: what the key
     // buys is not being written down as a new device, and what this asks for
     // is a session -- the thing a board takes away when somebody presses
     // disconnect, and the thing every line below is checked against
-    let mut call = crate::update::agent(std::time::Duration::from_secs(30))
-        .get(&format!("{}/?t={token}", base.trim_end_matches('/')));
-    if let Some(had) = known.get(base) {
+    let door = match here {
+        "" => format!("{}/?t={token}", base.trim_end_matches('/')),
+        key => format!("{}/?t={token}&here={key}", base.trim_end_matches('/')),
+    };
+    let mut call = crate::update::agent(std::time::Duration::from_secs(30)).get(&door);
+    if let (Some(had), true) = (known.get(base), here.is_empty()) {
         call = call.header("Cookie", &format!("rk={had}"));
     }
     let answer = call.call()?;
@@ -922,7 +929,7 @@ mod tests {
         let base = ui.url.split("/?").next().unwrap().trim_end_matches('/').to_string();
 
         // The device end: join, then answer whatever is asked
-        let cookie = join(&base, "tok123456789012").expect("it is not let in");
+        let cookie = join(&base, "tok123456789012", "").expect("it is not let in");
         let drawn = Arc::new(Drawn {
             stub: Arc::new(Stub { asked: Mutex::new(Vec::new()), refs: Mutex::new(HashMap::new()) }),
             open: Mutex::new(Vec::new()),

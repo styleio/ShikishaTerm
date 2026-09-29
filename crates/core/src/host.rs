@@ -105,7 +105,11 @@ pub trait Shell {
     /// A window shows the link as a code to scan, on its own settings screen,
     /// and has nothing to add. A runtime with no window has no screen to show it
     /// on, so it says it where the person who started it is looking
-    fn board_is_at(&self, _url: &str) {}
+    ///
+    /// `here_key` is what this PC's own window opens it with to be known as
+    /// that window (`remote::RemoteUi::here_key`). Never printed: it is for a
+    /// window this program starts, and for nobody reading a console
+    fn board_is_at(&self, _url: &str, _here_key: &str) {}
 
     /// Where the next page should be drawn. Meaningless to a shell that can
     /// only draw in one place, which is why it does nothing by default
@@ -133,8 +137,8 @@ pub trait Shell {
 /// holds it; what has to change keeps itself.
 pub trait Minder {
     /// The board is listening at this address. Nothing can be pointed at it
-    /// before this
-    fn board_is_at(&self, url: &str);
+    /// before this. `here_key` is for the window it starts, and nothing else
+    fn board_is_at(&self, url: &str, here_key: &str);
     /// Once round the loop. What came of it, in the loop's own words
     fn tick(&self) -> Told;
     /// A window was asked for
@@ -358,14 +362,14 @@ impl Shell for Headless {
     /// said happens. Nothing did: a server came up with its board listening
     /// and no way to learn the address short of reading the settings and the
     /// token file and putting the two together
-    fn board_is_at(&self, url: &str) {
+    fn board_is_at(&self, url: &str, here_key: &str) {
         let line = crate::i18n::tp("msg.serve.board_at", &[("url", url)]);
         println!("{line}");
         crate::append_hook_log(&line);
         // ...and where there is a window to open on it, it is opened now: the
         // address is the one thing it could not be started without
         if let Some(m) = &self.minder {
-            m.board_is_at(url);
+            m.board_is_at(url, here_key);
         }
     }
 

@@ -2354,7 +2354,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     r.set_page_line(line);
                 }
                 if let Some(r) = remote_ui.as_ref() {
-                    shell.board_is_at(&r.url);
+                    shell.board_is_at(&r.url, &r.here_key());
                 }
                 publish_remote(&remote_info, &remote_ui);
                 last_remote_ui = None;
@@ -4700,6 +4700,38 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::LinkPress { tab, target, kind, act, ask }) => {
                         shell.mail().link_presses.push(crate::mailbox::LinkPress { tab, target, kind, act, ask });
                     }
+                    // What only this PC's own window is let send over the
+                    // board, when the program is split in two
+                    // (`remote::allowed_from_here`). The same queues the
+                    // window of an unsplit program fills
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::InstallHelp { prog: None }) => {
+                        shell.mail().install_help = true;
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::InstallHelp { prog: Some(prog) }) => {
+                        shell.mail().install_pages.push(prog);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Thanks { open }) => {
+                        shell.mail().thanks = Some(open);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Setup { ai, yolo }) => {
+                        shell.mail().setup = Some((ai, yolo));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::SetupRefresh { step }) => {
+                        shell.mail().setup_refresh = Some(step);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteCut) => {
+                        shell.mail().remote_cut = true;
+                    }
+                    // A right-click on the terminal: this PC's clipboard, into
+                    // the tab in view, the way the window pastes
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Paste) => {
+                        if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get(i))
+                            && !t.locked
+                            && let Ok(Some(why)) = crate::paste::clipboard_into(t)
+                        {
+                            flash = Some(why);
+                        }
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
                         shell.mail().sftps.push((panel, act, args));
                     }
@@ -5478,7 +5510,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // person reading REMOTE believes their board is reachable from
             // the network, and this one is not
             remote_on: remote_ui.as_ref().is_some_and(|r| !r.local_only),
-            remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_state_clients()),
+            remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_devices()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             nav,
             asks: caps.asks_now(),

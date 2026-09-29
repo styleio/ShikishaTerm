@@ -456,6 +456,43 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
     }
 }
 
+/// What this PC's own window may ask on top of what a phone may.
+///
+/// When the program is split in two (`crate::split`) the window is a page on
+/// the board like a phone's, and every press it makes comes through the same
+/// door. Much of what the gate above refuses is refused *because the person
+/// is not at this PC*: it would open something on a screen nobody is looking
+/// at, or read a clipboard that is not theirs. At this PC's own window that
+/// person is sitting right there, and refusing it only made the window a
+/// worse window than the one the program draws when it is not split.
+///
+/// So these, and only these, are let through again -- to a session opened
+/// with the key the window was handed (`Gate::here_key`), never to a phone.
+/// What stays refused here is refused for a reason that holds at this PC as
+/// well: the window's frame and icon are answered in the window process, the
+/// settings, the guide and the master password need a window of the
+/// runtime's own, which a split runtime does not draw, and reports are not asks
+fn allowed_from_here(ev: &shikisha_shared::Ev) -> bool {
+    use shikisha_shared::Ev;
+    match ev {
+        // Every way of opening a place pressed on a terminal: the file with
+        // this PC's program for it, in Explorer, the address in this PC's browser
+        Ev::LinkPress { .. } => true,
+        // A program's install page and the star page, in this PC's browser
+        Ev::InstallHelp { .. } | Ev::Thanks { .. } => true,
+        // This PC's clipboard, pasted into the tab in view
+        Ev::Paste => true,
+        // The first-start setup: answered at this PC, and this is its screen
+        Ev::Setup { .. } | Ev::SetupRefresh { .. } => true,
+        // The window's own "disconnect remote access" pill. It cuts the phones;
+        // this window's session is not one of them (`Gate::cut`)
+        Ev::RemoteCut => true,
+        // Everything else is what a phone may ask, or refused at this PC too
+        // for the reason written beside it above
+        _ => false,
+    }
+}
+
 /// The end of the line browser asks go out on, once the runtime has one.
 type PageLine = Arc<Mutex<Option<crate::faraway::Line>>>;
 
@@ -656,6 +693,18 @@ impl Ids {
     fn clear(&self) {
         self.0.lock().unwrap().clear();
     }
+
+    /// Remember an id handed out by another list as belonging here too
+    fn add(&self, id: &str) {
+        if self.has(id) {
+            return;
+        }
+        let mut q = self.0.lock().unwrap();
+        while q.len() >= MAX_SESSIONS {
+            q.pop_front();
+        }
+        q.push_back(Held { id: id.to_string(), owner: None });
+    }
 }
 
 /// Everything a phone must present beyond the token — and the single place the
@@ -696,6 +745,14 @@ pub struct Gate {
     /// being sent every change on the PC for as long as it stayed open
     state_lines: StateClients,
     frame_lines: FrameClients,
+    /// What this PC's own window shows to be it, when the program is split in
+    /// two (`crate::split`): made fresh for each board, handed to the window
+    /// it starts and to nothing else, and never written anywhere. A window
+    /// that opens the board with it is recognised as the screen of this PC,
+    /// not as a phone -- see `allowed_from_here`
+    here_key: String,
+    /// The sessions opened with that key
+    here: Ids,
 }
 
 /// The score of wrong passwords, and what it costs.
@@ -765,12 +822,32 @@ impl Misses {
 impl Gate {
     /// Whether the caller still holds a live session from opening the link
     fn granted(&self, id: &str) -> bool {
-        self.grants.has(id)
+        self.grants.has(id) || self.here.has(id)
+    }
+
+    /// Whether the caller is this PC's own window: a session that was opened
+    /// with the key only that window was given
+    fn is_here(&self, id: &str) -> bool {
+        self.here.has(id)
+    }
+
+    /// Whether `key` is the one this board handed to its own window
+    fn here_key_is(&self, key: &str) -> bool {
+        !key.is_empty() && crate::crypto::token_eq(key, &self.here_key)
+    }
+
+    /// Whether an intent from the session `id` is let through: what any
+    /// device may ask, and -- from this PC's own window -- what only the
+    /// person sitting at this PC can mean
+    fn admits(&self, id: &str, ev: &shikisha_shared::Ev) -> bool {
+        allowed_from_afar(ev) || (self.is_here(id) && allowed_from_here(ev))
     }
 
     /// Whether the password factor is satisfied (always, when none is set)
     fn unlocked(&self, id: &str) -> bool {
-        self.password.is_empty() || self.pw.has(id)
+        // The password is asked of a device reaching this PC from elsewhere;
+        // this PC's own window has shown something stronger
+        self.password.is_empty() || self.pw.has(id) || self.here.has(id)
     }
 
     /// How much longer no password will be looked at, or `None` if one may be
@@ -799,6 +876,9 @@ impl Gate {
 
     /// The disconnect. Every session is gone, so nothing that was let in
     /// before this moment is let in again without opening the link afresh.
+    ///
+    /// Except this PC's own window (`here`): "disconnect remote access" is
+    /// pressed on that window, and it is not remote access
     fn cut(&self) {
         self.grants.clear();
         self.pw.clear();
@@ -1084,6 +1164,11 @@ impl RemoteUi {
             misses: Mutex::new(Misses::new(Instant::now())),
             state_lines: Arc::clone(&state_clients),
             frame_lines: Arc::clone(&frame_clients),
+            // As long as the session ids and as random: it is the same kind of
+            // secret, held by one process on this PC for as long as this board
+            // lives
+            here_key: crate::random_hex(24),
+            here: Ids::new(),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -1338,6 +1423,13 @@ impl RemoteUi {
         Arc::clone(&self.gate)
     }
 
+    /// What this PC's own window opens the board with, to be known as that
+    /// window (see `Gate::here_key`). Handed to the window this program
+    /// starts, and to nothing else
+    pub fn here_key(&self) -> String {
+        self.gate.here_key.clone()
+    }
+
     pub fn cut_sessions(&self) {
         self.gate.cut();
         // The links sitting in a chat are somebody holding this terminal too
@@ -1452,6 +1544,14 @@ impl RemoteUi {
     /// is, the main loop skips building and pushing state entirely.
     pub fn has_state_clients(&self) -> bool {
         !self.state_clients.lock().unwrap().is_empty()
+    }
+
+    /// Whether a device is looking from elsewhere. This PC's own window of a
+    /// program split in two is on the same line and is not one: counted, it
+    /// would put up "a phone is connected" for as long as the window is open.
+    /// Everything else about who is watching counts it, because it is watching
+    pub fn has_devices(&self) -> bool {
+        self.state_clients.lock().unwrap().iter().any(|c| !self.gate.is_here(&c.session))
     }
 
     /// How long a viewer that can only poll counts as still being there. It
@@ -1712,6 +1812,28 @@ fn handle(
         return req.respond(resp).map_err(Into::into);
     }
     if method == "GET" && (path == "/" || path == "/shell") {
+        // This PC's own window, when the program is split in two: it opens
+        // the board with the key it was handed as well as the link. It is
+        // given a session of its own and the page that knows it is at this
+        // PC -- and is not written into the book of devices, because it is
+        // not a device reaching this PC, it is this PC's screen
+        let here = if gate.here_key_is(&query_value(req.url(), "here")) {
+            let id = if gate.is_here(&session) { session.clone() } else { crate::random_hex(24) };
+            gate.here.add(&id);
+            Some(id)
+        } else {
+            gate.is_here(&session).then(|| session.clone())
+        };
+        if let Some(id) = &here {
+            let resp = Response::from_string(crate::shell::served_page(sticky, crate::shell::Served::Here))
+                .with_header(
+                    Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+                )
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Set-Cookie"[..], session_cookie(id).as_bytes()).unwrap());
+            return req.respond(resp).map_err(Into::into);
+        }
         let mut resp = Response::from_string(crate::shell::served_page(
             sticky,
             crate::shell::Served::Remote,
@@ -2527,7 +2649,7 @@ fn handle(
                                 continue;
                             };
                             if let Some(ev) = shikisha_shared::parse_intent(&v)
-                                && allowed_from_afar(&ev) {
+                                && gate.admits(&session, &ev) {
                                     let _ = tx.send(RemoteCmd::Ui(ev));
                                 }
                         }
@@ -2569,7 +2691,7 @@ fn handle(
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let mut took = false;
             if let Some(ev) = shikisha_shared::parse_intent(&v)
-                && allowed_from_afar(&ev) {
+                && gate.admits(&session, &ev) {
                     let _ = tx.send(RemoteCmd::Ui(ev));
                     took = true;
                 }
@@ -3160,10 +3282,117 @@ mod tests {
         // And that this would notice: a name the gate allows and nothing
         // answers is exactly what it is for
         assert!(
-            !routed.contains("Ev::Paste") && !keys.contains("Ev::Paste"),
-            "paste has somewhere to go (the gate should stay closed)"
+            !routed.contains("Ev::Password") && !keys.contains("Ev::Password"),
+            "the master password has somewhere to go (the gate should stay closed)"
         );
-        assert!(allowed.iter().all(|n| n != "Paste"), "paste gets through");
+        assert!(allowed.iter().all(|n| n != "Password"), "the master password gets through");
+
+        // What this PC's own window may send on top is held to the same
+        // promise: let through and answered nowhere would be the button that
+        // was fixed doing nothing still
+        let here = between(&gate_src, "fn allowed_from_here", "\n}\n");
+        assert!(here.len() < gate_src.len() / 4 && here.contains("_ => false"), "the window's list was not read");
+        let mut extra: Vec<String> = Vec::new();
+        let mut patterns = here.as_str();
+        while let Some(at) = patterns.find("=>") {
+            let (before, after) = (&patterns[..at], patterns[at + 2..].trim_start());
+            if after.starts_with("true") {
+                let names = before.rsplit("=>").next().unwrap_or(before);
+                extra.extend(names.match_indices("Ev::").map(|(i, _)| {
+                    names[i + 4..].chars().take_while(char::is_ascii_alphanumeric).collect::<String>()
+                }));
+            }
+            patterns = &patterns[at + 2..];
+        }
+        assert!(extra.len() >= 5, "the window's list was not read: {extra:?}");
+        let lost: Vec<&String> = extra
+            .iter()
+            .filter(|n| !routed.contains(&format!("Ev::{n}")) && !keys.contains(&format!("Ev::{n}")))
+            .collect();
+        assert!(lost.is_empty(), "let through from this PC's window but routed nowhere: {lost:?}");
+    }
+
+    /// This PC's own window is let through what only a person at this PC can
+    /// mean, and a phone still is not. The window is told apart by the key it
+    /// was handed, not by where it connects from: a phone behind `tailscale
+    /// serve` arrives from the loopback too
+    #[test]
+    fn this_pcs_window_is_let_through_what_a_phone_is_not() {
+        use shikisha_shared::Ev;
+        let pc_only = [
+            Ev::LinkPress { tab: "t".into(), target: "a.txt".into(), kind: "file".into(), act: "app".into(), ask: String::new() },
+            Ev::LinkPress { tab: "t".into(), target: "https://a.io".into(), kind: "web".into(), act: "pc".into(), ask: String::new() },
+            Ev::InstallHelp { prog: None },
+            Ev::Thanks { open: true },
+            Ev::Paste,
+            Ev::Setup { ai: None, yolo: false },
+            Ev::SetupRefresh { step: 1 },
+            Ev::RemoteCut,
+        ];
+        for ev in &pc_only {
+            assert!(!super::allowed_from_afar(ev), "a phone may send {ev:?}");
+            assert!(super::allowed_from_here(ev), "this PC's window may not send {ev:?}");
+        }
+        // What stays refused at this PC too, for the reasons written there
+        for ev in [Ev::Password { text: None }, Ev::Help, Ev::Closed, Ev::CloseSettings] {
+            assert!(!super::allowed_from_here(&ev), "this PC's window is let send {ev:?}");
+        }
+    }
+
+    /// Through the board itself: the window opens it with its key and is
+    /// served the page that knows it is at this PC, its presses that only
+    /// make sense at this PC arrive, a phone's same press does not, and the
+    /// "disconnect" pressed on the window does not cut the window
+    #[test]
+    fn this_pcs_window_opens_the_board_as_itself() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let key = ui.here_key();
+        assert!(key.len() >= 32, "the window's key is guessable: {key}");
+
+        // A wrong key is only the link: the page for a phone, and no window
+        let mut stranger = Phone::new(&base);
+        let page = stranger.text("/?t=tok123456789012&here=nottheone");
+        assert!(page.contains("const AT_PC = false;"), "a wrong key was taken for this PC's window");
+
+        let devices = crate::clients::load().clients.len();
+        let mut window = Phone::new(&base);
+        let mut r = window.get(&format!("/?t=tok123456789012&here={key}"));
+        let rs = r
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .find(|kv| kv.starts_with("rs="))
+            .expect("the window was given no session")
+            .to_string();
+        // Read to the end, as a browser does: the page is large, and a board
+        // left writing it to nobody answers nothing else
+        let first = r.body_mut().read_to_string().unwrap_or_default();
+        assert!(first.contains("const AT_PC = true;"), "the window opening with its key is not told it is at this PC");
+        window.also(&rs);
+        let page = window.text("/");
+        assert!(page.contains("const AT_PC = true;"), "the window is not told it is at this PC");
+        assert_eq!(crate::clients::load().clients.len(), devices, "this PC's window was written into the book of devices");
+
+        let mut phone = Phone::new(&base);
+        phone.pair("tok123456789012");
+        let press = r#"{"kind":"linkpress","tab":"t","target":"https://a.io","lk":"web","act":"pc","ask":""}"#;
+        let (_, said) = phone.said_post("/api/intent?t=tok123456789012", press);
+        assert!(said.contains("false"), "a phone had this PC's browser opened: {said}");
+        let (_, said) = window.said_post("/api/intent?t=tok123456789012", press);
+        assert!(said.contains("true"), "this PC's window was refused this PC's browser: {said}");
+        match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
+            RemoteCmd::Ui(shikisha_shared::Ev::LinkPress { act, .. }) => assert_eq!(act, "pc"),
+            other => panic!("unexpected: {other:?}"),
+        }
+
+        // The disconnect cuts the phone and leaves the window it was pressed on
+        ui.cut_sessions();
+        assert_eq!(phone.state("tok123456789012"), 403, "the phone is still in after the disconnect");
+        assert_eq!(window.state("tok123456789012"), 200, "the disconnect cut this PC's own window");
     }
 
     /// A phone can do what the window can. What it cannot is written down,
