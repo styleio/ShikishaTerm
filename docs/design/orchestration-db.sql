@@ -1,5 +1,5 @@
 -- The record of work handed between AI tabs (orchestration.db), as the
--- steps in crates/core/src/orch/migrations/ leave it at version 1.
+-- steps in crates/core/src/orch/migrations/ leave it at version 2.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- orchestration-db.md), then write this again:

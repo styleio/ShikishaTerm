@@ -25,6 +25,10 @@ keeps what was handed to whom, what came back, and what is still open in a SQLit
 
 `meta` holds one row, `schema`: the version the file is at.
 
+The steps so far: **1** is the layout the first version shipped with, in the words it used then
+(runs, dispatches, messages, gates); **2** carries a file written by it, rows and all, into the
+words used now. A new file runs both.
+
 States (`state`, `held_by`, `afterwards` ...) are plain text. There is no CHECK on them in the
 tables: which state may follow which is decided in one place in the code, `Store::shift`, which
 writes only if the row is still in a state the change expects. A new state is then a line of
@@ -38,7 +42,7 @@ The tables are made and changed by numbered steps, never by editing what shipped
    (the next number, four digits) and a line at the end of `STEPS` in `db.rs`:
 
    ```rust
-   (2, "what", Step::Sql(include_str!("migrations/0002_what.sql"))),
+   (3, "what", Step::Sql(include_str!("migrations/0003_what.sql"))),
    ```
 
    A change SQLite cannot make in place -- a column's type or constraint, a column dropped or
