@@ -577,6 +577,9 @@ pub struct Piece {
     /// Whether it holds what was searched for
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hit: bool,
+    /// How many pieces were left out just before this one (see `keep`)
+    #[serde(default, skip_serializing_if = "is_none_left")]
+    pub skipped: usize,
 }
 
 fn is_none_left(n: &usize) -> bool {
@@ -742,7 +745,48 @@ fn outputs_of(record: &Value) -> Vec<Piece> {
 }
 
 fn piece(kind: PieceKind, name: String, text: String) -> Piece {
-    Piece { kind, name, text, before: 0, after: 0, hit: false }
+    Piece { kind, name, text, before: 0, after: 0, hit: false, skipped: 0 }
+}
+
+/// The pieces of a stretch of work that are handed over, when there are more
+/// than `PIECES_CAP`: every one that holds what was searched for, and the
+/// rest of the room given to the first ones, in the order they happened. What
+/// is left out between two that are kept is counted on the one after it, and
+/// what is left out after the last in `more`: a piece that holds the words
+/// must never be the one left out, or the page it opens says the words are
+/// not there
+fn keep(pieces: Vec<Piece>) -> Work {
+    let total = pieces.len();
+    if total <= PIECES_CAP {
+        return Work { pieces, more: 0 };
+    }
+    let hits = pieces.iter().filter(|p| p.hit).count().min(PIECES_CAP);
+    let mut room = PIECES_CAP - hits;
+    let mut hits_left = hits;
+    let mut kept: Vec<Piece> = Vec::with_capacity(PIECES_CAP);
+    let mut gap = 0;
+    for mut p in pieces {
+        let take = match p.hit {
+            true if hits_left > 0 => {
+                hits_left -= 1;
+                true
+            }
+            true => false,
+            false if room > 0 => {
+                room -= 1;
+                true
+            }
+            false => false,
+        };
+        if !take {
+            gap += 1;
+            continue;
+        }
+        p.skipped = gap;
+        gap = 0;
+        kept.push(p);
+    }
+    Work { pieces: kept, more: gap }
 }
 
 /// The words in a value: every string in it, in order, one to a line.
@@ -892,16 +936,12 @@ fn split_side(steps: Vec<(usize, usize, Step)>, needle: &str) -> (Option<Item>, 
     let work = worked.then(|| {
         let pieces: Vec<Piece> = pieces.into_iter().map(|p| clip(p, needle)).collect();
         let hit = pieces.iter().any(|p| p.hit);
-        let total = pieces.len();
         Item::Work {
             calls,
             from: from as u64,
             to: to as u64,
             hit,
-            work: hit.then(|| Work {
-                more: total.saturating_sub(PIECES_CAP),
-                pieces: pieces.into_iter().take(PIECES_CAP).collect(),
-            }),
+            work: hit.then(|| keep(pieces)),
         }
     });
     let answer = answer.join("\n\n");
@@ -967,11 +1007,7 @@ pub fn work_at(bytes: &[u8], from: u64, to: u64, needle: &str) -> Work {
             _ => {}
         }
     }
-    let total = pieces.len();
-    Work {
-        more: total.saturating_sub(PIECES_CAP),
-        pieces: pieces.into_iter().take(PIECES_CAP).map(|p| clip(p, &needle)).collect(),
-    }
+    keep(pieces.into_iter().map(|p| clip(p, &needle)).collect())
 }
 
 /// The words of one line of a record that a reader would see: what was said,
@@ -1541,6 +1577,22 @@ mod tests {
         let work = work_at(bytes.as_bytes(), from, to, "");
         let out = work.pieces.iter().find(|p| p.kind == PieceKind::Out).expect("the left-out output is a piece");
         assert_eq!((out.text.as_str(), out.after), ("", 2_000_123));
+    }
+
+    /// A stretch of work too long to hand over whole keeps every piece that
+    /// holds what was searched for, and says what it left out where it left it
+    #[test]
+    fn a_long_stretch_of_work_keeps_what_holds_the_words() {
+        let mut pieces: Vec<Piece> = (0..500).map(|i| piece(PieceKind::Out, String::new(), format!("line {i}"))).collect();
+        pieces[450].hit = true;
+        let work = keep(pieces);
+        assert_eq!(work.pieces.len(), PIECES_CAP);
+        let kept = work.pieces.iter().find(|p| p.hit).expect("the piece with the words is kept");
+        assert_eq!(kept.text, "line 450");
+        assert_eq!(kept.skipped, 450 - (PIECES_CAP - 1), "what was left out before it is counted on it");
+        assert_eq!(work.more, 49);
+        let shown = work.pieces.len() + work.pieces.iter().map(|p| p.skipped).sum::<usize>() + work.more;
+        assert_eq!(shown, 500, "every piece is either shown or counted");
     }
 
     #[test]

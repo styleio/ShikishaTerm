@@ -1821,8 +1821,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (issues_tx, issues_rx) = std::sync::mpsc::channel::<String>();
     // A search of past conversations, answered by this PC's records and every
     // other machine's, each from a thread of its own. This PC's answer is the
-    // one that says whether it stopped at enough (`Some(capped)`)
-    let (vault_far_tx, vault_far_rx) = std::sync::mpsc::channel::<(u64, Vec<crate::vault::Hit>, Option<bool>)>();
+    // one that comes without a machine's name
+    let (vault_far_tx, vault_far_rx) = std::sync::mpsc::channel::<(u64, Option<String>, crate::vault::FarFound)>();
     let mut vault_seq: u64 = 0;
     // Which search is the current one. Reading this PC's records gives up the
     // moment a newer search replaces it: reading on would only hold that one up
@@ -8035,7 +8035,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let found = crate::vault::search_until(&q, 40, &|| {
                         now.load(std::sync::atomic::Ordering::Relaxed) != seq
                     });
-                    let _ = tx.send((seq, found.hits, Some(found.capped)));
+                    let _ = tx.send((seq, None, crate::vault::FarFound { hits: found.hits, capped: found.capped, failed: None }));
                 });
             }
             // Then every other machine a folder of any desk is on, each on a
@@ -8063,7 +8063,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     asking += 1;
                     let (tx, q, seq, name) = (vault_far_tx.clone(), query.clone(), vault_seq, host.name.clone());
                     std::thread::spawn(move || {
-                        let _ = tx.send((seq, crate::vault::search_far(&at, &name, &q, 40), None));
+                        let found = crate::vault::search_far(&at, &name, &q, 40);
+                        let _ = tx.send((seq, Some(name), found));
                     });
                 }
             }
@@ -8072,6 +8073,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 hits,
                 capped: false,
                 searching: true,
+                failed: Vec::new(),
                 asking,
                 sleeping,
                 seq: vault_seq,
@@ -8080,16 +8082,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Hits from another machine, joining the search that asked for them.
         // A conversation a copied machine carries from the one it was copied
         // from is listed once
-        while let Ok((seq, far, here)) = vault_far_rx.try_recv() {
+        while let Ok((seq, machine, found)) = vault_far_rx.try_recv() {
             let Some(v) = vault_view.as_mut().filter(|v| v.seq == seq) else { continue };
-            match here {
-                Some(capped) => {
-                    v.searching = false;
-                    v.capped = capped;
+            match machine {
+                None => v.searching = false,
+                Some(name) => {
+                    v.asking = v.asking.saturating_sub(1);
+                    // A machine that could not be searched is said by name,
+                    // not passed over as one that had nothing
+                    if found.failed.is_some() {
+                        v.failed.push(name);
+                    }
                 }
-                None => v.asking = v.asking.saturating_sub(1),
             }
-            for h in far {
+            // Any one of them stopping before the end is the whole search
+            // stopping before the end
+            v.capped |= found.capped;
+            for h in found.hits {
                 if !v.hits.iter().any(|x| x.tab.is_none() && x.program == h.program && x.id == h.id) {
                     v.hits.push(h);
                 }

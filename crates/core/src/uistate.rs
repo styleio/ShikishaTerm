@@ -282,6 +282,11 @@ pub struct VaultState {
     /// This PC's records still being read through: their hits join when done
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub searching: bool,
+    /// The machines that could not be searched, by the names the settings give
+    /// them. Said on the page, so a machine that did not answer is not taken
+    /// for one that had nothing
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<String>,
     /// Machines elsewhere still being searched: their hits join as they come
     #[serde(default, skip_serializing_if = "is_zero")]
     pub asking: usize,

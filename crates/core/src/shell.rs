@@ -3406,6 +3406,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #vault .vredge { text-align:center; font-size:11px; color:var(--faint); margin:0 0 var(--s5); }
   #vault .vredge.end { margin:var(--s2) 0 0; }
   #vault .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
+  #vault .vhint.bad { color:var(--warn); }
   #vault .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius:var(--r-ctl);
     padding:var(--s2) var(--s3); }
@@ -15035,8 +15036,15 @@ function renderVault() {
     far.push(el("button", {class:"quiet", onclick:() => send({kind:"vaultsearch", query: vs.query || "", wake:true})},
       (T["vault.wake"] || "").replaceAll("{n}", vs.sleeping)));
   }
+  // A machine that did not answer is not one that had nothing
+  if (vs && vs.failed && vs.failed.length) {
+    far.push(el("div", {class:"vhint bad"}, (T["vault.failed"] || "{names}").replaceAll("{names}", vs.failed.join(", "))));
+  }
   if (!hits.length) {
-    hint.textContent = vs && (vs.asking || vs.searching) ? "" : (T["vault.none"] || "Nothing found.");
+    // Nothing, said only once everything has answered -- and said as nothing
+    // among what was looked through when the search stopped before the end
+    hint.textContent = vs && (vs.asking || vs.searching) ? ""
+      : vs && vs.capped ? (T["vault.none.capped"] || "") : (T["vault.none"] || "Nothing found.");
     for (const f of far) list.append(f);
     return;
   }
@@ -15197,9 +15205,17 @@ function drawVaultRead(body, d, query) {
     showMark(0);
     return;
   }
-  // Looked for, and not in anything that was said or run: it was only in
-  // what the record notes about itself. Said, rather than showing a page with
-  // nothing marked on it and leaving the person to wonder
+  // What the reading found it in is what decides, not what the page managed
+  // to mark: a word marking cannot find in the text drawn (its lowercase is
+  // another length) still holds, and the place is brought into view
+  const found = items.findIndex(it => it.hit);
+  if (found >= 0) {
+    const at = body.querySelectorAll(".rturn, .vwork")[found];
+    if (at) at.scrollIntoView({block:"center"});
+    return;
+  }
+  // Looked for, and found in nothing said and nothing run. Said, rather than
+  // showing a page with nothing marked on it and leaving the person to wonder
   if (query.trim()) body.prepend(el("div", {class:"vrnote"}, T["vault.nohit"] || ""));
   // Nothing looked for: the conversation opens where it ended, the way the
   // other reader does -- the last thing said is what a list of recent ones
@@ -15218,7 +15234,11 @@ function fillWork(w, work, error) {
   }
   w.dataset.filled = "1";
   const query = vaultReading ? vaultReading.query : "";
+  const leftOut = n => el("div", {class:"vpcut"}, (T["vault.work.more"] || "{n}").replaceAll("{n}", n));
   for (const p of work.pieces || []) {
+    // Pieces left out before this one -- a long stretch keeps what holds the
+    // words, wherever it lies, and says where it skipped
+    if (p.skipped) inside.append(leftOut(p.skipped));
     const box = el("div", {class:"vpiece " + p.kind});
     if (p.kind === "say") box.append(rdMarkup(p.text));
     else {
@@ -15235,7 +15255,7 @@ function fillWork(w, work, error) {
     if (p.hit) markWords(box, query);
     inside.append(box);
   }
-  if (work.more) inside.append(el("div", {class:"vpcut"}, (T["vault.work.more"] || "{n}").replaceAll("{n}", work.more)));
+  if (work.more) inside.append(leftOut(work.more));
   // Opened by a press after the page was drawn: its marks join the walk
   if (vaultReading && vaultReading.answer) {
     const all = [...document.querySelectorAll("#vault .vrbody mark.vmark")];

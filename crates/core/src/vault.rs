@@ -185,35 +185,46 @@ fn search_in(sources: &[Source], query: &str, limit: usize, stop: &dyn Fn() -> b
 /// the folder and the id are) and the line it matched on (for the context
 /// shown), and `machine` is put in front of each hit's name, so a row says
 /// where the conversation is
-pub fn search_far(at: &crate::elsewhere::Elsewhere, machine: &str, query: &str, limit: usize) -> Vec<Hit> {
+pub fn search_far(at: &crate::elsewhere::Elsewhere, machine: &str, query: &str, limit: usize) -> FarFound {
     let needle = query.trim().to_lowercase();
     let sources = sources();
     // Searched over there by the bridge, when the person put one there and its
     // line is up: every record read all the way through, and judged the way
     // this PC judges its own. Otherwise, and when the bridge is too old to
-    // know the search, by one remote command as before
+    // know the search, by remote commands as before
     if let Some(found) = by_bridge::<Found>(at, "vault_search", serde_json::json!({
         "sources": sources, "query": query, "limit": limit,
     })) {
-        return found
-            .hits
-            .into_iter()
-            .map(|h| Hit {
-                title: format!("{machine}: {}", h.title),
-                host: Some(machine.to_string()),
-                ..h
-            })
-            .collect();
+        return FarFound {
+            hits: found
+                .hits
+                .into_iter()
+                .map(|h| Hit {
+                    title: format!("{machine}: {}", h.title),
+                    host: Some(machine.to_string()),
+                    ..h
+                })
+                .collect(),
+            capped: found.capped,
+            failed: None,
+        };
     }
-    let script = far_search_script(&sources, query);
-    let out = match crate::elsewhere::exec(at, &script, 120_000) {
+    let out = match crate::elsewhere::exec(at, &far_search_script(&sources, query), 120_000) {
         Ok(r) => r.out,
         Err(e) => {
             crate::append_hook_log(&format!("could not search the records on {}: {e:#}", at.address()));
-            return Vec::new();
+            return FarFound { failed: Some(format!("{e:#}")), ..FarFound::default() };
         }
     };
-    far_search_hits(&out, &sources, &needle, machine, limit)
+    let mut more = |again: &[(usize, String, usize)]| match crate::elsewhere::exec(at, &far_more_script(query, again), 120_000) {
+        Ok(r) => Some(r.out),
+        Err(e) => {
+            crate::append_hook_log(&format!("could not search further on {}: {e:#}", at.address()));
+            None
+        }
+    };
+    let (hits, capped) = far_search_hits(&out, &sources, &needle, machine, limit, &mut more);
+    FarFound { hits, capped, failed: None }
 }
 
 /// What a record notes about itself on every line, whose values a search on
@@ -228,30 +239,63 @@ const FAR_BOOKKEEPING: &[&str] = &[
     "originator", "model",
 ];
 
-/// How many lines of one record, and how much of them, are brought over as
-/// candidates. The first line that holds the words is almost always one a
-/// reader sees, once the bookkeeping is out of the way
+/// How many candidate lines of one record are brought over at a time, and at
+/// most how much of them. A record whose candidates were none of them words a
+/// reader sees -- the AI's own thinking mentions a word often, and it is never
+/// shown -- is asked for its next ones, up to `FAR_ROUNDS` times
 const FAR_CANDIDATE_LINES: usize = 20;
 const FAR_CANDIDATE_BYTES: usize = 1024 * 1024;
 
+/// How many times a record is asked for more candidates. Past that, the search
+/// says it stopped before the end rather than calling the record a miss
+const FAR_ROUNDS: usize = 10;
+
 /// How many records of one CLI there are brought over as candidates. The
 /// search wants a page of hits, and a common word would otherwise bring over
-/// a candidate from every record the machine holds
+/// a candidate from every record the machine holds. Reaching it is said
+/// (`@@CAP`), so the page says there may be older ones
 const FAR_CANDIDATE_RECORDS: usize = 80;
 
-/// The one command `search_far` runs: every CLI's records there, newest first,
-/// each that holds `query` printed as `@@F <which> <mtime> <path>`, then the
-/// start of it and the lines it matched on -- with the bookkeeping's values
-/// taken out -- both in base64
-fn far_search_script(sources: &[Source], query: &str) -> String {
+/// What a search of another machine came back with
+#[derive(Debug, Default, PartialEq)]
+pub struct FarFound {
+    pub hits: Vec<Hit>,
+    /// Stopped before the end: a record or a CLI's records had more to look
+    /// through than the search looks through
+    pub capped: bool,
+    /// Why the machine could not be searched at all
+    pub failed: Option<String>,
+}
+
+/// The shell function every far search is made of: `one <which> <file> <skip>`
+/// prints one record's candidate lines after the first `skip` -- with the
+/// bookkeeping's values taken out, "key":"value" becoming "key":"", which
+/// leaves every line the JSON it was -- as `@@F <which> <mtime> <skip> <path>`,
+/// then the start of the record and the candidates, both in base64. One more
+/// line than a round takes is asked for, so whether there are more is known
+/// from what came back. Fails for a record with no candidates at all
+fn far_search_prelude(query: &str) -> String {
     use base64::Engine as _;
     let q = base64::engine::general_purpose::STANDARD.encode(query.trim());
-    // "key":"value" becomes "key":"", which leaves every line the JSON it was
     let strip = format!(
         "s/\"({})\":\"([^\"\\\\]|\\\\.)*\"/\"\\1\":\"\"/g",
         FAR_BOOKKEEPING.join("|")
     );
-    let mut script = format!("cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); ");
+    let take = FAR_CANDIDATE_LINES + 1;
+    format!(
+        "cd \"$HOME\" 2>/dev/null || exit 0; q=$(printf %s '{q}' | base64 -d); \
+one() {{ if [ -z \"$q\" ]; then m=''; else \
+m=$(sed -E '{strip}' \"$2\" 2>/dev/null | grep -i -F -m $(($3 + {take})) -e \"$q\" | tail -n +$(($3 + 1)) | head -c {FAR_CANDIDATE_BYTES}); \
+[ -z \"$m\" ] && return 1; fi; \
+printf '@@F %s %s %s %s\\n' \"$1\" \"$(stat -c %Y \"$2\" 2>/dev/null || echo 0)\" \"$3\" \"$2\"; \
+head -c {FOLDER_CAP} \"$2\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; }}; "
+    )
+}
+
+/// The first command of a far search: every CLI's records there, newest first,
+/// each that holds `query` anywhere, through `one`
+fn far_search_script(sources: &[Source], query: &str) -> String {
+    let mut script = far_search_prelude(query);
     for (i, src) in sources.iter().enumerate() {
         let Some(rest) = src.verify.strip_prefix("{home}/").map(crate::sessionfind::any_id) else { continue };
         if !rest.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c)) {
@@ -259,56 +303,131 @@ fn far_search_script(sources: &[Source], query: &str) -> String {
         }
         script.push_str(&format!(
             "n=0; ls -t {rest} 2>/dev/null | while IFS= read -r f; do \
-if [ -z \"$q\" ]; then m=''; else grep -q -i -F -e \"$q\" \"$f\" 2>/dev/null || continue; \
-m=$(sed -E '{strip}' \"$f\" 2>/dev/null | grep -i -F -m {FAR_CANDIDATE_LINES} -e \"$q\" | head -c {FAR_CANDIDATE_BYTES}); \
-[ -z \"$m\" ] && continue; n=$((n+1)); [ $n -gt {FAR_CANDIDATE_RECORDS} ] && break; fi; \
-printf '@@F {i} %s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null || echo 0)\" \"$f\"; \
-head -c {FOLDER_CAP} \"$f\" | base64 -w0; echo; printf %s \"$m\" | base64 -w0; echo; done; "
+[ $n -ge {FAR_CANDIDATE_RECORDS} ] && {{ echo '@@CAP {i}'; break; }}; \
+if [ -n \"$q\" ]; then grep -q -i -F -e \"$q\" \"$f\" 2>/dev/null || continue; fi; \
+one {i} \"$f\" 0 && n=$((n+1)); done; "
         ));
     }
     script
 }
 
-/// What `far_search_script` printed, read into hits
-fn far_search_hits(out: &str, sources: &[Source], needle: &str, machine: &str, limit: usize) -> Vec<Hit> {
+/// A later command of a far search: the next candidates of the records whose
+/// earlier ones were none of them words a reader sees
+fn far_more_script(query: &str, more: &[(usize, String, usize)]) -> String {
+    let mut script = far_search_prelude(query);
+    for (which, path, skip) in more {
+        let quoted = crate::worktree::for_a_shell(std::slice::from_ref(path));
+        script.push_str(&format!("one {which} {quoted} {skip}; "));
+    }
+    script
+}
+
+/// One record as a far search printed it
+struct FarRecord {
+    which: usize,
+    when: u64,
+    skip: usize,
+    path: String,
+    head: String,
+    candidates: Vec<u8>,
+}
+
+/// What a far search's command printed: the records, and whether a CLI's
+/// records were more than it looks through
+fn far_records(out: &str) -> (Vec<FarRecord>, bool) {
     use base64::Engine as _;
     let decode = |b: &str| base64::engine::general_purpose::STANDARD.decode(b.trim()).unwrap_or_default();
-    let mut hits: Vec<Hit> = Vec::new();
+    let mut records = Vec::new();
+    let mut capped = false;
     let mut lines = out.lines();
-    while let Some(head_line) = lines.next() {
-        let Some(rest) = head_line.strip_prefix("@@F ") else { continue };
-        let mut parts = rest.splitn(3, ' ');
-        let (Some(which), Some(when), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
-        let head = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
-        let matched = decode(lines.next().unwrap_or_default());
-        let Some(src) = which.parse::<usize>().ok().and_then(|i| sources.get(i)) else { continue };
-        let Some(id) = id_of(Path::new(path), &head, src) else { continue };
-        let cwd = cwd_of(&head, src);
-        // The lines brought over are judged the way a record here is: a
-        // record whose words matched only in what it notes about itself is
-        // not a match
-        let snippet = match needle.is_empty() {
-            true => String::new(),
-            false => match crate::reader::mention(&matched, needle) {
-                Some((words, at)) => snippet(&words, at, needle.len()),
-                None => continue,
-            },
+    while let Some(line) = lines.next() {
+        if line.starts_with("@@CAP") {
+            capped = true;
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("@@F ") else { continue };
+        let mut parts = rest.splitn(4, ' ');
+        let (Some(which), Some(when), Some(skip), Some(path)) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+            continue;
         };
-        hits.push(Hit {
-            program: src.program.clone(),
-            id,
-            title: format!("{machine}: {}", title_of(cwd.as_deref(), &src.program)),
-            snippet,
-            cwd,
-            when: when.trim().parse().unwrap_or(0),
-            tab: None,
-            host: Some(machine.to_string()),
-        });
+        let head = String::from_utf8_lossy(&decode(lines.next().unwrap_or_default())).into_owned();
+        let candidates = decode(lines.next().unwrap_or_default());
+        let (Ok(which), Ok(skip)) = (which.parse(), skip.trim().parse()) else { continue };
+        records.push(FarRecord { which, when: when.trim().parse().unwrap_or(0), skip, path: path.to_string(), head, candidates });
+    }
+    (records, capped)
+}
+
+/// A far search's hits, judged here the way a record here is: a record whose
+/// candidates were only what it notes about itself is not a match. Asks `more`
+/// for the next candidates of a record that has more, round after round
+fn far_search_hits(
+    first: &str,
+    sources: &[Source],
+    needle: &str,
+    machine: &str,
+    limit: usize,
+    more: &mut dyn FnMut(&[(usize, String, usize)]) -> Option<String>,
+) -> (Vec<Hit>, bool) {
+    let (mut records, mut capped) = far_records(first);
+    let mut hits: Vec<Hit> = Vec::new();
+    for round in 0..=FAR_ROUNDS {
+        let mut again: Vec<(usize, String, usize)> = Vec::new();
+        for r in records.drain(..) {
+            let Some(src) = sources.get(r.which) else { continue };
+            let Some(id) = id_of(Path::new(&r.path), &r.head, src) else { continue };
+            let snippet = match needle.is_empty() {
+                true => String::new(),
+                false => match crate::reader::mention(&r.candidates, needle) {
+                    Some((words, at)) => snippet(&words, at, needle.len()),
+                    None => {
+                        // One more line than a round takes, or cut at its
+                        // size: there are more candidates after these
+                        let lines = r.candidates.split(|b| *b == b'\n').filter(|l| !l.is_empty()).count();
+                        if lines > FAR_CANDIDATE_LINES || r.candidates.len() >= FAR_CANDIDATE_BYTES {
+                            again.push((r.which, r.path, r.skip + lines.saturating_sub(1).max(1)));
+                        }
+                        continue;
+                    }
+                },
+            };
+            if hits.iter().any(|h| h.program == src.program && h.id == id) {
+                continue;
+            }
+            let cwd = cwd_of(&r.head, src);
+            hits.push(Hit {
+                program: src.program.clone(),
+                id,
+                title: format!("{machine}: {}", title_of(cwd.as_deref(), &src.program)),
+                snippet,
+                cwd,
+                when: r.when,
+                tab: None,
+                host: Some(machine.to_string()),
+            });
+        }
+        if again.is_empty() {
+            break;
+        }
+        if round == FAR_ROUNDS || hits.len() >= limit {
+            capped = true;
+            break;
+        }
+        match more(&again) {
+            Some(out) => records = far_records(&out).0,
+            None => {
+                capped = true;
+                break;
+            }
+        }
     }
     // Newest first across every CLI there, as the search here orders them
     hits.sort_by_key(|h| std::cmp::Reverse(h.when));
-    hits.truncate(limit);
-    hits
+    if hits.len() > limit {
+        capped = true;
+        hits.truncate(limit);
+    }
+    (hits, capped)
 }
 
 /// The arguments that reopen one hit, resuming its conversation.
@@ -1320,20 +1439,21 @@ mod far_search_tests {
             std::fs::write(to, &script).unwrap();
         }
         assert!(!script.contains("rm -rf"), "the words looked for reach the shell as words");
-        assert!(script.contains("grep -i -F -m 20"), "{script}");
+        assert!(script.contains("grep -i -F -m $(($3 + 21))"), "{script}");
         assert!(script.contains("\"(cwd|gitBranch|"), "the bookkeeping is not taken out before looking: {script}");
+        assert!(script.contains("@@CAP 0"), "reaching the records' cap is not said: {script}");
 
         use base64::Engine as _;
         let b = |t: &str| base64::engine::general_purpose::STANDARD.encode(t);
         let head = r#"{"type":"user","cwd":"/home/user/site","sessionId":"aaa"}"#;
         let line = r#"{"type":"user","cwd":"","message":{"role":"user","content":"please fix the login bug in auth.rs"}}"#;
-        let out = format!(
-            "@@F 0 1790430222 .claude/projects/-home-user-site/aaa.jsonl\n{}\n{}\n",
-            b(head),
-            b(line)
-        );
-        let hits = far_search_hits(&out, &[claude()], "login bug", "vm", 10);
+        let record = |id: &str, skip: usize, candidates: &str| {
+            format!("@@F 0 1790430222 {skip} .claude/projects/-home-user-site/{id}.jsonl\n{}\n{}\n", b(head), b(candidates))
+        };
+        let mut never = |_: &[(usize, String, usize)]| -> Option<String> { panic!("nothing more was needed") };
+        let (hits, capped) = far_search_hits(&record("aaa", 0, line), &[claude()], "login bug", "vm", 10, &mut never);
         assert_eq!(hits.len(), 1);
+        assert!(!capped);
         assert_eq!(hits[0].id, "aaa");
         assert!(hits[0].title.starts_with("vm: "), "{}", hits[0].title);
         assert!(hits[0].snippet.contains("login bug"), "{}", hits[0].snippet);
@@ -1342,12 +1462,33 @@ mod far_search_tests {
         // A line whose words did not hold it -- it was only in what the
         // record notes about itself -- is not a match
         let noted = r#"{"type":"user","cwd":"","instructions":"login bug","message":{"role":"user","content":"hello"}}"#;
-        let out = format!(
-            "@@F 0 1790430222 .claude/projects/-home-user-site/bbb.jsonl\n{}\n{}\n",
-            b(head),
-            b(noted)
-        );
-        assert!(far_search_hits(&out, &[claude()], "login bug", "vm", 10).is_empty());
+        let (hits, _) = far_search_hits(&record("bbb", 0, noted), &[claude()], "login bug", "vm", 10, &mut never);
+        assert!(hits.is_empty());
+
+        // A record whose first candidates are all thinking is asked for its
+        // next ones, and the match after them is found
+        let thought = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the login bug again"}]}}"#;
+        let first: String = std::iter::repeat_n(thought, FAR_CANDIDATE_LINES + 1).collect::<Vec<_>>().join("\n");
+        let mut asked: Vec<(usize, String, usize)> = Vec::new();
+        let mut more = |again: &[(usize, String, usize)]| {
+            asked.extend_from_slice(again);
+            Some(record("ccc", again[0].2, line))
+        };
+        let (hits, capped) = far_search_hits(&record("ccc", 0, &first), &[claude()], "login bug", "vm", 10, &mut more);
+        assert_eq!(asked, vec![(0, ".claude/projects/-home-user-site/ccc.jsonl".to_string(), FAR_CANDIDATE_LINES)]);
+        assert_eq!(hits.len(), 1, "the match after twenty thoughts was missed");
+        assert!(!capped);
+
+        // Asked for more past the rounds it may ask, the search says it
+        // stopped before the end rather than calling the record a miss
+        let mut forever = |again: &[(usize, String, usize)]| Some(record("ddd", again[0].2, &first));
+        let (hits, capped) = far_search_hits(&record("ddd", 0, &first), &[claude()], "login bug", "vm", 10, &mut forever);
+        assert!(hits.is_empty());
+        assert!(capped, "a search that stopped before the end did not say so");
+
+        // ...and so does one whose machine had more records than it reads
+        let (_, capped) = far_search_hits(&format!("{}@@CAP 0\n", record("aaa", 0, line)), &[claude()], "login bug", "vm", 10, &mut never);
+        assert!(capped);
     }
 }
 
