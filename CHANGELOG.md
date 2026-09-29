@@ -9,6 +9,14 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A Chat panel in the right-hand column** shows what was said in the AI tab in
+  front, newest first, and who really sent each line: you at this PC or from
+  afar, another tab, a job, or automation. Checkboxes narrow it to what you sent,
+  what an AI sent, the AI's replies, tool runs and events (a question answered
+  and by whom, a stop and by whom); typing narrows it at once and then searches
+  every conversation the tab had, tool output included. Lines can be pinned and
+  given a note. What only the app saw is kept in `data/conversations.db` without
+  any of the words; pins and notes in `config/conversation-marks.json`.
 - **Find opens a past conversation to read before anything is reopened.** A
   result opens the whole conversation in the same box, first word to last, with
   the words looked for marked and brought into view (the arrows at the foot walk

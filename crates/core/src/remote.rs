@@ -234,6 +234,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Reading one of those conversations is a read, of the same records
         // the search already reads
         Ev::VaultRead { .. } => true,
+        // The column's conversation panel: reading what was said in a tab, the
+        // same records; and a pin or a note, which is the person's own
+        // writing about their own conversation
+        Ev::Convo { .. } => true,
         // Asking what was said in a folder before is a read, and putting a tab
         // back into one of those conversations is the restart the phone can
         // already ask for, with the conversation named

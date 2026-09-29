@@ -5,9 +5,12 @@ rules below exist so that any version of the app can open a file an older versio
 bring it up to date without losing a row, and refuse a file a newer version wrote instead of
 damaging it.
 
-The worked example is the record of handed work: `crates/core/src/orch/db.rs`, its steps in
-`crates/core/src/orch/migrations/`, and [orchestration-db.md](orchestration-db.md). Copy it
-rather than inventing another way.
+What every file shares -- how it is opened, the numbered steps, the rebuild, the generated
+design file and the tests of its numbering -- is written once in `crates/core/src/sqlite.rs`.
+A feature's store calls it; it does not carry a copy. The worked examples are the record of
+handed work (`crates/core/src/orch/db.rs`, [orchestration-db.md](orchestration-db.md)) and
+the record of conversations (`crates/core/src/convo/db.rs`,
+[conversations-db.md](conversations-db.md)). Follow them rather than inventing another way.
 
 SQLite is bundled with `rusqlite` (`features = ["bundled"]`), so the version is known and the
 same on every machine: **3.53.2** today (see `libsqlite3-sys` in `Cargo.lock`). Anything
@@ -30,7 +33,8 @@ described here as needing a newer SQLite is available.
 
 ## 2. Opening a connection
 
-Every connection, every time, before anything else:
+Every connection, every time, before anything else. `sqlite::open(path, STEPS, what)` does
+all of it (and `sqlite::in_memory` for tests):
 
 ```rust
 conn.pragma_update(None, "journal_mode", "WAL")?;     // readers do not block the writer
@@ -42,8 +46,10 @@ conn.pragma_update(None, "foreign_keys", "ON")?;      // off by default in SQLit
 
 - `foreign_keys` is **off by default and per connection**. A connection that forgets it
   silently stops enforcing every `REFERENCES` in the file.
-- Keep **one writer**: do the writes from one thread (the app's main loop, for the record of
-  handed work). Transactions then guard against a program killed half way, not against a
+- Keep **one writer**: do the writes from one thread (the app's main loop, for both records
+  above). A thread that only reads opens its own read-only connection, which WAL lets run
+  beside the writer; it does not run the steps (the writer did), and refuses a file at a
+  version it does not know. Transactions then guard against a program killed half way, not against a
   second writer.
 
 ## 3. Designing tables

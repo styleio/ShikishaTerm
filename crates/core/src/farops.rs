@@ -21,6 +21,8 @@ type Op = fn(&Value) -> Result<Value, String>;
 pub const OPS: &[(&str, Op)] = &[
     ("ping", ping),
     ("read_page", read_page),
+    ("read_after", read_after),
+    ("read_work", read_work),
     ("put_key", put_key),
     ("drop_key", drop_key),
     ("vault_search", crate::vault::bridge_search),
@@ -76,6 +78,38 @@ fn read_page(p: &Value) -> Result<Value, String> {
     };
     let page = crate::reader::read_back(&path, before, want).map_err(|e| e.to_string())?;
     serde_json::to_value(page).map_err(|e| e.to_string())
+}
+
+/// A stretch of a conversation record read forwards from a place in it (see
+/// `reader::read_after`). Null when the CLI has not written the record yet
+fn read_after(p: &Value) -> Result<Value, String> {
+    let glob = text(p, "glob")?;
+    let id = text(p, "id")?;
+    let from = p.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let want = p.get("want").and_then(Value::as_u64).unwrap_or(6) as usize;
+    let Some(path) = crate::sessionfind::locate(glob, id) else {
+        return Ok(Value::Null);
+    };
+    let q = p.get("q").and_then(Value::as_str).unwrap_or_default();
+    let later = crate::reader::read_after(&path, from, want, q).map_err(|e| e.to_string())?;
+    serde_json::to_value(later).map_err(|e| e.to_string())
+}
+
+/// One stretch of a conversation's work opened (see `reader::Record::work`).
+/// Null when the CLI has not written the record
+fn read_work(p: &Value) -> Result<Value, String> {
+    let glob = text(p, "glob")?;
+    let id = text(p, "id")?;
+    let from = p.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let to = p.get("to").and_then(Value::as_u64).unwrap_or(from);
+    let q = p.get("q").and_then(Value::as_str).unwrap_or_default();
+    let Some(record) = crate::reader::Record::named(glob, id, None) else {
+        return Ok(Value::Null);
+    };
+    match record.work(from, to, q) {
+        None => Ok(Value::Null),
+        Some(work) => serde_json::to_value(work.map_err(|e| e.to_string())?).map_err(|e| e.to_string()),
+    }
 }
 
 /// A tab's key, for the `shikisha` command in that tab to show this app. In a

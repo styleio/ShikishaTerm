@@ -146,11 +146,14 @@ pub struct Mailbox {
     pub selects: Vec<usize>,
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
-    /// phone's relay.
-    pub says: Vec<(usize, String)>,
+    /// phone's relay, each saying which it was
+    pub says: Vec<(usize, String, crate::convo::Device)>,
     /// Quick commands pressed, by id, each with the tab it is for (0 = the one
     /// in view). Filled from both surfaces, like `says`
-    pub quicks: Vec<(String, usize)>,
+    pub quicks: Vec<(String, usize, crate::convo::Device)>,
+    /// Requests from the column's conversation panel (`Ev::Convo`), from the
+    /// window or from afar
+    pub convos: Vec<shikisha_shared::Ev>,
     /// Something the page draws over everything -- the quick commands, the
     /// ideas -- went up (true) or came down
     pub covered: Option<bool>,
@@ -476,11 +479,11 @@ impl Mailbox {
         std::mem::take(&mut self.frames)
     }
     /// Takes ownership of chat lines typed into model tabs
-    pub fn take_says(&mut self) -> Vec<(usize, String)> {
+    pub fn take_says(&mut self) -> Vec<(usize, String, crate::convo::Device)> {
         std::mem::take(&mut self.says)
     }
     /// Takes the quick commands pressed since the last drain
-    pub fn take_quicks(&mut self) -> Vec<(String, usize)> {
+    pub fn take_quicks(&mut self) -> Vec<(String, usize, crate::convo::Device)> {
         std::mem::take(&mut self.quicks)
     }
     pub fn take_covered(&mut self) -> Option<bool> {
@@ -547,6 +550,7 @@ impl Mailbox {
             Ev::VaultSearch { query, wake } => self.vault_queries.push((query, wake)),
             ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
             ev @ Ev::VaultRead { .. } => self.vault_reads.push(ev),
+            ev @ Ev::Convo { .. } => self.convos.push(ev),
             Ev::PastList { tab, wake } => self.past_lists.push((tab, wake)),
             Ev::PastResume { tab, id } => self.past_resumes.push((tab, id)),
             _ => {}
@@ -560,6 +564,9 @@ impl Mailbox {
     }
     pub fn take_vault_reads(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_reads)
+    }
+    pub fn take_convos(&mut self) -> Vec<shikisha_shared::Ev> {
+        std::mem::take(&mut self.convos)
     }
     pub fn take_past_lists(&mut self) -> Vec<(u32, bool)> {
         std::mem::take(&mut self.past_lists)

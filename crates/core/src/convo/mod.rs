@@ -1,0 +1,273 @@
+//! Conversations: what was said in an AI tab, read back from the CLI's own
+//! record, with what only this app saw put beside it.
+//!
+//! A CLI writes down every word of a conversation, and nothing about how the
+//! words got there. What a person typed at the window, what they sent from the
+//! phone, what another tab asked and what a job briefed all read as "the
+//! user" in its record. It cannot say who answered a question it asked, who
+//! stopped it, or that it moved to a new conversation after a `/clear`. This
+//! app can, because every one of those passed through it.
+//!
+//! * [`db`] -- the record of those things, kept on disk (`conversations.db`).
+//!   Written only here, by [`Log`], from the app's main loop.
+//! * [`read`] -- a page of a conversation for the panel beside the terminal:
+//!   the words from the CLI's record, each person's line matched to whoever
+//!   sent it, with the waits and stops in between. Read on a thread.
+//! * [`marks`] -- the pins and notes a person puts on what was said. Theirs,
+//!   so kept with their settings (`config/conversation-marks.json`), not here.
+
+pub mod db;
+pub mod marks;
+pub mod read;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+pub use db::{By, Device, Origin, Stop};
+
+use crate::detect::TabState;
+
+/// Where the record lives
+pub fn path() -> PathBuf {
+    crate::config::state_path("conversations.db")
+}
+
+/// Something that happened to a tab, written down where it happened and put
+/// into the record by the main loop at its next look ([`Log::take_notes`]).
+/// What types a job's brief or a script's line into a tab is a long way from
+/// the loop that holds the record; a note is how it says so without the
+/// record being handed down to it
+#[derive(Clone, Debug)]
+enum Note {
+    Sent { tab: String, texts: Vec<String>, from: Origin, at: i64 },
+    Touched { tab: String, from: Origin, at: i64 },
+    Stopped { tab: String, stop: Stop, at: i64 },
+}
+
+static NOTES: Mutex<Vec<Note>> = Mutex::new(Vec::new());
+
+fn note(n: Note) {
+    NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(n);
+}
+
+/// Text went into `tab` (by id) from `from`. `texts` are the ways it may land
+/// in the CLI's record: what was typed whole first, then any part of it the
+/// CLI may keep on its own
+pub fn note_sent(tab: &str, texts: &[&str], from: Origin) {
+    note(Note::Sent { tab: tab.to_string(), texts: texts.iter().map(|t| t.to_string()).collect(), from, at: db::now_ms() });
+}
+
+/// Input from `from` reached `tab`: the answer, when it was waiting on one
+pub fn note_touched(tab: &str, from: Origin) {
+    note(Note::Touched { tab: tab.to_string(), from, at: db::now_ms() });
+}
+
+/// `tab` was stopped
+pub fn note_stopped(tab: &str, stop: Stop) {
+    note(Note::Stopped { tab: tab.to_string(), stop, at: db::now_ms() });
+}
+
+/// What was last written about a tab, so the loop that looks at every tab
+/// five times a second writes only when something changed
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Sighting {
+    record_id: String,
+    cli: String,
+    is_yolo: bool,
+}
+
+/// The writer of the record, held by the app's main loop. A record that
+/// cannot be opened costs the app nothing but this record: every call becomes
+/// a no-op, and why is said once in the hooks log
+pub struct Log {
+    store: Option<db::Store>,
+    /// Whether a failure has been said already. One line, not one a tick
+    said_failure: bool,
+    seen: HashMap<String, Sighting>,
+}
+
+impl Default for Log {
+    fn default() -> Self {
+        Self::open(&path())
+    }
+}
+
+impl Log {
+    pub fn open(path: &std::path::Path) -> Self {
+        match db::Store::open(path) {
+            Ok(store) => Log { store: Some(store), said_failure: false, seen: HashMap::new() },
+            Err(e) => {
+                crate::append_hook_log(&format!("conversations: the record could not be opened ({e:#}); nothing is recorded"));
+                Log { store: None, said_failure: true, seen: HashMap::new() }
+            }
+        }
+    }
+
+    /// A record that lives only as long as this value (tests)
+    pub fn in_memory() -> Self {
+        Log { store: db::Store::in_memory().ok(), said_failure: false, seen: HashMap::new() }
+    }
+
+    fn write(&mut self, what: &str, f: impl FnOnce(&mut db::Store) -> anyhow::Result<()>) {
+        let Some(store) = self.store.as_mut() else { return };
+        if let Err(e) = f(store)
+            && !self.said_failure
+        {
+            self.said_failure = true;
+            crate::append_hook_log(&format!("conversations: could not record {what} ({e:#}); later failures are not repeated"));
+        }
+    }
+
+    /// Where a tab is: which conversation its CLI is on, which CLI, and
+    /// whether it runs without asking first. Called for every AI tab on every
+    /// look; writes only when the tab moved to another conversation
+    pub fn follow(&mut self, tab: &str, cli: &str, record_id: Option<&str>, is_yolo: bool) {
+        let Some(record_id) = record_id.filter(|r| !r.is_empty()) else { return };
+        let now = Sighting { record_id: record_id.to_string(), cli: cli.to_string(), is_yolo };
+        if self.seen.get(tab) == Some(&now) {
+            return;
+        }
+        self.seen.insert(tab.to_string(), now);
+        let at = db::now_ms();
+        self.write("a conversation", |s| s.seen(tab, cli, record_id, is_yolo, at));
+    }
+
+    /// The conversation a tab was last seen on
+    pub fn record_of(&self, tab: &str) -> Option<&str> {
+        self.seen.get(tab).map(|s| s.record_id.as_str())
+    }
+
+    /// Everything noted since the last look (`note_sent` and the others), in
+    /// the order it happened. Called by the main loop on every turn, and
+    /// before a change of state is written, so an answer lands on the wait it
+    /// answered
+    pub fn take_notes(&mut self) {
+        let notes = std::mem::take(&mut *NOTES.lock().unwrap_or_else(|e| e.into_inner()));
+        for n in notes {
+            match n {
+                Note::Sent { tab, texts, from, at } => {
+                    let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+                    self.sent_at(&tab, &texts, &from, at);
+                }
+                Note::Touched { tab, from, at } => self.touched_at(&tab, &from, at),
+                Note::Stopped { tab, stop, at } => self.write("a stop", |s| s.stopped(&tab, &stop, at)),
+            }
+        }
+    }
+
+    /// Text went into `tab` (see [`note_sent`])
+    pub fn sent(&mut self, tab: &str, texts: &[&str], from: &Origin) {
+        self.sent_at(tab, texts, from, db::now_ms());
+    }
+
+    fn sent_at(&mut self, tab: &str, texts: &[&str], from: &Origin, at: i64) {
+        let record = self.record_of(tab).map(str::to_string);
+        // What a CLI may keep of the text: the text, and the text with the
+        // app's own envelopes taken out, as the reader reads it back
+        let mut ways: Vec<String> = Vec::new();
+        for t in texts {
+            ways.push(t.to_string());
+            ways.push(crate::reader::human_part(t));
+        }
+        let ways: Vec<&str> = ways.iter().map(String::as_str).collect();
+        self.write("what was sent", |s| s.sent(tab, record.as_deref(), &ways, from, at));
+        self.touched_at(tab, from, at);
+    }
+
+    /// A tab changed state. A wait for an answer begins or ends here; a usage
+    /// limit reached is a stop, with the CLI's own line about it
+    pub fn state(&mut self, tab: &str, new: TabState, limit_line: Option<&str>) {
+        self.take_notes();
+        let at = db::now_ms();
+        self.write("a change of state", |s| s.state(tab, new.label(), at));
+        if new == TabState::Limit {
+            let stop = Stop { by: By::Limit, device: None, how: "limit", job: None, why: limit_line.map(str::to_string) };
+            self.write("a stop", |s| s.stopped(tab, &stop, at));
+        }
+        // The conversation was still going on now
+        if let Some(seen) = self.seen.get(tab).cloned() {
+            self.write("a conversation", |s| s.seen(tab, &seen.cli, &seen.record_id, seen.is_yolo, at));
+        }
+    }
+
+    /// Input reached `tab` from `from`: the answer, when it was waiting on one
+    pub fn touched(&mut self, tab: &str, from: &Origin) {
+        self.touched_at(tab, from, db::now_ms());
+    }
+
+    fn touched_at(&mut self, tab: &str, from: &Origin, at: i64) {
+        self.write("an answer", |s| s.touched(tab, from, at).map(|_| ()));
+    }
+
+    /// `tab` was stopped
+    pub fn stopped(&mut self, tab: &str, stop: &Stop) {
+        let at = db::now_ms();
+        self.write("a stop", |s| s.stopped(tab, stop, at));
+    }
+
+    /// A conversation whose record is gone (see [`db::Store::forget_conversation`])
+    pub fn forget(&mut self, tab: &str, record_id: &str) {
+        self.write("a forgotten conversation", |s| s.forget_conversation(tab, record_id));
+    }
+
+    /// The app is closing: every stretch of time still open ends now
+    pub fn close(&mut self) {
+        self.take_notes();
+        let at = db::now_ms();
+        self.write("the end of every stretch", |s| s.close_spans(at));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tab_is_written_down_only_when_it_moves() {
+        let mut log = Log::in_memory();
+        for _ in 0..5 {
+            log.follow("t", "claude", Some("a"), false);
+        }
+        log.follow("t", "claude", None, false);
+        log.follow("t", "claude", Some("b"), true);
+        let store = log.store.as_ref().unwrap();
+        let c = store.conversations("t").unwrap();
+        assert_eq!(c.iter().map(|c| c.record_id.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
+        assert!(c[0].is_yolo);
+        assert_eq!(log.record_of("t"), Some("b"));
+    }
+
+    #[test]
+    fn what_was_sent_is_kept_against_the_conversation_and_answers_a_question() {
+        let mut log = Log::in_memory();
+        log.follow("t", "claude", Some("a"), false);
+        log.state("t", TabState::Question, None);
+        log.sent("t", &["<shikisha-note>x</shikisha-note>yes, go on"], &Origin::person(Device::Phone, "composer"));
+        let store = log.store.as_ref().unwrap();
+        let sent = store.sends("t", 0, i64::MAX).unwrap();
+        assert_eq!(sent[0].record_id.as_deref(), Some("a"));
+        assert!(sent[0].heads.contains(&db::head("yes, go on").unwrap()), "the words as the reader reads them back");
+        let w = store.waits("t", i64::MIN, i64::MAX).unwrap();
+        assert_eq!((w[0].by.as_deref(), w[0].via.as_deref()), (Some("person"), Some("composer")));
+    }
+
+    #[test]
+    fn a_limit_reached_is_a_stop_with_the_cli_s_own_line() {
+        let mut log = Log::in_memory();
+        log.state("t", TabState::Busy, None);
+        log.state("t", TabState::Limit, Some("5-hour limit reached ∙ resets 3pm"));
+        let s = log.store.as_ref().unwrap().stops("t", i64::MIN, i64::MAX).unwrap();
+        assert_eq!((s[0].by.as_str(), s[0].how.as_str(), s[0].why.as_deref()), ("limit", "limit", Some("5-hour limit reached ∙ resets 3pm")));
+    }
+
+    #[test]
+    fn a_program_run_without_asking_is_told_by_its_command_line() {
+        use crate::tab::runs_without_asking;
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(runs_without_asking(&argv(&["claude", "--dangerously-skip-permissions"])));
+        assert!(runs_without_asking(&argv(&["C:\\bin\\codex.exe", "--dangerously-bypass-approvals-and-sandbox"])));
+        assert!(!runs_without_asking(&argv(&["claude"])));
+        assert!(!runs_without_asking(&argv(&["bash", "--yolo"])), "a word means something only to the program it belongs to");
+    }
+}

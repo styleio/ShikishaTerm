@@ -45,6 +45,11 @@ pub trait Shell {
     fn last_drawn(&self) -> Option<&crate::uistate::UiState>;
     fn queue_input(&mut self, ev: Event);
     fn inject(&mut self, ev: Event);
+    /// Whether the event `poll` last handed over was `inject`ed -- done by
+    /// somebody from afar (the phone, or any page served over the network)
+    /// rather than at this machine. Recorded with who answered a question or
+    /// stopped an AI (`convo`)
+    fn polled_from_afar(&self) -> bool;
     fn toggle_tab_bar(&self);
     fn toggle_side_bar(&self);
     fn take_open_settings(&mut self) -> Option<crate::mailbox::SettingsWanted>;
@@ -56,6 +61,8 @@ pub trait Shell {
     fn open_ideas(&self);
     fn push_git(&self, json: &str);
     fn push_files(&self, json: &str);
+    /// An answer for the column's conversation panel (already JSON-encoded)
+    fn push_convo(&self, json: &str);
     fn push_issues(&self, json: &str);
     fn push_ideas(&self, json: &str);
     /// A past conversation read for the Vault, or one stretch of its work
@@ -257,6 +264,8 @@ impl Shell for Headless {
     /// no keyboard here, so there is nothing to keep apart
     fn queue_input(&mut self, ev: Event) { self.typed.push_back(ev); }
     fn inject(&mut self, ev: Event) { self.typed.push_back(ev); }
+    /// Everything here came from afar: there is no keyboard at this machine
+    fn polled_from_afar(&self) -> bool { true }
     fn toggle_tab_bar(&self) {}
     fn toggle_side_bar(&self) {}
     fn take_open_settings( &mut self, ) -> Option<crate::mailbox::SettingsWanted> { None }
@@ -266,6 +275,7 @@ impl Shell for Headless {
     fn open_ideas(&self) {}
     fn push_git(&self, json: &str) { let _ = json; }
     fn push_files(&self, json: &str) { let _ = json; }
+    fn push_convo(&self, json: &str) { let _ = json; }
     fn push_issues(&self, json: &str) { let _ = json; }
     fn push_ideas(&self, json: &str) { let _ = json; }
     fn push_vault_read(&self, json: &str) { let _ = json; }

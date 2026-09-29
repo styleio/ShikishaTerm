@@ -1789,6 +1789,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // last looked at for it
     let mut orchestra = crate::orch::Orchestra::default();
     let mut orch_profiles = crate::orch::glue::Profiles::default();
+    // What only this app saw of each AI tab's conversation (`convo`): which
+    // conversation it is on, who sent what into it, who answered its
+    // questions and who stopped it. Written from this loop only
+    let mut convo_log = crate::convo::Log::default();
+    // A page of a conversation for the column's panel, read on a thread
+    let (convo_tx, convo_rx) = std::sync::mpsc::channel::<crate::convo::read::Found>();
     let mut orch_looked = std::time::Instant::now();
     let mut orch_manual: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     // The open jobs as the board draws them, rebuilt a few times a second
@@ -3063,6 +3069,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
                 transitions.push((i + 1, old, new));
+            }
+            // Which conversation each AI tab is on, and every change of state,
+            // for the record of conversations. A model bridge keeps no record
+            // of its own to put this beside
+            convo_log.take_notes();
+            for (t, &(_, old, new)) in tabs.iter().zip(&transitions) {
+                if !t.is_ai() || t.is_model() {
+                    continue;
+                }
+                let id = crate::orch::glue::tab_id(t);
+                let cli = t.ai_kind().unwrap_or_default();
+                convo_log.follow(&id, &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
+                if old != new {
+                    convo_log.state(&id, new, t.limit_note());
+                }
             }
             // What people asked the AIs, gathered by folder, and which folders
             // an AI just finished a turn in: what a folder's automatic name is
@@ -4498,10 +4519,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // (resets the auto-chain, and is rejected while locked)
                     remote::RemoteCmd::Send { tab, text } => {
                         let excerpt = log_excerpt(&text, 120);
+                        let said = text.clone();
                         if hand_line(
                             &mut tabs, &surfaces, tab, text, now_ms,
                             &mut pending_send, &mut ball,
                         ) {
+                            record_sent(&tabs, &surfaces, tab, &said, crate::convo::Origin::person(crate::convo::Device::Phone, "api"));
                             append_hook_log(&format!("remote send tab{tab}: {excerpt}"));
                         }
                     }
@@ -4537,6 +4560,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 &mut pending_send, &mut ball,
                             )
                         });
+                        if landed && let Some(n) = target {
+                            record_sent(&tabs, &surfaces, n, &text, crate::convo::Origin::person(crate::convo::Device::Phone, "reply"));
+                        }
                         let told = match landed {
                             true => i18n::tp("msg.notify.replied", &[("name", &name)]),
                             false => i18n::tp("msg.notify.reply_lost", &[("name", &name)]),
@@ -4554,6 +4580,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             }
                             t.chain_depth = 0;
                             t.last_manual_ms = Some(now_ms);
+                            record_keys(t, keys.as_bytes(), crate::convo::Device::Phone);
                             let _ = t.write_bytes(keys.as_bytes());
                         }
                     }
@@ -4659,12 +4686,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // keys_for and was dropped, which the loop's own
                     // fall-through guard had been saying all along.
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Say { tab, text }) => {
-                        shell.mail().says.push((tab, text));
+                        shell.mail().says.push((tab, text, crate::convo::Device::Phone));
                     }
                     // A quick command pressed on the phone: the same queue the
                     // window's press fills, looked up and sent on this machine
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Quick { id, tab }) => {
-                        shell.mail().quicks.push((id, tab));
+                        shell.mail().quicks.push((id, tab, crate::convo::Device::Phone));
                     }
                     // The bar's button, pressed on the phone: the same queue the
                     // board's press fills. A person's answer from wherever they
@@ -4675,6 +4702,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultSearch { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultOpen { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultRead { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Convo { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastList { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastResume { .. }) => {
                         shell.queue_ui(ev);
@@ -6048,7 +6076,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // Lines a person finished in the composer or the topic box, each for
         // the tab it names.
-        for (tab, line) in shell.mail().take_says() {
+        for (tab, line, device) in shell.mail().take_says() {
             let now_ms = start.elapsed().as_millis() as u64;
             let to = if tab == 0 { active } else { tab };
             // What the person sent names the tabs this one may drive, until
@@ -6058,7 +6086,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             {
                 mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&line));
             }
-            if !hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
+            let said = line.clone();
+            if hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
+                record_sent(&tabs, &surfaces, to, &said, crate::convo::Origin::person(device, "composer"));
+            } else {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
         }
@@ -6074,7 +6105,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // and open to whoever receives it. A shell is the person's own hands;
         // an AI is an AI reading it. A refusal about a secret is said by that
         // door (`caps::take_refusal`)
-        for (id, _tab) in shell.mail().take_quicks() {
+        for (id, _tab, device) in shell.mail().take_quicks() {
             let spec = crate::quick::arrange(&cfg.as_ref().map(|c| c.quick_commands.clone()).unwrap_or_default());
             // A folder is opened on the page and sends nothing; its id arriving
             // here, or one that is gone, is a page out of step with the settings
@@ -6118,7 +6149,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
             let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
-            match open_and_say(&desk, &at, &command, &program, &label, text, item.enter, &tabs, &mut pending_quicks, &mut reveal) {
+            let from = crate::convo::Origin::person(device, "quick");
+            match open_and_say(&desk, &at, &command, &program, &label, text, item.enter, from, &tabs, &mut pending_quicks, &mut reveal) {
                 Some(title) => {
                     append_hook_log(&format!(
                         "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
@@ -6148,7 +6180,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .is_some_and(|t| quick_ready(t, now_ms));
                 match (at, ready) {
                     (Some(s), true) => {
-                        hand_over(&mut tabs, &surfaces, s, p.text, p.submit, now_ms, &mut pending_send, &mut ball);
+                        let said = p.text.clone();
+                        if hand_over(&mut tabs, &surfaces, s, p.text, p.submit, now_ms, &mut pending_send, &mut ball) && p.submit {
+                            record_sent(&tabs, &surfaces, s, &said, p.from.clone());
+                        }
                     }
                     _ if Instant::now() > p.until => {
                         flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)]));
@@ -8177,6 +8212,38 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             shell.push_vault_read(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"vaultread\":{js}}}"));
+            }
+        }
+        // The column's conversation panel. What it looks at is worked out here,
+        // where the tabs and the settings are; the reading waits on the disk
+        // or on another machine, so it is done on a thread and answers below
+        for ev in shell.mail().take_convos() {
+            let shikisha_shared::Ev::Convo { panel, act, args } = ev else { continue };
+            let target = match convo_target(&panel, &args, &tabs, &desks) {
+                Ok(t) => t,
+                Err(why) => {
+                    let js = serde_json::json!({"panel": panel, "act": act, "req": args.get("req"), "ok": false, "error": why});
+                    shell.push_convo(&js.to_string());
+                    if let Some(r) = remote_ui.as_ref() {
+                        r.push_state(format!("{{\"convo\":{js}}}"));
+                    }
+                    continue;
+                }
+            };
+            let tx = convo_tx.clone();
+            std::thread::spawn(move || {
+                let found = crate::convo::read::answer(&target, &act, &args, &crate::convo::path(), &crate::convo::marks::path());
+                let _ = tx.send(found);
+            });
+        }
+        while let Ok(found) = convo_rx.try_recv() {
+            for (tab, record) in &found.forget {
+                convo_log.forget(tab, record);
+            }
+            let js = found.answer.to_string();
+            shell.push_convo(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"convo\":{js}}}"));
             }
         }
         // A folder renamed in the list, or taken out of it. Both are changes
@@ -11321,6 +11388,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             Duration::from_millis(16),
             session_at(&surfaces, active).and_then(|i| tabs.get(i)),
         )?;
+        // Where it was done: at this machine, or by somebody from afar
+        let device = match shell.polled_from_afar() {
+            true => crate::convo::Device::Phone,
+            false => crate::convo::Device::Window,
+        };
         // Once the window is gone, fall through to the same place as Ctrl+B q.
         // We want cleanup to live in exactly one place.
         if shell.mail().closed {
@@ -11617,11 +11689,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // And the AIs themselves. Stopping the hand-overs
                             // leaves whoever is mid-turn working, and the one
                             // still working is the one the stop was for
-                            let halted: Vec<&str> = tabs
-                                .iter()
-                                .filter(|t| t.interrupt())
-                                .map(|t| t.title.as_str())
-                                .collect();
+                            let halted: Vec<&Tab> = tabs.iter().filter(|t| t.interrupt()).collect();
+                            for t in halted.iter().filter(|t| t.is_ai() && !t.is_model()) {
+                                let stop = crate::convo::Stop {
+                                    by: crate::convo::By::Person,
+                                    device: Some(device),
+                                    how: "all",
+                                    job: None,
+                                    why: None,
+                                };
+                                crate::convo::note_stopped(&crate::orch::glue::tab_id(t), stop);
+                            }
+                            let halted: Vec<&str> = halted.iter().map(|t| t.title.as_str()).collect();
                             append_hook_log(&format!(
                                 "Emergency stop: automation off, interrupted [{}]",
                                 halted.join(", ")
@@ -11892,6 +11971,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // Typed characters show up at the very bottom. Scrolled back, they're invisible.
                             to_live(t);
                             finish_paste(&mut pending_send, t, active, now_ms);
+                            record_keys(t, &bytes, device);
                             t.write_bytes(&bytes)?;
                         }
                     }
@@ -11910,6 +11990,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         t.last_manual_ms = Some(now_ms);
                         to_live(t);
                         finish_paste(&mut pending_send, t, active, now_ms);
+                        record_keys(t, text.as_bytes(), device);
                         t.write_bytes(text.as_bytes())?;
                     }
             }
@@ -11922,6 +12003,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
     }
 
+    convo_log.close();
     if let Some(w) = &web {
         w.shutdown();
     }
@@ -13966,6 +14048,97 @@ pub const MANUAL_GUARD_MS: u64 = 5000;
 /// bridge has no prompt to type at and is told directly, anything else is typed
 /// and submitted the way a person at its keyboard would. Deciding that out at
 /// the edges meant every edge had to know, and the phone's edge did not.
+/// What the column's conversation panel is looking at: the tab named by
+/// `panel` (its id, or its name when it has none), or one conversation found
+/// by the search of every conversation (`args.past`: program, id, and the
+/// name of the machine it was had on). Refused with the reason a person reads
+fn convo_target(
+    panel: &str,
+    args: &serde_json::Value,
+    tabs: &[Tab],
+    desks: &[config::Desk],
+) -> std::result::Result<crate::convo::read::Target, String> {
+    if let Some(past) = args.get("past").filter(|p| p.is_object()) {
+        let program = past.get("program").and_then(serde_json::Value::as_str).unwrap_or_default();
+        let id = past.get("id").and_then(serde_json::Value::as_str).unwrap_or_default();
+        let glob = crate::profile::files()
+            .into_iter()
+            .find(|pf| pf.command_match.first().is_some_and(|c| c == program))
+            .and_then(|pf| pf.resume?.verify)
+            .ok_or_else(|| i18n::t("err.vault.no_program"))?;
+        let machine = match past.get("host").and_then(serde_json::Value::as_str).filter(|h| !h.is_empty()) {
+            None => None,
+            Some(name) => Some(
+                desks
+                    .iter()
+                    .flat_map(|d| &d.folders)
+                    .filter_map(|f| f.host.as_ref())
+                    .find(|h| h.name == name)
+                    .and_then(|h| crate::elsewhere::Elsewhere::of(h).ok())
+                    .ok_or_else(|| i18n::t("err.vault.no_machine"))?,
+            ),
+        };
+        return Ok(crate::convo::read::Target {
+            panel: panel.to_string(),
+            tab: crate::convo::db::Store::open_read(&crate::convo::path())
+                .ok()
+                .and_then(|s| s.tab_of(id).ok().flatten()),
+            live: None,
+            glob,
+            machine,
+            past: Some(id.to_string()),
+        });
+    }
+    let t = tabs
+        .iter()
+        .find(|t| t.key().matches(panel) || crate::orch::glue::tab_id(t) == panel)
+        .ok_or_else(|| i18n::t("convo.gone"))?;
+    if !t.is_ai() || t.is_model() {
+        return Err(i18n::t("convo.not_ai"));
+    }
+    let glob = t
+        .resume
+        .as_ref()
+        .and_then(|r| r.verify.clone())
+        .ok_or_else(|| i18n::t("convo.no_record"))?;
+    Ok(crate::convo::read::Target {
+        panel: panel.to_string(),
+        tab: Some(crate::orch::glue::tab_id(t)),
+        live: t.record_at(),
+        glob,
+        machine: t.machine(),
+        past: None,
+    })
+}
+
+/// Written down in the record of conversations: `text` went into the tab at
+/// screen position `at`, from `from`. Only for a tab whose CLI keeps a record
+/// of its own to put this beside -- not a shell, not a model bridge
+fn record_sent(tabs: &[Tab], surfaces: &[Surface], at: usize, text: &str, from: crate::convo::Origin) {
+    if let Some(t) = session_at(surfaces, at).and_then(|i| tabs.get(i))
+        && t.is_ai()
+        && !t.is_model()
+    {
+        crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[text], from);
+    }
+}
+
+/// Keys a person pressed into `t`, from `device`, written down in the record
+/// of conversations: an answer, when the tab was waiting on one, and a stop
+/// when it was Esc alone pressed while the AI was working
+fn record_keys(t: &Tab, bytes: &[u8], device: crate::convo::Device) {
+    if !t.is_ai() || t.is_model() {
+        return;
+    }
+    let id = crate::orch::glue::tab_id(t);
+    if bytes == b"\x1b" && t.state == TabState::Busy {
+        let stop = crate::convo::Stop { by: crate::convo::By::Person, device: Some(device), how: "esc", job: None, why: None };
+        crate::convo::note_stopped(&id, stop);
+        return;
+    }
+    crate::convo::note_touched(&id, crate::convo::Origin::person(device, "keys"));
+}
+
 pub fn hand_line(
     tabs: &mut [Tab],
     surfaces: &[Surface],
@@ -14338,6 +14511,7 @@ fn open_and_say(
     label: &str,
     text: String,
     submit: bool,
+    from: crate::convo::Origin,
     tabs: &[Tab],
     pending: &mut Vec<PendingQuick>,
     reveal: &mut Option<(String, Instant)>,
@@ -14356,6 +14530,7 @@ fn open_and_say(
         at: at.to_path_buf(),
         text,
         submit,
+        from,
         until: Instant::now() + QUICK_WAIT,
     });
     Some(title)
@@ -14621,7 +14796,10 @@ fn hand_to_ai_tab(
         *reveal = Some((name, Instant::now() + Duration::from_secs(20)));
         return Ok(serde_json::json!({"title": title, "already": true}));
     }
-    match open_and_say(&desk.name, at, &choice.key, &choice.name, label, prompt(), true, tabs, pending, reveal) {
+    // A button the person pressed (resolve the conflicts, review this); the
+    // words are the app's, written for them
+    let from = crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "button", sender: None, job: None };
+    match open_and_say(&desk.name, at, &choice.key, &choice.name, label, prompt(), true, from, tabs, pending, reveal) {
         Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
         None => Err(i18n::tp("msg.quick.open_failed", &[("label", label)])),
     }
@@ -14690,6 +14868,9 @@ pub struct PendingQuick {
     pub at: std::path::PathBuf,
     pub text: String,
     pub submit: bool,
+    /// Who asked for it, and from where: what the record of conversations
+    /// says sent the first message
+    pub from: crate::convo::Origin,
     pub until: Instant,
 }
 /// The screen to move to, following the ball. None if it shouldn't move.
@@ -15348,6 +15529,9 @@ pub fn exec_commands(
                     if touched_recently(t, now_ms) {
                         continue;
                     }
+                    if t.is_ai() && !t.is_model() {
+                        crate::convo::note_touched(&crate::orch::glue::tab_id(t), crate::convo::Origin::automation("script"));
+                    }
                     let _ = t.write_bytes(keys.as_bytes());
                 }
             }
@@ -15471,6 +15655,13 @@ pub fn exec_commands(
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
                     pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms, text.chars().count()));
+                    // Another tab's words, or the person's automation: whose
+                    // they were, for the record of conversations
+                    let sender = match (&from, origin) {
+                        (Some(f), o) if o != 0 => crate::convo::Origin::tab(f, "ask"),
+                        _ => crate::convo::Origin::automation("script"),
+                    };
+                    crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[&text], sender);
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 // A self-send (the opening nudge, a model's self-kick) starts
@@ -15977,6 +16168,7 @@ mod survey_tests {
             at: here.clone(),
             text: String::new(),
             submit: true,
+            from: crate::convo::Origin::person(crate::convo::Device::Window, "quick"),
             until: Instant::now() + QUICK_WAIT,
         }];
         assert_eq!(

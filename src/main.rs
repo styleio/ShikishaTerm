@@ -482,7 +482,10 @@ struct WinSurface {
     last_pane_screens: std::collections::HashMap<u32, (ScreenKey, String)>,
     /// Intents that arrived from the window, converted into the form the loop reads.
     /// The loop only understands terminal key input, so everything gets funneled there.
-    pending: std::collections::VecDeque<Event>,
+    /// Each is marked with whether it came from afar (`inject`)
+    pending: std::collections::VecDeque<(Event, bool)>,
+    /// Whether the event the loop was last handed came from afar
+    polled_afar: bool,
     /// The window is put away. Drawing goes on regardless (the phone reads the
     /// same state), but a notification's click has to bring it back first
     hidden: bool,
@@ -515,12 +518,14 @@ impl WinSurface {
     fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>) { self.phone_panes = panes; }
     fn is_hidden(&self) -> bool { self.hidden }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { self.last.as_ref() }
-    fn queue_input(&mut self, ev: Event) { self.pending.push_back(ev); }
+    fn queue_input(&mut self, ev: Event) { self.pending.push_back((ev, false)); }
 
     /// Puts an externally-arrived operation into the same queue as window keystrokes.
-    /// Whether it came from a phone or not, the loop sees no difference.
+    /// The loop carries it out the same way, and can still ask where it came
+    /// from (`polled_from_afar`): who answered a question, or stopped an AI,
+    /// is written down with the place they did it from
     fn inject(&mut self, ev: Event) {
-        self.pending.push_back(ev);
+        self.pending.push_back((ev, true));
     }
 
     /// Put the tab bar away, or bring it back out.
@@ -576,6 +581,11 @@ impl WinSurface {
     /// Hand one answer back to the column's file list (already JSON-encoded)
     fn push_files(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__files && window.__files({json});"));
+    }
+
+    /// Hand one answer back to the column's conversation panel (already JSON-encoded)
+    fn push_convo(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__convo && window.__convo({json});"));
     }
 
     /// Hand one answer back to the Issue tab (already JSON-encoded)
@@ -724,7 +734,7 @@ impl WinSurface {
                     // reaches the terminals on the next pass instead of after a
                     // sleep. The numbers themselves are read off `self` where
                     // the choice between the viewers is made (`terminal_size`).
-                    self.pending.push_back(Event::Resize(cols, rows));
+                    self.pending.push_back((Event::Resize(cols, rows), false));
                 }
                 Ev::FocusPane { id } => self.mail.focus_panes.push(id),
                 Ev::ClosePane { id } => self.mail.close_panes.push(id),
@@ -765,6 +775,7 @@ impl WinSurface {
                 ev @ (Ev::VaultSearch { .. }
                 | Ev::VaultOpen { .. }
                 | Ev::VaultRead { .. }
+                | Ev::Convo { .. }
                 | Ev::PastList { .. }
                 | Ev::PastResume { .. }) => self.mail.queue_ui(ev),
                 ev @ Ev::Branch { .. } => {
@@ -893,8 +904,8 @@ impl WinSurface {
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.mail.gos.push(go),
                 Ev::Scroll { by, row, col } => self.mail.scrolls.push((by, row, col)),
-                Ev::Say { tab, text } => self.mail.says.push((tab, text)),
-                Ev::Quick { id, tab } => self.mail.quicks.push((id, tab)),
+                Ev::Say { tab, text } => self.mail.says.push((tab, text, shikisha_core::convo::Device::Window)),
+                Ev::Quick { id, tab } => self.mail.quicks.push((id, tab, shikisha_core::convo::Device::Window)),
                 Ev::Covered { on } => self.mail.covered = Some(on),
                 Ev::Ideas { act, args } => self.mail.ideas.push((act, args)),
                 Ev::Where {
@@ -927,7 +938,7 @@ impl WinSurface {
                         pane: None,
                         folder: None,
                     }) {
-                        self.pending.push_back(e);
+                        self.pending.push_back((e, false));
                     }
                 }
                 // The pen a placed page drew for itself was pressed
@@ -988,7 +999,7 @@ impl WinSurface {
                 // single place that knows how.
                 other => {
                     for e in keys_for(&other) {
-                        self.pending.push_back(e);
+                        self.pending.push_back((e, false));
                     }
                 }
             }
@@ -1154,6 +1165,7 @@ fn run_in_window() -> Result<()> {
         last_layout: String::new(),
         last_pane_screens: std::collections::HashMap::new(),
         pending: std::collections::VecDeque::new(),
+        polled_afar: false,
         hidden: false,
         hotkeys: None,
         page_up: false,
@@ -1379,7 +1391,8 @@ impl WinSurface {
         if self.mail.closed {
             return Ok(None);
         }
-        if let Some(e) = self.pending.pop_front() {
+        if let Some((e, afar)) = self.pending.pop_front() {
+            self.polled_afar = afar;
             return Ok(Some(e));
         }
         std::thread::sleep(timeout);
@@ -2048,6 +2061,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { WinSurface::last_drawn(self) }
     fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }
     fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
+    fn polled_from_afar(&self) -> bool { self.polled_afar }
     fn toggle_tab_bar(&self) { WinSurface::toggle_tab_bar(self) }
     fn toggle_side_bar(&self) { WinSurface::toggle_side_bar(self) }
     fn take_open_settings(&mut self) -> Option<shikisha_core::mailbox::SettingsWanted> {
@@ -2059,6 +2073,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn open_ideas(&self) { WinSurface::open_ideas(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
+    fn push_convo(&self, json: &str) { WinSurface::push_convo(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }
     fn push_ideas(&self, json: &str) { WinSurface::push_ideas(self, json) }
     fn push_vault_read(&self, json: &str) { WinSurface::push_vault_read(self, json) }

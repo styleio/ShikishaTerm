@@ -2735,6 +2735,18 @@ pub fn bypass_flag(head: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether a program runs without asking first: the word that turns its
+/// questions off (`bypass_flag`) is on its command line. A word means
+/// something only to the program it belongs to
+pub fn runs_without_asking(argv: &[String]) -> bool {
+    let Some(head) = argv.first() else { return false };
+    let head = std::path::Path::new(head)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    bypass_flag(&head).is_some_and(|flag| argv.iter().skip(1).any(|a| a == flag))
+}
+
 /// How much of what another tab sent a model tab is shown on its screen. A
 /// discussion's brief runs to pages; the screen shows its start, and the model
 /// is sent all of it
@@ -4657,6 +4669,12 @@ impl Tab {
     /// the honest one rather than a guess dressed up as a boundary
     pub fn is_ai(&self) -> bool {
         self.is_model() || self.own != crate::profile::GENERIC
+    }
+
+    /// Whether this tab's program was started without asking first (see
+    /// [`runs_without_asking`])
+    pub fn runs_without_asking(&self) -> bool {
+        runs_without_asking(&self.argv)
     }
 
     /// Whether a chat reply is being generated right now (for the UI spinner).

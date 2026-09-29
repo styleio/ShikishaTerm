@@ -168,12 +168,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #filepanel[hidden] { display:none; }
   #filepanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column;
     overflow:hidden; font-size:13px; }
-  #filepanel .fsearch { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
+  :is(#filepanel, #convopanel) .fsearch { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2);
     padding:var(--s2); border-bottom:1px solid var(--line); }
-  #filepanel .fsearch input { flex:1 1 auto; min-width:0; height:28px; padding:0 var(--s3);
+  :is(#filepanel, #convopanel) .fsearch input { flex:1 1 auto; min-width:0; height:28px; padding:0 var(--s3);
     border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--bg);
     color:var(--text); font-family:var(--mono); font-size:12px; }
-  #filepanel .fsearch input:focus { outline:none; border-color:var(--brand);
+  :is(#filepanel, #convopanel) .fsearch input:focus { outline:none; border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #filepanel .fmode { flex:0 0 auto; display:flex; gap:var(--s1); }
   #filepanel .fmode button { padding:5px 12px; font-size:12.5px; border-radius:var(--r-chip);
@@ -200,8 +200,57 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The line a search matched, under the file it is in */
   #filepanel .fhit { padding:0 10px 4px 32px; color:var(--faint); font-size:11px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #filepanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
+  :is(#filepanel, #convopanel) .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); }
+  /* ── The conversation ───────────────────────────
+     What was said in the AI tab being looked at, the newest at the top. The
+     search box is the file list's; the boxes are the checkboxes of the form
+     (5.1); a thing said is the reader's own turn, and the work between is the
+     search reader's quiet line */
+  #convopanel[hidden] { display:none; }
+  #convopanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column;
+    overflow:hidden; font-size:13px; }
+  #convopanel .cshow { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:var(--s2) var(--s5);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #convopanel .cshow label { display:flex; align-items:center; gap:var(--s2); font-size:14px;
+    color:var(--text); cursor:pointer; white-space:nowrap; }
+  #convopanel .cshow input { width:15px; height:15px; margin:0; accent-color:var(--brand); cursor:pointer; }
+  #convopanel .cshow input:focus-visible { outline:1px solid var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #convopanel .clist { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain;
+    padding:var(--s3); font-size:14px; line-height:1.75; user-select:text; -webkit-user-select:text; }
+  #convopanel .rturn { margin:0 0 var(--s4); }
+  /* Who said it and when, on the line over it. The reader's label, in the
+     words of the language on screen rather than capitals */
+  #convopanel .cmeta { display:flex; align-items:center; gap:var(--s2); letter-spacing:0;
+    font-weight:600; margin-bottom:var(--s1); }
+  #convopanel .cmeta .cwho { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #convopanel .cwhen { flex:none; font-weight:400; color:var(--faint); font-variant-numeric:tabular-nums; }
+  #convopanel .cmeta .grow { flex:1 1 auto; }
+  /* What another tab, a job or automation sent: the person's indent, with the
+     edge drawn a step stronger so the two are told apart at a glance */
+  #convopanel .rturn.aiin { border-left-color:var(--edge-hi); }
+  #convopanel .cpin { flex:none; width:22px; height:22px; display:flex; align-items:center; justify-content:center;
+    border:0; border-radius:var(--r-chip); background:transparent; color:var(--faint); cursor:pointer; padding:0; }
+  #convopanel .cpin:hover { background:var(--hover); color:var(--text); }
+  #convopanel .cpin.on { color:var(--brand); }
+  #convopanel .cnote { display:flex; gap:var(--s2); align-items:flex-start; font-size:11.5px; color:var(--dim);
+    margin-top:var(--s1); }
+  #convopanel .cnote[hidden] { display:none; }
+  #convopanel .cnoteedit { display:block; width:100%; box-sizing:border-box; margin-top:var(--s2); padding:var(--s2) var(--s3);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--bg); color:var(--text);
+    font:inherit; font-size:13px; resize:vertical; }
+  #convopanel .cnoteedit:focus { outline:none; border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* What happened rather than what was said: a quiet line */
+  #convopanel .cev { display:flex; gap:var(--s2); font-size:11.5px; line-height:1.5; color:var(--dim);
+    margin:0 0 var(--s4); }
+  #convopanel .vredge { text-align:center; font-size:11px; color:var(--faint); margin:0 0 var(--s4); }
+  #convopanel .vwork { margin:0 0 var(--s4); }
+  #convopanel .cpage { width:100%; text-align:center; }
+  #convopanel .fsay .cshowall { height:32px; padding:0 var(--s3); margin-left:var(--s1); font:inherit; font-size:12.5px;
+    border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer; }
+  #convopanel .fsay .cshowall:hover { border-color:var(--edge-hi); }
   /* The column's own edge, held the same way as the tab bar's */
   #sidegrip { position:absolute; top:var(--titleh); bottom:0; z-index:6; width:9px;
     right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
@@ -3406,33 +3455,33 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Where the conversation begins and ends, so all of it is known to be here */
   #vault .vredge { text-align:center; font-size:11px; color:var(--faint); margin:0 0 var(--s5); }
   #vault .vredge.end { margin:var(--s2) 0 0; }
-  #vault .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
+  :is(#vault, #convopanel) .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
   #vault .vhint.bad { color:var(--warn); }
-  #vault .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
+  :is(#vault, #convopanel) .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius:var(--r-ctl);
     padding:var(--s2) var(--s3); }
   /* A long thing said, folded to its first twelve lines */
-  #vault .vrtext.vfold { max-height:calc(var(--vlh) * 12); overflow:hidden;
+  :is(#vault, #convopanel) .vrtext.vfold { max-height:calc(var(--vlh) * 12); overflow:hidden;
     -webkit-mask-image:linear-gradient(to bottom, #000 75%, transparent);
     mask-image:linear-gradient(to bottom, #000 75%, transparent); }
-  #vault .vmore { display:block; border:0; background:transparent; padding:var(--s1) 0; font:inherit;
+  :is(#vault, #convopanel) .vmore { display:block; border:0; background:transparent; padding:var(--s1) 0; font:inherit;
     font-size:12px; color:var(--dim); cursor:pointer; }
-  #vault .vmore:hover { color:var(--text); }
-  #vault .vmore.code { font-family:var(--mono); margin:0 0 var(--s4); }
+  :is(#vault, #convopanel) .vmore:hover { color:var(--text); }
+  :is(#vault, #convopanel) .vmore.code { font-family:var(--mono); margin:0 0 var(--s4); }
   /* The work between a question and its answer: one quiet line until opened */
   #vault .vwork { margin:0 0 var(--s6); }
-  #vault .vwbody { border-left:2px solid var(--line); padding-left:var(--s3); margin-top:var(--s2); }
-  #vault .vwbody[hidden] { display:none; }
-  #vault .vpiece { margin:0 0 var(--s3); }
-  #vault .vpname { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:var(--s1); }
-  #vault .vpiece pre { margin:0; padding:var(--s2) var(--s3); background:var(--sunk); border:1px solid var(--line);
+  :is(#vault, #convopanel) .vwbody { border-left:2px solid var(--line); padding-left:var(--s3); margin-top:var(--s2); }
+  :is(#vault, #convopanel) .vwbody[hidden] { display:none; }
+  :is(#vault, #convopanel) .vpiece { margin:0 0 var(--s3); }
+  :is(#vault, #convopanel) .vpname { font-family:var(--mono); font-size:11px; color:var(--dim); margin-bottom:var(--s1); }
+  :is(#vault, #convopanel) .vpiece pre { margin:0; padding:var(--s2) var(--s3); background:var(--sunk); border:1px solid var(--line);
     border-radius:var(--r-ctl); font-family:var(--mono); font-size:12px; line-height:1.5;
     white-space:pre-wrap; overflow-wrap:anywhere; }
-  #vault .vpcut { font-size:11px; color:var(--faint); }
+  :is(#vault, #convopanel) .vpcut { font-size:11px; color:var(--faint); }
   /* What was searched for, where it was said: the face drawn toward the
      brand, and the one being looked at ringed in it (2, faces; 5, attention) */
-  #vault mark.vmark { background:var(--tint); color:inherit; border-radius:var(--r-chip); padding:0 1px; }
-  #vault mark.vmark.cur { box-shadow:0 0 0 1px var(--brand); }
+  :is(#vault, #convopanel) mark.vmark { background:var(--tint); color:inherit; border-radius:var(--r-chip); padding:0 1px; }
+  :is(#vault, #convopanel) mark.vmark.cur { box-shadow:0 0 0 1px var(--brand); }
   #vault .vrnav { flex:none; display:flex; align-items:center; justify-content:flex-end; gap:var(--s2);
     padding:var(--s2) var(--s4); border-top:1px solid var(--line); }
   #vault .vrnav[hidden] { display:none; }
@@ -3566,7 +3615,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     user-select:text; -webkit-user-select:text; }
   /* The one place in this app where text is NOT monospace: this is prose to be
      read, and a proportional face fits more of it on a phone's width */
-  #rbody, #rhead, #vault .vrbody { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  #rbody, #rhead, #vault .vrbody, #convopanel .clist { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
   .rturn { margin:0 0 var(--s6); }
   .rwho { font-size:11px; font-weight:700; letter-spacing:.09em; color:var(--dim);
     margin-bottom:6px; }
@@ -3853,6 +3902,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <!-- The file list lives here and nowhere else. The git panel is moved in
            beside it when the column is the place it stands -->
       <div id="filepanel" hidden></div>
+      <!-- What was said in the AI tab being looked at -->
+      <div id="convopanel" hidden></div>
     </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
@@ -7928,6 +7979,9 @@ const PICK_ICON = {
   // came in the system's own colours and at its own size
   clip: '<path d="M11.8 6.6 7.1 11.3a3.1 3.1 0 0 1-4.4-4.4l5-5a2.1 2.1 0 0 1 3 3l-5 5a1.05 1.05 0 0 1-1.5-1.5l4.6-4.6"/>',
   at: '<circle cx="7" cy="7" r="2.3"/><path d="M9.3 4.7v3.1a1.6 1.6 0 0 0 3.2 0V7a5.5 5.5 0 1 0-2.2 4.4"/>',
+  // A thing said, kept to find again, and the words written about it
+  pin: '<path d="M5 1.8h4M5.6 1.8v3.6L3.6 7.8h6.8L8.4 5.4V1.8"/><path d="M7 7.8v4.4"/>',
+  note: '<path d="M2.5 2.5h9v6l-3 3h-6z"/><path d="M8.5 11.5v-3h3"/><path d="M4.5 5h5M4.5 7h3"/>',
   trash: '<path d="M2.5 3.5h9"/><path d="M5.5 3.5V2.2h3v1.3"/><path d="M3.6 3.5 4.2 12h5.6l.6-8.5"/><path d="M6 5.8v3.8M8 5.8v3.8"/>',
 };
 function pickIcon(name) {
@@ -12028,6 +12082,7 @@ function phoneWidth() {
 const SIDE_PANELS = [
   ["files", () => T["tui.side.files"] || "Files"],
   ["git", () => T["tui.side.git"] || "Git"],
+  ["convo", () => T["tui.side.convo"] || "Chat"],
 ];
 let sidePanel = "files";
 function sideWidth() {
@@ -12705,6 +12760,520 @@ function drawFiles() {
   u.say.style.color = FS.bad ? "var(--stop)" : "";
 }
 
+// ── The conversation ───────────────────────────────────
+// What was said in the AI tab being looked at, the newest at the top: the
+// words from the CLI's own record, each thing "you" said in it matched to
+// whoever really sent it -- the person, and from where; another tab; a job;
+// the person's automation -- with the AI's work between, the waits for an
+// answer and the stops put where they happened (`convo::read`).
+//
+// Two ways to narrow it. The boxes along the top choose which kinds of row
+// are shown. The words typed above them narrow what is already here at once,
+// and a moment later every conversation this tab carried on is read for them
+// -- the tool runs included, by the same rule the search of every
+// conversation uses. A match in a kind that is not shown is not shown either;
+// the line at the foot says how many there are, with the press that shows them.
+const CONVO_KINDS = [
+  // kind, the words for it, shown until somebody says otherwise
+  ["you", "convo.show.you", true],
+  ["aiin", "convo.show.aiin", true],
+  ["ai", "convo.show.ai", true],
+  ["work", "convo.show.work", false],
+  ["events", "convo.show.events", true],
+];
+const CV = {
+  panel: null,      // the tab this is about (its id), or the conversation opened from the search
+  past: null,       // {program, id, host}: a conversation opened by name rather than followed in a tab
+  rows: [],         // what has been read, the newest first
+  older: null,      // where reading further back goes on from, or null at the start of everything
+  newer: null,      // where reading on goes on from (a conversation opened at a place), or null
+  show: {},         // kind -> shown
+  pins: false,      // only what was pinned
+  q: "",            // the words typed
+  found: null,      // what reading every conversation found for the words (or the pins), newest first
+  capped: false,    // that reading stopped at enough
+  said: "", bad: false,
+  loading: false,
+  state: "",        // the tab's state when the newest page was read, to read again when it moves on
+  at: null,         // the place the conversation was opened at, brought into view once
+  pastFrom: null,   // the tab being looked at when a conversation was opened by name
+  opened: new Set(),// the stretches of work opened, kept open when the list is drawn again
+  works: new Map(), // a stretch of work -> what reading it brought, so drawing it again does not ask again
+  seq: {},          // kind of request -> the newest one, so an older answer is not drawn over it
+  rev: 0,
+};
+let cvUi = null, cvTimer = 0, cvAgain = 0;
+// What the boxes were left as, per viewer. A convenience: without it every
+// box starts as it is written above
+(function () {
+  for (const [id, , on] of CONVO_KINDS) CV.show[id] = on;
+  try {
+    const kept = JSON.parse(localStorage.getItem("shikisha_convo_show") || "{}");
+    for (const [id] of CONVO_KINDS) if (typeof kept[id] === "boolean") CV.show[id] = kept[id];
+  } catch (e) {}
+})();
+function convoKeepShow() {
+  try { localStorage.setItem("shikisha_convo_show", JSON.stringify(CV.show)); } catch (e) {}
+}
+
+// The tab being looked at, when it is one whose conversation can be read
+function convoTab() {
+  return ((S && S.tabs) || []).find(t => t.index === S.active && !t.settings) || null;
+}
+// Asked under a slot: two requests in the same slot are the same question
+// asked again, and only the newest answer is drawn. Reading further back and
+// reading the newest page again are different questions
+function convoAsk(act, args, slot) {
+  if (!CV.panel) return;
+  const s = slot || act;
+  CV.seq[s] = (CV.seq[s] || 0) + 1;
+  const a = Object.assign({req: s + "#" + CV.seq[s]}, args || {});
+  if (CV.past) a.past = CV.past;
+  send({kind: "convo", panel: CV.panel, act, args: a});
+}
+// Start over on another tab, or on a conversation opened by name
+function convoReset(panel, past) {
+  CV.panel = panel;
+  CV.past = past || null;
+  window.__convoPast = CV.past;
+  CV.rows = []; CV.older = null; CV.newer = null;
+  CV.found = null; CV.capped = false; CV.said = ""; CV.bad = false;
+  CV.at = null; CV.state = "";
+  CV.opened = new Set();
+  CV.works = new Map();
+  CV.loading = true;
+  CV.rev++;
+  const head = document.getElementById("convoHead");
+  if (head) head.textContent = "";
+}
+// The newest page again: something was said since it was read
+function convoRefresh() {
+  CV.loading = !CV.rows.length;
+  convoAsk("page", {});
+}
+// A row is the same row whichever page brought it
+function convoKey(r) {
+  switch (r.k) {
+    case "say": return "s" + r.record + "@" + r.at;
+    case "work": return "w" + r.record + "@" + r.from;
+    case "begin": return "b" + r.record;
+    default: return r.k + "@" + r.when + "@" + (r.how || "");
+  }
+}
+function convoKind(r) {
+  if (r.k === "say") return r.who === "ai" ? "ai" : (r.from && r.from.by !== "person" ? "aiin" : "you");
+  if (r.k === "work") return "work";
+  return "events";
+}
+function convoHas(r, q) {
+  if (!q) return true;
+  if (r.k === "say") return (r.text || "").toLowerCase().includes(q) || (r.note || "").toLowerCase().includes(q);
+  if (r.k === "work") return !!r.hit;
+  return false;
+}
+// Put the newest page in front of what was read before: the rows it shares
+// with what is here say where the two meet. Nothing shared means the newest
+// page is not next to what was read, so it starts the list again
+function convoMerge(fresh, older) {
+  if (!CV.rows.length) { CV.rows = fresh; CV.older = older; return; }
+  const last = fresh.length ? convoKey(fresh[fresh.length - 1]) : null;
+  const at = last ? CV.rows.findIndex(r => convoKey(r) === last) : -1;
+  if (at < 0) { CV.rows = fresh; CV.older = older; return; }
+  CV.rows = fresh.concat(CV.rows.slice(at + 1));
+}
+window.__convo = function (d) {
+  if (!d || !d.act) return;
+  if (d.panel !== CV.panel) return;
+  const cut = String(d.req || "").lastIndexOf("#");
+  const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
+  if (Number(n) !== CV.seq[slot]) return;
+  if (!d.ok) {
+    CV.loading = false;
+    CV.said = d.error || ""; CV.bad = true; CV.rev++;
+    drawConvo();
+    return;
+  }
+  CV.said = ""; CV.bad = false;
+  if (d.act === "page" && slot === "older") {
+    CV.rows = CV.rows.concat(d.rows || []);
+    CV.older = d.older;
+  } else if (d.act === "page") {
+    convoMerge(d.rows || [], d.older);
+    CV.loading = false;
+  } else if (d.act === "open") {
+    CV.rows = d.rows || [];
+    CV.older = d.older; CV.newer = d.newer; CV.at = d.at;
+    CV.loading = false;
+  } else if (d.act === "newer") {
+    CV.rows = (d.rows || []).concat(CV.rows);
+    CV.newer = d.newer;
+  } else if (d.act === "find") {
+    if (d.stale) return;
+    if ((d.q || "") !== CV.q.toLowerCase() || !!d.pins !== CV.pins) return;
+    CV.found = d.rows || [];
+    CV.capped = !!d.capped;
+  } else if (d.act === "work") {
+    const key = "w" + d.record + "@" + d.from;
+    CV.works.set(key, {work: d.work, q: d.q || ""});
+    const box = cvUi && cvUi.list.querySelector('.vwork[data-key="' + CSS.escape(key) + '"]');
+    if (box) {
+      workPieces(box.querySelector(".vwbody"), d.work, CV.q);
+      box.dataset.filled = "1";
+    }
+    return;
+  } else if (d.act === "mark") {
+    for (const list of [CV.rows, CV.found || []]) {
+      for (const r of list) {
+        if (r.k === "say" && r.record === d.record && r.at === d.at) { r.pin = !!d.pin; r.note = d.note || ""; }
+      }
+    }
+  }
+  CV.rev++;
+  drawConvo();
+};
+// Reading further back, or on toward the end of a conversation opened at a place
+function convoOlder() {
+  if (!CV.older) return;
+  convoAsk("page", {older: CV.older}, "older");
+}
+function convoNewer() {
+  if (!CV.newer || CV.newer.end) return;
+  convoAsk("newer", {newer: CV.newer});
+}
+// Typing narrows at once what is here, and asks for the rest after a pause
+function convoFindSoon() {
+  clearTimeout(cvTimer);
+  CV.found = null; CV.capped = false; CV.rev++;
+  drawConvo();
+  if (!CV.q && !CV.pins) return;
+  cvTimer = setTimeout(() => convoAsk("find", {q: CV.q, pins: CV.pins}), 250);
+}
+// Opened by name -- from the search of every conversation -- at the place a
+// match is, with the words that were searched for
+window.__openConvo = function (o) {
+  if (!o || !o.id) return;
+  sidePanel = "convo";
+  if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
+  sideStoodAside = false;
+  const past = {program: o.program || "", id: o.id, host: o.host || ""};
+  const from = convoTab();
+  convoReset("past:" + (o.host || "") + ":" + o.id, past);
+  CV.pastFrom = from ? (from.id || from.name) : null;
+  CV.q = (o.query || "").trim();
+  if (cvUi) cvUi.q.value = CV.q;
+  if (o.at != null) convoAsk("open", {at: o.at});
+  else convoAsk("page", {});
+  if (CV.q) convoFindSoon();
+  drawSide();
+};
+
+// -- the words on a row -------------------------------------------------------
+
+function convoTime(ms) {
+  if (ms == null) return "";
+  const d = new Date(ms);
+  const today = new Date().toDateString() === d.toDateString();
+  const hm = d.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return today ? hm : d.toLocaleDateString([], {month: "numeric", day: "numeric"}) + " " + hm;
+}
+function convoDur(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return (T["convo.dur.s"] || "{s}s").replaceAll("{s}", s);
+  if (s < 3600) return (T["convo.dur.m"] || "{m}m {s}s").replaceAll("{m}", Math.floor(s / 60)).replaceAll("{s}", s % 60);
+  return (T["convo.dur.h"] || "{h}h {m}m").replaceAll("{h}", Math.floor(s / 3600)).replaceAll("{m}", Math.floor(s / 60) % 60);
+}
+// A tab by its id, as the @ it is named by in the input bar
+function convoTabName(id) {
+  const t = ((S && S.tabs) || []).find(t => t.id === id);
+  return "@" + (t ? t.name : id || "");
+}
+// Who did something, in the words a row says it with
+function convoWho(by, device) {
+  if (by === "person") {
+    const where = device ? (T["convo.device." + device] || device) : "";
+    return where ? (T["convo.by.person.at"] || "you ({where})").replaceAll("{where}", where) : (T["convo.by.person"] || "you");
+  }
+  return T["convo.by." + by] || by || "";
+}
+// Who said a thing said: the AI, or whoever put the words into the tab
+function convoSpeaker(r) {
+  if (r.who === "ai") return T["convo.who.ai"] || "AI";
+  const f = r.from;
+  if (!f || f.by === "person") {
+    const parts = [T["convo.who.you"] || "You"];
+    if (f && f.device) parts.push(T["convo.device." + f.device] || f.device);
+    if (f && ["reply", "quick", "button"].includes(f.via)) parts.push(T["convo.via." + f.via] || f.via);
+    return parts.join(" · ");
+  }
+  const n = f.job != null ? String(f.job) : "?";
+  if (f.by === "tab") return (T["convo.from.tab"] || "From {tab}").replaceAll("{tab}", convoTabName(f.sender));
+  if (f.by === "job" && f.via === "mail") return (T["convo.from.mail"] || "Job #{n} · new mail").replaceAll("{n}", n);
+  if (f.by === "job" && f.sender) {
+    return (T["convo.from.job.lead"] || "Job #{n} · {tab}").replaceAll("{n}", n).replaceAll("{tab}", convoTabName(f.sender));
+  }
+  if (f.by === "job") return (T["convo.from.job"] || "Job #{n}").replaceAll("{n}", n);
+  return T["convo.from.auto"] || "Automation (Lua)";
+}
+// What happened, for a row that is not something said
+function convoEventText(r) {
+  const n = r.job != null ? String(r.job) : "?";
+  if (r.k === "wait") {
+    if (r.ended == null && r.answered == null) return T["convo.wait.open"] || "Waiting for an answer now";
+    const took = convoDur((r.answered != null ? r.answered : r.ended) - r.when);
+    if (r.by) {
+      return (T["convo.wait.by"] || "Waited {d} for an answer · answered by {who}")
+        .replaceAll("{d}", took).replaceAll("{who}", convoWho(r.by, r.device));
+    }
+    return (T["convo.wait"] || "Waited {d} for an answer").replaceAll("{d}", took);
+  }
+  if (r.k === "stop") {
+    const who = convoWho(r.by, r.device);
+    if (r.how === "limit") return (T["convo.stop.limit"] || "Usage limit reached: {why}").replaceAll("{why}", r.why || "");
+    if (r.how === "esc") return (T["convo.stop.esc"] || "Stopped with Esc by {who}").replaceAll("{who}", who);
+    if (r.how === "all") return (T["convo.stop.all"] || "Stopped with the stop button by {who}").replaceAll("{who}", who);
+    if (r.by === "lead") return (T["convo.stop.lead"] || "Stopped by the job's lead (job #{n})").replaceAll("{n}", n);
+    return (T["convo.stop.job"] || "{who} stopped job #{n}").replaceAll("{who}", who).replaceAll("{n}", n);
+  }
+  if (r.k === "begin") return T[r.yolo ? "convo.begin.yolo" : "convo.begin"] || "Start of a conversation";
+  return "";
+}
+
+// -- the rows -----------------------------------------------------------------
+
+// One thing said. Drawn with the reader's own parts, so a thing said looks the
+// same here, in the phone's reader and in a conversation found by the search
+function convoSay(r) {
+  const box = el("div", {class: "rturn " + (r.who === "ai" ? "ai" : "you") + (convoKind(r) === "aiin" ? " aiin" : ""),
+    "data-key": convoKey(r)});
+  const pin = el("button", {type: "button", class: "cpin" + (r.pin ? " on" : ""),
+    title: T[r.pin ? "convo.unpin" : "convo.pin"] || "",
+    "aria-pressed": r.pin ? "true" : "false",
+    onclick: e => { e.stopPropagation(); convoAsk("mark", {record: r.record, at: r.at, pin: !r.pin}); }},
+    pickIcon("pin"));
+  box.append(el("div", {class: "rwho cmeta"},
+    el("span", {class: "cwho"}, convoSpeaker(r)),
+    el("span", {class: "cwhen", title: r.when != null ? new Date(r.when).toLocaleString() : ""}, convoTime(r.when)),
+    el("span", {class: "grow"}), pin));
+  const text = el("div", {class: "vrtext"});
+  text.append(rdMarkup(r.text || ""));
+  box.append(text);
+  if (r.note) box.append(el("div", {class: "cnote"}, pickIcon("note"), el("span", {}, r.note)));
+  if (CV.q && (r.text || "").toLowerCase().includes(CV.q.toLowerCase())) { box.dataset.hit = "1"; markWords(text, CV.q); }
+  const menu = e => {
+    e.preventDefault();
+    openList(e.currentTarget, [
+      el("div", {onclick: () => { closeFolderMenu(); convoAsk("mark", {record: r.record, at: r.at, pin: !r.pin}); }},
+        T[r.pin ? "convo.unpin" : "convo.pin"] || ""),
+      el("div", {onclick: () => { closeFolderMenu(); convoNote(box, r); }}, T["convo.note"] || ""),
+      el("div", {onclick: () => { closeFolderMenu(); copyToClipboard(r.text || ""); }}, T["convo.copy"] || ""),
+    ], false, e);
+  };
+  box.oncontextmenu = menu;
+  holdOpens(box, menu);
+  return box;
+}
+// The note on a thing said, written where it is shown. Kept the moment the box
+// is left, as the ideas are: there is no Save to forget
+function convoNote(box, r) {
+  if (box.querySelector("textarea")) return;
+  const old = box.querySelector(".cnote");
+  const area = el("textarea", {class: "cnoteedit", rows: "2", placeholder: T["convo.note.ph"] || ""});
+  area.value = r.note || "";
+  const done = () => {
+    const note = area.value.trim();
+    if (note !== (r.note || "")) convoAsk("mark", {record: r.record, at: r.at, note});
+    area.remove();
+    if (old) old.hidden = false;
+  };
+  area.onblur = done;
+  area.onkeydown = e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); area.blur(); }
+    if (e.key === "Escape") { area.value = r.note || ""; area.blur(); }
+  };
+  if (old) old.hidden = true;
+  box.append(area);
+  area.focus();
+}
+// The work between two things said: one quiet line until it is opened
+function convoWork(r) {
+  const key = convoKey(r);
+  const w = el("div", {class: "vwork", "data-key": key});
+  const toggle = el("button", {type: "button", class: "vmore"});
+  const inside = el("div", {class: "vwbody"});
+  inside.hidden = true;
+  w.append(toggle, inside);
+  const say = () => {
+    const label = r.calls ? (T["vault.work"] || "Tool runs ({n})").replaceAll("{n}", r.calls) : (T["vault.work.none"] || "Work");
+    toggle.textContent = (inside.hidden ? "▸ " : "▾ ") + label;
+  };
+  const open = () => {
+    inside.hidden = false;
+    CV.opened.add(key);
+    say();
+    if (w.dataset.filled) return;
+    // Read before, and the words looked for have not changed since
+    const had = CV.works.get(key);
+    if (had && had.q === CV.q.toLowerCase()) { workPieces(inside, had.work, CV.q); w.dataset.filled = "1"; return; }
+    inside.textContent = "";
+    inside.append(el("div", {class: "vrnote"}, T["vault.work.loading"] || "Loading…"));
+    // Each stretch is its own question: two open at once are both answered
+    convoAsk("work", {record: r.record, from: r.from, to: r.to, q: CV.q}, "work:" + key);
+  };
+  toggle.onclick = () => {
+    if (inside.hidden) open();
+    else { inside.hidden = true; CV.opened.delete(key); say(); }
+  };
+  say();
+  // Opened before the list was drawn again, or holding what was searched for
+  if (CV.opened.has(key) || (r.hit && CV.q)) open();
+  return w;
+}
+function convoEvent(r) {
+  if (r.k === "begin") return el("div", {class: "vredge", "data-key": convoKey(r)}, convoEventText(r));
+  const row = el("div", {class: "cev " + r.k, "data-key": convoKey(r)},
+    el("span", {class: "cwhen"}, convoTime(r.when)), el("span", {}, convoEventText(r)));
+  if (r.k === "stop" && r.why && r.how !== "limit") row.title = r.why;
+  return row;
+}
+
+// -- the panel ----------------------------------------------------------------
+
+function convoBuild(box) {
+  box.textContent = "";
+  const search = el("div", {class: "fsearch"});
+  const q = el("input", {type: "text", autocomplete: "off", spellcheck: "false",
+    placeholder: T["convo.find.ph"] || "Search this conversation"});
+  q.oninput = () => { CV.q = q.value.trim(); convoFindSoon(); };
+  search.append(q);
+  // Where the choice between this conversation and every conversation stands
+  const mode = el("div", {id: "convoMode"});
+  const show = el("div", {class: "cshow"});
+  const boxes = {};
+  for (const [id, words] of CONVO_KINDS) {
+    const c = el("input", {type: "checkbox"});
+    c.onchange = () => { CV.show[id] = c.checked; convoKeepShow(); CV.rev++; drawConvo(); };
+    boxes[id] = c;
+    show.append(el("label", {}, c, T[words] || id));
+  }
+  const pins = el("input", {type: "checkbox"});
+  pins.onchange = () => { CV.pins = pins.checked; convoFindSoon(); };
+  show.append(el("label", {}, pins, T["convo.show.pins"] || "Pinned only"));
+  // What sits over a conversation opened by name (the way to pick it back up)
+  const head = el("div", {id: "convoHead"});
+  const list = el("div", {class: "clist"});
+  const say = el("div", {class: "fsay"});
+  box.append(search, mode, show, head, list, say);
+  cvUi = {q, boxes, pins, list, say};
+}
+// What the list shows: what reading every conversation found, when words are
+// typed or pins asked for -- until that arrives, what is here narrowed at once
+function convoSource() {
+  const q = CV.q.toLowerCase();
+  if (CV.found) return CV.found;
+  return CV.rows.filter(r => convoHas(r, q) && (!CV.pins || r.pin));
+}
+function drawConvo() {
+  const box = document.getElementById("convopanel");
+  if (!box || box.hidden) return;
+  if (!cvUi || !box.firstChild) convoBuild(box);
+  const u = cvUi;
+  if (document.activeElement !== u.q && u.q.value !== CV.q) u.q.value = CV.q;
+  for (const [id] of CONVO_KINDS) u.boxes[id].checked = !!CV.show[id];
+  u.pins.checked = CV.pins;
+  const searching = !!(CV.q || CV.pins);
+  const source = convoSource();
+  const shown = source.filter(r => CV.show[convoKind(r)]);
+  // Matches in the kinds put away: not shown, and not lost either
+  const hidden = searching ? source.length - shown.length : 0;
+  // A note being written is not taken out from under the hand writing it;
+  // the list is drawn again once it is put down
+  const writing = document.activeElement && document.activeElement.classList.contains("cnoteedit")
+    && u.list.contains(document.activeElement);
+  if (!writing && u.list.dataset.rev !== String(CV.rev)) {
+    u.list.dataset.rev = String(CV.rev);
+    const keep = u.list.scrollTop;
+    u.list.textContent = "";
+    if (!searching && CV.newer && !CV.newer.end) {
+      u.list.append(el("button", {type: "button", class: "vmore cpage", onclick: convoNewer}, "▲ " + (T["convo.newer"] || "Read on")));
+    }
+    const chunk = el("div", {});
+    u.list.append(chunk);
+    for (const r of shown) {
+      chunk.append(r.k === "say" ? convoSay(r) : r.k === "work" ? convoWork(r) : convoEvent(r));
+    }
+    // Long things folded, and every word marked -- once it is laid out
+    foldLong(chunk);
+    if (!searching && CV.older) {
+      u.list.append(el("button", {type: "button", class: "vmore cpage", onclick: convoOlder}, "▼ " + (T["convo.older"] || "Read earlier")));
+    }
+    if (CV.at != null) {
+      const at = chunk.querySelector('[data-key="' + CSS.escape("s" + (CV.past && CV.past.id) + "@" + CV.at) + '"]');
+      if (at) at.scrollIntoView({block: "center"});
+      CV.at = null;
+    } else u.list.scrollTop = keep;
+  }
+  u.say.textContent = "";
+  u.say.style.color = CV.bad ? "var(--stop)" : "";
+  if (CV.said) { u.say.textContent = CV.said; return; }
+  if (CV.loading) { u.say.textContent = T["convo.loading"] || "Reading…"; return; }
+  if (hidden > 0) {
+    // The kinds a match is in, switched on in one press
+    const kinds = [...new Set(source.filter(r => !CV.show[convoKind(r)]).map(convoKind))];
+    u.say.append(el("span", {}, (T["convo.hidden"] || "{n} more in kinds not shown").replaceAll("{n}", hidden) + " "),
+      el("button", {type: "button", class: "cshowall", onclick: () => {
+        for (const k of kinds) CV.show[k] = true;
+        convoKeepShow(); CV.rev++; drawConvo();
+      }}, T["convo.hidden.show"] || "Show"));
+    return;
+  }
+  if (!shown.length) {
+    u.say.textContent = searching ? (T["convo.none"] || "") : (T["convo.empty"] || "");
+    return;
+  }
+  if (searching && CV.capped) u.say.textContent = T["convo.capped"] || "";
+}
+// Called with the column: follows the tab being looked at, and reads again
+// when that tab moves on (it was sent something, it answered)
+function convoFollow() {
+  const t = convoTab();
+  // A conversation opened by name stays until another tab is looked at
+  if (CV.past && (t ? (t.id || t.name) : null) === CV.pastFrom) return "";
+  if (!t) return T["convo.notab"] || "";
+  if (t.kind !== "pty" || t.model || !t.ai) return T["convo.not_ai"] || "";
+  if (!t.readable) return T["convo.no_record"] || "";
+  const key = t.id || t.name;
+  // What moves when something is said: the state, and the output the tab row
+  // draws as its bar. A quick answer can come and go between two looks at
+  // the state, so the output is watched too
+  const moved = t.state + "|" + (t.activity || []).join("");
+  if (CV.panel !== key || CV.past) {
+    convoReset(key, null);
+    CV.pastFrom = null;
+    CV.state = moved;
+    convoRefresh();
+    if (CV.q || CV.pins) convoFindSoon();
+  }
+  else if (CV.state !== moved) {
+    CV.state = moved;
+    convoSoon(key);
+  }
+  return "";
+}
+// Read the newest page again, at most every couple of seconds while the tab
+// is moving, and once more after it stops: the record is written a moment
+// after the screen shows it
+let cvLast = 0;
+function convoSoon(key) {
+  const wait = Math.max(0, cvLast + 2000 - Date.now());
+  clearTimeout(cvAgain);
+  cvAgain = setTimeout(() => {
+    if (CV.panel !== key) return;
+    cvLast = Date.now();
+    convoRefresh();
+    cvAgain = setTimeout(() => { if (CV.panel === key) convoRefresh(); }, 2000);
+  }, wait);
+}
+
 // Draw the column: whether it is there, the strip along its top, and which
 // panel is standing in the body
 function drawSide() {
@@ -12754,11 +13323,16 @@ function drawSide() {
     panel.hidden = true;
   }
   if (files) files.hidden = !wantFiles;
+  // The conversation stands on the tab being looked at, not on its folder
+  const convo = document.getElementById("convopanel");
+  const convoMissing = sidePanel === "convo" ? convoFollow() : "";
+  if (convo) convo.hidden = sidePanel !== "convo" || !!convoMissing;
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
   // "there is nothing here"
-  const missing = !at ? (T["tui.side.notab"] || "")
+  const missing = sidePanel === "convo" ? convoMissing
+    : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
     : "";
   if (missing) {
@@ -12778,6 +13352,7 @@ function drawSide() {
     if (FS.panel !== (at.id || at.name)) filesReset(at.id || at.name);
     else drawFiles();
   }
+  if (sidePanel === "convo") drawConvo();
 }
 
 // One unfocused pane's terminal contents.
@@ -14176,6 +14751,7 @@ if (REMOTE) {
     // waits for ever -- which is what both of them did
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
+    if (d.convo) window.__convo(d.convo);
     if (d.issues) window.__issues(d.issues);
     if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
@@ -15234,7 +15810,22 @@ function fillWork(w, work, error) {
     return;
   }
   w.dataset.filled = "1";
-  const query = vaultReading ? vaultReading.query : "";
+  workPieces(inside, work, vaultReading ? vaultReading.query : "");
+  // Opened by a press after the page was drawn: its marks join the walk
+  if (vaultReading && vaultReading.answer) {
+    const all = [...document.querySelectorAll("#vault .vrbody mark.vmark")];
+    vaultReading.marks = all;
+    document.querySelector("#vault .vrnav").hidden = !all.length;
+    countMarks();
+  }
+}
+
+// The pieces of a stretch of work, into `inside`: what the AI said on the way,
+// each tool it reached for and what came back, cut to what is shown, with
+// `query` marked. One drawing for every reader of a conversation
+function workPieces(inside, work, query) {
+  inside.textContent = "";
+  if (!work) return;
   const leftOut = n => el("div", {class:"vpcut"}, (T["vault.work.more"] || "{n}").replaceAll("{n}", n));
   for (const p of work.pieces || []) {
     // Pieces left out before this one -- a long stretch keeps what holds the
@@ -15257,13 +15848,6 @@ function fillWork(w, work, error) {
     inside.append(box);
   }
   if (work.more) inside.append(leftOut(work.more));
-  // Opened by a press after the page was drawn: its marks join the walk
-  if (vaultReading && vaultReading.answer) {
-    const all = [...document.querySelectorAll("#vault .vrbody mark.vmark")];
-    vaultReading.marks = all;
-    document.querySelector("#vault .vrnav").hidden = !all.length;
-    countMarks();
-  }
 }
 
 // Every place `query` appears in the text under `root`, wrapped in a mark.

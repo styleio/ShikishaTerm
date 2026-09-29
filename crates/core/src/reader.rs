@@ -45,6 +45,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The most of one stretch of work read to open it. A stretch longer than
+/// this is a tool that printed megabytes, and what is shown of it is its start
+const WORK_MOST: u64 = 16 * 1024 * 1024;
+
 /// How much of the record to pull in one step. Small enough that a reader
 /// asking for the last few turns touches a fraction of a megabyte
 const CHUNK: usize = 256 * 1024;
@@ -94,6 +98,39 @@ pub struct Page {
     /// Whether anything older is left. False only when the head of the file
     /// has actually been reached, so the reader can stop asking
     pub more: bool,
+    /// The work the AI did between the things said on this page: where each
+    /// stretch of it lies, to be opened when somebody asks (`work_at`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work: Vec<Stretch>,
+}
+
+/// One stretch of work between two things said: the tools the AI reached
+/// for, what they gave back, and what it said on the way. Only where it lies
+/// and how many tools it called -- its contents are nearly all of a record's
+/// bytes, and are read when somebody opens it
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Stretch {
+    /// Where it begins in the record, and where the next thing said begins
+    pub from: u64,
+    pub to: u64,
+    pub calls: usize,
+    /// Whether it holds what was searched for (`read_after` with a needle)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hit: bool,
+}
+
+/// A stretch of the conversation read forwards from a place in it (see
+/// [`read_after`]), oldest turn first.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Later {
+    pub turns: Vec<Turn>,
+    /// Where the next stretch begins: the cursor for reading on
+    pub to: u64,
+    /// Whether anything newer is left in the record as it is now
+    pub more: bool,
+    /// The work between the things said (see [`Page::work`])
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work: Vec<Stretch>,
 }
 
 /// The last `want` things said in `path`, before byte `before`.
@@ -148,6 +185,133 @@ pub fn said_after(path: &Path, from: u64) -> Option<String> {
         .map(|t| t.text)
 }
 
+/// The first `want` things said at or after byte `from`, read forwards: what
+/// a reader opened at one place in a conversation shows when it is asked for
+/// what came next. The same reading as [`read_back`] -- an answer said in
+/// pieces is one answer, what a person sent is one thing each, and a line
+/// said on the way to a tool is an aside, not an answer
+///
+/// `needle` (lowercase, or empty) marks each stretch of work that holds it
+pub fn read_after(path: &Path, from: u64, want: usize, needle: &str) -> std::io::Result<Later> {
+    let mut file = File::open(path)?;
+    let len = file.metadata()?.len();
+    read_after_by(len, from, want, needle, &mut |start, n| {
+        let mut buf = vec![0u8; n];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf)?;
+        Ok(buf)
+    })
+}
+
+/// [`read_after`] over a record read a piece at a time by `read_at`
+pub fn read_after_by(
+    len: u64,
+    from: u64,
+    want: usize,
+    needle: &str,
+    read_at: &mut dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<Later> {
+    let mut at = from.min(len);
+    let mut found: Vec<Turn> = Vec::new();
+    let mut work: Vec<Stretch> = Vec::new();
+    // The work since somebody last spoke, not closed yet: it ends where the
+    // next thing said begins
+    let mut open: Option<Stretch> = None;
+    // What the AI has said since somebody last spoke or it last reached for a
+    // tool: an answer if somebody speaks next, an aside if a tool comes first
+    let mut waiting: Vec<Turn> = Vec::new();
+    let mut read = 0usize;
+    // Where the line being looked at starts, and the part of it read so far
+    let mut carried: Vec<u8> = Vec::new();
+    let mut carried_at = at;
+    let mut stop_at: Option<u64> = None;
+    fn settle(found: &mut Vec<Turn>, waiting: &mut Vec<Turn>) {
+        for turn in waiting.drain(..) {
+            match found.last_mut() {
+                Some(last) if joins(&turn, last) => {
+                    last.text = format!("{}\n\n{}", last.text, turn.text);
+                    last.when = turn.when.or(last.when);
+                }
+                _ => found.push(turn),
+            }
+        }
+    }
+    // The stretch is over: it ends where the answer after it begins, or where
+    // the next person's line does
+    fn close(open: &mut Option<Stretch>, work: &mut Vec<Stretch>, waiting: &[Turn], next: u64) {
+        if let Some(mut s) = open.take() {
+            s.to = waiting.first().and_then(|t| t.at).unwrap_or(next);
+            work.push(s);
+        }
+    }
+    'walk: while at < len && read < BUDGET {
+        let n = ((len - at) as usize).min(CHUNK);
+        let buf = read_at(at, n)?;
+        if buf.len() != n {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the record changed while it was read"));
+        }
+        read += n;
+        carried.extend_from_slice(&buf);
+        at += n as u64;
+        let mut line_start = 0usize;
+        while let Some(nl) = carried[line_start..].iter().position(|b| *b == b'\n') {
+            let end = line_start + nl;
+            let line_at = carried_at + line_start as u64;
+            let line = &carried[line_start..end];
+            let seen = look_at(line);
+            match seen {
+                Seen::Reaching(calls) => {
+                    // What was said since the last speaker was on the way here
+                    let began = waiting.first().and_then(|t| t.at).unwrap_or(line_at);
+                    let s = open.get_or_insert(Stretch { from: began, to: line_at, calls: 0, hit: false });
+                    s.calls += calls;
+                    if !needle.is_empty() && !s.hit {
+                        s.hit = waiting.iter().any(|t| find_in(&t.text, needle).is_some()) || mention(line, needle).is_some();
+                    }
+                    waiting.clear();
+                }
+                Seen::Said(mut turn) => {
+                    turn.at = Some(line_at);
+                    if turn.who == Who::You {
+                        close(&mut open, &mut work, &waiting, line_at);
+                        settle(&mut found, &mut waiting);
+                        // One block past what was asked for begins here: the
+                        // next stretch starts with it
+                        if found.len() >= want {
+                            stop_at = Some(line_at);
+                            break 'walk;
+                        }
+                        found.push(turn);
+                    } else {
+                        waiting.push(turn);
+                    }
+                }
+                Seen::Nothing => {
+                    // What a tool gave back lies inside the stretch
+                    if let Some(s) = open.as_mut()
+                        && waiting.is_empty()
+                        && !needle.is_empty()
+                        && !s.hit
+                    {
+                        s.hit = mention(line, needle).is_some();
+                    }
+                }
+            }
+            line_start = end + 1;
+        }
+        carried_at += line_start as u64;
+        carried.drain(..line_start);
+    }
+    // The end of what is there: a last line with no newline yet is still
+    // being written, and is read the next time
+    let to = stop_at.unwrap_or(carried_at);
+    if stop_at.is_none() {
+        close(&mut open, &mut work, &waiting, to);
+        settle(&mut found, &mut waiting);
+    }
+    Ok(Later { turns: found, to, more: to < len, work })
+}
+
 /// The same walk over a record read a piece at a time by `read_at` (from, how
 /// many bytes): a file here, or one on the machine a folder is on, fetched a
 /// piece at a time as the walk needs it
@@ -174,6 +338,11 @@ pub fn read_back_by(
     // machinery in between (thinking, a tool's result, the CLI's own notes)
     // leaves it standing, because a tool call can be a line or two further on
     let mut reaching_below = false;
+    // The work between the things said, newest first while collecting. The
+    // one being walked through ends where the thing said after it begins
+    let mut work: Vec<Stretch> = Vec::new();
+    let mut open: Option<Stretch> = None;
+    let mut next_said = end;
 
     while end > 0 && read < BUDGET && !enough {
         let start = end.saturating_sub(CHUNK as u64);
@@ -198,19 +367,34 @@ pub fn read_back_by(
         for k in (first..heads.len()).rev() {
             let at = heads[k];
             let stop = heads.get(k + 1).map_or(buf.len(), |n| n - 1);
+            let line_at = start + at as u64;
             let said = match look_at(&buf[at..stop.max(at)]) {
-                Seen::Reaching => {
+                Seen::Reaching(calls) => {
                     reaching_below = true;
+                    let s = open.get_or_insert(Stretch { from: line_at, to: next_said, calls: 0, hit: false });
+                    s.calls += calls;
+                    s.from = line_at;
                     None
                 }
                 // Said on the way to that tool, so it belongs to the work
-                Seen::Said(turn) if turn.who == Who::Ai && reaching_below => None,
+                Seen::Said(turn) if turn.who == Who::Ai && reaching_below => {
+                    if let Some(s) = open.as_mut() {
+                        s.from = line_at;
+                    }
+                    None
+                }
                 Seen::Said(turn) => {
                     reaching_below = false;
                     Some(turn)
                 }
                 Seen::Nothing => None,
             };
+            // Somebody speaking ends the stretch of work after them
+            if said.is_some()
+                && let Some(s) = open.take()
+            {
+                work.push(s);
+            }
             // One block past what was asked for: stop WITHOUT taking this line,
             // so the next page begins with it and the block it opens is read
             // whole rather than beheaded
@@ -230,12 +414,14 @@ pub fn read_back_by(
                 // being built — in FRONT of it, because this walk goes backwards
                 (Some(turn), Some(last)) if joins(last, &turn) => {
                     last.text = format!("{}\n\n{}", turn.text, last.text);
-                    last.at = Some(start + at as u64);
+                    last.at = Some(line_at);
                     last.when = last.when.or(turn.when);
+                    next_said = line_at;
                 }
                 (Some(mut turn), _) => {
-                    turn.at = Some(start + at as u64);
+                    turn.at = Some(line_at);
                     found.push(turn);
+                    next_said = line_at;
                 }
                 (None, _) => {}
             }
@@ -250,11 +436,14 @@ pub fn read_back_by(
         end = start;
     }
 
+    work.extend(open);
     found.reverse();
+    work.reverse();
     Ok(Page {
         turns: found,
         from,
         more: from > 0,
+        work,
     })
 }
 
@@ -322,6 +511,69 @@ impl Record {
             }
         }
     }
+
+    /// The first `want` things said at or after byte `from` (see
+    /// [`read_after`]). `None` when the CLI has not written the record yet
+    pub fn after(&self, from: u64, want: usize, needle: &str) -> Option<std::io::Result<Later>> {
+        match self {
+            Record::Here { glob, id } => {
+                crate::sessionfind::locate(glob, id).map(|path| read_after(&path, from, want, needle))
+            }
+            Record::Far { at, glob, id } => {
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id, "from": from, "want": want, "q": needle});
+                    match crate::farlink::call(at, "read_after", asked) {
+                        Ok(serde_json::Value::Null) => return None,
+                        Ok(v) => return Some(serde_json::from_value::<Later>(v).map_err(std::io::Error::other)),
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not read on ({e}); reading it the long way")),
+                    }
+                }
+                locate_far(at, glob, id).map(|path| {
+                    let (len, mut read_at) = far_pieces(at, &path)?;
+                    read_after_by(len, from, want, needle, &mut read_at)
+                })
+            }
+        }
+    }
+
+    /// One stretch of work opened (see [`work_at`]): the lines between
+    /// `from` and `to` of the record, read as the pieces they are. `None`
+    /// when the record is not there
+    pub fn work(&self, from: u64, to: u64, needle: &str) -> Option<std::io::Result<Work>> {
+        let n = to.saturating_sub(from).min(WORK_MOST) as usize;
+        match self {
+            Record::Here { glob, id } => crate::sessionfind::locate(glob, id).map(|path| {
+                let mut file = File::open(path)?;
+                let mut buf = vec![0u8; n];
+                file.seek(SeekFrom::Start(from))?;
+                let got = file.read(&mut buf)?;
+                buf.truncate(got);
+                Ok(work_at(&buf, 0, buf.len() as u64, needle))
+            }),
+            Record::Far { at, glob, id } => {
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id, "from": from, "to": to, "q": needle});
+                    match crate::farlink::call(at, "read_work", asked) {
+                        Ok(serde_json::Value::Null) => return None,
+                        Ok(v) => return Some(serde_json::from_value::<Work>(v).map_err(std::io::Error::other)),
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not open the work ({e}); reading it the long way")),
+                    }
+                }
+                locate_far(at, glob, id).map(|path| {
+                    let (_, mut read_at) = far_pieces(at, &path)?;
+                    let buf = read_at(from, n)?;
+                    Ok(work_at(&buf, 0, buf.len() as u64, needle))
+                })
+            }
+        }
+    }
+
+    /// The conversation's id
+    pub fn id(&self) -> &str {
+        match self {
+            Record::Here { id, .. } | Record::Far { id, .. } => id,
+        }
+    }
 }
 
 /// A CLI's record of one conversation on another machine: where it is there,
@@ -344,6 +596,13 @@ pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Opt
 
 /// `read_back` for a record on another machine, fetched a piece at a time
 pub fn read_back_far(at: &crate::elsewhere::Elsewhere, path: &str, before: u64, want: usize) -> std::io::Result<Page> {
+    let (len, mut read_at) = far_pieces(at, path)?;
+    read_back_by(len, before, want, &mut read_at)
+}
+
+/// How long a record on another machine is, and a way to fetch a piece of it
+/// (from, how many bytes) -- one remote command a piece
+fn far_pieces<'a>(at: &'a crate::elsewhere::Elsewhere, path: &str) -> std::io::Result<(u64, Pieces<'a>)> {
     use base64::Engine as _;
     let err = |e: anyhow::Error| std::io::Error::other(format!("{e:#}"));
     let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
@@ -353,7 +612,7 @@ pub fn read_back_far(at: &crate::elsewhere::Elsewhere, path: &str, before: u64, 
         .trim()
         .parse()
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::NotFound, "no such record"))?;
-    read_back_by(len, before, want, &mut |start, n| {
+    Ok((len, Box::new(move |start: u64, n: usize| {
         let ran = crate::elsewhere::exec(
             at,
             &format!("tail -c +{} -- {quoted} | head -c {n} | base64 -w0", start + 1),
@@ -363,16 +622,19 @@ pub fn read_back_far(at: &crate::elsewhere::Elsewhere, path: &str, before: u64, 
         base64::engine::general_purpose::STANDARD
             .decode(ran.out.trim())
             .map_err(|e| std::io::Error::other(e.to_string()))
-    })
+    })))
 }
+
+/// A way to fetch a piece of a record (from, how many bytes)
+type Pieces<'a> = Box<dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>> + 'a>;
 
 /// What one record turns out to be.
 enum Seen {
     /// Somebody speaking, and what they said
     Said(Turn),
-    /// The AI reaching for a tool. Nothing was said here, but whatever was
-    /// said just before it was said on the way to this
-    Reaching,
+    /// The AI reaching for tools (how many). Nothing was said here, but
+    /// whatever was said just before it was said on the way to this
+    Reaching(usize),
     /// Machinery, or a record this reader has no use for
     Nothing,
 }
@@ -407,7 +669,8 @@ fn look_at(line: &[u8]) -> Seen {
         return Seen::Nothing;
     }
     if reaching_for_a_tool(&record) {
-        return Seen::Reaching;
+        let calls = calls_of(&record).iter().filter(|p| p.kind == PieceKind::Call).count();
+        return Seen::Reaching(calls.max(1));
     }
     match turn_of(&record) {
         Some(turn) => Seen::Said(turn),
@@ -539,7 +802,7 @@ fn words_of(content: &Value) -> String {
 /// An envelope that is never closed is left alone. Cutting to the end of the
 /// message on the strength of one opening tag would swallow the very words
 /// this is trying to rescue.
-fn human_part(text: &str) -> String {
+pub fn human_part(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('<') {
@@ -1200,7 +1463,7 @@ mod tests {
     #[test]
     fn a_gemini_turn_that_calls_tools_is_reaching() {
         let line = r#"{"type":"gemini","content":"Let me look.","toolCalls":[{"id":"1","name":"read_file","args":{}}]}"#;
-        assert!(matches!(look_at(line.as_bytes()), Seen::Reaching));
+        assert!(matches!(look_at(line.as_bytes()), Seen::Reaching(_)));
         let quiet = r#"{"type":"gemini","content":"pong","toolCalls":[]}"#;
         assert!(matches!(look_at(quiet.as_bytes()), Seen::Said(_)));
     }
@@ -1271,7 +1534,7 @@ mod tests {
     #[test]
     fn a_tool_call_is_told_by_the_shape_of_its_name() {
         let call = |line: &str| {
-            matches!(look_at(line.as_bytes()), Seen::Reaching)
+            matches!(look_at(line.as_bytes()), Seen::Reaching(_))
         };
         assert!(call(r#"{"message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]}}"#));
         assert!(call(r#"{"message":{"role":"assistant","content":[{"type":"mcp_tool_use","name":"x"}]}}"#));
@@ -1683,6 +1946,79 @@ mod tests {
         let last_asked = read_back(&path, page.turns[2].at.unwrap(), 1).unwrap();
         assert_eq!(last_asked.turns.len(), 1);
         assert_eq!(last_asked.turns[0].text, "and the docs");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Read forwards from a place, a stretch is what read backwards to that
+    /// place's end would have shown: the same turns, the asides left out, and
+    /// a cursor that picks up exactly where it stopped
+    #[test]
+    fn reading_on_from_a_place_gives_what_reading_back_would() {
+        let path = tmp("onwards");
+        let call = "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{}}]}}";
+        let mut lines = String::new();
+        for (who, text) in [("user", "one"), ("assistant", "looking:")] {
+            lines.push_str(&record(who, text));
+            lines.push('\n');
+        }
+        lines.push_str(call);
+        lines.push('\n');
+        for (who, text) in [("assistant", "found it"), ("assistant", "and fixed it"), ("user", "two"), ("user", "three"), ("assistant", "done")] {
+            lines.push_str(&record(who, text));
+            lines.push('\n');
+        }
+        std::fs::write(&path, &lines).unwrap();
+        let back = read_back(&path, u64::MAX, 100).unwrap();
+        let first = read_after(&path, 0, 2, "").unwrap();
+        let said = |ts: &[Turn]| ts.iter().map(|t| t.text.clone()).collect::<Vec<_>>();
+        assert_eq!(said(&first.turns), vec!["one", "found it\n\nand fixed it"]);
+        assert!(first.more);
+        let rest = read_after(&path, first.to, 100, "").unwrap();
+        assert_eq!(said(&rest.turns), vec!["two", "three", "done"]);
+        assert!(!rest.more);
+        let both: Vec<Turn> = first.turns.into_iter().chain(rest.turns).collect();
+        assert_eq!(said(&both), said(&back.turns), "forwards and backwards read the same conversation");
+        let places = |ts: &[Turn]| ts.iter().map(|t| t.at).collect::<Vec<_>>();
+        assert_eq!(places(&both), places(&back.turns), "and find each thing at the same place");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The work between two things said is one stretch, found the same way
+    /// whichever way the record is read: from the first line said on the way
+    /// to a tool to where the answer begins, with the tools it called counted.
+    /// Read with a needle, a stretch holding it in what a tool gave back says so
+    #[test]
+    fn the_work_between_two_things_said_is_one_stretch_either_way() {
+        let path = tmp("stretch");
+        let call = |name: &str| {
+            format!("{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"name\":\"{name}\",\"input\":{{}}}}]}}}}\n")
+        };
+        let out = |text: &str| {
+            format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"content\":\"{text}\"}}]}}}}\n")
+        };
+        let lines = [
+            format!("{}\n", record("user", "fix it")),
+            format!("{}\n", record("assistant", "Looking first:")),
+            call("Read"),
+            out("fn parse() { panic!() }"),
+            call("Edit"),
+            out("ok"),
+            format!("{}\n", record("assistant", "Fixed.")),
+            format!("{}\n", record("user", "thanks")),
+        ];
+        std::fs::write(&path, lines.concat()).unwrap();
+        let start = |i: usize| lines[..i].iter().map(|l| l.len() as u64).sum::<u64>();
+        let want = Stretch { from: start(1), to: start(6), calls: 2, hit: false };
+        let back = read_back(&path, u64::MAX, 10).unwrap();
+        assert_eq!(back.work, vec![want.clone()]);
+        let on = read_after(&path, 0, 10, "").unwrap();
+        assert_eq!(on.work, vec![want.clone()], "forwards finds the same stretch");
+        let found = read_after(&path, 0, 10, "panic!").unwrap();
+        assert_eq!(found.work, vec![Stretch { hit: true, ..want.clone() }], "a tool's output holds the words");
+        assert!(!read_after(&path, 0, 10, "nowhere").unwrap().work[0].hit);
+        let bytes = std::fs::read(&path).unwrap();
+        let opened = work_at(&bytes, want.from, want.to, "");
+        assert_eq!(opened.pieces.iter().filter(|p| p.kind == PieceKind::Call).count(), 2);
         let _ = std::fs::remove_file(&path);
     }
 

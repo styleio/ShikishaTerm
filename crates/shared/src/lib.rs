@@ -594,6 +594,17 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// The column's conversation panel asking for what was said: a page of
+    /// the conversation in `panel` (a tab's id), a search of it, one stretch
+    /// of the AI's work opened, a pin or a note. A conversation found by the
+    /// search of every conversation is named in `args.past` (program, id,
+    /// host) instead of by a tab. `act` is one of a short list, like the
+    /// file panel's
+    Convo {
+        panel: String,
+        act: String,
+        args: serde_json::Value,
+    },
     /// The Issue tab asking for something: the desk's projects, a list of
     /// issues or pull requests, one in full, or a change to one. `act` is one
     /// of a short list the loop answers, each the same as an automation command
@@ -1332,6 +1343,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         // The file panel asking for a listing or a search (see `Ev::Files`).
         Some("files") => Ev::Files {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // The conversation panel (see `Ev::Convo`)
+        Some("convo") => Ev::Convo {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
