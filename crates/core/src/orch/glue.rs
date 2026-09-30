@@ -228,7 +228,7 @@ pub fn apply(
                     // record; either may be what it shows as the request
                     note_typed(&tab, &text);
                 }
-                pending.push(PendingSend::new(pos, chunks, true, t.output_count(), now_ms, said.chars().count()));
+                pending.push(PendingSend::new(pos, t.serial(), chunks, true, t.output_count(), now_ms, said.chars().count()));
                 crate::append_hook_log(&format!("orchestration: typed into {tab} ({} chars)", said.chars().count()));
             }
             Effect::Esc { tab } => {

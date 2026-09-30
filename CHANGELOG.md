@@ -34,6 +34,20 @@ once it reaches its first tagged release.
   the second question; and an AI that answered "still waiting", left the wait
   running and was woken by it could be handed that first reply instead of
   the one it went on to give.
+- **Switching desks no longer sends a message into the wrong tab.** Text
+  still going over to a tab when the person switched to another desk went on
+  into whichever tab of the new desk sat in the same place, and its Enter
+  with it; the tab it was meant for kept it unsent in its input box. It now
+  goes to the tab it was meant for, on whichever desk that is.
+- **An AI tab on a desk not in front answers what it is asked.** Its
+  conversation is found as it is for a tab in front, so its answer is read
+  from its record rather than guessed from its screen, and a question for a
+  tab on another desk waits until that desk is shown again rather than
+  failing.
+- **An answer from an AI on another machine is not an older one.** When how
+  long its record was at the moment of asking could not be found out, the
+  question could be matched with an earlier one of the same opening words;
+  the answer is read from its screen then.
 
 ### Removed
 - **The ? no longer offers to send a question to GitHub as an issue.** A

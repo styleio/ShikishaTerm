@@ -133,14 +133,25 @@ pub struct Ask {
     pub why_said: Option<Instant>,
     /// How long the tab's record was when the words were sent: the question
     /// is looked for only after that (see [`asked_in`]). `None` until sent,
-    /// and for a record that is not on this PC
+    /// for a tab not yet known to keep one then (a CLI writes its record at
+    /// the first thing said: all of it is after), and for a record on
+    /// another machine whose length could not be found out ([`Self::record_unsure`])
     pub record_from: Option<u64>,
     /// Since when the tab has read as busy without a break (see
     /// [`RECORD_TRUSTED_AFTER`])
     pub busy_since: Option<Instant>,
     /// How long a record on another machine is, being asked before the
     /// words go in (see [`far_len`]), and when it was asked
-    pub far_len: Option<(std::sync::mpsc::Receiver<u64>, Instant)>,
+    pub far_len: Option<(std::sync::mpsc::Receiver<Result<u64, String>>, Instant)>,
+    /// How long a record on another machine was as the words went in could
+    /// not be found out. Its record is then not read for this answer: looked
+    /// for anywhere in it, the question could be taken for an earlier one
+    /// with the same opening words, and that one's answer handed back. The
+    /// screen answers instead
+    pub record_unsure: bool,
+    /// The desk it was asked on, by id: its tabs are the ones named, whichever
+    /// desk is in front now. `None` is the desk in front
+    pub desk: Option<String>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -308,17 +319,16 @@ impl FarRead {
 /// How long `record` is, looked up on a thread: for a record on another
 /// machine, [`Ask::record_from`] has to be read over the network before the
 /// words go out (see `runtime::tend_asks`)
-pub fn far_len(record: crate::reader::Record) -> std::sync::mpsc::Receiver<u64> {
+pub fn far_len(record: crate::reader::Record) -> std::sync::mpsc::Receiver<Result<u64, String>> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        // A record not written yet is empty: all of it will come after
-        let _ = tx.send(record.standing().map_or(0, |s| s.len));
+        let _ = tx.send(record.length());
     });
     rx
 }
 
 /// How long the words may wait for [`far_len`] before they go without it --
-/// and the answer is looked for the old way, by its opening words alone
+/// and the answer is then read from the screen (see [`Ask::record_unsure`])
 pub const FAR_LEN_WAIT: Duration = Duration::from_secs(10);
 
 /// Where the reply to an ask is read from: the record here, the record on the
@@ -333,7 +343,7 @@ impl Ask {
     fn source(&self, t: &Tab) -> Source {
         match t.record_at() {
             Some(record) if record.is_far() => {
-                if self.far.missing { Source::Screen } else { Source::Far(record) }
+                if self.far.missing || self.record_unsure { Source::Screen } else { Source::Far(record) }
             }
             _ => t.record().map_or(Source::Screen, Source::Here),
         }
@@ -378,6 +388,8 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         record_from: None,
         busy_since: None,
         far_len: None,
+        record_unsure: false,
+        desk: None,
     }
 }
 
