@@ -523,11 +523,28 @@ pub fn bundled_for(machine: &str) -> Result<std::path::PathBuf> {
     };
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| anyhow!("no folder beside the program"))?;
-    let file = dir.join("bridge").join(format!("shikisha-bridge-{arch}-linux"));
-    if !file.exists() {
-        bail!("this copy of the app has no bridge for {arch} machines ({})", file.display());
+    let name = format!("shikisha-bridge-{arch}-linux");
+    let places = bridge_dirs(dir);
+    places
+        .iter()
+        .map(|d| d.join(&name))
+        .find(|f| f.exists())
+        .ok_or_else(|| {
+            let looked: Vec<String> = places.iter().map(|d| d.join(&name).display().to_string()).collect();
+            anyhow!("this copy of the app has no bridge for {arch} machines (looked for {})", looked.join(", "))
+        })
+}
+
+/// Where a copy of the app keeps the bridges it puts on other machines: the
+/// `bridge` folder beside its program (the Windows zip, the Linux tar and the
+/// installer that unpacks it), and where the server version's package puts
+/// them (far-keep plan §8)
+fn bridge_dirs(beside: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![beside.join("bridge")];
+    if cfg!(target_os = "linux") {
+        dirs.push(std::path::PathBuf::from("/usr/lib/shikisha/bridge"));
     }
-    Ok(file)
+    dirs
 }
 
 /// Whether a machine has the bridge, and which
@@ -893,6 +910,20 @@ impl Keeper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bridges are looked for beside the program first, and on Linux also
+    /// where the server version's package puts them
+    #[test]
+    fn the_bridges_are_looked_for_where_every_kind_of_install_puts_them() {
+        let beside = std::path::Path::new("/opt/app");
+        let dirs = bridge_dirs(beside);
+        assert_eq!(dirs[0], beside.join("bridge"), "beside the program comes first");
+        assert_eq!(
+            dirs.iter().any(|d| d == std::path::Path::new("/usr/lib/shikisha/bridge")),
+            cfg!(target_os = "linux"),
+            "{dirs:?}"
+        );
+    }
 
     #[test]
     fn a_frame_is_one_line_of_json() {

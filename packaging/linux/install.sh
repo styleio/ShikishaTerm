@@ -179,6 +179,15 @@ mkdir -p "$PREFIX" 2>/dev/null || true
     die "$PREFIX is not yours to write to. Make it so, or pass --prefix somewhere that is"
 install -m 755 "$BIN" "$PREFIX/shikisha-server"
 say "  installed $PREFIX/shikisha-server"
+# The helper this server puts on the servers and MicroVMs it reaches, for
+# either kind of processor. Beside the program, which is where it looks
+if [ -d "$TMP/unpacked/bridge" ]; then
+    mkdir -p "$PREFIX/bridge"
+    for b in "$TMP/unpacked/bridge"/shikisha-bridge-*-linux; do
+        [ -f "$b" ] && install -m 755 "$b" "$PREFIX/bridge/$(basename "$b")"
+    done
+    say "  installed the bridge beside it ($PREFIX/bridge)"
+fi
 
 case ":$PATH:" in
     *":$PREFIX:"*) ;;

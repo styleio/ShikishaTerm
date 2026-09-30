@@ -216,23 +216,80 @@ jobs:
           file "$BRIDGE" > /tmp/what
           grep -qE "static-pie linked|statically linked" /tmp/what
           "$BRIDGE" --version
-          mkdir -p bridge-out
+          mkdir -p bridge-out server-out
           cp "$BRIDGE" "bridge-out/shikisha-bridge-${{ matrix.arch }}-linux"
+          cp "$BIN" server-out/shikisha-server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-${{ matrix.arch }}
+          path: server-out/*
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-${{ matrix.arch }}
+          path: bridge-out/*
+          retention-days: 7
+          if-no-files-found: error
+
+  # Packed once the bridges of both processors are built: a server version
+  # reaches servers and MicroVMs of either kind, so each package carries both
+  # (far-keep plan §8). On the runner of its own processor, since rpmbuild
+  # builds only for the machine it runs on
+  linux-pack:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-${{ matrix.arch }}
+          path: server-in
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bridge-*
+          path: bridge
+          merge-multiple: true
+
+      - name: Both bridges are here
+        run: |
+          for a in x86_64 aarch64; do
+            test -f "bridge/shikisha-bridge-$a-linux" || { echo "::error::the $a bridge is missing"; exit 1; }
+          done
+          chmod 755 bridge/* server-in/shikisha-server
 
       # Three shapes: a tar for curl, a .deb for apt, an .rpm for dnf.
       # The tar includes the service file -- it sits inside the signature, so
-      # install.sh never needs a second download
+      # install.sh never needs a second download -- and both bridges, which
+      # install.sh puts beside the program
       - name: Pack
         run: |
           VERSION=${GITHUB_REF_NAME}
           case "$VERSION" in v*) ;; *) VERSION=v0.0.0-dryrun ;; esac
-          BIN=target/${{ matrix.target }}/release/shikisha-server
-          mkdir -p tar out
+          BIN=server-in/shikisha-server
+          mkdir -p tar/bridge out
           cp "$BIN" packaging/linux/shikisha.service tar/
+          cp bridge/shikisha-bridge-*-linux tar/bridge/
           tar -czf "out/shikisha-server-$VERSION-${{ matrix.arch }}-linux.tar.gz" \
-              -C tar shikisha-server shikisha.service
+              -C tar shikisha-server shikisha.service bridge
           sudo apt-get install -y rpm
-          sh packaging/linux/mkpkg.sh "$BIN" "$VERSION" "${{ matrix.arch }}" out
+          sh packaging/linux/mkpkg.sh "$BIN" "$VERSION" "${{ matrix.arch }}" out bridge
           ls -la out
 
       # A checksum and a signature for everything that ships. apt/dnf check their own index,
@@ -262,18 +319,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bridge-${{ matrix.arch }}
-          path: bridge-out/*
-          retention-days: 7
-          if-no-files-found: error
-
   # The apt and dnf repositories. The URL stays written in users' sources.list, so
   # it lives on our own domain (pkg.shikisha-term.com), and the storage behind it
   # can be changed at any time
   repo:
-    needs: linux
+    needs: linux-pack
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     env:
@@ -360,7 +410,7 @@ jobs:
           echo "published to $REPO_BASE_URL"
 
   publish:
-    needs: [windows, linux]
+    needs: [windows, linux-pack]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
