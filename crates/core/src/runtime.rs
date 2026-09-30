@@ -13120,36 +13120,71 @@ pub fn scrolled_to(cur: usize, by: i32) -> usize {
         cur.saturating_sub(by.unsigned_abs() as usize)
     }
 }
+/// Lines one wheel tick moves, whether through our history or as arrow keys
+pub const WHEEL_LINES: i32 = 3;
+/// Where one turn of the wheel goes, decided by what the program in the tab asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WheelRoute {
+    /// It watches the mouse: tell it the wheel turned, in its encoding
+    Mouse(vt100::MouseProtocolEncoding),
+    /// It is full screen and asked for the wheel as cursor keys (alternate
+    /// scroll, `CSI ? 1007 h`) -- Codex's transcript is one. Our history is
+    /// empty on that screen, so scrolling it would do nothing at all.
+    /// `application` is which form of the arrow keys it reads
+    Keys { application: bool },
+    /// Neither: scroll back through the history we keep
+    History,
+}
+pub fn wheel_route(s: &vt100::Screen) -> WheelRoute {
+    if s.mouse_protocol_mode() != vt100::MouseProtocolMode::None {
+        WheelRoute::Mouse(s.mouse_protocol_encoding())
+    } else if s.alternate_screen() && s.alternate_scroll() {
+        WheelRoute::Keys {
+            application: s.application_cursor(),
+        }
+    } else {
+        WheelRoute::History
+    }
+}
+/// One line of wheel as the arrow key a keyboard would send
+pub fn wheel_key(up: bool, application: bool) -> &'static [u8] {
+    match (up, application) {
+        (true, false) => b"\x1b[A",
+        (false, false) => b"\x1b[B",
+        (true, true) => b"\x1bOA",
+        (false, true) => b"\x1bOB",
+    }
+}
 /// The wheel was scrolled.
 ///
-/// If the recipient is watching the mouse, pass the scroll straight through.
-/// A full-screen program rewinds its own contents itself, so our history holds
-/// nothing useful. If it's not watching (a plain shell, etc.), scroll back
-/// through the history we keep instead. `by` is the tick count; positive is into the past.
+/// Goes where [`wheel_route`] says: to a program watching the mouse as the
+/// wheel itself, to a full-screen program that asked for it as arrow keys, and
+/// otherwise (a plain shell, etc.) through the history we keep. `by` is the
+/// tick count; positive is into the past.
 pub fn scroll_by(t: &Tab, by: i32, row: u16, col: u16) {
-    let (wants_mouse, enc) = {
+    let route = {
         let p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-        let s = p.screen();
-        (
-            s.mouse_protocol_mode() != vt100::MouseProtocolMode::None,
-            s.mouse_protocol_encoding(),
-        )
+        wheel_route(p.screen())
     };
-    if wants_mouse {
-        // The cap used to be 16 — plenty for a wheel notch or two from the
-        // window. The phone's page buttons ask for a whole screenful at once
-        // (and a full-screen TUI may only move a fraction of a row per tick),
-        // so allow a larger burst; parse_intent still clamps `by` to 250.
-        let mut bytes = Vec::new();
-        for _ in 0..by.unsigned_abs().min(250) {
-            bytes.extend_from_slice(&wheel_bytes(by > 0, row, col, enc));
+    // The cap used to be 16 — plenty for a wheel notch or two from the
+    // window. The phone's page buttons ask for a whole screenful at once
+    // (and a full-screen TUI may only move a fraction of a row per tick),
+    // so allow a larger burst; parse_intent still clamps `by` to 250.
+    let ticks = by.unsigned_abs().min(250) as usize;
+    match route {
+        WheelRoute::Mouse(enc) => {
+            let _ = t.write_bytes(&wheel_bytes(by > 0, row, col, enc).repeat(ticks));
+            return;
         }
-        let _ = t.write_bytes(&bytes);
-        return;
+        WheelRoute::Keys { application } => {
+            let key = wheel_key(by > 0, application);
+            let _ = t.write_bytes(&key.repeat(ticks * WHEEL_LINES as usize));
+            return;
+        }
+        WheelRoute::History => {}
     }
-    // 3 lines per tick, matching terminal convention
     let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
-    let next = scrolled_to(p.screen().scrollback(), by.saturating_mul(3));
+    let next = scrolled_to(p.screen().scrollback(), by.saturating_mul(WHEEL_LINES));
     p.screen_mut().set_scrollback(next);
 }
 /// Returns to the current, live screen.
@@ -19476,6 +19511,54 @@ mod tests {
             wheel_bytes(true, 0, 0, E::Default),
             vec![0x1b, b'[', b'M', 96, 33, 33]
         );
+    }
+
+    /// A full-screen program that asked for the wheel as arrow keys gets them.
+    ///
+    /// Codex opens its transcript on the alternate screen with `CSI ? 1007 h`
+    /// and never watches the mouse. The wheel used to fall through to our
+    /// history, which that screen does not have, and did nothing at all.
+    #[test]
+    fn a_full_screen_program_that_asked_for_keys_gets_arrows() {
+        let route = |bytes: &[u8]| {
+            let mut p = vt100::Parser::new(5, 20, 100);
+            p.process(bytes);
+            wheel_route(p.screen())
+        };
+        assert_eq!(
+            route(b""),
+            WheelRoute::History,
+            "a plain shell scrolls our history"
+        );
+        assert_eq!(
+            route(b"\x1b[?1049h\x1b[?1007h"),
+            WheelRoute::Keys { application: false },
+            "the transcript does not scroll"
+        );
+        assert_eq!(
+            route(b"\x1b[?1049h\x1b[?1007h\x1b[?1h"),
+            WheelRoute::Keys { application: true }
+        );
+        // Back on the normal screen, where our history holds its lines, the
+        // request does not take the wheel away from them
+        assert_eq!(route(b"\x1b[?1007h"), WheelRoute::History);
+        assert_eq!(
+            route(b"\x1b[?1049h\x1b[?1007h\x1b[?1049l"),
+            WheelRoute::History
+        );
+        assert_eq!(
+            route(b"\x1b[?1049h\x1b[?1007h\x1b[?1007l"),
+            WheelRoute::History
+        );
+        // Watching the mouse outranks it: the program said it wants the wheel itself
+        assert_eq!(
+            route(b"\x1b[?1049h\x1b[?1007h\x1b[?1000h\x1b[?1006h"),
+            WheelRoute::Mouse(vt100::MouseProtocolEncoding::Sgr)
+        );
+        assert_eq!(wheel_key(true, false), b"\x1b[A");
+        assert_eq!(wheel_key(false, false), b"\x1b[B");
+        assert_eq!(wheel_key(true, true), b"\x1bOA");
+        assert_eq!(wheel_key(false, true), b"\x1bOB");
     }
 
     /// The failed CI handed to an AI names what it ran on, whether that is a

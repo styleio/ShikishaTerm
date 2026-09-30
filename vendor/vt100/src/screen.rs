@@ -6,6 +6,7 @@ const MODE_APPLICATION_CURSOR: u8 = 0b0000_0010;
 const MODE_HIDE_CURSOR: u8 = 0b0000_0100;
 const MODE_ALTERNATE_SCREEN: u8 = 0b0000_1000;
 const MODE_BRACKETED_PASTE: u8 = 0b0001_0000;
+const MODE_ALTERNATE_SCROLL: u8 = 0b0010_0000;
 
 /// The xterm mouse handling mode currently in use.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
@@ -633,6 +634,14 @@ impl Screen {
         self.mode(MODE_BRACKETED_PASTE)
     }
 
+    /// Returns whether the application asked for the mouse wheel to be sent
+    /// as cursor up/down keys while the alternate screen is in use (xterm
+    /// alternate scroll mode, `CSI ? 1007 h`).
+    #[must_use]
+    pub fn alternate_scroll(&self) -> bool {
+        self.mode(MODE_ALTERNATE_SCROLL)
+    }
+
     /// Returns the currently active [`MouseProtocolMode`].
     #[must_use]
     pub fn mouse_protocol_mode(&self) -> MouseProtocolMode {
@@ -1153,6 +1162,7 @@ impl Screen {
                     self.alternate_grid.clear();
                     self.enter_alternate_grid();
                 }
+                [1007] => self.set_mode(MODE_ALTERNATE_SCROLL),
                 [2004] => self.set_mode(MODE_BRACKETED_PASTE),
                 _ => unhandled(self),
             }
@@ -1193,6 +1203,7 @@ impl Screen {
                     self.exit_alternate_grid();
                     self.decrc();
                 }
+                [1007] => self.clear_mode(MODE_ALTERNATE_SCROLL),
                 [2004] => self.clear_mode(MODE_BRACKETED_PASTE),
                 _ => unhandled(self),
             }
