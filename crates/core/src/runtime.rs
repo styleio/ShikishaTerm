@@ -137,6 +137,27 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project
 /// not by the dialog: answered to the caller, never drawn on the dialog
 const COMMAND_ASKS: u64 = 1 << 62;
 
+/// The asks of a far machine for its ports, numbered as they go out. Each is
+/// answered on a thread of its own, so they can come back in any order; only
+/// the newest one's answer is what the machine says now
+#[derive(Debug, Default)]
+struct FarAsks {
+    last: u64,
+}
+
+impl FarAsks {
+    /// The number of an ask about to go out
+    fn ask(&mut self) -> u64 {
+        self.last += 1;
+        self.last
+    }
+
+    /// Whether the answer to ask `n` is the one to show
+    fn is_newest(&self, n: u64) -> bool {
+        n == self.last
+    }
+}
+
 /// A `worktree_add` waiting for its folder
 struct WorktreeCall {
     seq: u64,
@@ -2400,7 +2421,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .into_iter()
         .map(|a| crate::uistate::MachineAiChoice { key: a.key, name: a.name })
         .collect();
-    let (far_ports_tx, far_ports_rx) = std::sync::mpsc::channel::<crate::uistate::FarPortsState>();
+    // Each ask numbered, so an answer to an older ask that comes back last is
+    // not taken for the newest (see `FarAsks`)
+    let mut far_asks = FarAsks::default();
+    let (far_ports_tx, far_ports_rx) = std::sync::mpsc::channel::<(u64, crate::uistate::FarPortsState)>();
     let (listing_tx, listing_rx) = std::sync::mpsc::channel::<crate::uistate::RemoteListState>();
     // The aliases a new machine can be filled in from, read again with the settings
     let mut ssh_aliases = crate::discover::ssh_aliases();
@@ -9589,7 +9613,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .map(|v| (v.ports.clone(), v.private))
                 .unwrap_or_default();
             far_ports_view = Some(crate::uistate::FarPortsState { folder: folder.clone(), server, busy: true, ports, private, ..Default::default() });
-            let tx = far_ports_tx.clone();
+            let n = far_asks.ask();
+            let far_ports_tx = far_ports_tx.clone();
+            let tx = move |answer: crate::uistate::FarPortsState| far_ports_tx.send((n, answer));
             std::thread::spawn(move || {
                 // A private MicroVM's addresses answer nobody from outside:
                 // listed without them, and carried here when opened. One
@@ -9603,7 +9629,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let private = match private {
                     Ok(p) => p,
                     Err(error) => {
-                        let _ = tx.send(crate::uistate::FarPortsState { folder, server, busy: false, error, ..Default::default() });
+                        let _ = tx(crate::uistate::FarPortsState { folder, server, busy: false, error, ..Default::default() });
                         return;
                     }
                 };
@@ -9616,7 +9642,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .map_err(|e| format!("{e:#}"))
                         .and_then(|spec| crate::microvm::server_ports_of(&spec)),
                 };
-                let _ = tx.send(match said {
+                let _ = tx(match said {
                     Ok(ports) => crate::uistate::FarPortsState { folder, server, private, busy: false, ports, error: String::new() },
                     Err(error) => crate::uistate::FarPortsState { folder, server, private, busy: false, ports: Vec::new(), error },
                 });
@@ -9792,9 +9818,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
         }
-        while let Ok(answer) = far_ports_rx.try_recv() {
-            // Only the folder last asked about
-            if far_ports_view.as_ref().is_none_or(|v| v.folder == answer.folder) {
+        while let Ok((n, answer)) = far_ports_rx.try_recv() {
+            // Only the answer to the last ask: an earlier one of the same
+            // folder that took longer would put back what the newer one
+            // replaced, and one of another folder is not what is shown
+            if far_asks.is_newest(n) && far_ports_view.as_ref().is_none_or(|v| v.folder == answer.folder) {
                 far_ports_view = Some(answer);
             }
         }
@@ -17787,6 +17815,18 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A far machine asked twice about its ports: when the first ask's
+    /// answer comes back after the second's, it is not shown -- before, it
+    /// replaced the newer list with the older one
+    #[test]
+    fn an_older_ports_answer_that_comes_back_last_is_not_shown() {
+        let mut asks = super::FarAsks::default();
+        let first = asks.ask();
+        let second = asks.ask();
+        assert!(asks.is_newest(second));
+        assert!(!asks.is_newest(first), "the older ask's answer was taken as the newest");
+    }
+
     /// The sign-in address an AI prints is whole again out of the rows it
     /// was broken into: by the terminal (a wrapped row) or by the program
     /// drawing its own screen (a row written to its last column). A row
