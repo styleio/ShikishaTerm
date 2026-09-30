@@ -9,6 +9,12 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **The wheel scrolls a full-screen program that asks for arrow keys.**
+  Codex's transcript, and any program that turns on xterm alternate scroll,
+  wants the wheel as up and down arrows and does not watch the mouse. The
+  wheel scrolled the tab's own history instead, which a full screen does not
+  have, so the tab stopped scrolling. Each tick now reaches such a program as
+  three arrow keys.
 - **An AI on a MicroVM keeps working past the longest run the E2B plan
   allows.** E2B pauses a machine once it has run for as long as the plan
   allows (an hour on the smallest), however much time it was asked for, and
