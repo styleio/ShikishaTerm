@@ -50,6 +50,7 @@
     "hook": {
       "file": "{home}/.codex/hooks.json",
       "format": "bare",
+      "trust": "codex_app_server",
       "events": [
         "SessionStart"
       ],

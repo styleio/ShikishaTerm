@@ -810,6 +810,7 @@ impl WinSurface {
                 Ev::FarServe { folder } => self.mail.far_serves.push(folder),
                 Ev::Login { folder, act } => self.mail.logins.push((folder, act)),
                 Ev::Skill { ai, act } => self.mail.skills.push((ai, act)),
+                Ev::AgentHooks { answer, seq } => self.mail.agent_hooks.push((answer, seq)),
                 Ev::Orch { act, job, decision, choice } => self.mail.orch.push((act, job, decision, choice)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),

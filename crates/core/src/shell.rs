@@ -10487,6 +10487,47 @@ function drawKeyChanges() {
   });
 }
 
+// The question asked as the program starts, about letting the AI CLIs used on
+// this PC report what they are doing. Each CLI with the file its hook goes
+// into and, a press away, exactly what goes into it -- agreed to having been
+// shown, not described. The same question on the window and on a phone;
+// answered on either, it goes from both. Put away without an answer (the
+// close mark, Esc), it is asked again at the next start
+let hookAskSeen = 0, hookAskOpen = false;
+function drawHookAsk() {
+  const a = S && S.hook_ask;
+  if (!a) {
+    if (hookAskOpen) { hookAskOpen = false; closeAsk(true); }
+    return;
+  }
+  if (a.seq === hookAskSeen) return;
+  hookAskSeen = a.seq;
+  hookAskOpen = true;
+  const rows = (a.clis || []).map(c => {
+    const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:6px 0 0;padding:8px;" +
+      "background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"}, c.preview);
+    const show = el("a", {href:"#", onclick: e => {
+      e.preventDefault();
+      pre.style.display = pre.style.display === "none" ? "block" : "none";
+    }}, T["tui.hooks.show"] || "");
+    return el("div", {class:"brow2 stacked"},
+      el("span", {class:"tag"}, c.name),
+      el("span", {class:"nm asis"}, c.file),
+      c.approval ? el("span", {class:"nm asis"}, (T["tui.hooks.approval"] || "{file}").replaceAll("{file}", c.approval)) : null,
+      show, pre);
+  });
+  const answer = word => { hookAskOpen = false; send({kind:"agenthooks", answer:word, seq:a.seq}); };
+  askQuestion({
+    title: T["tui.hooks.title"] || "",
+    say: T["tui.hooks.say"] || "",
+    rows,
+    label: T["tui.hooks.go"] || "",
+    no: { label: T["tui.hooks.no"] || "", act: () => answer("off") },
+    go: () => answer("on"),
+    back: () => answer("later"),
+  });
+}
+
 function drawCloseAsk() {
   const a = S && S.close_ask;
   if (!a) {
@@ -11409,6 +11450,7 @@ window.__state = function (json) {
   drawStrip();
   drawCloseAsk();
   drawKeyChanges();
+  drawHookAsk();
   drawStatus();
   drawNav();
   drawAsks();
@@ -15294,6 +15336,7 @@ function linkEdit(w, d) {
 // What the list says under its choices, when there is something to say
 function linkNote(w, d) {
   if (w.lk === "web" || d.far) return "";
+  if (!d.ok && d.why === "elsewhere") return (T["tui.link.elsewhere"] || "").replaceAll("{host}", d.host || "");
   if (!d.ok) return T["tui.link.nowhere"] || "";
   if (!d.found) return T["tui.link.missing"] || "";
   if (d.runs && AT_PC) return T["tui.link.runs"] || "";
@@ -20185,7 +20228,11 @@ let sAskGo = null, sAskBack = null;
 // server was marked as careful, the button waits for its name to be typed.
 // The typing is what makes the name read -- a mark beside a button is easy to
 // look past on the fortieth delete of the day, and "Production" typed out is not
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, go, back}) {
+//
+// `no` is a second answer beside the button, for a question whose "no" is an
+// answer worth keeping rather than the question put away: {label, act}. Without
+// it the other button is Cancel, which is `back`
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, no, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -20208,8 +20255,8 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const unasked = again.querySelector("input");
   unasked.checked = false;
   const cancel = box.querySelector(".quiet");
-  cancel.textContent = T["common.cancel"] || "";
-  cancel.onclick = () => closeAsk();
+  cancel.textContent = no ? no.label : (T["common.cancel"] || "");
+  cancel.onclick = no ? () => { sAskBack = null; closeAsk(true); no.act(); } : () => closeAsk();
   const btn = box.querySelector(".go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
@@ -21968,7 +22015,11 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
                 let chosen = if shikisha_shared::is_openable(target) {
                     Some(("web", target.to_string()))
                 } else {
-                    crate::termlink::file_url_path(target).map(|p| ("file", p))
+                    // A file address that names a machine keeps its address:
+                    // which machine that is, only the tab it was pressed on can
+                    // say (`termlink::file_home`)
+                    crate::termlink::file_url(target)
+                        .map(|u| ("file", if u.host.is_some() { target.to_string() } else { u.path }))
                 };
                 if let Some((kind, target)) = chosen {
                     place(i, end, kind, target, &mut spots);
@@ -25596,6 +25647,19 @@ mod tests {
             assert_eq!(with, rows_taken, "at {cols} columns: {rows:#?}");
             assert!(p.screen().contents().contains(&address), "at {cols} columns");
         }
+    }
+
+    /// A program's file link that names a machine keeps its whole address as
+    /// the place, for the tab it is pressed on to judge; one that names none
+    /// is the path
+    #[test]
+    fn a_file_link_naming_a_machine_keeps_its_address() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process(b"\x1b]8;;file://nas/share/a.txt\x1b\\on the nas\x1b]8;;\x1b\\");
+        p.process(b"\r\n\x1b]8;;file:///C:/w/b.txt\x1b\\here\x1b]8;;\x1b\\");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-lk="file" data-go="file://nas/share/a.txt""#), "{rows:?}");
+        assert!(rows[1].contains(r#"data-lk="file" data-go="C:/w/b.txt""#), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of

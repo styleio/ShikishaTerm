@@ -750,6 +750,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             })
             .collect(),
         close_ask: ui.close_ask.clone(),
+        hook_ask: ui.hook_ask.clone(),
         closed: ui.closed.clone(),
         // The ball moves by session number; what we display is the screen number
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
@@ -1756,6 +1757,8 @@ pub struct Ui {
     pub git_repos: Vec<(std::path::PathBuf, String)>,
     /// A tab's ✕ waiting for an answer (see `closed::close`)
     pub close_ask: Option<crate::uistate::CloseAskState>,
+    /// The question about the AI CLIs' hooks (see `agenthook::unasked`)
+    pub hook_ask: Option<crate::uistate::HookAskState>,
     /// This desk's closed tabs that can be opened again
     pub closed: Vec<crate::uistate::ClosedState>,
     /// The quick commands as the launcher draws them (see `quick::view`)

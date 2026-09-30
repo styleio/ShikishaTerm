@@ -68,7 +68,9 @@ browser tab instead.
 An address or a file path in a terminal is underlined under the pointer. Press it
 for what it can be opened with -- a browser tab, the editor at that line, the
 default app, its folder -- or Ctrl+click to open it straight away (Settings >
-Basic > Pressing an address or a path in a terminal).
+Basic > Pressing an address or a path in a terminal). A program's link to a
+file on another computer (`file://server/share/...`) opens as that computer's
+file share from a tab on this PC.
 
 **Along the top of the middle** are the tabs of the folder in view. Press one to
 switch to it, and `+` to add one. A tab's ✕, or a middle click on it, closes that
