@@ -16,6 +16,14 @@ once it reaches its first tagged release.
   came back two characters short at every row break, and opened nowhere.
   Lines that ran on are now laid out again at the new width, scrollback
   included, the way a terminal with scrollback does.
+- **A program's file link that names another computer opens that computer's
+  file, not this PC's.** A `file://server/share/file` link was opened as
+  `/share/file` on the tab's own machine -- the name of the computer was
+  thrown away. A link naming no computer, `localhost`, or the tab's own
+  machine (as `ls --hyperlink` writes it) is still a file there. One naming
+  another computer opens as its file share (`\\server\share\file`) from a tab
+  on this PC; from a tab on another machine it is not opened, and the list
+  says why.
 - **A phone is told to stop picking with the button, not with Esc.** The pick
   button's description said "Esc on the page stops" on a phone too; on a
   screen with no keyboard it now names Stop picking.

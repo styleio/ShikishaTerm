@@ -15274,6 +15274,7 @@ function linkEdit(w, d) {
 // What the list says under its choices, when there is something to say
 function linkNote(w, d) {
   if (w.lk === "web" || d.far) return "";
+  if (!d.ok && d.why === "elsewhere") return (T["tui.link.elsewhere"] || "").replaceAll("{host}", d.host || "");
   if (!d.ok) return T["tui.link.nowhere"] || "";
   if (!d.found) return T["tui.link.missing"] || "";
   if (d.runs && AT_PC) return T["tui.link.runs"] || "";
@@ -21858,7 +21859,11 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
                 let chosen = if shikisha_shared::is_openable(target) {
                     Some(("web", target.to_string()))
                 } else {
-                    crate::termlink::file_url_path(target).map(|p| ("file", p))
+                    // A file address that names a machine keeps its address:
+                    // which machine that is, only the tab it was pressed on can
+                    // say (`termlink::file_home`)
+                    crate::termlink::file_url(target)
+                        .map(|u| ("file", if u.host.is_some() { target.to_string() } else { u.path }))
                 };
                 if let Some((kind, target)) = chosen {
                     place(i, end, kind, target, &mut spots);
@@ -25486,6 +25491,19 @@ mod tests {
             assert_eq!(with, rows_taken, "at {cols} columns: {rows:#?}");
             assert!(p.screen().contents().contains(&address), "at {cols} columns");
         }
+    }
+
+    /// A program's file link that names a machine keeps its whole address as
+    /// the place, for the tab it is pressed on to judge; one that names none
+    /// is the path
+    #[test]
+    fn a_file_link_naming_a_machine_keeps_its_address() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process(b"\x1b]8;;file://nas/share/a.txt\x1b\\on the nas\x1b]8;;\x1b\\");
+        p.process(b"\r\n\x1b]8;;file:///C:/w/b.txt\x1b\\here\x1b]8;;\x1b\\");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-lk="file" data-go="file://nas/share/a.txt""#), "{rows:?}");
+        assert!(rows[1].contains(r#"data-lk="file" data-go="C:/w/b.txt""#), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of

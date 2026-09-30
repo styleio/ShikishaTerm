@@ -325,6 +325,10 @@ pub struct QueryResponder {
     /// Where the shell says it is now. Empty until one says so, which most
     /// never do -- announcing it takes shell integration nobody has set up
     cwd: ReportedCwd,
+    /// The machine the shell names when it says where it is (the host of an
+    /// `OSC 7` address). How a terminal on another machine tells us that
+    /// machine's own name, which nothing else does
+    said_machine: ReportedCwd,
     /// What an AI's hook on another machine said to this terminal (see
     /// `agenthook::far_line`), waiting for the loop
     far_hooks: FarHooks,
@@ -534,6 +538,34 @@ fn cwd_of(params: &[&[u8]]) -> Option<String> {
     }
 }
 
+/// The machine an `OSC 7` address names: `file://build-01/home/me` is
+/// `build-01`. Nothing for an address that names none (or `localhost`), and
+/// nothing for any other sequence
+fn machine_of(params: &[&[u8]]) -> Option<String> {
+    let [code, rest @ ..] = params else { return None };
+    if *code != b"7" || rest.is_empty() {
+        return None;
+    }
+    let payload = rest.iter().map(|p| String::from_utf8_lossy(p)).collect::<Vec<_>>().join(";");
+    crate::termlink::file_url(payload.trim())?.host
+}
+
+#[cfg(test)]
+mod said_machine_tests {
+    use super::machine_of;
+
+    #[test]
+    fn a_shell_names_its_machine_only_by_an_address_that_names_one() {
+        assert_eq!(machine_of(&[b"7", b"file://build-01/home/me"]).as_deref(), Some("build-01"));
+        assert_eq!(machine_of(&[b"7", b"file:///home/me"]), None);
+        assert_eq!(machine_of(&[b"7", b"file://localhost/home/me"]), None);
+        // A path with a semicolon in it arrives in pieces; the machine is in the first
+        assert_eq!(machine_of(&[b"7", b"file://box/a", b"b"]).as_deref(), Some("box"));
+        assert_eq!(machine_of(&[b"9", b"9", b"C:\\work"]), None);
+        assert_eq!(machine_of(&[b"0", b"a title"]), None);
+    }
+}
+
 /// Read a notification out of an OSC sequence, in any of the three spellings
 /// terminals have settled on.
 ///
@@ -668,6 +700,14 @@ impl vt100::Callbacks for QueryResponder {
         if let Some(title) = title_of(params) {
             self.store_title(title.as_bytes());
             return;
+        }
+        // The machine a shell names in its OSC 7 address -- the one way a
+        // terminal on another machine tells us that machine's own name, which
+        // a `file://` link it prints is then judged against
+        if let Some(machine) = machine_of(params)
+            && let Ok(mut m) = self.said_machine.lock()
+        {
+            *m = machine;
         }
         // Where the shell moved to. Kept rather than acted on: it is the only
         // honest answer to "where is this tab working" once somebody has typed
@@ -1635,6 +1675,7 @@ mod tests {
                 bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 notes: Arc::new(Mutex::new(Vec::new())),
                 cwd: Arc::new(Mutex::new(String::new())),
+                said_machine: Default::default(),
                 window_title: Arc::new(Mutex::new(String::new())),
                 clipboard_writes: false,
                 keyboard: Arc::clone(&keyboard),
@@ -1701,6 +1742,7 @@ mod tests {
                 clipboard_writes: false,
                 keyboard: Arc::new(Mutex::new(Vec::new())),
                 cwd: Arc::new(Mutex::new(String::new())),
+                said_machine: Default::default(),
             },
         );
 
@@ -1740,6 +1782,7 @@ mod tests {
                 bell: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 notes: Arc::clone(&notes),
                 cwd: Arc::clone(&cwd),
+                said_machine: Default::default(),
                 window_title: Arc::new(Mutex::new(String::new())),
                 clipboard_writes: false,
                 keyboard: Arc::new(Mutex::new(Vec::new())),
@@ -3104,6 +3147,9 @@ pub struct Tab {
     /// shell announces it, which takes shell integration most people do not
     /// have -- so this is a bonus, never something relied on
     reported_cwd: ReportedCwd,
+    /// The machine the shell named when it said where it is (see
+    /// `said_machine`). Empty when it named none, or said nothing
+    said_machine: ReportedCwd,
     /// Raised by the reader thread the first time this tab's output turns out
     /// not to be UTF-8. Only ever set on a tab that was not told to expect
     /// another encoding -- a tab reading Shift_JIS on purpose is not mistaken
@@ -3775,6 +3821,7 @@ impl Tab {
         let far_hooks: FarHooks = Arc::new(Mutex::new(Vec::new()));
         let window_title: WindowTitle = Arc::new(Mutex::new(String::new()));
         let reported_cwd: ReportedCwd = Arc::new(Mutex::new(String::new()));
+        let said_machine: ReportedCwd = Arc::new(Mutex::new(String::new()));
         // A fresh process starts with the keyboard every terminal has always
         // had. What the last one asked for died with it
         let keyboard: KeyboardMode = Arc::new(Mutex::new(Vec::new()));
@@ -3790,6 +3837,7 @@ impl Tab {
                 window_title: Arc::clone(&window_title),
                 keyboard: Arc::clone(&keyboard),
                 cwd: Arc::clone(&reported_cwd),
+                said_machine: Arc::clone(&said_machine),
                 clipboard_writes: crate::config::load()
                     .and_then(|c| c.tui_clipboard)
                     .unwrap_or(true),
@@ -3989,6 +4037,7 @@ impl Tab {
             guest: crate::guest::Watch::default(),
             own: own_profile,
             reported_cwd,
+            said_machine,
             not_utf8,
             created: Instant::now(),
             prompted: AtomicBool::new(false),
@@ -4399,6 +4448,16 @@ impl Tab {
     /// not move the tab.
     pub fn reported_cwd(&self) -> String {
         self.reported_cwd
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// The name the machine this tab's shell runs on gave itself, when the
+    /// shell said where it is with an address that names its machine. Empty
+    /// otherwise -- most shells never say
+    pub fn said_machine(&self) -> String {
+        self.said_machine
             .lock()
             .map(|c| c.clone())
             .unwrap_or_default()
@@ -6587,6 +6646,7 @@ mod far_hook_tests {
                 bell: Default::default(),
                 notes: Default::default(),
                 cwd: Default::default(),
+                said_machine: Default::default(),
                 window_title: Default::default(),
                 clipboard_writes: false,
                 keyboard: Default::default(),

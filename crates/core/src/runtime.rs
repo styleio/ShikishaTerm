@@ -13225,7 +13225,49 @@ fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt
     if press.kind != "file" {
         return None;
     }
-    let spot = crate::termlink::place_of(&press.target);
+    // A program's `file://` link that names a machine: the tab's own machine,
+    // another computer's share, or somewhere out of reach. The tab's machine
+    // goes by every name it is known by here -- this PC's name for a tab on
+    // this PC; for one over there, the name its shell gave (OSC 7) and the
+    // name the connection is set up under
+    let far = matches!(place, Some(FilesAt::There { .. }));
+    let mut target = press.target.clone();
+    if let Some(url) = crate::termlink::file_url(&press.target) {
+        let names: Vec<String> = if far {
+            vec![t.said_machine(), t.host().unwrap_or_default().to_string()]
+        } else {
+            vec![std::env::var("COMPUTERNAME").unwrap_or_default()]
+        };
+        match crate::termlink::file_home(&url, &names, far) {
+            crate::termlink::FileHome::Here(path) => target = path,
+            crate::termlink::FileHome::Away(host) => {
+                return (press.act == "look")
+                    .then(|| answer(serde_json::json!({ "ok": false, "why": "elsewhere", "host": host })));
+            }
+            crate::termlink::FileHome::Share(unc) => {
+                // Not looked at before it is offered: a computer that is off,
+                // or slow to answer, would hold the whole screen still while
+                // Windows waits on it. Opening it is left to a thread for the
+                // same reason
+                let full = std::path::PathBuf::from(&unc);
+                let runs = crate::termlink::runs_when_opened(&full);
+                match press.act.as_str() {
+                    "app" if !runs => {
+                        let open = unc.clone();
+                        std::thread::spawn(move || crate::webui::open_external(&open));
+                    }
+                    "reveal" => reveal_in_folder(&full, true, false),
+                    _ => {}
+                }
+                return (press.act == "look").then(|| {
+                    answer(serde_json::json!({
+                        "ok": true, "far": false, "path": unc, "found": true, "dir": false, "runs": runs,
+                    }))
+                });
+            }
+        }
+    }
+    let spot = crate::termlink::place_of(&target);
     let reported = t.reported_cwd();
     match place {
         Some(FilesAt::There { root, .. }) => {

@@ -1250,6 +1250,7 @@
   "tui.link.copied": "Copied the path",
   "tui.link.missing": "There is no file or folder here by this name.",
   "tui.link.nowhere": "Where this path is can't be told: this tab has no working folder.",
+  "tui.link.elsewhere": "Not opened: this link is to a file on another computer ({host}), which can't be reached from where this tab runs.",
   "tui.link.outside": "Not opened: the editor opens files inside this tab's working folder only, and this one is outside it.",
   "tui.link.runs": "Opening this file would run it, so it is only shown in Explorer.",
   "tui.edit.unwritable": "Not saved: {enc} can't hold these characters: {chars}",
