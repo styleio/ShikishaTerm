@@ -143,6 +143,11 @@ impl Held {
         let note = i18n::tp("msg.ci_log.cut", &[("shown", &mb(tail.text.len() as u64)), ("whole", &mb(tail.whole))]);
         // Already cut to size as it was read; cut again here, it would lose
         // the lines the count above is about
+        if tail.mid_line {
+            let mid = i18n::t("msg.ci_log.mid_line");
+            let lines = Kept { dropped_before: tail.dropped_lines, last: None, note: 2 };
+            return self.place(editors, title, format!("{note}\n{mid}\n{}", tail.text), lines, under);
+        }
         let lines = Kept { dropped_before: tail.dropped_lines, last: None, note: 1 };
         self.place(editors, title, format!("{note}\n{}", tail.text), lines, under)
     }
@@ -202,6 +207,9 @@ pub struct Tail {
     pub whole: u64,
     /// Whether anything was left out
     pub cut: bool,
+    /// Whether `text` starts in the middle of a line: the last line alone was
+    /// longer than what may be held, so its end is all there is of it
+    pub mid_line: bool,
 }
 
 /// Read a stream to its end, keeping its last `most` bytes at most.
@@ -210,7 +218,10 @@ pub struct Tail {
 /// of a stream too big is let go as it goes by, counting its lines so that a
 /// line of the whole can still be found in what is kept. Once anything is let
 /// go, the line the cut fell inside is let go too -- half a line reads as a
-/// line that says something else
+/// line that says something else. Except when that line is all there is:
+/// a last line longer than `most` keeps its end, said to begin mid-line
+/// (`mid_line`), because the end of a log is where its failure is written and
+/// an empty view would hide the one thing it was opened for
 pub fn read_tail(mut from: impl std::io::Read, most: usize) -> std::io::Result<Tail> {
     let lines_in = |b: &[u8]| b.iter().filter(|&&c| c == b'\n').count();
     let mut kept: Vec<u8> = Vec::new();
@@ -246,7 +257,13 @@ pub fn read_tail(mut from: impl std::io::Read, most: usize) -> std::io::Result<T
                 kept.drain(..=end);
                 tail.dropped_lines += 1;
             }
-            None => kept.clear(),
+            None => {
+                // Start on a character, not inside one: the bytes let go may
+                // have ended part way through a letter
+                let start = kept.iter().position(|&c| c & 0xC0 != 0x80).unwrap_or(kept.len());
+                kept.drain(..start);
+                tail.mid_line = true;
+            }
         }
     }
     tail.text = String::from_utf8_lossy(&kept).into_owned();
@@ -293,13 +310,39 @@ pub fn fit(text: String, kind: Kind) -> (String, Kept) {
 mod tests {
     use super::*;
 
+    /// A log whose last line alone is longer than what can be held keeps that
+    /// line's end, said to start mid-line, instead of showing nothing -- the
+    /// end of a failing job is where its failure is written. It starts on a
+    /// letter, not inside one, and its line is found where the editor shows it
+    #[test]
+    fn a_last_line_longer_than_the_limit_keeps_its_end() {
+        let log = format!("first\n{}é the failure", "x".repeat(300));
+        let tail = read_tail(log.as_bytes(), 100).unwrap();
+        assert!(tail.cut && tail.mid_line, "{tail:?}");
+        assert!(tail.text.ends_with("é the failure"), "the end was lost: {:?}", tail.text);
+        assert!(!tail.text.is_empty());
+        assert_eq!(tail.dropped_lines, 1, "the whole first line went, the second is kept in part");
+        // A cut inside the two bytes of "é" starts on the letter after it
+        let odd = format!("{}é tail", "y".repeat(50));
+        let cut = read_tail(odd.as_bytes(), "é tail".len() - 1).unwrap();
+        assert!(cut.mid_line && cut.text == " tail", "{cut:?}");
+
+        let mut held = Held::default();
+        let mut editors = Vec::new();
+        let opened = held.open_tail(&mut editors, "log".into(), tail, None);
+        let shown = held.texts.get(&opened.key).unwrap().clone();
+        let at = opened.editor_line(2).expect("the kept part of line 2 is in the editor");
+        assert!(shown.lines().nth(at - 1).unwrap().ends_with("é the failure"), "line 2 is not where it was said to be");
+        assert_eq!(opened.editor_line(1), None);
+    }
+
     /// A stream that fits is kept whole. One that does not keeps its end, from
     /// the start of a line, and counts the lines let go -- never holding the
     /// whole of it on the way
     #[test]
     fn a_stream_too_big_keeps_its_end_by_whole_lines() {
         let small = read_tail("a\nb\n".as_bytes(), 100).unwrap();
-        assert_eq!(small, Tail { text: "a\nb\n".into(), dropped_lines: 0, whole: 4, cut: false });
+        assert_eq!(small, Tail { text: "a\nb\n".into(), dropped_lines: 0, whole: 4, cut: false, mid_line: false });
 
         let log: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
         let tail = read_tail(log.as_bytes(), 100).unwrap();
