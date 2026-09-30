@@ -65,7 +65,10 @@ app under the page, not inside it, so a page cannot press it for the person.
 
 **What phone access does *not* protect against.** On a plain LAN, anyone who obtains the
 URL and token can send instructions to your AI sessions, and those sessions can run
-commands. This is why Tailscale is the recommended setup: with it, only devices on your own
+commands. A private address is not the same as an unreachable one: a router's port
+forwarding, a cloud machine's public IP mapped to its private address, or a firewall rule
+that allows the port all make the LAN address reachable from the internet. The program
+sets up none of these itself, and does not look for them. This is why Tailscale is the recommended setup: with it, only devices on your own
 tailnet can reach the port at all. Do not enable phone access on shared or public Wi-Fi.
 
 ### Out of scope
