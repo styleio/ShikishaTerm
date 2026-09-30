@@ -144,7 +144,18 @@ impl Grid {
         let (cursor_at, cursor_col) =
             cursor.unwrap_or((laid.len().saturating_sub(1), 0));
         // The screen shows the last rows laid out, as it showed the last
-        // rows before; everything above goes back into the scrollback
+        // rows before; everything above goes back into the scrollback.
+        //
+        // NOTE (vendored patch): when the rows under the cursor are, laid out
+        // again, taller than the screen, not all of them can stay: there is a
+        // scrollback above the screen but nothing below it. The cursor must
+        // stay on the row it was on -- a program on the main screen (an AI
+        // CLI's input box, a progress line) writes relative to it, and a
+        // cursor moved off its text has the next write land on someone
+        // else's line. So the cursor's row goes to the top of the screen,
+        // which keeps the most rows under it, and only those that still do
+        // not fit are dropped. Blank rows under the text were never counted
+        // (`used` above), so nothing that shows is dropped while room is left
         let mut top = laid.len().saturating_sub(screen_rows);
         if cursor_at < top {
             top = cursor_at;

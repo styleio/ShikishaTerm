@@ -5977,6 +5977,58 @@ mod resize_survival_tests {
         assert_eq!(before, whole(&mut p), "back at the first width, the same text");
     }
 
+    /// Narrowing while the cursor is not on the last line: the rows above it
+    /// go to the scrollback, blank rows under it are not counted, and the
+    /// cursor stays on the text it was on. Rows under the cursor are lost only
+    /// when, laid out again, they are taller than the screen with the cursor
+    /// on its top row -- and then the fewest are lost that can be while the
+    /// cursor stays where its program will write next
+    #[test]
+    fn narrowing_with_the_cursor_up_keeps_what_fits_and_the_cursor_on_its_text() {
+        let screen = |p: &vt100::Parser| {
+            let (rows, cols) = p.screen().size();
+            (0..rows).map(|r| p.screen().contents_between(r, 0, r, cols)).collect::<Vec<_>>()
+        };
+        let line = |n: usize| format!("line{n}-{}", "x".repeat(24));
+
+        // Four lines of 30 on a screen of 12 rows, the cursor moved up to the
+        // second line, with blank rows under the text: at 20 columns each line
+        // takes two rows, eight rows in all -- they fit, nothing is lost
+        let mut p = vt100::Parser::new(12, 40, 100);
+        for n in 1..=4 {
+            p.process(format!("{}\r\n", line(n)).as_bytes());
+        }
+        p.process(b"\x1b[2;3H");
+        p.screen_mut().set_size(12, 20);
+        let shown = screen(&p).concat();
+        for n in 1..=4 {
+            assert!(shown.contains(&line(n)), "line {n} lost: {shown:?}");
+        }
+        let (row, col) = p.screen().cursor_position();
+        assert_eq!((row, col), (2, 2), "the cursor stays on the second line's first row, third column");
+
+        // A screen full of text with the cursor near the top: laid out again
+        // it is taller than the screen, so the cursor's row is put at the top,
+        // what was above goes to the scrollback, and only the rows that still
+        // do not fit under it are lost
+        let mut p = vt100::Parser::new(6, 40, 100);
+        for n in 1..=6 {
+            p.process(line(n).as_bytes());
+            if n < 6 {
+                p.process(b"\r\n");
+            }
+        }
+        p.process(b"\x1b[2;1H");
+        p.screen_mut().set_size(6, 20);
+        let (row, _) = p.screen().cursor_position();
+        assert_eq!(row, 0, "the cursor is on the top row, so the most of what is under it fits");
+        let shown = screen(&p);
+        assert!(shown[0].starts_with("line2"), "the cursor is still on its own text: {shown:?}");
+        assert!(shown.concat().contains(&line(4)), "what fits under the cursor is kept: {shown:?}");
+        p.screen_mut().set_scrollback(usize::MAX);
+        assert!(p.screen().contents().contains("line1"), "what was above went to the scrollback");
+    }
+
     #[test]
     fn vendored_vt100_survives_resize_with_wide_chars() {
         let line = "全角テキストの帯あいうえお漢字カナ混在1２３ｗ日本語";
