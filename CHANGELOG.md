@@ -9,6 +9,21 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A phone's moving code lets in one device, even when it reaches both doors
+  at once.** The code is held while it is being used, so the same code sent
+  to the address and to the loopback at the same moment opens only one.
+- **A check's log whose last line alone is too long to show keeps that line's
+  end.** It used to open empty; it now shows the end of the line and says the
+  line begins part way.
+- **The usage figures belong to the account they were read for.** After an AI
+  CLI signed in as another account, a reading that failed showed the previous
+  account's numbers; they now go, and the new account is asked at once.
+- **A far machine's ports show the newest answer.** Asking twice, an older
+  answer that came back late replaced the newer list.
+- **Closing a panel called up over the right-hand column goes back to the
+  panel you chose.** It fell back to the first panel of the strip.
+- **A DevTools closed straight after opening does not stay attached to its
+  page.** A session that arrived after the DevTools closed is let go at once.
 - **A phone moving to the PC's new address is not let in on doors that have
   since changed.** The one-time code a watching phone is handed when the
   board moves now only opens the board while its link and password are the
