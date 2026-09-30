@@ -566,6 +566,64 @@ struct StateClient {
 /// What a line whose session has ended is told, just before it is let go
 const CUT_MESSAGE: &str = "{\"cut\":true}";
 
+/// A device that was watching a board which then moved to another address,
+/// and the one-time code that lets it in at the new one.
+///
+/// A browser keeps its cookies and its stored token per address, so a phone
+/// sent to the new address arrives holding nothing there. The code is what it
+/// carries instead: minted here for a line that had already passed every door
+/// (key, session, password), handed down that line, and taken once by
+/// `POST /moved` at whichever address the board answers next -- the new one,
+/// or the old one again when the network went back before the phone followed. It travels in the part of an address a
+/// browser never sends (after `#`) and is gone from the address bar the
+/// moment the page reads it; used or run out, it opens nothing
+struct Move {
+    code: String,
+    /// The device row, when the session had one: it is given a key of its own
+    /// at the new address (`clients::add_key`)
+    owner: Option<String>,
+    until: Instant,
+}
+
+/// How long a code waits to be used. Long enough for a person to see "this
+/// phone cannot reach the new address", switch Tailscale on on the phone and
+/// come back to the page; short enough that one nobody used is not lying
+/// about for the rest of the run
+const MOVE_LIFE: Duration = Duration::from_secs(10 * 60);
+
+/// The codes handed out and not yet used. Shared by every board this process
+/// runs, because the one that hands a code out is not the one that takes it
+static MOVES: Mutex<Vec<Move>> = Mutex::new(Vec::new());
+
+/// A code for this device to be let in at the board's next address
+fn mint_move(owner: Option<String>) -> String {
+    let code = crate::random_hex(24);
+    let now = Instant::now();
+    let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
+    moves.retain(|m| m.until > now);
+    moves.push(Move { code: code.clone(), owner, until: now + MOVE_LIFE });
+    code
+}
+
+/// The device a code was minted for, taking the code: it opens once. `None`
+/// for a code never handed out, used already, or run out
+fn take_move(code: &str) -> Option<Option<String>> {
+    if code.is_empty() {
+        return None;
+    }
+    let now = Instant::now();
+    let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
+    moves.retain(|m| m.until > now);
+    let at = moves.iter().position(|m| crate::crypto::token_eq(&m.code, code))?;
+    Some(moves.remove(at).owner)
+}
+
+/// What a viewer is told when the board it watches has moved: where to, and
+/// the code that lets it in there
+fn moved_message(to: &str, code: &str) -> String {
+    serde_json::json!({"moved": {"to": to, "code": code}}).to_string()
+}
+
 pub struct RemoteUi {
     pub url: String,
     /// Whether this board is listening for this machine alone -- the window
@@ -713,6 +771,20 @@ impl Ids {
         self.0.lock().unwrap().clear();
     }
 
+    /// The device a live session belongs to: `None` when the session is not
+    /// one of these, `Some(None)` when it is but no device row was written
+    fn owner_of(&self, id: &str) -> Option<Option<String>> {
+        if id.is_empty() {
+            return None;
+        }
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|h| crate::crypto::token_eq(&h.id, id))
+            .map(|h| h.owner.clone())
+    }
+
     /// Remember an id handed out by another list as belonging here too
     fn add(&self, id: &str) {
         if self.has(id) {
@@ -772,6 +844,11 @@ pub struct Gate {
     here_key: String,
     /// The sessions opened with that key
     here: Ids,
+    /// Where this board's devices are to go instead, once the network under
+    /// it has moved and a board at the new address has come up (see
+    /// `RemoteUi::hand_over`). A viewer asking for the state is told this
+    /// rather than handed a screen that is about to stop
+    moving: Mutex<Option<String>>,
 }
 
 /// The score of wrong passwords, and what it costs.
@@ -1188,6 +1265,7 @@ impl RemoteUi {
             // lives
             here_key: crate::random_hex(24),
             here: Ids::new(),
+            moving: Mutex::new(None),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -1596,6 +1674,41 @@ impl RemoteUi {
                 .is_some_and(|t| t.elapsed() < Self::POLL_LIFE)
     }
 
+    /// Tell every device watching this board that it has moved to `to` (the
+    /// origin of the board that came up at the new address), each with a code
+    /// of its own for getting in there. This PC's own window is not told: it
+    /// is pointed at the new board by the program itself. From here on a
+    /// device asking for the state is told the same, so one that watches by
+    /// asking rather than on a socket hears it too
+    pub fn hand_over(&self, to: &str) {
+        *self.gate.moving.lock().unwrap() = Some(to.to_string());
+        let lines = self.state_clients.lock().unwrap();
+        for c in lines.iter() {
+            if self.gate.is_here(&c.session) {
+                continue;
+            }
+            let Some(owner) = self.gate.grants.owner_of(&c.session) else { continue };
+            c.pending.fetch_add(1, Ordering::SeqCst);
+            if c.tx.send(moved_message(to, &mint_move(owner))).is_err() {
+                c.pending.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Stop answering on the loopback, and leave the main address answering.
+    ///
+    /// For a board that is on its way out while its devices are told where
+    /// to go: the board replacing it needs the loopback on the same port, and
+    /// a proxy on this machine (`tailscale serve`) has to reach the new one
+    pub fn release_loopback(&self) {
+        if let Some(s) = self.loopback.lock().unwrap().take() {
+            s.unblock();
+            if let Some(h) = self.loopback_thread.lock().unwrap().take() {
+                let _ = h.join();
+            }
+        }
+    }
+
     /// Push one state message (a small JSON object with `ui` or `screen_html`)
     /// to every connected viewer. Drop lines whose peer has gone.
     pub fn push_state(&self, msg: String) {
@@ -1834,6 +1947,41 @@ fn handle(
             )
             .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
             .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap());
+        return req.respond(resp).map_err(Into::into);
+    }
+    // A device arriving from the address this board used to have, with the
+    // code it was handed there (see `RemoteUi::hand_over`). The code is the
+    // whole credential, so this sits before the key: it is let in as the
+    // device it was -- a session, a key of its own for this address, and the
+    // password already given, since the line it was handed down had passed it
+    if method == "POST" && path == "/moved" {
+        let mut req = req;
+        // A code and nothing else: a body bigger than this is not one
+        let Some(body) = read_body(&mut req, 1024)? else {
+            req.respond(Response::from_string("payload too large").with_status_code(413))?;
+            return Ok(());
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let Some(owner) = take_move(v.get("code").and_then(|c| c.as_str()).unwrap_or("")) else {
+            return req
+                .respond(Response::from_string("gone").with_status_code(403))
+                .map_err(Into::into);
+        };
+        let key = owner.as_deref().and_then(|id| crate::clients::add_key(id).ok().flatten());
+        let id = gate.grants.keep_for("", owner);
+        let mut resp = Response::from_string("ok")
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap());
+        if let Some(key) = &key {
+            for c in device_cookies(key) {
+                resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], c.as_bytes()).unwrap());
+            }
+        }
+        if !gate.password.is_empty() {
+            let pw = gate.pw.keep("");
+            let cookie = format!("rp={pw}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000");
+            resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap());
+        }
         return req.respond(resp).map_err(Into::into);
     }
     if method == "GET" && (path == "/" || path == "/shell") {
@@ -2269,6 +2417,17 @@ fn handle(
 
     match (method.as_str(), path.as_str()) {
         ("GET", "/api/state") => {
+            // A board that moved says so instead, with this device's own way in
+            // at the new address (see `RemoteUi::hand_over`)
+            let moving = gate.moving.lock().unwrap().clone();
+            if let Some(to) = moving
+                && !gate.is_here(&session)
+                && let Some(owner) = gate.grants.owner_of(&session)
+            {
+                let said: serde_json::Value = serde_json::from_str(&moved_message(&to, &mint_move(owner)))?;
+                req.respond(json_response(said))?;
+                return Ok(());
+            }
             // Asking for the state IS watching, and this is the only trace a
             // viewer without a socket leaves (see `watched`).
             *last_poll.lock().unwrap() = Some(Instant::now());
@@ -3594,6 +3753,62 @@ mod tests {
         fn state(&self, token: &str) -> u16 {
             self.status(&format!("/api/state?t={token}"))
         }
+    }
+
+    /// A board whose network moved tells the phone watching it where it went,
+    /// with a code only that phone holds; the board at the new address lets
+    /// the phone in on that code once -- with cookies of its own, so it needs
+    /// no token there -- and a code that is made up, or used already, opens
+    /// nothing.
+    #[test]
+    fn a_phone_on_a_board_that_moved_is_let_in_at_the_new_address_once() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let start = || {
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "move-token-0000".into(), String::new()).unwrap()
+        };
+        let (old, new) = (start(), start());
+        let base = |r: &RemoteUi| r.url.split("/?").next().unwrap().to_string();
+
+        let mut phone = Phone::new(&base(&old));
+        phone.pair("move-token-0000");
+        assert_eq!(phone.status("/api/state"), 200, "the paired phone is not in on the old board");
+
+        old.hand_over(new.origin());
+        let (code, body) = phone.said("/api/state");
+        assert_eq!(code, 200);
+        let said: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        assert_eq!(said["moved"]["to"], serde_json::json!(new.origin()), "the phone is not told where: {body}");
+        let move_code = said["moved"]["code"].as_str().unwrap_or_default().to_string();
+        assert!(!move_code.is_empty(), "no code to get in with: {body}");
+        // Nobody else can use the way in: a stranger holding nothing asking the
+        // old board is refused as ever
+        assert_eq!(Phone::new(&base(&old)).status("/api/state"), 403);
+
+        // At the new address: nothing without the code, and a made-up one is nothing
+        let mut there = Phone::new(&base(&new));
+        assert_eq!(there.status("/api/state"), 403, "the new board let in a phone holding nothing");
+        assert_eq!(there.said_post("/moved", r#"{"code":"0123abcd"}"#).0, 403, "a made-up code opened the door");
+        let r = there.post("/moved", &serde_json::json!({"code": move_code}).to_string());
+        assert_eq!(r.status().as_u16(), 200, "the code handed out does not open the new board");
+        let set: Vec<String> = r
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .map(|kv| kv.trim().to_string())
+            .collect();
+        for name in ["rs=", "rk=", "ri="] {
+            assert!(set.iter().any(|kv| kv.starts_with(name)), "no {name} handed over: {set:?}");
+        }
+        there.cookie = set.join("; ");
+        assert_eq!(there.status("/api/state"), 200, "the phone is not in at the new address on its own cookies");
+        // Once: the same code again opens nothing
+        assert_eq!(Phone::new(&base(&new)).said_post("/moved", &serde_json::json!({"code": move_code}).to_string()).0, 403);
+        // Still one device, now holding a key for each address
+        assert_eq!(crate::clients::load().clients.len(), 1, "moving made a second device");
+        old.shutdown();
+        new.shutdown();
     }
 
     /// Asking to watch as video is a door like every other: it wants the

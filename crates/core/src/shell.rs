@@ -4285,6 +4285,19 @@ const TOKEN = (function () {
     return sessionStorage.getItem("shikisha_token") || "";
   } catch (e) { return ""; }
 })();
+// A phone sent here from the address the PC was on before (its network moved:
+// the LAN to Tailscale, say) carries a one-time code after the "#" -- the part
+// of an address a browser never sends. Read once and taken off the address
+// straight away, like the token above; the code is traded for this address's
+// own cookies before anything else is asked (see "moved" below)
+const MOVE_CODE = (function () {
+  try {
+    const m = /(?:^#|&)move=([0-9a-f]+)/.exec(location.hash);
+    if (!m) return "";
+    history.replaceState({}, "", location.pathname + location.search);
+    return m[1];
+  } catch (e) { return ""; }
+})();
 // Whether this page is a client of a runtime somewhere else, or the face of
 // one running in this very process. It decides two things: where state comes
 // from (a socket, or the host pushing it in) and where intents go (HTTP, or
@@ -15327,6 +15340,9 @@ if (REMOTE) {
   // drop. Either way the stale screen would otherwise just sit there looking
   // live — which is the worst of the three states, because it is the one that
   // gets acted on.
+  // Where the PC went, once it said so: the address, the code that lets this
+  // phone in there, and since when this phone has been failing to reach it
+  let moving = null;
   const showNet = (kind) => {
     let v = document.getElementById("netveil");
     if (!kind) { if (v) v.hidden = true; return; }
@@ -15343,11 +15359,16 @@ if (REMOTE) {
             ? el("button", {class:"nvbtn", onclick:() => {
                 location.href = "/?t=" + encodeURIComponent(TOKEN);
               }}, T["tui.net.cut.again"] || "Reconnect")
-            : null));
+            : null,
+          // Asking the new address again, straight away, instead of at the
+          // next try on its own. Only while this phone cannot reach it
+          el("button", {class:"nvbtn nvagain", hidden:true, onclick:() => { if (moving) tryMove(true); }},
+            T["tui.net.moved.again"] || "Try again")));
       document.body.append(v);
     }
     v.hidden = false;
     v.classList.toggle("cut", kind === "cut");
+    v.querySelector(".nvagain").hidden = true;
     v.querySelector(".nvicon").textContent = kind === "cut" ? "⛔" : "⚠";
     v.querySelector(".nvtitle").textContent = kind === "cut"
       ? (T["tui.net.cut.title"] || "Disconnected from this PC")
@@ -15357,8 +15378,79 @@ if (REMOTE) {
           ? (T["tui.net.cut.sub.sticky"] || "The PC ended this session. Its access code is unchanged, so opening the link again reconnects this device.")
           : (T["tui.net.cut.sub"] || "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect."))
       : (T["tui.net.down.sub"] || "Reconnecting…");
-    const btn = v.querySelector(".nvbtn");
+    const btn = v.querySelector(".nvbtn:not(.nvagain)");
     if (btn) btn.hidden = kind !== "cut";
+  };
+  // The PC's board moved to another address (its network changed) and said
+  // so before the old address went quiet. The phone goes after it: it looks
+  // for the new address, and the moment it answers, opens it with the code it
+  // was handed. A phone that cannot reach it (the PC is on Tailscale now and
+  // this phone is not) is told so, in words, and keeps looking
+  const MOVE_LOOK = 4000;       // one look at the new address, at most
+  const MOVE_AGAIN = 5000;      // between looks while it does not answer
+  const MOVE_FAR_AFTER = 15000; // this long without an answer is "cannot reach"
+  const saidMoved = (far) => {
+    showNet("down");
+    const v = document.getElementById("netveil");
+    v.querySelector(".nvicon").textContent = "↪";
+    v.querySelector(".nvtitle").textContent = T["tui.net.moved.title"] || "This PC's address changed";
+    v.querySelector(".nvsub").textContent = (T[far ? "tui.net.moved.far" : "tui.net.moved.sub"] || "{to}")
+      .replaceAll("{to}", moving.to);
+    v.querySelector(".nvagain").hidden = !far;
+  };
+  const tryMove = async (now) => {
+    if (!moving || moving.going) return;
+    clearTimeout(moving.timer);
+    // A look that gives up after a while: a board that has just stopped can
+    // leave a connection open that never answers
+    const look = async (url, opts) => {
+      const ctl = new AbortController();
+      const stop = setTimeout(() => ctl.abort(), MOVE_LOOK);
+      try { return await fetch(url, {...opts, cache:"no-store", signal: ctl.signal}); }
+      finally { clearTimeout(stop); }
+    };
+    let reached = false;
+    try {
+      // Any answer at all from the new address will do: this only asks
+      // whether it can be reached from here, not what it says
+      await look(moving.to + "/manifest.webmanifest", {mode:"no-cors"});
+      reached = true;
+    } catch (e) {}
+    if (reached) {
+      moving.going = true;
+      location.replace(moving.to + "/#move=" + moving.code);
+      return;
+    }
+    // Or the PC came back here: the network went back the way it was while
+    // this phone could not follow, and a board answers at this address again.
+    // A board here that still says "moved" is the old one in its last
+    // moments, and is not come back to. One that does not know this phone's
+    // session (403) is a board started since: the code this phone was handed
+    // opens it as well as the one it was meant for, so it is let in here
+    try {
+      const r = await look("api/state", {});
+      if (r.status === 403) {
+        const t = await look("moved", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({code: moving.code})});
+        if (t.ok) { moving.going = true; location.reload(); return; }
+      } else if (r.ok && !(await r.json()).moved) {
+        moving.going = true;
+        location.reload();
+        return;
+      }
+    } catch (e) {}
+    if (!moving.since) moving.since = Date.now();
+    saidMoved(now || Date.now() - moving.since >= MOVE_FAR_AFTER);
+    moving.timer = setTimeout(() => tryMove(false), MOVE_AGAIN);
+  };
+  const goMoved = (m) => {
+    if (!m || !m.to || !m.code || moving) return;
+    moving = {to: String(m.to).replace(/\/+$/, ""), code: m.code, since: 0, timer: 0, going: false};
+    wsUp = false;
+    try { if (sws) sws.close(); } catch (x) {}
+    castStop();
+    saidMoved(false);
+    tryMove(false);
   };
   // The PC ended this session. Stop everything this page holds — the state
   // socket and, above all, the relay: its input line is a separate socket, and
@@ -15376,6 +15468,8 @@ if (REMOTE) {
     // the screen goes dark the moment the person there decides it does, instead
     // of at the next poll.
     if (d.cut) { cutNow(); return; }
+    if (d.moved) { goMoved(d.moved); return; }
+    if (moving) return;
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     // The rows that moved, when the shape of the screen is unchanged. Scrolling
@@ -15416,7 +15510,7 @@ if (REMOTE) {
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
-    if (remoteCut) return;
+    if (remoteCut || moving) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       // Pictures of the panes nobody is looking at, at every size. Undivided
@@ -15428,15 +15522,24 @@ if (REMOTE) {
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    sws.onclose = () => { wsUp = false; if (!remoteCut) setTimeout(connectState, 1500); };
+    sws.onclose = () => { wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
-  connectState();
+  // Arrived from the old address with a code: this address's own cookies are
+  // asked for first, and the page loads again holding them. A code that no
+  // longer opens anything (used, or run out) leaves this phone where one with
+  // no pairing is -- the QR on the PC is the way in
+  if (MOVE_CODE) {
+    fetch("moved", {method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({code: MOVE_CODE})})
+      .then(r => { if (r.ok) location.reload(); else cutNow(); })
+      .catch(() => cutNow());
+  } else connectState();
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
   const pull = async () => {
-    if (wsUp || remoteCut) return;
+    if (wsUp || remoteCut || moving || MOVE_CODE) return;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
       if (r.status === 403) {
