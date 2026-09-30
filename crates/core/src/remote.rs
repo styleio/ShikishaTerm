@@ -597,6 +597,11 @@ struct Move {
     /// stood; once either changes, that promise is about doors that are gone
     auth: String,
     until: Instant,
+    /// Being let in right now, by one request that has it in hand. The two
+    /// doors (the address and the loopback) answer on threads of their own,
+    /// so the same code arriving at both at once would otherwise pass the
+    /// lookup twice and hand out two keys for one promise
+    held: bool,
 }
 
 /// What a board's doors are, as one mark: the link's token and the password.
@@ -624,6 +629,8 @@ enum MoveRefused {
     Unknown,
     /// Minted behind doors that have since changed
     DoorsChanged,
+    /// In the hands of another request this moment
+    Held,
 }
 
 /// How long a code waits to be used. Long enough for a person to see "this
@@ -643,16 +650,19 @@ fn mint_move(owner: Option<String>, auth: String) -> String {
     let now = Instant::now();
     let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
     moves.retain(|m| m.until > now);
-    moves.push(Move { code: code.clone(), owner, auth, until: now + MOVE_LIFE });
+    moves.push(Move { code: code.clone(), owner, auth, until: now + MOVE_LIFE, held: false });
     code
 }
 
-/// The device a code was minted for, WITHOUT using the code up: it is used up
-/// by `spend_move` once the device has what the code promised, so a key that
-/// could not be written leaves the code there to be tried again. A code minted
-/// behind other doors than `auth` is thrown away as it is refused -- there is
-/// nothing it could ever open again
-fn find_move(code: &str, auth: &str) -> Result<Option<String>, MoveRefused> {
+/// The device a code was minted for, with the code taken into this request's
+/// hands but NOT used up: it is used up by `spend_move` once the device has
+/// what the code promised, and put back by `release_move` when a key could not
+/// be written, so it can be tried again. While it is held, another request
+/// with the same code is turned away -- looking and holding happen under one
+/// lock, so two doors cannot both get past here. A code minted behind other
+/// doors than `auth` is thrown away as it is refused -- there is nothing it
+/// could ever open again
+fn claim_move(code: &str, auth: &str) -> Result<Option<String>, MoveRefused> {
     if code.is_empty() {
         return Err(MoveRefused::Unknown);
     }
@@ -667,7 +677,20 @@ fn find_move(code: &str, auth: &str) -> Result<Option<String>, MoveRefused> {
         moves.remove(at);
         return Err(MoveRefused::DoorsChanged);
     }
+    if moves[at].held {
+        return Err(MoveRefused::Held);
+    }
+    moves[at].held = true;
     Ok(moves[at].owner.clone())
+}
+
+/// A held code back on the shelf: what it promised could not be given this
+/// time, and the same device may try again
+fn release_move(code: &str) {
+    let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = moves.iter_mut().find(|m| crate::crypto::token_eq(&m.code, code)) {
+        m.held = false;
+    }
 }
 
 /// Use a code up: it opened, and opens nothing again
@@ -2044,9 +2067,13 @@ fn handle(
                 .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
                 .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
         };
-        let owner = match find_move(code, &auth_mark(&token, &gate.password)) {
+        let owner = match claim_move(code, &auth_mark(&token, &gate.password)) {
             Ok(owner) => owner,
-            Err(MoveRefused::Unknown) => return req.respond(refuse(403, "gone")).map_err(Into::into),
+            // Held by another request: from here it is a code being used, and
+            // "used" is what the phone is told a used code is
+            Err(MoveRefused::Unknown | MoveRefused::Held) => {
+                return req.respond(refuse(403, "gone")).map_err(Into::into);
+            }
             Err(MoveRefused::DoorsChanged) => return req.respond(refuse(403, "doors")).map_err(Into::into),
         };
         // The key first, the code used up after: a key that could not be
@@ -2061,6 +2088,7 @@ fn handle(
             }
             Some(Err(e)) => {
                 crate::append_hook_log(&format!("remote: a moved device's key could not be written: {e:#}"));
+                release_move(code);
                 return req.respond(refuse(503, "retry")).map_err(Into::into);
             }
         };
@@ -3965,23 +3993,51 @@ mod tests {
         new.shutdown();
     }
 
-    /// Looking a code up does not use it: only a device that got what the
-    /// code promised uses it up, so a key that could not be written can be
-    /// tried for again with the same code
+    /// Taking a code up does not use it: only a device that got what the
+    /// code promised uses it up, so a key that could not be written puts it
+    /// back to be tried again with the same code
     #[test]
     fn a_code_is_used_up_only_once_it_has_let_someone_in() {
         let auth = auth_mark("t", "");
         let code = mint_move(Some("dev".into()), auth.clone());
-        assert_eq!(find_move(&code, &auth), Ok(Some("dev".into())));
-        assert_eq!(find_move(&code, &auth), Ok(Some("dev".into())), "looking it up used it up");
+        assert_eq!(claim_move(&code, &auth), Ok(Some("dev".into())));
+        release_move(&code);
+        assert_eq!(claim_move(&code, &auth), Ok(Some("dev".into())), "a code put back could not be taken again");
         spend_move(&code);
-        assert_eq!(find_move(&code, &auth), Err(MoveRefused::Unknown));
+        assert_eq!(claim_move(&code, &auth), Err(MoveRefused::Unknown));
         // Other doors: refused, and dropped for good
         let other = mint_move(None, auth.clone());
-        assert_eq!(find_move(&other, &auth_mark("t", "a password")), Err(MoveRefused::DoorsChanged));
-        assert_eq!(find_move(&other, &auth), Err(MoveRefused::Unknown));
+        assert_eq!(claim_move(&other, &auth_mark("t", "a password")), Err(MoveRefused::DoorsChanged));
+        assert_eq!(claim_move(&other, &auth), Err(MoveRefused::Unknown));
         // A token and a password are one pair each, not one string
         assert_ne!(auth_mark("ab", "c"), auth_mark("a", "bc"));
+    }
+
+    /// The same code at both doors at once: exactly one of them gets it.
+    /// Both doors answer on threads of their own, and before a code was held
+    /// while it was being used, both got past the lookup and each handed out
+    /// a key -- one promise, two devices let in
+    #[test]
+    fn a_code_taken_at_two_doors_at_once_lets_in_one() {
+        let auth = auth_mark("both-doors", "");
+        for _ in 0..50 {
+            let code = mint_move(Some("dev".into()), auth.clone());
+            let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let got: Vec<bool> = (0..8)
+                .map(|_| {
+                    let (code, auth, start) = (code.clone(), auth.clone(), start.clone());
+                    std::thread::spawn(move || {
+                        start.wait();
+                        claim_move(&code, &auth).is_ok()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect();
+            assert_eq!(got.iter().filter(|&&ok| ok).count(), 1, "one code let in {:?}", got);
+            spend_move(&code);
+        }
     }
 
     /// Asking to watch as video is a door like every other: it wants the
