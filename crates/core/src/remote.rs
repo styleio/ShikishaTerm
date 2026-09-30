@@ -592,7 +592,38 @@ struct Move {
     /// The device row, when the session had one: it is given a key of its own
     /// at the new address (`clients::add_key`)
     owner: Option<String>,
+    /// The doors it was minted behind (`auth_mark`). A code is a promise that
+    /// the line it went down had passed the link and the password as they
+    /// stood; once either changes, that promise is about doors that are gone
+    auth: String,
     until: Instant,
+}
+
+/// What a board's doors are, as one mark: the link's token and the password.
+///
+/// Changing either is how a person says "whoever was let in before, not any
+/// more" -- the board is started again for it, and every session dies with the
+/// old one. A code minted before the change would otherwise walk straight
+/// through the new doors with a key, a session and the password cookie. Only
+/// the mark is kept, never what it is made of
+fn auth_mark(token: &str, password: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(token.as_bytes());
+    // Apart, so a token that ends where a password begins cannot be mistaken
+    // for another pair
+    h.update([0u8]);
+    h.update(password.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Why a code did not let a device in
+#[derive(Debug, PartialEq, Eq)]
+enum MoveRefused {
+    /// Never handed out, used already, or run out
+    Unknown,
+    /// Minted behind doors that have since changed
+    DoorsChanged,
 }
 
 /// How long a code waits to be used. Long enough for a person to see "this
@@ -605,27 +636,52 @@ const MOVE_LIFE: Duration = Duration::from_secs(10 * 60);
 /// runs, because the one that hands a code out is not the one that takes it
 static MOVES: Mutex<Vec<Move>> = Mutex::new(Vec::new());
 
-/// A code for this device to be let in at the board's next address
-fn mint_move(owner: Option<String>) -> String {
+/// A code for this device to be let in at the board's next address, behind
+/// the doors marked `auth`
+fn mint_move(owner: Option<String>, auth: String) -> String {
     let code = crate::random_hex(24);
     let now = Instant::now();
     let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
     moves.retain(|m| m.until > now);
-    moves.push(Move { code: code.clone(), owner, until: now + MOVE_LIFE });
+    moves.push(Move { code: code.clone(), owner, auth, until: now + MOVE_LIFE });
     code
 }
 
-/// The device a code was minted for, taking the code: it opens once. `None`
-/// for a code never handed out, used already, or run out
-fn take_move(code: &str) -> Option<Option<String>> {
+/// The device a code was minted for, WITHOUT using the code up: it is used up
+/// by `spend_move` once the device has what the code promised, so a key that
+/// could not be written leaves the code there to be tried again. A code minted
+/// behind other doors than `auth` is thrown away as it is refused -- there is
+/// nothing it could ever open again
+fn find_move(code: &str, auth: &str) -> Result<Option<String>, MoveRefused> {
     if code.is_empty() {
-        return None;
+        return Err(MoveRefused::Unknown);
     }
     let now = Instant::now();
     let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
     moves.retain(|m| m.until > now);
-    let at = moves.iter().position(|m| crate::crypto::token_eq(&m.code, code))?;
-    Some(moves.remove(at).owner)
+    let at = moves
+        .iter()
+        .position(|m| crate::crypto::token_eq(&m.code, code))
+        .ok_or(MoveRefused::Unknown)?;
+    if !crate::crypto::token_eq(&moves[at].auth, auth) {
+        moves.remove(at);
+        return Err(MoveRefused::DoorsChanged);
+    }
+    Ok(moves[at].owner.clone())
+}
+
+/// Use a code up: it opened, and opens nothing again
+fn spend_move(code: &str) {
+    let mut moves = MOVES.lock().unwrap_or_else(|e| e.into_inner());
+    moves.retain(|m| !crate::crypto::token_eq(&m.code, code));
+}
+
+/// Every code minted behind these doors and not yet used, gone: the person
+/// here has just shut them ("disconnect"), and a device on its way from the
+/// old address is one of the ones shut out. Only these doors' codes: the list
+/// is the whole process's, and another board's devices were not disconnected
+fn forget_moves(auth: &str) {
+    MOVES.lock().unwrap_or_else(|e| e.into_inner()).retain(|m| !crate::crypto::token_eq(&m.auth, auth));
 }
 
 /// What a viewer is told when the board it watches has moved: where to, and
@@ -1487,6 +1543,10 @@ impl RemoteUi {
     /// until it re-pairs with the new URL. `url` is rebuilt so the pairing QR,
     /// which reads it every frame, shows the new token.
     pub fn rotate_token(&mut self, new: String) {
+        // The codes handed out behind the token being replaced: they would be
+        // refused at the new doors anyway, and go now rather than lie about
+        // until they run out
+        forget_moves(&auth_mark(&self.token.lock().unwrap(), &self.gate.password));
         *self.token.lock().unwrap() = new.clone();
         self.url = format!("{}/?t={}", self.origin, new);
         self.cut_sessions();
@@ -1545,6 +1605,7 @@ impl RemoteUi {
 
     pub fn cut_sessions(&self) {
         self.gate.cut();
+        forget_moves(&auth_mark(&self.token.lock().unwrap(), &self.gate.password));
         // The links sitting in a chat are somebody holding this terminal too
         self.book.cut();
         // Say it on the way out. The phone's own poll would notice within a
@@ -1692,6 +1753,7 @@ impl RemoteUi {
     /// asking rather than on a socket hears it too
     pub fn hand_over(&self, to: &str) {
         *self.gate.moving.lock().unwrap() = Some(to.to_string());
+        let auth = auth_mark(&self.token.lock().unwrap(), &self.gate.password);
         let lines = self.state_clients.lock().unwrap();
         for c in lines.iter() {
             if self.gate.is_here(&c.session) {
@@ -1699,7 +1761,7 @@ impl RemoteUi {
             }
             let Some(owner) = self.gate.grants.owner_of(&c.session) else { continue };
             c.pending.fetch_add(1, Ordering::SeqCst);
-            if c.tx.send(moved_message(to, &mint_move(owner))).is_err() {
+            if c.tx.send(moved_message(to, &mint_move(owner, auth.clone()))).is_err() {
                 c.pending.fetch_sub(1, Ordering::SeqCst);
             }
         }
@@ -1972,12 +2034,37 @@ fn handle(
             return Ok(());
         };
         let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-        let Some(owner) = take_move(v.get("code").and_then(|c| c.as_str()).unwrap_or("")) else {
-            return req
-                .respond(Response::from_string("gone").with_status_code(403))
-                .map_err(Into::into);
+        let code = v.get("code").and_then(|c| c.as_str()).unwrap_or("");
+        // Why a code did not open, in a word the phone turns into a sentence.
+        // Said, not just refused: "your pairing was removed" and "the PC's
+        // link changed" are different things for the person to do
+        let refuse = |status: u16, why: &str| {
+            Response::from_string(serde_json::json!({"why": why}).to_string())
+                .with_status_code(status)
+                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
         };
-        let key = owner.as_deref().and_then(|id| crate::clients::add_key(id).ok().flatten());
+        let owner = match find_move(code, &auth_mark(&token, &gate.password)) {
+            Ok(owner) => owner,
+            Err(MoveRefused::Unknown) => return req.respond(refuse(403, "gone")).map_err(Into::into),
+            Err(MoveRefused::DoorsChanged) => return req.respond(refuse(403, "doors")).map_err(Into::into),
+        };
+        // The key first, the code used up after: a key that could not be
+        // written is a code worth trying again, and a device that is no
+        // longer in the book has nothing to be let in as
+        let key = match owner.as_deref().map(crate::clients::add_key) {
+            None => None,
+            Some(Ok(Some(key))) => Some(key),
+            Some(Ok(None)) => {
+                spend_move(code);
+                return req.respond(refuse(410, "device")).map_err(Into::into);
+            }
+            Some(Err(e)) => {
+                crate::append_hook_log(&format!("remote: a moved device's key could not be written: {e:#}"));
+                return req.respond(refuse(503, "retry")).map_err(Into::into);
+            }
+        };
+        spend_move(code);
         let id = gate.grants.keep_for("", owner);
         let mut resp = Response::from_string("ok")
             .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
@@ -2434,7 +2521,8 @@ fn handle(
                 && !gate.is_here(&session)
                 && let Some(owner) = gate.grants.owner_of(&session)
             {
-                let said: serde_json::Value = serde_json::from_str(&moved_message(&to, &mint_move(owner)))?;
+                let code = mint_move(owner, auth_mark(&token, &gate.password));
+                let said: serde_json::Value = serde_json::from_str(&moved_message(&to, &code))?;
                 req.respond(json_response(said))?;
                 return Ok(());
             }
@@ -3819,6 +3907,81 @@ mod tests {
         assert_eq!(crate::clients::load().clients.len(), 1, "moving made a second device");
         old.shutdown();
         new.shutdown();
+    }
+
+    /// The code a moving phone carries opens the doors it was handed behind
+    /// and no others. The link's token (or the password) changing is a person
+    /// shutting out everyone let in before -- a code minted before that is
+    /// refused at the new board, says why, and is gone
+    #[test]
+    fn a_code_handed_out_before_the_doors_changed_opens_nothing() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let old = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "doors-token-before".into(), String::new()).unwrap();
+        // The board started again with another token: what a changed token or
+        // password does
+        let new = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "doors-token-after".into(), String::new()).unwrap();
+        let base = |r: &RemoteUi| r.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base(&old));
+        phone.pair("doors-token-before");
+        old.hand_over(new.origin());
+        let (_, body) = phone.said("/api/state");
+        let said: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let code = said["moved"]["code"].as_str().unwrap_or_default().to_string();
+        assert!(!code.is_empty(), "no code handed out: {body}");
+
+        let there = Phone::new(&base(&new));
+        let (status, why) = there.said_post("/moved", &serde_json::json!({"code": code}).to_string());
+        assert_eq!(status, 403, "a code from behind the old doors opened the new ones");
+        assert!(why.contains("\"doors\""), "it did not say the doors changed: {why}");
+        // And it is gone, not waiting to be tried again
+        assert!(there.said_post("/moved", &serde_json::json!({"code": code}).to_string()).1.contains("\"gone\""));
+        old.shutdown();
+        new.shutdown();
+    }
+
+    /// A device taken off the book between being handed a code and using it
+    /// is told so -- not let in without a key, and not told "ok" to arrive
+    /// holding nothing
+    #[test]
+    fn a_code_for_a_device_no_longer_in_the_book_says_so() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let start = || {
+            RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "gone-device-token".into(), String::new()).unwrap()
+        };
+        let (old, new) = (start(), start());
+        let base = |r: &RemoteUi| r.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base(&old));
+        phone.pair("gone-device-token");
+        old.hand_over(new.origin());
+        let (_, body) = phone.said("/api/state");
+        let said: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let code = said["moved"]["code"].as_str().unwrap_or_default().to_string();
+        crate::clients::revoke_all().unwrap();
+
+        let (status, why) = Phone::new(&base(&new)).said_post("/moved", &serde_json::json!({"code": code}).to_string());
+        assert_eq!(status, 410, "a device off the book was let in: {why}");
+        assert!(why.contains("\"device\""), "it did not say the device is gone: {why}");
+        old.shutdown();
+        new.shutdown();
+    }
+
+    /// Looking a code up does not use it: only a device that got what the
+    /// code promised uses it up, so a key that could not be written can be
+    /// tried for again with the same code
+    #[test]
+    fn a_code_is_used_up_only_once_it_has_let_someone_in() {
+        let auth = auth_mark("t", "");
+        let code = mint_move(Some("dev".into()), auth.clone());
+        assert_eq!(find_move(&code, &auth), Ok(Some("dev".into())));
+        assert_eq!(find_move(&code, &auth), Ok(Some("dev".into())), "looking it up used it up");
+        spend_move(&code);
+        assert_eq!(find_move(&code, &auth), Err(MoveRefused::Unknown));
+        // Other doors: refused, and dropped for good
+        let other = mint_move(None, auth.clone());
+        assert_eq!(find_move(&other, &auth_mark("t", "a password")), Err(MoveRefused::DoorsChanged));
+        assert_eq!(find_move(&other, &auth), Err(MoveRefused::Unknown));
+        // A token and a password are one pair each, not one string
+        assert_ne!(auth_mark("ab", "c"), auth_mark("a", "bc"));
     }
 
     /// Asking to watch as video is a door like every other: it wants the

@@ -11114,11 +11114,13 @@ const AWAKE_MODES = ["off", "ai", "always"];
 function awakePill() {
   const a = S && S.awake;
   if (!a) return null;
-  const now = T[a.held ? "tui.awake.now.held" : "tui.awake.now.free"] || "";
+  // A system that would not keep the PC up is said to be one, never passed
+  // off as "waiting" -- the PC may sleep under a working AI there
+  const now = T[a.cannot ? "tui.awake.now.cannot" : a.held ? "tui.awake.now.held" : "tui.awake.now.free"] || "";
   const p = el("span", {class:"pill awake " + (a.held ? "held" : "off"),
       "data-short":T["tui.awake.short"] || "",
       title:(T["tui.awake.title"] || "{mode}: {now}").replaceAll("{mode}", T["tui.awake.mode." + a.mode] || a.mode).replaceAll("{now}", now)},
-    T[a.held ? "tui.awake.held" : "tui.awake.free"] || "");
+    T[a.cannot ? "tui.awake.cannot" : a.held ? "tui.awake.held" : "tui.awake.free"] || "");
   p.onclick = e => {
     e.stopPropagation();
     openList(p, AWAKE_MODES.map(m => el("div", {class:"aphost", onclick:() => { closeFolderMenu(); send({kind:"stay_awake", mode:m}); }},
@@ -16005,6 +16007,10 @@ if (REMOTE) {
         const t = await look("moved", {method:"POST", headers:{"Content-Type":"application/json"},
           body: JSON.stringify({code: moving.code})});
         if (t.ok) { moving.going = true; location.reload(); return; }
+        // A code that will never open (the PC changed its link or password,
+        // or took this phone off its list) is said so and not tried again
+        const why = await movedWhy(t);
+        if (why !== "retry") { moving.going = true; movedRefused(why); return; }
       } else if (r.ok && !(await r.json()).moved) {
         moving.going = true;
         location.reload();
@@ -16033,6 +16039,19 @@ if (REMOTE) {
     try { if (sws) sws.close(); } catch (x) {}
     castStop();
     showNet("cut");
+  };
+  // Why the new address did not take the code this phone was handed, as the
+  // PC said it ("doors", "device", "retry", "gone")
+  const movedWhy = async (r) => {
+    try { return String((await r.json()).why || ""); } catch (e) { return ""; }
+  };
+  // A code that will never open, said in what the person has to do about it.
+  // A used or run-out code is the plain "disconnected" screen, as before
+  const movedRefused = (why) => {
+    cutNow();
+    const say = {doors: "tui.net.moved.doors", device: "tui.net.moved.device", retry: "tui.net.moved.failed"}[why];
+    const v = document.getElementById("netveil");
+    if (say && v) v.querySelector(".nvsub").textContent = T[say] || "";
   };
   const connected = () => { downSince = 0; showNet(null); };
   const applyState = (d) => {
@@ -16102,10 +16121,25 @@ if (REMOTE) {
   // longer opens anything (used, or run out) leaves this phone where one with
   // no pairing is -- the QR on the PC is the way in
   if (MOVE_CODE) {
-    fetch("moved", {method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({code: MOVE_CODE})})
-      .then(r => { if (r.ok) location.reload(); else cutNow(); })
+    // The PC could not write this phone's key down just now: the same code
+    // is still good, so it is asked again a few times before giving up
+    const MOVE_RETRIES = 5, MOVE_RETRY_AFTER = 3000;
+    const redeem = (left) => fetch("moved", {method:"POST", cache:"no-store",
+        headers:{"Content-Type":"application/json"}, body: JSON.stringify({code: MOVE_CODE})})
+      .then(async r => {
+        if (r.ok) { location.reload(); return; }
+        const why = await movedWhy(r);
+        if (why === "retry" && left > 0) {
+          showNet("down");
+          const v = document.getElementById("netveil");
+          if (v) v.querySelector(".nvsub").textContent = T["tui.net.moved.retry"] || "";
+          setTimeout(() => redeem(left - 1), MOVE_RETRY_AFTER);
+          return;
+        }
+        movedRefused(why);
+      })
       .catch(() => cutNow());
+    redeem(MOVE_RETRIES);
   } else connectState();
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,

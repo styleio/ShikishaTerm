@@ -9,6 +9,29 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A phone moving to the PC's new address is not let in on doors that have
+  since changed.** The one-time code a watching phone is handed when the
+  board moves now only opens the board while its link and password are the
+  ones it was handed behind; after either changes, the phone is told to scan
+  the QR code again. "Disconnect" drops the codes waiting to be used.
+- **A phone that could not be let in at the new address is told why.** A phone
+  taken off the list of devices, or one the PC could not note down, was sent
+  to a board that did not know it. It now says which it is, and a failure to
+  note it down is tried again with the same code.
+- **A very long check's log is no longer held whole before being cut.** Only
+  its end is kept as it downloads.
+- **A pick is counted on the page when it is kept.** A press that came too
+  soon after the last one showed as picked while the app turned it away; the
+  page now counts what the app kept and says when a press was too soon. The
+  second press of a double-click is not a second pick.
+- **Keeping the PC awake never claims to hold a machine it cannot.** Outside
+  Windows it said the PC was held while nothing asked the system. A Linux
+  machine (the server version) is now held with systemd's inhibitor lock, and
+  where the system refuses or cannot be asked, the lower row says so.
+- **An AI's settings file on another machine is replaced only while it is still
+  the file the change was worked out from, checked on that machine as the new
+  file goes in.** The last moment between reading it here and writing it
+  there is gone.
 - **A check's log whose line only looked stamped opened instead of stopping
   the program.** A line starting with something shaped like a time stamp,
   with a letter of more than one byte where a digit belongs, was cut in the

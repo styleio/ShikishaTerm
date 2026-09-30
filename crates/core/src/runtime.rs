@@ -3511,7 +3511,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if awake.hold(want) {
                     append_hook_log(&format!(
                         "stay awake: {} ({}, {} working here, {} on other desks)",
-                        if want { "holding the PC up" } else { "letting it sleep" },
+                        if awake.cannot() {
+                            "the system would not keep the PC up"
+                        } else if want {
+                            "holding the PC up"
+                        } else {
+                            "letting it sleep"
+                        },
                         stay_awake.key(),
                         here,
                         away
@@ -5893,6 +5899,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             awake: (stay_awake != crate::awake::Stay::Off).then(|| crate::uistate::AwakeState {
                 mode: stay_awake.key().to_string(),
                 held: awake.held(),
+                cannot: awake.cannot(),
             }),
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
@@ -6986,15 +6993,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // which line to open on
         while let Ok(got) = ci_log_rx.try_recv() {
             let js = match got.result {
-                Ok(log) => {
-                    let (text, first_error) = crate::github::log_for_reading(&log);
+                Ok(mut tail) => {
+                    // Line for line, so the count of lines let go at the start
+                    // still says where the error is in the whole log
+                    let (text, first_error) = crate::github::log_for_reading(&tail.text);
+                    let first_error = first_error.map(|l| l + tail.dropped_lines);
+                    tail.text = text;
                     let short: String = got.sha.chars().take(7).collect();
                     let shown = format!("{} @ {short}", got.name.replace(['/', '\\'], "-"));
                     // The git panel's folder, wherever it is
                     let under = desks
                         .get(desk_index)
                         .and_then(|desk| crate::readview::Under::of_place(desk, std::path::Path::new(&got.folder)));
-                    let opened = views.open(&mut editors, shown.clone(), crate::readview::Kind::Log, text, under);
+                    let opened = views.open_tail(&mut editors, shown.clone(), tail, under);
                     // Where the error is once the log was cut to size, or no
                     // jump at all when the cut took it away
                     let line = first_error.and_then(|l| opened.editor_line(l));
@@ -16349,7 +16360,7 @@ struct CiLog {
     /// The folder the git panel was showing, as a place key: where the editor
     /// is listed
     folder: String,
-    result: anyhow::Result<String>,
+    result: anyhow::Result<crate::readview::Tail>,
 }
 
 struct CiFix {
