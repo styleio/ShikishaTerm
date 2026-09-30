@@ -322,6 +322,11 @@ pub fn connect(key: &str, id: &str, minutes: u32) -> Result<Sandbox> {
     )?;
     let found = sandbox_of(&v)?;
     remember(&found);
+    // Started, it has a run of its own from now
+    forget_run(&found.id);
+    if let Ok(mut p) = PAUSED_HERE.get_or_init(Default::default).lock() {
+        p.remove(&found.id);
+    }
     end_left(&found);
     Ok(found)
 }
@@ -379,12 +384,210 @@ pub fn keep_up(host: &crate::config::HostSpec) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let minutes = host.minutes_or_default();
+    keep_up_for(&key, id, minutes)?;
+    if let Ok(mut k) = KEPT.get_or_init(Default::default).lock() {
+        k.insert(id.to_string(), std::time::Instant::now());
+    }
+    // What the time asked for really became: cut at the account's longest
+    // run, the service still says it was done (see `Window`)
+    if let Ok(w) = window(&key, id) {
+        let asked_until = now_secs() + u64::from(minutes) * 60;
+        let cut = w.ends + 60 < asked_until;
+        if let Ok(mut r) = RUNS.get_or_init(Default::default).lock() {
+            r.insert(id.to_string(), Run { ends: w.ends, longest: w.ends.saturating_sub(w.started), cut });
+        }
+    }
+    Ok(())
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Where a machine kept up stands in its run, as last read
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    ends: u64,
+    /// How long a run the service lets it have, when `cut` says it cut one
+    longest: u64,
+    /// Whether the service ended the run sooner than it was asked to: the
+    /// account's longest run is what ends it
+    cut: bool,
+}
+
+static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Run>>> = std::sync::OnceLock::new();
+/// When each machine was last kept up: something was at work on it then
+static KEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::OnceLock::new();
+
+/// How long before the longest run the account allows is over a machine is
+/// begun again at the first quiet moment ([`begin_again`]). Wide enough that
+/// an AI working with only short pauses between its turns still offers one
+pub const BEGIN_AGAIN_WITHIN: Duration = Duration::from_secs(10 * 60);
+
+/// Whether `id`'s run is about to be ended by the account's longest run --
+/// not by the minutes the settings give it, which keeping it up moves on --
+/// and so wants [`begin_again`] at the first quiet moment
+pub fn run_ending(id: &str) -> bool {
+    let Some(run) = RUNS.get_or_init(Default::default).lock().ok().and_then(|r| r.get(id).copied()) else {
+        return false;
+    };
+    run.cut && run.ends.saturating_sub(now_secs()) <= BEGIN_AGAIN_WITHIN.as_secs()
+}
+
+fn forget_run(id: &str) {
+    if let Ok(mut r) = RUNS.get_or_init(Default::default).lock() {
+        r.remove(id);
+    }
+}
+
+/// Whether something was at work on this machine a moment ago
+fn kept_lately(id: &str) -> bool {
+    KEPT.get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|k| k.get(id).is_some_and(|at| at.elapsed() < Duration::from_secs(90)))
+}
+
+/// The machines being begun again from here right now: their terminals'
+/// streams end under them, and that is not the machine going to sleep
+static BEGINNING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+/// When each machine was last begun again, or tried
+static TRIED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::OnceLock::new();
+/// The machines this program paused, until it starts them again
+static PAUSED_HERE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+
+fn beginning(id: &str) -> bool {
+    BEGINNING.get_or_init(Default::default).lock().is_ok_and(|b| b.contains(id))
+}
+
+/// Pause a machine and start it again, so that its run begins anew.
+///
+/// The service lets a machine run for as long as the account allows (an hour
+/// on the smallest one, measured 2026-09-30) counted from when it was last
+/// started, and cuts short any time asked for past that while saying it gave
+/// it. A pause and a start again is the way past it the service itself
+/// documents: what runs on the machine goes on where it was, its clock is put
+/// right, and its run is counted from now (measured: `e2b_cycle_probe`). Its
+/// terminals here are taken up again at once, and each says why it blinked.
+/// Done at a quiet moment (`runtime::keep_machines_up`), so no AI loses a
+/// reply it was in the middle of receiving
+pub fn begin_again(host: &crate::config::HostSpec) -> Result<()> {
+    let id = host
+        .instance
+        .as_deref()
+        .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    // Once at a time for a machine, and not again at once after it failed
+    if TRIED.get_or_init(Default::default).lock().is_ok_and(|t| t.get(id).is_some_and(|at| at.elapsed() < Duration::from_secs(60))) {
+        return Ok(());
+    }
+    if !BEGINNING.get_or_init(Default::default).lock().is_ok_and(|mut b| b.insert(id.to_string())) {
+        return Ok(());
+    }
+    if let Ok(mut t) = TRIED.get_or_init(Default::default).lock() {
+        t.insert(id.to_string(), std::time::Instant::now());
+    }
+    let longest = RUNS.get_or_init(Default::default).lock().ok().and_then(|r| r.get(id).map(|x| x.longest)).unwrap_or(0);
+    let done = pause(&key, id).and_then(|()| connect(&key, id, host.minutes_or_default()));
+    if let Ok(mut b) = BEGINNING.get_or_init(Default::default).lock() {
+        b.remove(id);
+    }
+    done?;
+    crate::append_hook_log(&format!("e2b: {id} was begun again before its longest run ({longest}s) was up"));
+    take_up_terminals(id, &crate::i18n::tp("msg.microvm.begun_again", &[("minutes", &(longest / 60).to_string())]));
+    Ok(())
+}
+
+/// A machine that paused under its terminals while something was at work on
+/// it: the longest run the account allows is what paused it, since while
+/// something works its minutes are kept up. Started again at once rather than
+/// left for a key to be pressed -- an AI in the middle of a long piece of work
+/// would otherwise wait for a person who is not there -- and each terminal
+/// says what happened, since a reply the AI was receiving as it paused may
+/// have been cut
+fn started_again_after_its_longest_run(id: String, minutes: u32) {
+    // Once for the machine, however many terminals it had; and never for one
+    // this program paused itself -- on the way out, or with nothing open
+    if PAUSED_HERE.get_or_init(Default::default).lock().is_ok_and(|p| p.contains(&id))
+        || !BEGINNING.get_or_init(Default::default).lock().is_ok_and(|mut b| b.insert(id.clone()))
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        started_again_now(&id, minutes);
+        if let Ok(mut b) = BEGINNING.get_or_init(Default::default).lock() {
+            b.remove(&id);
+        }
+    });
+}
+
+/// How long a machine whose terminals dropped is watched for having paused.
+/// Putting one to sleep takes the service about four seconds a gigabyte of
+/// memory; one still running after this dropped its streams alone, and the
+/// watch takes those up (`shell`)
+const PAUSE_SEEN_WITHIN: Duration = Duration::from_secs(45);
+
+fn started_again_now(id: &str, minutes: u32) {
+    let Some(key) = key() else { return };
+    let until = std::time::Instant::now() + PAUSE_SEEN_WITHIN;
+    loop {
+        match state_of(&key, id).as_deref() {
+            Ok("paused") => break,
+            _ if std::time::Instant::now() >= until => return,
+            _ => std::thread::sleep(Duration::from_secs(3)),
+        }
+    }
+    // The longest run, when that is what its end was; otherwise the
+    // service paused it for a reason of its own, and it is not guessed at
+    let run = RUNS.get_or_init(Default::default).lock().ok().and_then(|r| r.get(id).copied());
+    let at_its_longest = run.filter(|r| r.cut && r.ends <= now_secs() + 60);
+    match connect(&key, id, minutes) {
+        Ok(_) => match at_its_longest {
+            Some(r) => {
+                crate::append_hook_log(&format!("e2b: {id} paused at its longest run ({}s) while at work; started again", r.longest));
+                take_up_terminals(id, &crate::i18n::tp("msg.microvm.run_limit", &[("minutes", &(r.longest / 60).to_string())]));
+            }
+            None => {
+                crate::append_hook_log(&format!("e2b: {id} paused while at work; started again"));
+                take_up_terminals(id, &crate::i18n::t("msg.microvm.paused_at_work"));
+            }
+        },
+        Err(e) => crate::append_hook_log(&format!("e2b: {id} paused at its longest run and could not be started again: {e:#}")),
+    }
+}
+
+/// Each terminal's way in, by machine: how a machine begun again from here
+/// has every terminal of this program on it taken up again at once
+static NOTES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Vec<std::sync::mpsc::Sender<Note>>>>> =
+    std::sync::OnceLock::new();
+
+fn listen_on(id: &str, tx: &std::sync::mpsc::Sender<Note>) {
+    if let Ok(mut n) = NOTES.get_or_init(Default::default).lock() {
+        n.entry(id.to_string()).or_default().push(tx.clone());
+    }
+}
+
+fn take_up_terminals(id: &str, why: &str) {
+    if let Ok(mut n) = NOTES.get_or_init(Default::default).lock()
+        && let Some(all) = n.get_mut(id)
+    {
+        // A terminal gone lets go of its end, and is dropped from the list
+        all.retain(|tx| tx.send(Note::Said(why.to_string())).is_ok() && tx.send(Note::Shown).is_ok());
+    }
+}
+
+/// Set a machine's time to `minutes` from now. Past the longest run the
+/// account allows, the service cuts it there and still says it was done
+/// ([`Window`] says what it really became)
+pub fn keep_up_for(key: &str, id: &str, minutes: u32) -> Result<()> {
     answered(
         agent()
             .post(&format!("{API}/sandboxes/{id}/timeout"))
-            .header("X-API-Key", &key)
+            .header("X-API-Key", key)
             .header("Content-Type", "application/json")
-            .send(serde_json::json!({ "timeout": host.minutes_or_default() * 60 }).to_string()),
+            .send(serde_json::json!({ "timeout": minutes.max(1) * 60 }).to_string()),
     )
     .map(|_| ())
 }
@@ -453,6 +656,11 @@ fn is_working(id: &str) -> bool {
 /// stays, and the next thing asked of it starts it again. One already paused
 /// is what was asked for
 pub fn pause(key: &str, id: &str) -> Result<()> {
+    // Paused on purpose: the terminals that go with it are not a machine
+    // stopped by its longest run (see `started_again_after_its_longest_run`)
+    if let Ok(mut p) = PAUSED_HERE.get_or_init(Default::default).lock() {
+        p.insert(id.to_string());
+    }
     let resp = agent().post(&format!("{API}/sandboxes/{id}/pause")).header("X-API-Key", key).send_empty();
     match resp {
         Ok(r) if r.status().as_u16() == 409 => Ok(()),
@@ -656,6 +864,30 @@ pub fn is_private(host: &crate::config::HostSpec) -> Result<bool> {
 /// What state a machine is in -- `running` or `paused` -- asked of the
 /// service's own records and not of the machine, so that asking does not
 /// wake one that is paused (every request to a paused machine does)
+/// Where a machine stands in its run, as the service keeps it: how it is
+/// (`running`, `paused`), when this run began and when it is to end, in
+/// seconds since 1970
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Window {
+    pub state: String,
+    /// When it was last started. A pause and a start again begin a new run,
+    /// and the longest run the account allows is counted from here
+    pub started: u64,
+    /// When it pauses, unless given more time -- which the service cuts at
+    /// the longest run the account allows, and says nothing of doing so
+    pub ends: u64,
+}
+
+pub fn window(key: &str, id: &str) -> Result<Window> {
+    let v = answered(agent().get(&format!("{API}/sandboxes/{id}")).header("X-API-Key", key).call())?;
+    let at = |k: &str| v.get(k).and_then(|s| s.as_str()).map(epoch_of).unwrap_or(0);
+    Ok(Window {
+        state: v.get("state").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+        started: at("startedAt"),
+        ends: at("endAt"),
+    })
+}
+
 pub fn state_of(key: &str, id: &str) -> Result<String> {
     let v = answered(agent().get(&format!("{API}/sandboxes/{id}")).header("X-API-Key", key).call())?;
     Ok(v.get("state").and_then(|s| s.as_str()).unwrap_or_default().to_string())
@@ -998,6 +1230,8 @@ enum Note {
     /// The line that starts the program, typed once the AI's hooks are in
     /// place there (see `agenthook::ensure_far_before`)
     Launch(String),
+    /// Something this program has to say on the terminal: why it blinked
+    Said(String),
 }
 
 /// The terminals waiting to be looked at before they open, by machine.
@@ -1455,6 +1689,7 @@ pub fn shell(
         live,
         far_ended: std::sync::atomic::AtomicBool::new(false),
     });
+    listen_on(&link.sandbox().id, &note_tx);
 
     // The listening thread. It holds the streaming response open for as long
     // as the shell lives, which is why it cannot be the thread anything else
@@ -1581,6 +1816,7 @@ pub fn shell(
                         }
                     }
                 }
+                Note::Said(text) => l.say(&text),
                 Note::Launch(line) => {
                     crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(l.host.clone()), &l.sandbox().id, &line);
                     if let Some(at) = l.at()
@@ -1880,9 +2116,14 @@ fn pump(link: &Link, how: Stream, up: Option<&std::sync::mpsc::Sender<Result<u32
     }
     // The stream went, and not because this terminal ended: the machine
     // has paused under it, or the link dropped. Said on screen; the next
-    // thing typed wakes it
-    if !link.is_ended() {
+    // thing typed wakes it -- unless this program is starting it again
+    // itself, or something was at work on it (see
+    // `started_again_after_its_longest_run`)
+    if !link.is_ended() && !beginning(&sandbox.id) {
         link.slept();
+        if kept_lately(&sandbox.id) {
+            started_again_after_its_longest_run(sandbox.id.clone(), link.host.minutes_or_default());
+        }
     }
 }
 
@@ -2362,6 +2603,30 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A machine is begun again only when the account's longest run is what
+    /// is about to end it, and only within the last minutes of that run: not
+    /// for a run that ends because nothing kept it up, and not an hour early
+    #[test]
+    fn a_machine_is_begun_again_only_near_the_end_of_its_longest_run() {
+        let put = |id: &str, left: u64, cut: bool| {
+            RUNS.get_or_init(Default::default)
+                .lock()
+                .unwrap()
+                .insert(id.to_string(), Run { ends: now_secs() + left, longest: 3600, cut });
+        };
+        put("near-cut", 5 * 60, true);
+        put("far-cut", 40 * 60, true);
+        put("near-uncut", 5 * 60, false);
+        assert!(run_ending("near-cut"));
+        assert!(!run_ending("far-cut"), "begun again an hour early");
+        assert!(!run_ending("near-uncut"), "a run the settings' minutes end is not the longest run");
+        assert!(!run_ending("never-kept"));
+        forget_run("near-cut");
+        assert!(!run_ending("near-cut"), "started again, it has a run of its own");
+    }
+
     /// On the service itself (needs E2B_API_TOKEN; makes one machine for a
     /// minute and deletes it): a private machine refuses anybody without its
     /// token -- still after its sign-in is changed -- and its port, carried

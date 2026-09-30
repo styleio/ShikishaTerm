@@ -13572,6 +13572,7 @@ const MACHINE_KEPT_EVERY: Duration = Duration::from_secs(30);
 /// which is what the setting says. Each ask is a thread of its own: it is a
 /// round trip, and this loop draws the window
 fn keep_machines_up(tabs: &[&Tab], now_ms: u64, kept: &mut std::collections::HashMap<String, Instant>) {
+    begin_machines_again(tabs, now_ms);
     for t in tabs {
         let Some(host) = t.cloud() else { continue };
         let Some(id) = host.instance.clone() else { continue };
@@ -13589,6 +13590,42 @@ fn keep_machines_up(tabs: &[&Tab], now_ms: u64, kept: &mut std::collections::Has
         std::thread::spawn(move || {
             if let Err(e) = crate::e2b::keep_up(&host) {
                 append_hook_log(&format!("e2b: keeping {} up failed: {e:#}", host.name));
+            }
+        });
+    }
+}
+
+/// How long every terminal on a machine has to have been still, with no AI
+/// on it at work, for the machine to be paused and started again under them
+const MACHINE_QUIET_MS: u64 = 15_000;
+
+/// Begin again, at a quiet moment, each MicroVM whose run the account's
+/// longest run is about to end (`e2b::begin_again`).
+///
+/// Quiet is every terminal of this program on that machine still for a
+/// moment and no AI in them at work: nobody is in the middle of receiving a
+/// reply, which is what a pause would cut. A machine that is never quiet
+/// before its run is over pauses anyway, and is started again at once
+/// (`e2b::started_again_after_its_longest_run`)
+fn begin_machines_again(tabs: &[&Tab], now_ms: u64) {
+    let mut seen: Vec<&str> = Vec::new();
+    for t in tabs {
+        let Some(host) = t.cloud() else { continue };
+        let Some(id) = host.instance.as_deref() else { continue };
+        if seen.contains(&id) || crate::e2b::asleep(id) || !crate::e2b::run_ending(id) {
+            continue;
+        }
+        seen.push(id);
+        let quiet = tabs.iter().filter(|o| o.cloud().and_then(|h| h.instance.as_deref()) == Some(id)).all(|o| {
+            o.ms_since_change(now_ms) >= MACHINE_QUIET_MS && !matches!(o.state, crate::detect::TabState::Busy)
+        });
+        if !quiet {
+            continue;
+        }
+        let host = host.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = crate::e2b::begin_again(&host) {
+                append_hook_log(&format!("e2b: {} could not be begun again: {e:#}", host.name));
             }
         });
     }
