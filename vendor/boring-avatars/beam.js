@@ -14,6 +14,8 @@
 //   the body's color is picked the same way the original picked.
 //
 // The same name and the same colors give the same face as the original.
+// On the board the colors are --face1 to --face5 and the inks --face-ink and
+// --face-ink-light (docs/design/STYLEGUIDE.md, "A tab's face").
 
 function beamFace(name, colors, ink) {
   const SIZE = 36;
