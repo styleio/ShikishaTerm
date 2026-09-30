@@ -658,14 +658,17 @@ impl Hub {
 
     /// The end of a GitHub Actions job's log: where a failure says what failed
     pub fn job_log_tail(&self, repo: &Repo, job: u64) -> Result<String> {
-        Ok(log_tail(&self.job_log(repo, job)?))
+        Ok(log_tail(&self.job_log(repo, job)?.text))
     }
 
-    /// A GitHub Actions job's whole log, as GitHub keeps it. GitHub answers
-    /// with a redirect to the file, which is followed. A refusal is said the
-    /// way every other one is: an expired log, a spent allowance and a missing
-    /// sign-in each have their own words
-    pub fn job_log(&self, repo: &Repo, job: u64) -> Result<String> {
+    /// A GitHub Actions job's log, as GitHub keeps it -- its end, when it is
+    /// bigger than an editor opens ([`crate::files::READ_LIMIT`]): a job fails
+    /// at its end, and the start of a log without end is let go as it arrives
+    /// rather than held whole first. GitHub answers with a redirect to the
+    /// file, which is followed. A refusal is said the way every other one is:
+    /// an expired log, a spent allowance and a missing sign-in each have
+    /// their own words
+    pub fn job_log(&self, repo: &Repo, job: u64) -> Result<crate::readview::Tail> {
         let url = format!("https://api.github.com/repos/{}/actions/jobs/{job}/logs", repo.slug());
         let mut resp = self
             .agent
@@ -677,7 +680,6 @@ impl Hub {
             .call()
             .map_err(|e| anyhow!(crate::i18n::tp("err.github.unreachable", &[("error", &e.to_string())])))?;
         let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
         // Not found, from a repository whose checks were just read with the
         // same account, is a job with no log yet: still running, or never
         // started. Said as that, not as a repository out of reach
@@ -685,9 +687,12 @@ impl Hub {
             bail!(crate::i18n::t("err.github.no_log"));
         }
         if !(200..300).contains(&status) {
-            bail!(refusal(status, text.trim()).0);
+            // A refusal is a sentence or two; more than this is not one
+            let said = crate::readview::read_tail(resp.body_mut().as_reader(), REFUSAL_MOST).unwrap_or_default();
+            bail!(refusal(status, said.text.trim()).0);
         }
-        Ok(text)
+        crate::readview::read_tail(resp.body_mut().as_reader(), crate::files::READ_LIMIT as usize)
+            .map_err(|e| anyhow!(crate::i18n::tp("err.github.unreachable", &[("error", &e.to_string())])))
     }
 
     /// Open a new issue. Answers with its number and address
@@ -1452,6 +1457,11 @@ fn logins(v: Option<&Value>) -> Value {
 }
 
 /// A check run's verdict: failed, pending, passed, or neutral
+/// How much of a refusal's body is read when a log is refused: GitHub's
+/// answer then is a short JSON message, and a body larger than this is not
+/// one worth holding
+const REFUSAL_MOST: usize = 64 * 1024;
+
 /// How much of a failed job's log is handed on: the lines before its last
 /// error, where a failure says what failed -- not the clean-up after it
 const LOG_TAIL_LINES: usize = 80;
@@ -1513,9 +1523,15 @@ pub fn ci_failures(
     Ok(Value::Array(out))
 }
 
-/// One GitHub Actions job's whole log, for a person to read: the project's
-/// repository and account found the way every other request finds them
-pub fn ci_log(sources: &[Source], project: &str, job: u64, look: &dyn Fn(&str) -> Option<String>) -> Result<String> {
+/// One GitHub Actions job's log, for a person to read (its end, when it is
+/// too big to hold): the project's repository and account found the way every
+/// other request finds them
+pub fn ci_log(
+    sources: &[Source],
+    project: &str,
+    job: u64,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> Result<crate::readview::Tail> {
     let source = sources
         .iter()
         .find(|s| s.name == project)

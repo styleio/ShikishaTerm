@@ -128,9 +128,28 @@ impl Held {
     /// ("shop (Source code).html": what it is, of what) and listed under the
     /// folder `under`
     pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<Under>) -> Opened {
+        let (text, lines) = fit(text, kind);
+        self.place(editors, title, text, lines, under)
+    }
+
+    /// Open the end of a text that was too big to hold, read with
+    /// [`read_tail`]: its first line says the start is not here, and lines are
+    /// counted in the whole text, as [`Opened::editor_line`] expects
+    pub fn open_tail(&mut self, editors: &mut Vec<EditorOpen>, title: String, tail: Tail, under: Option<Under>) -> Opened {
+        if !tail.cut {
+            return self.open(editors, title, Kind::Log, tail.text, under);
+        }
+        let mb = |n: u64| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
+        let note = i18n::tp("msg.ci_log.cut", &[("shown", &mb(tail.text.len() as u64)), ("whole", &mb(tail.whole))]);
+        // Already cut to size as it was read; cut again here, it would lose
+        // the lines the count above is about
+        let lines = Kept { dropped_before: tail.dropped_lines, last: None, note: 1 };
+        self.place(editors, title, format!("{note}\n{}", tail.text), lines, under)
+    }
+
+    fn place(&mut self, editors: &mut Vec<EditorOpen>, title: String, text: String, lines: Kept, under: Option<Under>) -> Opened {
         self.made += 1;
         let key = format!("{KEY_PREFIX}{}", self.made);
-        let (text, lines) = fit(text, kind);
         self.texts.insert(key.clone(), text);
         let under = under.unwrap_or_default();
         editors.push(EditorOpen {
@@ -169,6 +188,69 @@ impl Held {
     pub fn keep_open(&mut self, editors: &[EditorOpen]) {
         self.texts.retain(|k, _| editors.iter().any(|e| &e.key == k));
     }
+}
+
+/// The end of a text read from a stream, never holding more than a bounded
+/// amount of it. What a download too big to hold turns into
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tail {
+    /// The last lines, whole ones only once anything was cut
+    pub text: String,
+    /// Whole lines of the stream before the first one in `text`
+    pub dropped_lines: usize,
+    /// How many bytes the stream carried in all
+    pub whole: u64,
+    /// Whether anything was left out
+    pub cut: bool,
+}
+
+/// Read a stream to its end, keeping its last `most` bytes at most.
+///
+/// Held at most twice `most` (and one read's worth) at any moment: the start
+/// of a stream too big is let go as it goes by, counting its lines so that a
+/// line of the whole can still be found in what is kept. Once anything is let
+/// go, the line the cut fell inside is let go too -- half a line reads as a
+/// line that says something else
+pub fn read_tail(mut from: impl std::io::Read, most: usize) -> std::io::Result<Tail> {
+    let lines_in = |b: &[u8]| b.iter().filter(|&&c| c == b'\n').count();
+    let mut kept: Vec<u8> = Vec::new();
+    let mut tail = Tail::default();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let let_go = |kept: &mut Vec<u8>, tail: &mut Tail| {
+        if kept.len() > most {
+            let gone = kept.len() - most;
+            tail.dropped_lines += lines_in(&kept[..gone]);
+            kept.drain(..gone);
+            tail.cut = true;
+        }
+    };
+    loop {
+        let n = match from.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        tail.whole += n as u64;
+        kept.extend_from_slice(&chunk[..n]);
+        // Let go in large steps, not on every read: draining the front is a
+        // copy of what stays
+        if kept.len() > most.saturating_mul(2) {
+            let_go(&mut kept, &mut tail);
+        }
+    }
+    let_go(&mut kept, &mut tail);
+    if tail.cut {
+        match kept.iter().position(|&c| c == b'\n') {
+            Some(end) => {
+                kept.drain(..=end);
+                tail.dropped_lines += 1;
+            }
+            None => kept.clear(),
+        }
+    }
+    tail.text = String::from_utf8_lossy(&kept).into_owned();
+    Ok(tail)
 }
 
 /// A text as it goes into the editor: whole when it is within the editor's
@@ -210,6 +292,56 @@ pub fn fit(text: String, kind: Kind) -> (String, Kept) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream that fits is kept whole. One that does not keeps its end, from
+    /// the start of a line, and counts the lines let go -- never holding the
+    /// whole of it on the way
+    #[test]
+    fn a_stream_too_big_keeps_its_end_by_whole_lines() {
+        let small = read_tail("a\nb\n".as_bytes(), 100).unwrap();
+        assert_eq!(small, Tail { text: "a\nb\n".into(), dropped_lines: 0, whole: 4, cut: false });
+
+        let log: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        let tail = read_tail(log.as_bytes(), 100).unwrap();
+        assert!(tail.cut);
+        assert_eq!(tail.whole, log.len() as u64);
+        assert!(tail.text.len() <= 100, "kept more than asked: {}", tail.text.len());
+        // Whole lines only, and the count says which line comes first
+        let first = tail.text.lines().next().unwrap();
+        assert_eq!(first, format!("line {}", tail.dropped_lines + 1));
+        assert!(tail.text.ends_with("line 1000\n"));
+
+        // A stream read a little at a time is kept the same way
+        struct Drip<'a>(&'a [u8]);
+        impl std::io::Read for Drip<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.0.len().min(7).min(buf.len());
+                buf[..n].copy_from_slice(&self.0[..n]);
+                self.0 = &self.0[n..];
+                Ok(n)
+            }
+        }
+        assert_eq!(read_tail(Drip(log.as_bytes()), 100).unwrap(), tail);
+    }
+
+    /// The end of a stream opens with its line saying the start is missing,
+    /// and a line of the whole log is found where the editor shows it; a line
+    /// that was let go is nowhere
+    #[test]
+    fn the_end_of_a_stream_is_found_by_the_whole_logs_lines() {
+        let log: String = (1..=1000).map(|i| format!("line {i}\n")).collect();
+        let tail = read_tail(log.as_bytes(), 100).unwrap();
+        let first_kept = tail.dropped_lines + 1;
+        let mut held = Held::default();
+        let mut editors = Vec::new();
+        let opened = held.open_tail(&mut editors, "job @ abc".into(), tail, None);
+        let text = held.texts.get(&opened.key).unwrap().clone();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(opened.editor_line(first_kept), Some(2), "the note is line 1");
+        assert_eq!(lines[1], format!("line {first_kept}"));
+        assert_eq!(opened.editor_line(1000).map(|l| lines[l - 1]), Some("line 1000"));
+        assert_eq!(opened.editor_line(first_kept - 1), None);
+    }
 
     /// Held text is read from what is held, a save of it is refused whatever
     /// it says, and anything else -- or an editor that is not one of these --
