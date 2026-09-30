@@ -1647,26 +1647,89 @@ fn far_bak(path: &str) -> String {
     }
 }
 
-/// Write `text` over the hook file, the file as it was kept beside it first.
-/// A way back that could not be kept stops the change, as it does here
-fn far_write(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>, text: String, what: &str) -> Result<(), String> {
-    if let Some(old) = existing {
-        let bak = far_bak(path);
-        if let Err(e) = crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: bak.clone(), bytes: old.as_bytes().to_vec() }, 30_000) {
-            let why = format!("could not keep {bak} on {} before changing the {} hook, so it was not changed: {e:#}", at.address(), t.name);
-            crate::append_hook_log(&why);
-            return Err(why);
-        }
+/// What one try at putting a new hook file in place came to
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Swap {
+    /// The new file is in place, and the one it replaced is kept beside it
+    Done,
+    /// The file was no longer the one the new text was worked out from, and
+    /// nothing was changed
+    Changed,
+}
+
+/// The one command that puts a new hook file in place on the machine, but
+/// only while the file there is still the one the new text was worked out
+/// from.
+///
+/// The new text (`new`) and the file as it was read (`was`, when there was
+/// one) are sent beside the file first, under names nobody else uses; then
+/// this looks, keeps the way back and replaces, on that machine, in one go.
+/// Looking there rather than here is the point: from here the look and the
+/// write are a network round trip apart, and whatever the CLI or the person
+/// writes in between is lost. On the machine they are two commands apart.
+/// `cmp` and `mv` are in every POSIX shell's reach, and a `mv` within one
+/// folder replaces the file whole or not at all. Exit 3 says it had changed
+fn far_swap_script(path: &str, new: &str, was: Option<&str>, bak: &str) -> String {
+    let q = crate::ssh::sh_quote;
+    format!(
+        "f={f}; n={n}; w={w}; b={b}\n\
+         if [ -n \"$w\" ]; then\n\
+         \x20 if ! cmp -s \"$f\" \"$w\"; then rm -f \"$n\" \"$w\"; exit 3; fi\n\
+         elif [ -e \"$f\" ]; then rm -f \"$n\"; exit 3; fi\n\
+         [ -e \"$f\" ] && {{ chmod --reference=\"$f\" \"$n\" 2>/dev/null || true; }}\n\
+         if [ -n \"$w\" ]; then mv -f \"$w\" \"$b\" || {{ rm -f \"$n\" \"$w\"; exit 4; }}; fi\n\
+         mv -f \"$n\" \"$f\"\n",
+        f = q(path),
+        n = q(new),
+        w = q(was.unwrap_or("")),
+        b = q(bak),
+    )
+}
+
+/// Put `text` in place of the hook file on the machine, if it is still `base`
+/// there (`None`: if there is still no file), with `base` kept beside it as
+/// the way back (`far_bak`). A way back that could not be kept stops the
+/// change, as it does here
+fn far_swap(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, base: Option<&str>, text: &str) -> Result<Swap, String> {
+    let fail = |why: String| {
+        crate::append_hook_log(&why);
+        why
+    };
+    // Named for this try only, beside the file, so the final `mv` stays on
+    // one filesystem and two tries never share a name
+    let stem = format!("{path}.shikisha-{}", crate::random_hex(8));
+    let (new, was) = (format!("{stem}.new"), format!("{stem}.was"));
+    let send = |to: &str, bytes: &[u8]| {
+        crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: to.to_string(), bytes: bytes.to_vec() }, 30_000)
+    };
+    let clean = || {
+        let _ = crate::elsewhere::exec(at, &format!("rm -f {} {}", crate::ssh::sh_quote(&new), crate::ssh::sh_quote(&was)), 30_000);
+    };
+    if let Err(e) = send(&new, text.as_bytes()) {
+        clean();
+        return Err(fail(format!("could not send the new {} hook file to {} on {}: {e:#}", t.name, path, at.address())));
     }
-    match crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: path.to_string(), bytes: text.into_bytes() }, 30_000) {
-        Ok(_) => {
-            crate::append_hook_log(&format!("{} hook {what} in {path} on {}", t.name, at.address()));
-            Ok(())
+    if let Some(old) = base
+        && let Err(e) = send(&was, old.as_bytes())
+    {
+        clean();
+        return Err(fail(format!(
+            "could not keep the way back for the {} hook file {path} on {}, so it was not changed: {e:#}",
+            t.name,
+            at.address()
+        )));
+    }
+    let script = far_swap_script(path, &new, base.map(|_| was.as_str()), &far_bak(path));
+    match crate::elsewhere::exec(at, &script, 30_000) {
+        Ok(r) if r.ok() => Ok(Swap::Done),
+        Ok(r) if r.code == 3 => Ok(Swap::Changed),
+        Ok(r) => {
+            clean();
+            Err(fail(format!("could not change the {} hook in {path} on {}: {}", t.name, at.address(), r.said())))
         }
         Err(e) => {
-            let why = format!("could not change the {} hook in {path} on {}: {e:#}", t.name, at.address());
-            crate::append_hook_log(&why);
-            Err(why)
+            clean();
+            Err(fail(format!("could not change the {} hook in {path} on {}: {e:#}", t.name, at.address())))
         }
     }
 }
@@ -1686,31 +1749,30 @@ fn far_take_out(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existi
 /// would only race it again
 const FAR_TRIES: usize = 3;
 
-/// What to write, worked out from the file as it is at the moment of writing.
+/// Change a hook file to what `edit` makes of it, from the file as it is when
+/// the change lands.
 ///
 /// A hook file on another machine can be changed by the CLI there, or by the
 /// person, between this program reading it and writing it back -- and
 /// writing the text worked out from the earlier read would take that change
-/// away, with a way back that holds the earlier file too. So it is read again
-/// just before the write, and the write goes ahead only when it is still the
-/// file the text was worked out from; otherwise the text is worked out again
-/// from what is there now. `Ok(None)`: nothing to change. The moment between
-/// the last read and the write itself cannot be closed from here -- the file
-/// is written over a connection with no lock on it -- only made as short as
-/// one round trip
+/// away, with a way back that holds the earlier file too. So the new text
+/// goes in only while the file is still the one it was worked out from, a
+/// check made on the machine itself as part of the replacing (`far_swap`);
+/// when it has changed, it is read again and worked out again. `Ok(false)`:
+/// nothing to change
 fn far_settle(
     first: Option<&str>,
     edit: &dyn Fn(Option<&str>) -> Option<String>,
     mut read_again: impl FnMut() -> Result<Option<String>, String>,
-) -> Result<Option<(Option<String>, String)>, FarRace> {
+    mut swap: impl FnMut(Option<&str>, &str) -> Result<Swap, String>,
+) -> Result<bool, FarRace> {
     let mut seen = first.map(str::to_string);
     for _ in 0..FAR_TRIES {
-        let Some(text) = edit(seen.as_deref()) else { return Ok(None) };
-        let now = read_again().map_err(FarRace::Unread)?;
-        if now == seen {
-            return Ok(Some((seen, text)));
+        let Some(text) = edit(seen.as_deref()) else { return Ok(false) };
+        match swap(seen.as_deref(), &text).map_err(FarRace::Unwritten)? {
+            Swap::Done => return Ok(true),
+            Swap::Changed => seen = read_again().map_err(FarRace::Unread)?,
         }
-        seen = now;
     }
     Err(FarRace::KeptChanging)
 }
@@ -1720,6 +1782,8 @@ fn far_settle(
 enum FarRace {
     /// Reading it again failed
     Unread(String),
+    /// Putting the new file in place failed, and the reason was said
+    Unwritten(String),
     /// It was different on every read
     KeptChanging,
 }
@@ -1734,10 +1798,13 @@ fn far_change(
     edit: &dyn Fn(Option<&str>) -> Option<String>,
     what: &str,
 ) -> Result<(), String> {
-    match far_settle(existing, edit, || far_read(at, path, &t.name)) {
-        Ok(None) => Ok(()),
-        Ok(Some((base, text))) => far_write(at, t, path, base.as_deref(), text, what),
-        Err(FarRace::Unread(why)) => Err(why),
+    match far_settle(existing, edit, || far_read(at, path, &t.name), |base, text| far_swap(at, t, path, base, text)) {
+        Ok(false) => Ok(()),
+        Ok(true) => {
+            crate::append_hook_log(&format!("{} hook {what} in {path} on {}", t.name, at.address()));
+            Ok(())
+        }
+        Err(FarRace::Unread(why) | FarRace::Unwritten(why)) => Err(why),
         Err(FarRace::KeptChanging) => {
             let why = format!(
                 "the {} hook file {path} on {} kept changing while it was being {what}, so it was left alone; try again when it is quiet",
@@ -1800,24 +1867,97 @@ mod tests {
         let first = r#"{"model":"opus"}"#;
         let changed = r#"{"model":"opus","theme":"dark"}"#;
         let edit = |now: Option<&str>| far_edited(&t, now);
-        // Changed once, then still: the write is made from the changed file
-        let mut reads = vec![Ok(Some(changed.to_string())), Ok(Some(changed.to_string()))].into_iter();
-        let (base, text) = far_settle(Some(first), &edit, || reads.next().unwrap()).unwrap().unwrap();
-        assert_eq!(base.as_deref(), Some(changed), "the way back is the file as it was when written");
+        // The far side, as a file and a way back. It replaces only while the
+        // file is still the one the text was worked out from, as the command
+        // on the machine does
+        struct Far {
+            file: Option<String>,
+            bak: Option<String>,
+            /// Somebody else's writes, landing just before each swap
+            meanwhile: Vec<String>,
+        }
+        let run = |far: &std::cell::RefCell<Far>| {
+            let first = far.borrow().file.clone();
+            far_settle(
+                first.as_deref(),
+                &edit,
+                || Ok(far.borrow().file.clone()),
+                |base, text| {
+                    let mut f = far.borrow_mut();
+                    if !f.meanwhile.is_empty() {
+                        let other = f.meanwhile.remove(0);
+                        f.file = Some(other);
+                    }
+                    if f.file.as_deref() != base {
+                        return Ok(Swap::Changed);
+                    }
+                    f.bak = f.file.take();
+                    f.file = Some(text.to_string());
+                    Ok(Swap::Done)
+                },
+            )
+        };
+        // Changed once as it was being written: worked out again from the
+        // changed file, the change kept, the way back the file it replaced
+        let far = std::cell::RefCell::new(Far { file: Some(first.into()), bak: None, meanwhile: vec![changed.into()] });
+        assert_eq!(run(&far), Ok(true));
+        let f = far.borrow();
+        assert_eq!(f.bak.as_deref(), Some(changed), "the way back is the file as it was when replaced");
+        let text = f.file.clone().unwrap();
         assert!(text.contains("dark") && text.contains("state:DONE"), "the change made meanwhile is kept: {text}");
-        // Unchanged: one read again, and the write goes ahead
-        let mut reads = vec![Ok(Some(first.to_string()))].into_iter();
-        assert!(far_settle(Some(first), &edit, || reads.next().unwrap()).unwrap().is_some());
+        drop(f);
         // Different every time: left alone
-        let mut n = 0;
-        let busy = far_settle(Some(first), &edit, || {
-            n += 1;
-            Ok(Some(format!(r#"{{"n":{n}}}"#)))
+        let far = std::cell::RefCell::new(Far {
+            file: Some(first.into()),
+            bak: None,
+            meanwhile: (0..10).map(|n| format!(r#"{{"n":{n}}}"#)).collect(),
         });
-        assert_eq!(busy, Err(FarRace::KeptChanging));
-        // Nothing to change: not read again at all
+        assert_eq!(run(&far), Err(FarRace::KeptChanging));
+        assert!(far.borrow().bak.is_none(), "a file that kept changing was written over");
+        // Nothing to change: nothing sent at all
         let done = far_edited(&t, Some(first)).unwrap();
-        assert_eq!(far_settle(Some(&done), &edit, || panic!("read again for nothing")), Ok(None));
+        assert_eq!(far_settle(Some(&done), &edit, || panic!("read again for nothing"), |_, _| panic!("written for nothing")), Ok(false));
+    }
+
+    /// The command that replaces a hook file on the machine: it replaces only
+    /// while the file there is the one the text was worked out from, keeps the
+    /// way back, and says 3 when the file had changed -- run here in a real
+    /// shell when there is one (every Linux machine; Git's on Windows)
+    #[test]
+    fn the_far_swap_replaces_only_the_file_it_was_worked_out_from() {
+        let Some(sh) = ["sh", "C:/Program Files/Git/bin/sh.exe"]
+            .into_iter()
+            .find(|s| std::process::Command::new(s).arg("-c").arg("exit 0").output().is_ok_and(|o| o.status.success()))
+        else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("shikisha-farswap-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = |n: &str| dir.join(n).to_string_lossy().replace('\\', "/");
+        let (f, new, was, bak) = (p("settings.json"), p("s.new"), p("s.was"), p("settings.bak"));
+        let run = |script: &str| std::process::Command::new(sh).arg("-c").arg(script).output().unwrap().status.code();
+        std::fs::write(&f, "theirs").unwrap();
+        // Still the file it was worked out from: replaced, way back kept
+        std::fs::write(&new, "ours").unwrap();
+        std::fs::write(&was, "theirs").unwrap();
+        assert_eq!(run(&far_swap_script(&f, &new, Some(&was), &bak)), Some(0));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ours");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "theirs");
+        assert!(!std::path::Path::new(&new).exists() && !std::path::Path::new(&was).exists(), "the sent files were left lying about");
+        // Changed since it was read: left alone, and says so
+        std::fs::write(&new, "ours again").unwrap();
+        std::fs::write(&was, "theirs").unwrap();
+        assert_eq!(run(&far_swap_script(&f, &new, Some(&was), &bak)), Some(3));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "ours", "a changed file was written over");
+        // No file when read, one there now: left alone
+        std::fs::write(&new, "fresh").unwrap();
+        assert_eq!(run(&far_swap_script(&f, &new, None, &bak)), Some(3));
+        // No file when read, still none: written
+        std::fs::remove_file(&f).unwrap();
+        std::fs::write(&new, "fresh").unwrap();
+        assert_eq!(run(&far_swap_script(&f, &new, None, &bak)), Some(0));
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "fresh");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn far_test_target(events: &[(&str, &str)]) -> Target {
