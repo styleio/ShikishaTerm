@@ -4512,7 +4512,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // the tab is who is calling
                 if call.method == "confer_stop" {
                     let said = call.params.first().and_then(serde_json::Value::as_str).unwrap_or_default();
-                    let me = call.caller.as_deref().and_then(|c| tabs.iter().find(|t| t.called() == c));
+                    // On whichever desk it is: an ask is followed on a desk not in
+                    // front too (`tend_asks`), and its answer ends there
+                    let me = call
+                        .caller
+                        .as_deref()
+                        .and_then(|c| tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.called() == c));
                     let line_max = config::confer().line_max;
                     let mut hold = serde_json::Value::Null;
                     if let Some(t) = me {

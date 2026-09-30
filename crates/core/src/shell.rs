@@ -13726,8 +13726,9 @@ function drawConvo() {
   drawHead();
   if (cvConfer) {
     const c = (S && S.confer) || {};
-    // Read when it comes into view, and again whenever it changed
-    if (CF.asked !== c.rev) { CF.asked = c.rev; cfRefresh(); }
+    // Read when it comes into view, again whenever it changed, and afresh
+    // when another desk is in front
+    if (CF.asked !== c.rev || CF.desk !== ((S && S.desk_id) || "")) { CF.asked = c.rev; cfRefresh(); }
     CF.seen = c.rev;
     drawConfer(u);
     return;
@@ -13843,6 +13844,7 @@ function convoSoon(key) {
 // it appears, and made once.
 let cvConfer = false;    // the panel is showing the conference, not a conversation
 const CF = {
+  desk: "",        // the desk what has been read belongs to
   said: [],        // what has been read, oldest first
   more: false,     // there is more before the first of it
   seq: {},         // kind of request -> the newest one
@@ -13915,12 +13917,25 @@ function cfAsk(act, args, slot) {
   send({kind: "convo", panel: "confer", act, args: Object.assign({req: s + "#" + CF.seq[s]}, args || {})});
 }
 function cfRefresh() {
+  // Another desk in front: its conference, from the start
+  const desk = (S && S.desk_id) || "";
+  if (CF.desk !== desk) {
+    CF.desk = desk;
+    CF.said = []; CF.more = false; CF.full = new Set(); CF.stick = true; CF.drawn = "";
+  }
   CF.loading = !CF.said.length;
   cfAsk("confer", {});
 }
+// The page before what is here. Asked from a moment after the oldest thing
+// here, so what was said in the same millisecond on either side of the page
+// is not lost between the two; what comes back twice is kept once
 function cfEarlier() {
   if (!CF.more || !CF.said.length) return;
-  cfAsk("confer", {before: CF.said[0].at}, "earlier");
+  cfAsk("confer", {before: CF.said[0].at + 1}, "earlier");
+}
+// The same thing said, whichever page brought it
+function cfKey(s) {
+  return s.k + ":" + s.id;
 }
 // A page of the conference arrived
 function cfGot(d) {
@@ -13928,10 +13943,13 @@ function cfGot(d) {
   const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
   if (Number(n) !== CF.seq[slot]) return;
   CF.loading = false;
+  // Read for a desk no longer in front
+  if (d.desk !== undefined && d.desk !== CF.desk) return;
   if (!d.ok) { CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
   CF.bad = "";
   if (slot === "earlier") {
-    CF.said = (d.said || []).concat(CF.said);
+    const here = new Set(CF.said.map(cfKey));
+    CF.said = (d.said || []).filter(s => !here.has(cfKey(s))).concat(CF.said);
     CF.more = !!d.more;
     CF.keepTop = true;
   } else {
@@ -13939,7 +13957,8 @@ function cfGot(d) {
     // read further back is kept, with the page's lines taking theirs
     const fresh = d.said || [];
     const first = fresh.length ? fresh[0].at : Infinity;
-    const older = CF.said.filter(s => s.at < first);
+    const fresh_keys = new Set(fresh.map(cfKey));
+    const older = CF.said.filter(s => s.at <= first && !fresh_keys.has(cfKey(s)));
     CF.said = older.concat(fresh);
     if (!older.length) CF.more = !!d.more;
   }
