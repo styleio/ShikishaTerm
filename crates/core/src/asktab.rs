@@ -869,6 +869,20 @@ mod tests {
         };
         let mid = record(&[said("user", q), stop("Let me look.", "tool_use")]);
         assert_eq!(reply_when_over(mid.path(), q), None);
+        // Measured 2026-09-30: the model's thinking is filed first, stamped
+        // with the answer's `end_turn`, minutes before the words arrive. An
+        // aside said on the way is not the answer
+        let thinking = json!({"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "thinking", "thinking": ""}]}});
+        let early = record(&[said("user", q), thinking.clone(), stop("Let me look.", "tool_use")]);
+        assert_eq!(reply_when_over(early.path(), q), None, "a line of thinking is not the end of the turn");
+        // The line Claude Code files once, last, at the end of every turn
+        let ended = record(&[
+            said("user", q),
+            thinking,
+            stop("Let me look.", "tool_use"),
+            json!({"type": "system", "subtype": "turn_duration", "durationMs": 9000}),
+        ]);
+        assert!(reply_when_over(ended.path(), q).is_some_and(|r| r.ends_with("Let me look.")));
         let done = record(&[said("user", q), stop("Let me look.", "tool_use"), stop("ALPHA-42", "end_turn")]);
         let reply = reply_when_over(done.path(), q).expect("the turn ended");
         assert!(reply.ends_with("ALPHA-42"), "{reply}");

@@ -220,13 +220,33 @@ pub fn turn_mark(line: &str) -> Option<TurnMark> {
             "task_complete" | "turn_aborted" => Some(TurnMark::Over),
             _ => None,
         },
-        // Claude Code says why each answer stopped. `tool_use` is the middle
-        // of a turn -- the tool runs and the turn goes on -- so only the
-        // reasons a turn ends on count
-        "assistant" => match v.pointer("/message/stop_reason").and_then(Value::as_str)? {
-            "end_turn" | "max_tokens" | "stop_sequence" | "refusal" => Some(TurnMark::Over),
-            _ => None,
-        },
+        // Claude Code files the end of every turn as its own line, error or
+        // not, once and last (measured on 48 turns in a row: one each)
+        "system" => (v.get("subtype").and_then(Value::as_str)? == "turn_duration").then_some(TurnMark::Over),
+        "assistant" => {
+            // A turn cut off by a failed request is filed as an answer that
+            // says so, and nothing comes after it
+            if v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
+                return Some(TurnMark::Over);
+            }
+            // Claude Code files an answer one block to a line, each carrying
+            // the reason the whole answer stopped -- a line of the model's
+            // thinking is stamped `end_turn` while the words are still coming
+            // (measured 2026-09-30: 31 of 79 such lines were thinking alone,
+            // one written two minutes before its turn ended). So only a line
+            // that holds words counts, and `tool_use` is the middle of a turn
+            let ends = matches!(
+                v.pointer("/message/stop_reason").and_then(Value::as_str)?,
+                "end_turn" | "max_tokens" | "stop_sequence" | "refusal"
+            );
+            let words = v.pointer("/message/content").and_then(Value::as_array).is_some_and(|blocks| {
+                blocks.iter().any(|b| {
+                    b.get("type").and_then(Value::as_str) == Some("text")
+                        && b.get("text").and_then(Value::as_str).is_some_and(|t| !t.trim().is_empty())
+                })
+            });
+            (ends && words).then_some(TurnMark::Over)
+        }
         "user" => {
             // The person pressing Esc is filed as a message of theirs that
             // names the answer it cut off
@@ -2025,6 +2045,20 @@ mod tests {
         );
         assert_eq!(
             turn_mark(r#"{"type":"user","interruptedMessageId":"m1","message":{"role":"user","content":"[Request interrupted]"}}"#),
+            Some(TurnMark::Over)
+        );
+        // A line of thinking is stamped with the answer's reason while the
+        // words are still coming: not the end
+        assert_eq!(
+            turn_mark(r#"{"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"thinking","thinking":""}]}}"#),
+            None
+        );
+        assert_eq!(turn_mark(r#"{"type":"system","subtype":"turn_duration","durationMs":146000}"#), Some(TurnMark::Over));
+        assert_eq!(turn_mark(r#"{"type":"system","subtype":"stop_hook_summary"}"#), None);
+        assert_eq!(
+            turn_mark(
+                r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: Connection lost mid-response."}]}}"#
+            ),
             Some(TurnMark::Over)
         );
         // Gemini writes no marks: left to the screen
