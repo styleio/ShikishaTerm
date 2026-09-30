@@ -9,6 +9,13 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **With the screen run as a program of its own, a locked secrets file says
+  where its password goes.** The master password is not typed into that
+  window (it would have to travel over the board), and starting up only said
+  the secrets had been skipped, as if somebody had pressed cancel. It now says
+  the password is typed in the program's own window, and how to get that window
+  back; setting or changing it from the menu says the same. The settings and
+  the ? already worked from that window, through the same pages a phone uses.
 - **Nothing is written into an AI's settings on another machine without
   asking.** The hook that lets an AI on a server or a MicroVM report what it
   is doing was written into that AI's settings file there on its own. It is

@@ -3801,6 +3801,7 @@
   "settings.phone.device.days": "{n} days ago",
   "settings.phone.device.last": "last here {when}",
   "settings.phone.device.gone": "That device was not in the list any more — it may have been taken away already.",
+  "prompt.password.split": "While the screen runs as a program of its own, the master password is not typed here. Started without opening the secrets (notifications are unavailable). To type it, turn off Settings > Basic > Screen and work > “Run the screen as a program of its own” and start this program again: its window asks for it as it starts.",
   "prompt.password.headless": "The secrets are encrypted and nothing here could supply the master password. Either start it from a terminal, where it will ask, or give the service the password as a credential: LoadCredential=shikisha-master:/etc/shikisha/master in the unit file.",
   "err.chrome.none": "No browser on this machine. Install one (apt install chromium) and the browser commands start working; nothing else changes.",
   "far.device": "the connected device",

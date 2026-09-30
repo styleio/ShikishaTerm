@@ -3777,6 +3777,7 @@
   "settings.phone.device.days": "{n}日前",
   "settings.phone.device.last": "最後に来たのは{when}",
   "settings.phone.device.gone": "その端末はもう一覧にありませんでした。すでに取り上げられたのかもしれません。",
+  "prompt.password.split": "画面を別のプログラムとして動かしているあいだは、マスターパスワードをここでは入力しません。secrets を開かずに起動しました（通知は使えません）。入力するには、設定 > 基本 > 画面と作業 の「画面を別のプログラムとして動かす」を外して、このプログラムを起動し直します。起動したときに窓で聞きます。",
   "prompt.password.headless": "secrets が暗号化されていて、マスターパスワードを受け取る道がありませんでした。端末から起動すれば聞きます。サービスとして動かすなら、unit に LoadCredential=shikisha-master:/etc/shikisha/master を足してパスワードを渡してください。",
   "err.chrome.none": "このマシンにブラウザがありません。入れれば（apt install chromium）ブラウザの命令が使えるようになります。他は何も変わりません。",
   "far.device": "つないだ端末",

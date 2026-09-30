@@ -175,6 +175,10 @@ The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is IN
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,
 `i` the QR code for a phone, `r` restart stopped tabs, `w` switch desk,
 `t` send a test notification, `k` the master password, `?` help.
+The master password is typed only in the program's own window. While the
+screen runs as a program of its own (Settings > Basic > Screen and work), and
+from a phone, it is not asked for: turn that off and start the program again
+to type it.
 
 The mouse works too: wheel to scroll, Ctrl+wheel to change the terminal's text
 size, drag to copy, right click to paste, click a tab name to switch. Drag the
