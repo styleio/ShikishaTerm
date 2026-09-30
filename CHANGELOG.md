@@ -9,6 +9,29 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A Claude Code tab stays "at work behind its prompt" while its helpers
+  run.** When Claude hands work to a helper (a subagent) in the background
+  and ends its own turn, the tab went blue (answered) whenever the helper was
+  only thinking, and turned the ring colour only while the helper ran a
+  command. The helper runs inside Claude, where no count of the tab's
+  processes can see it. Claude's hooks now also say when a helper begins and
+  ends, and the list of what still runs that Claude hands over at the end of
+  each turn is read, so the tab reads BACKGROUND for as long as any helper is
+  at work -- pressing Esc on the turn included -- and comes to rest when the
+  last one ends. Something not heard of for three hours is let go of, so a
+  lost report cannot hold a tab at work for good. Automation can say the
+  same with `shikisha.set_helper` and `shikisha.set_running`.
+- **Hooks agreed to earlier are asked about again before anything is added
+  to them.** A new version that adds events to an AI CLI's hook no longer
+  writes them on its own: the question at start comes back, showing the file
+  as it would be and naming what this version adds.
+- **A worktree an AI made for its own helper is no longer offered as one of
+  yours.** Claude Code keeps a worktree inside the project
+  (`.claude\worktrees\agent-…`) for each helper it runs apart. Those were
+  counted among the project's found worktrees and offered for the desk, and
+  a pull request's branch could be opened in one. They are now left to the
+  tool. A project whose settings say its worktrees go in that very place
+  keeps them as its own.
 - **A MicroVM paused by somebody on purpose is not started again.** Only a
   machine paused by the longest run its E2B plan allows is started again at
   once while something works on it; any other pause is said on its

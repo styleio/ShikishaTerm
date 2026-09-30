@@ -288,6 +288,34 @@ pub fn worktrees_of(family: &Path) -> Vec<(PathBuf, Option<String>)> {
     out
 }
 
+/// Where an AI CLI keeps worktrees of its own inside a checkout: Claude Code
+/// makes one per helper it runs apart (`agent-<id>`) and removes it after.
+/// Only the CLIs this app works with; a folder of that name anywhere else in
+/// a path is not one of these
+const TOOL_SCRATCH: &[&[&str]] = &[&[".claude", "worktrees"]];
+
+/// Whether `folder` is a worktree an AI CLI made for its own use inside
+/// `checkout`, rather than one somebody made to work in.
+///
+/// Such a folder is the tool's, like its cache: it comes and goes with a
+/// helper's run, and offering it to the person as a worktree of theirs is
+/// offering them somebody else's scratch paper. Judged against the checkout
+/// the worktree belongs to, not by a name found anywhere in the path -- a
+/// project of somebody's own called `worktrees` under a `.claude` elsewhere is
+/// theirs. `bases` are the places the project's settings say its worktrees go:
+/// one of those that points inside the scratch place was chosen by a person,
+/// and what is in it is theirs
+pub fn tool_scratch(checkout: &Path, folder: &Path, bases: &[PathBuf]) -> bool {
+    TOOL_SCRATCH.iter().any(|parts| {
+        let root = parts.iter().fold(checkout.to_path_buf(), |p, s| p.join(s));
+        crate::worktree::inside_checkout(&root, folder)
+            && !crate::uistate::same_folder(&root, folder)
+            && !bases.iter().any(|b| {
+                crate::worktree::inside_checkout(&root, b) && crate::worktree::inside_checkout(b, folder)
+            })
+    })
+}
+
 /// The same path written the one way, so that two of them can be compared.
 ///
 /// `..` is resolved by reading the path rather than by asking the disk: the
@@ -742,6 +770,30 @@ mod tests {
         assert!(found.iter().any(|(f, b)| f == &here && b.as_deref() == Some("feature/login")), "the branch was not read: {found:?}");
         assert!(found.iter().any(|(f, b)| f == &here && b.is_none()), "a detached worktree was dropped: {found:?}");
         assert!(worktrees_of(&root.join("nowhere")).is_empty());
+    }
+
+    /// A helper's worktree inside the checkout is the tool's; the same names
+    /// anywhere else, and a place the project itself chose, are the person's
+    #[test]
+    fn a_worktree_an_ai_tool_made_for_itself_is_told_apart() {
+        let p = |s: &str| PathBuf::from(crate::local_path(s));
+        let checkout = p("D:/work/app");
+        let helper = checkout.join(".claude").join("worktrees").join("agent-a1b2c3");
+        assert!(tool_scratch(&checkout, &helper, &[]));
+        // Written with the other slash, and on Windows in other letters, the same folder
+        let spelled = if cfg!(windows) { "d:/WORK/app/.claude/worktrees/agent-a1b2c3" } else { "D:/work/app/.claude/worktrees/agent-a1b2c3" };
+        assert!(tool_scratch(&checkout, &p(spelled), &[]));
+        // The scratch place itself, a sibling of it, and another checkout's are not
+        assert!(!tool_scratch(&checkout, &checkout.join(".claude").join("worktrees"), &[]));
+        assert!(!tool_scratch(&checkout, &checkout.join(".claude").join("skills").join("x"), &[]));
+        assert!(!tool_scratch(&checkout, &p("D:/elsewhere/.claude/worktrees/agent-a1b2c3"), &[]));
+        // An ordinary worktree beside the checkout
+        assert!(!tool_scratch(&checkout, &p("D:/work/app-login"), &[]));
+        // The project said its worktrees go in there: then they are the person's
+        let chosen = checkout.join(".claude").join("worktrees");
+        assert!(!tool_scratch(&checkout, &helper, std::slice::from_ref(&chosen)));
+        // A base somewhere else does not change what is inside the scratch place
+        assert!(tool_scratch(&checkout, &helper, &[p("D:/trees")]));
     }
 
     /// A program is named by its file, not its whole path: the row has room

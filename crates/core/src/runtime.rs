@@ -3599,18 +3599,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 for (kind, sent, v) in heard {
                     let report = crate::agenthook::report_of(&kind, &v);
-                    if let Some(id) = report.id {
+                    if let Some(id) = report.id.clone() {
                         let s = tab::Session { id, source: tab::SessionSource::Hook };
                         append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
                         t.session = Some(s);
                     }
-                    if let Some(prompt) = report.prompt {
-                        t.heard(&prompt);
+                    if let Some(prompt) = &report.prompt {
+                        t.heard(prompt);
                     }
-                    if let Some(known) = report.state.as_deref().and_then(TabState::from_label) {
-                        let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
-                        t.hook_says(known, sent);
-                    }
+                    let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
+                    t.take_report(&report, sent);
                 }
             }
 
@@ -5725,6 +5723,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| place(f).zip(f.work_item.clone())).collect())
                 .unwrap_or_default(),
+            worktree_bases: desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default(),
             folder_labels: desks
                 .get(desk_index)
                 .map(|w| {
@@ -7972,7 +7971,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                     continue;
                 }
-                let dir = source.and_then(|s| crate::github::head_folder(&s.dir, &head));
+                let dir = source.and_then(|s| crate::github::head_folder(&s.dir, &head, &desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default()));
                 let base = format!("origin/{into}");
                 let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
                 let say = |mut js: serde_json::Value| {
@@ -8177,7 +8176,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                     continue;
                 }
-                match sources.iter().find(|s| s.name == project).and_then(|s| crate::github::head_folder(&s.dir, &head)) {
+                match sources.iter().find(|s| s.name == project).and_then(|s| crate::github::head_folder(&s.dir, &head, &desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default())) {
                     None => {
                         let js = serde_json::json!({"act": act, "ok": false, "seq": seq, "project": project, "number": number,
                             "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])}).to_string();
@@ -11562,8 +11561,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if !hooks_looked {
             hooks_looked = true;
             let answers = cfg.as_ref().map(|c| c.agent_hooks.clone()).unwrap_or_default();
-            keep_hooks_right(crate::agenthook::agreed(&answers), hooks_tx.clone());
+            // One this version adds events to is asked about again rather
+            // than kept right: it was agreed to as it was shown, and a new
+            // event is not something it was shown doing
+            let (keep, grown) = crate::agenthook::agreed_split(&answers);
+            keep_hooks_right(keep, hooks_tx.clone());
+            if !grown.is_empty() {
+                append_hook_log(&format!(
+                    "hooks: asking again about {}, which this version adds to",
+                    grown.iter().map(|t| format!("{} ({})", t.name, crate::agenthook::new_events(t).join(", "))).collect::<Vec<_>>().join("; ")
+                ));
+            }
             hook_asking = crate::agenthook::unasked(&answers);
+            hook_asking.extend(grown);
             if !hook_asking.is_empty() {
                 append_hook_log(&format!(
                     "hooks: asking whether to set up {}",
@@ -16690,6 +16700,17 @@ pub fn exec_commands(
                     ));
                 }
             }
+            Command::SetHelper { id, running, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) => {
+                    append_hook_log(&format!("tab{origin} \"{}\": helper {id} {}", t.title, if running { "began" } else { "ended" }));
+                    t.helper_says(&id, running);
+                }
+                None => append_hook_log(&format!("set_helper from tab{origin}: no such tab")),
+            },
+            Command::SetRunning { helpers, other, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) => t.running_says(&crate::agenthook::Running { helpers, other }),
+                None => append_hook_log(&format!("set_running from tab{origin}: no such tab")),
+            },
             Command::SetStatus { key, value, target, origin } => {
                 let at = target.as_ref().and_then(index_of).unwrap_or(origin);
                 if let Some(t) = session_of(at).and_then(|i| tabs.get_mut(i)) {

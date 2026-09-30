@@ -111,6 +111,8 @@ page shows it and lets you change it.
 | `shikisha.set_session("id")` | Say which conversation THIS tab's CLI is running, so a restart can pick it up. No tab argument: the caller is the tab |
 | `shikisha.report_prompt("text")` | Say what a person just asked THIS tab's CLI. A folder with Auto on writes its name and summary from these. Claude Code's and Codex's own hooks report through here, which also catches what was typed straight into the terminal |
 | `shikisha.set_state("BUSY")` | Say what THIS tab is doing, instead of leaving it to be read off the screen: `BUSY`, `QUESTION`, `DONE` or `WAIT`. This is how an AI CLI's own hooks drive the state dot. A second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
+| `shikisha.set_helper("a1f2", true)` | Say that a helper THIS tab's program runs on the side (a subagent, by the program's own id for it) began (`true`) or ended (`false`). While one runs, a tab whose turn is over reads BACKGROUND rather than done. An AI CLI's own hooks report through this |
+| `shikisha.set_running({"a1f2"}, false)` | Say everything THIS tab's program still has running beside its conversation: the helpers by id, and whether anything that is not a helper (a command left running) is still going. Replaces what was said before; `set_running({}, false)` says nothing runs. What is not heard of again for three hours is let go of |
 | `shikisha.set_status("key", "text", tab)` | Say what a tab is doing, in its own words, under its name in the tab bar. `key` lets several sources speak without overwriting each other; an empty text removes that one. Leave `tab` out and it is THIS tab |
 | `shikisha.set_progress(0.4, "label", tab)` | How far along, 0..1, shown beside the status. `nil` removes it. Leave `tab` out and it is THIS tab |
 
@@ -1062,6 +1064,8 @@ report about another tab. An AI CLI's own hooks report through here too.
 | Command | What it does |
 |---|---|
 | `shikisha.set_state("BUSY")` | **This tab** says what it is doing rather than leaving it to be read off the screen (`BUSY` / `QUESTION` / `DONE` / `WAIT`). The second argument is the sender's clock in milliseconds, so reports that overtake each other still apply in the order they were said |
+| `shikisha.set_helper("a1f2", true)` | **This tab**'s program says a helper it runs on the side began (`true`) or ended (`false`) |
+| `shikisha.set_running({"a1f2"}, false)` | **This tab**'s program says everything it still has running beside its conversation: helpers by id, and whether anything else is still going. Replaces what was said before |
 | `shikisha.set_status("key", "text", tab)` | Say what is being worked on, in its own words (shown under the tab name). Separate keys let several writers speak without overwriting each other; an empty string clears one. Leave `tab` out and it is **this tab** |
 | `shikisha.set_progress(0.4, "label", tab)` | How far along it is (0..1), shown beside the state. `nil` clears it. Leave `tab` out and it is **this tab** |
 | `shikisha.set_session("id")` | **This tab** says which conversation its CLI is running, so a restart can pick it back up |

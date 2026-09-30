@@ -1076,8 +1076,10 @@ pub fn far_head_folder(s: &Source, head: &str) -> Option<(std::path::PathBuf, St
 
 /// The folder on this PC where a pull request's branch is checked out: the
 /// project's checkout itself, or any worktree cut from it. None when no folder
-/// stands on that branch -- one is made for it first
-pub fn head_folder(checkout: &std::path::Path, head: &str) -> Option<std::path::PathBuf> {
+/// stands on that branch -- one is made for it first. A worktree an AI tool
+/// made for its own helper is not somewhere to open somebody's work, even on
+/// that branch (`repo::tool_scratch`; `bases` are the places projects chose)
+pub fn head_folder(checkout: &std::path::Path, head: &str, bases: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
     let head = head.trim();
     if head.is_empty() {
         return None;
@@ -1089,7 +1091,7 @@ pub fn head_folder(checkout: &std::path::Path, head: &str) -> Option<std::path::
     let family = crate::repo::family_of(&main)?;
     crate::repo::worktrees_of(&family)
         .into_iter()
-        .find(|(_, b)| b.as_deref() == Some(head))
+        .find(|(f, b)| b.as_deref() == Some(head) && !crate::repo::tool_scratch(&main, f, bases))
         .map(|(folder, _)| folder)
 }
 
@@ -1712,10 +1714,17 @@ mod tests {
         // in its short form (`RUNNER~1`) and read back in its long one
         let real = |p: &std::path::Path| std::fs::canonicalize(p).ok();
         let is = |found: Option<std::path::PathBuf>, want: &std::path::Path| found.as_deref().and_then(real) == real(want);
-        assert!(is(super::head_folder(&main, "main"), &main), "the checkout was not found on its own branch");
-        assert!(is(super::head_folder(&cut, "feature"), &cut), "a worktree was not found from itself");
-        assert!(is(super::head_folder(&main, "feature"), &cut), "a worktree was not found from the checkout");
-        assert_eq!(super::head_folder(&main, "elsewhere"), None);
+        assert!(is(super::head_folder(&main, "main", &[]), &main), "the checkout was not found on its own branch");
+        assert!(is(super::head_folder(&cut, "feature", &[]), &cut), "a worktree was not found from itself");
+        assert!(is(super::head_folder(&main, "feature", &[]), &cut), "a worktree was not found from the checkout");
+        assert_eq!(super::head_folder(&main, "elsewhere", &[]), None);
+        // An AI tool's helper on the branch, inside the checkout: not where
+        // somebody's work is opened -- unless the project put its worktrees there
+        let helper = main.join(".claude").join("worktrees").join("agent-a1b2c3");
+        git(&main, &["worktree", "add", "-q", "-b", "helper", &helper.display().to_string()]).unwrap();
+        assert_eq!(super::head_folder(&main, "helper", &[]), None, "a helper's worktree was taken for the branch's folder");
+        let chosen = [main.join(".claude").join("worktrees")];
+        assert!(is(super::head_folder(&main, "helper", &chosen), &helper), "a worktree where the project chose was not found");
         let _ = std::fs::remove_dir_all(&root);
     }
 

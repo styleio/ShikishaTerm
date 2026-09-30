@@ -2597,6 +2597,26 @@ impl Placement {
     }
 }
 
+/// The folder a project's settings say its worktrees go in on this PC, when
+/// they say one: the place as written, read the way [`place`] reads it. A
+/// project that has written nothing chose nothing -- the app's own place is
+/// not somebody's choice. `None` too for a project with no checkout here, or
+/// a place this PC cannot read
+pub fn chosen_base(project: &crate::config::ProjectSpec) -> Option<PathBuf> {
+    let spec = project.placement.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    let main = PathBuf::from(project.at.as_deref().map(str::trim).filter(|s| !s.is_empty())?);
+    let origin = name_of(&main);
+    let name = Some(project.name.trim()).filter(|n| !n.is_empty()).unwrap_or(&origin).to_string();
+    resolve_placement(spec, &main.display().to_string(), &branches_root().display().to_string(), &name, &origin, false)
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Every one of these projects' [`chosen_base`] on this PC
+pub fn chosen_bases(projects: &[crate::config::ProjectSpec]) -> Vec<PathBuf> {
+    projects.iter().filter_map(chosen_base).collect()
+}
+
 /// The folder a branch of this project gets, following its [`Placement`].
 ///
 /// Arithmetic on paths and nothing else: the dialog asks on every keystroke,

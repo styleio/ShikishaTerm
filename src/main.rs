@@ -1254,6 +1254,15 @@ fn hook_mode(kind: String) -> Result<()> {
     if let Some(id) = report.id {
         calls.push(("set_session", vec![id.into()]));
     }
+    // What runs beside the conversation goes first: an end of turn that says
+    // "done" and "a helper is still running" in one breath must never be read
+    // as done for the moment in between
+    if let Some(running) = report.running {
+        calls.push(("set_running", vec![running.helpers.into(), running.other.into()]));
+    }
+    if let Some((id, up)) = report.helper {
+        calls.push(("set_helper", vec![id.into(), up.into()]));
+    }
     if let Some(state) = report.state {
         calls.push(("set_state", vec![state.into(), sent.into()]));
     }
@@ -1321,7 +1330,7 @@ mod hook_report_tests {
     fn a_state_event_says_the_state_and_nothing_else() {
         assert_eq!(
             hook_report("state:BUSY", &claude("UserPromptSubmit")),
-            Report { id: None, state: Some("BUSY".into()), prompt: None }
+            Report { id: None, state: Some("BUSY".into()), prompt: None, ..Default::default() }
         );
     }
 
@@ -1334,7 +1343,7 @@ mod hook_report_tests {
         sent["prompt"] = serde_json::json!("  make the sidebar remember what was folded  ");
         assert_eq!(
             hook_report("state:BUSY", &sent),
-            Report { id: None, state: Some("BUSY".into()), prompt: Some("make the sidebar remember what was folded".into()) }
+            Report { id: None, state: Some("BUSY".into()), prompt: Some("make the sidebar remember what was folded".into()), ..Default::default() }
         );
         sent["agent_id"] = serde_json::json!("agent_42");
         assert_eq!(hook_report("state:BUSY", &sent).prompt, None, "a subagent's prompt was taken for a person's");
