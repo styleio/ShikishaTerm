@@ -330,10 +330,7 @@ try {
   const editorsBefore = await board.run('S.tabs.filter(t => t.kind === "editor").length');
   await develop(board, 'tui.dev.source');
   await until(() => board.run('S.flash === T["err.browser.source_not_kept"] || (S.flash || "").includes(T["err.browser.source_not_kept"])'), 'the reason said', 10000).catch(() => {});
-  // A window over a runtime of its own is not handed the runtime's messages
-  // (every message, not this one: noted, not yet mended), so the words are
-  // looked for only where they are drawn; the log says them in both
-  if (!SPLIT_MODE) check(await board.run('(S.flash || "").includes(T["err.browser.source_not_kept"])'), 'it says why there is no source, and where to look instead: ' + (await board.run('S.flash')));
+  check(await board.run('(S.flash || "").includes(T["err.browser.source_not_kept"])'), 'it says why there is no source, and where to look instead: ' + (await board.run('S.flash')));
   check((await board.run('S.tabs.filter(t => t.kind === "editor").length')) === editorsBefore, 'and opens no empty editor');
   await page.run(`location.href = "/"`).catch(() => {});
   await until(() => page.run('location.pathname === "/" && document.readyState === "complete" && !!window.__shikisha_pick'), 'the page back', 15000);

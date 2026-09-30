@@ -9,6 +9,11 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **Messages reach the screen when the program runs in two parts, or as a
+  server.** "Saved", "could not read the page" and every other message the
+  program says were left out of what a window over a split program, a window
+  connected to a server, and a phone watching either one were given, so none
+  of them saw it. They are there now.
 - **An answer asked of another AI tab arrives when the AI finishes, even if
   its screen still looks busy.** A Codex tab could go on looking busy after
   its turn was over, and the answer waited in its record until something on
