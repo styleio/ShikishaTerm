@@ -18,6 +18,9 @@
  *   menu      a folder's right-click menu offers the ports and calls the panel up
  *   empty     a folder where nothing listens says so, and what starts a port
  *   script    `show_panel("ports")` through the external API calls it up
+ *   one address  a port the server listens on at this PC's LAN address alone
+ *             is listed with that address, and its row opens it there -- not
+ *             at localhost, where nothing answers (skipped with no LAN address)
  *   phone     a phone-sized Chrome on the remote door gets the same rows, with
  *             no way to open this PC's localhost in the phone's own browser,
  *             and pressing a row brings up the page already open, not a second
@@ -75,10 +78,18 @@ if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n'
 // The server a tab runs: what it serves is a word only it knows
 const PORT = await freePort();
 const WORD = 'served-by-the-tab-' + PORT;
+// This PC's address on its LAN: what a dev server is told to listen on when
+// it should answer the rest of the network and not the loopback
+const LAN = Object.values(os.networkInterfaces()).flat()
+  .find((a) => a && a.family === 'IPv4' && !a.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(a.address))?.address || '';
+const LPORT = await freePort();
 fs.writeFileSync(path.join(WORK, 'serve.mjs'),
   `import http from 'node:http';\n` +
   `http.createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end('<title>${WORD}</title><h1>${WORD}</h1>'); })` +
-  `.listen(${PORT}, '127.0.0.1', () => console.log('listening on ${PORT}'));\n`);
+  `.listen(${PORT}, '127.0.0.1', () => console.log('listening on ${PORT}'));\n` +
+  // The same kind of page on this PC's LAN address alone, when it has one
+  (LAN ? `http.createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end('<h1>lan-${WORD}</h1>'); })` +
+    `.listen(${LPORT}, '${LAN}');\n` : ''));
 const PHONE_PORT = await freePort();
 const PHONE_KEY = 'portsphone0123456789abcd';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
@@ -287,6 +298,21 @@ try {
   await until(() => phone.run(`S.tabs.find(t => t.index === S.active).kind === "browser"`), 'the page in front on the phone', 15000).catch(() => {});
   check(await phone.run(`S.tabs.find(t => t.index === S.active).kind === "browser"`), 'the phone\'s press brings the page up');
   check(pageTabs().length === 1, 'the page already open is used, not a second one: ' + pageTabs().length);
+
+  console.log('7. a port on one address only opens at that address');
+  if (!LAN) console.log('  (skipped: this PC has no LAN address)');
+  else {
+    await board.front('shell');
+    await board.run('sideReveal("ports")');
+    await until(async () => (await board.panel()).rows.some((r) => r.port === ':' + LPORT), 'the LAN port as a row', 20000);
+    const lrow = (await board.panel()).rows.find((r) => r.port === ':' + LPORT);
+    check(lrow.tab.includes(LAN), 'the row names the address it listens on: ' + JSON.stringify(lrow));
+    await board.press(`[...document.querySelectorAll("#portpanel .prt")].find(r => r.querySelector(".pp").textContent === ":${LPORT}")`);
+    const want = `browser http://${LAN}:${LPORT}/`;
+    await until(() => pageTabs().some((t) => t.command === want), 'a page on the LAN address', 20000).catch(() => {});
+    check(pageTabs().some((t) => t.command === want), 'opened at the address it listens on, not localhost: ' + JSON.stringify(pageTabs().map((t) => t.command)));
+    await board.shot('6-lan');
+  }
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);

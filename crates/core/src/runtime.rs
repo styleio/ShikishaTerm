@@ -3756,6 +3756,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         branch,
                         ports: held.ports,
                         programs: held.programs,
+                        hosts: held.hosts,
                         repo,
                         pr,
                         family,
