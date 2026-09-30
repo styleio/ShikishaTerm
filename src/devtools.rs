@@ -193,10 +193,39 @@ pub struct Screens {
     open: std::collections::HashMap<u64, Screen>,
 }
 
+/// A screen's session, and whether the screen has gone. Both halves of the
+/// attach answer later, on the window's thread, and the screen can be closed
+/// in between: a session that arrives for a screen already gone must be let
+/// go at once, or it stays attached to the page with nobody to detach it
+#[derive(Debug, Default)]
+struct Attach {
+    session: Option<String>,
+    closed: bool,
+}
+
+impl Attach {
+    /// The page answered with a session. `Some` is a session to let go of
+    /// straight away: its screen closed while it was on its way
+    fn attached(&mut self, sid: String) -> Option<String> {
+        if self.closed {
+            return Some(sid);
+        }
+        self.session = Some(sid);
+        None
+    }
+
+    /// The screen went away. `Some` is the session to let go of, when there
+    /// already is one; one still on its way is let go of when it arrives
+    fn close(&mut self) -> Option<String> {
+        self.closed = true;
+        self.session.take()
+    }
+}
+
 struct Screen {
     to: Option<String>,
     /// The session attached for this screen, once the page has said which
-    session: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    session: std::rc::Rc<std::cell::RefCell<Attach>>,
     /// Said before the session was there, in order
     waiting: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     heard: Option<(webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DevToolsProtocolEventReceiver, i64)>,
@@ -213,12 +242,12 @@ impl Screens {
         webview: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
         out: Sender<String>,
     ) {
-        let session = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
+        let session = std::rc::Rc::new(std::cell::RefCell::new(Attach::default()));
         let waiting = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let mine = std::rc::Rc::clone(&session);
         let heard = crate::browser::cdp::listen(&webview, "Target.receivedMessageFromTarget", move |v| {
             let from = v.get("sessionId").and_then(|x| x.as_str());
-            if from.is_some() && from == mine.borrow().as_deref()
+            if from.is_some() && from == mine.borrow().session.as_deref()
                 && let Some(m) = v.get("message").and_then(|x| x.as_str())
             {
                 let _ = out.send(m.to_string());
@@ -235,6 +264,10 @@ impl Screens {
                 shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: the page did not say which it is ({json})"));
                 return;
             };
+            // Closed while the page was being asked: nothing to attach for
+            if slot.borrow().closed {
+                return;
+            }
             let params = serde_json::json!({"targetId": target, "flatten": false}).to_string();
             let wv2 = wv.clone();
             crate::browser::cdp::call_result(&wv, "Target.attachToTarget", &params, move |ok, json| {
@@ -246,7 +279,13 @@ impl Screens {
                     shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: could not attach ({json})"));
                     return;
                 };
-                *slot.borrow_mut() = Some(sid.clone());
+                let late = slot.borrow_mut().attached(sid.clone());
+                if let Some(late) = late {
+                    detach(&wv2, &late);
+                    queue.borrow_mut().clear();
+                    shikisha_core::append_hook_log(&format!("[devtools] screen {conn}: attached after it closed, let go"));
+                    return;
+                }
                 for text in queue.borrow_mut().drain(..) {
                     say(&wv2, &sid, &text);
                 }
@@ -258,7 +297,7 @@ impl Screens {
     /// What the screen said, on to its session (or kept until it has one)
     pub fn say(&mut self, conn: u64, text: String) {
         let Some(s) = self.open.get(&conn) else { return };
-        let sid = s.session.borrow().clone();
+        let sid = s.session.borrow().session.clone();
         match sid {
             Some(sid) => say(&s.webview, &sid, &text),
             None => s.waiting.borrow_mut().push(text),
@@ -283,13 +322,18 @@ impl Screens {
 
 impl Screen {
     fn let_go(self) {
-        if let Some(sid) = self.session.borrow().clone() {
-            crate::browser::cdp::call(&self.webview, "Target.detachFromTarget", &serde_json::json!({"sessionId": sid}).to_string());
+        let sid = self.session.borrow_mut().close();
+        if let Some(sid) = sid {
+            detach(&self.webview, &sid);
         }
         if let Some(h) = &self.heard {
             crate::browser::cdp::unlisten(h);
         }
     }
+}
+
+fn detach(webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, sid: &str) {
+    crate::browser::cdp::call(webview, "Target.detachFromTarget", &serde_json::json!({"sessionId": sid}).to_string());
 }
 
 fn say(webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, sid: &str, text: &str) {
@@ -300,6 +344,22 @@ fn say(webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Closed before the page answered: the session that arrives after is
+    /// handed back to be let go of, not kept -- before, it was kept by a
+    /// screen nobody had any more and stayed attached to the page
+    #[test]
+    fn a_session_that_arrives_after_its_screen_closed_is_let_go() {
+        let mut early = Attach::default();
+        assert_eq!(early.close(), None, "nothing attached yet, nothing to let go of");
+        assert_eq!(early.attached("s1".into()), Some("s1".into()), "a late session was kept");
+        assert_eq!(early.session, None);
+
+        let mut usual = Attach::default();
+        assert_eq!(usual.attached("s2".into()), None);
+        assert_eq!(usual.session.as_deref(), Some("s2"));
+        assert_eq!(usual.close(), Some("s2".into()), "closing did not let go of its session");
+    }
 
     #[test]
     fn a_page_name_survives_the_address() {
