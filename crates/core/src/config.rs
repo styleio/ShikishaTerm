@@ -1168,6 +1168,10 @@ pub struct Config {
     /// for pages driven from words (🗣).
     #[serde(default)]
     pub operate: OperateSpec,
+    /// AIs conferring: the short lines said beside each ask, shown as a chat
+    /// in the conversation panel (`convo::confer`)
+    #[serde(default)]
+    pub confer: ConferSpec,
     /// Display language ("ja" etc). Follows the OS setting if omitted
     #[serde(default)]
     pub language: Option<String>,
@@ -1841,6 +1845,32 @@ fn default_operate_confirm() -> String {
 /// The operate limits/policy (defaults if none configured).
 pub fn operate() -> OperateSpec {
     load().map(|c| c.operate).unwrap_or_default()
+}
+
+/// How AIs conferring is shown and kept short.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConferSpec {
+    /// Open the conversation panel on the conference when one tab asks
+    /// another. On unless turned off: the person asked to see it happen
+    #[serde(default = "yes")]
+    pub open: bool,
+    /// The most characters a line may have. 0 = no limit
+    #[serde(default = "default_line_max")]
+    pub line_max: u32,
+}
+
+impl Default for ConferSpec {
+    fn default() -> Self {
+        Self { open: true, line_max: default_line_max() }
+    }
+}
+
+fn default_line_max() -> u32 {
+    crate::convo::confer::LINE_MAX
+}
+
+pub fn confer() -> ConferSpec {
+    load().map(|c| c.confer).unwrap_or_default()
 }
 
 fn default_attach_ext() -> Vec<String> {

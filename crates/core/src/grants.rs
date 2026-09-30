@@ -140,6 +140,11 @@ pub const CATALOG: &[Entry] = &[
     e("tab_run", Group::Tabs, true, true, false),
     e("browser_do", Group::Tabs, true, true, false),
     e("tab_list", Group::Tabs, true, true, false),
+    // The conference: a line, a mark, a card. Words to the other tabs, shown
+    // on the conversation panel; nothing is typed into any of them
+    e("say", Group::Tabs, true, true, false),
+    e("react", Group::Tabs, true, true, false),
+    e("share", Group::Tabs, true, true, false),
     // A tab running one of the AI CLIs as the person set new AI tabs up, and
     // nothing the caller wrote: open to an AI where `open_tab` is not
     e("open_ai_tab", Group::Tabs, true, true, false),

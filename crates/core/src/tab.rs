@@ -2281,6 +2281,33 @@ mod tests {
         t.kill();
     }
 
+    /// What a program says on its way out -- an error, or why nothing more
+    /// happens in the tab -- is on the screen automation reads
+    /// (`shikisha.tab_screen`), not only on the one drawn
+    #[test]
+    fn the_last_words_before_an_end_are_read_as_the_screen() {
+        use super::{Tab, TabOptions};
+        use std::time::{Duration, Instant};
+
+        let argv = vec![crate::test_shell()];
+        let mut t = Tab::spawn("shell".into(), &argv, None, 10, 60, TabOptions::default()).unwrap();
+        let start = Instant::now();
+        std::thread::sleep(Duration::from_millis(500));
+        t.tick(start);
+        // Said and ended between two ticks: the words are only on the screen
+        // the tick that sees the end takes
+        let (said, heard): (&[u8], &str) =
+            if cfg!(windows) { (b"echo last-%OS% && exit\r", "last-Windows_NT") } else { (b"echo last-$((6*7)) && exit\r", "last-42") };
+        t.write_bytes(said).unwrap();
+        let ended = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            t.exited()
+        });
+        assert!(ended, "the shell did not end");
+        t.tick(start);
+        assert!(t.last_screen.contains(heard), "{:?}", t.last_screen);
+    }
+
     /// Just typing or just pasting must not count as "submitted."
     ///
     /// If it did, a screen that went idle mid-typing would be misread as a
@@ -3776,13 +3803,29 @@ impl Tab {
         let mut far_lost = None;
         // A terminal held by the bridge there (see `farterm`)
         let mut far_term: Option<Arc<crate::farterm::FarTerm>> = None;
+        // Held by the bridge there, when that machine's terminals are held
+        // (the away mode; a development switch until it can be chosen): the
+        // one this tab left running there, gone back to whether or not the
+        // line is up yet, or a new one when the line is up
+        let held_there = match (&pair, opts.remote.as_ref(), opts.cloud.as_ref()) {
+            (None, Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
+            (None, None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+            _ => None,
+        }
+        .filter(|_| crate::farterm::wanted())
+        .and_then(|at| {
+            match crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), opts.called(&title)) {
+                Some(left) => Some((at, Some(left))),
+                None => far_holds(&at).then_some((at, None)),
+            }
+        });
         let (master, killer, pid, child): (
             Box<dyn MasterPty + Send>,
             Box<dyn ChildKiller + Send + Sync>,
             Option<u32>,
             Option<Box<dyn portable_pty::Child + Send + Sync>>,
-        ) = match (pair, opts.remote.as_ref(), opts.cloud.as_ref()) {
-            (Some(pair), _, _) => {
+        ) = match (pair, opts.remote.as_ref(), opts.cloud.as_ref(), held_there) {
+            (Some(pair), _, _, _) => {
                 let child = pair.slave.spawn_command(cmd)?;
                 drop(pair.slave);
                 let pid = child.process_id();
@@ -3791,30 +3834,24 @@ impl Tab {
             // Nothing of ours runs for a remote tab: the shell is the far end's
             // own, started by the far end, and there is no local process id to
             // put in a job object
-            // Held by the bridge there, when that machine's terminals are held
-            // (the away mode; a development switch until it can be chosen)
-            (None, Some(spec), _) if crate::farterm::wanted() && far_holds(&crate::elsewhere::Elsewhere::Ssh(spec.clone())) => {
-                let at = crate::elsewhere::Elsewhere::Ssh(spec.clone());
-                let (m, k, t) = crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+            (None, _, _, Some((at, left))) => {
+                let (m, k, t) = match left {
+                    Some(left) => crate::farterm::reattach(&at, left, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref()),
+                    None => crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?,
+                };
                 far_term = Some(t);
                 (m, k, None, None)
             }
-            (None, Some(spec), _) => {
+            (None, Some(spec), _, None) => {
                 let (m, k, lost) =
                     crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
                 far_lost = Some(lost);
                 (m, k, None, None)
             }
-            (None, None, Some(host)) if crate::farterm::wanted() && far_holds(&crate::elsewhere::Elsewhere::Cloud(host.clone())) => {
-                let at = crate::elsewhere::Elsewhere::Cloud(host.clone());
-                let (m, k, t) = crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
-                far_term = Some(t);
-                (m, k, None, None)
-            }
             // The same, except the far end does not exist yet. Asking for it
             // here rather than earlier is what keeps a machine from being
             // rented by a desk that is only being read
-            (None, None, Some(host)) => {
+            (None, None, Some(host), None) => {
                 let (m, k) = crate::e2b::shell(
                     host,
                     rows,
@@ -3825,7 +3862,7 @@ impl Tab {
                 )?;
                 (m, k, None, None)
             }
-            (None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
+            (None, None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
         };
         // Everything this tab goes on to start belongs to this tab. Killing the
         // program we launched has never reached what it launched -- a .cmd shim
@@ -4690,6 +4727,11 @@ impl Tab {
     fn tick_state(&mut self, start: Instant) -> (TabState, TabState) {
         if self.exited() {
             let old = self.state;
+            // What the program said last, before it ended -- an error, or why
+            // the tab is not going on -- is read as its screen from now on
+            if old != TabState::Exited {
+                self.last_screen = self.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+            }
             self.state = TabState::Exited;
             return (old, self.state);
         }

@@ -5,8 +5,8 @@
 //! so what it asks is counted against that tab, under that tab's permissions.
 //! Nothing to install, nothing to point at the app.
 //!
-//! **One door, the commands Lua has.** `shikisha ask_tab otter "review this"`
-//! is `shikisha.ask_tab("otter", "review this")`: the first word names the
+//! **One door, the commands Lua has.** `shikisha tab_run shell "make"`
+//! is `shikisha.tab_run("shell", "make")`: the first word names the
 //! command, the rest are its arguments, and the call goes down the same pipe
 //! to the same code. Nothing here knows what any command does, so a command
 //! added for Lua is a command here the moment it exists, and the permission
@@ -93,9 +93,13 @@ fn usage() -> &'static str {
     "Usage: shikisha COMMAND [ARGUMENT...]
   Runs the SHIKISHA-TERM command of that name -- the one Lua calls shikisha.COMMAND --
   for this tab. An argument written as JSON ({\"want\":3}) is passed as that value.
-    shikisha ask_tab ID \"what you want it to do\"   -- hand work to the AI in <@ID>, print its reply
+    shikisha ask_tab ID \"a line\" \"what to do\"   -- hand work to the AI in <@ID>, print its reply; the line is
+                                                    what the chat shows (one short line, like to a colleague)
     shikisha tab_run ID \"a command\"                -- run a command in the terminal <@ID>, print its output
     shikisha browser_do ID \"what to get done\"      -- drive the web page <@ID> toward a goal, print what it found
+    shikisha say \"a line\"                          -- say one short line to the other tabs, in the chat
+    shikisha react ID 👍                            -- mark the last line <@ID> said (👍 ❤️ 🎉 👀 ✅ ❓)
+    shikisha share commit|pr|file|url WHAT [TITLE]  -- show the others a commit, a pull request, a file or a page
     shikisha tab_list                               -- the tabs of this desk
     shikisha tab_conversation ID '{\"want\":3}'      -- the last things said in <@ID>'s conversation
     shikisha list                                   -- every command this tab may call
@@ -120,7 +124,10 @@ fn argument(arg: &str) -> Value {
 /// given this command's, so it answers before the AI's shell gives up on it
 fn arguments(command: &str, args: &[String]) -> Vec<Value> {
     let mut params: Vec<Value> = args.iter().map(|a| argument(a)).collect();
-    if crate::asktab::HELD.contains(&command) && params.len() == 2 {
+    // Where the options go: after the tab and what to do, and for an ask
+    // after its line as well
+    let options_at = if command == "ask_tab" { 3 } else { 2 };
+    if crate::asktab::HELD.contains(&command) && params.len() == options_at {
         params.push(json!({"timeout_ms": WAIT_MS}));
     }
     params
@@ -338,9 +345,12 @@ mod tests {
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         // A hand-off with no wait of its own answers before the AI's shell gives up
         assert_eq!(
-            arguments("ask_tab", &s(&["otter", "review this"])),
-            vec![json!("otter"), json!("review this"), json!({"timeout_ms": WAIT_MS})]
+            arguments("ask_tab", &s(&["otter", "Can you review this?", "review src/p.rs"])),
+            vec![json!("otter"), json!("Can you review this?"), json!("review src/p.rs"), json!({"timeout_ms": WAIT_MS})]
         );
+        // An ask written the old way is passed on as written, for the app to
+        // refuse with the new form rather than to read wrongly
+        assert_eq!(arguments("ask_tab", &s(&["otter", "review this"])), vec![json!("otter"), json!("review this")]);
         // ...and one that names its own keeps it
         assert_eq!(
             arguments("tab_run", &s(&["sh", "make", r#"{"timeout_ms":5000}"#])),

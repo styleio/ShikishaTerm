@@ -159,6 +159,13 @@ How far an AI may go when it hands work to other tabs or drives a page
 - **Settle wait (ms)** — After each action, wait until the page stops changing (up to this long) before reading it. 0 = don't wait.
 - **Ask before acting** — A brake: pause for you to approve a step on the page before it runs. Declining holds the run.
 
+### AIConfer
+
+AIs asking each other things, shown as a chat
+
+- **Open AIConfer when one AI asks another** — The panel on the right opens to AIConfer. On a phone, it is chosen in the panel without opening it.
+- **Longest line** — Characters. An AI's line longer than this is sent back to be said shorter. 0 means no limit.
+
 ### AI allowance
 
 Each AI subscription's allowances, and when they come back

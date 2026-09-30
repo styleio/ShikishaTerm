@@ -94,7 +94,7 @@ page shows it and lets you change it.
 | Command | Description |
 |---|---|
 | `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (automatic chain +1) |
-| `shikisha.ask_tab(tab_id, "text", {timeout_ms=…})` | **Ask another tab's AI and get its reply back.** When a message contains `<@ID>`, that is a SHIKISHA tab: call this with that ID to hand it work (a review, a question) and wait. Waits while the tab is busy, sends, waits for it to finish, and returns `{state, reply, round, max_rounds, same_folder, note}`. `state` is `DONE` with the reply, `QUESTION` when it waits for approval, or `PENDING` when it is still working at the timeout (50 min by default) -- its reply is then typed into your tab when it finishes. Stop when `round` reaches `max_rounds`. `same_folder: false` means it cannot see your uncommitted changes. Through the pipe or MCP only |
+| `shikisha.ask_tab(tab_id, "line", "text", {timeout_ms=…})` | **Ask another tab's AI and get its reply back.** When a message contains `<@ID>`, that is a SHIKISHA tab: call this with that ID to hand it work (a review, a question) and wait. `line` is one short line for the chat (AIConfer shows it; one line, no longer than the settings allow, 80 characters unless changed); `text` is everything the tab is sent. Waits while the tab is busy, sends, waits for it to finish, and returns `{state, reply, round, max_rounds, same_folder, note}`. `state` is `DONE` with the reply, `QUESTION` when it waits for approval, or `PENDING` when it is still working at the timeout (50 min by default) -- its reply is then typed into your tab when it finishes. Stop when `round` reaches `max_rounds`. `same_folder: false` means it cannot see your uncommitted changes. Through the pipe or MCP only |
 | `shikisha.send(tab, "text")` | Send raw keystrokes (newline is `\r`). For answering prompts, not for instructions |
 | `shikisha.tab_run(tab_id, "command", {timeout_ms=…})` | **Run a command in a terminal tab and get its output.** Only in a terminal the person named with `@` in what they last sent you. Waits while the tab is busy, types the command, waits for it to finish, and returns `{state, reply}` with the output in `reply` (`PENDING` at the timeout, the output then typed into your tab). Through the pipe or MCP only |
 | `shikisha.browser_do(tab_id, "goal", {timeout_ms=…})` | **Have a web page driven toward a goal and get what it found.** Only a page the person named with `@`. Runs the page's 🗣 words run and returns `{state, reply, note}`: `DONE` with what the page shows about the goal, `STUCK` with why, `STOPPED` when someone stopped it, `PENDING` at the timeout. One page at a time. Through the pipe or MCP only |
@@ -767,8 +767,8 @@ that presented no valid key.
 ### The same commands from a tab: `shikisha`
 
 Every tab finds a command called `shikisha` on its PATH. It is these same commands with
-another door: `shikisha ask_tab otter "review this"` is `shikisha.ask_tab("otter", "review
-this")`. The first word names the command and the rest are its arguments; an argument
+another door: `shikisha tab_run shell "make"` is `shikisha.tab_run("shell",
+"make")`. The first word names the command and the rest are its arguments; an argument
 written as JSON (`{"want":3}`) is passed as that value, and every other one as text. It
 talks to the app through the tab's own key, so what it asks counts against that tab, under
 that tab's permissions -- the same table that decides what an AI may call through MCP.
@@ -777,7 +777,7 @@ that tab's permissions -- the same table that decides what an AI may call throug
 The ones an AI in a tab is taught to use:
 
 ```text
-shikisha ask_tab ID "what you want it to do"   # another AI: it does the work and replies
+shikisha ask_tab ID "a line" "what to do"      # another AI: it does the work and replies
 shikisha tab_run ID "a command"                # a terminal: one command, its output back
 shikisha browser_do ID "what to get done"      # a web page: its 🗣 run driven toward the goal, what it found back
 shikisha tab_list                              # the tabs of this desk and what each is
@@ -963,7 +963,10 @@ written at all.
 | Command | Description |
 |---|---|
 | `shikisha.send_to_tab(tab, "text")` | **Give a tab an instruction and run it.** Works on this tab too (chain +1) |
-| `shikisha.ask_tab(tab_id, "text", {timeout_ms=…})` | **Ask another tab and wait for its reply.** Waits while it is busy, sends, and answers `{state, reply, round, max_rounds, same_folder, note}` once it has finished (`reply` from its conversation record). Through the pipe or MCP only |
+| `shikisha.ask_tab(tab_id, "line", "text", {timeout_ms=…})` | **Ask another tab and wait for its reply.** `line` is one short line for the chat, shown in AIConfer (refused when empty, longer than the settings allow, or more than one line); `text` is everything the tab is sent. Waits while it is busy, sends, and answers `{state, reply, round, max_rounds, same_folder, note}` once it has finished (`reply` from its conversation record). When its turn ends the tab is asked once for a line of its own, and its reply is kept as it was. Through the pipe or MCP only |
+| `shikisha.say("line")` | **Say one short line to the other tabs**, in AIConfer: something said on its own, not the answer to an ask (that line is asked for when the answer ends). Refused when empty, longer than the settings allow, or more than one line. Called from an AI tab |
+| `shikisha.react(tab_id, "👍")` | **Mark the last line a tab said** in AIConfer: one of 👍 ❤️ 🎉 👀 ✅ ❓. `person` marks the person's last line. The same mark again takes it off. Called from an AI tab |
+| `shikisha.share("commit"/"pr"/"file"/"url", target, "title")` | **Show the other tabs a card** in AIConfer: a commit in this tab's folder (`HEAD`, a hash), a pull request's address, a file inside this tab's folder, or a web address. Checked first: what does not exist is refused. `title` is optional (a commit's subject, a file's name by default). Called from an AI tab |
 | `shikisha.tab_run(tab_id, "command", {timeout_ms=…})` | **Run a command in a terminal tab and get its output.** Only in a terminal the person named with `@` in what they last sent you. Waits while the tab is busy, types the command, waits for it to finish, and returns `{state, reply}` with the output in `reply` (`PENDING` at the timeout, the output then typed into your tab). Through the pipe or MCP only |
 | `shikisha.browser_do(tab_id, "goal", {timeout_ms=…})` | **Have a web page driven toward a goal and get what it found.** Only a page the person named with `@`. Runs the page's 🗣 words run and returns `{state, reply, note}`: `DONE` with what the page shows about the goal, `STUCK` with why, `STOPPED` when someone stopped it, `PENDING` at the timeout. One page at a time. Through the pipe or MCP only |
 | `shikisha.tab_list()` | **The tabs of this desk**, as `{id, name, kind (ai / terminal / page), folder, you, named}`. `named` is a tab the person named in what they last sent the caller. Through the pipe or MCP only |

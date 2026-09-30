@@ -63,7 +63,8 @@
       "helpers": {
         "SubagentStart": "up",
         "SubagentStop": "down"
-      }
+      },
+      "turn_end": "Stop"
     },
     "verify": "{home}/.claude/projects/*/{id}.jsonl",
     "asks": {
