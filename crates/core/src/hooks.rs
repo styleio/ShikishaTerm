@@ -1611,8 +1611,20 @@ end
 -- Ask another tab and wait for its reply. Carried out by the app loop when it
 -- comes through the pipe or MCP (see asktab.rs): what runs here is only the
 -- check that the tab exists, made under the permission table like any call
-function shikisha.ask_tab(tab, text, opts)
+function shikisha.ask_tab(tab, line, text, opts)
   return { accepted = true, state = shikisha.state(tab) }
+end
+-- A tab's own words to the others, a mark on what one said, a card shown to
+-- them (see convo/confer.rs). Carried out by the app loop, which knows which
+-- tab is calling; what runs here is the permission check
+function shikisha.say(line)
+  return { accepted = true }
+end
+function shikisha.react(tab, mark)
+  return { accepted = true }
+end
+function shikisha.share(kind, target, title)
+  return { accepted = true }
 end
 -- The same wait, for a command typed into a terminal the person named
 function shikisha.tab_run(tab, command, opts)

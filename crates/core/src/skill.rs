@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -51,7 +51,7 @@ description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal
 Which command reaches it depends on what the tab is (`shikisha tab_list` lists
 them, with their kind):
 
-    shikisha ask_tab ID "what you want it to do"   # another AI: it does the work and replies
+    shikisha ask_tab ID "a line" "what to do"      # another AI: it does the work and replies
     shikisha tab_run ID "a command"                # a terminal: runs one command, prints its output
     shikisha browser_do ID "what to get done"      # a web page: driven toward the goal, prints what it found
 
@@ -78,6 +78,23 @@ to answer. If the output says `same folder: no`, it cannot see your uncommitted
 changes: commit them, or put the diff in the request. For a page, write only
 what to do on it ("type Alice in the name box and send the form"). Do not ask
 the page to report anything: what it shows at the end comes back to you.
+
+The person watches the AIs confer as a chat. `ask_tab` takes one short line
+for it before what you want done: what you would say to a colleague, one line,
+in the person's language (for example `shikisha ask_tab otter "Could you review
+the parser change?" "Review the diff in src/parser.rs on branch fix-parser ..."`).
+A line too long or on more than one line is refused with the limit; say it
+shorter. When another tab has asked you something, just answer it; as you
+finish you are asked for your line, and you reply with that line alone.
+
+To talk to the others without asking anything:
+
+    shikisha say "a line"                       # one short line in the chat
+    shikisha react ID 👍                        # mark the last line <@ID> said (👍 ❤️ 🎉 👀 ✅ ❓)
+    shikisha share commit HEAD                  # a card: commit, pr URL, file PATH, or url URL
+
+Share what the others should look at -- the commit you made, the pull request
+you opened -- rather than pasting it into a line.
 
 To repeat (for example "until the review finds nothing"): ask, act on the
 result, ask again. Stop when it reports nothing significant, or when the round

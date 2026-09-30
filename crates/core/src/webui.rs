@@ -8446,6 +8446,8 @@ function globalSections() {
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
     {id:"operate",   label:T["settings.sec.operate"],   sub:T["settings.sec.operate.sub"],   build:operateCard},
+    // AIs asking each other things, shown as a chat in the conversation panel
+    {id:"confer",    label:T["settings.sec.confer"],    sub:T["settings.sec.confer.sub"],    build:conferCard},
     {id:"aiusage",   label:T["settings.sec.aiusage"],   sub:T["settings.sec.aiusage.sub"],   build:aiUsageCard},
     {id:"api",       label:T["settings.sec.api"],       sub:T["settings.sec.api.sub"],       build:apiCard},
     {id:"resume",    label:T["settings.sec.resume"],    sub:T["settings.sec.resume.sub"],    build:resumeCard},
@@ -10211,6 +10213,21 @@ function operateCard() {
     row(T["settings.operate.on_limit"], pol, el("span", {class:"hint"}, T["settings.operate.on_limit.hint"])),
     row(T["settings.operate.settle"], num("settle_ms", 1800), el("span", {class:"hint"}, T["settings.operate.settle.hint"])),
     row(T["settings.operate.confirm"], conf, el("span", {class:"hint"}, T["settings.operate.confirm.hint"])));
+}
+
+// AIs conferring (config.confer): whether the conversation panel opens on it
+// by itself, and how long the line an AI says there may be. Both shown with
+// the value they have, the standard one included
+function conferCard() {
+  const o = current.confer = current.confer || {};
+  const max = el("input", {type:"number", min:"0", step:"1", style:"width:110px"});
+  max.value = (o.line_max ?? 80);
+  max.addEventListener("input", () => { o.line_max = max.value; refreshSave(); });
+  return card(T["settings.confer.title"],
+    el("div", {class:"hint"}, T["settings.confer.hint"]),
+    row(T["settings.confer.open"], checkDefaultOn(o, "open", T["settings.confer.open.label"]),
+      el("span", {class:"hint"}, T["settings.confer.open.hint"])),
+    row(T["settings.confer.line_max"], max, el("span", {class:"hint"}, T["settings.confer.line_max.hint"])));
 }
 
 // Who may run which command: the person's own automation in one column, an AI
@@ -16173,6 +16190,14 @@ function payload() {
                       max_depth:Math.max(1, o.max_depth ?? 1) };
     }
   }
+  // AIConfer: the length as a number, and the block left out while it says
+  // what the app does anyway (the card shows those values as they are)
+  if (out.confer) {
+    const c = out.confer;
+    const n = (c.line_max === "" || c.line_max == null) ? 80 : Math.max(0, Math.round(Number(c.line_max)) || 0);
+    if (c.open !== false && n === 80) delete out.confer;
+    else out.confer = { open: c.open !== false, line_max: n };
+  }
   // Quick commands, written in one shape whatever state the editor left them
   // in: what is the default is left out (the app reads it back the same), a
   // command never filled in is dropped, and nothing is left when nothing is
@@ -17452,7 +17477,7 @@ mod tests {
     #[test]
     fn every_page_has_what_it_calls() {
         let served = |page: &str| {
-            crate::quick::render(crate::push::inject(crate::toast::render(page.to_string())))
+            crate::shell::with_faces(crate::quick::render(crate::push::inject(crate::toast::render(page.to_string()))))
         };
         for (which, page) in [
             ("the settings page", super::PAGE),

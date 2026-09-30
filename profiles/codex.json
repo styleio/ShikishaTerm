@@ -59,7 +59,8 @@
         "PermissionRequest": "QUESTION",
         "Stop": "DONE",
         "Interrupt": "WAIT"
-      }
+      },
+      "turn_end": "Stop"
     }
   }
 }

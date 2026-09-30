@@ -15,7 +15,10 @@
 //!   sent it, with the waits and stops in between. Read on a thread.
 //! * [`marks`] -- the pins and notes a person puts on what was said. Theirs,
 //!   so kept with their settings (`config/conversation-marks.json`), not here.
+//! * [`confer`] -- AIs conferring: the short lines said beside each ask, and
+//!   the rules they are kept to.
 
+pub mod confer;
 pub mod db;
 pub mod marks;
 pub mod read;
@@ -68,6 +71,20 @@ pub fn note_stopped(tab: &str, stop: Stop) {
     note(Note::Stopped { tab: tab.to_string(), stop, at: db::now_ms() });
 }
 
+/// A decision made in a job, waiting for the main loop to put it in the
+/// conference of the desk its lead is on: the lead's id and what was decided
+static AGREED: Mutex<Vec<(String, String, i64)>> = Mutex::new(Vec::new());
+
+/// A job's decision was made (see `orch::Orchestra::make_decision`)
+pub fn note_agreed(lead: &str, text: &str) {
+    AGREED.lock().unwrap_or_else(|e| e.into_inner()).push((lead.to_string(), text.to_string(), db::now_ms()));
+}
+
+/// Every decision noted since the last look, oldest first
+pub fn take_agreed() -> Vec<(String, String, i64)> {
+    std::mem::take(&mut *AGREED.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// What was last written about a tab, so the loop that looks at every tab
 /// five times a second writes only when something changed
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +102,9 @@ pub struct Log {
     /// Whether a failure has been said already. One line, not one a tick
     said_failure: bool,
     seen: HashMap<String, Sighting>,
+    /// Goes up every time the conference changes, so a panel showing it
+    /// knows to read it again
+    pub confer_rev: u64,
 }
 
 impl Default for Log {
@@ -96,17 +116,17 @@ impl Default for Log {
 impl Log {
     pub fn open(path: &std::path::Path) -> Self {
         match db::Store::open(path) {
-            Ok(store) => Log { store: Some(store), said_failure: false, seen: HashMap::new() },
+            Ok(store) => Log { store: Some(store), said_failure: false, seen: HashMap::new(), confer_rev: 0 },
             Err(e) => {
                 crate::append_hook_log(&format!("conversations: the record could not be opened ({e:#}); nothing is recorded"));
-                Log { store: None, said_failure: true, seen: HashMap::new() }
+                Log { store: None, said_failure: true, seen: HashMap::new(), confer_rev: 0 }
             }
         }
     }
 
     /// A record that lives only as long as this value (tests)
     pub fn in_memory() -> Self {
-        Log { store: db::Store::in_memory().ok(), said_failure: false, seen: HashMap::new() }
+        Log { store: db::Store::in_memory().ok(), said_failure: false, seen: HashMap::new(), confer_rev: 0 }
     }
 
     fn write(&mut self, what: &str, f: impl FnOnce(&mut db::Store) -> anyhow::Result<()>) {
@@ -209,6 +229,69 @@ impl Log {
     /// A conversation whose record is gone (see [`db::Store::forget_conversation`])
     pub fn forget(&mut self, tab: &str, record_id: &str) {
         self.write("a forgotten conversation", |s| s.forget_conversation(tab, record_id));
+    }
+
+    /// A value written to the record, or `None` when it could not be (said
+    /// once in the log, as for every other write)
+    fn written<T>(&mut self, what: &str, f: impl FnOnce(&mut db::Store) -> anyhow::Result<T>) -> Option<T> {
+        let mut out = None;
+        self.write(what, |s| {
+            out = Some(f(s)?);
+            Ok(())
+        });
+        if out.is_some() {
+            self.confer_rev += 1;
+        }
+        out
+    }
+
+    /// An ask was sent (see [`db::Store::ask_opened`]), with the asker's line
+    pub fn ask_opened(&mut self, desk: &str, caller: Option<&str>, target: &str, line: &str, text: &str, round: u32) -> Option<i64> {
+        let at = db::now_ms();
+        let id = self.written("an ask", |s| s.ask_opened(desk, caller, target, text, round, at))?;
+        self.written("an ask's line", |s| s.line(desk, caller, line, Some(id), "ask", at));
+        Some(id)
+    }
+
+    /// How an ask ended. A reply with no line of its own is given its first
+    /// sentence, marked as taken for it
+    pub fn ask_answered(&mut self, desk: &str, ask: i64, target: &str, state: &str, reply: Option<&str>, line_max: u32) {
+        let at = db::now_ms();
+        self.written("an answer to an ask", |s| s.ask_answered(ask, state, reply, at));
+        let Some(reply) = reply.filter(|_| state == "DONE") else { return };
+        let has = self.store.as_ref().is_some_and(|s| s.ask_has_answer_line(ask).unwrap_or(true));
+        let line = confer::first_sentence(reply, line_max);
+        if !has && !line.is_empty() {
+            self.written("an answer's line", |s| s.line(desk, Some(target), &line, Some(ask), "auto", at));
+        }
+    }
+
+    /// A line said: `how` as in the `lines` table
+    pub fn line(&mut self, desk: &str, tab: Option<&str>, text: &str, ask: Option<i64>, how: &str) -> Option<i64> {
+        let at = db::now_ms();
+        self.written("a line", |s| s.line(desk, tab, text, ask, how, at))
+    }
+
+    /// The last line `tab` said on `desk`
+    pub fn last_line_of(&self, desk: &str, tab: Option<&str>) -> Option<i64> {
+        self.store.as_ref()?.last_line_of(desk, tab).ok()?
+    }
+
+    /// The desk a line was said on
+    pub fn desk_of_line(&self, line: i64) -> Option<String> {
+        self.store.as_ref()?.desk_of_line(line).ok()?
+    }
+
+    /// A mark put on a line or taken off it. `Some(true)`: it is on now
+    pub fn toggle_mark(&mut self, line: i64, by: &str, mark: &str) -> Option<bool> {
+        let at = db::now_ms();
+        self.written("a mark", |s| s.toggle_mark(line, by, mark, at))
+    }
+
+    /// A card shared
+    pub fn shared(&mut self, desk: &str, tab: &str, kind: &str, target: &str, title: &str, detail: &serde_json::Value) -> Option<i64> {
+        let at = db::now_ms();
+        self.written("a card", |s| s.shared(desk, tab, kind, target, title, detail, at))
     }
 
     /// The app is closing: every stretch of time still open ends now

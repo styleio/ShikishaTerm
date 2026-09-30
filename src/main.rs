@@ -1244,6 +1244,10 @@ fn hook_mode(kind: String) -> Result<()> {
     let mut body = String::new();
     let read = std::io::stdin().read_to_string(&mut body);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    if kind == shikisha_core::agenthook::LINE_ARG {
+        line_hook(&v);
+        return Ok(());
+    }
     // Stamped where it was said, not where it lands. Hooks are separate
     // processes told not to block, so two of them race and the loser of the
     // race is not the loser of the argument
@@ -1303,6 +1307,46 @@ fn hook_mode(kind: String) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The end of a turn, for a tab that may owe the chat a line: the one hook
+/// that answers back. The app is asked what to do (`confer_stop`, with what
+/// the tab said last), and its answer is printed the way the CLI reads one:
+/// `{"decision":"block","reason":...}` to hold the end back and tell the tab
+/// why, `{}` to let it end.
+///
+/// Anything that goes wrong lets the turn end. A hook that failed must not be
+/// the reason an AI cannot stop, and a CLI that is told nothing it can read
+/// (Codex wants JSON on every exit 0) complains in the person's terminal
+fn line_hook(v: &serde_json::Value) {
+    let go = || println!("{{}}");
+    if std::env::var(api::ENV_PIPE).is_err() {
+        return go();
+    }
+    let said = v.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default();
+    let mut client = match api::ApiClient::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            append_hook_log(&format!("hook line could not ask: {e}"));
+            return go();
+        }
+    };
+    match client.call("confer_stop", vec![said.into()]) {
+        Ok(answer) if answer["ok"] == serde_json::json!(true) => match answer["result"]["hold"].as_str() {
+            Some(reason) if !reason.trim().is_empty() => {
+                println!("{}", serde_json::json!({"decision": "block", "reason": reason}));
+            }
+            _ => go(),
+        },
+        Ok(answer) => {
+            append_hook_log(&format!("hook line refused: {answer}"));
+            go()
+        }
+        Err(e) => {
+            append_hook_log(&format!("hook line could not ask: {e}"));
+            go()
+        }
+    }
 }
 
 #[cfg(test)]

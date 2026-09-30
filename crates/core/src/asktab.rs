@@ -22,6 +22,15 @@
 //! names no record, or whose machine has none by that name, falls back to the
 //! screen.
 //!
+//! **The line for the chat.** Every ask carries a short line said beside it
+//! (`crate::convo::confer`), and so does every answer. The answer's is asked
+//! for when the tab ends its turn: a stop hook of this app's holds the end
+//! back once, with the reply the tab just gave kept as the answer, and the
+//! tab replies with the line alone ([`Ask::held`]). Taking the line from a
+//! second message rather than from a command the tab runs keeps the answer
+//! whole: an AI that ran a command after answering would say a word more
+//! about it, and that word would be what the record calls its last.
+//!
 //! **What is never lost.** The caller may stop holding the line: its client
 //! has a timeout of its own, or a person pressed Esc. The other tab goes on
 //! working all the same, and when it finishes its reply goes into the
@@ -84,6 +93,22 @@ const RECORD_AGAIN: Duration = Duration::from_secs(5);
 /// line the record has not been given yet -- measured 2026-09-30: an AI woken
 /// by its own background job was handed the answer of the turn before
 const RECORD_TRUSTED_AFTER: Duration = Duration::from_secs(30);
+
+/// How long a tab held back at the end of its turn may take to say its line
+/// before the answer goes without one. Saying a line is one short message;
+/// this is for a tab that never does
+pub const LINE_WAIT: Duration = Duration::from_secs(90);
+
+/// How long a finished-looking tab expected to call the stop hook is given
+/// for it, before its answer is read the old way. The hook runs as the turn
+/// ends and reaches the app in a fraction of a second; the screen can read as
+/// finished a moment before it does
+const HOOK_GRACE: Duration = Duration::from_secs(5);
+
+/// How many times a tab is asked for its line. Once, and once more with the
+/// reason when what it said could not be taken; after that its first
+/// sentence is used
+pub const LINE_TRIES: u8 = 2;
 
 /// How much of what was sent is looked for in the record, to find the turn
 /// the reply belongs to. Enough to tell two questions apart, short enough to
@@ -152,6 +177,25 @@ pub struct Ask {
     /// The desk it was asked on, by id: its tabs are the ones named, whichever
     /// desk is in front now. `None` is the desk in front
     pub desk: Option<String>,
+    /// The asker's line for the chat (`crate::convo::confer`). Empty for a
+    /// command typed into a terminal
+    pub line: String,
+    /// The ask as the conference keeps it, once sent
+    pub ask_id: Option<i64>,
+    /// The tab asked calls this app's stop hook as its turn ends (see
+    /// `agenthook::LINE_ARG`): its answer waits a moment for it
+    pub hook_expected: bool,
+    /// The stop hook has been heard from for this ask
+    pub hook_seen: bool,
+    /// The reply the tab gave as its turn first ended, kept while it is asked
+    /// for its line: the answer, whatever it says next
+    pub held: Option<String>,
+    /// When the reply was kept
+    pub held_at: Option<Instant>,
+    /// How many times the tab has been asked for its line
+    pub line_asks: u8,
+    /// The answer has its line, or will not get one of its own
+    pub lined: bool,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -390,6 +434,14 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         far_len: None,
         record_unsure: false,
         desk: None,
+        line: String::new(),
+        ask_id: None,
+        hook_expected: false,
+        hook_seen: false,
+        held: None,
+        held_at: None,
+        line_asks: 0,
+        lined: false,
     }
 }
 
@@ -406,35 +458,123 @@ pub enum Step {
     Drop,
 }
 
-/// `ask_tab(tab, text, {timeout_ms})`, taken apart. Only a tab's id names a
-/// tab here: a position changes when tabs are moved, and a display name is
-/// not unique
+/// `tab_run(tab, command, {timeout_ms})` and `browser_do(tab, goal, ...)`,
+/// taken apart. Only a tab's id names a tab here: a position changes when
+/// tabs are moved, and a display name is not unique
 pub fn parse(params: &[Value]) -> Result<(String, String, Duration), String> {
-    let target = params
-        .first()
-        .and_then(Value::as_str)
-        .filter(|s| !s.trim().is_empty())
-        .ok_or("ask_tab needs the tab's id first")?
-        .trim()
-        // Handed over the way it appears in a message -- `<@codex>` -- or bare
-        .trim_start_matches('<')
-        .trim_start_matches('@')
-        .trim_end_matches('>')
-        .to_string();
+    let target = target_of(params, "the command")?;
     let text = params
         .get(1)
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
-        .ok_or("ask_tab needs what to say second")?
+        .ok_or("this needs what to do second")?
         .to_string();
-    let wait = params
-        .get(2)
+    Ok((target, text, wait_of(params.get(2))))
+}
+
+/// How an ask is written, for every refusal that has to say it
+pub const ASK_FORM: &str = "ask_tab ID \"one short line for the chat\" \"everything you want it to do\"";
+
+/// `ask_tab(tab, line, text, {timeout_ms})`, taken apart: the tab, the line
+/// said beside the ask for the chat (checked against `line_max`, see
+/// `crate::convo::confer::check_line`), everything the tab is sent, and how
+/// long the caller waits.
+///
+/// The line comes second, before the text, the way a subject comes before a
+/// letter. An ask written the old way, with the text second and nothing or
+/// the options third, is refused with the new form rather than read in a way
+/// nobody meant
+pub fn parse_ask(params: &[Value], line_max: u32) -> Result<(String, String, String, Duration), String> {
+    let target = target_of(params, "ask_tab")?;
+    let text = match params.get(2) {
+        Some(Value::String(s)) if !s.trim().is_empty() => s.clone(),
+        Some(Value::String(_)) => return Err(format!("ask_tab needs what to ask third: {ASK_FORM}")),
+        _ => {
+            return Err(format!(
+                "ask_tab needs a short line for the chat second and what to ask third: {ASK_FORM}"
+            ));
+        }
+    };
+    let line = params.get(1).and_then(Value::as_str).unwrap_or_default();
+    let line = crate::convo::confer::check_line(line, line_max, "the line (second)")?;
+    Ok((target, line, text, wait_of(params.get(3))))
+}
+
+/// The tab named first, handed over the way it appears in a message --
+/// `<@codex>` -- or bare
+fn target_of(params: &[Value], what: &str) -> Result<String, String> {
+    Ok(params
+        .first()
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| format!("{what} needs the tab's id first"))?
+        .trim()
+        .trim_start_matches('<')
+        .trim_start_matches('@')
+        .trim_end_matches('>')
+        .to_string())
+}
+
+/// How long a caller is held: `{timeout_ms}` if it says, and never past the line
+fn wait_of(options: Option<&Value>) -> Duration {
+    options
         .and_then(|o| o.get("timeout_ms"))
         .and_then(Value::as_u64)
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_WAIT)
-        .min(LINE_HOLD - Duration::from_secs(60));
-    Ok((target, text, wait))
+        .min(LINE_HOLD - Duration::from_secs(60))
+}
+
+/// What the stop hook of a tab ending its turn is answered, for the ask it
+/// was answering (see [`Ask::held`]). `first` is what the tab said last;
+/// `line_max` the settings' limit. `Some(reason)`: hold the end back, and
+/// the reason is what the tab is told. `Hear::Line` is a line the tab said
+#[derive(Debug, PartialEq, Eq)]
+pub enum Hear {
+    /// Let the turn end
+    Go,
+    /// Hold it: the tab is told this
+    Hold(String),
+    /// Let it end: this is the answer's line
+    Line(String),
+}
+
+impl Ask {
+    /// The tab asked ended its turn, saying `said` last
+    pub fn hear_stop(&mut self, said: &str, line_max: u32) -> Hear {
+        self.hook_seen = true;
+        if self.lined || self.run.is_some() {
+            return Hear::Go;
+        }
+        let said = said.trim();
+        let Some(_) = self.held else {
+            if said.is_empty() {
+                // Nothing to pass on; the answer is read the ordinary way
+                return Hear::Go;
+            }
+            self.held = Some(said.to_string());
+            self.held_at = Some(Instant::now());
+            self.line_asks = 1;
+            return Hear::Hold(crate::convo::confer::stop_reason(line_max));
+        };
+        // A line is said the way a person says one: quotes or ticks around it
+        // are not part of it
+        let bare = said.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '「' | '」' | '“' | '”')).trim();
+        match crate::convo::confer::check_line(bare, line_max, "That line") {
+            Ok(line) => {
+                self.lined = true;
+                Hear::Line(line)
+            }
+            Err(why) if self.line_asks < LINE_TRIES => {
+                self.line_asks += 1;
+                Hear::Hold(format!("{why}. Reply again with only the line."))
+            }
+            Err(_) => {
+                self.lined = true;
+                Hear::Go
+            }
+        }
+    }
 }
 
 /// Words with their runs of space made single, for finding one text in another
@@ -617,6 +757,18 @@ pub fn step(
         }
         return Step::Nothing;
     }
+    // The tab gave its answer and is saying its line: the answer is the reply
+    // kept then, and waits only for the line -- or for the tab to stop in a
+    // way that says something of its own
+    if let Some(reply) = a.held.clone()
+        && !matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed)
+    {
+        if a.lined || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
+            a.lined = true;
+            return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
+        }
+        return Step::Nothing;
+    }
     // Sent: watch it work
     if t.state != TabState::Busy {
         a.busy_since = None;
@@ -745,6 +897,11 @@ pub fn step(
                 Step::Nothing
             };
         }
+        // A tab that calls the stop hook is given a moment to: the screen can
+        // read as finished just before the turn's end reaches the hook
+        if a.hook_expected && !a.hook_seen && since.elapsed() < HOOK_GRACE {
+            return Step::Nothing;
+        }
         match a.source(t) {
             Source::Here(_) | Source::Far(_) => {
                 if since.elapsed() >= SETTLE {
@@ -868,7 +1025,7 @@ pub fn wrong_command(command: &str, id: &str, kind: Kind) -> Option<String> {
         return None;
     }
     let what = match kind {
-        Kind::Ai => format!("<@{id}> is an AI: use ask_tab (`shikisha ask_tab {id} \"what you want it to do\"`)"),
+        Kind::Ai => format!("<@{id}> is an AI: use ask_tab (`shikisha ask_tab {id} \"a line for the chat\" \"what you want it to do\"`)"),
         Kind::Shell => {
             format!("<@{id}> is a terminal, not an AI: use tab_run (`shikisha tab_run {id} \"a command\"`)")
         }
@@ -946,6 +1103,62 @@ mod tests {
 
     fn said(role: &str, text: &str) -> Value {
         json!({"type": role, "message": {"role": role, "content": [{"type": "text", "text": text}]}})
+    }
+
+    #[test]
+    fn an_ask_carries_a_line_for_the_chat_and_the_old_form_is_refused_with_the_new() {
+        let (t, line, text, _) = parse_ask(&[json!("<@otter>"), json!(" Review this? "), json!("the diff in src/p.rs")], 80).unwrap();
+        assert_eq!((t.as_str(), line.as_str(), text.as_str()), ("otter", "Review this?", "the diff in src/p.rs"));
+        let old = parse_ask(&[json!("otter"), json!("review the diff in src/p.rs")], 80).unwrap_err();
+        assert!(old.contains(ASK_FORM), "{old}");
+        let old = parse_ask(&[json!("otter"), json!("review"), json!({"timeout_ms": 5})], 80).unwrap_err();
+        assert!(old.contains(ASK_FORM), "the options where the text now goes: {old}");
+        let long = parse_ask(&[json!("otter"), json!("x".repeat(81)), json!("y")], 80).unwrap_err();
+        assert!(long.contains("the most is 80"), "{long}");
+        let (_, _, _, wait) = parse_ask(&[json!("otter"), json!("a"), json!("b"), json!({"timeout_ms": 5000})], 80).unwrap();
+        assert_eq!(wait, Duration::from_millis(5000));
+        // A command keeps its old form
+        assert_eq!(parse(&[json!("sh"), json!("make")]).unwrap().1, "make");
+    }
+
+    fn sent_ask() -> Ask {
+        let mut a = handing("caller".into(), "otter".into(), String::new());
+        a.phase = Phase::Waiting;
+        a.text = "review it".into();
+        a.deadline = Instant::now() + Duration::from_secs(600);
+        a.hook_expected = true;
+        a
+    }
+
+    #[test]
+    fn the_end_of_a_turn_keeps_the_reply_and_asks_once_for_the_line() {
+        let mut a = sent_ask();
+        let Hear::Hold(why) = a.hear_stop("Two findings: the parser drops the tail; the test is missing.", 80) else {
+            panic!("the first end is held back")
+        };
+        assert!(why.contains("only one short line") && why.contains("at most 80 characters"), "{why}");
+        assert_eq!(a.held.as_deref(), Some("Two findings: the parser drops the tail; the test is missing."));
+        // Said too long: asked again with the reason, the reply kept as it was
+        let Hear::Hold(again) = a.hear_stop(&"x".repeat(200), 80) else { panic!("asked again") };
+        assert!(again.contains("the most is 80"), "{again}");
+        assert_eq!(a.hear_stop("\"Two small things, both fixable.\"", 80), Hear::Line("Two small things, both fixable.".into()));
+        assert!(a.lined);
+        assert!(a.held.as_deref().unwrap().starts_with("Two findings"), "the answer is the reply, not the line");
+        assert_eq!(a.hear_stop("anything", 80), Hear::Go, "once it has its line, the turn ends");
+    }
+
+    #[test]
+    fn a_line_that_cannot_be_taken_twice_lets_the_turn_end() {
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The answer.", 80), Hear::Hold(_)));
+        assert!(matches!(a.hear_stop("one\ntwo", 80), Hear::Hold(_)));
+        assert_eq!(a.hear_stop("one\ntwo", 80), Hear::Go);
+        assert!(a.lined, "no line of its own: its first sentence is taken");
+        let mut quiet = sent_ask();
+        assert_eq!(quiet.hear_stop("   ", 80), Hear::Go, "nothing said, nothing to keep");
+        let mut run = sent_ask();
+        run.run = Some(RunFrom::default());
+        assert_eq!(run.hear_stop("done", 80), Hear::Go, "a terminal's command owes no line");
     }
 
     /// The night of 2026-09-30: a Codex tab finished at 00:58 and its screen

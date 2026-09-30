@@ -39,6 +39,16 @@ const MARK: &str = "--hook";
 /// place
 const TIMEOUT_S: u32 = 3;
 
+/// What the one hook that answers back is run with: the end of a turn, where
+/// a tab that was asked something by another tab is asked for its line for
+/// the chat (`main::hook_mode`, `asktab::Ask::hear_stop`)
+pub const LINE_ARG: &str = "line";
+
+/// How long a CLI waits for that one, in seconds. It is waited for -- it
+/// decides whether the turn ends -- and the app answers it at once; this is
+/// the most a stuck app can cost a turn
+const LINE_TIMEOUT_S: u32 = 10;
+
 /// One event we ask a CLI to report, and what our end makes of it.
 ///
 /// The meaning travels in the command line rather than being looked up when
@@ -62,6 +72,8 @@ pub struct Target {
     pub format: HookFormat,
     /// How long the CLI may wait, already in the unit that CLI counts in
     pub timeout: u32,
+    /// The same, for the hook that answers back ([`LINE_ARG`])
+    pub line_timeout: u32,
     pub entries: Vec<Entry>,
     /// How the CLI is told a hook written for it is agreed to ([`approve`])
     pub trust: Option<HookTrust>,
@@ -120,11 +132,15 @@ pub fn targets() -> Vec<Target> {
                     )),
                 }
             }
+            if let Some(event) = hook.turn_end.as_ref() {
+                entries.push(Entry { event: event.clone(), arg: LINE_ARG.to_string() });
+            }
             Some(Target {
                 name: p.name.clone(),
                 file: expand(&hook.file),
                 format: hook.format,
                 timeout: hook.timeout_unit.from_seconds(TIMEOUT_S),
+                line_timeout: hook.timeout_unit.from_seconds(LINE_TIMEOUT_S),
                 entries,
                 trust: hook.trust,
             })
@@ -210,9 +226,20 @@ fn spaceless(path: &Path) -> Option<String> {
 /// `async` is not a nicety. A hook is a program the CLI runs and waits for,
 /// and these fire on every turn and every permission dialog -- a fifth of a
 /// second of process startup, charged to the person's turn, for a report
-/// nobody is waiting on. Nothing here answers back, so nothing here should be
-/// waited for. The timeout stays for the CLIs that still honour one.
+/// nobody is waiting on. The one exception is [`LINE_ARG`]: it answers back,
+/// and a CLI ignores what a hook it did not wait for says. The timeout stays
+/// for the CLIs that still honour one.
 fn handler(format: HookFormat, timeout: u32, arg: &str, program: &Path) -> serde_json::Value {
+    let mut h = handler_of(format, timeout, arg, program);
+    if arg == LINE_ARG
+        && let Some(o) = h.as_object_mut()
+    {
+        o.shift_remove("async");
+    }
+    h
+}
+
+fn handler_of(format: HookFormat, timeout: u32, arg: &str, program: &Path) -> serde_json::Value {
     let exe = program.display().to_string();
     match format {
         // Nothing quoted, and a path chosen so that nothing needs to be
@@ -255,6 +282,24 @@ fn is_ours(h: &serde_json::Value) -> bool {
         .unwrap_or_default();
     let both = format!("{line} {args}");
     both.contains(MARK) && both.to_ascii_lowercase().contains("shikisha")
+}
+
+/// Whether a handler of ours runs this app with `arg` (`--hook <arg>`)
+fn carries(h: &serde_json::Value, arg: &str) -> bool {
+    let line = h.get("command").and_then(|c| c.as_str()).unwrap_or_default();
+    let args = h
+        .get("args")
+        .and_then(|a| a.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    let both = format!("{line} {args}");
+    both.match_indices(MARK).any(|(at, _)| {
+        both[at + MARK.len()..]
+            .trim_start()
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '"' | '\''))
+            .next()
+            == Some(arg)
+    })
 }
 
 /// Whether a handler of ours is exactly one of the ones we would write today
@@ -338,27 +383,29 @@ pub fn new_events(t: &Target) -> Vec<String> {
 
 /// [`new_events`] of a file already read, from this PC or another machine
 fn new_events_in(doc: &serde_json::Value, t: &Target) -> Vec<String> {
-    let ours_in = |event: &str| {
+    let ours_in = |event: &str| -> Vec<serde_json::Value> {
         doc.pointer(&format!("/hooks/{event}"))
             .and_then(|g| g.as_array())
             .into_iter()
             .flatten()
             .flat_map(|group| group.pointer("/hooks").and_then(|h| h.as_array()).cloned().unwrap_or_default())
-            .any(|h| is_ours(&h))
+            .filter(is_ours)
+            .collect()
     };
-    let wanted: Vec<&str> = {
-        let mut seen: Vec<&str> = Vec::new();
-        for e in &t.entries {
-            if !seen.contains(&e.event.as_str()) {
-                seen.push(&e.event);
-            }
-        }
-        seen
-    };
-    if !wanted.iter().any(|e| ours_in(e)) {
+    if !t.entries.iter().any(|e| !ours_in(&e.event).is_empty()) {
         return Vec::new();
     }
-    wanted.into_iter().filter(|e| !ours_in(e)).map(str::to_string).collect()
+    // An event is new when something is asked of it that no entry of ours
+    // there does: a whole event, or a new thing asked of one already carried
+    // (the end of a turn asked to answer back as well as to report)
+    let mut added: Vec<String> = Vec::new();
+    for e in &t.entries {
+        let new = !ours_in(&e.event).iter().any(|h| carries(h, &e.arg));
+        if new && !added.contains(&e.event) {
+            added.push(e.event.clone());
+        }
+    }
+    added
 }
 
 /// Everything we want from one event, gathered.
@@ -370,7 +417,8 @@ fn new_events_in(doc: &serde_json::Value, t: &Target) -> Vec<String> {
 fn wanted(t: &Target, program: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
     let mut out: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
     for entry in &t.entries {
-        let h = handler(t.format, t.timeout, &entry.arg, program);
+        let wait = if entry.arg == LINE_ARG { t.line_timeout } else { t.timeout };
+        let h = handler(t.format, wait, &entry.arg, program);
         match out.iter_mut().find(|(event, _)| *event == entry.event) {
             Some((_, list)) => list.push(h),
             None => out.push((entry.event.clone(), vec![h])),
@@ -1277,7 +1325,11 @@ pub fn far_targets() -> Vec<(Target, String)> {
         .into_iter()
         .filter_map(|p| {
             let file = p.resume.as_ref()?.hook.as_ref()?.file.clone();
-            let t = targets().into_iter().find(|t| t.name == p.name)?;
+            let mut t = targets().into_iter().find(|t| t.name == p.name)?;
+            // What a hook there says reaches this app one way, as a line on
+            // the terminal: nothing goes back to it, so nothing is asked of
+            // it that would need an answer
+            t.entries.retain(|e| e.arg != LINE_ARG);
             Some((t, file))
         })
         .collect()
@@ -1643,6 +1695,7 @@ mod tests {
             file: PathBuf::from("unused"),
             format: HookFormat::Shell,
             timeout: TIMEOUT_S,
+            line_timeout: LINE_TIMEOUT_S,
             trust: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
@@ -1665,6 +1718,7 @@ mod tests {
             file: PathBuf::from("unused"),
             format: HookFormat::Shell,
             timeout: TIMEOUT_S,
+            line_timeout: LINE_TIMEOUT_S,
             trust: None,
             entries: events.iter().map(|(e, a)| Entry { event: (*e).into(), arg: (*a).into() }).collect(),
         }
@@ -1748,6 +1802,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format,
             timeout: TIMEOUT_S,
+            line_timeout: LINE_TIMEOUT_S,
             trust: None,
             entries: vec![Entry { event: "SessionStart".into(), arg: "session".into() }],
         }
@@ -1771,6 +1826,7 @@ mod tests {
             file: dir.join("settings.json"),
             format: HookFormat::Args,
             timeout: TIMEOUT_S,
+            line_timeout: LINE_TIMEOUT_S,
             trust: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
@@ -1795,6 +1851,22 @@ mod tests {
         assert_eq!(new_events(&newer), vec!["SubagentStart".to_string(), "SubagentStop".into()]);
         install(&newer).unwrap();
         assert!(new_events(&newer).is_empty(), "written, the events are still said to be new");
+        // Something new asked of an event already carried is new too: the
+        // end of a turn asked to answer back, as well as to report
+        let answers = Target {
+            entries: [newer.entries.clone(), vec![Entry { event: "Stop".into(), arg: LINE_ARG.into() }]].concat(),
+            ..newer.clone()
+        };
+        assert_eq!(new_events(&answers), vec!["Stop".to_string()]);
+        install(&answers).unwrap();
+        assert!(new_events(&answers).is_empty());
+        assert_eq!(status(&answers), Status::Installed);
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&answers.file).unwrap()).unwrap();
+        let stop = doc["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+        let line = stop.iter().find(|h| carries(h, LINE_ARG)).expect("the line hook is written");
+        assert!(line.get("async").is_none(), "a hook that answers back is waited for");
+        assert_eq!(line["timeout"], LINE_TIMEOUT_S);
+        assert!(stop.iter().any(|h| carries(h, "state:DONE") && h["async"] == true), "the report stays out of the way");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1942,6 +2014,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format: HookFormat::Bare,
             timeout: 3_000,
+            line_timeout: 10_000,
             trust: None,
             entries: vec![
                 Entry { event: "BeforeAgent".into(), arg: "session".into() },
@@ -1990,6 +2063,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format: HookFormat::Args,
             timeout: TIMEOUT_S,
+            line_timeout: LINE_TIMEOUT_S,
             trust: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },

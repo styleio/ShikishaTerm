@@ -89,6 +89,17 @@ What you choose is remembered for each kind of tab, so going from a page back to
 brings back what you were reading beside the AI. Something a button calls up (the search of
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
 
+**Chat** reads three ways. **AIConfer** is what the AIs of this desk say to each other when
+one asks another (after you name a tab with `@`, or on its own): one short line each, like a
+chat, with a face for every tab and what each is doing along the top. Under each line,
+"What was asked" and "The whole answer" open the full text. Press a line to put a mark on it
+(👍 ❤️ 🎉 👀 ✅ ❓); a card opens the commit, pull request, file or page an AI shared; a
+decision made in a job shows as "Agreed". A line marked "first sentence" is an answer whose
+AI wrote no line of its own. AIConfer opens by itself when one AI asks another (not while
+you are using the window, and on a phone it is only chosen); turn that off, or change how
+long a line may be, under Settings > AIConfer. **This conversation** is the tab in view, and
+**Every conversation** searches them all.
+
 **The bar above the input box** is the convenience bar: one press sends a stock
 instruction to the AI in view (continue, explain, review, fix). The small picker at
 its left chooses what the bar holds: the stock replies, your own quick actions, the
@@ -333,6 +344,7 @@ settings screen, so it cannot fall behind.
 - **Where it runs** — Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 - **Server names** — Tell production from staging at a glance
 - **Limits on handing work** — How far an AI may go when it hands work to other tabs or drives a page
+- **AIConfer** — AIs asking each other things, shown as a chat
 - **AI allowance** — Each AI subscription's allowances, and when they come back
 - **External control** — Let programs drive this app
 - **Carrying conversations** — What survives a restart
