@@ -259,18 +259,26 @@ mod screen_push_tests {
 /// The worktrees git knows each project has and the desk does not list, by
 /// project. `on_desk` is every folder the list holds; `kept` the projects whose
 /// found worktrees somebody chose to keep hidden, which are still said -- as
-/// kept -- so the project's heading can offer them back
+/// kept -- so the project's heading can offer them back. One an AI tool made
+/// inside the checkout for its own helper is not somebody's work and is not
+/// offered (`repo::tool_scratch`), unless it stands where `bases` -- the
+/// places projects chose for their worktrees -- say worktrees go
 fn discovered_of(
     cuts: &std::collections::HashMap<std::path::PathBuf, Vec<(std::path::PathBuf, Option<String>)>>,
     on_desk: &[std::path::PathBuf],
     kept: &std::collections::BTreeSet<String>,
+    bases: &[std::path::PathBuf],
 ) -> Vec<crate::uistate::DiscoveredState> {
     let mut out: Vec<crate::uistate::DiscoveredState> = cuts
         .iter()
         .filter_map(|(family, found)| {
+            // `<checkout>\.git` -> `<checkout>`; a bare repository has no
+            // checkout for a tool to keep anything inside
+            let checkout = family.parent().filter(|_| family.file_name().is_some_and(|n| n == ".git"));
             let away: Vec<crate::uistate::FoundWorktree> = found
                 .iter()
                 .filter(|(f, _)| !on_desk.iter().any(|d| crate::uistate::same_folder(d, f)))
+                .filter(|(f, _)| !checkout.is_some_and(|c| crate::repo::tool_scratch(c, f, bases)))
                 .map(|(f, b)| crate::uistate::FoundWorktree { folder: f.display().to_string(), branch: b.clone() })
                 .collect();
             let family = family.display().to_string();
@@ -487,7 +495,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         .chain(put_away.iter().cloned())
         .chain(ui.making.iter().map(|m| std::path::PathBuf::from(&m.folder)))
         .collect();
-    let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept);
+    let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept, &ui.worktree_bases);
     // A folder on another machine joins its project's household there, as
     // the settings say it -- the checkout at the head, its worktrees under it
     let mut far_joined = false;
@@ -1156,14 +1164,40 @@ mod drawn_away_tests {
         let login = if cfg!(windows) { r"c:/wt/APP-LOGIN" } else { r"C:\wt\app-login" };
         let on_desk = vec![PathBuf::from(login), PathBuf::from(r"C:\wt\other-a")];
         let none_kept = std::collections::BTreeSet::new();
-        let found = super::discovered_of(&cuts, &on_desk, &none_kept);
+        let found = super::discovered_of(&cuts, &on_desk, &none_kept, &[]);
         assert_eq!(found.len(), 1, "a project with nothing to offer is offered: {found:?}");
         assert_eq!(found[0].found.len(), 1);
         assert_eq!(found[0].found[0].folder, r"C:\wt\app-fix");
         assert!(!found[0].kept);
         let kept = std::collections::BTreeSet::from([family.display().to_string()]);
-        let again = super::discovered_of(&cuts, &on_desk, &kept);
+        let again = super::discovered_of(&cuts, &on_desk, &kept, &[]);
         assert!(again[0].kept, "a kept project is not said to be kept");
+    }
+
+    /// A worktree an AI tool made inside the checkout for a helper of its own
+    /// is the tool's scratch paper, not a worktree somebody might want on the
+    /// desk: it is neither offered nor counted -- a project whose only found
+    /// ones are those says nothing. Put where the project chose to keep its
+    /// worktrees, the same folder is somebody's and is offered
+    #[test]
+    fn a_worktree_an_ai_tool_made_for_its_helper_is_not_offered() {
+        use std::path::PathBuf;
+        let p = |s: &str| PathBuf::from(crate::local_path(s));
+        let family = p(r"D:\work\app\.git");
+        let helper = p(r"D:\work\app\.claude\worktrees\agent-a1b2c3");
+        let theirs = p(r"D:\wt\app-login");
+        let cuts = std::collections::HashMap::from([(family.clone(), vec![(helper.clone(), None), (theirs.clone(), None)])]);
+        let none = std::collections::BTreeSet::new();
+        let found = super::discovered_of(&cuts, &[], &none, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].found.len(), 1, "the helper's worktree was offered: {found:?}");
+        assert_eq!(found[0].found[0].folder, theirs.display().to_string());
+        // Nothing but the helper's: nothing to say about the project
+        let only = std::collections::HashMap::from([(family.clone(), vec![(helper.clone(), None)])]);
+        assert!(super::discovered_of(&only, &[], &none, &[]).is_empty());
+        // The project said its worktrees go there
+        let chosen = [p(r"D:\work\app\.claude\worktrees")];
+        assert_eq!(super::discovered_of(&only, &[], &none, &chosen)[0].found.len(), 1);
     }
 
     /// A folder put out of sight keeps its rows in the list -- they are simply
@@ -1271,12 +1305,12 @@ mod drawn_away_tests {
         // The list `ui_state_of` hands over: the drawn folders and the ones
         // put out of sight, which are on the desk just the same
         assert!(
-            super::discovered_of(&cuts, &[main.clone(), away.clone()], &kept).is_empty(),
+            super::discovered_of(&cuts, &[main.clone(), away.clone()], &kept, &[]).is_empty(),
             "the folder came back as a worktree nobody had"
         );
         // Leave it out -- draw the list from what is on screen alone -- and
         // the project offers the folder straight back. That was the bug
-        let found = super::discovered_of(&cuts, &[main.clone()], &kept);
+        let found = super::discovered_of(&cuts, &[main.clone()], &kept, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].found[0].folder, away.display().to_string());
     }
@@ -1686,6 +1720,11 @@ pub struct Ui {
     /// Of those, the ones the settings say which project they are in: (the
     /// folder, the project's name)
     pub folder_projects: Vec<(std::path::PathBuf, String)>,
+    /// The places the projects' settings say their worktrees go on this PC,
+    /// where they say one (`worktree::chosen_base`). A worktree in one of
+    /// these is somebody's choice, even inside a place an AI tool keeps for
+    /// itself (`repo::tool_scratch`)
+    pub worktree_bases: Vec<std::path::PathBuf>,
     /// Of those, the ones made for an issue or a pull request: (the folder, what for)
     pub folder_items: Vec<(std::path::PathBuf, String)>,
     /// Of those, what each says is being done in it, and whether that is

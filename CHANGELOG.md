@@ -9,6 +9,13 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A worktree an AI made for its own helper is no longer offered as one of
+  yours.** Claude Code keeps a worktree inside the project
+  (`.claude\worktrees\agent-…`) for each helper it runs apart. Those were
+  counted among the project's found worktrees and offered for the desk, and
+  a pull request's branch could be opened in one. They are now left to the
+  tool. A project whose settings say its worktrees go in that very place
+  keeps them as its own.
 - **A page's DevTools stands in the page's folder.** Opened from the phone
   (and from the window alike), it was listed apart from every folder, far
   from the page it inspects. It now stands under the page's folder, and

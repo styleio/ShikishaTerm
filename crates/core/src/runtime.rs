@@ -5728,6 +5728,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| place(f).zip(f.work_item.clone())).collect())
                 .unwrap_or_default(),
+            worktree_bases: desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default(),
             folder_labels: desks
                 .get(desk_index)
                 .map(|w| {
@@ -7975,7 +7976,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                     continue;
                 }
-                let dir = source.and_then(|s| crate::github::head_folder(&s.dir, &head));
+                let dir = source.and_then(|s| crate::github::head_folder(&s.dir, &head, &desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default()));
                 let base = format!("origin/{into}");
                 let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
                 let say = |mut js: serde_json::Value| {
@@ -8180,7 +8181,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                     continue;
                 }
-                match sources.iter().find(|s| s.name == project).and_then(|s| crate::github::head_folder(&s.dir, &head)) {
+                match sources.iter().find(|s| s.name == project).and_then(|s| crate::github::head_folder(&s.dir, &head, &desks.get(desk_index).map(|d| crate::worktree::chosen_bases(&d.projects)).unwrap_or_default())) {
                     None => {
                         let js = serde_json::json!({"act": act, "ok": false, "seq": seq, "project": project, "number": number,
                             "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])}).to_string();
