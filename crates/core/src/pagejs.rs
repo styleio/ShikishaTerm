@@ -542,7 +542,7 @@ pub const AUTOMATION: &str = r##"
   // way down instead, so the wheel and a finger's scroll still move the page
   // and the thing wanted can be brought into view first.
   let pickOn = false, pickHost = null, pickRoot = null, pickFrame = null, pickTag = null, pickSay = null;
-  let pickHint = "", pickCount = 0, pickUnder = null;
+  let pickHint = "", pickCount = 0, pickUnder = null, pickSoon = "", pickSoonTimer = 0;
   // What the markup and the words are cut to. One component's markup fits in
   // 3000 characters, and a handful of picks together stay far below what an
   // AI's input takes in one paste. 160 characters is two lines of a button's
@@ -712,13 +712,26 @@ pub const AUTOMATION: &str = r##"
   }
   // `hint` is the line shown at the top, in the person's language; `{n}` in it
   // becomes how many have been picked since arming
-  window.__shikisha_pick = function (on, hint) {
+  window.__shikisha_pick = function (on, hint, soon) {
     if (!on) { pickStop(false); return; }
     pickOn = true;
     pickCount = 0;
     pickHint = hint || "";
+    pickSoon = soon || "";
     pickBuild();
     pickSayNow();
+  };
+  // What the app did with the last press: counted only once it was kept, so
+  // the number here is the panel's. A press it turned away for coming too
+  // soon after the one before is said here for a moment, where the finger is
+  window.__shikisha_pick_heard = function (said) {
+    if (!pickOn) return;
+    if (said === "kept") { pickCount++; pickSayNow(); return; }
+    if (said === "soon" && pickSay && pickSoon) {
+      pickSay.textContent = pickSoon;
+      clearTimeout(pickSoonTimer);
+      pickSoonTimer = setTimeout(pickSayNow, 1500);
+    }
   };
   const pickSwallow = (e) => {
     if (!pickOn || !e.isTrusted) return;
@@ -737,12 +750,13 @@ pub const AUTOMATION: &str = r##"
     if (!pickOn || !e.isTrusted) return;
     e.preventDefault();
     e.stopImmediatePropagation();
+    // The second press of a double-click is the same pick again, not a new
+    // one: the browser counts the presses in a row for us
+    if (e.detail > 1) return;
     // A tap arrives without a move before it, so the point is looked at again
     const el = pickAt(e.clientX, e.clientY);
     if (!el) return;
     pickDraw(el);
-    pickCount++;
-    pickSayNow();
     if (pickFrame) {
       pickFrame.style.background = "rgba(63,167,255,.35)";
       setTimeout(() => { if (pickFrame) pickFrame.style.background = "rgba(63,167,255,.12)"; }, 250);
@@ -805,5 +819,20 @@ mod tests {
         let body = &super::AUTOMATION[at..at + 400];
         assert!(body.contains("el instanceof HTMLInputElement"), "it decides by whether there is a value");
         assert!(!body.contains("el.value !== undefined"), "a button is read as an empty string");
+    }
+
+    /// The number of picks the page shows is the number the app kept: a press
+    /// is counted when the app says it was kept, not when the page sends it,
+    /// and the second press of a double-click is not sent at all
+    #[test]
+    fn the_page_counts_the_picks_the_app_kept() {
+        let at = super::AUTOMATION.find("  addEventListener(\"click\", (e) => {").expect("the picking click is missing");
+        let click = &super::AUTOMATION[at..at + 1200];
+        assert!(!click.contains("pickCount++"), "the page counts a press before the app has kept it");
+        assert!(click.contains("e.detail > 1"), "a double-click is sent as two picks");
+        let heard = super::AUTOMATION
+            .find("window.__shikisha_pick_heard = function")
+            .expect("the page is never told what became of a press");
+        assert!(super::AUTOMATION[heard..heard + 400].contains("pickCount++"));
     }
 }

@@ -1152,7 +1152,10 @@ impl Capabilities {
                 true => "tui.pick.page_hint_touch",
                 false => "tui.pick.page_hint",
             }));
-            self.with(name, |b, to| b.eval_in(to, &format!("window.__shikisha_pick && window.__shikisha_pick(true, {hint});")).map(|_| ()))?;
+            let soon = serde_json::Value::String(crate::i18n::t("tui.pick.page_soon"));
+            self.with(name, |b, to| {
+                b.eval_in(to, &format!("window.__shikisha_pick && window.__shikisha_pick(true, {hint}, {soon});")).map(|_| ())
+            })?;
             self.picks.borrow_mut().entry(key).or_default().armed = true;
             Ok(())
         } else {
@@ -1179,6 +1182,25 @@ impl Capabilities {
     /// person's Escape: picking ends there. Answers the page's display name
     /// and what became of the report, for the log and the person
     pub fn note_picked(&self, child: &str, item: serde_json::Value) -> PickHeard {
+        let heard = self.hear_pick(child, item);
+        // The page counts what was kept, not what it sent: told here, after
+        // the decision, so its number is the panel's number. A press turned
+        // away for coming too soon is said on the page, where the finger is
+        let said = match &heard {
+            PickHeard::Kept(_) => Some("'kept'"),
+            PickHeard::Refused(_, crate::pick::Refused::TooSoon) => Some("'soon'"),
+            PickHeard::Refused(_, _) => Some("'no'"),
+            _ => None,
+        };
+        if let Some(said) = said
+            && let Some(h) = self.host.borrow().as_ref()
+        {
+            let _ = h.eval_in(Some(child), &format!("window.__shikisha_pick_heard && window.__shikisha_pick_heard({said});"));
+        }
+        heard
+    }
+
+    fn hear_pick(&self, child: &str, item: serde_json::Value) -> PickHeard {
         let Some(name) = self.name_of_child(child) else { return PickHeard::Unasked };
         let mut picks = self.picks.borrow_mut();
         let Some(p) = picks.get_mut(child).filter(|p| p.armed) else { return PickHeard::Unasked };
