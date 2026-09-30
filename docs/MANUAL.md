@@ -36,7 +36,13 @@ letters. `Ctrl+B 0` brings it back from anywhere.
 - **A tab** — its number, its name, and a dot: **green** while it works, **blue**
   when it has answered, **amber** when it is waiting for you to answer. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
-  what it last said about itself.
+  what it last said about itself. The ports show on the folder's card too, after its branch.
+  Press a port (`:3000` and so on) and the column on the
+  right shows **Ports**: what listens in that folder, with the program and the tab it came
+  from. Press a line to open it in a browser tab (on the PC, you can also open it in the PC's
+  browser or copy the address). A folder's right-click menu (a long press on a phone) has
+  "Show the ports" too. For a folder on a server the entry is "Open the server's ports", and
+  on a MicroVM "Public URLs"; the machine is asked when you press Ask.
 - Under INDEX and Issue, the **PROJECT** heading with a `+` at its end (add a project).
   At the very bottom, the gear (settings), `?` (this page), 💡 (ideas), the scissors
   (tools) and 🎛️ (quick commands).
