@@ -14,6 +14,22 @@ impl Row {
         }
     }
 
+    /// NOTE (vendored patch): a row put together from cells laid out
+    /// elsewhere -- what reflowing on a change of width builds
+    pub(crate) fn from_cells(cells: Vec<crate::Cell>, wrapped: bool) -> Self {
+        Self { cells, wrapped }
+    }
+
+    /// NOTE (vendored patch): the row's cells, handed over whole
+    pub(crate) fn into_cells(self) -> Vec<crate::Cell> {
+        self.cells
+    }
+
+    /// NOTE (vendored patch): whether anything is written on the row
+    pub(crate) fn is_written(&self) -> bool {
+        self.cells.iter().any(crate::Cell::has_contents)
+    }
+
     fn cols(&self) -> u16 {
         self.cells
             .len()

@@ -89,6 +89,11 @@ const LONG = 'https://example.com/' + 'abcdefghij'.repeat(26);
 // The same length again, broken at the edge by a line break rather than run
 // on past it: the shape a screen drawn again by the pseudo console comes in
 const BROKEN = 'https://example.net/' + 'klmnopqrst'.repeat(26);
+// A program's file links that name a machine, the way `ls --hyperlink` writes
+// them: this PC by its own name, and a share on a computer that is not there
+const HERE_LINK = 'file://' + os.hostname() + '/' + path.join(WORK, 'src', 'main.rs').replaceAll('\\', '/');
+const SHARE_LINK = 'file://nas-nowhere-9/share/a%20b.txt';
+const SHARE_UNC = '\\\\nas-nowhere-9\\share\\a b.txt';
 
 console.log('starting this checkout\'s build, isolated');
 stopApp();
@@ -112,6 +117,7 @@ fs.writeFileSync(path.join(WORK, 'say.mjs'), [
   `console.log('far ' + ${JSON.stringify(OUTSIDE)});`,
   `console.log('long ${LONG}');`,
   `process.stdout.write('\\x1b]8;;https://example.org/osc\\x1b\\\\labelled link\\x1b]8;;\\x1b\\\\ after\\n');`,
+  `process.stdout.write('\\x1b]8;;${HERE_LINK}\\x1b\\\\on this pc\\x1b]8;;\\x1b\\\\ \\x1b]8;;${SHARE_LINK}\\x1b\\\\on a share\\x1b]8;;\\x1b\\\\\\n');`,
   // Cut at exactly the width the screen is drawn at, once the check has
   // measured it there and left it in width.txt. Not the console's own idea
   // of its width: that is read once when the program starts, and the
@@ -349,6 +355,28 @@ try {
   m = await board.menu();
   check(texts(m).some((t) => t === L['tui.link.missing']), 'the list says there is nothing there');
   check(!texts(m).some((t) => t === L['tui.link.edit'] || t === AT12), 'and offers no editor');
+  await board.away();
+
+  console.log('3b. a file link that names a machine');
+  // This PC's own name: a path here, in the folder, so the editor is offered
+  await board.press(HERE_LINK);
+  await until(() => board.menu(), 'the list');
+  m = await board.menu();
+  check(texts(m).includes(L['tui.link.edit']) && !texts(m).includes(L['tui.link.missing']),
+    'a link naming this PC is the file here, offered to the editor: ' + texts(m).join(' | '));
+  await board.away();
+  // Another computer: its share by the UNC path, offered without asking the
+  // computer first (it is not there, and asking would hold the screen)
+  const asked = Date.now();
+  await board.press(SHARE_LINK);
+  await until(() => board.menu(), 'the list');
+  const took = Date.now() - asked;
+  m = await board.menu();
+  // The list's first row is the place: the address, then where it is
+  check(texts(m)[0].endsWith(SHARE_UNC), 'a link naming another computer is its share: ' + texts(m).join(' | '));
+  const editRow = m.rows.find((r) => r.text === L['tui.link.edit']);
+  check(!editRow || /\boff\b/.test(editRow.cls), 'the editor is not offered for another computer\'s file');
+  check(took < 5000, 'and the list comes up at once (' + took + ' ms), the computer not asked');
   await board.away();
 
   console.log('4. a file outside the folder: the editor greyed, and why');

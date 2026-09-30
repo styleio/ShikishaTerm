@@ -144,7 +144,9 @@ impl Screen {
 
     /// Resizes the terminal.
     pub fn set_size(&mut self, rows: u16, cols: u16) {
-        self.grid.set_size(crate::grid::Size { rows, cols });
+        // NOTE (vendored patch): the main screen's lines are laid out again
+        // at a new width (see `Grid::set_size_reflowing`)
+        self.grid.set_size_reflowing(crate::grid::Size { rows, cols });
         self.alternate_grid
             .set_size(crate::grid::Size { rows, cols });
     }
@@ -796,6 +798,21 @@ impl Screen {
             }) {
                 if last_cell.has_contents() || last_cell.is_wide_continuation() {
                     wrap = true;
+                }
+            }
+            // NOTE (vendored patch): a wide character pushed to the next row
+            // because the text before it stopped one column short of the
+            // edge runs on too; the empty last column is only where it did
+            // not fit. Without the mark, reflowing on a new width would take
+            // the line for two
+            if !wrap && width == 2 && pos.col == size.cols - 1 && size.cols >= 2 {
+                if let Some(before) = self.grid().drawing_cell(crate::grid::Pos {
+                    row: pos.row,
+                    col: size.cols - 2,
+                }) {
+                    if before.has_contents() || before.is_wide_continuation() {
+                        wrap = true;
+                    }
                 }
             }
         }

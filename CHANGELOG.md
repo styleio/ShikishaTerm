@@ -9,6 +9,36 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A port listening on one address only opens at that address.** The ports
+  panel opened every port at localhost, so a development server told to
+  listen on the LAN address alone was listed and then answered nothing. The
+  panel now opens such a port where it listens, and names the address on its
+  line.
+- **The phone settings say where the link is really reachable from.** They
+  said only people on the same network could connect and that nothing was
+  put on the internet. The address the board listens on is a Tailscale or LAN
+  one, but a router's port forwarding, a cloud machine's public IP or a
+  firewall rule can still carry the internet to it; the settings, the README
+  and the security notes now say that, and that the program forwards nothing
+  itself.
+- **Text that ran past the edge of a terminal survives the window getting
+  narrower.** Making a tab narrower cut every row at the new width, and the
+  characters past it were gone for good -- the pseudo console does not draw
+  the screen again after a resize. A long address printed before a resize
+  came back two characters short at every row break, and opened nowhere.
+  Lines that ran on are now laid out again at the new width, scrollback
+  included, the way a terminal with scrollback does.
+- **A program's file link that names another computer opens that computer's
+  file, not this PC's.** A `file://server/share/file` link was opened as
+  `/share/file` on the tab's own machine -- the name of the computer was
+  thrown away. A link naming no computer, `localhost`, or the tab's own
+  machine (as `ls --hyperlink` writes it) is still a file there. One naming
+  another computer opens as its file share (`\\server\share\file`) from a tab
+  on this PC; from a tab on another machine it is not opened, and the list
+  says why.
+- **A phone is told to stop picking with the button, not with Esc.** The pick
+  button's description said "Esc on the page stops" on a phone too; on a
+  screen with no keyboard it now names Stop picking.
 - **Messages reach the screen when the program runs in two parts, or as a
   server.** "Saved", "could not read the page" and every other message the
   program says were left out of what a window over a split program, a window

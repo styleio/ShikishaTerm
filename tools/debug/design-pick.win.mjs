@@ -374,6 +374,11 @@ try {
   await until(() => phone.run('!document.getElementById("side").hidden && sidePanel === "picks"'), 'the list back from the edge');
   await until(() => phone.run('document.querySelectorAll("#pickpanel .prow").length === 1'), 'the row on the phone');
   check(true, 'the phone lists the same pick');
+  // The button's own description tells a finger to stop with the button,
+  // never with a key the phone does not have
+  const told = await phone.run('document.querySelector("#pickpanel .chead button").title');
+  const meant = await phone.run('T["tui.pick.hint_touch"] || ""');
+  check(!!meant && told === meant && !/\bEsc\b/.test(told), 'the phone\'s stop button says to stop with it: "' + told + '"');
   await sleep(500);
   await phone.shot('3-phone');
   await phone.shot('4-phone-page');

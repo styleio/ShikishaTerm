@@ -298,6 +298,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #portpanel .prt .pg { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #portpanel .prt .po { font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
     display:flex; align-items:center; gap:var(--s1); }
+  #portpanel .prt .ph { font-family:var(--mono); }
   #portpanel .prt .pa { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:var(--r-chip);
     background:transparent; color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center; }
   #portpanel .prt .pa:hover { background:var(--raise); color:var(--text); }
@@ -8045,17 +8046,20 @@ function drawHerePorts(box, g, group) {
   const held = [];
   for (const t of (S && S.tabs) || []) {
     if (t.group !== group || !t.place) continue;
-    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || ""});
+    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || "",
+      host: (t.place.hosts || {})[port] || ""});
   }
   held.sort((a, b) => a.port - b.port);
-  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
   if (PT.drawn === sig && box.firstChild) return;
   PT.drawn = sig;
   box.textContent = "";
   box.append(el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.ports.here.title"] || "")));
   const list = el("div", {class:"plist"});
   for (const h of held) {
-    const url = "http://localhost:" + h.port + "/";
+    // A program listening on one address only (the LAN's, say) answers
+    // there and not at localhost, so it is opened, and named, where it listens
+    const url = "http://" + (h.host || "localhost") + ":" + h.port + "/";
     const tab = h.t.id || h.t.name || "";
     // The same road a pressed address on a terminal takes: the app checks the
     // address, finds the folder from the tab, and opens it there
@@ -8075,7 +8079,10 @@ function drawHerePorts(box, g, group) {
       el("span", {class:"pp"}, ":" + h.port),
       el("span", {class:"pw"},
         el("span", {class:"pg"}, h.program || (T["tui.ports.unnamed"] || "")),
-        el("span", {class:"po"}, markFor(h.t) || null, el("span", {}, h.t.name || tab))),
+        // The address, when it is not this PC's own loopback: the one thing
+        // that says why this row opens somewhere other than localhost
+        el("span", {class:"po"}, h.host ? el("span", {class:"ph"}, h.host) : null,
+          markFor(h.t) || null, el("span", {}, h.t.name || tab))),
       ...acts));
   }
   // Nothing yet is said where the rows would be, not at the foot of an empty
@@ -15316,6 +15323,7 @@ function linkEdit(w, d) {
 // What the list says under its choices, when there is something to say
 function linkNote(w, d) {
   if (w.lk === "web" || d.far) return "";
+  if (!d.ok && d.why === "elsewhere") return (T["tui.link.elsewhere"] || "").replaceAll("{host}", d.host || "");
   if (!d.ok) return T["tui.link.nowhere"] || "";
   if (!d.found) return T["tui.link.missing"] || "";
   if (d.runs && AT_PC) return T["tui.link.runs"] || "";
@@ -17883,9 +17891,12 @@ function drawPicks() {
   const p = pickHere();
   box.textContent = "";
   const head = el("div", {class:"chead"});
+  // A screen with no keyboard to hand is told to stop with this button,
+  // not with a key it does not have -- the same test the page's own hint uses
+  const touch = window.matchMedia("(hover: none)").matches;
   head.append(el("button", {class: p.on ? "on" : "", "aria-pressed": p.on ? "true" : "false",
-    title: T["tui.pick.hint"] || "",
-    onclick: () => send({kind:"pick", on: !p.on, touch: window.matchMedia("(hover: none)").matches})},
+    title: T[touch ? "tui.pick.hint_touch" : "tui.pick.hint"] || "",
+    onclick: () => send({kind:"pick", on: !p.on, touch})},
     p.on ? (T["tui.pick.stop"] || "Stop picking") : (T["tui.pick.start"] || "Pick")));
   head.append(el("span", {class:"grow"}));
   if (p.items.length) {
@@ -21901,7 +21912,11 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
                 let chosen = if shikisha_shared::is_openable(target) {
                     Some(("web", target.to_string()))
                 } else {
-                    crate::termlink::file_url_path(target).map(|p| ("file", p))
+                    // A file address that names a machine keeps its address:
+                    // which machine that is, only the tab it was pressed on can
+                    // say (`termlink::file_home`)
+                    crate::termlink::file_url(target)
+                        .map(|u| ("file", if u.host.is_some() { target.to_string() } else { u.path }))
                 };
                 if let Some((kind, target)) = chosen {
                     place(i, end, kind, target, &mut spots);
@@ -25487,6 +25502,61 @@ mod tests {
         p.process(b"xx see src/lib/a.rs.\r\nThen more");
         let rows = screen_rows(p.screen());
         assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#) && !rows[1].contains("data-go"), "{rows:?}");
+    }
+
+    /// The shape recorded on a machine where the check failed: the address was
+    /// printed while the terminal was 120 columns wide (the size a tab starts
+    /// at before the board has measured itself), and the board then made it
+    /// 118. The pseudo console does not draw the screen again after a resize,
+    /// so what the screen holds after the resize is all there is -- and it
+    /// used to be the rows cut at column 118, two characters gone at every
+    /// break: one "address" 276 characters long, opening nowhere
+    #[test]
+    fn an_address_printed_before_the_screen_narrowed_keeps_every_character() {
+        let address = format!("https://example.com/{}", "abcdefghij".repeat(26));
+        let mut p: vt100::Parser = vt100::Parser::new(30, 120, 100);
+        p.process(b"page: http://127.0.0.1:1/x\r\n");
+        p.process(format!("long {address}\r\n").as_bytes());
+        p.process(b"after\r\n");
+        p.screen_mut().set_size(30, 118);
+        let go = format!(r#"data-go="{address}" data-at="1.5""#);
+        let rows = screen_rows(p.screen());
+        let with: Vec<usize> = (0..rows.len()).filter(|&r| rows[r].contains(&go)).collect();
+        assert_eq!(with, vec![1, 2, 3], "{rows:#?}");
+        assert!(p.screen().contents().contains(&address), "{}", p.screen().contents());
+        // What came after is still after it, and the cursor under it
+        assert!(rows[4].contains("after"), "{rows:#?}");
+        assert_eq!(p.screen().cursor_position(), (5, 0));
+    }
+
+    /// Narrower, then wider than it started: at every width the address is
+    /// whole and one place, however many rows it takes
+    #[test]
+    fn an_address_stays_whole_through_narrowing_and_widening() {
+        let address = format!("https://example.com/{}", "abcdefghij".repeat(26));
+        let mut p: vt100::Parser = vt100::Parser::new(30, 118, 100);
+        p.process(format!("long {address}\r\n").as_bytes());
+        for (cols, rows_taken) in [(82u16, 4usize), (150, 2), (118, 3), (300, 1)] {
+            p.screen_mut().set_size(30, cols);
+            let go = format!(r#"data-go="{address}" data-at="0.5""#);
+            let rows = screen_rows(p.screen());
+            let with = rows.iter().filter(|r| r.contains(&go)).count();
+            assert_eq!(with, rows_taken, "at {cols} columns: {rows:#?}");
+            assert!(p.screen().contents().contains(&address), "at {cols} columns");
+        }
+    }
+
+    /// A program's file link that names a machine keeps its whole address as
+    /// the place, for the tab it is pressed on to judge; one that names none
+    /// is the path
+    #[test]
+    fn a_file_link_naming_a_machine_keeps_its_address() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process(b"\x1b]8;;file://nas/share/a.txt\x1b\\on the nas\x1b]8;;\x1b\\");
+        p.process(b"\r\n\x1b]8;;file:///C:/w/b.txt\x1b\\here\x1b]8;;\x1b\\");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-lk="file" data-go="file://nas/share/a.txt""#), "{rows:?}");
+        assert!(rows[1].contains(r#"data-lk="file" data-go="C:/w/b.txt""#), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of
