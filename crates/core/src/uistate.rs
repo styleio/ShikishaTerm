@@ -229,6 +229,14 @@ pub struct HookAskState {
     /// Which asking this is. The page opens the question once per number
     pub seq: u64,
     pub clis: Vec<HookAskCli>,
+    /// The machine the files are on, by its name in the settings. Empty for
+    /// this PC (`agenthook::far_question`)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine: String,
+    /// An earlier version of this app already wrote there without asking:
+    /// the question is whether to keep it or take it out
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub found: bool,
 }
 
 /// One CLI in [`HookAskState`]

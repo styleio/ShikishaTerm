@@ -333,6 +333,11 @@ pub fn new_events(t: &Target) -> Vec<String> {
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) else {
         return Vec::new();
     };
+    new_events_in(&doc, t)
+}
+
+/// [`new_events`] of a file already read, from this PC or another machine
+fn new_events_in(doc: &serde_json::Value, t: &Target) -> Vec<String> {
     let ours_in = |event: &str| {
         doc.pointer(&format!("/hooks/{event}"))
             .and_then(|g| g.as_array())
@@ -394,15 +399,20 @@ const MARKED: &str = "\u{1}shikisha:";
 /// that cannot be read is not written to (see [`edit`]); shown for it is what
 /// ours is on its own
 pub fn preview(t: &Target) -> Vec<Line> {
-    let program = me();
     let existing = std::fs::read_to_string(&t.file).ok();
-    let mut doc = match existing.as_deref() {
+    preview_of(existing.as_deref(), wanted(t, &me()))
+}
+
+/// [`preview`] of a file's text as read, wherever it was read from, with
+/// `wanted` put into it
+fn preview_of(existing: Option<&str>, wanted: Vec<(String, Vec<serde_json::Value>)>) -> Vec<Line> {
+    let mut doc = match existing {
         None => serde_json::json!({}),
         Some(text) => match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) {
             Ok(v) if v.is_object() => v,
             _ => {
                 let mut hooks = serde_json::Map::new();
-                for (event, hs) in wanted(t, &program) {
+                for (event, hs) in wanted {
                     hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
                 }
                 return pretty_lines(&serde_json::json!({ "hooks": hooks }), true);
@@ -411,7 +421,7 @@ pub fn preview(t: &Target) -> Vec<Line> {
     };
     let had: Option<Vec<String>> = doc.get("hooks").and_then(|h| h.as_object()).map(|h| h.keys().cloned().collect());
     let mut marks = Vec::new();
-    merge(&mut doc, t, true, &program, Some(&mut marks));
+    merge_with(&mut doc, wanted, true, Some(&mut marks));
     // The stand-in as the text spells it: quoted, the mark escaped
     let needle = serde_json::to_string(MARKED).unwrap_or_default();
     let needle = needle.trim_end_matches('"');
@@ -568,6 +578,8 @@ pub fn question(seq: u64, clis: &[Target]) -> crate::uistate::HookAskState {
                 added: new_events(t),
             })
             .collect(),
+        machine: String::new(),
+        found: false,
     }
 }
 
@@ -853,8 +865,20 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
 /// leaving everything else where it was. With `marks`, each group of ours is
 /// put in as a stand-in naming its place in `marks` instead, for [`preview`]
 /// to find in the text and draw as ours
-fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, mut marks: Option<&mut Vec<serde_json::Value>>) {
-    for (event, hs) in wanted(t, program) {
+fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, marks: Option<&mut Vec<serde_json::Value>>) {
+    merge_with(doc, wanted(t, program), want, marks)
+}
+
+/// [`merge`], given what is wanted of each event rather than working it out
+/// for this PC: the same edit serves a hook file on another machine, whose
+/// entries are spelled for that machine ([`far_wanted`])
+fn merge_with(
+    doc: &mut serde_json::Value,
+    wanted: Vec<(String, Vec<serde_json::Value>)>,
+    want: bool,
+    mut marks: Option<&mut Vec<serde_json::Value>>,
+) {
+    for (event, hs) in wanted {
         let list = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
@@ -1123,6 +1147,19 @@ pub fn far_file(t: &Target, profile_file: &str, on_microvm: bool) -> Option<Stri
     })
 }
 
+/// What this app writes into a CLI's hook file on another machine, per event
+fn far_wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
+    let mut wanted: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    for entry in &t.entries {
+        let h = far_handler(t.format, t.timeout, &entry.arg);
+        match wanted.iter_mut().find(|(event, _)| *event == entry.event) {
+            Some((_, list)) => list.push(h),
+            None => wanted.push((entry.event.clone(), vec![h])),
+        }
+    }
+    wanted
+}
+
 /// The hook file's text with this app's entries for another machine in it,
 /// everything else in it as it was. `None` when there is nothing to change,
 /// or when the file is not JSON this can read -- a file that does not parse
@@ -1136,15 +1173,7 @@ pub fn far_edited(t: &Target, existing: Option<&str>) -> Option<String> {
         return None;
     }
     let before = doc.clone();
-    let mut wanted: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
-    for entry in &t.entries {
-        let h = far_handler(t.format, t.timeout, &entry.arg);
-        match wanted.iter_mut().find(|(event, _)| *event == entry.event) {
-            Some((_, list)) => list.push(h),
-            None => wanted.push((entry.event.clone(), vec![h])),
-        }
-    }
-    for (event, hs) in wanted {
+    for (event, hs) in far_wanted(t) {
         let Some(slot) = doc
             .as_object_mut()
             .and_then(|o| o.entry("hooks").or_insert_with(|| serde_json::json!({})).as_object_mut())
@@ -1177,6 +1206,70 @@ pub fn far_edited(t: &Target, existing: Option<&str>) -> Option<String> {
     (doc != before).then(|| serde_json::to_string_pretty(&doc).unwrap_or_default())
 }
 
+/// The hook file's text with every entry of this app's taken out, whatever
+/// event it sits under and whichever version wrote it, and everything else
+/// as it was. `None` when there is none of ours in it, or when it is not JSON
+/// this can read (left exactly as it is)
+pub fn far_without(existing: Option<&str>) -> Option<String> {
+    let text = existing.filter(|t| !t.trim().is_empty())?;
+    let mut doc: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let before = doc.clone();
+    let hooks = doc.get_mut("hooks").and_then(|h| h.as_object_mut())?;
+    for groups in hooks.values_mut().filter_map(|g| g.as_array_mut()) {
+        for group in groups.iter_mut() {
+            if let Some(list) = group.pointer_mut("/hooks").and_then(|h| h.as_array_mut()) {
+                list.retain(|h| !is_ours(h));
+            }
+        }
+        groups.retain(|g| g.pointer("/hooks").and_then(|h| h.as_array()).is_none_or(|h| !h.is_empty()));
+    }
+    // An event that only held ours goes with it, and the map when nothing is left
+    hooks.retain(|_, v| !v.as_array().is_some_and(|a| a.is_empty()));
+    let empty = hooks.is_empty();
+    if let Some(o) = doc.as_object_mut().filter(|_| empty) {
+        o.shift_remove("hooks");
+    }
+    (doc != before).then(|| serde_json::to_string_pretty(&doc).unwrap_or_default())
+}
+
+/// What a hook file on another machine says about this app, read without
+/// changing anything
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct FarSeen {
+    /// An entry of this app's is in it
+    pub ours: bool,
+    /// Events this version asks for that the file carries none of ours for,
+    /// while it carries ours for others: what an update adds to a hook that
+    /// was already there ([`new_events`])
+    pub added: Vec<String>,
+}
+
+pub fn far_seen(t: &Target, existing: Option<&str>) -> FarSeen {
+    let Some(doc) = existing
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok())
+    else {
+        return FarSeen::default();
+    };
+    let ours = doc
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .into_iter()
+        .flat_map(|h| h.values())
+        .filter_map(|g| g.as_array())
+        .flatten()
+        .filter_map(|g| g.pointer("/hooks").and_then(|h| h.as_array()))
+        .flatten()
+        .any(is_ours);
+    FarSeen { ours, added: new_events_in(&doc, t) }
+}
+
+/// The hook file on another machine as it would be once this app's entries
+/// are in, a line at a time, the lines this app adds told apart ([`preview`])
+pub fn far_preview(t: &Target, existing: Option<&str>) -> Vec<Line> {
+    preview_of(existing.filter(|s| !s.trim().is_empty()), far_wanted(t))
+}
+
 /// The profiles' hook targets, with the file each names as the profile wrote
 /// it (`{home}/...`), for placing on another machine
 pub fn far_targets() -> Vec<(Target, String)> {
@@ -1190,26 +1283,251 @@ pub fn far_targets() -> Vec<(Target, String)> {
         .collect()
 }
 
-/// Put this app's hooks for the CLI `profile` into its file on another
-/// machine, once per machine and CLI in this run. On a thread; what it could
-/// not do goes to the log. The AI reads the file when it starts, so a
-/// conversation already running reports from its next start on
-pub fn ensure_far(at: crate::elsewhere::Elsewhere, machine: String, profile: String) {
-    if far_done(&machine, &profile) {
+// ── Consent, per machine ──────────────────────────
+//
+// A hook on another machine is written into somebody's settings on a machine
+// that is not this one, so it is asked about first, the way this PC's are
+// (`question`), and only ever written after "yes". The answer is kept per
+// machine -- by the name its entry in the settings has, as the bridge is
+// (`config::Config::bridges`) -- and per CLI: agreeing for Claude Code on a
+// server is not agreeing for Codex there, whose file was never shown.
+//
+// Nothing here writes on its own account. `far_look` reads the file and
+// decides: kept right when agreed, taken out when refused, asked about when
+// there is no answer -- including a file an older version of this app wrote
+// into without asking, which is asked about once (keep or take out) rather
+// than kept or deleted silently.
+
+/// The answers, as the settings last said ([`crate::config::Config::far_hooks`])
+static FAR_ANSWERS: std::sync::Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Take the answers the settings hold now. A machine whose answers changed
+/// is looked at again (see [`far_look`]): unticked in the settings, its hook
+/// comes out the next time the machine is reached
+pub fn far_answers_now(answers: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>) {
+    let Ok(mut now) = FAR_ANSWERS.lock() else { return };
+    if *now == *answers {
         return;
     }
+    let changed: Vec<String> = now
+        .keys()
+        .chain(answers.keys())
+        .filter(|h| now.get(*h) != answers.get(*h))
+        .cloned()
+        .collect();
+    *now = answers.clone();
+    drop(now);
+    if let Ok(mut looked) = FAR_LOOKED.lock() {
+        looked.retain(|k, _| !changed.iter().any(|h| k.0 == *h));
+    }
+}
+
+/// What the person said about `cli` on the machine `host`: `None` when they
+/// have not been asked
+pub fn far_answer(host: &str, cli: &str) -> Option<bool> {
+    FAR_ANSWERS
+        .lock()
+        .ok()?
+        .get(host)?
+        .get(cli)
+        .map(|a| a == crate::config::HOOK_ON)
+}
+
+/// The CLIs whose hook the person refused, or unticked, on the machine
+/// `host`: looked at whenever any tab reaches that machine, not only an AI's,
+/// so that an entry to take out does not wait for an AI to be started there
+pub fn far_refused(host: &str) -> Vec<String> {
+    FAR_ANSWERS
+        .lock()
+        .ok()
+        .and_then(|a| a.get(host).cloned())
+        .map(|m| m.into_iter().filter(|(_, a)| a == crate::config::HOOK_OFF).map(|(cli, _)| cli).collect())
+        .unwrap_or_default()
+}
+
+/// A question to put to the person about one CLI's hook on one machine
+#[derive(Debug, Clone)]
+pub struct FarAsk {
+    /// The machine's entry name, the key its answer is kept under
+    pub host: String,
+    pub at: crate::elsewhere::Elsewhere,
+    pub cli: Target,
+    /// The file there, as that machine spells it
+    pub file: String,
+    pub preview: Vec<Line>,
+    /// An older version already wrote ours there without asking: the answers
+    /// are "keep" and "take out"
+    pub found: bool,
+    /// Agreed to already, asked again because this version adds these events
+    pub added: Vec<String>,
+}
+
+/// The question about `ask`, as the board draws it ([`question`]'s far twin)
+pub fn far_question(seq: u64, ask: &FarAsk) -> crate::uistate::HookAskState {
+    crate::uistate::HookAskState {
+        seq,
+        clis: vec![crate::uistate::HookAskCli {
+            name: ask.cli.name.clone(),
+            // A path a server's file commands take from its home, said the way
+            // a person reads one there
+            file: if ask.file.starts_with('/') { ask.file.clone() } else { format!("~/{}", ask.file) },
+            preview: ask.preview.clone(),
+            approval: String::new(),
+            added: ask.added.clone(),
+        }],
+        machine: ask.host.clone(),
+        found: ask.found,
+    }
+}
+
+/// Questions found by [`far_look`], waiting for the board
+static FAR_ASKS: std::sync::Mutex<Vec<FarAsk>> = std::sync::Mutex::new(Vec::new());
+
+/// The questions found since the last call
+pub fn take_far_asks() -> Vec<FarAsk> {
+    FAR_ASKS.lock().map(|mut a| std::mem::take(&mut *a)).unwrap_or_default()
+}
+
+/// Which machine and CLI pairs have been looked at in this run, and when a
+/// look that could not read the file may be tried again
+static FAR_LOOKED: std::sync::Mutex<std::collections::BTreeMap<(String, String, String), Option<std::time::Instant>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// How long after a failed read the same file is tried again. A machine that
+/// did not answer is usually still starting or briefly away; asking it again
+/// on every pass of the loop would only fill the log
+const FAR_RETRY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Look at the CLI `profile`'s hook file on the machine `host` (reached as
+/// `at`; `machine` tells one of its machines from another) once in this run,
+/// on a thread, and do what the person's answer says -- or ask. Reads only,
+/// unless the answer is on record
+pub fn far_look(at: crate::elsewhere::Elsewhere, host: String, machine: String, profile: String) {
+    let key = (host.clone(), machine, profile.clone());
+    {
+        let Ok(mut looked) = FAR_LOOKED.lock() else { return };
+        match looked.get(&key) {
+            Some(None) => return,
+            Some(Some(again)) if std::time::Instant::now() < *again => return,
+            _ => {}
+        }
+        looked.insert(key.clone(), None);
+    }
     std::thread::spawn(move || {
-        if write_far(&at, &profile).is_ok() {
-            far_done_now(&machine, &profile);
+        if far_look_now(&at, &host, &profile).is_err()
+            && let Ok(mut looked) = FAR_LOOKED.lock()
+        {
+            looked.insert(key, Some(std::time::Instant::now() + FAR_RETRY));
         }
     });
 }
 
-/// The same, before the AI is started, and waited for: the AI reads its hooks
-/// when it starts, so hooks written after the line that starts it reach only
-/// its next start -- and the first conversation on a new machine reported
-/// nothing. `line` is what is about to be typed; the CLI is its first word
-pub fn ensure_far_before(at: &crate::elsewhere::Elsewhere, machine: &str, line: &str) {
+fn far_look_now(at: &crate::elsewhere::Elsewhere, host: &str, profile: &str) -> Result<(), String> {
+    let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
+    for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
+        let Some(path) = far_file(&t, &file, on_microvm) else { continue };
+        let existing = far_read(at, &path, &t.name)?;
+        let seen = far_seen(&t, existing.as_deref());
+        match far_answer(host, &t.name) {
+            // Agreed: kept right -- unless this version would add events,
+            // which were not shown when it was agreed to
+            Some(true) if seen.added.is_empty() => far_put(at, &t, &path, existing.as_deref())?,
+            Some(true) => far_ask(host, at, &t, &path, existing.as_deref(), false, seen.added),
+            // Refused, here or in the settings: ours comes out
+            Some(false) => {
+                if seen.ours {
+                    far_take_out(at, &t, &path, existing.as_deref())?;
+                }
+            }
+            None => far_ask(host, at, &t, &path, existing.as_deref(), seen.ours, Vec::new()),
+        }
+    }
+    Ok(())
+}
+
+fn far_ask(
+    host: &str,
+    at: &crate::elsewhere::Elsewhere,
+    t: &Target,
+    path: &str,
+    existing: Option<&str>,
+    found: bool,
+    added: Vec<String>,
+) {
+    let ask = FarAsk {
+        host: host.to_string(),
+        at: at.clone(),
+        cli: t.clone(),
+        file: path.to_string(),
+        preview: far_preview(t, existing),
+        found,
+        added,
+    };
+    crate::append_hook_log(&format!(
+        "far hooks: asking about {} on {}{}",
+        t.name,
+        host,
+        if found { " (already written there by an earlier version)" } else { "" }
+    ));
+    if let Ok(mut asks) = FAR_ASKS.lock() {
+        asks.push(ask);
+    }
+}
+
+/// The person's answer about `t` on the machine `at`, carried out there: put
+/// in (every event this version asks for) or taken out. On a thread; what
+/// happened goes to the log, and `said` hears one line for the screen
+pub fn far_apply(at: crate::elsewhere::Elsewhere, t: Target, path: String, on: bool, said: std::sync::mpsc::Sender<String>) {
+    std::thread::spawn(move || {
+        let done = far_read(&at, &path, &t.name).and_then(|existing| match on {
+            true => far_put(&at, &t, &path, existing.as_deref()),
+            false => far_take_out(&at, &t, &path, existing.as_deref()),
+        });
+        let line = match (&done, on) {
+            (Ok(()), true) => crate::i18n::tp("msg.hooks.far.set_up", &[("name", &t.name), ("machine", &at.address())]),
+            (Ok(()), false) => crate::i18n::tp("msg.hooks.far.off", &[("name", &t.name), ("machine", &at.address())]),
+            (Err(why), _) => crate::i18n::tp("msg.hooks.far.failed", &[("why", why)]),
+        };
+        let _ = said.send(line);
+    });
+}
+
+/// Take this app's entries out of every CLI's hook file on the machine a
+/// settings entry names, there and then. For a server about to be taken out
+/// of the settings, whose hooks would otherwise stay behind with nothing left
+/// that could reach them. Answers what could not be done
+pub fn far_take_out_all(host: &crate::config::HostSpec) -> Result<(), String> {
+    let at = crate::elsewhere::Elsewhere::of(host).map_err(|e| format!("{e:#}"))?;
+    let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
+    let mut failed = Vec::new();
+    for (t, file) in far_targets() {
+        let Some(path) = far_file(&t, &file, on_microvm) else { continue };
+        let done = far_read(&at, &path, &t.name).and_then(|existing| {
+            if far_seen(&t, existing.as_deref()).ours {
+                far_take_out(&at, &t, &path, existing.as_deref())
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(why) = done {
+            failed.push(why);
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(failed.join("; ")),
+    }
+}
+
+/// Put this app's hooks for the CLI `profile` into its file on the machine,
+/// before the AI is started there, and waited for -- when the person agreed
+/// to it for that machine, and only then. The AI reads its hooks when it
+/// starts, so hooks written after the line that starts it reach only its next
+/// start. Not agreed (or not asked yet): nothing is written, and the question
+/// is asked on the screen as the tab runs. `line` is what is about to be
+/// typed; the CLI is its first word
+pub fn ensure_far_before(at: &crate::elsewhere::Elsewhere, host: &str, line: &str) {
     let head = line.split_whitespace().next().unwrap_or_default().to_ascii_lowercase();
     if head.is_empty() {
         return;
@@ -1221,67 +1539,87 @@ pub fn ensure_far_before(at: &crate::elsewhere::Elsewhere, machine: &str, line: 
     else {
         return;
     };
-    if far_done(machine, &profile) {
+    if far_answer(host, &profile) != Some(true) {
         return;
     }
-    if write_far(at, &profile).is_ok() {
-        far_done_now(machine, &profile);
-    }
-}
-
-/// The machines and CLIs whose hooks are in place in this run. Written down
-/// once the write is done, not before: one that failed is tried again the
-/// next time the machine is opened
-static FAR_DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::OnceLock::new();
-
-fn far_done(machine: &str, profile: &str) -> bool {
-    FAR_DONE
-        .get_or_init(Default::default)
-        .lock()
-        .is_ok_and(|d| d.contains(&format!("{machine}\u{1f}{profile}")))
-}
-
-fn far_done_now(machine: &str, profile: &str) {
-    if let Ok(mut d) = FAR_DONE.get_or_init(Default::default).lock() {
-        d.insert(format!("{machine}\u{1f}{profile}"));
-    }
-}
-
-/// Put this app's hooks for the CLI `profile` into its file on the machine.
-/// A file that could not be read is left alone unless it is known not to be
-/// there: a read that failed on the way is not an empty file, and writing
-/// over it would take the person's own settings with it
-fn write_far(at: &crate::elsewhere::Elsewhere, profile: &str) -> Result<(), String> {
     let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
     for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
         let Some(path) = far_file(&t, &file, on_microvm) else { continue };
-        let existing = match crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: path.clone() }, 30_000) {
-            Ok(crate::ssh::FileAnswer::Bytes(b)) => Some(String::from_utf8_lossy(&b).to_string()),
-            _ => {
-                let quoted = crate::worktree::for_a_shell(&[path.clone()]);
-                match crate::elsewhere::exec(at, &format!("test -e {quoted}"), 30_000) {
-                    Ok(r) if !r.ok() => None,
-                    _ => {
-                        let why = format!("could not read the {} hook file {path} on {}; left alone", t.name, at.address());
-                        crate::append_hook_log(&why);
-                        return Err(why);
-                    }
+        let Ok(existing) = far_read(at, &path, &t.name) else { return };
+        // Events this version adds were not what was agreed to: they wait
+        // for the question, and what was agreed stays as it was
+        if far_seen(&t, existing.as_deref()).added.is_empty() {
+            let _ = far_put(at, &t, &path, existing.as_deref());
+        }
+    }
+}
+
+/// The hook file on the machine: its text, `None` when it is known not to be
+/// there, an error when it could not be read -- a read that failed on the way
+/// is not an empty file, and writing over it would take the person's own
+/// settings with it
+fn far_read(at: &crate::elsewhere::Elsewhere, path: &str, name: &str) -> Result<Option<String>, String> {
+    match crate::elsewhere::files(at, crate::ssh::FileJob::Read { path: path.to_string() }, 30_000) {
+        Ok(crate::ssh::FileAnswer::Bytes(b)) => Ok(Some(String::from_utf8_lossy(&b).to_string())),
+        _ => {
+            let quoted = crate::worktree::for_a_shell(&[path.to_string()]);
+            match crate::elsewhere::exec(at, &format!("test -e {quoted}"), 30_000) {
+                Ok(r) if !r.ok() => Ok(None),
+                _ => {
+                    let why = format!("could not read the {name} hook file {path} on {}; left alone", at.address());
+                    crate::append_hook_log(&why);
+                    Err(why)
                 }
-            }
-        };
-        let Some(text) = far_edited(&t, existing.as_deref()) else { continue };
-        let written = crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: path.clone(), bytes: text.into_bytes() }, 30_000);
-        match written {
-            Ok(_) => crate::append_hook_log(&format!("{} hook written in {path} on {}", t.name, at.address())),
-            Err(e) => {
-                let why = format!("could not write the {} hook in {path} on {}: {e:#}", t.name, at.address());
-                crate::append_hook_log(&why);
-                return Err(why);
             }
         }
     }
-    Ok(())
+}
+
+/// Where the way back is kept beside a hook file, as on this PC
+/// (`settings.json` -> `settings.bak`)
+fn far_bak(path: &str) -> String {
+    match path.strip_suffix(".json") {
+        Some(stem) => format!("{stem}.bak"),
+        None => format!("{path}.bak"),
+    }
+}
+
+/// Write `text` over the hook file, the file as it was kept beside it first.
+/// A way back that could not be kept stops the change, as it does here
+fn far_write(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>, text: String, what: &str) -> Result<(), String> {
+    if let Some(old) = existing {
+        let bak = far_bak(path);
+        if let Err(e) = crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: bak.clone(), bytes: old.as_bytes().to_vec() }, 30_000) {
+            let why = format!("could not keep {bak} on {} before changing the {} hook, so it was not changed: {e:#}", at.address(), t.name);
+            crate::append_hook_log(&why);
+            return Err(why);
+        }
+    }
+    match crate::elsewhere::files(at, crate::ssh::FileJob::Write { to: path.to_string(), bytes: text.into_bytes() }, 30_000) {
+        Ok(_) => {
+            crate::append_hook_log(&format!("{} hook {what} in {path} on {}", t.name, at.address()));
+            Ok(())
+        }
+        Err(e) => {
+            let why = format!("could not change the {} hook in {path} on {}: {e:#}", t.name, at.address());
+            crate::append_hook_log(&why);
+            Err(why)
+        }
+    }
+}
+
+fn far_put(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>) -> Result<(), String> {
+    match far_edited(t, existing) {
+        Some(text) => far_write(at, t, path, existing, text, "written"),
+        None => Ok(()),
+    }
+}
+
+fn far_take_out(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>) -> Result<(), String> {
+    match far_without(existing) {
+        Some(text) => far_write(at, t, path, existing, text, "taken out"),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -1319,6 +1657,89 @@ mod tests {
         assert!(once.contains("state:DONE") && once.contains("SessionStart"));
         assert_eq!(far_edited(&t, Some(&once)), None, "a second pass writes again");
         assert_eq!(far_edited(&t, Some("{ not json")), None, "a file that does not parse is written over");
+    }
+
+    fn far_test_target(events: &[(&str, &str)]) -> Target {
+        Target {
+            name: "Test CLI".into(),
+            file: PathBuf::from("unused"),
+            format: HookFormat::Shell,
+            timeout: TIMEOUT_S,
+            trust: None,
+            entries: events.iter().map(|(e, a)| Entry { event: (*e).into(), arg: (*a).into() }).collect(),
+        }
+    }
+
+    /// Taking ours out of a file on another machine leaves the person's own
+    /// hooks and settings exactly, takes ours out of every event (including
+    /// one a newer version no longer asks for), and drops what only held ours
+    #[test]
+    fn a_far_hook_comes_out_and_nothing_of_the_persons_goes_with_it() {
+        let t = far_test_target(&[("Stop", "state:DONE"), ("SessionStart", "session")]);
+        let theirs = r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#;
+        let with = far_edited(&t, Some(theirs)).unwrap();
+        // One more of ours under an event this version does not ask for
+        let mut v: serde_json::Value = serde_json::from_str(&with).unwrap();
+        v["hooks"]["Old"] = serde_json::json!([{ "hooks": [far_handler(HookFormat::Shell, TIMEOUT_S, "state:BUSY")] }]);
+        let with = serde_json::to_string_pretty(&v).unwrap();
+
+        let out = far_without(Some(&with)).expect("nothing was taken out");
+        let back: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back["model"], "opus", "the person's own setting went");
+        assert_eq!(back["hooks"]["Stop"][0]["hooks"][0]["command"], "say done", "the person's own hook went");
+        assert!(!out.contains(MARK), "an entry of ours is still there");
+        assert!(back["hooks"].get("SessionStart").is_none() && back["hooks"].get("Old").is_none(), "an event that only held ours stayed");
+
+        assert_eq!(far_without(Some(theirs)), None, "a file with none of ours is written");
+        assert_eq!(far_without(Some("{ not json")), None, "a file that does not parse is written over");
+        assert_eq!(far_without(None), None);
+        // Ours alone: the list of hooks goes with it
+        let only = far_edited(&t, None).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&far_without(Some(&only)).unwrap()).unwrap(), serde_json::json!({}));
+    }
+
+    /// What a file on another machine says: none of ours, ours as agreed, or
+    /// ours from before an update that asks for more
+    #[test]
+    fn a_far_file_says_whether_ours_is_there_and_what_an_update_adds() {
+        let older = far_test_target(&[("Stop", "state:DONE")]);
+        let newer = far_test_target(&[("Stop", "state:DONE"), ("SubagentStart", "helper:start")]);
+        assert_eq!(far_seen(&newer, None), FarSeen::default());
+        assert_eq!(far_seen(&newer, Some(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say"}]}]}}"#)), FarSeen::default());
+        let written = far_edited(&older, None).unwrap();
+        assert_eq!(far_seen(&older, Some(&written)), FarSeen { ours: true, added: vec![] });
+        assert_eq!(far_seen(&newer, Some(&written)), FarSeen { ours: true, added: vec!["SubagentStart".into()] });
+        // The way back sits beside the file, as on this PC
+        assert_eq!(far_bak(".claude/settings.json"), ".claude/settings.bak");
+        assert_eq!(far_bak("/home/user/.gemini/hooks"), "/home/user/.gemini/hooks.bak");
+        // What would be shown before writing: the person's lines and ours, told apart
+        let lines = far_preview(&older, Some(r#"{"model":"opus"}"#));
+        assert!(lines.iter().any(|l| !l.ours && l.text.contains("opus")));
+        assert!(lines.iter().any(|l| l.ours && l.text.contains(MARK)));
+    }
+
+    /// The answers are kept per machine and per CLI, and a machine whose
+    /// answers change is looked at again -- that is how unticking it in the
+    /// settings takes the hook out
+    #[test]
+    fn far_answers_are_per_machine_and_a_change_looks_again() {
+        let mut answers: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> = Default::default();
+        answers.entry("far-test-a".into()).or_default().insert("Claude Code".into(), crate::config::HOOK_ON.into());
+        answers.entry("far-test-b".into()).or_default().insert("Claude Code".into(), crate::config::HOOK_OFF.into());
+        far_answers_now(&answers);
+        assert_eq!(far_answer("far-test-a", "Claude Code"), Some(true));
+        assert_eq!(far_answer("far-test-b", "Claude Code"), Some(false));
+        assert_eq!(far_answer("far-test-a", "Codex CLI"), None, "an answer for one CLI was taken for another");
+        assert_eq!(far_refused("far-test-b"), vec!["Claude Code".to_string()]);
+        assert!(far_refused("far-test-a").is_empty());
+
+        FAR_LOOKED.lock().unwrap().insert(("far-test-a".into(), "m1".into(), "Claude Code".into()), None);
+        FAR_LOOKED.lock().unwrap().insert(("far-test-b".into(), "m2".into(), "Claude Code".into()), None);
+        answers.get_mut("far-test-a").unwrap().insert("Claude Code".into(), crate::config::HOOK_OFF.into());
+        far_answers_now(&answers);
+        let looked = FAR_LOOKED.lock().unwrap();
+        assert!(!looked.contains_key(&("far-test-a".into(), "m1".into(), "Claude Code".into())), "a changed machine is not looked at again");
+        assert!(looked.contains_key(&("far-test-b".into(), "m2".into(), "Claude Code".into())), "an unchanged machine was looked at again");
     }
 
     fn target(dir: &std::path::Path, format: HookFormat) -> Target {

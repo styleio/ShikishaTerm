@@ -1976,6 +1976,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut hooks_looked = false;
     let mut hook_ask: Option<crate::uistate::HookAskState> = None;
     let mut hook_asking: Vec<crate::agenthook::Target> = Vec::new();
+    // The same question about a CLI on another machine, one at a time and
+    // only while the question about this PC is not up (`agenthook::far_look`)
+    let mut far_queue: Vec<crate::agenthook::FarAsk> = Vec::new();
+    let mut far_asking: Option<crate::agenthook::FarAsk> = None;
+    // Numbered past the question about this PC, which is always the first
+    let mut far_seq: u64 = 1;
     let (hooks_tx, hooks_rx) = std::sync::mpsc::channel::<String>();
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // Which tabs each AI tab may drive -- type into a shell, operate a page --
@@ -2165,6 +2171,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut auto_switch = cfg.as_ref().and_then(|c| c.auto_switch).unwrap_or(true);
     // Whether the ✕ puts the window away rather than quitting (see the loop)
     let mut resident = cfg.as_ref().and_then(|c| c.resident).unwrap_or(true);
+    // The answers about hooks on other machines, where the threads that write them look
+    crate::agenthook::far_answers_now(&cfg.as_ref().map(|c| c.far_hooks.clone()).unwrap_or_default());
     // When to keep the PC up, and the ask to Windows itself. Made from this
     // thread because the ask is the thread's and ends with it (see awake.rs)
     let mut stay_awake = crate::awake::Stay::parse(cfg.as_ref().and_then(|c| c.stay_awake.as_deref()));
@@ -3233,6 +3241,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 ssh_aliases = crate::discover::ssh_aliases();
                 auto_switch = newcfg.auto_switch.unwrap_or(true);
                 resident = newcfg.resident.unwrap_or(true);
+                crate::agenthook::far_answers_now(&newcfg.far_hooks);
                 stay_awake = crate::awake::Stay::parse(newcfg.stay_awake.as_deref());
                 ai_usage_on = newcfg.ai_usage.unwrap_or(true);
                 update::set_auto(newcfg.update_check.unwrap_or(true));
@@ -3753,10 +3762,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .collect();
                 let now_ms = start.elapsed().as_millis() as u64;
                 // The AI in a tab on another machine reports through a hook
-                // written there, once per machine and AI in this run
-                for t in tabs.iter().filter(|t| t.is_ai() && t.had_output()) {
+                // written there -- when the person agreed to it for that
+                // machine (`agenthook::far_look` reads the file once per machine
+                // and AI in this run, and asks when there is no answer)
+                for t in tabs.iter() {
                     let Some(at) = tab_machine(t) else { continue };
-                    // Written when the machine is up for its own reasons
+                    // Looked at when the machine is up for its own reasons
                     if t.cloud().and_then(|h| h.instance.as_deref()).is_some_and(crate::e2b::asleep) {
                         continue;
                     }
@@ -3764,7 +3775,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         crate::elsewhere::Elsewhere::Cloud(h) => h.instance.clone().unwrap_or_else(|| h.name.clone()),
                         other => other.address(),
                     };
-                    crate::agenthook::ensure_far(at, machine, t.profile_name().to_string());
+                    // Kept per the machine's name in the settings; a machine
+                    // reached without an entry is known by its address
+                    let host = match &at {
+                        crate::elsewhere::Elsewhere::Cloud(h) => h.name.clone(),
+                        other => t.host_name().map(str::to_string).unwrap_or_else(|| other.address()),
+                    };
+                    // A hook refused or unticked comes out as soon as any tab
+                    // reaches the machine
+                    for cli in crate::agenthook::far_refused(&host) {
+                        crate::agenthook::far_look(at.clone(), host.clone(), machine.clone(), cli);
+                    }
+                    if t.is_ai() && t.had_output() {
+                        crate::agenthook::far_look(at, host, machine, t.profile_name().to_string());
+                    }
                 }
                 for (i, t) in tabs.iter_mut().enumerate() {
                     t.usage = cost.get(&i).copied().unwrap_or_default();
@@ -11582,6 +11606,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 hook_ask = Some(crate::agenthook::question(1, &hook_asking));
             }
         }
+        for ask in crate::agenthook::take_far_asks() {
+            let same = |a: &crate::agenthook::FarAsk| a.host == ask.host && a.cli.name == ask.cli.name;
+            if !far_queue.iter().any(same) && !far_asking.as_ref().is_some_and(same) {
+                far_queue.push(ask);
+            }
+        }
+        if hook_ask.is_none() && hook_asking.is_empty() && far_asking.is_none() && !far_queue.is_empty() {
+            let ask = far_queue.remove(0);
+            far_seq += 1;
+            hook_ask = Some(crate::agenthook::far_question(far_seq, &ask));
+            far_asking = Some(ask);
+        }
         for (answer, seq) in shell.mail().take_agent_hooks() {
             // An answer to a question no longer up (answered on the other
             // screen first) is nobody's
@@ -11589,6 +11625,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             hook_ask = None;
+            // About a CLI on another machine: the answer is kept under the
+            // machine's name and carried out there
+            if let Some(ask) = far_asking.take() {
+                match answer.as_str() {
+                    "on" | "off" => {
+                        let on = answer == "on";
+                        if config::save_far_hook(&ask.host, &ask.cli.name, on) {
+                            if let Some(c) = cfg.as_mut() {
+                                c.far_hooks
+                                    .entry(ask.host.clone())
+                                    .or_default()
+                                    .insert(ask.cli.name.clone(), if on { config::HOOK_ON } else { config::HOOK_OFF }.into());
+                                crate::agenthook::far_answers_now(&c.far_hooks);
+                            }
+                            append_hook_log(&format!("far hooks: the person said {answer} for {} on {}", ask.cli.name, ask.host));
+                            crate::agenthook::far_apply(ask.at, ask.cli, ask.file, on, hooks_tx.clone());
+                        } else {
+                            flash = Some(i18n::t("msg.hooks.not_saved"));
+                        }
+                    }
+                    _ => append_hook_log(&format!(
+                        "far hooks: the question about {} on {} was put away; it is asked again at the next start",
+                        ask.cli.name, ask.host
+                    )),
+                }
+                continue;
+            }
             let clis = std::mem::take(&mut hook_asking);
             let names = clis.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
             match answer.as_str() {

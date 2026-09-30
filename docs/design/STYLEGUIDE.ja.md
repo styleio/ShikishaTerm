@@ -243,7 +243,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | 部品 | 呼ぶ関数 | どのページ |
 |---|---|---|
 | ダイアログ（設定・`.framed`） | `openModal(...kids)`（返ってきた枠に `.framed` を付ける） | 設定（`webui.rs`） |
-| 取り消せない操作の確認 | `confirmAction(message, action)` | 設定（`webui.rs`） |
+| 取り消せない操作の確認 | `confirmAction(message, action, other)`（取り消せない道が2つあるときだけ `other` に2つ目の名前。押されると "other" を返す） | 設定（`webui.rs`） |
 | 盤面に立てる1問（`#floatbox`） | `frameOpen(spec)`。描き直しは `frameDraw()`、閉じるのは `frameLeave()`、「詳しく設定する」は `frameMore()`、Esc と ✕ は `frameCancel()` | 設定（`webui.rs`） |
 | 欄 | `sfield(label, control, hint)`。設定の値に結びついた欄は `field(obj, key, ph)`・`check(obj, key, label)`・`checkDefaultOn(obj, key, label)`・`choose(obj, key, opts)`・`pathField(obj, key, ph, kind, title)` | 設定（`webui.rs`） |
 | 名前と項目の1行 | `row(label, ...kids)` | 設定（`webui.rs`） |

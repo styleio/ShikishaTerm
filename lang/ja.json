@@ -708,6 +708,22 @@
   "tui.hooks.added": "設定済みです。この版で次の知らせを追加します: {events}",
   "tui.hooks.go": "許可して設定する",
   "tui.hooks.no": "設定しない",
+
+  "tui.hooks.far.title": "ほかのマシンの AI に、作業の状態を知らせてもらう",
+
+  "tui.hooks.far.say": "{machine} のタブの横の●は、そこで動く AI が「始めた」「あなたの返事を待っている」「終わった」を知らせると正確になります。そのために {machine} の AI の設定ファイルに1件だけ書き込みます。ここで許可したときだけ書き込みます。",
+
+  "tui.hooks.far.detail": "{machine} の下のファイルに1件だけ追記します。ファイルのほかの設定はそのまま保ち、書き換える前のファイルを隣に .bak として残します。残せないときは書き込みません。追記した1件がするのは、その AI の端末に短い1行を出すことだけで、このアプリがそれを読みます。許可しない場合も {machine} のタブは使えます。状態は画面の表示と会話の記録から読むので、少し不正確になることがあります。あとから 設定 › ホスト で {machine} を開いて外せます。",
+
+  "tui.hooks.far.found": "以前の版のこのアプリが、確認せずにこの1件を {machine} に書き込んでいました。残すか外すかを選んでください。",
+
+  "tui.hooks.far.go": "許可して書き込む",
+
+  "tui.hooks.far.no": "書き込まない",
+
+  "tui.hooks.far.keep": "残す",
+
+  "tui.hooks.far.take_out": "外す",
   "tui.coach.plus": "ここからAIを起動します。",
   "tui.coach.close": "閉じる",
   "tui.ago.now": "今",
@@ -909,6 +925,12 @@
   "msg.hooks.off": "設定しませんでした: {names}。設定 › 再起動をまたいで会話を引き継ぐ で設定できます",
   "msg.hooks.failed": "設定を最後まで終えられませんでした: {why}。次にアプリを起動したときにもう一度試します",
   "msg.hooks.not_saved": "答えを設定ファイルに保存できなかったので、何も設定していません",
+
+  "msg.hooks.far.set_up": "書き込みました: {machine} の {name} は、次に起動したときから作業の状態を知らせます",
+
+  "msg.hooks.far.off": "{machine} の {name} には、このアプリの設定がありません。状態は画面の表示から読みます",
+
+  "msg.hooks.far.failed": "遠くのマシンでの作業を最後まで終えられませんでした: {why}。次にそのマシンにつながったときにもう一度試します",
   "msg.skill.removed": "{name} から、ほかのタブに頼むスキルを外しました",
   "msg.skill.failed": "{name} のスキルを変更できませんでした: {error}",
   "msg.skill.updated": "ほかのタブに頼むスキルを新しい版にしました（{names}）",
@@ -1121,6 +1143,22 @@
   "settings.hosts.bridge.where": "置くもの: 小さなプログラム（約 1 MB）を ~/.local/share/shikisha/bridge/ に置きます。このアプリがこのマシンのタブを使っている間だけ動きます。このマシンのほかの場所は変えません。",
   "settings.hosts.bridge.off": "外すときは、チェックを外して保存してください。その場でフォルダごと消します。そのときマシンに届かない場合（止まっている MicroVM など）は、次に届いた時点で消します。",
   "settings.hosts.bridge.put": "このマシンに中継役を置く",
+
+  "settings.hosts.hooks": "AI の状態の知らせ（フック）",
+
+  "settings.hosts.hooks.what": "チェックが入っていると、このマシンの AI の設定ファイルに、このアプリの設定が1件入ります。これでタブの横の●が正確になります。書き込むのは、画面で許可したときだけです。",
+
+  "settings.hosts.hooks.off": "外すときは、チェックを外して保存してください。次にこのマシンにつながったときに、このアプリの1件だけを消します。ファイルのほかの設定はそのまま残ります。",
+
+  "settings.hosts.hooks.none": "まだ聞いていません。このマシンで初めて AI が動いたときに、画面で聞きます。",
+
+  "settings.hosts.drop.hooks": "{name} の AI の設定ファイルには、このアプリの設定が入ったままです。サーバーを削除する前に外しますか？ 外す場合は、いまサーバーにつないで外します。残した場合は、あとから外す手段がなくなります。",
+
+  "settings.hosts.drop.hooks.take_out": "外してから削除",
+
+  "settings.hosts.drop.hooks.keep": "残したまま削除",
+
+  "settings.hosts.drop.hooks.failed": "外せなかったので、サーバーは削除していません: {why}",
   "settings.hosts.keepalive.hint": "この間隔でサーバーに小さな確認を送り、使っていない接続が途中の機器に切られるのを防ぎます。3 回続けて返事がなければ接続が切れたと判断し、サーバーに届くようになりしだい、端末を開き直します。0 にすると送りません",
   "settings.hosts.drop": "外す",
   "settings.sec.operate": "頼みごとの上限",

@@ -4240,6 +4240,29 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // Take this app's hook entries out of the AI CLIs' files on a server,
+        // there and then: asked before its entry is removed from the settings,
+        // after which nothing could reach it to take them out. Named by the
+        // entry, read from the settings on disk, so the page never hands over
+        // an address or a path
+        ("POST", "/api/farhooks/takeout") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let name = v.get("host").and_then(|x| x.as_str()).unwrap_or_default().trim().to_string();
+            let host = crate::config::load().and_then(|c| c.hosts.into_iter().find(|h| h.name.trim() == name));
+            let resp = match host {
+                None => serde_json::json!({ "ok": false, "error": "no such server" }),
+                Some(h) => match crate::agenthook::far_take_out_all(&h) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                },
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Put one CLI's hook in, or take it out. Named by profile, so the page
         // never hands over a path to write to
         ("POST", "/api/resume/hook") => {
@@ -6928,9 +6951,13 @@ function openModal(...kids) {
 // device's key, a desk, unsaved changes -- so the button that does it wears
 // the colour for breaking things, not the brand's (STYLEGUIDE §5, buttons),
 // and the key that is pressed without looking lands on Cancel: an Enter meant
-// for the field underneath must not be the one that deletes
+// for the field underneath must not be the one that deletes.
+//
+// `other` names a second way through, when throwing it away can be done two
+// ways (a server removed with what this app wrote there taken out first, or
+// left): pressing it answers "other" instead of true
 let confirming = false;
-function confirmAction(message, action) {
+function confirmAction(message, action, other) {
   if (confirming) return Promise.resolve(false);
   confirming = true;
   const previous = document.activeElement;
@@ -6942,6 +6969,7 @@ function confirmAction(message, action) {
     };
     const accept = el("button", {class:"danger", onclick:() => finish(true)}, action);
     const cancel = el("button", {class:"quiet", onclick:() => finish(false)}, T["common.cancel"]);
+    const second = other ? el("button", {class:"danger", onclick:() => finish("other")}, other) : null;
     const dialog = el("dialog", {class:"modal-inner framed confirm-box",
       "aria-labelledby":"confirm-title", "aria-describedby":"confirm-message"},
       el("div", {class:"mhead"},
@@ -6949,7 +6977,7 @@ function confirmAction(message, action) {
         el("button", {class:"quiet icon", title:T["common.close"],
           "aria-label":T["common.close"], onclick:() => finish(false)}, "✕")),
       el("div", {class:"mbody", id:"confirm-message"}, message),
-      el("div", {class:"mfoot"}, cancel, accept));
+      el("div", {class:"mfoot"}, second, second ? el("span", {class:"grow"}) : null, cancel, accept));
     dialog.addEventListener("cancel", e => { e.preventDefault(); finish(false); });
     dialog.addEventListener("keydown", e => {
       if (e.key !== "Tab") return;
@@ -10622,6 +10650,22 @@ function hostDialog(at, redraw, kind, done) {
     el("div", {class:"hint"}, T["settings.hosts.bridge.off"]),
     (() => { const l = el("label", {class:"check"}); l.append(bridgeIn, document.createTextNode(T["settings.hosts.bridge.put"])); return l; })());
 
+  // The AI CLIs' hooks on this machine. Only the CLIs already asked about on
+  // the board are listed -- a hook is agreed to having been shown the file it
+  // goes into, and that is shown on the board, not here. A tick taken off
+  // takes this app's entry out the next time the machine is reached
+  const hookAnswers = editing ? ((current.far_hooks || {})[(h.name || "").trim()] || {}) : {};
+  const hookIns = Object.keys(hookAnswers).sort().map(cli => {
+    const i = el("input", {type:"checkbox"});
+    i.checked = hookAnswers[cli] === "on";
+    i.dataset.cli = cli;
+    return i;
+  });
+  const hooksBox = el("div", {class:"bridgecard"},
+    el("div", {class:"hint"}, T["settings.hosts.hooks.what"]),
+    el("div", {class:"hint"}, T[hookIns.length ? "settings.hosts.hooks.off" : "settings.hosts.hooks.none"]),
+    ...hookIns.map(i => { const l = el("label", {class:"check"}); l.append(i, document.createTextNode(i.dataset.cli)); return l; }));
+
   const shut = () => { back.remove(); if (done && !closedBy) done(null); };
   let closedBy = null;
   const back = openModal(
@@ -10636,12 +10680,14 @@ function hostDialog(at, redraw, kind, done) {
            field(T["settings.hosts.template"], templateIn, T["settings.hosts.template.hint"]),
            field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"]),
            mark ? mark.box : null,
-           field(T["settings.hosts.bridge"], bridgeBox, "")]
+           field(T["settings.hosts.bridge"], bridgeBox, ""),
+           field(T["settings.hosts.hooks"], hooksBox, "")]
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,
            field(T["settings.hosts.keepalive"], keepaliveIn, T["settings.hosts.keepalive.hint"]),
            field(T["settings.hosts.bridge"], bridgeBox, ""),
+           field(T["settings.hosts.hooks"], hooksBox, ""),
            el("div", {class:"hint"}, T["settings.hosts.projects.hint"])])),
     el("div", {class:"mfoot"},
       editing
@@ -10656,8 +10702,25 @@ function hostDialog(at, redraw, kind, done) {
               msg(fill(T["settings.hosts.drop.in_use"], {name: h.name || "", what: users.join(", ")}), true);
               return;
             }
-            if (!await confirmAction(fill(T["settings.hosts.drop.sure"], {name: h.name || ""}),
+            const hostKey = (h.name || "").trim();
+            const hooksOn = !made && Object.values((current.far_hooks || {})[hostKey] || {}).includes("on");
+            if (hooksOn) {
+              // Once the entry is gone nothing can reach the server to take
+              // them out, so the choice is made here, before it goes
+              const pick = await confirmAction(fill(T["settings.hosts.drop.hooks"], {name: hostKey}),
+                T["settings.hosts.drop.hooks.take_out"], T["settings.hosts.drop.hooks.keep"]);
+              if (!pick) return;
+              if (pick === true) {
+                let j = null;
+                try {
+                  j = await (await fetch("/api/farhooks/takeout", {method:"POST",
+                    headers:{"X-Token":TOKEN, "Content-Type":"application/json"}, body: JSON.stringify({host: hostKey})})).json();
+                } catch (e) { j = {ok:false, error: String(e)}; }
+                if (!j || !j.ok) { msg(fill(T["settings.hosts.drop.hooks.failed"], {why: (j && j.error) || ""}), true); return; }
+              }
+            } else if (!await confirmAction(fill(T["settings.hosts.drop.sure"], {name: h.name || ""}),
                                      T["settings.hosts.drop"])) return;
+            if (current.far_hooks) { delete current.far_hooks[hostKey]; if (!Object.keys(current.far_hooks).length) delete current.far_hooks; }
             current.hosts.splice(at, 1);
             refreshSave(); shut(); redraw();
           }}, T["settings.hosts.drop"])
@@ -10715,6 +10778,16 @@ function hostDialog(at, redraw, kind, done) {
     const bridges = (current.bridges || []).filter(b => b !== was && b !== it.name);
     if (bridgeIn.checked && it.name) bridges.push(it.name);
     if (bridges.length) current.bridges = bridges; else delete current.bridges;
+    // The hook answers go with the name too. Unticked is "off": the app takes
+    // its entry out of that CLI's file on the machine when it next reaches it
+    const fh = current.far_hooks || {};
+    const hooksWere = fh[was] ? Object.assign({}, fh[was]) : null;
+    if (was && was !== it.name) delete fh[was];
+    if (hooksWere && it.name) {
+      for (const i of hookIns) hooksWere[i.dataset.cli] = i.checked ? "on" : "off";
+      fh[it.name] = hooksWere;
+    }
+    if (Object.keys(fh).length) current.far_hooks = fh; else delete current.far_hooks;
     if (mark) mark.commit();
     closedBy = "save";
     refreshSave(); shut(); redraw();

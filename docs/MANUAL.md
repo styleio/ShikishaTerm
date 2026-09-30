@@ -278,6 +278,14 @@ the settings.
 **A server whose key is not the one from last time is refused.** If you
 reinstalled the server, delete its line from `data/known-hosts.json`.
 
+**An AI's settings file on another machine is written into only when you allow it.** The first time an
+AI tab runs on a server or a MicroVM, the screen asks whether one entry may go into that AI's settings file
+there, so it can report what it is doing (the file as it would be is shown before you choose). Without it
+the tab still works; its state is read from the screen and the conversation record. To take it out later,
+open that machine under Settings > Where it runs, untick the AI and save: only this app's entry is removed, the
+next time the machine is reached. A machine an earlier version wrote into without asking is asked about
+once: keep it, or take it out.
+
 A tab that runs the `ssh` command itself still works as before (the kind is
 "SSH (ssh.exe)").
 

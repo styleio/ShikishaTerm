@@ -1087,6 +1087,13 @@ pub struct Config {
     /// list takes the bridge off it
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bridges: Vec<String>,
+    /// The person's answers about the AI CLIs' hooks on other machines: the
+    /// machine's entry name -> the CLI's name -> [`HOOK_ON`] / [`HOOK_OFF`].
+    /// Nothing is written into a CLI's settings on a machine without "on"
+    /// here, and "off" takes this app's entries out the next time the machine
+    /// is reached (`agenthook::far_look`)
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub far_hooks: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
     /// What writes the automatic names, and the branch names that follow them
     /// ("claude", "codex", "gemini", or `model <connection>/<model>`). Unset
     /// is the assistant AI above. A desk may name another
@@ -6676,6 +6683,39 @@ fn save_agent_hook_at(path: &Path, cli: &str, on: bool) -> bool {
     }
 }
 
+/// Write the person's answer about one CLI's hook on another machine into
+/// the settings file ([`Config::far_hooks`]), leaving the rest of it as they
+/// wrote it. Returns whether it was written
+pub fn save_far_hook(host: &str, cli: &str, on: bool) -> bool {
+    save_far_hook_at(&config_file_path(), host, cli, on)
+}
+
+fn save_far_hook_at(path: &Path, host: &str, cli: &str, on: bool) -> bool {
+    let (host, cli) = (host.trim(), cli.trim());
+    if host.is_empty() || cli.is_empty() {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record the answer about a hook on another machine: settings are not readable");
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    if !doc["far_hooks"].is_object() {
+        doc["far_hooks"] = serde_json::json!({});
+    }
+    if !doc["far_hooks"][host].is_object() {
+        doc["far_hooks"][host] = serde_json::json!({});
+    }
+    doc["far_hooks"][host][cli] = serde_json::json!(if on { HOOK_ON } else { HOOK_OFF });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
 pub fn save_agreed(row: &str, kind: &str) -> bool {
     save_agreed_at(&config_file_path(), row, kind)
 }
@@ -7660,6 +7700,32 @@ mod tests {
         assert_eq!(doc["language"], "ja", "other settings changed");
         let cfg: Config = serde_json::from_value(doc).unwrap();
         assert_eq!(cfg.agent_hooks.get("Codex CLI").map(String::as_str), Some(HOOK_ON));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The answer about a CLI's hook on another machine is kept under that
+    /// machine's name, beside the answers for this PC and the rest of the file
+    #[test]
+    fn the_answer_about_a_far_hook_is_kept_per_machine() {
+        let dir = std::env::temp_dir().join("shikisha-far-hooks-answer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"language": "ja", "agent_hooks": {"Claude Code": "on"}}"#).unwrap();
+        assert!(save_far_hook_at(&path, "build", "Claude Code", true));
+        assert!(save_far_hook_at(&path, "build", "Codex CLI", false));
+        assert!(save_far_hook_at(&path, "vm", "Claude Code", false));
+        assert!(save_far_hook_at(&path, "build", "Claude Code", false), "changing one's mind");
+        assert!(!save_far_hook_at(&path, " ", "Claude Code", true), "no machine named");
+        assert!(!save_far_hook_at(&path, "build", " ", true), "no CLI named");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["far_hooks"],
+            serde_json::json!({"build": {"Claude Code": "off", "Codex CLI": "off"}, "vm": {"Claude Code": "off"}})
+        );
+        assert_eq!(doc["agent_hooks"], serde_json::json!({"Claude Code": "on"}), "this PC's answer changed");
+        let cfg: Config = serde_json::from_value(doc).unwrap();
+        assert_eq!(cfg.far_hooks["vm"]["Claude Code"], HOOK_OFF);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -684,6 +684,22 @@
   "tui.hooks.added": "Set up before. This version adds: {events}",
   "tui.hooks.go": "Allow and set up",
   "tui.hooks.no": "Do not set up",
+
+  "tui.hooks.far.title": "Let an AI on another machine report what it is doing",
+
+  "tui.hooks.far.say": "The dot beside a tab on {machine} is exact when its AI reports when it starts, waits for you and finishes. That takes one entry in the AI's settings file on {machine}, which this app writes only if you allow it here.",
+
+  "tui.hooks.far.detail": "One entry is added to the file below, on {machine}; the rest of the file stays as it is, and the file as it was is kept beside it as .bak. Nothing is written if that copy cannot be kept. The entry only prints a short line to that AI's own terminal, which this app reads. If you do not allow it, the tabs on {machine} still work: their state is read from the screen and the conversation record, which is sometimes less exact. You can take it out later by opening {machine} under Settings > Where it runs.",
+
+  "tui.hooks.far.found": "An earlier version of this app already wrote this entry on {machine} without asking. Keep it, or take it out.",
+
+  "tui.hooks.far.go": "Allow and write",
+
+  "tui.hooks.far.no": "Do not write",
+
+  "tui.hooks.far.keep": "Keep it",
+
+  "tui.hooks.far.take_out": "Take it out",
   "tui.coach.plus": "Start an AI here.",
   "tui.coach.close": "Close",
   "tui.ago.now": "now",
@@ -907,6 +923,12 @@
   "msg.hooks.off": "Not set up: {names}. You can set them up under Settings › Carrying conversations across a restart",
   "msg.hooks.failed": "Could not finish setting up: {why}. It is tried again the next time the app starts",
   "msg.hooks.not_saved": "Your answer could not be saved to the settings file, so nothing was set up",
+
+  "msg.hooks.far.set_up": "Written: {name} on {machine} now reports what it is doing, from its next start",
+
+  "msg.hooks.far.off": "{name} on {machine} has no entry of this app's. Its state is read from the screen",
+
+  "msg.hooks.far.failed": "Could not finish on the other machine: {why}. It is tried again the next time the machine is reached",
   "msg.skill.removed": "{name} no longer has the skill for asking other tabs",
   "msg.skill.failed": "The skill for {name} was not changed: {error}",
   "msg.skill.updated": "The skill for asking other tabs was updated for {names}",
@@ -1119,6 +1141,22 @@
   "settings.hosts.bridge.where": "What is put there: a small program (about 1 MB) in ~/.local/share/shikisha/bridge/. It runs only while this app is using a tab on this machine. Nothing else on the machine is changed.",
   "settings.hosts.bridge.off": "To take it off, untick the box and save. The folder is deleted then, or, if the machine cannot be reached at that moment (a paused MicroVM, say), as soon as this app reaches it again.",
   "settings.hosts.bridge.put": "Put the bridge on this machine",
+
+  "settings.hosts.hooks": "AI status reports (hooks)",
+
+  "settings.hosts.hooks.what": "With a tick, the AI settings file on this machine carries one entry of this app's, so the dot beside its tabs is exact. It is written only after you allow it on the screen.",
+
+  "settings.hosts.hooks.off": "To take it out, untick it and save. Only this app's entry is removed, the next time the machine is reached; the rest of the file stays.",
+
+  "settings.hosts.hooks.none": "Not asked yet. It is asked on the screen the first time an AI runs on this machine.",
+
+  "settings.hosts.drop.hooks": "{name} still has this app's entry in its AI settings files. Take it out before removing the server? Taken out now, over the connection; kept, it stays there with nothing left that removes it.",
+
+  "settings.hosts.drop.hooks.take_out": "Take it out, then remove",
+
+  "settings.hosts.drop.hooks.keep": "Remove and leave it",
+
+  "settings.hosts.drop.hooks.failed": "Could not take it out, so the server was not removed: {why}",
   "settings.hosts.keepalive.hint": "A small check is sent to the server this often, so a quiet connection is not cut by something on the way. Three with no answer are a connection that is gone, and its terminals are opened again as soon as the server can be reached. 0 sends none.",
   "settings.hosts.drop": "Remove",
   "settings.sec.operate": "Limits on handing work",

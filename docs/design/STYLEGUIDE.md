@@ -253,7 +253,7 @@ not on its page. A name changed is a name changed here too.
 | Part | Function to call | Page |
 |---|---|---|
 | Dialog (settings, `.framed`) | `openModal(...kids)` (give the returned frame `.framed`) | settings (`webui.rs`) |
-| Confirming something that cannot be undone | `confirmAction(message, action)` | settings (`webui.rs`) |
+| Confirming something that cannot be undone | `confirmAction(message, action, other)` (`other` names a second way through, only when there are two; pressed, it answers "other") | settings (`webui.rs`) |
 | A question stood over the board (`#floatbox`) | `frameOpen(spec)`. Drawn again with `frameDraw()`, closed with `frameLeave()`, "More settings" is `frameMore()`, Esc and ✕ are `frameCancel()` | settings (`webui.rs`) |
 | Field | `sfield(label, control, hint)`. A field tied to a setting: `field(obj, key, ph)`, `check(obj, key, label)`, `checkDefaultOn(obj, key, label)`, `choose(obj, key, opts)`, `pathField(obj, key, ph, kind, title)` | settings (`webui.rs`) |
 | A name and what it sets, on one line | `row(label, ...kids)` | settings (`webui.rs`) |
