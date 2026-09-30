@@ -95,6 +95,9 @@ const PHONE_KEY = 'portsphone0123456789abcd';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
+  // Answered already, so the start does not stop on the question about the
+  // AI CLIs' hooks, which covers the board (this checks nothing about them)
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   side_bar_width: 420,
   external_api: { access: 'user' },
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
@@ -263,6 +266,10 @@ try {
 
   console.log('4. a folder where nothing listens');
   await board.front('quiet');
+  // Another tab keeps its own choice; the called panel waits in the strip,
+  // and pressing it there shows this folder's ports
+  await board.run('sideChoose("ports")');
+  await sleep(200);
   p = await board.panel();
   check(p.on === 'ports' && p.rows.length === 0 && p.text.includes(L['tui.ports.here.none']), 'it says nothing listens, and what starts a port: ' + JSON.stringify(p));
   await board.shot('4-empty');
