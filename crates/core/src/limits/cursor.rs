@@ -57,6 +57,13 @@ fn sign_in(now: i64) -> Option<(String, String)> {
     })
 }
 
+/// The account Cursor is signed in as: the subject of whichever token it
+/// keeps, run out or not
+pub(super) fn account() -> Option<String> {
+    let dir = cursor_dir()?;
+    [token_in_agent_file(&dir), token_in_editor(&dir)].into_iter().flatten().find_map(|t| subject_of(&t).map(|(sub, _)| sub))
+}
+
 pub(super) fn signed_in() -> bool {
     cursor_dir().is_some_and(|d| token_in_agent_file(&d).or_else(|| token_in_editor(&d)).is_some())
 }

@@ -109,12 +109,31 @@ fn file() -> std::path::PathBuf {
     crate::config::state_path("claude-usage.json")
 }
 
-pub(super) fn save(l: &Limits, at: i64) {
-    let _ = crate::crypto::write_atomic(&file(), &book_json(l, at).to_string());
+/// The account Claude Code is signed in as: its id, from Claude Code's own
+/// settings file (written at every sign-in). `None` when that file does not
+/// say, which leaves "which account" as unknown
+pub(super) fn account() -> Option<String> {
+    let v = super::read_json(&super::home()?.join(".claude.json"))?;
+    let id = v.get("oauthAccount")?.get("accountUuid")?.as_str()?.trim();
+    (!id.is_empty()).then(|| id.to_string())
 }
 
-pub(super) fn load() -> Option<(Limits, i64)> {
-    book_of(&super::read_json(&file())?)
+/// Keep the reading, with the mark of the account it is of (`who`)
+pub(super) fn save(l: &Limits, at: i64, who: Option<&str>) {
+    let mut v = book_json(l, at);
+    if let Some(who) = who {
+        v["who"] = serde_json::Value::String(who.to_string());
+    }
+    let _ = crate::crypto::write_atomic(&file(), &v.to_string());
+}
+
+/// The kept reading and the mark of the account it is of. A file written
+/// before readings carried the mark says no account; it is shown until the
+/// next reading replaces it, as it was before
+pub(super) fn load() -> Option<((Limits, i64), Option<String>)> {
+    let v = super::read_json(&file())?;
+    let who = v.get("who").and_then(|w| w.as_str()).map(str::to_string);
+    Some((book_of(&v)?, who))
 }
 
 fn book_json(l: &Limits, at: i64) -> serde_json::Value {

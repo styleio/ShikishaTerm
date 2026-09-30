@@ -234,13 +234,16 @@ impl Source {
         let now = now_ms() / 1000;
         match self {
             // A panic anywhere in the reading is one more "no answer"
-            Source::Codex => codex::newest(asked(self, now, codex::ask), std::panic::catch_unwind(|| codex::reading(now)).unwrap_or(None)),
-            Source::Claude => asked(self, now, claude::ask),
-            Source::Kimi => asked(self, now, kimi::ask),
-            Source::Grok => asked(self, now, grok::ask),
-            Source::OpenCode => asked(self, now, opencode::ask),
-            Source::Cursor => asked(self, now, cursor::ask),
-            Source::Gemini => asked(self, now, gemini::ask),
+            Source::Codex => codex::newest(
+                asked(self, now, codex::ask, codex::account),
+                std::panic::catch_unwind(|| codex::reading(now)).unwrap_or(None),
+            ),
+            Source::Claude => asked(self, now, claude::ask, claude::account),
+            Source::Kimi => asked(self, now, kimi::ask, kimi::account),
+            Source::Grok => asked(self, now, grok::ask, grok::account),
+            Source::OpenCode => asked(self, now, opencode::ask, opencode::account),
+            Source::Cursor => asked(self, now, cursor::ask, cursor::account),
+            Source::Gemini => asked(self, now, gemini::ask, gemini::account),
         }
     }
 
@@ -444,21 +447,62 @@ const DATED: i64 = 120;
 const QUIET_FIRST: i64 = 60;
 const QUIET_MOST: i64 = 15 * 60;
 
+/// Which account a sign-in is for, as a mark that says "same" or "not the
+/// same" and nothing else: a hash of the account's id (or of the credential
+/// itself where the file names no account). Never the id or the secret -- the
+/// mark is kept on disk beside Claude's last reading
+pub(super) fn account_mark(identity: &str) -> String {
+    use sha2::Digest as _;
+    let h = sha2::Sha256::digest(identity.trim().as_bytes());
+    // Half of the hash: far more than enough to tell a person's few accounts
+    // apart, and short enough to read in the file
+    h.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The account a JWT sign-in is for, from its own claims: the subject, or an
+/// e-mail or user id where a service puts it instead. `None` for a token that
+/// says nothing of the kind (an opaque one), which leaves "which account" as
+/// unknown rather than guessing it from a string that changes every renewal
+fn subject_in_token(token: &str) -> Option<String> {
+    let c = token_claims(token)?;
+    ["sub", "email", "user_id"]
+        .iter()
+        .find_map(|k| c.get(*k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+}
+
 /// What has been learnt of one service: the last good reading and when it
-/// was taken, and how long to leave the service alone.
+/// was taken, which account it was taken for, and how long to leave the
+/// service alone.
 ///
 /// One per service for the whole program, so the status line and the
 /// settings screen share it
 #[derive(Debug, Clone, PartialEq)]
 struct Book {
     last: Option<(Limits, i64)>,
+    /// The account the last reading is of (`account_mark`), when known
+    who: Option<String>,
     quiet_until: i64,
     quiet: i64,
     loaded: bool,
 }
 
 impl Book {
-    const EMPTY: Book = Book { last: None, quiet_until: 0, quiet: 0, loaded: false };
+    const EMPTY: Book = Book { last: None, who: None, quiet_until: 0, quiet: 0, loaded: false };
+
+    /// The CLI is signed in as `who` now. A reading of another account is
+    /// no reading of this one: it goes, and the service is asked afresh
+    /// rather than left alone for the old account's refusals. An account that
+    /// cannot be told (an opaque token, the file unreadable) changes nothing:
+    /// a renewal must not look like somebody else signing in
+    fn signed_in_as(&mut self, who: Option<&str>) {
+        let Some(who) = who else { return };
+        if self.who.as_deref().is_some_and(|was| was != who) {
+            self.last = None;
+            self.quiet = 0;
+            self.quiet_until = 0;
+        }
+        self.who = Some(who.to_string());
+    }
 
     /// Whether to ask the service now, rather than hand out what is known
     fn should_ask(&self, now: i64) -> bool {
@@ -491,8 +535,11 @@ impl Book {
 static BOOKS: Mutex<Vec<(Source, Book)>> = Mutex::new(Vec::new());
 
 /// A service's reading through its [`Book`]: `fetch` is called only when
-/// the book says to ask, and a panic in it is one more "no answer"
-fn asked(source: Source, now: i64, fetch: fn() -> Option<Limits>) -> Option<Limits> {
+/// the book says to ask, and a panic in it is one more "no answer". `account`
+/// says which account the CLI is signed in as now, so a reading kept from
+/// another account is never handed out as this one's
+fn asked(source: Source, now: i64, fetch: fn() -> Option<Limits>, account: fn() -> Option<String>) -> Option<Limits> {
+    let who = std::panic::catch_unwind(account).ok().flatten().map(|id| account_mark(&id));
     let with = |f: &mut dyn FnMut(&mut Book)| {
         let Ok(mut books) = BOOKS.lock() else { return };
         if !books.iter().any(|(s, _)| *s == source) {
@@ -508,10 +555,14 @@ fn asked(source: Source, now: i64, fetch: fn() -> Option<Limits>) -> Option<Limi
             b.loaded = true;
             // Claude's last reading is kept between starts, so a start while
             // its service is turning asks away still has something to show
-            if source == Source::Claude {
-                b.last = claude::load();
+            if source == Source::Claude
+                && let Some((last, kept_for)) = claude::load()
+            {
+                b.last = Some(last);
+                b.who = kept_for;
             }
         }
+        b.signed_in_as(who.as_deref());
         ask = b.should_ask(now);
     });
     if ask {
@@ -519,7 +570,7 @@ fn asked(source: Source, now: i64, fetch: fn() -> Option<Limits>) -> Option<Limi
         if source == Source::Claude
             && let Some(l) = &got
         {
-            claude::save(l, now);
+            claude::save(l, now, who.as_deref());
         }
         with(&mut |b| b.record(got.clone(), now));
     }
@@ -669,6 +720,37 @@ mod tests {
         // An answer puts everything back
         b.record(Some(l), 3_000);
         assert_eq!((b.quiet, b.quiet_until), (0, 0));
+    }
+
+    /// A reading is of one account. Signed in as another, the old numbers go
+    /// -- even while the service is turning asks away, when before they stood
+    /// in as though they were the new account's -- and the service is asked
+    /// at once. An account that cannot be told changes nothing, and the
+    /// account itself is never kept, only its mark
+    #[test]
+    fn a_reading_of_another_account_is_not_handed_out() {
+        let l = Limits::of(vec![Allowance::whole(Span::Hours5, Window { pct: 71, resets_at: None })], None).unwrap();
+        let (alice, bob) = (account_mark("alice-uuid"), account_mark("bob-uuid"));
+        assert_ne!(alice, bob);
+        assert!(!alice.contains("alice"), "the mark carries the id itself");
+        let mut b = Book { loaded: true, ..Book::EMPTY };
+        b.signed_in_as(Some(&alice));
+        b.record(Some(l), 1_000);
+        b.record(None, 1_060); // turned away since
+        b.signed_in_as(None); // a renewal in progress: unknown, not "someone else"
+        assert!(b.answer(1_100).is_some(), "an unknown account dropped the reading");
+        b.signed_in_as(Some(&alice));
+        assert!(b.answer(1_100).is_some(), "the same account dropped the reading");
+        b.signed_in_as(Some(&bob));
+        assert!(b.answer(1_100).is_none(), "alice's numbers were handed out for bob");
+        assert!(b.should_ask(1_100), "the new account waited out the old one's refusals");
+        // A JWT's subject names the account; an opaque token names none
+        let jwt = |claims: &str| {
+            use base64::Engine as _;
+            format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims))
+        };
+        assert_eq!(subject_in_token(&jwt(r#"{"sub":"u-1"}"#)).as_deref(), Some("u-1"));
+        assert_eq!(subject_in_token("opaque-token"), None);
     }
 
     /// The whole subscription first, shortest window first; a model's own

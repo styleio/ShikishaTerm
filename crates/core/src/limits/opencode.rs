@@ -64,6 +64,12 @@ pub(super) fn signed_in() -> bool {
     key().is_some()
 }
 
+/// Which account: the key itself names it (only its mark is ever kept). A
+/// key does not renew itself, so a different key is a different sign-in
+pub(super) fn account() -> Option<String> {
+    key()
+}
+
 pub(super) fn ask() -> Option<Limits> {
     let key = key()?;
     let mut resp = super::client()

@@ -27,6 +27,11 @@ fn token_in(v: &serde_json::Value, now: i64) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
+/// The account Kimi Code is signed in as, from the token's own subject
+pub(super) fn account() -> Option<String> {
+    super::subject_in_token(super::read_json(&sign_in_file()?)?.get("access_token")?.as_str()?)
+}
+
 pub(super) fn ask() -> Option<Limits> {
     let token = token_in(&super::read_json(&sign_in_file()?)?, super::now_ms() / 1000)?;
     let base = std::env::var("KIMI_CODE_BASE_URL").ok().filter(|b| !b.trim().is_empty());

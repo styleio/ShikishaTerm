@@ -30,7 +30,9 @@ fn entry(v: &serde_json::Value, now: i64) -> Option<(String, Option<String>)> {
             return None;
         }
         let expires = e.get("expires_at").and_then(|x| x.as_str()).and_then(super::epoch_of);
-        if expires.is_some_and(|at| at - now <= super::SPARE) {
+        // Saturating: "any time at all" is asked as `now = i64::MIN`, and
+        // the plain difference overflows there
+        if expires.is_some_and(|at| at.saturating_sub(now) <= super::SPARE) {
             return None;
         }
         Some((token.to_string(), e.get("user_id").and_then(|u| u.as_str()).map(str::to_string)))
@@ -40,6 +42,12 @@ fn entry(v: &serde_json::Value, now: i64) -> Option<(String, Option<String>)> {
         return o.iter().filter(|(k, _)| is_xai(k)).find_map(|(_, e)| usable(e));
     }
     o.values().find_map(usable)
+}
+
+/// The account Grok is signed in as: the user id its sign-in names, taken
+/// whether or not the token has run out
+pub(super) fn account() -> Option<String> {
+    entry(&super::read_json(&sign_in_file()?)?, i64::MIN).and_then(|(_, user)| user)
 }
 
 pub(super) fn ask() -> Option<Limits> {

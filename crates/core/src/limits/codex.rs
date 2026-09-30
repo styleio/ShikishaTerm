@@ -25,6 +25,19 @@ fn sign_in_of(v: &serde_json::Value, now: i64) -> Option<(String, Option<String>
     Some((token.to_string(), t.get("account_id").and_then(|a| a.as_str()).map(str::to_string)))
 }
 
+/// The account Codex is signed in as: the id its sign-in names, or the
+/// token's own subject. Read whether or not the token has run out -- the
+/// account does not change when a token does
+pub(super) fn account() -> Option<String> {
+    let t = super::read_json(&codex_home()?.join("auth.json"))?.get("tokens")?.clone();
+    t.get("account_id")
+        .and_then(|a| a.as_str())
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .or_else(|| super::subject_in_token(t.get("access_token")?.as_str()?))
+}
+
 /// One ask of the service, the question the CLI's own status asks
 pub(super) fn ask() -> Option<Limits> {
     let (token, account) = sign_in(super::now_ms() / 1000)?;

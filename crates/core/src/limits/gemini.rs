@@ -29,6 +29,12 @@ fn token_in(v: &serde_json::Value, now: i64) -> Option<String> {
     Some(v.get("access_token")?.as_str()?.trim().to_string()).filter(|t| !t.is_empty())
 }
 
+/// The account the Google sign-in is for: the subject of the ID token kept
+/// beside the access token (the access token itself says nothing of it)
+pub(super) fn account() -> Option<String> {
+    super::subject_in_token(super::read_json(&sign_in_file()?)?.get("id_token")?.as_str()?)
+}
+
 pub(super) fn signed_in() -> bool {
     sign_in_file().is_some_and(|f| f.is_file())
 }
