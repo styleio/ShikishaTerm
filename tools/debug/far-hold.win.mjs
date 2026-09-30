@@ -177,10 +177,16 @@ try {
   // The build this app put there: not one of the made-up builds from step 0
   const program = (await inside(`ls ${BRIDGE_DIR}`)).split('\n')
     .find((n) => n.startsWith('shikisha-bridge-') && !FAKE.includes(n.slice('shikisha-bridge-'.length)) && !n.endsWith('.part'));
+  // The other app is of another build: its door, a program of another name,
+  // carries its line to the resident process this app's build started.
   // Marked in its environment, so the cut below leaves it alone
-  await box.commands.run(`(while true; do echo '{"t":"tick"}'; sleep 5; done) | OTHER_APP=1 ${BRIDGE_DIR}/${program} serve > /tmp/other-app.out 2>&1`, { background: true });
+  const other = 'shikisha-bridge-0.0.9-otherbuild';
+  await inside(`cp ${BRIDGE_DIR}/${program} ${BRIDGE_DIR}/${other}`);
+  await box.commands.run(`(while true; do echo '{"t":"tick"}'; sleep 5; done) | OTHER_APP=1 ${BRIDGE_DIR}/${other} serve > /tmp/other-app.out 2>&1`, { background: true });
   await sleep(4000);
-  check((await inside('head -c 200 /tmp/other-app.out')).includes('"t":"hello"'), 'another app\'s line is up');
+  const otherSaid = await inside('head -c 400 /tmp/other-app.out');
+  check(otherSaid.includes('"t":"hello"') && otherSaid.includes(program), 'another app of another build is on the same resident process: ' + otherSaid.slice(0, 200));
+  check((await inside(`ls -a ${BRIDGE_DIR}`)).split('\n').includes(`.${other}.lock`), 'the other build\'s door holds its mark');
   const before = log().length;
   const killed = await inside(`for p in $(pgrep -f '^${BRIDGE_DIR}/${program} serve'); do tr '\\0' '\\n' < /proc/$p/environ | grep -qx OTHER_APP=1 || { kill $p; echo killed $p; }; done`);
   check(/killed/.test(killed), 'the app\'s line was cut: ' + killed);
@@ -204,6 +210,12 @@ try {
   const drawn = (text) => text.split('\n').some((l) => l.trim() === 'fullscreen-mark');
   check(normal.includes('held-42') && !drawn(normal), 'leaving the full screen brings back the normal screen under it' + (normal.includes('held-42') ? '' : ': ' + JSON.stringify(normal.split('\n').filter((l) => l.trim()).slice(-12))));
   check(!/not known there any more/.test(log()), 'the terminal was never taken for gone');
+
+  console.log('6. the shikisha command in the terminal runs the resident process\'s own build');
+  await primitive('send_to_tab', ['held', 'echo "prog=$SHIKISHA_BRIDGE_PROGRAM"']);
+  await until(async () => (await screen()).includes(`prog=${BRIDGE_DIR}/${program}`), 'the program in the terminal', 30000)
+    .then(() => check(true, 'the terminal names the resident process\'s build'))
+    .catch(async () => check(false, 'the terminal names the resident process\'s build: ' + (await screen()).slice(-300)));
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + (e.stack || e));

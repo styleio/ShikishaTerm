@@ -230,6 +230,11 @@ impl Terms {
                 }
             }
         }
+        // The `shikisha` command in it runs this build, whatever build was
+        // put on the machine after (far-keep plan §4.5)
+        if let Ok(exe) = std::env::current_exe() {
+            cmd.env(crate::farlink::ENV_PROGRAM, exe);
+        }
         let mut child = pty.slave.spawn_command(cmd)?;
         drop(pty.slave);
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.master.take_writer()?));

@@ -137,6 +137,9 @@ pub fn far_cli(args: &[String]) -> i32 {
 /// Where the `shikisha` command over there finds the bridge, and its tab's key
 pub const ENV_SOCK: &str = "SHIKISHA_BRIDGE_SOCK";
 pub const ENV_KEY: &str = "SHIKISHA_KEY_FILE";
+/// The program of the resident process that opened a terminal, which the
+/// `shikisha` command in it runs (`shim`)
+pub const ENV_PROGRAM: &str = "SHIKISHA_BRIDGE_PROGRAM";
 
 // ── Here ────────────────────────────────────────────────────────────────────
 
@@ -366,6 +369,39 @@ pub fn call(at: &crate::elsewhere::Elsewhere, op: &str, p: Value) -> Result<Valu
         .call(op, p, Duration::from_secs(60))
 }
 
+/// How many times the bridge is put there and started before it is left to
+/// the next round
+const BRING_UP_TRIES: u32 = 3;
+
+/// Put this build of the bridge on a machine if it is not there, and start
+/// it. Agreed to for this machine's entry: a machine of it without this build
+/// gets it now, as the person said.
+///
+/// What was found there is not taken as settled (far-keep plan §4.5): between
+/// looking and starting, another app of another build may have cleared this
+/// build away, as nothing ran it. A start that fails is tried again from the
+/// look, a few times
+fn bring_up(at: &crate::elsewhere::Elsewhere) -> Result<()> {
+    let mut tried = 0;
+    loop {
+        tried += 1;
+        let done = (|| -> Result<()> {
+            if installed(at)? != Installed::Current {
+                install(at)?;
+            }
+            connect(at).map(drop)
+        })();
+        match done {
+            Ok(()) => return Ok(()),
+            Err(e) if tried >= BRING_UP_TRIES => return Err(e),
+            Err(e) => {
+                crate::append_hook_log(&format!("bridge: {} did not start ({e:#}); trying again", at.address()));
+                std::thread::sleep(Duration::from_secs(u64::from(tried)));
+            }
+        }
+    }
+}
+
 /// Start a machine's bridge over the line this app already has to it, and
 /// keep it. Blocks until it has said hello (or not); call from a thread
 pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
@@ -565,10 +601,10 @@ pub fn installed(at: &crate::elsewhere::Elsewhere) -> Result<Installed> {
 
 /// Put the bridge on a machine. Only ever called because the person said so
 /// (the settings, or the question asked where it is needed). The tabs'
-/// command is written beside it. Older builds there are left where they are:
-/// a resident process of one may still be running, holding what it holds,
-/// and a door an older app opens runs one by its name. Clearing them away
-/// safely is far-keep plan §4.5 (a lock each program holds while it runs)
+/// command is written beside it. Of the other builds there, only those
+/// nothing runs are cleared away (`clear_old_builds`): a resident process of
+/// one may still be running, holding what it holds, and a door an older app
+/// opens runs one by its name
 pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     let home = far_home(at)?;
     let machine = crate::elsewhere::exec(at, "uname -m", 30_000)?.out;
@@ -582,8 +618,7 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         crate::ssh::FileJob::Put { from, to: part.clone(), overwrite: true },
         10 * 60_000,
     )?;
-    // The tabs' command: the bridge's own, under the name the tabs call
-    let shim = format!("#!/bin/sh\nexec {} cli \"$@\"\n", q(&program));
+    let shim = shim(&home, &program);
     let bin = format!("{home}/bin/shikisha");
     let ran = crate::elsewhere::exec(
         at,
@@ -603,6 +638,29 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     clear_old_builds(at, &home, &program);
     crate::append_hook_log(&format!("bridge: installed on {}", at.address()));
     Ok(())
+}
+
+/// The tabs' command, `bin/shikisha`: the bridge's own, under the name the
+/// tabs call. Every build writes the same script, so a tab of an older
+/// resident process that calls it after a newer build was put there still
+/// reaches a program (far-keep plan §4.5): the resident process's own, which
+/// it puts in the environment of the terminals it opens; else the build put
+/// there last; else any build there. What the command then says goes to the
+/// socket in the tab's environment in the API's own lines, which no build
+/// changes
+fn shim(home: &str, program: &str) -> String {
+    let q = crate::ssh::sh_quote;
+    format!(
+        "#!/bin/sh\n\
+         for p in \"${ENV_PROGRAM}\" {program} {home}/shikisha-bridge-*; do\n\
+         \x20 case \"$p\" in ''|*.part) continue ;; esac\n\
+         \x20 [ -x \"$p\" ] && exec \"$p\" cli \"$@\"\n\
+         done\n\
+         echo 'shikisha: the SHIKISHA bridge program is not on this machine; connect SHIKISHA-TERM to it again' >&2\n\
+         exit 127\n",
+        program = q(program),
+        home = q(home),
+    )
 }
 
 /// Delete the other builds on a machine that nothing runs any more (far-keep
@@ -786,12 +844,7 @@ impl Keeper {
             let _ = std::thread::Builder::new().name(format!("bridge keep {}", w.at.address())).spawn(move || {
                 let done = (|| -> Result<()> {
                     if !is_up(&w.at) {
-                        // Agreed to for this machine's entry: a machine of it
-                        // without this version gets it now, as the person said
-                        if installed(&w.at)? != Installed::Current {
-                            install(&w.at)?;
-                        }
-                        connect(&w.at)?;
+                        bring_up(&w.at)?;
                     }
                     for (tab, k) in fresh {
                         give_key(&w.at, &tab, &k).map_err(|e| anyhow!(e))?;
@@ -963,6 +1016,46 @@ impl Keeper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tabs' command runs the build of the resident process that opened
+    /// the tab; without one, the build put there last; without that, any
+    /// build there; and with none, says so. Each made-up build here says its
+    /// name and what it was asked
+    #[cfg(unix)]
+    #[test]
+    fn the_tabs_command_finds_a_build_whichever_was_put_there_last() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = std::env::temp_dir().join(format!("shikisha shim {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        let build = |name: &str| {
+            let p = home.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\necho {name} \"$@\"\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+            p
+        };
+        let (older, newer) = (build("shikisha-bridge-1-aaaa"), build("shikisha-bridge-2-bbbb"));
+        build("shikisha-bridge-3-cccc.part");
+        let bin = home.join("bin/shikisha");
+        std::fs::write(&bin, shim(&home.to_string_lossy(), &newer.to_string_lossy())).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let run = |program: Option<&std::path::Path>| {
+            let mut c = std::process::Command::new(&bin);
+            c.args(["tab_list", "a b"]).env_remove(ENV_PROGRAM);
+            if let Some(p) = program {
+                c.env(ENV_PROGRAM, p);
+            }
+            let o = c.output().unwrap();
+            (o.status.code(), String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        assert_eq!(run(Some(&older)), (Some(0), "shikisha-bridge-1-aaaa cli tab_list a b".to_string()));
+        assert_eq!(run(None), (Some(0), "shikisha-bridge-2-bbbb cli tab_list a b".to_string()));
+        std::fs::remove_file(&newer).unwrap();
+        assert_eq!(run(Some(&newer)), (Some(0), "shikisha-bridge-1-aaaa cli tab_list a b".to_string()));
+        std::fs::remove_file(&older).unwrap();
+        assert_eq!(run(None).0, Some(127), "a build half put there is never run");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// The bridges are looked for beside the program first, and on Linux also
     /// where the server version's package puts them

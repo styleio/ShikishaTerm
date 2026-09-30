@@ -1021,6 +1021,60 @@ mod tests {
         p.screen().contents()
     }
 
+    /// Two apps attach to one terminal at the same moment (far-keep plan
+    /// §10.1 "reconnecting at once"): one of them owns it in the end, the
+    /// other is told it was taken, and only the owner's keys go in
+    #[test]
+    fn two_apps_attaching_at_once_leave_one_owner() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Opened by an app that then goes, and a second app kept on the
+        // line so the resident process stays while the two come
+        let keeper = App::open(&run);
+        let mut pc = App::open(&run);
+        term(&mut pc, json!({ "do": "open", "ref": 1, "tab": "t1", "rows": 24, "cols": 80, "then": "exec cat" }));
+        let opened = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened");
+        let (id, generation) = (opened["term"].as_u64().unwrap(), opened["gen"].as_str().unwrap().to_string());
+        assert!(term_said(&mut pc, |m| m["did"] == "attached").is_some());
+        drop(pc);
+
+        let (mut a, mut b) = (App::open(&run), App::open(&run));
+        let attach = json!({ "do": "attach", "term": id, "gen": generation, "tab": "t1", "rows": 24, "cols": 80 });
+        term(&mut a, attach.clone());
+        term(&mut b, attach);
+        let at_a = term_said(&mut a, |m| m["did"] == "attached").expect("a was not attached");
+        let at_b = term_said(&mut b, |m| m["did"] == "attached").expect("b was not attached");
+        let (owner_a, owner_b) = (at_a["owner"].as_u64().unwrap(), at_b["owner"].as_u64().unwrap());
+        assert_ne!(owner_a, owner_b, "both were given the same generation");
+        // The later generation owns it; the one before is told
+        let ((mut winner, at_w, owner_w), (mut loser, owner_l)) =
+            if owner_a > owner_b { ((a, at_a, owner_a), (b, owner_b)) } else { ((b, at_b, owner_b), (a, owner_a)) };
+        assert!(term_said(&mut loser, |m| m["did"] == "taken").is_some(), "the earlier one was not told");
+        term(&mut loser, json!({ "do": "in", "term": id, "owner": owner_l, "b": crate::farterms_b64(b"from-loser\r") }));
+        assert!(term_said(&mut loser, |m| m["did"] == "refused").is_some(), "the earlier one's keys went in");
+        term(&mut winner, json!({ "do": "in", "term": id, "owner": owner_w, "b": crate::farterms_b64(b"from-winner\r") }));
+        let mut outs = Vec::new();
+        while !screen_of(&at_w, &outs).contains("from-winner") {
+            outs.push(term_said(&mut winner, |m| m["did"] == "out" && m["term"] == id).expect("the owner's keys did not go in"));
+        }
+        assert!(!screen_of(&at_w, &outs).contains("from-loser"), "{:?}", screen_of(&at_w, &outs));
+
+        term(&mut winner, json!({ "do": "stop", "term": id, "owner": owner_w }));
+        assert!(term_said(&mut winner, |m| m["did"] == "ended").is_some());
+        drop((winner, loser, keeper));
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The terminals job (far-keep plan §4.4): a terminal opened by one app,
     /// taken by another with its state, the first told and refused, asked
     /// about by the wrong tab or generation answered "unknown", stopped with
