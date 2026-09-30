@@ -101,13 +101,20 @@ async function onThePhone(url) {
     fs.mkdirSync(shots, { recursive: true });
     const shot = await cdp.call('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(shots, `phone-${LANG}.png`), Buffer.from(shot.result.data, 'base64'));
-    const folded = await js('getComputedStyle(document.querySelector("#sask .blist")).display === "none" || !document.querySelector("#sask .smore").open');
+    // The CLIs are in view with the words folded; only the long words fold
+    const folded = await js('!document.querySelector("#sask .smore").open && document.querySelector("#sask .blist").offsetHeight > 0 && !document.querySelector("#sask .smore").contains(document.querySelector("#sask .blist"))');
     await js('document.querySelector("#sask .smore summary").click()');
     await sleep(300);
     const open = await js('document.querySelector("#sask .smore").open');
     const shot2 = await cdp.call('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(shots, `phone-${LANG}-open.png`), Buffer.from(shot2.result.data, 'base64'));
     seen.folds = folded && open;
+    // And the file each would be, opened: the lines added drawn in blue
+    await js('document.querySelector("#sask .smore").open = false; [...document.querySelectorAll("#sask .blist a")].forEach((a) => a.click())');
+    await sleep(300);
+    const shot3 = await cdp.call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    fs.writeFileSync(path.join(shots, `phone-${LANG}-file.png`), Buffer.from(shot3.result.data, 'base64'));
+    seen.blue = await js('[...document.querySelectorAll("#sask .blist pre div")].filter((d) => d.style.color).length');
     await js('document.querySelector("#sask .quiet").click()');
     await sleep(1000);
     return seen;
@@ -187,12 +194,14 @@ async function trial(answer) {
       `it asks about the CLIs used here, and only those: ${names.join(', ')}`);
     const codexRow = (asked?.clis || []).find((c) => c.name === 'Codex CLI');
     check(!!codexRow?.approval && codexRow.approval.toLowerCase().endsWith('config.toml'), 'it says where Codex keeps the approval');
-    check(!!codexRow?.preview && codexRow.preview.includes('--hook'), 'it shows what gets written');
+    const shown = codexRow?.preview || [];
+    check(shown.some((l) => l.ours && l.text.includes('--hook')) && shown.filter((l) => l.text.includes('their-notify')).every((l) => !l.ours) && shown.some((l) => l.text.includes('their-notify')),
+      'it shows the file as it will be: ours marked, theirs as they are');
     if (answer === 'off') {
       // Answered the way a person on a phone answers it: the board opened at
       // a phone's width, the question read off it, its "no" pressed
       const seen = await onThePhone(`http://127.0.0.1:${port}/?t=${TOKEN}`);
-      check(/work together|連携/i.test(seen.title) && seen.rows >= 2 && seen.folds,
+      check(/work together|連携/i.test(seen.title) && seen.rows >= 2 && seen.folds && seen.blue > 0,
         `the phone shows the question: "${seen.title}", ${seen.rows} CLIs, buttons "${seen.no}" / "${seen.go}"`);
     } else {
       const r = await intent({ kind: 'agenthooks', answer, seq: asked?.seq });

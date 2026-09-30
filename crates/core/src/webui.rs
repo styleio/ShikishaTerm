@@ -11399,7 +11399,8 @@ function resumeCard() {
       // What would be written, before agreeing to it — not a description of it
       const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:var(--s1) 0;" +
         "padding:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"},
-        r.hook.preview);
+        // The file as it will be, the lines this app adds in blue
+        ...(r.hook.preview || []).map(l => el("div", {style: l.ours ? "color:var(--accent)" : ""}, l.text || " ")));
       const show = el("a", {href:"#"}, T["settings.resume.show"]);
       show.addEventListener("click", (e) => {
         e.preventDefault();

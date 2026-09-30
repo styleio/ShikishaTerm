@@ -10510,7 +10510,9 @@ function drawHookAsk() {
   hookAskOpen = true;
   const rows = (a.clis || []).map(c => {
     const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:6px 0 0;padding:8px;" +
-      "background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"}, c.preview);
+      "background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"},
+      // The file as it will be, the lines this app adds in blue
+      ...(c.preview || []).map(l => el("div", {style: l.ours ? "color:var(--accent)" : ""}, l.text || " ")));
     const show = el("a", {href:"#", onclick: e => {
       e.preventDefault();
       pre.style.display = pre.style.display === "none" ? "block" : "none";
@@ -20236,8 +20238,7 @@ let sAskGo = null, sAskBack = null;
 // look past on the fortieth delete of the day, and "Production" typed out is not
 //
 // `more` is what a question keeps folded under its words, for the reader who
-// wants the whole of it: {label, say, rows}. The rows go in the fold then, not
-// under the words
+// wants the whole of it: {label, say}. The rows stay in view either way
 //
 // `no` is a second answer beside the button, for a question whose "no" is an
 // answer worth keeping rather than the question put away: {label, act}. Without
@@ -20262,13 +20263,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   list.textContent = "";
   list.hidden = !(rows && rows.length);
   for (const r of rows || []) list.append(r);
-  if (more) {
-    if (more.say) foldBody.append(el("div", {class:"vsay"}, more.say));
-    // The list is the same list, moved into the fold
-    if (rows && rows.length) foldBody.append(list);
-  } else if (list.parentNode !== box.querySelector(".vbox")) {
-    box.querySelector(".vbox").insertBefore(list, box.querySelector(".snever"));
-  }
+  if (more && more.say) foldBody.append(el("div", {class:"vsay"}, more.say));
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";

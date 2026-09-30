@@ -238,7 +238,7 @@ pub struct HookAskCli {
     /// The settings file the hook goes into
     pub file: String,
     /// What goes into it, as it will be written (`agenthook::preview`)
-    pub preview: String,
+    pub preview: Vec<crate::agenthook::Line>,
     /// The file the CLI keeps its approval of the hook in, for a CLI that
     /// holds a new hook back until it is approved; empty for one that does not
     #[serde(default, skip_serializing_if = "String::is_empty")]

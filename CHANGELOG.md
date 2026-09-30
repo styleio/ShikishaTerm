@@ -96,7 +96,8 @@ once it reaches its first tagged release.
 - **The AI command-line tools are asked, once, to report what they are doing.**
   When the app starts and finds Claude Code, Codex or Gemini used on this PC
   without an answer about them yet, it shows which settings file of each it
-  would add one entry to, and exactly what that entry is, and asks. Allowed,
+  would add one entry to and, a press away, that file as it will be, the
+  lines it adds in blue beside the ones already there, and asks. Allowed,
   the entries go in and every start keeps them up to date; the dot beside each
   tab is then right, and two tabs of the same AI in one folder are told apart.
   Not allowed, those files are left alone and the question is not asked again.

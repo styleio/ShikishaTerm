@@ -324,17 +324,104 @@ fn wanted(t: &Target, program: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
     out
 }
 
-/// Exactly what would be added, for a person to read before agreeing to it.
+/// One line of [`preview`]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Line {
+    pub text: String,
+    /// Written by this app: the rest is the person's, as it already is
+    pub ours: bool,
+}
+
+/// What stands in for a group of ours while [`preview`] lays the file out
+const MARKED: &str = "\u{1}shikisha:";
+
+/// The CLI's settings file as it would be once ours is in, a line at a time,
+/// with the lines this app adds told from the ones already there.
 ///
 /// Shown rather than described: this writes into someone else's config, and
-/// "trust me" is not an acceptable substitute for the four lines involved
-pub fn preview(t: &Target) -> String {
-    let mut hooks = serde_json::Map::new();
-    for (event, hs) in wanted(t, &me()) {
-        hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
+/// "trust me" is not an acceptable substitute for the lines involved -- nor is
+/// showing ours alone, which says nothing of what happens to theirs. A file
+/// that cannot be read is not written to (see [`edit`]); shown for it is what
+/// ours is on its own
+pub fn preview(t: &Target) -> Vec<Line> {
+    let program = me();
+    let existing = std::fs::read_to_string(&t.file).ok();
+    let mut doc = match existing.as_deref() {
+        None => serde_json::json!({}),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                let mut hooks = serde_json::Map::new();
+                for (event, hs) in wanted(t, &program) {
+                    hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
+                }
+                return pretty_lines(&serde_json::json!({ "hooks": hooks }), true);
+            }
+        },
+    };
+    let had: Option<Vec<String>> = doc.get("hooks").and_then(|h| h.as_object()).map(|h| h.keys().cloned().collect());
+    let mut marks = Vec::new();
+    merge(&mut doc, t, true, &program, Some(&mut marks));
+    // The stand-in as the text spells it: quoted, the mark escaped
+    let needle = serde_json::to_string(MARKED).unwrap_or_default();
+    let needle = needle.trim_end_matches('"');
+    let mut out: Vec<Line> = Vec::new();
+    for line in pretty_lines(&doc, existing.is_none()) {
+        // A stand-in for a group of ours: the group, where it stood, indented
+        // as it stood and carrying its comma
+        let Some(at) = line.text.find(needle) else {
+            out.push(line);
+            continue;
+        };
+        let lead = &line.text[..at];
+        let rest = &line.text[at + 1..];
+        let n: usize = rest.split('"').next().and_then(|m| m.rsplit(':').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+        let comma = if line.text.trim_end().ends_with(',') { "," } else { "" };
+        let body = serde_json::to_string_pretty(&marks.get(n).cloned().unwrap_or_default()).unwrap_or_default();
+        let count = body.lines().count();
+        for (i, piece) in body.lines().enumerate() {
+            let text = match i {
+                0 => format!("{lead}{piece}"),
+                _ => format!("{}{piece}", " ".repeat(lead.len())),
+            };
+            out.push(Line { text: if i + 1 == count { format!("{text}{comma}") } else { text }, ours: true });
+        }
     }
-    serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks }))
+    // An event, or the whole list of hooks, that the file did not have: the
+    // brackets around ours are ours too
+    let opens = |text: &str, depth: usize| text.len() > depth && text[..depth].trim().is_empty() && !text[depth..].starts_with(' ');
+    let mut i = 0;
+    while i < out.len() {
+        let text = out[i].text.clone();
+        let key = text.trim_start().split('"').nth(1).unwrap_or_default().to_string();
+        let new = match &had {
+            None => opens(&text, 2) && key == "hooks",
+            Some(keys) => opens(&text, 4) && text.trim_end().ends_with('[') && !keys.contains(&key),
+        };
+        if new {
+            let depth = text.len() - text.trim_start().len();
+            let mut j = i;
+            while j < out.len() {
+                out[j].ours = true;
+                let t = out[j].text.trim_start();
+                if j > i && (out[j].text.len() - t.len()) == depth && (t.starts_with(']') || t.starts_with('}')) {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn pretty_lines(v: &serde_json::Value, ours: bool) -> Vec<Line> {
+    serde_json::to_string_pretty(v)
         .unwrap_or_default()
+        .lines()
+        .map(|l| Line { text: l.to_string(), ours })
+        .collect()
 }
 
 /// Put our entry in (or bring it up to date), leaving everything else alone.
@@ -681,6 +768,30 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
         ));
     }
 
+    merge(&mut doc, t, want, program, None);
+
+    if let Some(dir) = t.file.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    // The way back, before the first change
+    if let Some(text) = existing.as_deref() {
+        let _ = std::fs::write(t.file.with_extension("bak"), text);
+    }
+    crate::crypto::write_atomic(&t.file, &serde_json::to_string_pretty(&doc)?)?;
+    crate::append_hook_log(&format!(
+        "{} hook {} in {}",
+        t.name,
+        if want { "installed" } else { "removed" },
+        t.file.display()
+    ));
+    Ok(())
+}
+
+/// Put ours into a CLI's settings as read (`want`), or take ours out of them,
+/// leaving everything else where it was. With `marks`, each group of ours is
+/// put in as a stand-in naming its place in `marks` instead, for [`preview`]
+/// to find in the text and draw as ours
+fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, mut marks: Option<&mut Vec<serde_json::Value>>) {
     for (event, hs) in wanted(t, program) {
         let list = doc
             .as_object_mut()
@@ -705,7 +816,14 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
                 .unwrap_or(true)
         });
         if want {
-            groups.push(serde_json::json!({ "hooks": hs }));
+            let group = serde_json::json!({ "hooks": hs });
+            match marks.as_deref_mut() {
+                Some(marks) => {
+                    groups.push(serde_json::json!(format!("{MARKED}{}", marks.len())));
+                    marks.push(group);
+                }
+                None => groups.push(group),
+            }
         }
     }
     // Leave no empty scaffolding behind after a removal — including the map
@@ -720,22 +838,6 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
             o.shift_remove("hooks");
         }
     }
-
-    if let Some(dir) = t.file.parent() {
-        std::fs::create_dir_all(dir).ok();
-    }
-    // The way back, before the first change
-    if let Some(text) = existing.as_deref() {
-        let _ = std::fs::write(t.file.with_extension("bak"), text);
-    }
-    crate::crypto::write_atomic(&t.file, &serde_json::to_string_pretty(&doc)?)?;
-    crate::append_hook_log(&format!(
-        "{} hook {} in {}",
-        t.name,
-        if want { "installed" } else { "removed" },
-        t.file.display()
-    ));
-    Ok(())
 }
 
 /// What one hook event is worth keeping, once the CLI's JSON has been read.
@@ -1232,7 +1334,8 @@ mod tests {
         assert_eq!(said("AfterAgent").len(), 1);
 
         // What the person was shown is what was written
-        let shown: serde_json::Value = serde_json::from_str(&preview(&t)).unwrap();
+        let shown = preview(&t).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n");
+        let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
         assert_eq!(shown["hooks"]["BeforeAgent"][0]["hooks"].as_array().unwrap().len(), 2);
 
         // And taking it out takes out both
@@ -1416,6 +1519,39 @@ mod tests {
         let names = |v: Vec<Target>| v.into_iter().map(|t| t.name).collect::<Vec<_>>();
         assert_eq!(names(among(all(), &answers, None)), vec!["new"], "asked about");
         assert_eq!(names(among(all(), &answers, Some("on"))), vec!["yes"], "kept right");
+    }
+
+    /// The file is shown as it will be written, the person's lines as they
+    /// are and ours told apart: the group added beside their hook, and an
+    /// event they had nothing under, brackets and all
+    #[test]
+    fn the_preview_is_the_file_to_be_written_with_ours_told_apart() {
+        let dir = tmp("preview");
+        let mut t = target(&dir, HookFormat::Args);
+        t.entries.push(Entry { event: "Stop".into(), arg: "state:DONE".into() });
+        let theirs = serde_json::json!({
+            "model": "opus",
+            "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "their-beep" }] }] }
+        });
+        std::fs::write(&t.file, serde_json::to_string_pretty(&theirs).unwrap()).unwrap();
+        let lines = preview(&t);
+        let text = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        install(&t).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), written, "shown is not what was written:\n{text}");
+        let ours = |needle: &str| lines.iter().filter(|l| l.text.contains(needle)).all(|l| l.ours);
+        let theirs_line = |needle: &str| lines.iter().filter(|l| l.text.contains(needle)).all(|l| !l.ours);
+        assert!(theirs_line("\"model\"") && theirs_line("their-beep") && theirs_line("\"Stop\""), "{lines:#?}");
+        assert!(ours("--hook") && ours("\"SessionStart\""), "{lines:#?}");
+        assert!(lines.iter().filter(|l| l.ours).count() > 8 && lines.iter().any(|l| !l.ours));
+        // The brackets closing the event the file did not have are ours; the
+        // ones closing theirs are not
+        let start = lines.iter().position(|l| l.text.contains("\"SessionStart\"")).unwrap();
+        let close = lines[start..].iter().position(|l| l.text.trim_start().starts_with(']')).unwrap() + start;
+        assert!(lines[start..=close].iter().all(|l| l.ours), "{lines:#?}");
+        // A file that is not there yet is all ours
+        std::fs::remove_file(&t.file).unwrap();
+        assert!(preview(&t).iter().all(|l| l.ours));
     }
 
     /// Two copies of the app on one PC that both keep hooks right do not take
