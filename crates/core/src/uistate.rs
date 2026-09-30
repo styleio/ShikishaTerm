@@ -333,6 +333,9 @@ pub struct PlaceState {
     pub pr: Option<String>,
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// By port, the program holding it (`node.exe`), for the ports panel
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub programs: std::collections::BTreeMap<u16, String>,
     /// `owner/name` on GitHub, when that is where this folder pushes to. What
     /// the screen asks before it asks GitHub anything at all: with this
     /// missing, the git column has no way to tell a folder whose server has
@@ -2406,6 +2409,7 @@ impl TabState {
                 branch: t.place.branch.clone(),
                 pr: t.place.pr.clone(),
                 ports: t.place.ports.clone(),
+                programs: t.place.programs.clone(),
                 repo: t.place.repo.clone(),
             }),
             cost: t.usage.line(),
@@ -2692,7 +2696,7 @@ mod tests {
             repo: Some("owner/name".into()),
             ..Default::default()
         };
-        let sent = PlaceState { branch: place.branch.clone(), pr: None, ports: vec![], repo: place.repo.clone() };
+        let sent = PlaceState { branch: place.branch.clone(), repo: place.repo.clone(), ..Default::default() };
         let js = serde_json::to_value(&sent).expect("it cannot be sent to the screen");
         assert_eq!(js["repo"], "owner/name", "the screen is not told the repository: {js}");
         // And nothing is added for a folder that pushes nowhere

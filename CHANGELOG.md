@@ -22,6 +22,16 @@ once it reaches its first tagged release.
   Why a tab still looks busy is written to hooks.log when an answer is held
   back for a long time, and every change of a tab's state is logged whether
   automation is on or off.
+- **A Codex tab still at work reads as working, even when its screen looks
+  idle.** A Codex that lost its connection mid-answer waits minutes before it
+  asks again, and all that time its screen and title look exactly like a
+  Codex with nothing to do. The tab now also reads Codex's own record of the
+  conversation, where a turn begun and not yet ended is work.
+- **An answer asked of another AI tab is the answer to that question.** Asked
+  the same thing twice in a row, a tab could be handed the first answer for
+  the second question; and an AI that answered "still waiting", left the wait
+  running and was woken by it could be handed that first reply instead of
+  the one it went on to give.
 
 ### Removed
 - **The ? no longer offers to send a question to GitHub as an issue.** A
@@ -37,6 +47,13 @@ once it reaches its first tagged release.
   is one. A check still running, or one with no log to download, opens its
   page in a browser tab instead and says why. A log GitHub no longer keeps
   says that too.
+- **A Ports panel on the right.** Press a port under a tab (`:3000`) or choose
+  it from a folder's menu, and the column shows what listens in that folder:
+  each port with the program holding it and the tab it came from, opened in a
+  browser tab with one press, or in this PC's browser, or copied. On a server
+  or a MicroVM the same panel lists what its machine answers on, asked when
+  you press Ask; it replaces the list that used to float over the folder's
+  menu. Scripts call it up with `show_panel("ports")`.
 - **Develop, on a web page's bar.** Tick it among the browser tab's controls
   and the bar gets a list of tools for somebody building the page: the hard
   reload, picking elements for an AI (the list of what was picked now stands

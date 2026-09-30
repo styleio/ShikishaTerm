@@ -25,6 +25,10 @@ pub struct Place {
     pub branch: Option<String>,
     /// Ports this tab's processes are listening on, low to high
     pub ports: Vec<u16>,
+    /// The program holding each of those ports, by port: what a person would
+    /// recognise it by (`node.exe`, `python`), for the ports panel. A port
+    /// whose holder could not be named is simply not in here
+    pub programs: std::collections::BTreeMap<u16, String>,
     /// `owner/name` on GitHub, when that is where this folder pushes to
     pub repo: Option<String>,
     /// The folder shared by this checkout and every branch cut from it. Two
@@ -329,12 +333,22 @@ pub fn listeners() -> HashMap<u32, Vec<u16>> {
     out
 }
 
+/// The ports below one tab, and the program holding each.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Low to high
+    pub ports: Vec<u16>,
+    /// By port, the program that holds it, when it could be named
+    pub programs: std::collections::BTreeMap<u16, String>,
+}
+
 /// Every tab's ports, given each tab's own process.
 ///
 /// The tab's process is a shell; what listens is whatever it started, however
 /// far down. So this walks the machine's process tree once and gives each tab
-/// the ports of everything below it
-pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Vec<u16>> {
+/// the ports of everything below it -- and names the program holding each,
+/// asked only of the few processes that turned out to hold one
+pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Held> {
     let mut out = HashMap::new();
     if roots.is_empty() {
         return out;
@@ -344,23 +358,70 @@ pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Vec<u16>> {
         return out;
     }
     let children = child_map();
+    // The same process under two roots is named once
+    let mut names: HashMap<u32, Option<String>> = HashMap::new();
     for (key, root) in roots {
-        let mut ports: Vec<u16> = Vec::new();
+        let mut held = Held::default();
         for pid in descendants(*root, &children) {
-            if let Some(p) = by_pid.get(&pid) {
-                for port in p {
-                    if !ports.contains(port) {
-                        ports.push(*port);
+            let Some(p) = by_pid.get(&pid) else { continue };
+            let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
+            for port in p {
+                if !held.ports.contains(port) {
+                    held.ports.push(*port);
+                    if let Some(n) = &name {
+                        held.programs.insert(*port, n.clone());
                     }
                 }
             }
         }
-        ports.sort_unstable();
-        if !ports.is_empty() {
-            out.insert(*key, ports);
+        held.ports.sort_unstable();
+        if !held.ports.is_empty() {
+            out.insert(*key, held);
         }
     }
     out
+}
+
+/// The name of the program a process runs: the file name of its executable
+/// (`node.exe`), which is what a person would look for in a task manager.
+/// A process that ended or cannot be opened has none
+#[cfg(windows)]
+pub fn program_of(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        // Room for any path Windows hands back through this call
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(h);
+        if !ok || len == 0 {
+            return None;
+        }
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        leaf_name(&full)
+    }
+}
+
+/// The name of the program a process runs, as the kernel keeps it
+#[cfg(unix)]
+pub fn program_of(pid: u32) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let comm = comm.trim();
+    (!comm.is_empty()).then(|| comm.to_string())
+}
+
+/// The last part of a path, whichever way its slashes lean
+#[cfg_attr(not(windows), allow(dead_code))]
+fn leaf_name(path: &str) -> Option<String> {
+    let leaf = path.rsplit(['\\', '/']).next()?.trim();
+    (!leaf.is_empty()).then(|| leaf.to_string())
 }
 
 /// A process and everything it started, however deep.
@@ -622,6 +683,24 @@ mod tests {
         assert!(found.iter().any(|(f, b)| f == &here && b.as_deref() == Some("feature/login")), "the branch was not read: {found:?}");
         assert!(found.iter().any(|(f, b)| f == &here && b.is_none()), "a detached worktree was dropped: {found:?}");
         assert!(worktrees_of(&root.join("nowhere")).is_empty());
+    }
+
+    /// A program is named by its file, not its whole path: the row has room
+    /// for `node.exe`, and that is what a task manager calls it too
+    #[test]
+    fn a_program_is_named_by_the_last_part_of_its_path() {
+        assert_eq!(leaf_name(r"C:\Program Files\nodejs\node.exe").as_deref(), Some("node.exe"));
+        assert_eq!(leaf_name("/usr/bin/python3").as_deref(), Some("python3"));
+        assert_eq!(leaf_name("vite").as_deref(), Some("vite"));
+        assert_eq!(leaf_name(r"C:\trailing\"), None);
+        assert_eq!(leaf_name(""), None);
+    }
+
+    /// This process listens nowhere, but it is running: its own name comes back
+    #[test]
+    fn this_programs_own_name_can_be_read() {
+        let name = program_of(std::process::id()).expect("no name for the running test");
+        assert!(!name.is_empty() && !name.contains(['/', '\\']), "{name:?}");
     }
 
     #[test]

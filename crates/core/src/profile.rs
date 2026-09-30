@@ -336,6 +336,14 @@ pub struct RecordSpec {
     pub id: String,
     /// Field holding the folder that conversation was started in
     pub cwd: String,
+    /// The record marks the two ends of every turn, and nothing else starts
+    /// one: a turn it says began and has not ended is work, whatever the
+    /// screen shows (see [`crate::reader::last_turn_mark`]). Only for a CLI
+    /// that keeps to that -- Codex does; Claude Code files its own commands
+    /// (`/model`, `/clear`) as things the person said, with no end after them,
+    /// so a turn read off its record could begin and never end
+    #[serde(default)]
+    pub turns: bool,
 }
 
 /// How to ask a CLI to report on itself, by writing into its own config.

@@ -203,6 +203,13 @@ pub struct Detector {
     /// it withdraws itself the moment the CLI stops writing the mark. Nothing
     /// has to expire it and nothing has to be cleared by hand
     title_busy: bool,
+    /// Whether the CLI's own record says a turn began and has not ended.
+    ///
+    /// A level, like the title: set on every look at the record (see
+    /// `Tab::tick_state`), and gone the moment the record says the turn is
+    /// over. Only for a CLI whose record marks both ends of every turn
+    /// (`RecordSpec::turns`)
+    record_busy: bool,
 }
 
 impl Detector {
@@ -216,7 +223,20 @@ impl Detector {
             last_bell: 0,
             word: None,
             title_busy: false,
+            record_busy: false,
         }
+    }
+
+    /// What the CLI's own record says: `true` while a turn it began has not
+    /// ended. Kept until told otherwise, since the record is looked at every
+    /// few seconds rather than every tick
+    pub fn record_says(&mut self, busy: bool) {
+        self.record_busy = busy;
+    }
+
+    /// Whether the record said a turn is going on, at the last look
+    pub fn record_busy(&self) -> bool {
+        self.record_busy
     }
 
     /// The window title, as the program last set it.
@@ -364,6 +384,15 @@ impl Detector {
         if let Some(w) = word {
             return w;
         }
+        // Then the record: the CLI writing down that a turn began and has not
+        // ended. It outranks the title and the screen for the case they both
+        // get wrong -- a Codex whose connection died waits five minutes before
+        // asking again, and all that time its screen and title read exactly
+        // like a Codex with nothing to do (measured 2026-09-30). Like the
+        // title it can only say BUSY; the screen keeps every other verdict
+        if self.record_busy {
+            return TabState::Busy;
+        }
         // Then the title, which outranks the screen for one reason: a CLI that
         // is thinking draws nothing, and a screen that has not moved for
         // silence_ms is read as a turn that ended. It has ended a few of them
@@ -507,6 +536,28 @@ mod tests {
     /// be read as a finished turn -- which handed the work on while the AI was
     /// still doing it. Below the hook, because anything running in that tab can
     /// write a title, while the hook is the CLI itself.
+    /// The record sits between the hook and the title. Measured 2026-09-30: a
+    /// Codex whose connection died waited five minutes before asking again,
+    /// with a screen and a title exactly like a Codex with nothing to do, and
+    /// its record saying a turn had begun and not ended. Below the hook,
+    /// because the hook is the CLI speaking the instant it happens; above the
+    /// title and the screen, because they are what got it wrong
+    #[test]
+    fn a_turn_the_record_says_is_going_on_is_work_whatever_the_screen_shows() {
+        let mut d = Detector::new(claude_like());
+        d.tick("Thinking… (2s · esc to interrupt)", 0, 0);
+        // The connection is gone; the screen has gone still and reads as idle
+        d.record_says(true);
+        assert_eq!(d.tick("> ", 120_000, 0), TabState::Busy, "an idle-looking screen mid-turn is still at work");
+        assert!(d.record_busy());
+        // The record says the turn ended: the screen decides again
+        d.record_says(false);
+        assert_eq!(d.tick("> ", 120_000, 0), TabState::Done);
+        // A question on screen still comes first: nobody looks at a tab that claims to be busy
+        d.record_says(true);
+        assert_eq!(d.tick("Do you want to proceed?\n❯ 1. Yes", 120_000, 0), TabState::Question);
+    }
+
     #[test]
     fn the_title_is_believed_after_the_hook_and_before_the_screen() {
         let mut p = claude_like();

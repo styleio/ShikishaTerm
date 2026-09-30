@@ -273,6 +273,44 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px; outline:none; min-width:0; }
   #pickpanel .prow input:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  /* ── Ports ─────────────────────────────────────
+     A panel called up by a port's chip or a folder's menu. What listens in
+     the folder the column stands on, one row a port: its number, the program
+     holding it, the tab it came from, then the ways to open it. The row is
+     the press for the first way (a browser tab here), as a list's row opens
+     what it names; the other ways are line icons at its right end */
+  #portpanel[hidden] { display:none; }
+  #portpanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; overflow:hidden; font-size:13px; }
+  #portpanel .chead { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #portpanel .chead .ttl { flex:1 1 auto; min-width:0; font-size:12px; color:var(--dim); line-height:1.5; }
+  #portpanel .chead button { height:28px; padding:0 var(--s2); font:inherit; font-size:12px; display:flex;
+    align-items:center; gap:var(--s1); border-radius:var(--r-chip); border:1px solid var(--line); background:none;
+    color:var(--dim); cursor:pointer; }
+  #portpanel .chead button:hover { color:var(--text); }
+  #portpanel .chead button .ico { display:flex; }
+  #portpanel .plist { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+  #portpanel .prt { display:flex; align-items:center; gap:var(--s2); padding:7px 10px; min-height:36px;
+    border-bottom:1px solid var(--line); cursor:pointer; }
+  #portpanel .prt:hover { background:var(--hover); }
+  #portpanel .prt .pp { flex:none; font-family:var(--mono); font-weight:600; font-variant-numeric:tabular-nums; }
+  #portpanel .prt .pw { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; }
+  #portpanel .prt .pg { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #portpanel .prt .po { font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    display:flex; align-items:center; gap:var(--s1); }
+  #portpanel .prt .pa { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:var(--r-chip);
+    background:transparent; color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center; }
+  #portpanel .prt .pa:hover { background:var(--raise); color:var(--text); }
+  #portpanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--dim); font-size:11.5px; line-height:1.5; }
+  #portpanel .fsay.bad { color:var(--warn); }
+  #portpanel .pmore { display:flex; align-items:center; gap:var(--s2); padding:7px 10px; min-height:36px;
+    border-bottom:1px solid var(--line); cursor:pointer; color:var(--text); font-size:12.5px; }
+  #portpanel .pmore:hover { background:var(--hover); }
+  #portpanel .pmore .ico { display:flex; color:var(--dim); }
+  /* A port on a tab's row or a folder's card is a way in to the panel */
+  .pt.go { cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
+  .pt.go:hover { color:var(--text); }
+  .tab.folder.wcard .fbr .pt { margin-left:var(--s2); }
   #pickpanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); line-height:1.5; }
   #pickpanel .fsay .warn { color:var(--warn); margin-top:var(--s1); }
@@ -609,24 +647,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .aphost .ck { width:12px; flex:none; color:var(--brand); }
   .fmenu .aphost .at { margin-left:auto; padding-left:var(--s3); font-family:var(--mono); font-size:11px; color:var(--dim); }
   .fmenu .aphostadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
-  /* A machine's ports: what the list is, then one line a port -- its number,
-     its address, and a copy button for an address anybody can open */
-  /* One width for the whole list, the heading's words included, so every
-     line of it wraps at the same edge */
-  .fmenu.farports { width:min(440px, calc(100vw - 16px)); }
-  .fmenu.farports div.fabout { max-width:none; }
-  .fmenu.farports div.fsay { padding-bottom:var(--s2); }
-  .fmenu .farserve { display:flex; align-items:center; gap:var(--s2); }
-  .fmenu .farserve .ico { display:flex; color:var(--dim); }
   .fmenu div.fsay { cursor:default; white-space:normal; font-size:11.5px; line-height:1.5; color:var(--dim); }
   .fmenu div.fsay:hover { background:transparent; }
   .fmenu div.fsay.bad { color:var(--warn); }
-  .fmenu .farport .nm { flex:none; font-family:var(--mono); font-weight:600; }
-  .fmenu .farport .at { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .fmenu .farport .fcopy { flex:none; width:22px; height:22px; margin-right:calc(-1 * var(--s1)); padding:0; border:0;
-    border-radius:var(--r-chip); background:transparent; color:var(--dim); cursor:pointer;
-    display:flex; align-items:center; justify-content:center; }
-  .fmenu .farport .fcopy:hover { background:var(--hover); color:var(--text); }
   /* Once: a star, if you like it. Sits above the gear, and goes for good */
   .thanks { margin:auto var(--s2) var(--s2); padding:10px 12px; border:1px solid var(--line); border-radius:var(--r-card);
     background:var(--raise); font-size:12px; }
@@ -3997,6 +4020,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <!-- What the page being looked at said on its console -->
       <div id="consolepanel" hidden></div>
       <div id="pickpanel" hidden></div>
+      <div id="portpanel" hidden></div>
     </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
@@ -7300,7 +7324,7 @@ function folderRow(g, mine, card) {
   // the + is the heading's: one worktree at a time is cut from the project
   row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
   if (card) {
-    row.append(...[folderSummary(g), folderWhere(g)].filter(Boolean));
+    row.append(...[folderSummary(g), folderWhere(g, mine)].filter(Boolean));
   }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
@@ -7361,9 +7385,14 @@ function holdOpens(row, open) {
 // A card's second line: the machine it is on, when that is not this one, and
 // the branch. The name a person gave that machine leads, since it is the part
 // read at a glance and the address is the part checked
-function folderWhere(g) {
+// After the branch, the ports its tabs opened (`tabs`: the folder's own), each
+// a way into the ports panel
+function folderWhere(g, tabs) {
+  const ports = [...new Set((tabs || []).flatMap(t => (t.place && t.place.ports) || []))].sort((a, b) => a - b);
   return el("span", {class:"fbr", title:g.host ? g.host + ":" + g.folder : T["tui.folder.on.title"] || ""},
-    ...[serverMark(g.mark), (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean));
+    ...[serverMark(g.mark), (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean),
+    ...ports.map(port => el("span", {class:"pt go", title:T["tui.ports.chip"] || "",
+      onclick:e => { e.stopPropagation(); showPorts(g); }}, ":" + port)));
 }
 
 // Whether this folder is the one whose tab is in front, so its row can say so
@@ -7540,8 +7569,11 @@ function tabRow(t, g, deep, head) {
       line.append(el("span", {class:"br"}, short));
     }
     if (p.pr) line.append(el("span", {class:"pr"}, p.pr));
+    // A port is a way into the ports panel. The press goes on to the row as
+    // well, which brings this tab -- and so its folder -- to the front: the
+    // panel stands on the folder in front
     for (const port of (p.ports || [])) {
-      line.append(el("span", {class:"pt"}, ":" + port));
+      line.append(el("span", {class:"pt go", title:T["tui.ports.chip"] || "", onclick:() => sideReveal("ports")}, ":" + port));
     }
     // The whole of it on hover, since the row cannot hold it all
     line.title = [p.branch, p.pr].filter(Boolean)
@@ -7939,13 +7971,6 @@ function folderMenu(e, g) {
   // The row pressed, kept now: by the time an entry is chosen the event is
   // over, and its currentTarget is nothing
   const row = e.currentTarget;
-  // And where it was pressed, as a place on the window: what an entry opens
-  // after this -- an answer the machine is asked for -- is drawn there. Not
-  // on the row: the row is built again whenever a tab in the folder changes
-  // (a terminal at work, many times a second), and a list hung on the one
-  // pressed was never drawn at all
-  const r = row.getBoundingClientRect();
-  const at = e.clientX || e.clientY ? {clientX: e.clientX, clientY: e.clientY} : {clientX: r.left, clientY: r.bottom};
   openList(row, [
     // What is being done in it, whole, over what can be done to it. The card
     // has room for a line of it, and a phone has no pointer to rest on it
@@ -7962,11 +7987,12 @@ function folderMenu(e, g) {
     // project's own checkout included -- that one is never thrown away, and
     // until this was here it was the one folder with no way off the list at
     // all except a settings page that refused while it had tabs
-    // On a MicroVM: the addresses it answers on from anywhere -- what a
-    // webhook is pointed at, and a page opened on a phone
-    onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, at))
-      // On a server: what it listens on, carried here to open in a tab
-      : g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, at)) : null,
+    // What listens in the folder, in the column's ports panel. Named for what
+    // it is where the folder is: on a MicroVM, the addresses it answers on
+    // from anywhere (what a webhook is pointed at, a page opened on a
+    // phone); on a server, its ports, carried here when opened; here, the
+    // ports its tabs' programs opened
+    item(T[onMicrovm(g) ? "tui.menu.urls" : g.host ? "tui.menu.ports" : "tui.menu.ports.here"] || "", () => showPorts(g)),
     item(T["tui.menu.forget"] || "", () => forgetHere(g)),
     // Last and in red, the one entry that cannot be taken back. Only a
     // worktree, here or on a server, where git there removes it: a project's
@@ -7981,62 +8007,129 @@ function folderMenu(e, g) {
 // Whether a folder is on a MicroVM, as the settings name its machine
 const onMicrovm = g => !!(g && g.host && ((S && S.hosts) || []).some(h => h.name === g.host && h.kind === "microvm"));
 
-// The addresses a folder on a MicroVM answers on from anywhere, asked of its
-// machine when somebody asks -- asking starts a paused one, so never on a
-// timer -- and listed where its menu was, each a press to copy
-let farPortsOpen = null;
-// `at` is the place on the window it is drawn at ({clientX, clientY})
-function openFarPorts(g, at) {
-  farPortsOpen = {folder: gkey(g), at, drawn: ""};
-  send({kind:"farports", folder: gkey(g)});
-  drawFarPorts();
+// ── Ports ───────────────────────────────────────
+// What listens in a folder, in the column's ports panel. Called up from a
+// port's chip on a tab's row, from a folder's menu, or by a script
+// (show_panel). It stands on the folder the column stands on -- the tab in
+// front -- so a folder not in front is brought forward first.
+//
+// Here, the ports come with the tabs, read from the machine's own table every
+// couple of seconds: nothing to ask. On a MicroVM or a server they are asked
+// of the machine, and only when somebody asks -- asking starts a paused
+// MicroVM, so never on a timer, and never just because the front folder
+// changed; the panel offers the asking instead
+const PT = {asked: "", drawn: ""};
+function showPorts(g) {
+  if (!inFront(g)) send({kind:"folderview", folder: gkey(g)});
+  if (g.host) portsAsk(gkey(g));
+  sideReveal("ports");
 }
-function drawFarPorts() {
-  const o = farPortsOpen;
-  if (!o) return;
-  // Put away by a press elsewhere: it stays away
-  if (o.drawn && !document.querySelector(".fmenu.farports")) { farPortsOpen = null; return; }
-  const st = S && S.far_ports && sameFolder(S.far_ports.folder, o.folder) ? S.far_ports : {busy: true, ports: []};
-  const sig = JSON.stringify(st);
-  if (o.drawn === sig) return;
-  o.drawn = sig;
-  // A server's ports are carried here when one is opened, and so are a
-  // private MicroVM's; an unlisted MicroVM's answer anybody with the address
-  const variant = st.server ? "tui.urls.server." : st.private ? "tui.urls.private." : "";
+function portsAsk(folder) {
+  PT.asked = folder;
+  PT.drawn = "";
+  send({kind:"farports", folder});
+}
+function drawPorts() {
+  const box = document.getElementById("portpanel");
+  if (!box || box.hidden) return;
+  const at = folderTab();
+  const g = at ? ((S && S.groups) || [])[at.group] : null;
+  if (!g) return;
+  if (g.host) drawFarPorts(box, g);
+  else drawHerePorts(box, g, at.group);
+}
+// A folder on this PC: every port its tabs' programs opened, by the tab that
+// opened it. The row opens it in a browser tab of the folder -- the way a
+// port is opened from a phone too, as a page the window relays
+function drawHerePorts(box, g, group) {
+  const held = [];
+  for (const t of (S && S.tabs) || []) {
+    if (t.group !== group || !t.place) continue;
+    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || ""});
+  }
+  held.sort((a, b) => a.port - b.port);
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
+  if (PT.drawn === sig && box.firstChild) return;
+  PT.drawn = sig;
+  box.textContent = "";
+  box.append(el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.ports.here.title"] || "")));
+  const list = el("div", {class:"plist"});
+  for (const h of held) {
+    const url = "http://localhost:" + h.port + "/";
+    const tab = h.t.id || h.t.name || "";
+    // The same road a pressed address on a terminal takes: the app checks the
+    // address, finds the folder from the tab, and opens it there
+    const act = what => send({kind:"linkpress", tab, target: url, lk: "web", act: what, ask: ""});
+    const acts = [];
+    // This PC's own browser, and the address to paste into one. Not from a
+    // phone: there, localhost is the phone itself, and neither would reach
+    // the program -- the row's browser tab is how a phone opens it
+    if (AT_PC) {
+      acts.push(el("button", {type:"button", class:"pa", title: T["tui.link.pc"] || "",
+        onclick: e => { e.stopPropagation(); act("pc"); }}, pickIcon("open")));
+      acts.push(el("button", {type:"button", class:"pa", title: T["tui.link.copy_url"] || "",
+        onclick: e => { e.stopPropagation(); copyToClipboard(url); toast(T["tui.urls.copied"] || ""); }}, pickIcon("copy")));
+    }
+    list.append(el("div", {class:"prt", title: (T["tui.urls.open"] || "").replaceAll("{port}", h.port),
+        onclick: () => act("page")},
+      el("span", {class:"pp"}, ":" + h.port),
+      el("span", {class:"pw"},
+        el("span", {class:"pg"}, h.program || (T["tui.ports.unnamed"] || "")),
+        el("span", {class:"po"}, markFor(h.t) || null, el("span", {}, h.t.name || tab))),
+      ...acts));
+  }
+  // Nothing yet is said where the rows would be, not at the foot of an empty
+  // column where nobody is looking
+  if (!held.length) list.append(el("div", {class:"fsay"}, T["tui.ports.here.none"] || ""));
+  box.append(list);
+}
+// A folder on a MicroVM or a server: what its machine said when last asked.
+// A server's ports are carried here when one is opened, and so are a private
+// MicroVM's; an unlisted MicroVM's answer anybody with the address
+function drawFarPorts(box, g) {
+  const folder = gkey(g);
+  const said = S && S.far_ports && sameFolder(S.far_ports.folder, folder) ? S.far_ports : null;
+  const st = said || (PT.asked === folder ? {busy: true, ports: []} : null);
+  const sig = ["far", folder, JSON.stringify(st)].join("|");
+  if (PT.drawn === sig && box.firstChild) return;
+  PT.drawn = sig;
+  box.textContent = "";
+  const variant = st && st.server ? "tui.urls.server." : st && st.private ? "tui.urls.private." : "";
   const say = k => T[variant && T[k.replace("tui.urls.", variant)] ? k.replace("tui.urls.", variant) : k] || "";
-  // What the list is, read and not chosen: a heading that cannot be pressed,
-  // as a folder's summary heads its menu. What the machine said -- asking,
-  // nothing yet, what went wrong -- is read the same way
-  const rows = [el("div", {class:"fabout farhead"},
-    el("span", {class:"ttl"}, T[st.server ? "tui.menu.ports" : "tui.menu.urls"] || ""),
-    el("span", {class:"sum"}, say("tui.urls.title")))];
-  if (st.busy) rows.push(el("div", {class:"fsay"}, say("tui.urls.asking")));
-  else if (st.error) rows.push(el("div", {class:"fsay bad"}, st.error));
-  else if (!st.ports.length) rows.push(el("div", {class:"fsay"}, say("tui.urls.none")));
-  // One line a port: pressed, it opens in a browser tab of the app; an
-  // address anybody can open has a copy button of its own at the right
-  for (const p of st.ports || []) {
-    const copy = p.url && !st.server && !st.private
-      ? el("button", {type:"button", class:"fcopy", title:T["tui.urls.copy"] || "", onclick:e => {
-          e.stopPropagation();
-          copyText(p.url).then(() => toast(T["tui.urls.copied"] || ""));
-        }}, pickIcon("copy"))
-      : null;
-    // Chosen: the list goes, and the page comes up as a tab of the folder
-    rows.push(el("div", {class:"aphost farport", title:(T["tui.urls.open"] || "").replaceAll("{port}", p.port),
-        onclick:() => { closeFolderMenu(); farPortsOpen = null; send({kind:"farpage", folder:o.folder, port:p.port}); }},
-      el("span", {class:"nm"}, ":" + p.port), el("span", {class:"at"}, p.url || say("tui.urls.not_yet")), copy));
+  const head = el("div", {class:"chead"}, el("span", {class:"ttl"}, say("tui.urls.title")));
+  // Asking again is always there once an answer is in, and is the first
+  // thing offered for a folder nobody has asked about yet
+  if (!st || !st.busy) head.append(el("button", {type:"button", onclick: () => portsAsk(folder)},
+    pickIcon("refresh"), el("span", {}, T[st ? "tui.urls.again" : "tui.ports.far.ask"] || "")));
+  box.append(head);
+  const list = el("div", {class:"plist"});
+  for (const p of (st && st.ports) || []) {
+    // An address anybody can open is copied, and opened on a phone's own
+    // browser; one carried to this PC answers only here
+    const open = !!(p.url && !st.server && !st.private);
+    const acts = [];
+    if (open && !AT_PC) acts.push(el("button", {type:"button", class:"pa", title: T["tui.link.here"] || "",
+      onclick: e => { e.stopPropagation(); window.open(p.url, "_blank", "noopener"); }}, pickIcon("open")));
+    if (open) acts.push(el("button", {type:"button", class:"pa", title: T["tui.urls.copy"] || "",
+      onclick: e => { e.stopPropagation(); copyToClipboard(p.url); toast(T["tui.urls.copied"] || ""); }}, pickIcon("copy")));
+    list.append(el("div", {class:"prt", title: (T["tui.urls.open"] || "").replaceAll("{port}", p.port),
+        onclick: () => send({kind:"farpage", folder, port: p.port})},
+      el("span", {class:"pp"}, ":" + p.port),
+      el("span", {class:"pw"}, el("span", {class:"pg"}, p.url || say("tui.urls.not_yet"))),
+      ...acts));
   }
   // How a server is started differs from project to project: the folder's
   // AI finds out and starts it, in a tab of its own, and says the port
-  if (!st.busy && !st.error) rows.push(el("div", {class:"aphostadd farserve", onclick:() => {
-    closeFolderMenu();
-    farPortsOpen = null;
-    send({kind:"farserve", folder:o.folder});
-  }}, pickIcon("sparkles"), el("span", {}, T["tui.urls.serve"] || "")));
-  if (!st.busy) rows.push(el("div", {class:"aphostadd", onclick:() => { o.drawn = ""; send({kind:"farports", folder:o.folder}); }},
-    T["tui.urls.again"] || ""));
-  openList(document.body, rows, false, o.at, "farports");
+  if (st && !st.busy && !st.error) list.append(el("div", {class:"pmore farserve",
+    onclick: () => send({kind:"farserve", folder})}, pickIcon("sparkles"), el("span", {}, T["tui.urls.serve"] || "")));
+  // What the machine said -- nothing asked yet, asking, nothing there, what
+  // went wrong -- stands where the rows would, above anything to press
+  const line = !st ? T["tui.ports.far.unasked"] || ""
+    : st.busy ? say("tui.urls.asking")
+    : st.error ? st.error
+    : !st.ports.length ? say("tui.urls.none") : "";
+  if (line) list.prepend(el("div", {class:"fsay" + (st && st.error ? " bad" : "")}, line));
+  box.append(list);
 }
 // A folder taken off the list while it is right here. Nothing on disk is
 // touched -- the folder and everything in it stays where it is -- and the tabs
@@ -11253,7 +11346,6 @@ window.__state = function (json) {
   gitAfterWork(before);
   projectFlow();
   microvmArrived();
-  drawFarPorts();
   drawLogin();
   mentionsArrived();
   // The settings were read in again while the worktree dialog is open: what
@@ -12267,6 +12359,7 @@ const SIDE_PANELS = [
   ["convo", () => T["tui.side.convo"] || "Chat", k => k === "ai"],
   ["console", () => T["tui.side.console"] || "Console", k => k === "browser"],
   ["picks", () => T["tui.side.picks"] || "Picked elements", null],
+  ["ports", () => T["tui.side.ports"] || "Ports", null],
 ];
 // Which of the three kinds of tab is in front, as far as the column is
 // concerned. A model pane is a conversation of its own rather than a CLI with
@@ -13626,6 +13719,9 @@ function drawSide() {
   // What was picked on the page being looked at
   const picks = document.getElementById("pickpanel");
   if (picks) picks.hidden = sidePanel !== "picks" || !onPage;
+  // What listens in the folder the column stands on
+  const ports = document.getElementById("portpanel");
+  if (ports) ports.hidden = sidePanel !== "ports" || !at;
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
@@ -13659,6 +13755,7 @@ function drawSide() {
   if (sidePanel === "convo") drawConvo();
   if (sidePanel === "console") drawConsole();
   if (sidePanel === "picks") drawPicks();
+  if (sidePanel === "ports") drawPorts();
 }
 
 // ── The console ─────────────────────────────────────────
@@ -23101,6 +23198,31 @@ mod tests {
         );
     }
 
+    /// The ports panel is called up, never standing in the strip on its own;
+    /// a machine far away is asked only when somebody asks -- asking wakes a
+    /// paused MicroVM -- and the old floating list is gone, so the same ports
+    /// are drawn in one place
+    #[test]
+    fn the_ports_panel_is_called_up_and_asks_a_far_machine_only_when_pressed() {
+        let p = super::page();
+        assert!(p.contains(r#"["ports", () => T["tui.side.ports"] || "Ports", null],"#), "the ports panel is not a called-up panel");
+        assert_eq!(p.matches("id=\"portpanel\"").count(), 1, "there is not exactly one ports panel");
+        assert!(p.contains(r#"if (sidePanel === "ports") drawPorts();"#), "the column never draws the ports");
+        // One place sends the question, and it runs only from a press
+        assert_eq!(p.matches(r#"send({kind:"farports""#).count(), 1, "a far machine is asked from more than one place");
+        assert!(p.contains("function portsAsk(folder) {"), "asking is not its own step");
+        assert!(!p.contains("fmenu.farports") && !p.contains("function openFarPorts"), "the floating list of ports is still there");
+        // A port on a tab's row leads to the panel
+        assert!(p.contains(r#"onclick:() => sideReveal("ports")}, ":" + port)"#), "a port on a row does not lead to the panel");
+        // This PC's localhost is not offered to a phone, where it is the phone
+        let here = p.find("function drawHerePorts").expect("no drawing of this PC's ports");
+        let body = &p[here..here + p[here..].find("function drawFarPorts").expect("the far drawing moved")];
+        assert!(body.contains("if (AT_PC) {"), "this PC's own browser is offered where it cannot be reached");
+        assert!(!body.contains("window.open("), "a phone is offered its own browser for this PC's localhost");
+        // A script can call it up by the same name
+        assert!(crate::hooks::PANEL_NAMES.contains(&"ports"), "show_panel does not know the ports panel");
+    }
+
     /// Elements marked hidden must actually be hidden.
     ///
     /// HTML's hidden attribute defaults to display:none, but declaring
@@ -24261,10 +24383,9 @@ mod tests {
         // chosen, the event's currentTarget is nothing, and the list had
         // nowhere to stand
         assert!(PAGE.contains("const row = e.currentTarget;") && PAGE.contains("openList(row, ["), "the pressed row is not kept");
-        assert!(PAGE.contains(r#"onMicrovm(g) ? item(T["tui.menu.urls"] || "", () => openFarPorts(g, at))"#),
-            "a folder on a MicroVM does not say where it answers from");
-        assert!(PAGE.contains(r#": g.host ? item(T["tui.menu.ports"] || "", () => openFarPorts(g, at)) : null,"#),
-            "a folder on a server does not offer its ports");
+        // Every folder offers what listens in it, named for where it is
+        assert!(PAGE.contains(r#"item(T[onMicrovm(g) ? "tui.menu.urls" : g.host ? "tui.menu.ports" : "tui.menu.ports.here"] || "", () => showPorts(g)),"#),
+            "a folder's menu does not offer its ports");
         assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
         assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
@@ -24451,8 +24572,11 @@ mod tests {
         assert!(PAGE.contains(r#"if (folded.has("proj:" + pk)) continue;"#), "a project cannot be put away from its heading");
         assert!(PAGE.contains(r#"onclick:e => { e.stopPropagation(); openBranch(main); }}, "+")"#), "the heading has no + for another worktree");
         assert!(PAGE.contains(r#"T["tui.folder.primary"] || "primary""#), "the checkout is not marked primary");
-        assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean));"#),
+        assert!(PAGE.contains(r#"(g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean),"#),
             "a card does not say the branch it is on");
+        // ...and after the branch, the ports its tabs opened, each a way to the ports panel
+        assert!(PAGE.contains(r#"onclick:e => { e.stopPropagation(); showPorts(g); }}, ":" + port)));"#),
+            "a card's ports do not lead to the ports panel");
         assert!(PAGE.contains(r#"el("span", {class:"fill"}), folderSummary(g), folderWhere(g)]"#), "an empty card does not say the branch it is on");
         assert!(PAGE.contains(r#"if (g.branch && g.branch !== g.name && !card) {"#), "grouped by state, a folder loses the branch it is on");
         assert!(PAGE.contains(r#"const GROUP_AXES = ["none", "state"];"#), "grouping by project is offered twice");
@@ -24493,7 +24617,7 @@ mod tests {
         assert!(PAGE.contains(r#"title:folderAbout(g), onclick:() => send({kind:"folderview""#), "a card's tooltip is not its summary");
         assert!(PAGE.contains(r#"return g.summary ? name + "\n" + g.summary : name;"#));
         assert!(PAGE.contains("@media (hover: none) {\n    .tab.folder.wcard .fsum { display:block;"), "a phone has no summary on the card");
-        assert!(PAGE.contains(r#"row.append(...[folderSummary(g), folderWhere(g)].filter(Boolean));"#));
+        assert!(PAGE.contains(r#"row.append(...[folderSummary(g), folderWhere(g, mine)].filter(Boolean));"#));
         assert_eq!(PAGE.matches("holdOpens(row, e => folderMenu(e, g));").count(), 2, "a held press opens no menu on a folder");
         assert!(PAGE.contains(r#"g.summary ? el("div", {class:"fabout"},"#), "the menu does not hold the whole summary");
         assert!(PAGE.contains(r#"return "nm" + (g.auto ? " auto" : "");"#) && PAGE.contains(".tab.folder .nm.auto { color:var(--dim); }"));

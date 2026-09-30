@@ -333,6 +333,7 @@ mod tests {
             dir: dir.display().to_string(),
             id: "payload.session_id".into(),
             cwd: "payload.cwd".into(),
+            turns: false,
         }
     }
 

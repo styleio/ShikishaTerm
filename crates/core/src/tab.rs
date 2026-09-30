@@ -2901,6 +2901,22 @@ struct RecordReply {
     next: Instant,
 }
 
+/// Where the tab's record stands on the turn going on now (see
+/// [`Tab::look_at_the_turn`]): the record, once found, for the conversation
+/// it was found for, and when to look again
+#[derive(Default)]
+struct TurnLook {
+    /// The conversation id the record was found for, and the record
+    found: Option<(String, std::path::PathBuf)>,
+    /// When to look next
+    next: Option<Instant>,
+}
+
+/// How often a record is looked at for a turn going on. The record is the
+/// CLI's own word and costs a read of its end, so not every tick; a few
+/// seconds late on a state the screen got wrong for minutes is nothing
+const TURN_LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
@@ -3147,6 +3163,12 @@ pub struct Tab {
     record_reply: Option<RecordReply>,
     /// When the state last changed, for saying how long ago a tab finished
     pub state_since: std::time::SystemTime,
+    /// When this tab's program was started. A turn the record says began
+    /// before it belongs to a program that is gone -- one that died mid-turn,
+    /// whose conversation this one resumed -- and is no turn going on now
+    launched: std::time::SystemTime,
+    /// The record, looked at for a turn going on (see [`Tab::look_at_the_turn`])
+    turn_look: TurnLook,
     /// The state this tab's desk last heard about, while the desk is not in
     /// front and the state has moved on since (see [`Tab::tick_away`])
     told: Option<crate::detect::TabState>,
@@ -3290,6 +3312,52 @@ impl Tab {
         let id = &self.session.as_ref()?.id;
         let glob = self.resume.as_ref()?.verify.as_deref()?;
         Some((glob, id))
+    }
+
+    /// Tell the detector whether the CLI's own record says a turn is going on.
+    ///
+    /// Only for a CLI whose record marks both ends of every turn
+    /// (`RecordSpec::turns`), and only a record on this PC. A turn counts only
+    /// if it began after this tab's program did: an older one belongs to a
+    /// program that died mid-turn, and the conversation resumed here is idle
+    /// until it is asked something. A mark with no time is not trusted either
+    fn look_at_the_turn(&mut self) {
+        let on = self
+            .resume
+            .as_ref()
+            .and_then(|r| r.record.as_ref())
+            .is_some_and(|r| r.turns);
+        if !on {
+            return;
+        }
+        let now = Instant::now();
+        if self.turn_look.next.is_some_and(|next| now < next) {
+            return;
+        }
+        self.turn_look.next = Some(now + TURN_LOOK_EVERY);
+        // Found again when the conversation changes (a new one, a resume)
+        let id = self.session.as_ref().map(|s| s.id.clone());
+        let stale = match (&self.turn_look.found, &id) {
+            (Some((found, _)), Some(id)) => found != id,
+            (Some(_), None) => true,
+            (None, _) => true,
+        };
+        if stale {
+            self.turn_look.found = id.zip(self.record());
+        }
+        let since = self
+            .launched
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(i64::MAX, |d| d.as_millis() as i64);
+        let busy = self
+            .turn_look
+            .found
+            .as_ref()
+            .and_then(|(_, path)| crate::reader::last_turn_mark(path))
+            .is_some_and(|(mark, when)| {
+                mark == crate::reader::TurnMark::Working && when.is_some_and(|w| w >= since)
+            });
+        self.detector.record_says(busy);
     }
 
     /// The turn has ended and its answer is still being looked for in the
@@ -3898,6 +3966,8 @@ impl Tab {
             last_hash: 0,
             last_change_ms: 0,
             state_since: std::time::SystemTime::now(),
+            launched: std::time::SystemTime::now(),
+            turn_look: TurnLook::default(),
             told: None,
             last_response: None,
             record_reply: None,
@@ -4525,6 +4595,7 @@ impl Tab {
         if let Ok(t) = self.window_title.lock() {
             self.detector.title_says(&t);
         }
+        self.look_at_the_turn();
         self.state = self
             .detector
             .tick(&screen_text, since, self.bell_count.load(Ordering::Relaxed));
@@ -4692,6 +4763,9 @@ impl Tab {
         }
         if let Some(word) = self.hook_word() {
             why.push(format!("the program said {}", word.label()));
+        }
+        if self.detector.record_busy() {
+            why.push("its record says a turn began and has not ended".to_string());
         }
         why.push(format!("screen last changed {}s ago", self.ms_since_change(now_ms) / 1000));
         why.join("; ")

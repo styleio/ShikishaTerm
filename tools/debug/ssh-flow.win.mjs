@@ -648,7 +648,7 @@ try {
     const rg = `(S.groups || []).find(x => x.folder === ${JSON.stringify(REPO)})`;
     check(await board.run(`(() => { folderMenu({currentTarget: document.body, preventDefault(){}}, ${rg}); const has = [...document.querySelectorAll(".fmenu div")].some(d => d.textContent === "サーバーのポートを開く"); closeFolderMenu(); return has; })()`),
       'a folder on a server offers its ports on its menu');
-    await board.run(`openFarPorts(${rg}, {clientX: 200, clientY: 200}); true`);
+    await board.run(`showPorts(${rg}); true`);
     const portsSaid = () => board.run('JSON.stringify(S.far_ports || null)').then((t) => JSON.parse(t || 'null'));
     await until(async () => { const v = await portsSaid(); return !!v && !v.busy && v.server && v.ports.some((p) => p.port === PORT_THERE); }, 'the server\x27s port, listed', 60000)
       .catch(async (e) => { console.log('    (the list: ' + JSON.stringify(await portsSaid()) + ')'); throw e; });

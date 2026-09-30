@@ -37,7 +37,8 @@
     "record": {
       "dir": "{home}/.codex/sessions",
       "id": "payload.session_id",
-      "cwd": "payload.cwd"
+      "cwd": "payload.cwd",
+      "turns": true
     },
     "verify": "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl",
     "asks": {

@@ -214,10 +214,12 @@ pub enum TurnMark {
 pub fn turn_mark(line: &str) -> Option<TurnMark> {
     let v: Value = serde_json::from_str(line.trim()).ok()?;
     match v.get("type").and_then(Value::as_str)? {
-        // Codex files the turn's own two ends as events
+        // Codex files the turn's own two ends as events, and reads them the
+        // same way itself: an error ends a turn as surely as its completion
+        // does (`codex-rs/core/src/agent/status.rs`, checked 2026-09-30)
         "event_msg" => match v.pointer("/payload/type").and_then(Value::as_str)? {
             "task_started" => Some(TurnMark::Working),
-            "task_complete" | "turn_aborted" => Some(TurnMark::Over),
+            "task_complete" | "turn_aborted" | "error" => Some(TurnMark::Over),
             _ => None,
         },
         // Claude Code files the end of every turn as its own line, error or
@@ -294,6 +296,47 @@ pub fn turn_over_after(path: &Path, from: u64) -> bool {
 
 /// How much of a record [`turn_over_after`] reads past the turn's start
 pub const TURN_READ_MAX: u64 = 32 * 1024 * 1024;
+
+/// The last mark the record at `path` makes, and when it was written
+/// (milliseconds since the epoch, where the line says).
+///
+/// This is the other half of reading a turn off the record: not "has the
+/// turn I asked in ended" but "is a turn going on now". Codex, cut off from
+/// its model, waits five minutes before it asks again, and all that time its
+/// screen reads exactly like a Codex with nothing to do -- no "Working", no
+/// mark in its title (measured 2026-09-30). Its record still says a turn
+/// began and has not ended.
+///
+/// Only the end of the record is read ([`TAIL_READ`]): the last mark is near
+/// it, and a record with none in that much is "not known"
+pub fn last_turn_mark(path: &Path) -> Option<(TurnMark, Option<i64>)> {
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_READ);
+    let mut buf = vec![0u8; (len - start) as usize];
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.read_exact(&mut buf).ok()?;
+    last_mark_in(&buf, start > 0)
+}
+
+/// How much of the end of a record [`last_turn_mark`] reads
+pub const TAIL_READ: u64 = 512 * 1024;
+
+/// [`last_turn_mark`] on bytes already read. `cut` says the first line may be
+/// the tail of one that began before them; the last may still be being written
+fn last_mark_in(bytes: &[u8], cut: bool) -> Option<(TurnMark, Option<i64>)> {
+    let end = bytes.iter().rposition(|&b| b == b'\n')?;
+    let mut lines: Vec<&[u8]> = bytes[..end].split(|&b| b == b'\n').collect();
+    if cut && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines.iter().rev().find_map(|line| {
+        let line = std::str::from_utf8(line).ok()?;
+        let mark = turn_mark(line)?;
+        let when = serde_json::from_str::<Value>(line.trim()).ok().and_then(|v| when_of(&v));
+        Some((mark, when))
+    })
+}
 
 /// [`turn_over_after`] on bytes already read. Only whole lines count: the last
 /// one may still be being written
@@ -2064,6 +2107,39 @@ mod tests {
         // Gemini writes no marks: left to the screen
         assert_eq!(turn_mark(r#"{"type":"gemini","content":"hello"}"#), None);
         assert_eq!(turn_mark("not json"), None);
+    }
+
+    /// Codex's own reading: an error ends the turn
+    #[test]
+    fn a_codex_error_ends_the_turn() {
+        assert_eq!(
+            turn_mark(r#"{"type":"event_msg","payload":{"type":"error","message":"stream disconnected"}}"#),
+            Some(TurnMark::Over)
+        );
+    }
+
+    /// Whether a turn is going on now is the LAST mark, with when it was written
+    #[test]
+    fn the_last_mark_says_whether_a_turn_is_going_on() {
+        let at = |t: &str, kind: &str| format!(r#"{{"timestamp":"{t}","type":"event_msg","payload":{{"type":"{kind}"}}}}"#);
+        let said = r#"{"timestamp":"2026-09-30T02:47:00.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#;
+        let working = format!(
+            "{}\n{}\n{}\n{said}\n",
+            at("2026-09-30T02:41:33.000Z", "task_complete"),
+            at("2026-09-30T02:46:48.000Z", "task_started"),
+            at("2026-09-30T02:46:49.000Z", "token_count"),
+        );
+        let (mark, when) = last_mark_in(working.as_bytes(), false).expect("a mark");
+        assert_eq!(mark, TurnMark::Working, "begun and not ended: at work, whatever the screen says");
+        assert_eq!(when, crate::limits::epoch_ms_of("2026-09-30T02:46:48.000Z"));
+        let over = format!("{working}{}\n", at("2026-09-30T02:55:36.000Z", "task_complete"));
+        assert_eq!(last_mark_in(over.as_bytes(), false).map(|m| m.0), Some(TurnMark::Over));
+        // A line still being written is not read; a line cut off at the front is not either
+        let half = format!("{working}{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_comp");
+        assert_eq!(last_mark_in(half.as_bytes(), false).map(|m| m.0), Some(TurnMark::Working));
+        let cut = format!("pe\":\"task_complete\"}}}}\n{said}\n");
+        assert_eq!(last_mark_in(cut.as_bytes(), true), None, "the cut-off front of a line is no mark");
+        assert_eq!(last_mark_in(b"", false), None);
     }
 
     #[test]
