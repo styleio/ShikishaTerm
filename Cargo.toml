@@ -109,6 +109,8 @@ winresource = "0.1.31"
 # edge (row.rs clear_wide / screen.rs text_common index past the end). Every
 # Japanese TUI hits that combination eventually, and the reader thread's
 # catch_unwind can only answer with a full screen reset — losing the screen
-# mid-rally. The vendored copy makes those sites degrade gracefully instead
+# mid-rally. The vendored copy makes those sites degrade gracefully instead.
+# It also records xterm alternate scroll (CSI ? 1007), which 0.16.2 drops, so
+# the wheel can reach a full-screen program that asked for it as arrow keys
 [patch.crates-io]
 vt100 = { path = "vendor/vt100" }
