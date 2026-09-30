@@ -882,8 +882,17 @@ mod tests {
         }
         // How many apps are connected: one app does not take the bridge off
         // a machine another is using
-        pc.say(&Frame::Op { id: 2, op: "host_lines".into(), p: json!({}) });
-        let lines = pc.hear_until(|f| matches!(f, Frame::Re { id: 2, .. }));
+        // Asked until both doors are in: an app is counted once the resident
+        // process has read its key, a moment after the door is open
+        let mut lines = None;
+        for id in 100..150 {
+            pc.say(&Frame::Op { id, op: "host_lines".into(), p: json!({}) });
+            lines = pc.hear_until(|f| matches!(f, Frame::Re { id: i, .. } if *i == id));
+            if matches!(lines, Some(Frame::Re { ref r, .. }) if r["lines"] == 2) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
         assert!(matches!(lines, Some(Frame::Re { ref r, .. }) if r["lines"] == 2), "{lines:?}");
 
         // A key given by the PC: that tab's command goes to the PC alone
