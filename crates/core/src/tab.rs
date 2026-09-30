@@ -3127,6 +3127,10 @@ pub struct Tab {
     /// How many processes this tab's job holds when nothing is going on.
     /// Learned rather than assumed -- see [`crate::detect::background_now`]
     job_rest: Option<u32>,
+    /// What the CLI said is running beside its conversation (see
+    /// [`crate::detect::Aside`]). A helper runs inside the CLI and is not one
+    /// of the job's processes, so only the CLI's own word can say it is there
+    aside: crate::detect::Aside,
     /// Which of the job's processes are machinery rather than work -- this
     /// program (the MCP server, a hook report) or one of the CLI's helpers --
     /// by id, remembered so each process is looked at once, not at every tick.
@@ -4033,6 +4037,7 @@ impl Tab {
             bytes_out,
             job,
             job_rest: None,
+            aside: Default::default(),
             job_ours: std::collections::HashMap::new(),
             guest: crate::guest::Watch::default(),
             own: own_profile,
@@ -4743,14 +4748,31 @@ impl Tab {
         let population = self.job_population(busy);
         let (background, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;
+        // What the CLI itself says is running beside it: its helpers, which
+        // no count of processes can see. Pressing Esc ends the turn and not
+        // the helpers, so nothing about how the turn ended takes these away
+        let aside = self.aside.running(Instant::now());
         if matches!(self.state, TabState::Done | TabState::Wait) {
             // Order is which one a person needs to hear. A turn that ended
             // against the limit produced no answer and no amount of waiting on
             // this tab will change that, so it outranks work still running
             if self.limit_note.is_some() {
                 self.state = TabState::Limit;
-            } else if background {
+            } else if background || aside {
                 self.state = TabState::Background;
+                // Which of the two is holding it, once as it starts to: the
+                // one question worth answering when a dot stays on too long
+                if old_state != TabState::Background {
+                    crate::append_hook_log(&format!(
+                        "tab \"{}\" at work behind its prompt: {}",
+                        self.title,
+                        match (background, aside) {
+                            (true, true) => "its processes and what its program says runs beside it",
+                            (true, false) => "its processes",
+                            _ => "what its program says runs beside it",
+                        }
+                    ));
+                }
             }
         }
         if self.state == TabState::Busy {
@@ -4820,6 +4842,34 @@ impl Tab {
     /// was older than something already applied and was dropped
     pub fn hook_says(&mut self, state: TabState, sent_ms: u64) -> bool {
         self.detector.hook_says(state, sent_ms)
+    }
+
+    /// The CLI said a helper of its began (`up`) or ended
+    pub fn helper_says(&mut self, id: &str, up: bool) {
+        self.aside.helper(id, up, Instant::now());
+    }
+
+    /// The CLI said what is still running beside its conversation, all of it
+    pub fn running_says(&mut self, running: &crate::agenthook::Running) {
+        self.aside.replace(running, Instant::now());
+    }
+
+    /// What this tab has to take from one report of its CLI's hook, beyond the
+    /// conversation's id and its prompt: its state, and what runs beside it.
+    /// The one place both roads a report comes by -- the pipe from a program
+    /// here, the terminal from one on another machine -- hand it over, so the
+    /// two cannot come to read the same report differently
+    pub fn take_report(&mut self, report: &crate::agenthook::Report, sent_ms: u64) -> bool {
+        if let Some((id, up)) = &report.helper {
+            self.helper_says(id, *up);
+        }
+        if let Some(running) = &report.running {
+            self.running_says(running);
+        }
+        match report.state.as_deref().and_then(TabState::from_label) {
+            Some(known) => self.hook_says(known, sent_ms),
+            None => true,
+        }
     }
 
     /// What the program last said about itself, while it still stands

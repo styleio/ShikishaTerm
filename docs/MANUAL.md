@@ -34,7 +34,9 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   uncommitted changes. Tick "Don't show this again" in the question and it deletes
   at once from then on (turn the question back on under Settings > Basic > Deleting a worktree).
 - **A tab** — its number, its name, and a dot: **green** while it works, **blue**
-  when it has answered, **amber** when it is waiting for you to answer. Under the name, the
+  when it has answered, **amber** when it is waiting for you to answer. A green **ring** means
+  it has answered but something it started is still at work -- a command left running, or a
+  helper (subagent) the AI runs on the side -- and you can already type to it. Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself. The ports show on the folder's card too, after its branch.
   Press a port (`:3000` and so on) and the column on the

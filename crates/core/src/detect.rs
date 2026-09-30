@@ -152,6 +152,66 @@ pub fn background_now(now: Option<u32>, busy: bool, rest: Option<u32>) -> (bool,
     (Some(now) > rest, rest)
 }
 
+/// How long something the CLI said is running beside its conversation is
+/// believed without another word about it.
+///
+/// A helper's end can go missing -- the report sent while this app was being
+/// restarted, a CLI that failed before it could say -- and a tab held "at work
+/// behind its prompt" for the rest of the day is a dot nobody can trust. The
+/// longest helper runs seen in this project's own work were about 100 minutes
+/// (four of them, 50 to 100 minutes each, on 2026-09-30), so three hours is
+/// nearly twice the longest seen: a helper silent past that is more likely an
+/// end that never arrived than work. The parent's next end of turn carries
+/// the whole list again and settles it sooner in the ordinary case
+pub const ASIDE_TRUST: std::time::Duration = std::time::Duration::from_secs(3 * 60 * 60);
+
+/// What an AI CLI has said is running beside its conversation: the helpers it
+/// runs on the side, by its own id for each, and whether anything else it
+/// started (a command left running) is still going -- each with when it was
+/// last heard of.
+///
+/// Kept apart from the state the CLI reports for its own turn, because the two
+/// end apart: a turn ends while its helpers go on, and pressing Esc ends the
+/// turn and not them.
+#[derive(Debug, Default, Clone)]
+pub struct Aside {
+    helpers: std::collections::HashMap<String, std::time::Instant>,
+    other: Option<std::time::Instant>,
+}
+
+impl Aside {
+    /// A helper began, or ended
+    pub fn helper(&mut self, id: &str, up: bool, now: std::time::Instant) {
+        match up {
+            true => {
+                self.helpers.insert(id.to_string(), now);
+            }
+            false => {
+                self.helpers.remove(id);
+            }
+        }
+    }
+
+    /// The whole list as the CLI has it now. A helper already known keeps the
+    /// time it was last heard of from its own events -- the list says it is
+    /// still there, which is being heard of
+    pub fn replace(&mut self, running: &crate::agenthook::Running, now: std::time::Instant) {
+        self.helpers = running.helpers.iter().map(|id| (id.clone(), now)).collect();
+        self.other = running.other.then_some(now);
+    }
+
+    /// Whether anything is running beside the conversation, as of `now`.
+    /// What has not been heard of for [`ASIDE_TRUST`] is let go of here
+    pub fn running(&mut self, now: std::time::Instant) -> bool {
+        let fresh = |at: &std::time::Instant| now.saturating_duration_since(*at) < ASIDE_TRUST;
+        self.helpers.retain(|_, at| fresh(at));
+        if self.other.is_some_and(|at| !fresh(&at)) {
+            self.other = None;
+        }
+        !self.helpers.is_empty() || self.other.is_some()
+    }
+}
+
 /// The end of a turn can go missing: pressing Ctrl+C or Esc is something a
 /// person does to a CLI, so most of them have no event for it, and the app can
 /// also be started in the middle of a turn it never saw begin. A dot stuck on
@@ -925,6 +985,48 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod aside_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A helper is running from its beginning to its end; the list at the end
+    /// of a turn replaces what was known, which is how an end that went
+    /// missing is put right
+    #[test]
+    fn helpers_are_counted_from_start_to_end_and_the_list_settles_them() {
+        let t0 = Instant::now();
+        let mut a = Aside::default();
+        assert!(!a.running(t0));
+        a.helper("a1", true, t0);
+        a.helper("a2", true, t0);
+        assert!(a.running(t0));
+        a.helper("a1", false, t0);
+        assert!(a.running(t0), "one helper ending ended the other");
+        // The end of a2 never arrived; the parent's next list does not have it
+        a.replace(&crate::agenthook::Running { helpers: vec![], other: false }, t0);
+        assert!(!a.running(t0));
+        // Something that is not a helper, still going
+        a.replace(&crate::agenthook::Running { helpers: vec![], other: true }, t0);
+        assert!(a.running(t0));
+    }
+
+    /// Nothing heard of for longer than it is believed is let go of: a tab is
+    /// not held at work for good by an end that never came
+    #[test]
+    fn what_is_not_heard_of_for_hours_is_let_go_of() {
+        let t0 = Instant::now();
+        let mut a = Aside::default();
+        a.helper("a1", true, t0);
+        a.replace(&crate::agenthook::Running { helpers: vec!["a1".into()], other: true }, t0);
+        assert!(a.running(t0 + ASIDE_TRUST - Duration::from_secs(1)));
+        assert!(!a.running(t0 + ASIDE_TRUST + Duration::from_secs(1)));
+        // Heard of again, it is believed again from then
+        a.helper("a1", true, t0 + ASIDE_TRUST * 2);
+        assert!(a.running(t0 + ASIDE_TRUST * 2 + Duration::from_secs(60)));
+    }
+}
 
 #[cfg(test)]
 mod state_set_tests {

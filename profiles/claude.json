@@ -59,6 +59,10 @@
         "Elicitation": "QUESTION",
         "Stop": "DONE",
         "StopFailure": "FAILED"
+      },
+      "helpers": {
+        "SubagentStart": "up",
+        "SubagentStop": "down"
       }
     },
     "verify": "{home}/.claude/projects/*/{id}.jsonl",

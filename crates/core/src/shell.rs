@@ -10521,6 +10521,9 @@ function drawHookAsk() {
       el("span", {class:"tag"}, c.name),
       el("span", {class:"nm asis"}, c.file),
       c.approval ? el("span", {class:"nm asis"}, (T["tui.hooks.approval"] || "{file}").replaceAll("{file}", c.approval)) : null,
+      // Already agreed to, and asked again because this version adds to it:
+      // what is new, by the names the CLI's own file uses
+      (c.added || []).length ? el("span", {class:"nm asis"}, (T["tui.hooks.added"] || "{events}").replaceAll("{events}", c.added.join(", "))) : null,
       show, pre);
   });
   const answer = word => { hookAskOpen = false; send({kind:"agenthooks", answer:word, seq:a.seq}); };

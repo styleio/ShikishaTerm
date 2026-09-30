@@ -108,6 +108,18 @@ pub fn targets() -> Vec<Target> {
                     )),
                 }
             }
+            // A helper beginning or ending. Only the two words this app acts
+            // on, for the same reason as the states: anything else would be a
+            // hook that fires into nothing
+            for (event, way) in &hook.helpers {
+                match Helper::of(way) {
+                    Some(h) => entries.push(Entry { event: event.clone(), arg: h.arg().to_string() }),
+                    None => crate::append_hook_log(&format!(
+                        "profile {}: {event} says {way:?} of a helper, which is neither \"up\" nor \"down\"",
+                        p.name
+                    )),
+                }
+            }
             Some(Target {
                 name: p.name.clone(),
                 file: expand(&hook.file),
@@ -306,6 +318,44 @@ pub fn status_of(t: &Target, program: &Path) -> Status {
     }
 }
 
+/// The events this app now asks the CLI to report that its file does not yet
+/// carry an entry of ours for, while it does carry ours for others: what an
+/// update of this app adds to a hook somebody already agreed to.
+///
+/// Told apart from a hook that is merely out of date (it names another copy
+/// of this app, or an older way of writing the same thing), which is kept
+/// right without asking: agreeing to a hook was agreeing to what it was shown
+/// to do, and a new event is something it was not shown doing. Empty for a
+/// file with none of ours in it -- that is a hook not set up at all, asked
+/// about the ordinary way -- and for one that cannot be read
+pub fn new_events(t: &Target) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(&t.file) else { return Vec::new() };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) else {
+        return Vec::new();
+    };
+    let ours_in = |event: &str| {
+        doc.pointer(&format!("/hooks/{event}"))
+            .and_then(|g| g.as_array())
+            .into_iter()
+            .flatten()
+            .flat_map(|group| group.pointer("/hooks").and_then(|h| h.as_array()).cloned().unwrap_or_default())
+            .any(|h| is_ours(&h))
+    };
+    let wanted: Vec<&str> = {
+        let mut seen: Vec<&str> = Vec::new();
+        for e in &t.entries {
+            if !seen.contains(&e.event.as_str()) {
+                seen.push(&e.event);
+            }
+        }
+        seen
+    };
+    if !wanted.iter().any(|e| ours_in(e)) {
+        return Vec::new();
+    }
+    wanted.into_iter().filter(|e| !ours_in(e)).map(str::to_string).collect()
+}
+
 /// Everything we want from one event, gathered.
 ///
 /// One event can be asked for more than one thing -- Gemini CLI has four
@@ -490,6 +540,13 @@ pub fn agreed(answers: &std::collections::BTreeMap<String, String>) -> Vec<Targe
     among(targets(), answers, Some(crate::config::HOOK_ON))
 }
 
+/// The CLIs agreed to, split by what may be done about them without asking:
+/// kept right as they are (`.0`), or asked about again first because this
+/// version adds events to their hook ([`new_events`]; `.1`)
+pub fn agreed_split(answers: &std::collections::BTreeMap<String, String>) -> (Vec<Target>, Vec<Target>) {
+    agreed(answers).into_iter().partition(|t| new_events(t).is_empty())
+}
+
 /// Of `all`, the ones used here whose answer is `answer` (`None`: none yet)
 fn among(all: Vec<Target>, answers: &std::collections::BTreeMap<String, String>, answer: Option<&str>) -> Vec<Target> {
     all.into_iter()
@@ -508,6 +565,7 @@ pub fn question(seq: u64, clis: &[Target]) -> crate::uistate::HookAskState {
                 file: t.file.display().to_string(),
                 preview: preview(t),
                 approval: approval_file(t).map(|f| f.display().to_string()).unwrap_or_default(),
+                added: new_events(t),
             })
             .collect(),
     }
@@ -853,6 +911,102 @@ pub struct Report {
     pub state: Option<String>,
     /// What a person just asked, when the event is the one carrying it
     pub prompt: Option<String>,
+    /// A helper that began (`true`) or ended (`false`), by the CLI's id for it
+    pub helper: Option<(String, bool)>,
+    /// Everything the CLI says is still running beside the conversation, when
+    /// the event carries its list: the helpers by id, and whether anything
+    /// that is not a helper (a command left running) is still going. The
+    /// whole picture as of that moment, so it replaces what was known
+    pub running: Option<Running>,
+}
+
+/// What a CLI said is still running beside a conversation (see [`Report::running`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Running {
+    pub helpers: Vec<String>,
+    pub other: bool,
+}
+
+/// Which way a helper went, as a hook entry for it says (`--hook helper:up`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Helper {
+    Up,
+    Down,
+}
+
+impl Helper {
+    /// The profile's word for it
+    pub fn of(word: &str) -> Option<Helper> {
+        match word.trim() {
+            "up" => Some(Helper::Up),
+            "down" => Some(Helper::Down),
+            _ => None,
+        }
+    }
+
+    /// What the hook entry asks to be run for it
+    pub fn arg(self) -> &'static str {
+        match self {
+            Helper::Up => "helper:up",
+            Helper::Down => "helper:down",
+        }
+    }
+}
+
+/// The CLI's id for the helper an event is about, when it is about one.
+///
+/// Every event a helper sends carries the parent conversation's id and this
+/// one beside it: it is how a helper's events are told from the parent's
+fn helper_id(v: &serde_json::Value) -> Option<String> {
+    v.get("agent_id").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// The kinds of thing a CLI lists as running that are helpers of the kind
+/// that ends: a subagent the conversation started. A teammate is not among
+/// them -- it is listed as running for as long as the team exists, whether or
+/// not it is doing anything, so counting it would hold the tab at work for
+/// good. A command left running is counted as other work
+const HELPER_KINDS: &[&str] = &["subagent", "local_agent", "local_subagent"];
+const STANDING_KINDS: &[&str] = &["teammate"];
+
+/// A status that says the thing has ended, however it ended. Anything else --
+/// a word this list does not know included -- is read as still running: a
+/// tab held at work a little too long is put right by the next list, while
+/// one let go of too early says "done" under work that is still going
+fn ended(status: &str) -> bool {
+    matches!(
+        status,
+        "done" | "finished" | "complete" | "completed" | "succeeded" | "success" | "stopped" | "exited"
+            | "terminated" | "killed" | "cancelled" | "canceled" | "aborted" | "failed" | "error" | "errored"
+            | "crashed" | "timed_out" | "timeout" | "expired" | "skipped" | "idle"
+    )
+}
+
+/// What is running beside the conversation, from the list a CLI hands its
+/// hook as the turn ends. `None` when the event carries no list (an older CLI,
+/// or an event that never does): then nothing is known, and what was known
+/// stands
+pub fn running_of(v: &serde_json::Value) -> Option<Running> {
+    let list = v.get("background_tasks")?.as_array()?;
+    let mut out = Running::default();
+    for item in list {
+        let kind = item.get("type").and_then(|x| x.as_str()).unwrap_or("").trim().to_ascii_lowercase();
+        let status = item.get("status").and_then(|x| x.as_str()).unwrap_or("").trim().to_ascii_lowercase();
+        if !status.is_empty() && ended(&status) {
+            continue;
+        }
+        if STANDING_KINDS.contains(&kind.as_str()) {
+            continue;
+        }
+        let id = item.get("id").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        match (HELPER_KINDS.contains(&kind.as_str()), id) {
+            (true, Some(id)) => out.helpers.push(id.to_string()),
+            // A helper with no id cannot be told apart from the next one, and
+            // anything of a kind nobody here knows is something still going
+            _ => out.other = true,
+        }
+    }
+    Some(out)
 }
 
 /// `kind` is what the hook entry asked for: `session`, or `state:<STATE>`.
@@ -865,8 +1019,21 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
         .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+    if let Some(way) = kind.strip_prefix("helper:") {
+        let helper = Helper::of(way).zip(helper_id(v)).map(|(h, id)| (id, h == Helper::Up));
+        return Report { helper, ..Default::default() };
+    }
     let Some(state) = kind.strip_prefix("state:") else {
-        return Report { id: id.filter(|_| kind == "session"), ..Default::default() };
+        // A conversation begun afresh has nothing running beside it yet; one
+        // taken up again, or packed down to save room, carries on with what
+        // it had
+        let fresh = kind == "session"
+            && matches!(v.get("source").and_then(|s| s.as_str()), Some("startup") | Some("clear"));
+        return Report {
+            id: id.filter(|_| kind == "session"),
+            running: fresh.then(Running::default),
+            ..Default::default()
+        };
     };
     // A subagent's events carry its parent's session id, so its "finished"
     // would put the whole tab back to rest while the real turn runs on. The
@@ -887,7 +1054,13 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .map(str::to_string);
-    Report { id: None, state: keep.then(|| state.to_string()), prompt }
+    // A helper whose turn failed (its request to the model refused, a limit
+    // hit) sends no "ended" of its own -- this failure is its end
+    let helper = (sub && state.eq_ignore_ascii_case("FAILED")).then(|| helper_id(v)).flatten().map(|id| (id, false));
+    // What is still running, from the parent's own end of its turn only: a
+    // helper's list is not the conversation's
+    let running = (!sub).then(|| running_of(v)).flatten();
+    Report { id: None, state: keep.then(|| state.to_string()), prompt, helper, running }
 }
 
 // ── On another machine ───────────────────────────────────────────────────
@@ -1162,6 +1335,44 @@ mod tests {
         d
     }
 
+    /// A hook set up by an earlier version is asked about again when this one
+    /// adds events to it -- and only then: missing altogether is the first
+    /// question's business, and complete is nothing to ask about
+    #[test]
+    fn events_this_version_adds_to_an_agreed_hook_are_named() {
+        let dir = tmp("grown");
+        let older = Target {
+            name: "Test CLI".into(),
+            file: dir.join("settings.json"),
+            format: HookFormat::Args,
+            timeout: TIMEOUT_S,
+            trust: None,
+            entries: vec![
+                Entry { event: "SessionStart".into(), arg: "session".into() },
+                Entry { event: "Stop".into(), arg: "state:DONE".into() },
+            ],
+        };
+        // Not set up at all: not this question's
+        assert!(new_events(&older).is_empty());
+        install(&older).unwrap();
+        assert!(new_events(&older).is_empty(), "a complete hook was said to have new events");
+        let newer = Target {
+            entries: [
+                older.entries.clone(),
+                vec![
+                    Entry { event: "SubagentStart".into(), arg: "helper:up".into() },
+                    Entry { event: "SubagentStop".into(), arg: "helper:down".into() },
+                ],
+            ]
+            .concat(),
+            ..older.clone()
+        };
+        assert_eq!(new_events(&newer), vec!["SubagentStart".to_string(), "SubagentStop".into()]);
+        install(&newer).unwrap();
+        assert!(new_events(&newer).is_empty(), "written, the events are still said to be new");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn installing_leaves_every_other_hook_exactly_where_it_was() {
         let dir = tmp("keep");
@@ -1417,7 +1628,78 @@ mod tests {
                     p.name
                 );
             }
+            for (event, way) in &hook.helpers {
+                assert!(Helper::of(way).is_some(), "{}: {event} says {way:?} of a helper", p.name);
+            }
         }
+    }
+
+    /// A helper's beginning and end, from the events that say them, by the
+    /// helper's own id -- and nothing about the conversation's state, which
+    /// is the parent's to say
+    #[test]
+    fn a_helper_is_heard_beginning_and_ending() {
+        let started = serde_json::json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1f2", "agent_type": "general-purpose"});
+        let r = report_of("helper:up", &started);
+        assert_eq!(r.helper, Some(("a1f2".into(), true)));
+        assert_eq!(r.state, None);
+        let ended = serde_json::json!({"session_id": "s", "hook_event_name": "SubagentStop", "agent_id": "a1f2"});
+        assert_eq!(report_of("helper:down", &ended).helper, Some(("a1f2".into(), false)));
+        // Without the helper's id there is nothing to keep track of
+        assert_eq!(report_of("helper:up", &serde_json::json!({"session_id": "s"})).helper, None);
+        // A helper whose turn failed sends no end of its own: the failure is it
+        let failed = serde_json::json!({"session_id": "s", "hook_event_name": "StopFailure", "agent_id": "a1f2"});
+        let r = report_of("state:FAILED", &failed);
+        assert_eq!(r.helper, Some(("a1f2".into(), false)));
+        assert_eq!(r.state, None, "a helper's failure was taken for the conversation's");
+    }
+
+    /// The list a turn's end carries is read for what is still running: the
+    /// helpers of the kind that end, by id, and whether anything else is
+    /// going. Ended things are left out; a teammate -- listed as running for
+    /// as long as its team stands -- does not count; a kind or a status
+    /// nobody here knows counts as still going
+    #[test]
+    fn what_still_runs_is_read_from_the_end_of_the_turn() {
+        let stop = |tasks: serde_json::Value| {
+            report_of("state:DONE", &serde_json::json!({"session_id": "s", "hook_event_name": "Stop", "background_tasks": tasks}))
+        };
+        let r = stop(serde_json::json!([
+            {"id": "a1", "type": "subagent", "status": "running"},
+            {"id": "a2", "type": "subagent", "status": "completed"},
+            {"id": "team-x", "type": "teammate", "status": "running"},
+        ]));
+        assert_eq!(r.state.as_deref(), Some("DONE"), "the parent's own turn still ended");
+        assert_eq!(r.running, Some(Running { helpers: vec!["a1".into()], other: false }));
+        let shell = stop(serde_json::json!([{"id": "b1", "type": "shell", "status": "running"}]));
+        assert_eq!(shell.running, Some(Running { helpers: vec![], other: true }));
+        let odd = stop(serde_json::json!([{"id": "c1", "type": "something_new"}]));
+        assert!(odd.running.unwrap().other, "an unknown kind with no status was taken as ended");
+        let unknown_status = stop(serde_json::json!([{"id": "a3", "type": "subagent", "status": "warming_up"}]));
+        assert_eq!(unknown_status.running.unwrap().helpers, vec!["a3".to_string()]);
+        let clear = stop(serde_json::json!([]));
+        assert_eq!(clear.running, Some(Running::default()), "an empty list is news too: nothing runs");
+        // No list at all says nothing -- what was known stands
+        let none = report_of("state:DONE", &serde_json::json!({"session_id": "s", "hook_event_name": "Stop"}));
+        assert_eq!(none.running, None);
+        // A helper's own end of turn carries a list that is not the conversation's
+        let helpers = report_of(
+            "state:DONE",
+            &serde_json::json!({"session_id": "s", "agent_id": "a1", "background_tasks": [{"id": "z", "type": "shell", "status": "running"}]}),
+        );
+        assert_eq!(helpers.running, None);
+    }
+
+    /// A conversation begun afresh has nothing beside it; one taken up again
+    /// or packed down keeps what it had
+    #[test]
+    fn a_fresh_conversation_has_nothing_beside_it() {
+        let begun = |source: &str| report_of("session", &serde_json::json!({"session_id": "s", "source": source}));
+        assert_eq!(begun("startup").running, Some(Running::default()));
+        assert_eq!(begun("clear").running, Some(Running::default()));
+        assert_eq!(begun("resume").running, None);
+        assert_eq!(begun("compact").running, None);
+        assert_eq!(begun("startup").id.as_deref(), Some("s"));
     }
 
     /// Measured against Codex CLI 0.150/0.151 on Windows, which splits the

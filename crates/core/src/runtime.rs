@@ -3602,18 +3602,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 for (kind, sent, v) in heard {
                     let report = crate::agenthook::report_of(&kind, &v);
-                    if let Some(id) = report.id {
+                    if let Some(id) = report.id.clone() {
                         let s = tab::Session { id, source: tab::SessionSource::Hook };
                         append_hook_log(&format!("\"{}\" (on another machine) is running {}", t.title, s.short()));
                         t.session = Some(s);
                     }
-                    if let Some(prompt) = report.prompt {
-                        t.heard(&prompt);
+                    if let Some(prompt) = &report.prompt {
+                        t.heard(prompt);
                     }
-                    if let Some(known) = report.state.as_deref().and_then(TabState::from_label) {
-                        let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
-                        t.hook_says(known, sent);
-                    }
+                    let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
+                    t.take_report(&report, sent);
                 }
             }
 
@@ -11566,8 +11564,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if !hooks_looked {
             hooks_looked = true;
             let answers = cfg.as_ref().map(|c| c.agent_hooks.clone()).unwrap_or_default();
-            keep_hooks_right(crate::agenthook::agreed(&answers), hooks_tx.clone());
+            // One this version adds events to is asked about again rather
+            // than kept right: it was agreed to as it was shown, and a new
+            // event is not something it was shown doing
+            let (keep, grown) = crate::agenthook::agreed_split(&answers);
+            keep_hooks_right(keep, hooks_tx.clone());
+            if !grown.is_empty() {
+                append_hook_log(&format!(
+                    "hooks: asking again about {}, which this version adds to",
+                    grown.iter().map(|t| format!("{} ({})", t.name, crate::agenthook::new_events(t).join(", "))).collect::<Vec<_>>().join("; ")
+                ));
+            }
             hook_asking = crate::agenthook::unasked(&answers);
+            hook_asking.extend(grown);
             if !hook_asking.is_empty() {
                 append_hook_log(&format!(
                     "hooks: asking whether to set up {}",
@@ -11603,6 +11612,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     } else if on {
                         keep_hooks_right(saved, hooks_tx.clone());
                     } else {
+                        // One that was set up before and is now said no to
+                        // (asked again because this version adds to it) is
+                        // taken out: "do not set up" is not "leave the old one"
+                        for t in saved.iter().filter(|t| matches!(crate::agenthook::status(t), crate::agenthook::Status::Installed | crate::agenthook::Status::Stale)) {
+                            match crate::agenthook::uninstall(t) {
+                                Ok(()) => append_hook_log(&format!("hooks: {} taken out, as the person said", t.name)),
+                                Err(e) => append_hook_log(&format!("hooks: {} could not be taken out: {e:#}", t.name)),
+                            }
+                        }
                         flash = Some(i18n::tp("msg.hooks.off", &[("names", &names)]));
                     }
                 }
@@ -16680,6 +16698,17 @@ pub fn exec_commands(
                     ));
                 }
             }
+            Command::SetHelper { id, running, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) => {
+                    append_hook_log(&format!("tab{origin} \"{}\": helper {id} {}", t.title, if running { "began" } else { "ended" }));
+                    t.helper_says(&id, running);
+                }
+                None => append_hook_log(&format!("set_helper from tab{origin}: no such tab")),
+            },
+            Command::SetRunning { helpers, other, origin } => match session_of(origin).and_then(|i| tabs.get_mut(i)) {
+                Some(t) => t.running_says(&crate::agenthook::Running { helpers, other }),
+                None => append_hook_log(&format!("set_running from tab{origin}: no such tab")),
+            },
             Command::SetStatus { key, value, target, origin } => {
                 let at = target.as_ref().and_then(index_of).unwrap_or(origin);
                 if let Some(t) = session_of(at).and_then(|i| tabs.get_mut(i)) {

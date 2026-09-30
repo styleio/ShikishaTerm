@@ -172,6 +172,8 @@ pub const CATALOG: &[Entry] = &[
     // An AI CLI's own hooks report through these. Closing them would leave the
     // state dot guessing from the screen for the tools that were willing to say
     e("set_state", Group::Report, true, true, false),
+    e("set_helper", Group::Report, true, true, false),
+    e("set_running", Group::Report, true, true, false),
     e("set_status", Group::Report, true, true, false),
     e("set_progress", Group::Report, true, true, false),
     e("set_session", Group::Report, true, true, false),

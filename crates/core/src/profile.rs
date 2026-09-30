@@ -371,6 +371,13 @@ pub struct HookSpec {
     /// in the app
     #[serde(default)]
     pub states: std::collections::BTreeMap<String, String>,
+    /// The events that say a helper the CLI runs on the side -- a subagent --
+    /// began or ended: `{"SubagentStart": "up", "SubagentStop": "down"}`.
+    /// Such a helper can outlive the turn that started it, and while it runs
+    /// the tab is still at work behind its prompt; nothing on the screen or in
+    /// the tab's processes says so, because the helper runs inside the CLI
+    #[serde(default)]
+    pub helpers: std::collections::BTreeMap<String, String>,
     /// What this CLI counts a hook's patience in. Absent is seconds, which is
     /// what most of them use -- and getting it wrong is not a rounding error:
     /// three seconds written where three milliseconds was meant kills every

@@ -243,6 +243,11 @@ pub struct HookAskCli {
     /// holds a new hook back until it is approved; empty for one that does not
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub approval: String,
+    /// For a CLI already agreed to: the events this version adds to its hook,
+    /// asked about before they are written. Empty when the question is the
+    /// first one
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<String>,
 }
 
 /// A closed tab the list offers to open again.

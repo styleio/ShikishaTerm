@@ -1309,6 +1309,12 @@ pub enum Command {
     /// otherwise read off the screen, which is a guess -- a good one, and
     /// still a guess. A program that will say so outright is believed
     SetState { state: String, sent_ms: u64, origin: usize },
+    /// "A helper of mine began / ended", from the program in the tab itself --
+    /// a subagent it runs on the side, by the program's own id for it
+    SetHelper { id: String, running: bool, origin: usize },
+    /// "This is everything I still have running beside the conversation":
+    /// the helpers by id, and whether anything else is still going
+    SetRunning { helpers: Vec<String>, other: bool, origin: usize },
     /// "This is what I am doing." The caller's own tab unless it names another
     /// — a build script run by hand is nobody's tab and still has something to
     /// say. An empty value takes the entry away, so finishing needs no second verb
@@ -3525,6 +3531,52 @@ impl HookEngine {
                             sent_ms: sent.map(|v| v.max(0) as u64).unwrap_or_else(epoch_ms),
                             origin: o.get(),
                         });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // What runs beside the conversation in this tab: helpers the
+            // program runs on the side, which outlive the turn that started
+            // them and are no process of the tab's, so nothing but the
+            // program's own word can say they are there. The caller IS the
+            // tab, as for set_state; an AI CLI's hooks report through these
+            // (`--hook helper:up` and the list its end of turn carries).
+            //
+            // `set_helper(id, running)`: one helper began or ended.
+            // `set_running({ids...}, other)`: the whole list as it stands, and
+            // whether anything that is not a helper is still going
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_helper",
+                    lua.create_function(move |_, (id, running): (String, bool)| {
+                        let id = id.trim().to_string();
+                        if id.is_empty() {
+                            return Err(mlua::Error::runtime(crate::i18n::t("err.hooks.helper_id")));
+                        }
+                        c.borrow_mut().push(Command::SetHelper { id, running, origin: o.get() });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+            let c = Rc::clone(&commands);
+            let o = Rc::clone(&current_origin);
+            shikisha
+                .set(
+                    "set_running",
+                    lua.create_function(move |_, (ids, other): (Option<Vec<String>>, Option<bool>)| {
+                        let helpers = ids
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        c.borrow_mut().push(Command::SetRunning { helpers, other: other.unwrap_or(false), origin: o.get() });
                         Ok(())
                     })
                     .map_err(lerr)?,
