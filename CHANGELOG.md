@@ -9,6 +9,18 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A port listening on one address only opens at that address.** The ports
+  panel opened every port at localhost, so a development server told to
+  listen on the LAN address alone was listed and then answered nothing. The
+  panel now opens such a port where it listens, and names the address on its
+  line.
+- **The phone settings say where the link is really reachable from.** They
+  said only people on the same network could connect and that nothing was
+  put on the internet. The address the board listens on is a Tailscale or LAN
+  one, but a router's port forwarding, a cloud machine's public IP or a
+  firewall rule can still carry the internet to it; the settings, the README
+  and the security notes now say that, and that the program forwards nothing
+  itself.
 - **Text that ran past the edge of a terminal survives the window getting
   narrower.** Making a tab narrower cut every row at the new width, and the
   characters past it were gone for good -- the pseudo console does not draw

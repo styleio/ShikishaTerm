@@ -298,6 +298,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #portpanel .prt .pg { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #portpanel .prt .po { font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
     display:flex; align-items:center; gap:var(--s1); }
+  #portpanel .prt .ph { font-family:var(--mono); }
   #portpanel .prt .pa { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:var(--r-chip);
     background:transparent; color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center; }
   #portpanel .prt .pa:hover { background:var(--raise); color:var(--text); }
@@ -8045,17 +8046,20 @@ function drawHerePorts(box, g, group) {
   const held = [];
   for (const t of (S && S.tabs) || []) {
     if (t.group !== group || !t.place) continue;
-    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || ""});
+    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || "",
+      host: (t.place.hosts || {})[port] || ""});
   }
   held.sort((a, b) => a.port - b.port);
-  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
   if (PT.drawn === sig && box.firstChild) return;
   PT.drawn = sig;
   box.textContent = "";
   box.append(el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.ports.here.title"] || "")));
   const list = el("div", {class:"plist"});
   for (const h of held) {
-    const url = "http://localhost:" + h.port + "/";
+    // A program listening on one address only (the LAN's, say) answers
+    // there and not at localhost, so it is opened, and named, where it listens
+    const url = "http://" + (h.host || "localhost") + ":" + h.port + "/";
     const tab = h.t.id || h.t.name || "";
     // The same road a pressed address on a terminal takes: the app checks the
     // address, finds the folder from the tab, and opens it there
@@ -8075,7 +8079,10 @@ function drawHerePorts(box, g, group) {
       el("span", {class:"pp"}, ":" + h.port),
       el("span", {class:"pw"},
         el("span", {class:"pg"}, h.program || (T["tui.ports.unnamed"] || "")),
-        el("span", {class:"po"}, markFor(h.t) || null, el("span", {}, h.t.name || tab))),
+        // The address, when it is not this PC's own loopback: the one thing
+        // that says why this row opens somewhere other than localhost
+        el("span", {class:"po"}, h.host ? el("span", {class:"ph"}, h.host) : null,
+          markFor(h.t) || null, el("span", {}, h.t.name || tab))),
       ...acts));
   }
   // Nothing yet is said where the rows would be, not at the foot of an empty
