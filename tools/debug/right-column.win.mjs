@@ -260,6 +260,8 @@ try {
   await sleep(200);
   s = await board.strip();
   check(s.on === 'git' && !s.called.includes('ports'), 'its ✕ goes back to the changes the person chose, not to files: ' + s.on);
+  // Back to the choice written down in part 2, which the phone expects
+  await board.run('sideChoose("convo")');
 
   console.log('4. show_panel from a script');
   const door = await openDoor();
