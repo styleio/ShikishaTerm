@@ -40,6 +40,13 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **A Ports panel on the right.** Press a port under a tab (`:3000`) or choose
+  it from a folder's menu, and the column shows what listens in that folder:
+  each port with the program holding it and the tab it came from, opened in a
+  browser tab with one press, or in this PC's browser, or copied. On a server
+  or a MicroVM the same panel lists what its machine answers on, asked when
+  you press Ask; it replaces the list that used to float over the folder's
+  menu. Scripts call it up with `show_panel("ports")`.
 - **Develop, on a web page's bar.** Tick it among the browser tab's controls
   and the bar gets a list of tools for somebody building the page: the hard
   reload, picking elements for an AI (the list of what was picked now stands

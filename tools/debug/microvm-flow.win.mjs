@@ -598,43 +598,38 @@ try {
   const entry = await board.run('(() => { const d = [...document.querySelectorAll(".fmenu div")].find(d => d.textContent === "公開 URL"); const b = d.getBoundingClientRect(); return {x: b.left + b.width / 2, y: b.top + b.height / 2}; })()');
   await board.press(entry.x, entry.y);
   await until(() => board.run(`!!(S.far_ports && !S.far_ports.busy && S.far_ports.folder === gkey(${g}))`), 'the addresses', 60000);
-  await until(() => board.run('/8000/.test((document.querySelector(".fmenu.farports") || {textContent: ""}).textContent)'), 'the addresses drawn under the pointer', 10000)
-    .catch(async (e) => { console.log('    (the page has: ' + await board.run('JSON.stringify({open: !!farPortsOpen, menus: [...document.querySelectorAll(".fmenu")].map(m => m.textContent)})') + ')'); throw e; });
+  await until(() => board.run('/8000/.test((document.getElementById("portpanel") || {textContent: ""}).textContent)'), 'the addresses drawn in the ports panel', 10000)
+    .catch(async (e) => { console.log('    (the page has: ' + await board.run('JSON.stringify({panel: sidePanel, hidden: (document.getElementById("portpanel") || {}).hidden, text: (document.getElementById("portpanel") || {}).textContent})') + ')'); throw e; });
   const ports = await board.run('S.far_ports.ports');
   const p8000 = ports.find((p) => p.port === 8000);
   check(!!p8000 && p8000.url === `https://8000-${wt.sandbox}.e2b.app`, 'the port and its public URL are listed: ' + JSON.stringify(ports));
-  check(await board.run('!!document.querySelector(".fmenu.farports")'), 'and shown where the menu was');
-  // Read, then chosen: what the list is heads it and cannot be pressed; a
-  // port is one line, with a copy button for its address; what the image
+  check(await board.run('sidePanel === "ports" && !document.getElementById("portpanel").hidden'), 'and shown in the column\'s ports panel');
+  // A port is one line, with a copy button for its address; what the image
   // itself runs as root (SSH on 22, the port mapper on 111) is not offered
-  check(await board.run('(() => { const m = document.querySelector(".fmenu.farports"); const lines = [...m.querySelectorAll(".farport")]; return !!m.querySelector(".farhead") && !m.querySelector(".farhead").onclick && lines.length === ports.length && lines.every(l => !!l.querySelector(".fcopy")); })()'.replace('ports.length', String(ports.length))),
-    'a heading that is read, and one line a port with its copy button');
+  check(await board.run('(() => { const lines = [...document.querySelectorAll("#portpanel .prt")]; return lines.length === ports.length && lines.every(l => !!l.querySelector(".pa")); })()'.replace('ports.length', String(ports.length))),
+    'one line a port, with its copy button');
   check(!ports.some((p) => p.port === 22 || p.port === 111), 'the image\'s own ports are not offered: ' + ports.map((p) => p.port).join(', '));
-  // Every line the same width, and the list inside the window
-  check(await board.run('(() => { const m = document.querySelector(".fmenu.farports"); const b = m.getBoundingClientRect(); const w = [...m.children].map(c => Math.round(c.getBoundingClientRect().width)); return w.every(x => x === w[0]) && b.bottom <= innerHeight - 8; })()'),
-    'every line of the list is as wide as the others, and the list is inside the window');
   // How a server is started differs from project to project: the machine's
   // AI is handed it, in a tab of its own in the folder
-  await board.run('document.querySelector(".fmenu.farports .farserve").click(); true');
+  await board.run('document.querySelector("#portpanel .farserve").click(); true');
   await until(() => board.run(`(S.tabs || []).some(t => t.name === "サーバー起動" && t.group === (S.groups || []).indexOf(${g}))`), 'a tab for the AI to start the server in', 60000)
     .catch(async (e) => { console.log('    (the board says: ' + await board.run('S.flash || ""') + ')'); throw e; });
   check(true, 'the AI is handed starting the server, in a tab of its own in the folder');
   await board.run('(() => { const t = (S.tabs || []).find(t => t.name === "サーバー起動"); if (t) send({kind:"closetab", tab:t.index, key:t.key || "", sure:true}); return true; })()');
   await until(() => board.run('!(S.tabs || []).some(t => t.name === "サーバー起動")'), 'that tab closed', 30000);
-  await board.run(`openFarPorts(${g}, {clientX: 200, clientY: 200}); true`);
+  await board.run(`showPorts(${g}); true`);
   // A port pressed is a browser tab of the folder, beside its other tabs, and
   // written down there: the folder's row still holds every tab it had
-  await until(() => board.run('!!document.querySelector(".fmenu.farports .farport")'), 'the list again', 60000);
+  await until(() => board.run('!!document.querySelector("#portpanel .prt")'), 'the list again', 60000);
   const before = await board.run(`(S.tabs || []).filter(t => t.group === (S.groups || []).indexOf(${g})).length`);
-  await board.run('document.querySelector(".fmenu.farports .farport").click(); true');
+  await board.run('document.querySelector("#portpanel .prt").click(); true');
   await until(() => board.run(`(S.tabs || []).some(t => t.name === ":8000" && t.group === (S.groups || []).indexOf(${g}))`), 'the page as a tab of the folder', 30000)
     .catch(async (e) => { console.log('    (the tabs: ' + await board.run('JSON.stringify((S.tabs || []).map(t => [t.name, t.group]))') + ')'); throw e; });
   check(await board.run(`(S.tabs || []).filter(t => t.group === (S.groups || []).indexOf(${g})).length`) === before + 1,
     'the port opens as one more tab of the folder, and its other tabs stay beside it');
   check((folderAt(wt.cwd).tabs || []).some((t) => t.command === `browser https://8000-${wt.sandbox}.e2b.app`),
     'and it is written down in the folder, to be there on the next start');
-  check(!(await board.run('!!document.querySelector(".fmenu.farports")')), 'the list is put away once a port is chosen');
-  await board.run(`openFarPorts(${g}, {clientX: 200, clientY: 200}); true`);
+  await board.run(`showPorts(${g}); true`);
   await board.shot('3b-urls');
   if (p8000) {
     const got = await fetch(p8000.url).then((r) => r.text()).catch((e) => String(e));

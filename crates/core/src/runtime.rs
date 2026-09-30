@@ -3585,9 +3585,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Some(c) => (crate::repo::family_of(c), crate::repo::is_linked(c)),
                         None => (None, false),
                     };
+                    let held = ports.get(&i).cloned().unwrap_or_default();
                     t.place = crate::repo::Place {
                         branch,
-                        ports: ports.get(&i).cloned().unwrap_or_default(),
+                        ports: held.ports,
+                        programs: held.programs,
                         repo,
                         pr,
                         family,

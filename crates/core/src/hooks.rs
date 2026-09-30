@@ -1238,7 +1238,7 @@ impl TabRef {
 
 /// The panels the right-hand column can be opened on, by the names the board
 /// page gives them (`SIDE_PANELS` in `shell.rs`)
-pub const PANEL_NAMES: &[&str] = &["files", "git", "convo", "console", "picks"];
+pub const PANEL_NAMES: &[&str] = &["files", "git", "convo", "console", "picks", "ports"];
 
 /// Operations requested from hooks to the Rust side. Executed by main
 #[derive(Debug)]
