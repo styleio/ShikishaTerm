@@ -602,7 +602,17 @@ pub fn agreed(answers: &std::collections::BTreeMap<String, String>) -> Vec<Targe
 /// kept right as they are (`.0`), or asked about again first because this
 /// version adds events to their hook ([`new_events`]; `.1`)
 pub fn agreed_split(answers: &std::collections::BTreeMap<String, String>) -> (Vec<Target>, Vec<Target>) {
-    agreed(answers).into_iter().partition(|t| new_events(t).is_empty())
+    agreed(answers).into_iter().partition(|t| !asked_again(t))
+}
+
+/// Whether a CLI agreed to is asked about again rather than kept right: this
+/// version asks something of it that its file does not carry yet
+/// ([`new_events`]), or its file holds none of this app's entries any more.
+/// That last is not a hook out of date but one somebody took out; writing all
+/// of it back, whatever this version adds to it, would be writing what was
+/// never shown
+fn asked_again(t: &Target) -> bool {
+    !new_events(t).is_empty() || status(t) == Status::Absent
 }
 
 /// Of `all`, the ones used here whose answer is `answer` (`None`: none yet)
