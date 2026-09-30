@@ -552,11 +552,16 @@ fn answer(
 
 /// One tick of one ask, against the tab it went to (`None`: gone) and whether
 /// the caller's tab is free to be typed into.
+///
+/// `shown` is whether the tab's desk is the one in front: words for a tab on
+/// a desk not in front wait for it (they are typed through the desk in
+/// front), and the wait for them is the same wait, with the same end
 pub fn step(
     a: &mut Ask,
     target: Option<&Tab>,
     caller_free: bool,
     same_folder: Option<bool>,
+    shown: bool,
 ) -> Step {
     let now = Instant::now();
     if let Phase::Handing(text) = &a.phase {
@@ -587,8 +592,18 @@ pub fn step(
                 Some("the tab's program has ended"),
             ));
         }
-        if turn_over(t.state) {
+        if turn_over(t.state) && shown {
             return Step::Send;
+        }
+        if now >= a.deadline && !shown {
+            return Step::Answer(answer(
+                a,
+                "BUSY",
+                None,
+                "none",
+                same_folder,
+                Some("the tab's desk was not shown before the wait ran out; nothing was sent"),
+            ));
         }
         if now >= a.deadline {
             return Step::Answer(answer(

@@ -143,7 +143,11 @@ async function trial(answer) {
   // come through untouched, where they were
   const theirCodex = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'their-notify done', timeout: 5 }] }] } };
   const theirClaude = { model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'their-beep' }] }] } };
-  fs.writeFileSync(path.join(HOME, '.codex', 'hooks.json'), JSON.stringify(theirCodex, null, 2));
+  // Where the person is not asked yet but an older copy of this app put its
+  // entry in already, "Do not set up" has to take that out, and only that
+  const olderOurs = { hooks: [{ type: 'command', command: 'C:/older/SHIKISHA-TERM.exe --hook session', timeout: 3, async: true }] };
+  const seededCodex = answer === 'on' ? theirCodex : { hooks: { ...theirCodex.hooks, SessionStart: [olderOurs] } };
+  fs.writeFileSync(path.join(HOME, '.codex', 'hooks.json'), JSON.stringify(seededCodex, null, 2));
   fs.writeFileSync(path.join(HOME, '.claude', 'settings.json'), JSON.stringify(theirClaude, null, 2));
   if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed');
   const port = await freePort();
@@ -228,8 +232,13 @@ async function trial(answer) {
       const listed = all.filter((h) => !h.startsWith('theirs:'));
       check(all.includes('theirs:stop:untrusted'), `the person's own Codex hook is left for them to approve: ${all.filter((h) => h.startsWith('theirs:')).join(' ')}`);
       check(listed.length > 0 && listed.every((h) => h.endsWith(':trusted')), `Codex runs them: ${listed.join(' ')}`);
+    } else if (answer === 'off') {
+      await until(async () => !read(codexHooks).includes('--hook'), 'the older entry to be taken out', 20000).catch(() => {});
+      check(!read(codexHooks).includes('--hook') && !read(claudeSettings).includes('--hook'), 'nothing of this app is left: the older entry was taken out');
+      check(read(codexHooks).includes('their-notify'), 'the person\'s own hook is still there');
     } else {
-      check(!read(codexHooks).includes('--hook') && !read(claudeSettings).includes('--hook'), 'nothing was written');
+      check(read(codexHooks).includes('C:/older/SHIKISHA-TERM.exe') && !read(claudeSettings).includes('--hook'),
+        'nothing was written or taken out: not answered yet');
     }
     const saved = JSON.parse(read(CONFIG)).agent_hooks || {};
     check(answer === 'later' ? !saved['Codex CLI'] : saved['Codex CLI'] === answer, `the answer on record: ${JSON.stringify(saved)}`);

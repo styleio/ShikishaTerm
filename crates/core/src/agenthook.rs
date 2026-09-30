@@ -773,9 +773,13 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
     if let Some(dir) = t.file.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    // The way back, before the first change
+    // The way back, before the change. Promised in the question that asks
+    // to write here, so a way back that could not be kept stops the change
     if let Some(text) = existing.as_deref() {
-        let _ = std::fs::write(t.file.with_extension("bak"), text);
+        let bak = t.file.with_extension("bak");
+        std::fs::write(&bak, text).with_context(|| {
+            crate::i18n::tp("err.hookfile.no_backup", &[("path", &bak.display().to_string())])
+        })?;
     }
     crate::crypto::write_atomic(&t.file, &serde_json::to_string_pretty(&doc)?)?;
     crate::append_hook_log(&format!(

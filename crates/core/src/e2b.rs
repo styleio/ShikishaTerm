@@ -479,6 +479,12 @@ pub fn begin_again(host: &crate::config::HostSpec) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.no_machine", &[("host", &host.name)])))?;
     let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    // Not while this app has work of its own running on it -- a clone, an
+    // install, a worktree being cut -- which its terminals being still says
+    // nothing about: that work waits for the next quiet moment
+    if is_working(id) || being_made(id) {
+        return Ok(());
+    }
     // Once at a time for a machine, and not again at once after it failed
     if TRIED.get_or_init(Default::default).lock().is_ok_and(|t| t.get(id).is_some_and(|at| at.elapsed() < Duration::from_secs(60))) {
         return Ok(());
@@ -542,19 +548,33 @@ fn started_again_now(id: &str, minutes: u32) {
     // The longest run, when that is what its end was; otherwise the
     // service paused it for a reason of its own, and it is not guessed at
     let run = RUNS.get_or_init(Default::default).lock().ok().and_then(|r| r.get(id).copied());
-    let at_its_longest = run.filter(|r| r.cut && r.ends <= now_secs() + 60);
+    // Started again only when the end of its longest run is what paused it:
+    // the run was cut short, and it paused when that cut said. A pause for
+    // any other reason -- somebody paused it, on purpose, from elsewhere --
+    // is not undone here, which would start paying for it again: the person
+    // is told, and a key pressed there starts it
+    let now = now_secs();
+    let Some(r) = run.filter(|r| r.cut && r.ends <= now + 60 && r.ends + 120 >= now) else {
+        crate::append_hook_log(&format!("e2b: {id} paused while at work, not at the end of its longest run; left for a key to be pressed"));
+        say_on_terminals(id, &crate::i18n::t("msg.microvm.paused_at_work"));
+        return;
+    };
     match connect(&key, id, minutes) {
-        Ok(_) => match at_its_longest {
-            Some(r) => {
-                crate::append_hook_log(&format!("e2b: {id} paused at its longest run ({}s) while at work; started again", r.longest));
-                take_up_terminals(id, &crate::i18n::tp("msg.microvm.run_limit", &[("minutes", &(r.longest / 60).to_string())]));
-            }
-            None => {
-                crate::append_hook_log(&format!("e2b: {id} paused while at work; started again"));
-                take_up_terminals(id, &crate::i18n::t("msg.microvm.paused_at_work"));
-            }
-        },
+        Ok(_) => {
+            crate::append_hook_log(&format!("e2b: {id} paused at its longest run ({}s) while at work; started again", r.longest));
+            take_up_terminals(id, &crate::i18n::tp("msg.microvm.run_limit", &[("minutes", &(r.longest / 60).to_string())]));
+        }
         Err(e) => crate::append_hook_log(&format!("e2b: {id} paused at its longest run and could not be started again: {e:#}")),
+    }
+}
+
+/// Something said on every terminal of this program on a machine, without
+/// waking it
+fn say_on_terminals(id: &str, why: &str) {
+    if let Ok(mut n) = NOTES.get_or_init(Default::default).lock()
+        && let Some(all) = n.get_mut(id)
+    {
+        all.retain(|tx| tx.send(Note::Said(why.to_string())).is_ok());
     }
 }
 

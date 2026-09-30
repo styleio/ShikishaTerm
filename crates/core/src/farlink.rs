@@ -55,6 +55,11 @@ pub enum Frame {
         rev: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         jobs: Vec<String>,
+        /// The file name of the program it runs, which carries its build
+        /// (`program_name`): the app can tell a resident process of an older
+        /// build of the same version from its own
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        program: String,
     },
     /// A `shikisha` command over there connected (`c` names the connection)
     Open { c: u64 },
@@ -99,6 +104,9 @@ pub const HOME_DIR: &str = ".local/share/shikisha/bridge";
 /// `run` folder (see `fardaemon`). A tab of an older bridge has
 /// `shikisha.sock` instead, served by that bridge for as long as it runs
 pub const TABS_SOCK: &str = "tabs.sock";
+/// The resident process's own socket there, beside the older bridge's
+/// (`shikisha.sock`), which nothing of the resident process touches
+pub const KEEP_SOCK: &str = "keep.sock";
 
 /// The `shikisha` command over there: this crate's own command, pointed at the
 /// bridge's socket, with the tab's key read from the file the bridge was given
@@ -180,7 +188,17 @@ impl Link {
             let Ok(line) = line else { break };
             let Ok(frame) = serde_json::from_str::<Frame>(&line) else { continue };
             match frame {
-                Frame::Hello { version, jobs, .. } => {
+                Frame::Hello { version, jobs, program, .. } => {
+                    // A resident process of another build of this version,
+                    // still holding what it holds: it is used as it is, for
+                    // the jobs it names, and said in the log
+                    let mine = program_name(env!("CARGO_PKG_VERSION"));
+                    if !program.is_empty() && program != mine {
+                        crate::append_hook_log(&format!(
+                            "bridge: the resident process there runs {program}, not {mine}; using it for the jobs it names ({})",
+                            jobs.join(", ")
+                        ));
+                    }
                     *self.version.lock().unwrap_or_else(|e| e.into_inner()) = Some(version);
                     *self.jobs.lock().unwrap_or_else(|e| e.into_inner()) = jobs;
                     self.up.store(true, Ordering::SeqCst);
@@ -503,8 +521,11 @@ pub fn installed(at: &crate::elsewhere::Elsewhere) -> Result<Installed> {
 }
 
 /// Put the bridge on a machine. Only ever called because the person said so
-/// (the settings, or the question asked where it is needed). Older versions
-/// there are removed; the tabs' command is written beside it
+/// (the settings, or the question asked where it is needed). The tabs'
+/// command is written beside it. Older builds there are left where they are:
+/// a resident process of one may still be running, holding what it holds,
+/// and a door an older app opens runs one by its name. Clearing them away
+/// safely is far-keep plan §4.5 (a lock each program holds while it runs)
 pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     let home = far_home(at)?;
     let machine = crate::elsewhere::exec(at, "uname -m", 30_000)?.out;
@@ -525,12 +546,11 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         at,
         &format!(
             "chmod 700 {part} && mv -f {part} {prog} && printf %s {shim} > {bin} && chmod 700 {bin} \
-             && for f in {home}/shikisha-bridge-*; do [ \"$f\" = {prog} ] || rm -f \"$f\"; done && {prog} --version",
+             && {prog} --version",
             part = q(&part),
             prog = q(&program),
             shim = q(&shim),
             bin = q(&bin),
-            home = q(&home),
         ),
         60_000,
     )?;
@@ -544,6 +564,28 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
 /// Take the bridge off a machine: its line is let go, and its folder -- the
 /// program, the tabs' command, the keys -- is deleted
 pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
+    // Not from under another app: the folder, its sockets and its key are
+    // every app's on that machine, and one app's "no" is not theirs
+    let others = match link(at) {
+        Some(l) if l.jobs.lock().is_ok_and(|j| j.iter().any(|n| n == "host")) => l
+            .call("host_lines", json!({}), Duration::from_secs(20))
+            .ok()
+            .and_then(|v| v.get("lines").and_then(|n| n.as_u64()))
+            .map(|n| n.saturating_sub(1))
+            .unwrap_or(0),
+        Some(_) => 0,
+        // Not connected from here: a resident process there is holding some
+        // other app's line (it leaves a few seconds after the last one goes)
+        None => {
+            let home = far_home(at)?;
+            let sock = format!("{home}/run/{}", KEEP_SOCK);
+            let ran = crate::elsewhere::exec(at, &format!("test -S {} && echo held", crate::ssh::sh_quote(&sock)), 30_000)?;
+            u64::from(ran.out.contains("held"))
+        }
+    };
+    if others > 0 {
+        bail!(crate::i18n::tp("err.bridge.in_use", &[("host", &at.address()), ("n", &others.to_string())]));
+    }
     disconnect(at);
     let home = far_home(at)?;
     if !home.ends_with(HOME_DIR) {
@@ -868,7 +910,7 @@ mod tests {
     #[test]
     fn a_frame_is_one_line_of_json() {
         for f in [
-            Frame::Hello { version: "1".into(), rev: "x".into(), jobs: vec!["ops".into()] },
+            Frame::Hello { version: "1".into(), rev: "x".into(), jobs: vec!["ops".into()], program: "shikisha-bridge-1-abc".into() },
             Frame::Open { c: 3 },
             Frame::Line { c: 3, l: "{\"id\":\"1\"}".into() },
             Frame::Close { c: 3 },
@@ -914,7 +956,7 @@ mod tests {
         // Over there: answers operations the way the bridge does
         std::thread::spawn(move || {
             let mut out = there;
-            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into(), jobs: Vec::new() }.line().as_bytes());
+            let _ = out.write_all(Frame::Hello { version: "t".into(), rev: "t".into(), jobs: Vec::new(), program: String::new() }.line().as_bytes());
             for line in BufReader::new(far_in).lines() {
                 let Ok(line) = line else { break };
                 if let Ok(Frame::Op { id, op, p }) = serde_json::from_str::<Frame>(&line) {
