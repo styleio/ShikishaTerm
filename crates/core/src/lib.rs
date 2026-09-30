@@ -84,6 +84,7 @@ pub mod push;
 pub mod pwa;
 pub mod quick;
 pub mod reader;
+pub mod readview;
 pub mod remote;
 #[cfg(windows)]
 pub mod reserve;

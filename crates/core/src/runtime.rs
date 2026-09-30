@@ -2072,10 +2072,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is showing. Held here rather than in the settings, because the file
     // somebody opened this afternoon is not a setting
     let mut editors: Vec<crate::view::EditorOpen> = Vec::new();
-    // What the read-only editors are showing: a page's source or DOM, by the
-    // editor's key (see `page_view_text`), and how many have been opened
-    let mut page_views: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut page_view_n: u64 = 0;
+    // What the read-only editors are showing (a page's source or DOM), by
+    // the editor's key -- see `readview`
+    let mut views = crate::readview::Held::default();
     // The one just asked for, to be brought into view at the top of the pass
     // (the surfaces were worked out before the press arrived)
     let mut open_editor: Option<String> = None;
@@ -6505,36 +6504,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let dom = what == "dom";
             let got = if dom { caps.browser_html(&page) } else { caps.browser_source(&page) };
             let text = match got {
-                Ok(t) => page_view_text(t),
+                Ok(t) => t,
                 Err(e) => {
                     append_hook_log(&format!("page view: the {what} of {page} could not be read: {e:#}"));
                     flash = Some(i18n::tp("msg.page_view.failed", &[("e", &format!("{e:#}"))]));
                     continue;
                 }
             };
-            page_view_n += 1;
-            let key = format!("{PAGE_VIEW_PREFIX}{page_view_n}");
             let label = i18n::t(if dom { "tui.dev.dom" } else { "tui.dev.source" });
             let shown = format!("{} ({label}).html", name.replace(['/', '\\'], "-"));
-            page_views.insert(key.clone(), text);
-            editors.push(crate::view::EditorOpen {
-                key: key.clone(),
-                // Under the page's own folder in the list, when it is in one on
-                // this PC -- the text is not a file of that folder, only about it
-                dir: if on.is_none() { dir } else { None },
-                showing: Some(shown),
-                stamp: None,
-                scratch: true,
-                at: None,
-                on: None,
-                diff: None,
-                read_only: true,
-            });
-            open_editor = Some(key);
+            // Under the page's own folder in the list, when it is in one on
+            // this PC -- the text is not a file of that folder, only about it
+            let under = if on.is_none() { dir } else { None };
+            open_editor = Some(views.open(&mut editors, shown, crate::readview::Kind::Html, text, under));
             append_hook_log(&format!("page view: the {} of {page} opened to read", if dom { "DOM" } else { "source" }));
         }
-        // A page view's text goes with its editor
-        page_views.retain(|k, _| editors.iter().any(|e| &e.key == k));
+        // A held text goes with its editor
+        views.keep_open(&editors);
 
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
@@ -8000,8 +7986,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is one folder of this machine or a search that stops itself; a
         // folder on another machine is asked on a thread and answers below
         for (panel, act, args) in shell.mail().take_files() {
-            // An editor showing a page's source or DOM reads what is held here
-            let held = page_views.get(&panel).and_then(|text| page_view_answer(&panel, &act, &args, text));
+            // An editor showing held text reads it from here
+            let held = views.answer(&panel, &act, &args);
             if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
                 shell.push_files(&js);
                 if let Some(r) = remote_ui.as_ref() {
@@ -13383,46 +13369,9 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
 }
 
 /// The page's answer to a file that was read, from its bytes -- the same
-/// answer whichever machine the bytes came from.
-/// How the editors showing a page's source or DOM are named. Not a name a
-/// setting can give an editor, so the two never meet
-pub const PAGE_VIEW_PREFIX: &str = "view:";
-
-/// A page's HTML as it goes into an editor that only reads. Held to the
-/// most the editor opens of a file (`files::READ_LIMIT`), cut on a character's
-/// edge, with a line at the top saying it was cut and how big it was --
-/// a page's text that stopped short with nothing said would read as the page
-pub fn page_view_text(text: String) -> String {
-    let most = crate::files::READ_LIMIT as usize;
-    if text.len() <= most {
-        return text;
-    }
-    let mut end = most;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mb = |n: usize| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
-    let note = i18n::tp("msg.page_view.cut", &[("shown", &mb(end)), ("whole", &mb(text.len()))]);
-    format!("<!-- {note} -->\n{}", &text[..end])
-}
-
-/// What the page asks of an editor showing a page's source or DOM: it reads
-/// what is held, and a save is refused. `None` for any other act, which goes
-/// on to the folder the editor stands in (the column's file list)
-fn page_view_answer(panel: &str, act: &str, args: &serde_json::Value, text: &str) -> Option<String> {
-    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-    match act {
-        "read" => Some(read_reply(panel, path, text.as_bytes(), args, String::new())),
-        "write" => Some(
-            serde_json::json!({"act": "write", "panel": panel, "path": path, "ok": false,
-                "error": i18n::t("err.page_view.read_only")})
-            .to_string(),
-        ),
-        _ => None,
-    }
-}
-
-fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
+/// answer whichever machine the bytes came from, and for text the app holds
+/// (`readview`)
+pub(crate) fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
     let fail = |e: String| serde_json::json!({"act": "read", "panel": panel, "ok": false, "error": e}).to_string();
     // What is not text has no lines to put in an editor, and guessing at its
     // encoding would write the guess back
@@ -16961,36 +16910,6 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
-    /// A page's source or DOM is read from what is held, a save of it is
-    /// refused whatever it says, and anything else goes on to the folder
-    #[test]
-    fn a_page_view_reads_and_refuses_to_save() {
-        let args = serde_json::json!({"path": "shop (Source code).html"});
-        let read: serde_json::Value =
-            serde_json::from_str(&super::page_view_answer("view:1", "read", &args, "<p>hi</p>").unwrap()).unwrap();
-        assert_eq!(read["ok"], true);
-        assert_eq!(read["text"], "<p>hi</p>");
-        let write: serde_json::Value = serde_json::from_str(
-            &super::page_view_answer("view:1", "write", &serde_json::json!({"path": "x", "text": "changed"}), "<p>hi</p>").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(write["ok"], false);
-        assert!(super::page_view_answer("view:1", "ls", &args, "<p>hi</p>").is_none());
-    }
-
-    /// Past the editor's own limit the text is cut on a character's edge,
-    /// and says so on its first line
-    #[test]
-    fn a_page_view_too_big_is_cut_and_says_so() {
-        let most = crate::files::READ_LIMIT as usize;
-        assert_eq!(super::page_view_text("<p>short</p>".into()), "<p>short</p>");
-        let big = "あ".repeat(most / 3 + 10);
-        let cut = super::page_view_text(big.clone());
-        assert!(cut.starts_with("<!-- "), "no line saying it was cut");
-        let body = &cut[cut.find('\n').unwrap() + 1..];
-        assert!(body.len() <= most && big.starts_with(body));
-    }
-
     /// The sign-in address an AI prints is whole again out of the rows it
     /// was broken into: by the terminal (a wrapped row) or by the program
     /// drawing its own screen (a row written to its last column). A row
