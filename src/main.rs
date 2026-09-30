@@ -756,6 +756,7 @@ impl WinSurface {
                 Ev::FontSize { px } => self.mail.font_size = Some(px),
                 Ev::TabWidth { px } => self.mail.tab_width = Some(px),
                 Ev::SideWidth { px } => self.mail.side_width = Some(px),
+                Ev::SidePanel { tab, panel } => self.mail.side_panels.push((tab, panel)),
                 Ev::JsError { msg } => {
                     shikisha_core::append_hook_log(&format!("Screen failure: {msg}"));
                 }
@@ -2018,6 +2019,11 @@ impl shikisha_core::host::Shell for WinSurface {
     fn polled_from_afar(&self) -> bool { self.polled_afar }
     fn toggle_tab_bar(&self) { WinSurface::toggle_tab_bar(self) }
     fn toggle_side_bar(&self) { WinSurface::toggle_side_bar(self) }
+    fn show_panel(&self, name: &str) {
+        // As a JSON string, so a name is only ever a value in the page
+        let arg = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".into());
+        let _ = self.win.eval(&format!("window.__sideReveal && window.__sideReveal({arg});"));
+    }
     fn take_open_settings(&mut self) -> Option<shikisha_core::mailbox::SettingsWanted> {
         WinSurface::take_open_settings(self)
     }

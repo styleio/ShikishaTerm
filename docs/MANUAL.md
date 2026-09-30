@@ -68,6 +68,13 @@ be opened again from the ▾ at the end of the row; with a CLI that can resume a
 conversation by name (Claude Code, Codex) the conversation comes back with it.
 What was on its screen does not.
 
+**The column on the right** (◨ in the title bar brings it out and puts it away) holds only what
+the tab in view is used with: Files, Git and Chat beside an AI tab, Files and Git beside a
+terminal or an editor, and Console beside a web page. A folder git does not hold has no Git.
+What you choose is remembered for each kind of tab, so going from a page back to an AI tab
+brings back what you were reading beside the AI. Something a button calls up (the search of
+every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
+
 **The bar above the input box** is the convenience bar: one press sends a stock
 instruction to the AI in view (continue, explain, review, fix). The small picker at
 its left chooses what the bar holds: the stock replies, your own quick actions, the

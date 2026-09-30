@@ -148,6 +148,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #side .sbar button:hover { background:var(--hover); color:var(--text); }
   #side .sbar button.on { background:var(--raise); color:var(--text); }
   #side .sbar button.away { font-size:13px; line-height:1; padding:3px 8px; }
+  /* A panel called up by a button: its own ✕ rides inside it, so the two read
+     as one thing. The ✕ is a finger's size on a phone (STYLEGUIDE §8) */
+  #side .sbar button.called { display:inline-flex; align-items:center; gap:var(--s1); padding-right:4px; }
+  #side .sbar button.called .sx { display:inline-flex; align-items:center; justify-content:center;
+    min-width:22px; min-height:22px; border-radius:var(--r-chip); color:var(--dim); font-size:11px; }
+  #side .sbar button.called .sx:hover { background:var(--hover); color:var(--text); }
   /* Which folder the panel is reporting on. The same weight the tab rows give
      a folder name, because it is the same fact */
   #side .sbar .swhere { flex:0 1 auto; font-size:11px; color:var(--dim); min-width:0; overflow:hidden;
@@ -12182,15 +12188,74 @@ let sideStoodAside = false;
 function phoneWidth() {
   return window.matchMedia("(max-width:700px), (max-aspect-ratio:1/1)").matches;
 }
-// Which panel stands in the column. One today; the strip is drawn from this
-// list, so the next one is a row here rather than a shape change
+// The panels the column can hold, and when each belongs there. What belongs
+// follows the tab in front: a page has its console and nothing about files, a
+// terminal has its folder and changes, and an AI tab has those and its
+// conversation as well. A panel that does not belong is not in the strip at
+// all -- not greyed, since pressing a grey one could only say "not here".
+// `when` of null: only ever there because something called it (sideReveal)
 const SIDE_PANELS = [
-  ["files", () => T["tui.side.files"] || "Files"],
-  ["git", () => T["tui.side.git"] || "Git"],
-  ["convo", () => T["tui.side.convo"] || "Chat"],
-  ["console", () => T["tui.side.console"] || "Console"],
+  ["files", () => T["tui.side.files"] || "Files", k => k !== "browser" && !!folderTab()],
+  ["git", () => T["tui.side.git"] || "Git", k => k !== "browser" && !!repoTab()],
+  ["convo", () => T["tui.side.convo"] || "Chat", k => k === "ai"],
+  ["console", () => T["tui.side.console"] || "Console", k => k === "browser"],
 ];
+// Which of the three kinds of tab is in front, as far as the column is
+// concerned. A model pane is a conversation of its own rather than a CLI with
+// a record, so it counts with the terminals
+function sideKind() {
+  const t = activeTab();
+  if (t && t.kind === "browser" && !t.settings) return "browser";
+  if (t && t.kind === "pty" && t.ai && !t.model) return "ai";
+  return "term";
+}
+// The panel last chosen for each kind, so moving from a page to an AI and
+// back puts back what was being looked at on each. Written down by the app
+// (`side_panels`), so the next start opens the same way
+const sideChoice = Object.assign({}, {{SIDE_PANELS}});
+// Panels called up by a button rather than belonging to the tab in front.
+// They stay, whatever is in front, until their ✕ is pressed: a panel somebody
+// just asked for vanishing because they looked at another tab would be the
+// panel losing their place
+const sideCalled = new Set();
+function sideShown(kind) {
+  return SIDE_PANELS.filter(([id, , when]) => sideCalled.has(id) || (when && when(kind)));
+}
+// The panel standing in the column right now. What was chosen for this kind,
+// when it is there; otherwise the first that is. The choice itself is kept:
+// looking at a tab where it cannot stand does not forget it
 let sidePanel = "files";
+function sideEffective(kind) {
+  const shown = sideShown(kind).map(([id]) => id);
+  const want = sideChoice[kind];
+  return shown.includes(want) ? want : (shown[0] || "");
+}
+// Chosen from the strip: remembered for this kind, and told to the app. A
+// called panel is a visit, not a choice, and is not written down
+function sideChoose(id) {
+  const kind = sideKind();
+  sideChoice[kind] = id;
+  const regular = SIDE_PANELS.find(([p, , when]) => p === id && when && when(kind));
+  if (regular) send({kind:"sidepanel", tab: kind, panel: id});
+  drawSide();
+}
+// Open the column on a panel and switch to it, whatever is in front: what a
+// button that calls a panel up does. The panel stays until its ✕
+function sideReveal(id) {
+  if (!SIDE_PANELS.some(([p]) => p === id)) return;
+  const kind = sideKind();
+  const regular = SIDE_PANELS.find(([p, , when]) => p === id && when && when(kind));
+  if (!regular) sideCalled.add(id);
+  sideChoice[kind] = id;
+  if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
+  sideStoodAside = false;
+  drawSide();
+}
+window.__sideReveal = sideReveal;
+function sideDismiss(id) {
+  sideCalled.delete(id);
+  drawSide();
+}
 function sideWidth() {
   const v = parseFloat(getComputedStyle(document.documentElement)
     .getPropertyValue("--sidew"));
@@ -13081,9 +13146,7 @@ function convoFindSoon() {
 // match is, with the words that were searched for
 window.__openConvo = function (o) {
   if (!o || !o.id) return;
-  sidePanel = "convo";
-  if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
-  sideStoodAside = false;
+  sideReveal("convo");
   const past = {program: o.program || "", id: o.id, host: o.host || ""};
   const from = convoTab();
   convoReset("past:" + (o.host || "") + ":" + o.id, past);
@@ -13429,13 +13492,24 @@ function drawSide() {
   const where = (g && (g.name || g.folder)) || "";
   // The strip is rebuilt only when what it would say changed: it is a row of
   // buttons under the pointer several times a second otherwise
-  const key = SIDE_PANELS.map(([id]) => id).join(",") + "|" + sidePanel + "|" + where;
+  const kind = sideKind();
+  const shown = sideShown(kind);
+  sidePanel = sideEffective(kind);
+  const key = shown.map(([id]) => id + (sideCalled.has(id) ? "*" : "")).join(",") + "|" + sidePanel + "|" + where;
   if (bar.dataset.key !== key) {
     bar.dataset.key = key;
     bar.textContent = "";
-    for (const [id, label] of SIDE_PANELS) {
-      bar.append(el("button", {class: sidePanel === id ? "on" : "",
-        onclick:() => { sidePanel = id; drawSide(); }}, label()));
+    for (const [id, label] of shown) {
+      const b = el("button", {class: sidePanel === id ? "on" : "",
+        onclick:() => sideChoose(id)}, label());
+      // A called panel carries its own way out, inside its button so the pair
+      // reads as one thing and moves as one when the strip is narrow
+      if (sideCalled.has(id)) {
+        b.classList.add("called");
+        b.append(el("span", {class:"sx", role:"button", title:T["tui.side.dismiss"] || "",
+          onclick:(e) => { e.stopPropagation(); sideDismiss(id); }}, "✕"));
+      }
+      bar.append(b);
     }
     bar.append(el("span", {class:"grow"}));
     if (where) bar.append(el("span", {class:"swhere", title:(g && g.folder) || where}, where));
@@ -13471,8 +13545,11 @@ function drawSide() {
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
-  // "there is nothing here"
-  const missing = sidePanel === "console" ? (onPage ? "" : (T["tui.console.nopage"] || ""))
+  // "there is nothing here". A panel that belongs to the tab in front always
+  // has something to stand on; these are for a panel called up over a tab it
+  // is not about, and for a tab with nothing beside it at all
+  const missing = !sidePanel ? (T["tui.side.notab"] || "")
+    : sidePanel === "console" ? (onPage ? "" : (T["tui.console.nopage"] || ""))
     : sidePanel === "convo" ? convoMissing
     : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
@@ -15141,6 +15218,8 @@ if (REMOTE) {
     if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
     if (d.termlink) window.__linkSaid(d.termlink);
+    // A script opening the column on a panel (show_panel)
+    if (typeof d.panel === "string") window.__sideReveal(d.panel);
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
     if (d.vaultwhere) window.__vaultWhere(d.vaultwhere);
@@ -15906,9 +15985,7 @@ let cvWhereReq = 0;
 // Every road that opened the search -- INDEX's menu, the palette, the key --
 // opens the panel on every conversation, the search box ready
 window.__openVault = function () {
-  sidePanel = "convo";
-  if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
-  sideStoodAside = false;
+  sideReveal("convo");
   convoModeTo(true);
   setTimeout(() => { if (cvUi) cvUi.q.focus(); }, 30);
 };
@@ -21837,6 +21914,7 @@ fn built(sticky: bool, by: Served) -> String {
     .replace("{{SIDE_W_MIN}}", &crate::config::SIDE_BAR_MIN_PX.to_string())
     .replace("{{SIDE_W_MAX}}", &crate::config::SIDE_BAR_MAX_PX.to_string())
     .replace("{{SIDE_W_DEF}}", &crate::config::SIDE_BAR_DEFAULT_PX.to_string())
+    .replace("{{SIDE_PANELS}}", &crate::config::side_panels_json())
     .replace("{{TAB_W_MIN}}", &crate::config::TAB_BAR_MIN_PX.to_string())
     .replace("{{TAB_W_MAX}}", &crate::config::TAB_BAR_MAX_PX.to_string())
     .replace("{{TAB_W_DEF}}", &crate::config::TAB_BAR_DEFAULT_PX.to_string())

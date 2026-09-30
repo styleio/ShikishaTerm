@@ -25,6 +25,14 @@ once it reaches its first tagged release.
   answers it.
 
 ### Changed
+- **The right-hand column holds only what the tab in view is used with.**
+  Files, Git and Chat beside an AI tab, Files and Git beside a terminal or an
+  editor, and Console beside a web page -- the rest leaves the strip instead of
+  saying "not here" when pressed. The panel chosen is remembered for each kind
+  of tab, in the settings, so a page and an AI tab each come back to their own.
+  A panel called up by a button (the search of every conversation) joins the
+  strip with its own ✕ and stays until that is pressed. Scripts call one up
+  with `shikisha.show_panel(name)`.
 - **An answer from the source code says which code it was read in.** When this
   build's own code is not public, the release of the same version is read
   before the newest code, and the answer names the one it used.

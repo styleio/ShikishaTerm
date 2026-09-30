@@ -180,6 +180,10 @@ pub enum Ev {
     /// brought back. Same story as the tab bar: the page is already drawn that
     /// way, and this is so it opens that way next time. 0 means put away
     SideWidth { px: u16 },
+    /// A panel of that column was chosen while a tab of kind `tab` (`browser`,
+    /// `ai`, `term`) was in front. The page already shows it; this is so the
+    /// next start opens that kind on it
+    SidePanel { tab: String, panel: String },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// Wants to view this tab with one line of its terminal in sight: a line
@@ -1626,6 +1630,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("sidewidth") => Ev::SideWidth {
             px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
+        },
+        Some("sidepanel") => Ev::SidePanel {
+            tab: v.get("tab").and_then(|x| x.as_str()).unwrap_or_default().chars().take(16).collect(),
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().chars().take(32).collect(),
         },
         Some("splitpane") => Ev::SplitPane {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,

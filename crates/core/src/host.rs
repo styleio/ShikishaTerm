@@ -52,6 +52,9 @@ pub trait Shell {
     fn polled_from_afar(&self) -> bool;
     fn toggle_tab_bar(&self);
     fn toggle_side_bar(&self);
+    /// Open the right-hand column on a panel and switch to it (`show_panel`).
+    /// A surface with no column has nothing to open
+    fn show_panel(&self, _name: &str) {}
     fn take_open_settings(&mut self) -> Option<crate::mailbox::SettingsWanted>;
     fn open_vault(&self);
     fn open_palette(&self);

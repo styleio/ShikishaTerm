@@ -2080,6 +2080,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut font_save_at: Option<std::time::Instant> = None;
     let mut tab_save_at: Option<std::time::Instant> = None;
     let mut side_save_at: Option<std::time::Instant> = None;
+    // Panels of the column chosen and not yet written down, by kind of tab
+    let mut side_panels_kept: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut side_panels_save_at: Option<std::time::Instant> = None;
     // Whether the composer is shut, as the window's own page last said. The
     // pen a placed page draws for itself follows it
     let mut composer_shut = false;
@@ -5083,6 +5086,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::SideWidth { px }) => {
                         shell.mail().side_width = Some(px);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::SidePanel { tab, panel }) => {
+                        shell.mail().side_panels.push((tab, panel));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -5959,6 +5965,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             side_width = Some(config::clamp_side_bar(px));
             side_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
         }
+        // The panel chosen for a kind of tab, held back the same way: going
+        // along the strip to find something is several choices in a second
+        for (kind, panel) in shell.mail().take_side_panels() {
+            if config::SIDE_KINDS.contains(&kind.as_str()) && config::side_panel_name_ok(&panel) {
+                side_panels_kept.insert(kind, panel);
+                side_panels_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+            }
+        }
+        if side_panels_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            side_panels_save_at = None;
+            for (kind, panel) in std::mem::take(&mut side_panels_kept) {
+                config::save_setting(&["side_panels", kind.as_str()], serde_json::json!(panel));
+            }
+            watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+        }
         if side_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
             side_save_at = None;
             if let Some(px) = side_width.take() {
@@ -5989,6 +6010,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A tab written into the settings starts when they are read again
         if asks.reread {
             watcher.poke();
+        }
+        for name in asks.panels {
+            shell.show_panel(&name);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(serde_json::json!({ "panel": name }).to_string());
+            }
         }
         for (id, down) in shell.mail().take_pane_splits() {
             if !pane_layout.focus_pane(id) {
@@ -15824,6 +15851,9 @@ pub struct LuaAsks {
     pub closes: Vec<(usize, String)>,
     /// The settings were written to (`open_tab`) and have to be read again
     pub reread: bool,
+    /// Panels of the right-hand column to open and switch to (`show_panel`).
+    /// The column is the page's, so the loop hands the name to every page
+    pub panels: Vec<String>,
 }
 
 /// How long work sent to a tab `open_tab` just wrote is held while the tab
@@ -15998,6 +16028,15 @@ pub fn exec_commands(
                     *active = pane;
                 } else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
+                }
+            }
+            // A panel of the column, under the same say as moving the view:
+            // opening the column over what somebody is reading moves it too
+            Command::ShowPanel { name } => {
+                if view.may(now_ms) {
+                    asks.panels.push(name);
+                } else {
+                    append_hook_log(&format!("ShowPanel {name:?} ignored: the view is the person's right now"));
                 }
             }
             // A rally's final result. Written to data/last-result.json, the log, and the UI.

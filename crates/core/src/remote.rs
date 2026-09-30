@@ -229,6 +229,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // has less width to spare than a window does, so this is the one it
         // needs most
         Ev::SideWidth { .. } => true,
+        // Which panel of that column is chosen for a kind of tab: the same
+        // person's preference wherever they chose it, and nothing opens or runs
+        Ev::SidePanel { .. } => true,
         // The file panel, on the same reasoning. Sending a photo from a phone
         // to a server is one of the things this exists for
         Ev::Sftp { .. } => true,

@@ -999,6 +999,7 @@ there is none that splits the screen and puts a browser there: every kind of tab
 | Command | Description |
 |---|---|
 | `shikisha.show(tab)` | Put that tab on screen. `0` is the board. Ignored if the person turned Auto-switch off, just moved the view themselves, or is in the settings |
+| `shikisha.show_panel(name)` | Open the right-hand column on one of its panels and switch to it, the way a button that calls a panel up does: `files`, `git`, `convo`, `console`. A panel the tab in front does not have joins the column with its own ✕ and stays until that is pressed. Held by the same say as `show` |
 | `shikisha.open_result(run)` | Open that run's transcript as a result page and go to it |
 | `shikisha.split_pane("right")` | Divide the pane in focus. `"right"` beside, `"down"` below. The new half takes focus |
 | `shikisha.close_pane()` | Close the pane in focus. The tab behind it keeps running |

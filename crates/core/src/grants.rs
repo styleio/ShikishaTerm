@@ -146,6 +146,9 @@ pub const CATALOG: &[Entry] = &[
     e("draft_to_tab", Group::Tabs, true, true, false),
     e("send", Group::Tabs, true, true, false),
     e("show", Group::Tabs, true, true, false),
+    // Opening the right-hand column on a panel: moves what is in view the
+    // way `show` does, and is let or held by the same say
+    e("show_panel", Group::Tabs, true, true, false),
     e("wait", Group::Tabs, true, true, false),
     e("wait_state", Group::Tabs, true, true, false),
     // Restarting a tab throws away the conversation running in it
