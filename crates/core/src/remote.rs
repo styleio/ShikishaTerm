@@ -370,6 +370,11 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // The skill the @ list asks about: the same card is on the phone's
         // list, and what it writes is on this PC, which is where it is read
         Ev::Skill { .. } => true,
+        // The question about the AI CLIs' hooks, asked as the program starts:
+        // the same question is on the phone, since the person may be there
+        // rather than at the window. What it writes is on this PC, into the
+        // files the question showed (`agenthook::question`)
+        Ev::AgentHooks { .. } => true,
         // A job's card: stopping its workers, answering a decision it asked
         // the person for. The person away from the desk is who it asks
         Ev::Orch { .. } => true,

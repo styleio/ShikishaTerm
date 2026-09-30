@@ -5,7 +5,7 @@ sign in to, no server of ours behind it, and no analytics or telemetry of any
 kind. **We — the developers — never receive your data.** There is nothing for us
 to receive: nothing in this program reports to us.
 
-Last updated: 24 September 2026.
+Last updated: 30 September 2026.
 
 ## What stays on your machine
 
@@ -19,6 +19,16 @@ program (the portable download) or under
 
 You can read, back up or delete any of it with Explorer. Uninstalling the Store
 copy removes the program; the folder above is yours to delete when you want to.
+
+Outside that folder, the program writes only into the settings of the AI
+command-line tools you use, and only once you have agreed to it: one entry in
+each tool's own settings file, so that the tool tells this program when it
+starts, waits for you and finishes (for Codex, also Codex's own record that the
+entry is approved), and the skill that lets one AI hand work to another tab.
+Before writing either, the program shows exactly what it would write and where,
+and asks: about the entries when it starts, about the skill when you first name
+another tab with @. Nothing else in those files is changed, the previous file is kept
+beside it as `.bak`, and each can be taken out again in Settings.
 
 API keys and webhook URLs you enter are stored **encrypted** (AES-GCM, with a key
 derived by Argon2) in that same folder, and are only ever sent to the service each

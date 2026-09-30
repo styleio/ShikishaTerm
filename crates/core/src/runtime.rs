@@ -1967,6 +1967,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut skill_view = crate::skill::statuses();
     let mut skill_seen = std::time::Instant::now();
     let mut skills_refreshed = false;
+    // The AI CLIs' hooks (see `agenthook`): whether this start has looked at
+    // them yet, the question about the ones never asked about while it waits
+    // (and the CLIs it asks about), and word of the ones being put right
+    let mut hooks_looked = false;
+    let mut hook_ask: Option<crate::uistate::HookAskState> = None;
+    let mut hook_asking: Vec<crate::agenthook::Target> = Vec::new();
+    let (hooks_tx, hooks_rx) = std::sync::mpsc::channel::<String>();
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // Which tabs each AI tab may drive -- type into a shell, operate a page --
     // because the person named them in what they last sent it (<@ID>)
@@ -5135,6 +5142,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Skill { ai, act }) => {
                         shell.mail().skills.push((ai, act));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AgentHooks { answer, seq }) => {
+                        shell.mail().agent_hooks.push((answer, seq));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Orch { act, job, decision, choice }) => {
                         shell.mail().orch.push((act, job, decision, choice));
                     }
@@ -5566,6 +5576,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
             close_ask: close_ask.clone(),
+            hook_ask: hook_ask.clone(),
             closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.name)).unwrap_or_default(),
             quick: quick_view.clone(),
             // Where each kind of button would go right now, for the launcher
@@ -11480,6 +11491,58 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             skill_view = crate::skill::statuses();
             skill_seen = std::time::Instant::now();
         }
+        // The AI CLIs' hooks, as the person answered about each. Once, as the
+        // program starts: the ones agreed to are put right off this thread,
+        // and the ones used here and never asked about are asked about
+        if !hooks_looked {
+            hooks_looked = true;
+            let answers = cfg.as_ref().map(|c| c.agent_hooks.clone()).unwrap_or_default();
+            keep_hooks_right(crate::agenthook::agreed(&answers), hooks_tx.clone());
+            hook_asking = crate::agenthook::unasked(&answers);
+            if !hook_asking.is_empty() {
+                append_hook_log(&format!(
+                    "hooks: asking whether to set up {}",
+                    hook_asking.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+                hook_ask = Some(crate::agenthook::question(1, &hook_asking));
+            }
+        }
+        for (answer, seq) in shell.mail().take_agent_hooks() {
+            // An answer to a question no longer up (answered on the other
+            // screen first) is nobody's
+            if hook_ask.as_ref().is_none_or(|a| a.seq != seq) {
+                continue;
+            }
+            hook_ask = None;
+            let clis = std::mem::take(&mut hook_asking);
+            let names = clis.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+            match answer.as_str() {
+                "on" | "off" => {
+                    let on = answer == "on";
+                    // Written first: set up without the answer on record, the
+                    // next start would ask again about a hook already in
+                    let saved: Vec<crate::agenthook::Target> =
+                        clis.into_iter().filter(|t| config::save_agent_hook(&t.name, on)).collect();
+                    if let Some(c) = cfg.as_mut() {
+                        for t in &saved {
+                            c.agent_hooks.insert(t.name.clone(), if on { config::HOOK_ON } else { config::HOOK_OFF }.into());
+                        }
+                    }
+                    append_hook_log(&format!("hooks: the person said {answer} for {names}"));
+                    if saved.is_empty() {
+                        flash = Some(i18n::t("msg.hooks.not_saved"));
+                    } else if on {
+                        keep_hooks_right(saved, hooks_tx.clone());
+                    } else {
+                        flash = Some(i18n::tp("msg.hooks.off", &[("names", &names)]));
+                    }
+                }
+                _ => append_hook_log(&format!("hooks: the question about {names} was put away; it is asked again at the next start")),
+            }
+        }
+        if let Ok(said) = hooks_rx.try_recv() {
+            flash = Some(said);
+        }
         // Once, as the program starts: a skill agreed to earlier is brought up
         // to the words this version writes, and the person is told which
         if !skills_refreshed {
@@ -12744,6 +12807,42 @@ pub fn reload_providers(
 /// in pieces holds the tab until it is finished; letting a keystroke into the
 /// gaps would type it into the middle of the person's own sentence. The Enter
 /// is left where it was — the person may still be adding to what was pasted.
+/// Put the hooks of `clis` right (`agenthook::keep_right`) on a thread of its
+/// own -- a CLI asked to approve one is a program started and asked -- and
+/// send back what there is to tell the person: what was set up, or what could
+/// not be and why. Nothing when every one of them was already right
+fn keep_hooks_right(clis: Vec<crate::agenthook::Target>, said: std::sync::mpsc::Sender<String>) {
+    if clis.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut done: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for t in &clis {
+            match crate::agenthook::keep_right(t) {
+                Ok(k) if k.written || k.approved > 0 => {
+                    append_hook_log(&format!(
+                        "hooks: {} put right (written: {}, approved: {})",
+                        t.name, k.written, k.approved
+                    ));
+                    done.push(t.name.clone());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    append_hook_log(&format!("hooks: {} could not be put right: {e:#}", t.name));
+                    failed.push(format!("{}: {e:#}", t.name));
+                }
+            }
+        }
+        let word = match (failed.is_empty(), done.is_empty()) {
+            (false, _) => i18n::tp("msg.hooks.failed", &[("why", &failed.join(" / "))]),
+            (true, false) => i18n::tp("msg.hooks.set_up", &[("names", &done.join(", "))]),
+            (true, true) => return,
+        };
+        let _ = said.send(word);
+    });
+}
+
 pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, now_ms: u64) {
     for p in pending.iter_mut().filter(|p| p.serial == t.serial()) {
         let rest = p.rest(now_ms);

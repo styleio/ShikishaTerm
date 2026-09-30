@@ -377,6 +377,23 @@ pub struct HookSpec {
     /// hook before it can run
     #[serde(default)]
     pub timeout_unit: TimeoutUnit,
+    /// How the CLI is told that a hook written into its file is one the
+    /// person agreed to. Absent: it runs whatever the file says
+    #[serde(default)]
+    pub trust: Option<HookTrust>,
+}
+
+/// How a CLI that holds new hooks back until they are approved has one
+/// approved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookTrust {
+    /// Codex CLI (0.155, measured 2026-09-30) runs a hook from its
+    /// hooks.json only once the approval of that very hook is in its
+    /// config.toml, and says "untrusted" of it until then. The approval is
+    /// written by Codex itself, asked through `codex app-server`
+    /// (`agenthook::trust`), so what it is computed from is Codex's business
+    CodexAppServer,
 }
 
 /// What a CLI counts a hook's patience in.

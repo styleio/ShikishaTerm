@@ -4167,6 +4167,9 @@ fn handle(
             })))?;
         }
         ("GET", "/api/resume") => {
+            // What the person answered about each CLI's hook, shown as the
+            // value it is: set up, left alone, or not asked yet
+            let answers = crate::config::load().map(|c| c.agent_hooks).unwrap_or_default();
             let rows: Vec<serde_json::Value> = crate::profile::all()
                 .into_iter()
                 .filter_map(|p| {
@@ -4193,6 +4196,9 @@ fn handle(
                                 "status": format!("{:?}", crate::agenthook::status(&t))
                                     .split('(').next().unwrap_or("").to_string(),
                                 "preview": crate::agenthook::preview(&t),
+                                "approval": crate::agenthook::approval_file(&t).map(|f| f.display().to_string()),
+                                "answer": answers.get(&t.name).cloned().unwrap_or_default(),
+                                "used": crate::agenthook::in_use(&t),
                             })
                         });
                     Some(serde_json::json!({ "name": p.name, "how": how, "hook": hook }))
@@ -4249,8 +4255,14 @@ fn handle(
             let resp = match found {
                 None => serde_json::json!({ "ok": false, "error": "no such CLI" }),
                 Some(t) => {
+                    // The same answer the question at start takes, so the
+                    // next start keeps it: set up and kept right, or taken
+                    // out and left out rather than put back
+                    if !crate::config::save_agent_hook(&t.name, on) {
+                        crate::append_hook_log(&format!("hooks: the answer about {} could not be written to the settings", t.name));
+                    }
                     let done = if on {
-                        crate::agenthook::install(&t)
+                        crate::agenthook::keep_right(&t).map(|_| ())
                     } else {
                         crate::agenthook::uninstall(&t)
                     };
@@ -11393,7 +11405,16 @@ function resumeCard() {
         e.preventDefault();
         pre.style.display = pre.style.display === "none" ? "block" : "none";
       });
-      right.append(state, el("div", {style:"display:flex;gap:var(--s2);align-items:center"}, btn, show), pre);
+      // What the next start does with it, as the value it is: nothing is
+      // left to a default nobody can see
+      const answer = el("span", {class:"hint"},
+        T["settings.resume.answer." + (r.hook.answer || (r.hook.used ? "unasked" : "unused"))] || "");
+      right.append(state, answer);
+      if (r.hook.approval) {
+        right.append(el("span", {class:"hint"},
+          (T["settings.resume.approval"] || "{file}").replaceAll("{file}", r.hook.approval)));
+      }
+      right.append(el("div", {style:"display:flex;gap:var(--s2);align-items:center"}, btn, show), pre);
     }
     wrap.append(el("label", {}, r.name), right);
     return wrap;

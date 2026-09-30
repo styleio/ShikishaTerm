@@ -220,6 +220,31 @@ pub struct CloseAskState {
     pub comes_back: bool,
 }
 
+/// The question asked as the program starts, about letting the AI CLIs used
+/// on this PC report what they are doing (`agenthook::unasked`): which CLIs,
+/// and exactly what would be written where. Asked on the window and on a
+/// phone alike; answered on either, it goes from both
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct HookAskState {
+    /// Which asking this is. The page opens the question once per number
+    pub seq: u64,
+    pub clis: Vec<HookAskCli>,
+}
+
+/// One CLI in [`HookAskState`]
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct HookAskCli {
+    pub name: String,
+    /// The settings file the hook goes into
+    pub file: String,
+    /// What goes into it, as it will be written (`agenthook::preview`)
+    pub preview: String,
+    /// The file the CLI keeps its approval of the hook in, for a CLI that
+    /// holds a new hook back until it is approved; empty for one that does not
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub approval: String,
+}
+
 /// A closed tab the list offers to open again.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct ClosedState {
@@ -2358,6 +2383,9 @@ pub struct UiState {
     /// A tab's ✕ waiting for an answer, while there is one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_ask: Option<CloseAskState>,
+    /// The question about the AI CLIs' hooks, while it waits for an answer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_ask: Option<HookAskState>,
     /// This desk's closed tabs that can be opened again, newest first
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub closed: Vec<ClosedState>,
