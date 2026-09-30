@@ -26,7 +26,9 @@ once it reaches its first tagged release.
   idle.** A Codex that lost its connection mid-answer waits minutes before it
   asks again, and all that time its screen and title look exactly like a
   Codex with nothing to do. The tab now also reads Codex's own record of the
-  conversation, where a turn begun and not yet ended is work.
+  conversation, where a turn begun and not yet ended is work -- on this PC,
+  on a server over SSH and on a MicroVM alike. A paused MicroVM is not asked,
+  so reading it never wakes one.
 - **An answer asked of another AI tab is the answer to that question.** Asked
   the same thing twice in a row, a tab could be handed the first answer for
   the second question; and an AI that answered "still waiting", left the wait

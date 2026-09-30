@@ -22,6 +22,7 @@ pub const OPS: &[(&str, Op)] = &[
     ("ping", ping),
     ("read_page", read_page),
     ("read_after", read_after),
+    ("record_standing", record_standing),
     ("read_work", read_work),
     ("put_key", put_key),
     ("drop_key", drop_key),
@@ -77,6 +78,18 @@ fn read_page(p: &Value) -> Result<Value, String> {
     };
     let page = crate::reader::read_back(&path, before, want).map_err(|e| e.to_string())?;
     serde_json::to_value(page).map_err(|e| e.to_string())
+}
+
+/// Where a conversation record stands: how long it is, and whether the last
+/// thing it marks is a turn begun or a turn ended (see `reader::Standing`).
+/// Null when the CLI has not written the record yet
+fn record_standing(p: &Value) -> Result<Value, String> {
+    let glob = text(p, "glob")?;
+    let id = text(p, "id")?;
+    let Some(path) = crate::sessionfind::locate(glob, id) else {
+        return Ok(Value::Null);
+    };
+    Ok(crate::reader::standing_of(&path).map_or(Value::Null, crate::reader::Standing::to_json))
 }
 
 /// A stretch of a conversation record read forwards from a place in it (see
@@ -194,6 +207,30 @@ mod tests {
         let here = serde_json::to_value(crate::reader::read_back(&file, u64::MAX, 2).unwrap()).unwrap();
         assert_eq!(page, here);
         assert_eq!(run("read_page", &json!({"glob": glob, "id": "nope"})).unwrap(), Value::Null);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Where a record stands, said there and understood here: the same length
+    /// and the same last mark as reading it on this machine
+    #[test]
+    fn where_a_record_stands_is_said_there_as_it_is_read_here() {
+        let dir = std::env::temp_dir().join(format!("farops-standing-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abc.jsonl");
+        std::fs::write(
+            &file,
+            "{\"timestamp\":\"2026-09-30T02:46:48.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n\
+             {\"timestamp\":\"2026-09-30T02:46:49.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[]}}\n",
+        )
+        .unwrap();
+        let glob = format!("{}/{{id}}.jsonl", dir.display()).replace('\\', "/");
+        let said = run("record_standing", &json!({"glob": glob, "id": "abc"})).unwrap();
+        let there = crate::reader::Standing::from_json(&said).expect("a standing");
+        let here = crate::reader::standing_of(&file).unwrap();
+        assert_eq!(there, here);
+        assert_eq!(there.mark.map(|m| m.0), Some(crate::reader::TurnMark::Working));
+        assert_eq!(there.len, std::fs::metadata(&file).unwrap().len());
+        assert_eq!(run("record_standing", &json!({"glob": glob, "id": "nope"})).unwrap(), Value::Null);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -138,6 +138,9 @@ pub struct Ask {
     /// Since when the tab has read as busy without a break (see
     /// [`RECORD_TRUSTED_AFTER`])
     pub busy_since: Option<Instant>,
+    /// How long a record on another machine is, being asked before the
+    /// words go in (see [`far_len`]), and when it was asked
+    pub far_len: Option<(std::sync::mpsc::Receiver<u64>, Instant)>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -218,7 +221,10 @@ fn run_output(t: &Tab, from: &RunFrom) -> (String, &'static str) {
 /// from a thread of its own.
 #[derive(Default)]
 pub struct FarRead {
-    pending: Option<std::sync::mpsc::Receiver<Found>>,
+    /// A look out on its thread, and whether it asked for the turn to be over
+    /// too (see [`FarRead::reply`]). An answer to the other kind of look is
+    /// not this one's
+    pending: Option<(std::sync::mpsc::Receiver<Found>, bool)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
@@ -239,13 +245,19 @@ const FAR_AGAIN: Duration = Duration::from_secs(3);
 
 impl FarRead {
     /// The reply to `sent` in `record`, once a look has come back with it.
-    /// `None` while one is out or the record has not caught up
-    fn reply(&mut self, record: &crate::reader::Record, sent: &str) -> Option<String> {
-        if let Some(rx) = &self.pending {
+    /// `None` while one is out or the record has not caught up.
+    ///
+    /// `from` is how long the record was when `sent` was sent, as for
+    /// [`reply_in`]. `over` is the record-says-so road taken while the screen
+    /// still reads as busy (see [`reply_when_over`]): the answer only counts
+    /// once the record's last mark ends a turn, written after the question
+    fn reply(&mut self, record: &crate::reader::Record, sent: &str, from: u64, over: bool) -> Option<String> {
+        if let Some((rx, kind)) = &self.pending {
+            let kind = *kind;
             match rx.try_recv() {
                 Ok(Found::Reply(reply)) => {
                     self.pending = None;
-                    return Some(reply);
+                    return (kind == over).then_some(reply);
                 }
                 Ok(Found::Missing) => {
                     self.pending = None;
@@ -264,16 +276,50 @@ impl FarRead {
         std::thread::spawn(move || {
             let found = match record.page(u64::MAX, REPLY_TURNS) {
                 None => Found::Missing,
-                Some(Ok(page)) => reply_of(&page, &sent).map_or(Found::NotYet, Found::Reply),
+                Some(Ok(page)) => match asked_in(&page, &sent, from) {
+                    None => Found::NotYet,
+                    // The turn's end is known here only by when it was
+                    // written: after the question, and nothing begun since
+                    Some(asked) if over => {
+                        let ended_after = |asked_when: i64| {
+                            record.standing().and_then(|s| s.mark).is_some_and(|(mark, when)| {
+                                mark == crate::reader::TurnMark::Over && when.is_some_and(|w| w >= asked_when)
+                            })
+                        };
+                        match page.turns[asked].when {
+                            Some(asked_when) if ended_after(asked_when) => {
+                                reply_after(&page, asked).map_or(Found::NotYet, Found::Reply)
+                            }
+                            _ => Found::NotYet,
+                        }
+                    }
+                    Some(asked) => reply_after(&page, asked).map_or(Found::NotYet, Found::Reply),
+                },
                 Some(Err(_)) => Found::NotYet,
             };
             let _ = tx.send(found);
         });
-        self.pending = Some(rx);
+        self.pending = Some((rx, over));
         self.last = Some(Instant::now());
         None
     }
 }
+
+/// How long `record` is, looked up on a thread: for a record on another
+/// machine, [`Ask::record_from`] has to be read over the network before the
+/// words go out (see `runtime::tend_asks`)
+pub fn far_len(record: crate::reader::Record) -> std::sync::mpsc::Receiver<u64> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        // A record not written yet is empty: all of it will come after
+        let _ = tx.send(record.standing().map_or(0, |s| s.len));
+    });
+    rx
+}
+
+/// How long the words may wait for [`far_len`] before they go without it --
+/// and the answer is looked for the old way, by its opening words alone
+pub const FAR_LEN_WAIT: Duration = Duration::from_secs(10);
 
 /// Where the reply to an ask is read from: the record here, the record on the
 /// machine the tab runs on, or -- with neither -- the screen
@@ -300,7 +346,7 @@ impl Ask {
             Source::Here(path) => reply_in(&path, &self.text, self.record_from.unwrap_or(0)),
             Source::Far(record) => {
                 let text = self.text.clone();
-                self.far.reply(&record, &text)
+                self.far.reply(&record, &text, self.record_from.unwrap_or(0), false)
             }
             Source::Screen => None,
         }
@@ -331,6 +377,7 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         why_said: None,
         record_from: None,
         busy_since: None,
+        far_len: None,
     }
 }
 
@@ -437,12 +484,6 @@ fn asked_in(page: &crate::reader::Page, sent: &str, from: u64) -> Option<usize> 
             && flat(&t.text).contains(&want)
             && (from == 0 || t.at.is_some_and(|at| at >= from))
     })
-}
-
-/// The reply to `sent` in a page of the record (see [`reply_in`]), for a page
-/// read from another machine, where how long its record was is not known here
-fn reply_of(page: &crate::reader::Page, sent: &str) -> Option<String> {
-    reply_after(page, asked_in(page, sent, 0)?)
 }
 
 /// The last thing the AI said after the turn at `asked`
@@ -559,16 +600,22 @@ pub fn step(
             a.quiet_since = None;
             a.background_since = None;
             let busy_since = *a.busy_since.get_or_insert(now);
-            // The screen says busy; the record may know better. Only a record
-            // here: one on another machine is read through the bridge, a look
-            // every few seconds, in `FarRead`
-            if a.run.is_none()
-                && busy_since.elapsed() >= RECORD_TRUSTED_AFTER
-                && a.record_look.is_none_or(|at| at.elapsed() >= RECORD_AGAIN)
-                && let Source::Here(path) = a.source(t)
-            {
-                a.record_look = Some(now);
-                if let Some(reply) = reply_when_over(&path, &a.text, a.record_from.unwrap_or(0)) {
+            // The screen says busy; the record may know better. A record here
+            // is read on the spot; one on another machine through `FarRead`,
+            // on a thread, a look every few seconds
+            if a.run.is_none() && busy_since.elapsed() >= RECORD_TRUSTED_AFTER {
+                let over = match a.source(t) {
+                    Source::Here(path) if a.record_look.is_none_or(|at| at.elapsed() >= RECORD_AGAIN) => {
+                        a.record_look = Some(now);
+                        reply_when_over(&path, &a.text, a.record_from.unwrap_or(0))
+                    }
+                    Source::Far(record) => {
+                        let text = a.text.clone();
+                        a.far.reply(&record, &text, a.record_from.unwrap_or(0), true)
+                    }
+                    _ => None,
+                };
+                if let Some(reply) = over {
                     return Step::Answer(answer(
                         a,
                         "DONE",

@@ -1050,6 +1050,33 @@ fn tend_asks(
         match crate::asktab::step(a, target, caller_free, same_folder) {
             Step::Nothing => true,
             Step::Drop => false,
+            // A record on another machine: how long it is has to come back over
+            // the network before the words go in, or the question could be
+            // looked for where the last one was (see `asktab::asked_in`). The
+            // words wait for it a few seconds at most, then go without
+            Step::Send
+                if a.record_from.is_none()
+                    && let Some(record) = target
+                        .and_then(|t| t.record_at())
+                        .filter(crate::reader::Record::is_far) =>
+            {
+                match &a.far_len {
+                    None => a.far_len = Some((crate::asktab::far_len(record), std::time::Instant::now())),
+                    Some((rx, asked)) => match rx.try_recv() {
+                        Ok(len) => {
+                            a.record_from = Some(len);
+                            a.far_len = None;
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) if asked.elapsed() < crate::asktab::FAR_LEN_WAIT => {}
+                        // Not known in time: looked for by its opening words alone, as before
+                        _ => {
+                            a.record_from = Some(0);
+                            a.far_len = None;
+                        }
+                    },
+                }
+                true
+            }
             Step::Send => match {
                 // Where the terminal's output starts is taken as the command goes in
                 if a.run.is_some()
@@ -1058,8 +1085,11 @@ fn tend_asks(
                     a.run = Some(crate::asktab::RunFrom::now(t));
                 }
                 // Where the record stands as the words go in: the question is
-                // looked for only after it (see `asktab::asked_in`)
-                a.record_from = target.and_then(crate::asktab::record_len);
+                // looked for only after it (see `asktab::asked_in`). A record
+                // on another machine was measured on the way here, above
+                if a.record_from.is_none() {
+                    a.record_from = target.and_then(crate::asktab::record_len);
+                }
                 send(a.caller.as_deref(), &a.target, &a.text)
             } {
                 Ok(_) => {
@@ -4485,6 +4515,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         why_said: None,
                                         record_from: None,
                                         busy_since: None,
+                                        far_len: None,
                                     });
                                 }
                             }

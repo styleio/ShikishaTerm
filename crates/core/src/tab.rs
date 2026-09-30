@@ -2910,12 +2910,18 @@ struct TurnLook {
     found: Option<(String, std::path::PathBuf)>,
     /// When to look next
     next: Option<Instant>,
+    /// A look at a record on another machine, out on a thread of its own
+    far: Option<std::sync::mpsc::Receiver<Option<crate::reader::Standing>>>,
 }
 
 /// How often a record is looked at for a turn going on. The record is the
 /// CLI's own word and costs a read of its end, so not every tick; a few
 /// seconds late on a state the screen got wrong for minutes is nothing
 const TURN_LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The same, for a record on another machine: every look is a request over
+/// the network (one to the bridge, or two remote commands without one)
+const TURN_LOOK_FAR_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct Tab {
     pub title: String,
@@ -3330,7 +3336,48 @@ impl Tab {
         if !on {
             return;
         }
+        let since = self
+            .launched
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(i64::MAX, |d| d.as_millis() as i64);
+        let going_on = move |s: Option<crate::reader::Standing>| {
+            s.and_then(|s| s.mark).is_some_and(|(mark, when)| {
+                mark == crate::reader::TurnMark::Working && when.is_some_and(|w| w >= since)
+            })
+        };
         let now = Instant::now();
+        // A record on another machine: read on a thread, the answer picked up
+        // on a later tick, the verdict kept until then
+        if let Some(record) = self.record_at().filter(crate::reader::Record::is_far) {
+            if let Some(rx) = &self.turn_look.far {
+                match rx.try_recv() {
+                    Ok(standing) => {
+                        self.turn_look.far = None;
+                        self.detector.record_says(going_on(standing));
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => self.turn_look.far = None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+                return;
+            }
+            if self.turn_look.next.is_some_and(|next| now < next) {
+                return;
+            }
+            self.turn_look.next = Some(now + TURN_LOOK_FAR_EVERY);
+            // A paused MicroVM is not asked: every request to one wakes it,
+            // and a woken machine is a billed one. Its AI is frozen anyway
+            if let crate::reader::Record::Far { at: crate::elsewhere::Elsewhere::Cloud(host), .. } = &record
+                && host.instance.as_deref().is_none_or(crate::e2b::asleep)
+            {
+                return;
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(record.standing());
+            });
+            self.turn_look.far = Some(rx);
+            return;
+        }
         if self.turn_look.next.is_some_and(|next| now < next) {
             return;
         }
@@ -3345,19 +3392,8 @@ impl Tab {
         if stale {
             self.turn_look.found = id.zip(self.record());
         }
-        let since = self
-            .launched
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(i64::MAX, |d| d.as_millis() as i64);
-        let busy = self
-            .turn_look
-            .found
-            .as_ref()
-            .and_then(|(_, path)| crate::reader::last_turn_mark(path))
-            .is_some_and(|(mark, when)| {
-                mark == crate::reader::TurnMark::Working && when.is_some_and(|w| w >= since)
-            });
-        self.detector.record_says(busy);
+        let standing = self.turn_look.found.as_ref().and_then(|(_, path)| crate::reader::standing_of(path));
+        self.detector.record_says(going_on(standing));
     }
 
     /// The turn has ended and its answer is still being looked for in the

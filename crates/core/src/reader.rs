@@ -322,6 +322,43 @@ pub fn last_turn_mark(path: &Path) -> Option<(TurnMark, Option<i64>)> {
 /// How much of the end of a record [`last_turn_mark`] reads
 pub const TAIL_READ: u64 = 512 * 1024;
 
+/// Where a record stands now: how long it is, and its last turn mark with
+/// when it was written (see [`last_turn_mark`])
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Standing {
+    pub len: u64,
+    pub mark: Option<(TurnMark, Option<i64>)>,
+}
+
+/// [`Standing`] of a record on this machine
+pub fn standing_of(path: &Path) -> Option<Standing> {
+    let len = std::fs::metadata(path).ok()?.len();
+    Some(Standing { len, mark: last_turn_mark(path) })
+}
+
+impl Standing {
+    /// As it travels between the bridge and this PC
+    pub fn to_json(self) -> Value {
+        let (mark, when) = match self.mark {
+            Some((TurnMark::Working, when)) => (Value::from("working"), when),
+            Some((TurnMark::Over, when)) => (Value::from("over"), when),
+            None => (Value::Null, None),
+        };
+        serde_json::json!({"len": self.len, "mark": mark, "when": when})
+    }
+
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let len = v.get("len")?.as_u64()?;
+        let when = v.get("when").and_then(Value::as_i64);
+        let mark = match v.get("mark").and_then(Value::as_str) {
+            Some("working") => Some((TurnMark::Working, when)),
+            Some("over") => Some((TurnMark::Over, when)),
+            _ => None,
+        };
+        Some(Standing { len, mark })
+    }
+}
+
 /// [`last_turn_mark`] on bytes already read. `cut` says the first line may be
 /// the tail of one that began before them; the last may still be being written
 fn last_mark_in(bytes: &[u8], cut: bool) -> Option<(TurnMark, Option<i64>)> {
@@ -688,6 +725,28 @@ impl Record {
         }
     }
 
+    /// Where the record stands now (see [`Standing`]). `None` when the CLI has
+    /// not written it yet, or it could not be read. On another machine this
+    /// goes over the network, so it is for a thread of its own
+    pub fn standing(&self) -> Option<Standing> {
+        match self {
+            Record::Here { glob, id } => standing_of(&crate::sessionfind::locate(glob, id)?),
+            Record::Far { at, glob, id } => {
+                // One request to the bridge, when it is there. A bridge from
+                // before this knows no such thing: then the long way
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id});
+                    match crate::farlink::call(at, "record_standing", asked) {
+                        Ok(Value::Null) => return None,
+                        Ok(v) => return Standing::from_json(&v),
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not say where the record stands ({e}); reading it the long way")),
+                    }
+                }
+                standing_far(at, &locate_far(at, glob, id)?)
+            }
+        }
+    }
+
     /// The first `want` things said at or after byte `from` (see
     /// [`read_after`]). `None` when the CLI has not written the record yet
     pub fn after(&self, from: u64, want: usize, needle: &str) -> Option<std::io::Result<Later>> {
@@ -768,6 +827,15 @@ pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Opt
     let ran = crate::elsewhere::exec(at, &format!("cd \"$HOME\" && ls -1d {rest} 2>/dev/null | head -n 1 | sed \"s#^#$HOME/#\""), 30_000).ok()?;
     let path = ran.out.lines().next()?.trim().to_string();
     (!path.is_empty()).then_some(path)
+}
+
+/// [`Standing`] of a record on another machine without a bridge: its length,
+/// and its end fetched in one piece
+fn standing_far(at: &crate::elsewhere::Elsewhere, path: &str) -> Option<Standing> {
+    let (len, mut read_at) = far_pieces(at, path).ok()?;
+    let start = len.saturating_sub(TAIL_READ);
+    let tail = read_at(start, (len - start) as usize).ok()?;
+    Some(Standing { len, mark: last_mark_in(&tail, start > 0) })
 }
 
 /// `read_back` for a record on another machine, fetched a piece at a time
