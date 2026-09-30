@@ -758,12 +758,13 @@ pub fn step(
         return Step::Nothing;
     }
     // The tab gave its answer and is saying its line: the answer is the reply
-    // kept then, and waits only for the line -- or for the tab to stop in a
-    // way that says something of its own
-    if let Some(reply) = a.held.clone()
-        && !matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed)
-    {
-        if a.lined || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
+    // kept then, whatever happens next. It waits only for the line, and not
+    // past the caller's own wait, nor past the tab stopping in another way (a
+    // question, a limit, an error, the end of its program): the answer was
+    // already given, and the line goes without its own words
+    if let Some(reply) = a.held.clone() {
+        let stopped = matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed);
+        if a.lined || stopped || now >= a.deadline || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
             a.lined = true;
             return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
         }
@@ -1145,6 +1146,24 @@ mod tests {
         assert!(a.lined);
         assert!(a.held.as_deref().unwrap().starts_with("Two findings"), "the answer is the reply, not the line");
         assert_eq!(a.hear_stop("anything", 80), Hear::Go, "once it has its line, the turn ends");
+    }
+
+    #[test]
+    fn a_reply_kept_is_the_answer_whatever_the_tab_does_next() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        for state in [TabState::Question, TabState::Limit, TabState::Failed, TabState::Exited] {
+            let mut a = sent_ask();
+            assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+            t.state = state;
+            let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("{state:?} kept the caller waiting") };
+            assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The memo says ABC.")), "{state:?}");
+        }
+        // Nor past the caller's own wait
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        a.deadline = Instant::now();
+        t.state = TabState::Busy;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "past the caller's wait");
     }
 
     #[test]

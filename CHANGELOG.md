@@ -200,6 +200,23 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **AIConfer: watch AIs ask each other things, as a chat.** The Chat panel
+  has a third view beside "This conversation" and "Every conversation". When
+  one AI tab asks another (after you name it with `@`, or on its own), each
+  says one short line about it -- what it asks, what it found -- with a face
+  for every tab, what each is doing along the top, and the full text of the
+  request and the answer folded under each line. Press a line to mark it
+  (👍 ❤️ 🎉 👀 ✅ ❓); an AI can share a commit, a pull request, a file or a
+  page as a card that opens it; a decision made in a job shows as "Agreed".
+  It opens by itself when one AI asks another (not while you are using the
+  window; on a phone it is only chosen), and Settings > AIConfer turns that
+  off or changes how long a line may be (80 characters). For automation,
+  `ask_tab` now takes that line before what it asks
+  (`shikisha ask_tab ID "line" "text"`); the old form is refused with the
+  new one. An AI that was asked is asked once, as it finishes, for its line;
+  the answer handed back is unchanged. New commands `say`, `react` and
+  `share`. Claude Code and Codex are asked again about their hooks, since
+  the end of a turn now asks for the line.
 - **The AI command-line tools are asked, once, to report what they are doing.**
   When the app starts and finds Claude Code, Codex or Gemini used on this PC
   without an answer about them yet, it shows which settings file of each it
