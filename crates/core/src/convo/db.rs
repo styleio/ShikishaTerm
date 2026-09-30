@@ -12,9 +12,13 @@
 //! * **spans** -- how long a tab spent in each state, a row a change.
 //! * **answers** -- who answered a tab that was waiting on a question.
 //! * **stops** -- who stopped a tab, from where, and why.
+//! * **asks**, **lines**, **reactions**, **shares** -- AIs conferring: each
+//!   ask one tab made of another, the short lines said about it, the marks
+//!   put on them and the cards shared, shown together by `crate::convo::confer`.
 //!
-//! The words themselves are never kept here: they are in the CLI's record,
-//! and a second copy would be a second thing to drift and to leak. A send
+//! The words of a conversation are not kept here: they are in the CLI's
+//! record, and a second copy would be a second thing to drift and to leak.
+//! The conference is the exception, and its tables say why. A send
 //! keeps fingerprints of how its text begins ([`heads`]), which is what finds
 //! it in the record again.
 //!
@@ -40,7 +44,10 @@ const WHAT: &str = "the record of conversations";
 /// Every change to the tables, in order. A step is never edited once it has
 /// shipped: a record that already has it would not run it again. The number is
 /// the version a record is at once the step has run
-pub const STEPS: &[(i64, &str, Step)] = &[(1, "first", Step::Sql(include_str!("migrations/0001_first.sql")))];
+pub const STEPS: &[(i64, &str, Step)] = &[
+    (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
+    (2, "confer", Step::Sql(include_str!("migrations/0002_confer.sql"))),
+];
 
 /// The version the steps bring a record to
 pub fn latest() -> i64 {
@@ -228,6 +235,66 @@ pub struct Stopped {
     pub why: Option<String>,
 }
 
+/// An ask, as a line of the conference carries it
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct AskRow {
+    pub id: i64,
+    pub caller: Option<String>,
+    pub target: String,
+    pub text: String,
+    pub reply: Option<String>,
+    pub state: String,
+    pub round: i64,
+}
+
+/// A mark on a line, and who put it there
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Mark {
+    pub by: String,
+    pub mark: String,
+}
+
+/// One thing in the conference, as the panel shows it
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "k", rename_all = "lowercase")]
+pub enum Said {
+    Line {
+        id: i64,
+        tab: Option<String>,
+        at: i64,
+        text: String,
+        how: String,
+        ask: Option<AskRow>,
+        marks: Vec<Mark>,
+    },
+    Share {
+        id: i64,
+        tab: String,
+        at: i64,
+        kind: String,
+        target: String,
+        title: String,
+        detail: serde_json::Value,
+    },
+}
+
+impl Said {
+    pub fn at(&self) -> i64 {
+        match self {
+            Said::Line { at, .. } | Said::Share { at, .. } => *at,
+        }
+    }
+
+    /// Of two things at the same moment, which came second: a card after the
+    /// line said with it, then the order they were written in
+    fn order(&self) -> (u8, i64) {
+        match self {
+            Said::Line { id, .. } => (0, *id),
+            Said::Share { id, .. } => (1, *id),
+        }
+    }
+}
+
 pub struct Store {
     conn: Connection,
 }
@@ -277,6 +344,10 @@ impl Store {
             self.conn
                 .execute("DELETE FROM spans WHERE ended_at IS NOT NULL AND ended_at < ?1", params![before])?;
             self.conn.execute("DELETE FROM stops WHERE stopped_at < ?1", params![before])?;
+            // A line's marks go with it (ON DELETE CASCADE)
+            self.conn.execute("DELETE FROM lines WHERE said_at < ?1", params![before])?;
+            self.conn.execute("DELETE FROM asks WHERE asked_at < ?1", params![before])?;
+            self.conn.execute("DELETE FROM shares WHERE shared_at < ?1", params![before])?;
             Ok(())
         })();
         match done {
@@ -387,6 +458,172 @@ impl Store {
     pub fn close_spans(&self, at: i64) -> Result<()> {
         self.conn.execute("UPDATE spans SET ended_at = ?1 WHERE ended_at IS NULL", params![at])?;
         Ok(())
+    }
+
+    // -- the conference (the main loop) ------------------------------------------
+
+    /// An ask sent: `caller` asked `target` on `desk`. Its id, for its lines
+    pub fn ask_opened(&self, desk: &str, caller: Option<&str>, target: &str, text: &str, round: u32, at: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO asks (desk, caller, target, text, state, round, asked_at) VALUES (?1, ?2, ?3, ?4, 'waiting', ?5, ?6)",
+            params![desk, caller, target, text, round, at],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// How an ask ended, and what was said back
+    pub fn ask_answered(&self, id: i64, state: &str, reply: Option<&str>, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE asks SET state = ?2, reply = COALESCE(?3, reply), answered_at = ?4 WHERE id = ?1",
+            params![id, state, reply, at],
+        )?;
+        Ok(())
+    }
+
+    /// A line said. Its id, for the marks put on it
+    pub fn line(&self, desk: &str, tab: Option<&str>, text: &str, ask: Option<i64>, how: &str, at: i64) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO lines (desk, tab, said_at, text, ask_id, how) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![desk, tab, at, text, ask, how],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Whether the answer to `ask` has a line yet, in its own words or taken for it
+    pub fn ask_has_answer_line(&self, ask: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT 1 FROM lines WHERE ask_id = ?1 AND how IN ('said', 'auto') LIMIT 1",
+                params![ask],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The last line `tab` said on `desk` (`None`: the person's). A decision
+    /// is nobody's line to answer
+    pub fn last_line_of(&self, desk: &str, tab: Option<&str>) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM lines WHERE desk = ?1 AND tab IS ?2 AND how != 'agreed' ORDER BY said_at DESC, id DESC LIMIT 1",
+                params![desk, tab],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The desk a line was said on, if it is still kept
+    pub fn desk_of_line(&self, line: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT desk FROM lines WHERE id = ?1", params![line], |r| r.get(0)).optional()?)
+    }
+
+    /// A mark put on a line, or taken off again when `by` had already put
+    /// the same one there. `true`: it is on now
+    pub fn toggle_mark(&self, line: i64, by: &str, mark: &str, at: i64) -> Result<bool> {
+        let gone = self
+            .conn
+            .execute("DELETE FROM reactions WHERE line_id = ?1 AND by = ?2 AND mark = ?3", params![line, by, mark])?;
+        if gone > 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO reactions (line_id, by, mark, marked_at) VALUES (?1, ?2, ?3, ?4)",
+            params![line, by, mark, at],
+        )?;
+        Ok(true)
+    }
+
+    /// A card shared
+    #[allow(clippy::too_many_arguments)]
+    pub fn shared(
+        &self,
+        desk: &str,
+        tab: &str,
+        kind: &str,
+        target: &str,
+        title: &str,
+        detail: &serde_json::Value,
+        at: i64,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO shares (desk, tab, shared_at, kind, target, title, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![desk, tab, at, kind, target, title, detail.to_string()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    // -- the conference (the panel's thread) -----------------------------------
+
+    /// A page of the conference on `desk`: what was said and shared before
+    /// `before`, the newest `want` of it, handed back oldest first -- the
+    /// way a chat reads
+    pub fn conference(&self, desk: &str, before: i64, want: usize) -> Result<Vec<Said>> {
+        let mut out: Vec<Said> = Vec::new();
+        let mut st = self.conn.prepare(
+            "SELECT l.id, l.tab, l.said_at, l.text, l.how, a.id, a.caller, a.target, a.text, a.reply, a.state, a.round \
+             FROM lines l LEFT JOIN asks a ON a.id = l.ask_id \
+             WHERE l.desk = ?1 AND l.said_at < ?2 ORDER BY l.said_at DESC, l.id DESC LIMIT ?3",
+        )?;
+        let lines = st
+            .query_map(params![desk, before, want as i64], |r| {
+                let ask = match r.get::<_, Option<i64>>(5)? {
+                    None => None,
+                    Some(id) => Some(AskRow {
+                        id,
+                        caller: r.get(6)?,
+                        target: r.get(7)?,
+                        text: r.get(8)?,
+                        reply: r.get(9)?,
+                        state: r.get(10)?,
+                        round: r.get(11)?,
+                    }),
+                };
+                Ok(Said::Line {
+                    id: r.get(0)?,
+                    tab: r.get(1)?,
+                    at: r.get(2)?,
+                    text: r.get(3)?,
+                    how: r.get(4)?,
+                    ask,
+                    marks: Vec::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        out.extend(lines);
+        let mut st = self.conn.prepare(
+            "SELECT id, tab, shared_at, kind, target, title, detail FROM shares \
+             WHERE desk = ?1 AND shared_at < ?2 ORDER BY shared_at DESC, id DESC LIMIT ?3",
+        )?;
+        let shares = st
+            .query_map(params![desk, before, want as i64], |r| {
+                Ok(Said::Share {
+                    id: r.get(0)?,
+                    tab: r.get(1)?,
+                    at: r.get(2)?,
+                    kind: r.get(3)?,
+                    target: r.get(4)?,
+                    title: r.get(5)?,
+                    detail: serde_json::from_str(&r.get::<_, String>(6)?).unwrap_or_default(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        out.extend(shares);
+        // Newest first to cut the page, then the other way round to read it
+        out.sort_by(|a, b| b.at().cmp(&a.at()).then(b.order().cmp(&a.order())));
+        out.truncate(want);
+        out.reverse();
+        let mut st = self.conn.prepare("SELECT by, mark FROM reactions WHERE line_id = ?1 ORDER BY marked_at, id")?;
+        for s in out.iter_mut() {
+            if let Said::Line { id, marks, .. } = s {
+                *marks = st
+                    .query_map(params![*id], |r| Ok(Mark { by: r.get(0)?, mark: r.get(1)? }))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+            }
+        }
+        Ok(out)
     }
 
     // -- reading (the panel's thread) ------------------------------------------
@@ -742,6 +979,51 @@ mod tests {
         let e = migrate(&mut conn, &with_one_more("orphan", Step::Code(orphan)), None, WHAT).unwrap_err();
         assert!(e.to_string().contains("pointing at nothing"), "{e}");
         assert_eq!(version_of(&conn).unwrap(), latest());
+    }
+
+    #[test]
+    fn the_conference_reads_as_a_chat_oldest_first_with_its_asks_and_marks() {
+        let s = Store::in_memory().unwrap();
+        let ask = s.ask_opened("d", Some("otter"), "finch", "Review the parser in src/p.rs", 1, 10).unwrap();
+        let asked = s.line("d", Some("otter"), "Can you review the parser?", Some(ask), "ask", 10).unwrap();
+        assert!(!s.ask_has_answer_line(ask).unwrap());
+        s.ask_answered(ask, "DONE", Some("Two findings: ..."), 30).unwrap();
+        let said = s.line("d", Some("finch"), "Two small things, fixable.", Some(ask), "said", 30).unwrap();
+        assert!(s.ask_has_answer_line(ask).unwrap());
+        s.shared("d", "finch", "commit", "abc1234", "Fix the parser", &serde_json::json!({"branch": "main"}), 30).unwrap();
+        s.line("elsewhere", Some("otter"), "not this desk", None, "aside", 20).unwrap();
+        assert!(s.toggle_mark(said, "otter", "👍", 40).unwrap());
+        assert!(s.toggle_mark(said, "person", "👍", 41).unwrap());
+        assert!(!s.toggle_mark(said, "person", "👍", 42).unwrap(), "the same mark again takes it off");
+
+        let page = s.conference("d", i64::MAX, 10).unwrap();
+        assert_eq!(page.len(), 3, "{page:?}");
+        let Said::Line { id, how, ask: Some(a), .. } = &page[0] else { panic!("{:?}", page[0]) };
+        assert_eq!((*id, how.as_str(), a.target.as_str(), a.state.as_str()), (asked, "ask", "finch", "DONE"));
+        assert_eq!(a.reply.as_deref(), Some("Two findings: ..."));
+        let Said::Line { marks, .. } = &page[1] else { panic!() };
+        assert_eq!(marks, &vec![Mark { by: "otter".into(), mark: "👍".into() }]);
+        assert!(matches!(&page[2], Said::Share { kind, .. } if kind == "commit"), "a card after the line said with it");
+
+        // Paged from the newest: the page before the last thing is what came earlier
+        let older = s.conference("d", 30, 10).unwrap();
+        assert_eq!(older.len(), 1);
+        assert_eq!(s.last_line_of("d", Some("finch")).unwrap(), Some(said));
+        assert_eq!(s.last_line_of("d", None).unwrap(), None, "the person said nothing");
+        assert_eq!(s.desk_of_line(said).unwrap().as_deref(), Some("d"));
+    }
+
+    #[test]
+    fn the_conference_is_let_go_with_the_rest_and_a_line_takes_its_marks() {
+        let s = Store::in_memory().unwrap();
+        let ask = s.ask_opened("d", None, "finch", "x", 1, 5).unwrap();
+        let l = s.line("d", Some("finch"), "ok", Some(ask), "said", 5).unwrap();
+        s.toggle_mark(l, "person", "👍", 6).unwrap();
+        s.shared("d", "finch", "url", "https://example.com", "Example", &serde_json::json!({}), 5).unwrap();
+        s.forget_old(5 + KEEP_MS + 1).unwrap();
+        assert!(s.conference("d", i64::MAX, 10).unwrap().is_empty());
+        let marks: i64 = s.conn.query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0)).unwrap();
+        assert_eq!(marks, 0);
     }
 
     #[test]

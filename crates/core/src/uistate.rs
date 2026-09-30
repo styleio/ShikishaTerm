@@ -2141,6 +2141,24 @@ fn is_empty_list(v: &serde_json::Value) -> bool {
 }
 
 
+/// What the page needs to know of the conference without reading it: that it
+/// changed, and that it should be opened
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ConferState {
+    /// Goes up every time something is said, marked or shared: a panel
+    /// showing the conference reads it again when this moves
+    pub rev: u64,
+    /// Goes up every time one tab asks another, on the desk named in
+    /// [`Self::open_desk`]: the page opens the conference, if the settings say
+    /// to and the person is not in the middle of something
+    pub open: u64,
+    pub open_desk: String,
+    /// Whether the settings say to open it
+    pub auto_open: bool,
+    /// The longest a line may be, for the settings' own hint
+    pub line_max: u32,
+}
+
 /// Everything shown on screen, all in one place.
 ///
 /// Words about appearance (color, width, symbols) don't belong here.
@@ -2354,6 +2372,10 @@ pub struct UiState {
     /// honest about our own weight rather than leaving it to a task manager
     #[serde(default)]
     pub self_cost: Option<String>,
+    /// AIs conferring (`convo::confer`): when to read the conference again,
+    /// and when to open it
+    #[serde(default)]
+    pub confer: ConferState,
     /// The Vault, when its overlay is open: a query and what it found. Absent
     /// the rest of the time, so the state stays small
     #[serde(default)]

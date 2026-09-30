@@ -7,7 +7,9 @@ An AI CLI writes down every word of a conversation in a record of its own (a JSO
 
 This app can, because all of it went through the app. It writes those things down in an SQLite file, the `conversations.db` in the app's state folder. The column's Chat panel (`convo::read`) reads the words from the CLI's record and puts these facts beside them. The code is in `crates/core/src/convo/`.
 
-**The words are never kept here.** They are in the CLI's record already; a second copy would be one more thing to drift and one more place a pasted token could leak from. A send keeps only fingerprints of how its text begins (the first 60 characters with runs of space made single, hashed), which is what finds it in the record again.
+**The words of a conversation are not kept here.** They are in the CLI's record already; a second copy would be one more thing to drift and one more place a pasted token could leak from. A send keeps only fingerprints of how its text begins (the first 60 characters with runs of space made single, hashed), which is what finds it in the record again.
+
+The conference tables (`asks`, `lines`, `reactions`, `shares`) are the exception: AIConfer puts many tabs, on many machines, side by side, and reading every bubble back out of each CLI's own record would be a round trip per bubble. What they keep is what the app itself wrote and read, and it goes when everything else here goes.
 
 ## What each table is for
 
@@ -18,6 +20,10 @@ This app can, because all of it went through the app. It writes those things dow
 | `spans` | A stretch of time a tab spent in one state. Written when the state changes, never on a clock | To say how long a question waited for an answer |
 | `answers` | What ended a wait for an answer: the first input that reached the tab while it was asking | The CLI records what was chosen, not who chose it |
 | `stops` | One stop: who, from where, how (the stop button, Esc, a job stopped, a usage limit) and what was said about it | The CLI records only that its turn was cut short |
+| `asks` | One `ask_tab`: which tab (or person) asked which, everything it was sent, everything it said back, how it ended | The AIConfer view shows a whole desk's asks side by side |
+| `lines` | One bubble of AIConfer: who said it, the short line, the ask it belongs to, and how it came to be (the asker's line, the answer in its own words, the answer's first sentence taken for it, a line said on its own, a person naming a tab, a decision made) | No CLI record has these: they are said to the app, not in the conversation |
+| `reactions` | One mark on a line, and who put it there (a tab, or the person) | |
+| `shares` | One card: a commit, a pull request, a file or a page an AI put in front of the others, checked before it was taken | |
 
 `meta` holds one row, `schema`: the version the file is at.
 

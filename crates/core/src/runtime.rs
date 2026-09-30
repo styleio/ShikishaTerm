@@ -1006,8 +1006,11 @@ fn tend_asks(
     desk_tabs: &[Vec<Tab>],
     orchestra: &mut crate::orch::Orchestra,
     start: std::time::Instant,
+    log: &mut crate::convo::Log,
+    opened: &mut Vec<String>,
 ) {
     use crate::asktab::{Phase, Step};
+    let line_max = config::confer().line_max;
     let desk = desks.get(desk_index);
     let here = desk.map(|d| d.id.as_str());
     let keys_here: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
@@ -1137,6 +1140,15 @@ fn tend_asks(
                     append_hook_log(&format!("ask_tab: sent to {}", a.target));
                     a.phase = Phase::Waiting;
                     a.sent_at = Some(std::time::Instant::now());
+                    // Into the conference, with the asker's line. A command
+                    // typed into a terminal is not said to anyone
+                    if a.run.is_none() {
+                        let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
+                        let caller = a.caller.as_deref().map(caller_id);
+                        let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+                        a.ask_id = log.ask_opened(&desk, caller.as_deref(), &target, &a.line, &a.text, a.round);
+                        opened.push(desk);
+                    }
                     true
                 }
                 Err(e) => {
@@ -1148,6 +1160,11 @@ fn tend_asks(
             },
             Step::Answer(v) => {
                 let state = v["state"].as_str().unwrap_or_default().to_string();
+                if let Some(ask) = a.ask_id {
+                    let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
+                    let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+                    log.ask_answered(&desk, ask, &target, &state, v["reply"].as_str(), line_max);
+                }
                 append_hook_log(&format!(
                     "ask_tab: {} -> {state} ({}s, from {})",
                     a.target,
@@ -1193,6 +1210,28 @@ fn tend_asks(
         }
     });
 }
+/// A card checked on its thread, on its way to be written by the loop
+struct CardChecked {
+    desk: String,
+    tab: String,
+    card: Result<crate::convo::confer::Card, String>,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+}
+
+/// The desk a tab is on, by the tab's id: the one on screen, or one of the
+/// others (whose tabs run on behind it)
+fn desk_of_tab(id: &str, desks: &[config::Desk], desk_index: usize, tabs: &[Tab], desk_tabs: &[Vec<Tab>]) -> Option<String> {
+    let is = |t: &Tab| crate::orch::glue::tab_id(t) == id;
+    if tabs.iter().any(is) {
+        return desks.get(desk_index).map(|d| d.id.clone());
+    }
+    desk_tabs
+        .iter()
+        .position(|list| list.iter().any(is))
+        .and_then(|i| desks.get(i))
+        .map(|d| d.id.clone())
+}
+
 pub fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
     tabs.iter()
         .map(|t| (t.key(), t.state.label().to_string()))
@@ -1999,6 +2038,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut convo_log = crate::convo::Log::default();
     // A page of a conversation for the column's panel, read on a thread
     let (convo_tx, convo_rx) = std::sync::mpsc::channel::<crate::convo::read::Found>();
+    // AIs conferring (`convo::confer`): how many times, and on which desk, one
+    // tab last asked another -- the page opens the conference when it moves --
+    // and the cards being checked on threads, to be written here
+    let mut confer_open: (u64, String) = (0, String::new());
+    let (card_tx, card_rx) = std::sync::mpsc::channel::<CardChecked>();
     let mut orch_looked = std::time::Instant::now();
     let mut orch_manual: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     // The open jobs as the board draws them, rebuilt a few times a second
@@ -3460,6 +3504,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // for the record of conversations. A model bridge keeps no record
             // of its own to put this beside
             convo_log.take_notes();
+            // A job's decision, put in the conference of the desk its lead is on
+            for (lead, text, _) in crate::convo::take_agreed() {
+                if let Some(desk) = desk_of_tab(&lead, &desks, desk_index, &tabs, &desk_tabs) {
+                    convo_log.line(&desk, Some(&lead), &text, None, "agreed");
+                }
+            }
+            // Cards checked on their threads, written here, where the record is
+            while let Ok(done) = card_rx.try_recv() {
+                let answer = match done.card {
+                    Ok(c) => match convo_log.shared(&done.desk, &done.tab, c.kind, &c.target, &c.title, &c.detail) {
+                        Some(_) => Ok(serde_json::json!({"shared": c.kind, "title": c.title})),
+                        None => Err("the card could not be kept; see the log".to_string()),
+                    },
+                    Err(why) => Err(why),
+                };
+                let _ = done.reply.send(answer);
+            }
             for (t, &(_, old, new)) in tabs.iter().zip(&transitions) {
                 if !t.is_ai() || t.is_model() {
                     continue;
@@ -4443,6 +4504,117 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                     continue;
                 }
+                // The end of a turn, from the stop hook of a tab that may owe
+                // the chat a line (`main::line_hook`). Its own key calls, so
+                // the tab is who is calling
+                if call.method == "confer_stop" {
+                    let said = call.params.first().and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let me = call.caller.as_deref().and_then(|c| tabs.iter().find(|t| t.called() == c));
+                    let line_max = config::confer().line_max;
+                    let mut hold = serde_json::Value::Null;
+                    if let Some(t) = me {
+                        let id = crate::orch::glue::tab_id(t);
+                        let asked = tab_asks
+                            .iter_mut()
+                            .filter(|a| {
+                                (a.target == id || a.target == t.called())
+                                    && a.sent_at.is_some()
+                                    && a.run.is_none()
+                                    && matches!(a.phase, crate::asktab::Phase::Waiting | crate::asktab::Phase::Deliver)
+                            })
+                            .max_by_key(|a| a.sent_at);
+                        if let Some(a) = asked {
+                            match a.hear_stop(said, line_max) {
+                                crate::asktab::Hear::Hold(why) => {
+                                    append_hook_log(&format!("confer: {id} is asked for its line"));
+                                    hold = serde_json::json!(why);
+                                }
+                                crate::asktab::Hear::Line(line) => {
+                                    let desk = a.desk.clone().or_else(|| desks.get(desk_index).map(|d| d.id.clone())).unwrap_or_default();
+                                    convo_log.line(&desk, Some(&id), &line, a.ask_id, "said");
+                                }
+                                crate::asktab::Hear::Go => {}
+                            }
+                        }
+                    }
+                    let _ = call.reply.send(Ok(serde_json::json!({"hold": hold})));
+                    continue;
+                }
+                // Saying something to the conference, marking a line, sharing
+                // a card: a tab's own words, so a tab has to be calling
+                if matches!(call.method.as_str(), "say" | "react" | "share") {
+                    let Some(eng) = engine.as_ref() else { continue };
+                    brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                    let who = subject_of(call.caller.as_deref(), &tabs);
+                    let words: Vec<serde_json::Value> = call.params.iter().take(3).cloned().collect();
+                    if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &words) {
+                        let _ = call.reply.send(Err(e));
+                        continue;
+                    }
+                    let me = call.caller.as_deref().and_then(|c| {
+                        tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.called() == c)
+                    });
+                    let Some(me) = me else {
+                        let _ = call.reply.send(Err(format!(
+                            "{} is said by a tab: run it from inside the AI's tab",
+                            call.method
+                        )));
+                        continue;
+                    };
+                    let id = crate::orch::glue::tab_id(me);
+                    let Some(desk) = desk_of_tab(&id, &desks, desk_index, &tabs, &desk_tabs) else {
+                        let _ = call.reply.send(Err("this tab is on no desk".to_string()));
+                        continue;
+                    };
+                    let text_at = |i: usize| call.params.get(i).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+                    let answer = match call.method.as_str() {
+                        "say" => crate::convo::confer::check_line(&text_at(0), config::confer().line_max, "say").and_then(|line| {
+                            convo_log
+                                .line(&desk, Some(&id), &line, None, "aside")
+                                .map(|n| serde_json::json!({"said": n}))
+                                .ok_or_else(|| "it could not be kept; see the log".to_string())
+                        }),
+                        "react" => {
+                            let whose = text_at(0);
+                            let whose = whose.trim().trim_start_matches('<').trim_start_matches('@').trim_end_matches('>');
+                            let of: Option<&str> = match whose {
+                                "person" | "you" | "human" => None,
+                                other => Some(other),
+                            };
+                            crate::convo::confer::check_mark(&text_at(1)).and_then(|mark| {
+                                let line = convo_log.last_line_of(&desk, of).ok_or_else(|| match of {
+                                    Some(t) => format!("<@{t}> has said nothing to mark yet"),
+                                    None => "the person has said nothing to mark yet".to_string(),
+                                })?;
+                                convo_log
+                                    .toggle_mark(line, &id, mark)
+                                    .map(|on| serde_json::json!({"mark": mark, "on": on}))
+                                    .ok_or_else(|| "it could not be kept; see the log".to_string())
+                            })
+                        }
+                        _ => {
+                            // Checked on a thread (a commit on another machine
+                            // is a round trip away) and written above
+                            let from = crate::convo::confer::From { folder: me.cwd().map(std::path::Path::to_path_buf), machine: me.machine() };
+                            let (kind, target) = (text_at(0), text_at(1));
+                            let title = match call.params.get(2) {
+                                Some(serde_json::Value::String(s)) => s.clone(),
+                                Some(o) => o.get("title").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                                None => String::new(),
+                            };
+                            let tx = card_tx.clone();
+                            let reply = call.reply;
+                            let tab = id.clone();
+                            std::thread::spawn(move || {
+                                let card = crate::convo::confer::card(&kind, &target, &title, &from);
+                                let _ = tx.send(CardChecked { desk, tab, card, reply });
+                            });
+                            continue;
+                        }
+                    };
+                    let _ = call.reply.send(answer);
+                    continue;
+                }
                 // The tabs of this desk, as another tab's AI can address them
                 if call.method == "tab_list" {
                     let granted = call
@@ -4605,7 +4777,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     if let Some(eng) = engine.as_ref() {
                         brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
                         let who = subject_of(call.caller.as_deref(), &tabs);
-                        let taken = crate::asktab::parse(&call.params).and_then(|(target, text, wait)| {
+                        // An ask carries a line for the chat, second; a command does not
+                        let parsed = if run {
+                            crate::asktab::parse(&call.params).map(|(target, text, wait)| (target, String::new(), text, wait))
+                        } else {
+                            crate::asktab::parse_ask(&call.params, config::confer().line_max)
+                        };
+                        let taken = parsed.and_then(|(target, line, text, wait)| {
                             eng.call_primitive_as(
                                 call.caller.as_deref(),
                                 who,
@@ -4623,13 +4801,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 return Err(format!("Not run: the person has not named <@{target}> in what they asked you. \
                                     A terminal is only typed into when the person names it with @; ask them to."));
                             }
-                            Ok((target, text, wait))
+                            Ok((target, line, text, wait))
                         });
                         match taken {
                             Err(e) => {
                                 let _ = call.reply.send(Err(e));
                             }
-                            Ok((target, text, wait)) => {
+                            Ok((target, line, text, wait)) => {
                                 let max_rounds = config::operate().max_rounds;
                                 let round = ask_rounds.entry(call.caller.clone().unwrap_or_default()).or_insert(0);
                                 *round += 1;
@@ -4643,6 +4821,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         call.caller.as_deref().unwrap_or("outside")
                                     ));
                                     let now = std::time::Instant::now();
+                                    let hook_expected = !run
+                                        && tabs
+                                            .iter()
+                                            .find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target)
+                                            .is_some_and(crate::agenthook::line_hook_expected);
                                     tab_asks.push(crate::asktab::Ask {
                                         reply: Some(call.reply),
                                         caller: call.caller,
@@ -4666,6 +4849,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         far_len: None,
                                         record_unsure: false,
                                         desk: desks.get(desk_index).map(|d| d.id.clone()),
+                                        line,
+                                        ask_id: None,
+                                        hook_expected,
+                                        hook_seen: false,
+                                        held: None,
+                                        held_at: None,
+                                        line_asks: 0,
+                                        lined: false,
                                     });
                                 }
                             }
@@ -4718,7 +4909,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Asks waiting on another tab: a look at each, every turn of the loop
         if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                tend_asks(&mut tab_asks, eng, &desks, desk_index, &surfaces, &tabs, &desk_tabs, &mut orchestra, start);
+                let mut opened: Vec<String> = Vec::new();
+                tend_asks(
+                    &mut tab_asks,
+                    eng,
+                    &desks,
+                    desk_index,
+                    &surfaces,
+                    &tabs,
+                    &desk_tabs,
+                    &mut orchestra,
+                    start,
+                    &mut convo_log,
+                    &mut opened,
+                );
+                if let Some(desk) = opened.pop() {
+                    confer_open = (confer_open.0 + 1, desk);
+                }
             }
         }
         // Handed-out work: briefs waiting for their tab to be free, waits on
@@ -5829,6 +6036,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .unwrap_or_default(),
             server_marks: cfg.as_ref().map(|c| c.server_marks.clone()).unwrap_or_default(),
             self_cost: self_cost.clone(),
+            confer: {
+                let spec = config::confer();
+                crate::uistate::ConferState {
+                    rev: convo_log.confer_rev,
+                    open: confer_open.0,
+                    open_desk: confer_open.1.clone(),
+                    auto_open: spec.open,
+                    line_max: spec.line_max,
+                }
+            },
             // With a stand-in laid out there is a link to show even when
             // nothing is listening — that is the whole point of it (netaddr::demo_link)
             qr: if qr_open {
@@ -6525,6 +6742,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let said = line.clone();
             if hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
                 record_sent(&tabs, &surfaces, to, &said, crate::convo::Origin::person(device, "composer"));
+                // A person naming a tab is where a conference begins: what
+                // they said is its first line
+                if !crate::asktab::named_in(&said).is_empty()
+                    && let Some(desk) = desks.get(desk_index)
+                {
+                    convo_log.line(&desk.id, None, said.trim(), None, "person");
+                }
             } else {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
             }
@@ -8932,6 +9156,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // or on another machine, so it is done on a thread and answers below
         for ev in shell.mail().take_convos() {
             let shikisha_shared::Ev::Convo { panel, act, args } = ev else { continue };
+            // The conference of the desk on screen: read on a thread like the
+            // rest, a mark put on by the person written here
+            if act == "confer" || act == "confer_mark" {
+                let desk = desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default();
+                if act == "confer_mark" {
+                    let line = args.get("line").and_then(serde_json::Value::as_i64);
+                    let mark = args.get("mark").and_then(serde_json::Value::as_str).unwrap_or_default();
+                    match (line, crate::convo::confer::check_mark(mark)) {
+                        (Some(line), Ok(mark)) if convo_log.desk_of_line(line).as_deref() == Some(desk.as_str()) => {
+                            convo_log.toggle_mark(line, "person", mark);
+                        }
+                        _ => append_hook_log(&format!("confer: a mark not taken ({args})")),
+                    }
+                    continue;
+                }
+                let tx = convo_tx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(crate::convo::read::Found { answer: crate::convo::confer::page(&desk, &args, &crate::convo::path()), forget: Vec::new() });
+                });
+                continue;
+            }
             let target = match convo_target(&panel, &args, &tabs, &desks) {
                 Ok(t) => t,
                 Err(why) => {

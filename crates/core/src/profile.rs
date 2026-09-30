@@ -378,6 +378,13 @@ pub struct HookSpec {
     /// the tab's processes says so, because the helper runs inside the CLI
     #[serde(default)]
     pub helpers: std::collections::BTreeMap<String, String>,
+    /// The event a turn ends at, when the CLI lets a hook hold the end back
+    /// and tell it to go on: `"Stop"`. Where it is named, a tab that was
+    /// asked something by another tab is asked there for one short line for
+    /// the chat (`agenthook::LINE_ARG`). Absent: the answer's line is taken
+    /// from its first sentence
+    #[serde(default)]
+    pub turn_end: Option<String>,
     /// What this CLI counts a hook's patience in. Absent is seconds, which is
     /// what most of them use -- and getting it wrong is not a rounding error:
     /// three seconds written where three milliseconds was meant kills every

@@ -768,6 +768,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         vault: ui.vault.clone(),
         past: ui.past.clone(),
         self_cost: ui.self_cost.clone(),
+        confer: ui.confer.clone(),
         desk_open: ui.desk_open,
         // The link, its picture and the badge under it are decided together, in
         // this one place: a QR that says one thing while the badge beside it
@@ -1673,6 +1674,8 @@ pub struct Ui {
     pub past: Option<uistate::PastState>,
     /// What this whole app is costing the machine, for the board header
     pub self_cost: Option<String>,
+    /// AIs conferring (see `UiState::confer`)
+    pub confer: uistate::ConferState,
     /// The connection URL, if the QR code is being shown
     pub qr: Option<String>,
     /// Whether the remote UI is listening (shown at all times so it's never a mystery)
