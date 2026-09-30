@@ -257,7 +257,7 @@ then `i` shows the same code on the board.
 Under the code sit the only two things worth acting on. **📋 copies the link** — token and
 all — to the clipboard, for a phone that cannot photograph the screen it is on, and the
 **badge beside it says which network that link leads to**: green for Tailscale (your own
-devices, anywhere), amber for the home LAN (everyone on that Wi-Fi). The link itself is
+devices, anywhere), amber for the LAN (everyone on that Wi-Fi or office network). The link itself is
 never printed: with its token it is the key to the machine, and without one it opens
 nothing.
 
@@ -266,8 +266,9 @@ nothing.
 - Only people **on the same network** can connect. It is never published to the internet
 - With **[Tailscale](https://tailscale.com/)** (free) only your own devices can reach it,
   encrypted, from anywhere. This is the safest way and the one to prefer
-- Without Tailscale it works on your **home LAN only**. Anyone on the same Wi-Fi who knows
-  the URL and the token could use it — do not turn it on for shared or public Wi-Fi
+- While Tailscale is not connected it works on the **LAN only** (the same Wi-Fi or office
+  network), and switches to Tailscale by itself once it connects. Anyone on the same network
+  who knows the URL and the token could use it — do not turn it on for shared or public Wi-Fi
 - Binding to a public address (`remote.allow_public`) never happens unless you write it in
   the config file yourself
 

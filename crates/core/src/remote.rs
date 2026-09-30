@@ -577,6 +577,10 @@ pub struct RemoteUi {
     /// "any"). Kept because the address the world reaches this by can change
     /// while the port cannot.
     port: u16,
+    /// The address the socket is bound to. Kept because `url` may name a
+    /// different host (a tailnet name in front of it), and a board chosen by
+    /// "auto" has to know where it actually is to tell that the network moved.
+    bound: std::net::Ipv4Addr,
     /// The same board, answering on 127.0.0.1 as well, so a proxy on this
     /// machine can reach it. `None` when the board is already on the loopback,
     /// or when something else holds that port there.
@@ -1297,6 +1301,7 @@ impl RemoteUi {
             local_only: false,
             origin,
             port: real_port,
+            bound: bind,
             token,
             note: None,
             snapshot,
@@ -1360,6 +1365,11 @@ impl RemoteUi {
     pub fn reached_at(&mut self, origin: String) {
         self.url = format!("{origin}/?t={}", self.token.lock().unwrap());
         self.origin = origin;
+    }
+
+    /// The address the socket is bound to
+    pub fn bound(&self) -> std::net::Ipv4Addr {
+        self.bound
     }
 
     /// Where the board is, without the key to it.
@@ -3828,7 +3838,7 @@ mod tests {
     /// one case where a second door would be the same door.
     #[test]
     fn a_board_on_the_network_answers_on_the_loopback_too() {
-        let Some(ip) = crate::netaddr::tailscale_ip().or_else(crate::netaddr::lan_ip) else {
+        let Some(ip) = crate::netaddr::auto_ip() else {
             println!("no network address on this machine; nothing to test");
             return;
         };

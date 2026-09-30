@@ -86,7 +86,7 @@ Remote control & QR
 - **Fixed token** — On, the string below is the token and the phone keeps it in its URL and storage (bookmarkable; a discarded tab needs no new QR). Disconnect still stops that phone's screen and touches at once, but the token is unchanged, so it can come back by opening the link again. To shut a phone out for good, change this string. Stored in plain text in config.json — pair it with a password
 - **Devices that have this board's key**
 - **Tailscale** — Only your own devices can reach this address, from anywhere. The safe way to use it
-- **Home network** — Anyone on the same Wi-Fi could use this link. Fine at home, not on a café or office network
+- **LAN** — Anyone on the same network (the same Wi-Fi or office network) could use this link. Do not use it on a network strangers can join, like a café or public Wi-Fi
 - **This PC only** — This address exists only inside this PC, so no phone can reach it
 - **Open to the internet** — This address is reachable from outside. Anyone who gets the link can operate this PC
 

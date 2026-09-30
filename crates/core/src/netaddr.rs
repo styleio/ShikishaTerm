@@ -65,18 +65,28 @@ pub fn is_private(ip: &Ipv4Addr) -> bool {
     ip.is_loopback() || ip.is_private() || ip.is_link_local() || is_tailscale(ip)
 }
 
+/// Whether the bind spec leaves the choice of network to this machine
+pub fn is_auto(spec: &str) -> bool {
+    let spec = spec.trim();
+    spec.is_empty() || spec.eq_ignore_ascii_case("auto")
+}
+
+/// The address "auto" means at this moment: Tailscale when it is up, the
+/// LAN otherwise, and nothing when neither is there.
+pub fn auto_ip() -> Option<Ipv4Addr> {
+    tailscale_ip().or_else(lan_ip)
+}
+
 /// Resolve the configured bind spec to an actual address.
 /// "auto" searches in order: Tailscale -> LAN -> loopback.
 pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<String>), String> {
     let spec = spec.trim();
-    if spec.is_empty() || spec.eq_ignore_ascii_case("auto") {
-        if let Some(ip) = tailscale_ip() {
-            return Ok((ip, None));
-        }
-        if let Some(ip) = lan_ip() {
-            return Ok((ip, Some(crate::i18n::t("remote.err.lan_only"))));
-        }
-        return Err(crate::i18n::t("remote.err.no_network"));
+    if is_auto(spec) {
+        return match auto_ip() {
+            Some(ip) if is_tailscale(&ip) => Ok((ip, None)),
+            Some(ip) => Ok((ip, Some(crate::i18n::t("remote.err.lan_only")))),
+            None => Err(crate::i18n::t("remote.err.no_network")),
+        };
     }
     let ip: Ipv4Addr = spec
         .parse()
@@ -85,6 +95,60 @@ pub fn resolve_bind(spec: &str, allow_public: bool) -> Result<(Ipv4Addr, Option<
         return Err(crate::i18n::tp("remote.err.public", &[("ip", &ip.to_string())]));
     }
     Ok((ip, None))
+}
+
+/// Notices when the address "auto" stands for is no longer the one the board
+/// is listening on.
+///
+/// "auto" is decided when the board starts. Tailscale often connects after
+/// this app does -- at sign-in, after sleep, after a restart of either -- and
+/// a board that settled on the LAN in that moment stayed there for the rest
+/// of the run, showing a LAN link while Tailscale was plainly connected. The
+/// same holds the other way round: an address that has gone away is a board
+/// no phone can reach.
+///
+/// A change is acted on only when two looks in a row agree on it, because a
+/// network that is reconnecting answers differently from one second to the
+/// next, and every move cuts the phones that are watching.
+pub struct AutoWatch {
+    next: std::time::Instant,
+    seen: Option<Ipv4Addr>,
+}
+
+impl AutoWatch {
+    /// How long between looks. The route lookup is cheap (no packets), so this
+    /// is about how soon a switch is noticed: two agreeing looks put a move at
+    /// 10 to 20 seconds after the network changes, sooner than a person reaches
+    /// for the phone after connecting.
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+    pub fn new(now: std::time::Instant) -> Self {
+        Self { next: now + Self::EVERY, seen: None }
+    }
+
+    /// The address to move to, once it is settled. `bound` is where the board
+    /// listens now, or `None` when it could not start for want of a network.
+    pub fn poll(&mut self, now: std::time::Instant, bound: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        if now < self.next {
+            return None;
+        }
+        self.next = now + Self::EVERY;
+        self.settle(bound, auto_ip())
+    }
+
+    fn settle(&mut self, bound: Option<Ipv4Addr>, answer: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        // Nothing to move to (no network at all), or already there
+        let Some(to) = answer.filter(|a| Some(*a) != bound) else {
+            self.seen = None;
+            return None;
+        };
+        if self.seen == Some(to) {
+            self.seen = None;
+            return Some(to);
+        }
+        self.seen = Some(to);
+        None
+    }
 }
 
 /// The host out of one of our own `http://ip:port/…` URLs, without the port.
@@ -276,6 +340,28 @@ mod tests {
             "192.168.1.5".parse::<Ipv4Addr>().unwrap()
         );
         assert!(resolve_bind("なにこれ", false).is_err());
+    }
+
+    #[test]
+    fn auto_follows_the_network_once_two_looks_agree() {
+        let lan: Ipv4Addr = "192.168.0.127".parse().unwrap();
+        let ts: Ipv4Addr = "100.103.175.34".parse().unwrap();
+        let mut w = AutoWatch::new(std::time::Instant::now());
+        // Tailscale came up after the board settled on the LAN
+        assert_eq!(w.settle(Some(lan), Some(ts)), None, "one look is not enough");
+        assert_eq!(w.settle(Some(lan), Some(ts)), Some(ts));
+        // Already there: nothing to do
+        assert_eq!(w.settle(Some(ts), Some(ts)), None);
+        // A reconnect that flickers back does not move the board
+        assert_eq!(w.settle(Some(ts), Some(lan)), None);
+        assert_eq!(w.settle(Some(ts), Some(ts)), None);
+        assert_eq!(w.settle(Some(ts), Some(lan)), None, "the flicker was forgotten");
+        // No network at all is not somewhere to move to
+        assert_eq!(w.settle(Some(ts), None), None);
+        assert_eq!(w.settle(Some(ts), None), None);
+        // A board that could not start for want of a network starts once there is one
+        assert_eq!(w.settle(None, Some(lan)), None);
+        assert_eq!(w.settle(None, Some(lan)), Some(lan));
     }
 
     /// Checks what gets picked in the real environment (result is

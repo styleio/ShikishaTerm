@@ -2363,6 +2363,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // screen: the thing the person was looking at before this took the
     // screen, and not the neighbour by number (`view::back_row`)
     let mut fronts: Vec<String> = Vec::new();
+    // Throw the remote server away and bind a new one under these settings.
+    // Everything the old one had told its viewers goes with it. The QR/status
+    // appear a moment later, when the loop installs the result
+    macro_rules! restart_remote {
+        ($c:expr) => {{
+            if let Some(r) = &remote_ui {
+                r.shutdown();
+            }
+            remote_ui = None;
+            remote_rx = start_remote_bg(Some($c), password.as_deref());
+            publish_remote(&remote_info, &remote_ui);
+            // A fresh remote server needs its settings proxy re-pointed.
+            settings_linked = false;
+            // Fresh server = fresh viewers; forget what the old one pushed.
+            last_remote_ui = None;
+            last_remote_rows = Vec::new();
+            pane_relay = PaneRelay::default();
+        }};
+    }
+    // Whether the network under a board bound with "auto" has moved
+    // (netaddr::AutoWatch), and whether the board is missing only because
+    // there was no network at all when it tried to start
+    let mut remote_watch = netaddr::AutoWatch::new(Instant::now());
+    let mut remote_waits_network = false;
 
     loop {
         // Install the remote server the moment its background bind lands.
@@ -2371,6 +2395,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Ok((ui, mut errs)) = rx.try_recv() {
                 remote_ui = ui;
                 remote_rx = None;
+                remote_waits_network = remote_ui.is_none() && netaddr::auto_ip().is_none();
                 // Pages drawn on a connected device are driven through this
                 if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
                     r.set_page_line(line);
@@ -2387,6 +2412,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 startup_errors.append(&mut errs);
             }
+        // Follow the network under a board bound with "auto": Tailscale that
+        // connects after this app started, or an address that went away
+        if remote_rx.is_none()
+            && let Some(c) = cfg.as_ref()
+            && c.remote.enabled
+            && !board_for_the_window(c)
+            && netaddr::is_auto(&c.remote.bind)
+            && (remote_ui.is_some() || remote_waits_network)
+            && let Some(to) = remote_watch.poll(Instant::now(), remote_ui.as_ref().map(|r| r.bound()))
+        {
+            append_hook_log(&format!("remote: the network moved; listening on {to} instead"));
+            restart_remote!(c);
+        }
 
         // Open the desk's declared browsers on the iteration AFTER the
         // first full draw: the board answers clicks first, then the window
@@ -3027,20 +3065,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if (want.enabled, &want.bind, want.port, want.allow_public, &want.password, want.sticky_token, &want.fixed_token)
                     != (now.enabled, &now.bind, now.port, now.allow_public, &now.password, now.sticky_token, &now.fixed_token)
                 {
-                    if let Some(r) = &remote_ui {
-                        r.shutdown();
-                    }
-                    // Same background bind as startup — the QR/status appear a
-                    // moment later when the loop installs the result.
-                    remote_ui = None;
-                    remote_rx = start_remote_bg(Some(&newcfg), password.as_deref());
-                    publish_remote(&remote_info, &remote_ui);
-                    // A fresh remote server needs its settings proxy re-pointed.
-                    settings_linked = false;
-                    // Fresh server = fresh viewers; forget what the old one pushed.
-                    last_remote_ui = None;
-                    last_remote_rows = Vec::new();
-                    pane_relay = PaneRelay::default();
+                    restart_remote!(&newcfg);
                     // Announce the INTENT (the bind hasn't landed yet); a bind
                     // failure still surfaces as a flash from the install above.
                     remote_changed = Some(if want.enabled {
