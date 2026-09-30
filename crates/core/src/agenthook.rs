@@ -607,12 +607,13 @@ pub fn agreed_split(answers: &std::collections::BTreeMap<String, String>) -> (Ve
 
 /// Whether a CLI agreed to is asked about again rather than kept right: this
 /// version asks something of it that its file does not carry yet
-/// ([`new_events`]), or its file holds none of this app's entries any more.
-/// That last is not a hook out of date but one somebody took out; writing all
-/// of it back, whatever this version adds to it, would be writing what was
-/// never shown
+/// ([`new_events`]), or its file holds none of this app's entries any more
+/// -- or is not there at all, while the CLI's folder is (`in_use`). Those
+/// are not a hook out of date but one somebody took out; writing all of it
+/// back, whatever this version adds to it, would be writing what was never
+/// shown
 fn asked_again(t: &Target) -> bool {
-    !new_events(t).is_empty() || status(t) == Status::Absent
+    !new_events(t).is_empty() || matches!(status(t), Status::Absent | Status::NoConfig)
 }
 
 /// Of `all`, the ones used here whose answer is `answer` (`None`: none yet)

@@ -1029,6 +1029,11 @@ fn tend_asks(
         let who = subject_of(from, tabs);
         eng.call_primitive_as(from, who, "send_to_tab", &[serde_json::json!(to), serde_json::json!(text)])
     };
+    // The tabs still saying the line for an answer they gave: nothing more is
+    // sent them until it is said or given up on. Their line may yet be read
+    // from their record, and a second question's answer would be read as it
+    let owing: std::collections::HashSet<String> =
+        asks.iter().filter(|a| a.held.is_some() && !a.lined).map(|a| a.target.clone()).collect();
     asks.retain_mut(|a| {
         // The tabs of the desk it was asked on. A desk that is not in front
         // keeps its tabs running and their state read (`Tab::tick_away`), so
@@ -1121,6 +1126,8 @@ fn tend_asks(
                 }
                 true
             }
+            // Sent to later, once the tab has its line
+            Step::Send if owing.contains(&a.target) => true,
             Step::Send => match {
                 // Where the terminal's output starts is taken as the command goes in
                 if a.run.is_some()
