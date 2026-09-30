@@ -425,6 +425,7 @@
   "tui.pick.start": "Pick",
   "tui.pick.stop": "Stop picking",
   "tui.pick.hint": "While this is on, pressing a part of the page picks it instead of pressing it. Esc on the page stops.",
+  "tui.pick.hint_touch": "While this is on, tapping a part of the page picks it instead of tapping it. Tap Stop picking to stop.",
   "tui.pick.empty": "Press Pick, then press the parts of the page you want an AI to look at.",
   "tui.pick.armed": "Press a part of the page. Each one you press is added here.",
   "tui.pick.note": "Note",

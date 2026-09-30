@@ -16,6 +16,9 @@ once it reaches its first tagged release.
   came back two characters short at every row break, and opened nowhere.
   Lines that ran on are now laid out again at the new width, scrollback
   included, the way a terminal with scrollback does.
+- **A phone is told to stop picking with the button, not with Esc.** The pick
+  button's description said "Esc on the page stops" on a phone too; on a
+  screen with no keyboard it now names Stop picking.
 - **Messages reach the screen when the program runs in two parts, or as a
   server.** "Saved", "could not read the page" and every other message the
   program says were left out of what a window over a split program, a window

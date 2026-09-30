@@ -17841,9 +17841,12 @@ function drawPicks() {
   const p = pickHere();
   box.textContent = "";
   const head = el("div", {class:"chead"});
+  // A screen with no keyboard to hand is told to stop with this button,
+  // not with a key it does not have -- the same test the page's own hint uses
+  const touch = window.matchMedia("(hover: none)").matches;
   head.append(el("button", {class: p.on ? "on" : "", "aria-pressed": p.on ? "true" : "false",
-    title: T["tui.pick.hint"] || "",
-    onclick: () => send({kind:"pick", on: !p.on, touch: window.matchMedia("(hover: none)").matches})},
+    title: T[touch ? "tui.pick.hint_touch" : "tui.pick.hint"] || "",
+    onclick: () => send({kind:"pick", on: !p.on, touch})},
     p.on ? (T["tui.pick.stop"] || "Stop picking") : (T["tui.pick.start"] || "Pick")));
   head.append(el("span", {class:"grow"}));
   if (p.items.length) {
