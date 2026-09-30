@@ -29,6 +29,17 @@ path = "src/main.rs"
 strip = true
 lto = true
 
+# The picture a phone watches is undone from JPEG once per frame (`vframe`).
+# Unoptimised, the decoder alone held the relay to 3-4 pictures a second at over
+# a core of the PC for a page changing ten times a second (measured 2026-09-30,
+# tools/debug/cast-measure.win.mjs) -- and the development build is the one
+# that runs on the machines this is worked on. Optimising only these costs
+# their own compile once and nothing on every build after
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+
 [dependencies]
 shikisha-shared = { path = "crates/shared" }
 shikisha-core = { path = "crates/core" }

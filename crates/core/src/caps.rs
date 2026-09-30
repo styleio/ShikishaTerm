@@ -289,6 +289,18 @@ pub fn devtools_page(screen: &str) -> Option<&str> {
     screen.strip_suffix("-devtools").filter(|p| !p.is_empty())
 }
 
+/// Whose width a page placed in the window is drawn at for a phone watching
+/// it (see [`crate::cdp::view_metrics`]), from the name it was placed under
+/// (`<desk>/<name>`). A DevTools screen takes the phone's; any other page
+/// keeps its own
+pub fn view_fit(child: &str) -> crate::cdp::ViewFit {
+    let name = child.split_once('/').map_or(child, |(_, n)| n);
+    match devtools_page(name) {
+        Some(_) => crate::cdp::ViewFit::Viewer,
+        None => crate::cdp::ViewFit::Page,
+    }
+}
+
 /// Wait window for actions (click/fill). Actions auto-wait for the element
 /// to appear and become actionable — across a navigation if need be — so
 /// they get a longer leash than a read
@@ -1224,10 +1236,14 @@ impl Capabilities {
     /// session speaking to it
     pub fn browser_devtools(&self, name: &str) -> Result<(String, bool)> {
         let screen = devtools_screen(name);
-        let desk = self.desk.get();
-        if self.hosted.borrow().iter().any(|(w, x)| *w == desk && *x == screen) {
+        if self.devtools_open(name) {
             return Ok((screen, false));
         }
+        // A page under the DevTools' name that is not one (a script chose the
+        // name) is taken over rather than shown: the name is how the page's
+        // folder, its split and the next press find its DevTools, and showing
+        // the stranger would be showing the wrong screen under that name.
+        // Opening under an open name loads the new address in the same place
         let url = self.with(name, |b, to| b.devtools_url(to))?;
         // A refusal says the address it refused; this one carries the key to
         // the bridge, and an error is logged and shown
@@ -1235,6 +1251,21 @@ impl Capabilities {
         self.browser_open(&screen, &url, shikisha_shared::BrowserProfile::shared_default())
             .map_err(|e| anyhow::anyhow!(e.to_string().replace(&url, &bare)))?;
         Ok((screen, true))
+    }
+
+    /// Whether this page's own DevTools is open on the desk in view: a page
+    /// under the DevTools' name, opened on a DevTools address. A page that
+    /// merely carries the name is not one, and neither is anything on
+    /// another desk
+    pub fn devtools_open(&self, name: &str) -> bool {
+        let screen = devtools_screen(name);
+        let desk = self.desk.get();
+        self.hosted.borrow().iter().any(|(w, x)| *w == desk && *x == screen)
+            && self
+                .opened
+                .borrow()
+                .get(&Self::key(desk, &screen))
+                .is_some_and(|(url, _)| url.starts_with("devtools://"))
     }
 
     /// Start hearing a page's console, if nobody has yet. Asked by the Console
@@ -1467,7 +1498,14 @@ impl Capabilities {
         self.consoles.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
+        self.opened.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = None;
+        // Its DevTools goes with it: a DevTools is about one page, and left
+        // behind it inspects nothing -- and the next "Open DevTools" on a page
+        // of the same name would find it and show it instead of a live one
+        if self.devtools_open(name) {
+            self.browser_close(&devtools_screen(name))?;
+        }
         Ok(())
     }
 

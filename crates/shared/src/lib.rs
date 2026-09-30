@@ -10,6 +10,16 @@
 //! runtime could not be built without the window it was supposed to be
 //! independent of.
 
+/// The densest screen a viewer is believed about. Phones sold today stop at 3
+/// device pixels to a CSS pixel and a few reach 4; beyond that a figure is a
+/// mistake or a lie, and believing it would draw a page larger than a picture
+/// is let be (`cdp::CAST_PARAMS`)
+pub const MAX_VIEWER_DPR: f64 = 4.0;
+
+fn one() -> f64 {
+    1.0
+}
+
 /// A single input event for the screencast view. Coordinates arrive as a
 /// fraction (0.0-1.0) of the screencast frame and get converted to real
 /// pixels. This lets the same spot be pointed at even when the sender's
@@ -44,8 +54,17 @@ pub enum Input {
     Key { named: String, ctrl: bool, alt: bool },
     /// The viewer's screen shape in CSS pixels. The page's viewport gets
     /// re-shaped to the same aspect ratio (keeping the PC-side width) so a
-    /// portrait phone sees a full screen instead of a letterboxed strip
-    View { w: f64, h: f64 },
+    /// portrait phone sees a full screen instead of a letterboxed strip.
+    /// `dpr` is how many of the viewer's device pixels make one of those: a
+    /// screen of the app's own (a DevTools) is drawn with that many pixels,
+    /// so its picture has as many as the screen showing it (see
+    /// `cdp::view_metrics`). 1 when not said
+    View {
+        w: f64,
+        h: f64,
+        #[serde(default = "one")]
+        dpr: f64,
+    },
 }
 
 /// A navigation request sent to the browser.
@@ -1697,6 +1716,13 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 "view" => Input::View {
                     w: f("w").max(1.0),
                     h: f("h").max(1.0),
+                    // A viewer that does not say is taken at one to one. The
+                    // top is where screens stop: a larger figure would be a
+                    // page drawn bigger than any screen can show
+                    dpr: match f("dpr") {
+                        d if d > 0.0 => d.clamp(1.0, MAX_VIEWER_DPR),
+                        _ => 1.0,
+                    },
                 },
                 _ => return None,
             };

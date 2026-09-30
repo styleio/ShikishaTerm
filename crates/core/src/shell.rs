@@ -15649,7 +15649,9 @@ function sendShape(force) {
   const w = Math.round(cv.clientWidth), h = Math.round(cv.clientHeight);
   if (!w || !h) return false;
   if (!force && w === shapeW) return true;
-  if (!sendIn({kind:"inject", what:"view", w:w, h:h})) return false;
+  // With how dense this screen is, so the page is drawn with as many pixels
+  // as are here to show it: stretched from fewer, it arrives soft
+  if (!sendIn({kind:"inject", what:"view", w:w, h:h, dpr:window.devicePixelRatio || 1})) return false;
   shapeW = w;
   return true;
 }

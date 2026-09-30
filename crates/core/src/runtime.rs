@@ -6648,7 +6648,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // it is only shown
         for page in std::mem::take(&mut shell.mail().devtools) {
             let Some(n) = crate::closed::row_named(&surfaces, &tabs, &page) else { continue };
-            let fresh = !caps.hosted_names().contains(&crate::caps::devtools_screen(&page));
+            let fresh = !caps.devtools_open(&page);
             let code = format!(
                 "local screen, fresh = shikisha.browser_devtools({page})\n\
                  if fresh then shikisha.split_pane(\"right\") end\n",
@@ -6695,9 +6695,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             let label = i18n::t(if dom { "tui.dev.dom" } else { "tui.dev.source" });
             let shown = format!("{} ({label}).html", name.replace(['/', '\\'], "-"));
-            // Under the page's own folder in the list, when it is in one on
-            // this PC -- the text is not a file of that folder, only about it
-            let under = if on.is_none() { dir } else { None };
+            // Under the page's own folder in the list, wherever that folder
+            // is -- the text is not a file of that folder, only about it
+            let under = dir.and_then(|d| {
+                let key = std::path::PathBuf::from(crate::uistate::place_key(on.as_deref(), &d));
+                desks.get(desk_index).and_then(|desk| crate::readview::Under::of_place(desk, &key))
+            });
             open_editor = Some(views.open(&mut editors, shown, crate::readview::Kind::Html, text, under).key);
             append_hook_log(&format!("page view: the {} of {page} opened to read", if dom { "DOM" } else { "source" }));
         }
@@ -6710,8 +6713,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let (text, first_error) = crate::github::log_for_reading(&log);
                     let short: String = got.sha.chars().take(7).collect();
                     let shown = format!("{} @ {short}", got.name.replace(['/', '\\'], "-"));
-                    let (on, dir) = crate::uistate::place_of(std::path::Path::new(&got.folder));
-                    let under = (on.is_none() && !dir.as_os_str().is_empty()).then_some(dir);
+                    // The git panel's folder, wherever it is
+                    let under = desks
+                        .get(desk_index)
+                        .and_then(|desk| crate::readview::Under::of_place(desk, std::path::Path::new(&got.folder)));
                     let opened = views.open(&mut editors, shown.clone(), crate::readview::Kind::Log, text, under);
                     open_editor = Some(opened.key);
                     append_hook_log(&format!("ci log: {} of {short} opened to read", got.name));
