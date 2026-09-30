@@ -1000,6 +1000,32 @@ mod page_folder_tests {
             .expect("the page is not on the list");
         assert_eq!(surface_dir(adhoc, &[]), None, "a page nobody wrote was given a folder");
     }
+
+    /// A page's DevTools is written nowhere either, but it is about one page,
+    /// and stands in that page's folder -- opened from the window, a phone or
+    /// a script alike, since they all end in the same list. Filed under no
+    /// folder, it was listed apart from everything, far from the page it
+    /// inspects (seen from a phone, 2026-09-30)
+    #[test]
+    fn a_pages_devtools_stands_in_the_pages_folder() {
+        let desk = desk_of(&two_folders());
+        let hosted = vec![crate::caps::devtools_screen("fox"), crate::caps::devtools_screen("nobody")];
+        let surfaces = surfaces_of(Some(&desk), &["shell"], &hosted, &[], false);
+        let dir_of = |key: &str| {
+            let s = surfaces
+                .iter()
+                .find(|s| matches!(s, Surface::Browser { key: k, .. } if k == key))
+                .expect("the screen is not on the list");
+            surface_dir(s, &[])
+        };
+        assert_eq!(
+            dir_of("fox-devtools").as_deref(),
+            Some(std::path::Path::new(&second_folder())),
+            "the DevTools is not in its page's folder"
+        );
+        // A DevTools whose page is not on this desk has no folder to borrow
+        assert_eq!(dir_of("nobody-devtools"), None);
+    }
 }
 
 #[cfg(test)]
@@ -1538,7 +1564,18 @@ pub fn surfaces_written(
             } else {
                 h.clone()
             };
-            out.push((Surface::Browser { key: h.clone(), name, dir: None, on: None }, None));
+            // A page's DevTools stands where the page does: it is about that
+            // page and nothing else, and a screen with no folder is listed
+            // apart from everything, far from the page it inspects
+            let (dir, on) = crate::caps::devtools_page(h)
+                .and_then(|page| {
+                    out.iter().find_map(|(s, _)| match s {
+                        Surface::Browser { key, dir, on, .. } if key == page => Some((dir.clone(), on.clone())),
+                        _ => None,
+                    })
+                })
+                .unwrap_or((None, None));
+            out.push((Surface::Browser { key: h.clone(), name, dir, on }, None));
         }
     }
     // An editor's tab says which file it is showing rather than what it was

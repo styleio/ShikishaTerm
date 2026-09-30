@@ -59,23 +59,57 @@ pub struct Held {
     made: u64,
 }
 
+/// The folder held text is listed under: the one it is about (the page's, the
+/// git panel's), wherever that folder is. On another machine it carries the
+/// machine too, so the editor stands in that folder's row and not in a folder
+/// of the same path on this PC -- nor, as it did before, in no folder at all
+#[derive(Debug, Clone, Default)]
+pub struct Under {
+    pub dir: PathBuf,
+    /// The machine's name, when the folder is on another machine
+    pub on: Option<String>,
+    /// How to reach it, for what the column beside the editor lists
+    pub at: Option<crate::elsewhere::Elsewhere>,
+}
+
+impl Under {
+    /// The folder a place key names (see [`crate::uistate::place_key`]), as
+    /// the desk has it. A path on this PC the desk does not have is still
+    /// where it is; a place on another machine the desk does not have is
+    /// nowhere this program can reach, and nothing to stand in
+    pub fn of_place(desk: &crate::config::Desk, key: &std::path::Path) -> Option<Under> {
+        match desk.folder_at(key) {
+            Some(folder) => Some(Under {
+                dir: folder.cwd.clone()?,
+                on: folder.host.as_ref().map(|h| h.name.clone()),
+                at: folder.host.as_ref().and_then(|h| crate::elsewhere::Elsewhere::of(h).ok()),
+            }),
+            None => match crate::uistate::place_of(key) {
+                (None, dir) if !dir.as_os_str().is_empty() => Some(Under { dir, on: None, at: None }),
+                _ => None,
+            },
+        }
+    }
+}
+
 impl Held {
     /// Open `text` in an editor that only reads, called `title` on its tab
     /// ("shop (Source code).html": what it is, of what) and listed under the
-    /// folder `under` when it has one on this PC
-    pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<PathBuf>) -> Opened {
+    /// folder `under`
+    pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<Under>) -> Opened {
         self.made += 1;
         let key = format!("{KEY_PREFIX}{}", self.made);
         let (text, cut) = fit(text, kind);
         self.texts.insert(key.clone(), text);
+        let under = under.unwrap_or_default();
         editors.push(EditorOpen {
             key: key.clone(),
-            dir: under,
+            dir: Some(under.dir).filter(|d| !d.as_os_str().is_empty()),
             showing: Some(title),
             stamp: None,
             scratch: true,
-            at: None,
-            on: None,
+            at: under.at,
+            on: under.on,
             diff: None,
             read_only: true,
         });
@@ -160,6 +194,36 @@ mod tests {
         assert_eq!(write["ok"], false);
         assert!(held.answer(&key, "ls", &args).is_none());
         assert!(held.answer("some-editor", "read", &args).is_none(), "an editor on a file is not answered here");
+    }
+
+    /// Held text about a folder on another machine stands in that folder --
+    /// with its machine, so not in a folder of the same path on this PC, and
+    /// not in no folder at all, which is where it used to land
+    #[test]
+    fn held_text_stands_in_its_folder_wherever_that_is() {
+        let cfg: crate::config::Config = serde_json::from_str(
+            r#"{"hosts": [{"name": "bench", "at": "ssh://me@bench"}],
+              "desks": [{"name": "Demo", "folders": [
+                {"cwd": "/srv/proj", "host": "bench", "tabs": []},
+                {"cwd": "/srv/proj", "tabs": []}]}]}"#,
+        )
+        .unwrap();
+        let desk = &cfg.resolve_desks().0[0];
+        let far = std::path::PathBuf::from(crate::uistate::place_key(Some("bench"), std::path::Path::new("/srv/proj")));
+        let under = Under::of_place(desk, &far).expect("the folder over there is not found");
+        assert_eq!(under.on.as_deref(), Some("bench"));
+        assert!(under.at.is_some(), "the folder's machine cannot be reached from its editor");
+        let mut held = Held::default();
+        let mut editors = Vec::new();
+        held.open(&mut editors, "ci @ abc1234".into(), Kind::Log, "log".into(), Some(under));
+        assert_eq!(editors[0].on.as_deref(), Some("bench"));
+        assert_eq!(editors[0].dir.as_deref(), Some(std::path::Path::new("/srv/proj")));
+        // This PC's folder of the same path is its own place
+        let here = Under::of_place(desk, std::path::Path::new("/srv/proj")).unwrap();
+        assert!(here.on.is_none() && here.at.is_none());
+        // A machine the desk does not have is nowhere to stand
+        let nowhere = std::path::PathBuf::from(crate::uistate::place_key(Some("gone"), std::path::Path::new("/srv/proj")));
+        assert!(Under::of_place(desk, &nowhere).is_none());
     }
 
     /// Two opened are two keys, and a closed one's text is let go

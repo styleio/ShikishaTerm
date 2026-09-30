@@ -2,7 +2,7 @@
  * A page's DevTools opened beside it, through the running app's own window.
  *
  * This checkout's build in a folder of its own, with a small page served here
- * in a browser tab. "Open DevTools beside it" is asked for the way the tab's
+ * in a browser tab. "Developer tools" is asked for the way the tab's
  * menu asks, and what follows is checked from both ends: the DevTools screen
  * (a page of the app's own, read through the pages' debugging port that only
  * this check turns on) and the bridge it talks through.
@@ -12,7 +12,8 @@
  *
  * Checked:
  *   opened    a page named `<page>-devtools` is opened, in a pane of its own
- *             beside the page (the pane was divided)
+ *             beside the page (the pane was divided), listed in the page's
+ *             folder -- asked for from the window and from a phone alike
  *   connected the screen says it is inspecting the page (its title names it)
  *   works     an expression evaluated through the screen's own connection
  *             answers from the page -- the whole road, both ways
@@ -44,6 +45,10 @@ const HOOKS_LOG = path.join(APP, 'logs', 'hooks.log');
 const JA = process.argv.includes('--ja');
 // --split runs the same checks with the window and the runtime as two programs
 const SPLIT_MODE = process.argv.includes('--split');
+// The words the menu says, from the language files it is drawn from, so a
+// renamed item is not taken for a missing one
+const readLang = (l) => JSON.parse(fs.readFileSync(path.join(ROOT, 'lang', l + '.json'), 'utf8'));
+const L = { ...readLang('en'), ...(JA ? readLang('ja') : {}) };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -87,8 +92,12 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
   ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
+  // Answered already, so the start does not stop on the question about the
+  // AI CLIs' hooks (this checks nothing about them)
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'DevTools', id: 'devtools', folders: [{ cwd: WORK, tabs: [
     { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/` },
+    { name: 'other', id: 'other', command: `browser http://127.0.0.1:${pagePort}/other` },
   ] }] }],
 }, null, 2));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -154,6 +163,14 @@ function knock(port, pathname, origin) {
   });
 }
 
+// The folder a tab is listed under, as the board has it
+const folderOf = (on, key) => on.run(`(() => { const t = S.tabs.find(x => (x.id || x.name) === ${JSON.stringify(key)});
+  const g = t && S.groups && S.groups[t.group]; return g ? String(g.folder || "") : ""; })()`);
+const standsIn = async (on, key) => {
+  const f = (await folderOf(on, key)).replace(/[\\/]+$/, '').toLowerCase();
+  return !!f && f === WORK.replace(/[\\/]+$/, '').toLowerCase();
+};
+
 let chrome = null;
 const PHONE_DIR = path.join(RUN, 'phone');
 function findChrome() {
@@ -179,7 +196,7 @@ try {
   await until(() => board.run(`S.active === ${pageTab}`), 'the page in front');
   check((await board.run(`(() => { const t = S.tabs.find(x => x.index === ${pageTab}); const a = document.createElement("div"); document.body.append(a);
     tabMenu(a, t, "strip", null); const said = [...document.querySelectorAll(".fmenu div")].map(d => d.textContent); closeFolderMenu(); a.remove(); return said; })()`))
-    .includes(JA ? '隣に DevTools を開く' : 'Open DevTools beside it'), 'the page\'s tab menu offers it');
+    .includes(L['tui.dev.devtools']), 'the page\'s tab menu offers it');
 
   console.log('1. DevTools asked for');
   const panes = () => board.run('document.querySelectorAll("#panes .pane").length');
@@ -187,6 +204,7 @@ try {
   await board.run('send({kind:"devtools", page:"page"})');
   await until(() => board.run('S.tabs.some(t => t.kind === "browser" && (t.id || t.name) === "page-devtools")'), 'the screen as a tab', 20000);
   check(true, 'a page named page-devtools is open');
+  check(await standsIn(board, 'page-devtools'), 'it stands in the page\'s folder, not apart from every folder: ' + await folderOf(board, 'page-devtools'));
   await until(async () => (await panes()) > panesBefore, 'the pane divided', 10000).catch(() => {});
   check((await panes()) > panesBefore, `the pane was divided (${panesBefore} -> ${await panes()})`);
   const screenTab = await board.run('S.tabs.find(t => (t.id || t.name) === "page-devtools").index');
@@ -291,6 +309,12 @@ try {
   await phone.send('Page.navigate', { url: `http://127.0.0.1:${PHONE_PORT}/?t=${PHONE_KEY}` });
   await until(() => phone.run('!!S && S.tabs.some(t => (t.id || t.name) === "page-devtools")'), 'the screen on the phone', 30000);
   check(true, 'the phone lists the screen as a tab');
+  // Asked for from the phone, the way a person there would: it stands where
+  // its page does, as the window's did (from the phone it once stood apart
+  // from every folder)
+  await phone.run('send({kind:"devtools", page:"other"})');
+  await until(() => phone.run('S.tabs.some(t => (t.id || t.name) === "other-devtools")'), 'the phone\'s DevTools as a tab', 30000);
+  check(await standsIn(phone, 'other-devtools'), 'opened from the phone, it stands in its page\'s folder: ' + await folderOf(phone, 'other-devtools'));
   await phone.shot('2-phone');
 } catch (e) {
   failures += 1;

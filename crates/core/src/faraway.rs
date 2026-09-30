@@ -1025,4 +1025,35 @@ mod tests {
             assert_eq!(format!("{ask:?}"), format!("{back:?}"), "it changed on the round trip");
         }
     }
+
+    /// "Open DevTools" shows what is open only when it is that page's own
+    /// DevTools: a page that merely carries the name (a script chose it) is
+    /// not one, and closing the page takes its DevTools with it -- left
+    /// behind, it inspects nothing, and the next press would show it
+    #[test]
+    fn a_pages_devtools_is_its_own_and_goes_with_it() {
+        let drawn = std::rc::Rc::new(Drawn {
+            stub: Arc::new(Stub { asked: Mutex::new(Vec::new()), refs: Mutex::new(HashMap::new()) }),
+            open: Mutex::new(Vec::new()),
+        });
+        let caps = crate::caps::Capabilities::new(
+            Default::default(),
+            std::path::PathBuf::from("."),
+            HashMap::new(),
+            HashMap::new(),
+            Default::default(),
+        );
+        caps.set_host(Some((drawn.clone() as std::rc::Rc<dyn BrowserHost>, (0, 0, 900, 700))));
+        let shared = BrowserProfile::shared_default;
+        caps.browser_open("page", "https://example.com/", shared()).unwrap();
+        caps.browser_open("page-devtools", "https://stranger.example/", shared()).unwrap();
+        assert!(!caps.devtools_open("page"), "a page that only carries the name counts as the DevTools");
+        caps.browser_open("page-devtools", "devtools://devtools/bundled/devtools_app.html?ws=127.0.0.1:1/devtools/k/", shared())
+            .unwrap();
+        assert!(caps.devtools_open("page"));
+        assert!(!caps.devtools_open("other"));
+        caps.browser_close("page").unwrap();
+        assert!(!caps.devtools_open("page"), "the DevTools outlived its page");
+        assert!(caps.hosted_names().is_empty(), "left behind: {:?}", caps.hosted_names());
+    }
 }
