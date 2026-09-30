@@ -298,6 +298,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #portpanel .prt .pg { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #portpanel .prt .po { font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
     display:flex; align-items:center; gap:var(--s1); }
+  #portpanel .prt .ph { font-family:var(--mono); }
   #portpanel .prt .pa { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:var(--r-chip);
     background:transparent; color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center; }
   #portpanel .prt .pa:hover { background:var(--raise); color:var(--text); }
@@ -2988,6 +2989,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #sask .smore[hidden] { display:none; }
+  #sask .smore > summary { cursor:pointer; color:var(--accent); font-size:12px; margin-top:var(--s2); }
+  #sask .smorebody { margin-top:var(--s2); display:flex; flex-direction:column; gap:var(--s2); }
+  #sask .smorebody > .vsay { margin:0; }
   /* The thing the question is about -- a path -- quoted as it is: the mono
      well (5), quiet, broken anywhere so a long path never widens the dialog */
   #sask .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
@@ -3961,6 +3966,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vbox">
         <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
         <div class="vsay"></div>
+        <details class="smore" hidden><summary></summary><div class="smorebody"></div></details>
         <div class="bwhere"></div>
         <div class="blist" hidden></div>
         <label class="snever" hidden><input type="checkbox"><span></span></label>
@@ -4282,6 +4288,19 @@ const TOKEN = (function () {
       return t;
     }
     return sessionStorage.getItem("shikisha_token") || "";
+  } catch (e) { return ""; }
+})();
+// A phone sent here from the address the PC was on before (its network moved:
+// the LAN to Tailscale, say) carries a one-time code after the "#" -- the part
+// of an address a browser never sends. Read once and taken off the address
+// straight away, like the token above; the code is traded for this address's
+// own cookies before anything else is asked (see "moved" below)
+const MOVE_CODE = (function () {
+  try {
+    const m = /(?:^#|&)move=([0-9a-f]+)/.exec(location.hash);
+    if (!m) return "";
+    history.replaceState({}, "", location.pathname + location.search);
+    return m[1];
   } catch (e) { return ""; }
 })();
 // Whether this page is a client of a runtime somewhere else, or the face of
@@ -8045,17 +8064,20 @@ function drawHerePorts(box, g, group) {
   const held = [];
   for (const t of (S && S.tabs) || []) {
     if (t.group !== group || !t.place) continue;
-    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || ""});
+    for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || "",
+      host: (t.place.hosts || {})[port] || ""});
   }
   held.sort((a, b) => a.port - b.port);
-  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
   if (PT.drawn === sig && box.firstChild) return;
   PT.drawn = sig;
   box.textContent = "";
   box.append(el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.ports.here.title"] || "")));
   const list = el("div", {class:"plist"});
   for (const h of held) {
-    const url = "http://localhost:" + h.port + "/";
+    // A program listening on one address only (the LAN's, say) answers
+    // there and not at localhost, so it is opened, and named, where it listens
+    const url = "http://" + (h.host || "localhost") + ":" + h.port + "/";
     const tab = h.t.id || h.t.name || "";
     // The same road a pressed address on a terminal takes: the app checks the
     // address, finds the folder from the tab, and opens it there
@@ -8075,7 +8097,10 @@ function drawHerePorts(box, g, group) {
       el("span", {class:"pp"}, ":" + h.port),
       el("span", {class:"pw"},
         el("span", {class:"pg"}, h.program || (T["tui.ports.unnamed"] || "")),
-        el("span", {class:"po"}, markFor(h.t) || null, el("span", {}, h.t.name || tab))),
+        // The address, when it is not this PC's own loopback: the one thing
+        // that says why this row opens somewhere other than localhost
+        el("span", {class:"po"}, h.host ? el("span", {class:"ph"}, h.host) : null,
+          markFor(h.t) || null, el("span", {}, h.t.name || tab))),
       ...acts));
   }
   // Nothing yet is said where the rows would be, not at the foot of an empty
@@ -10467,6 +10492,50 @@ function drawKeyChanges() {
   });
 }
 
+// The question asked as the program starts, about letting the AI CLIs used on
+// this PC report what they are doing. Each CLI with the file its hook goes
+// into and, a press away, exactly what goes into it -- agreed to having been
+// shown, not described. The same question on the window and on a phone;
+// answered on either, it goes from both. Put away without an answer (the
+// close mark, Esc), it is asked again at the next start
+let hookAskSeen = 0, hookAskOpen = false;
+function drawHookAsk() {
+  const a = S && S.hook_ask;
+  if (!a) {
+    if (hookAskOpen) { hookAskOpen = false; closeAsk(true); }
+    return;
+  }
+  if (a.seq === hookAskSeen) return;
+  hookAskSeen = a.seq;
+  hookAskOpen = true;
+  const rows = (a.clis || []).map(c => {
+    const pre = el("pre", {class:"mono", style:"display:none;white-space:pre-wrap;margin:6px 0 0;padding:8px;" +
+      "background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:11px"},
+      // The file as it will be, the lines this app adds in blue
+      ...(c.preview || []).map(l => el("div", {style: l.ours ? "color:var(--accent)" : ""}, l.text || " ")));
+    const show = el("a", {href:"#", onclick: e => {
+      e.preventDefault();
+      pre.style.display = pre.style.display === "none" ? "block" : "none";
+    }}, T["tui.hooks.show"] || "");
+    return el("div", {class:"brow2 stacked"},
+      el("span", {class:"tag"}, c.name),
+      el("span", {class:"nm asis"}, c.file),
+      c.approval ? el("span", {class:"nm asis"}, (T["tui.hooks.approval"] || "{file}").replaceAll("{file}", c.approval)) : null,
+      show, pre);
+  });
+  const answer = word => { hookAskOpen = false; send({kind:"agenthooks", answer:word, seq:a.seq}); };
+  askQuestion({
+    title: T["tui.hooks.title"] || "",
+    say: T["tui.hooks.say"] || "",
+    more: { label: T["tui.hooks.more"] || "", say: T["tui.hooks.detail"] || "" },
+    rows,
+    label: T["tui.hooks.go"] || "",
+    no: { label: T["tui.hooks.no"] || "", act: () => answer("off") },
+    go: () => answer("on"),
+    back: () => answer("later"),
+  });
+}
+
 function drawCloseAsk() {
   const a = S && S.close_ask;
   if (!a) {
@@ -11389,6 +11458,7 @@ window.__state = function (json) {
   drawStrip();
   drawCloseAsk();
   drawKeyChanges();
+  drawHookAsk();
   drawStatus();
   drawNav();
   drawAsks();
@@ -15274,6 +15344,7 @@ function linkEdit(w, d) {
 // What the list says under its choices, when there is something to say
 function linkNote(w, d) {
   if (w.lk === "web" || d.far) return "";
+  if (!d.ok && d.why === "elsewhere") return (T["tui.link.elsewhere"] || "").replaceAll("{host}", d.host || "");
   if (!d.ok) return T["tui.link.nowhere"] || "";
   if (!d.found) return T["tui.link.missing"] || "";
   if (d.runs && AT_PC) return T["tui.link.runs"] || "";
@@ -15320,6 +15391,9 @@ if (REMOTE) {
   // drop. Either way the stale screen would otherwise just sit there looking
   // live — which is the worst of the three states, because it is the one that
   // gets acted on.
+  // Where the PC went, once it said so: the address, the code that lets this
+  // phone in there, and since when this phone has been failing to reach it
+  let moving = null;
   const showNet = (kind) => {
     let v = document.getElementById("netveil");
     if (!kind) { if (v) v.hidden = true; return; }
@@ -15336,11 +15410,16 @@ if (REMOTE) {
             ? el("button", {class:"nvbtn", onclick:() => {
                 location.href = "/?t=" + encodeURIComponent(TOKEN);
               }}, T["tui.net.cut.again"] || "Reconnect")
-            : null));
+            : null,
+          // Asking the new address again, straight away, instead of at the
+          // next try on its own. Only while this phone cannot reach it
+          el("button", {class:"nvbtn nvagain", hidden:true, onclick:() => { if (moving) tryMove(true); }},
+            T["tui.net.moved.again"] || "Try again")));
       document.body.append(v);
     }
     v.hidden = false;
     v.classList.toggle("cut", kind === "cut");
+    v.querySelector(".nvagain").hidden = true;
     v.querySelector(".nvicon").textContent = kind === "cut" ? "⛔" : "⚠";
     v.querySelector(".nvtitle").textContent = kind === "cut"
       ? (T["tui.net.cut.title"] || "Disconnected from this PC")
@@ -15350,8 +15429,79 @@ if (REMOTE) {
           ? (T["tui.net.cut.sub.sticky"] || "The PC ended this session. Its access code is unchanged, so opening the link again reconnects this device.")
           : (T["tui.net.cut.sub"] || "The PC ended this session (its access code changed). Scan the new QR code on the PC to reconnect."))
       : (T["tui.net.down.sub"] || "Reconnecting…");
-    const btn = v.querySelector(".nvbtn");
+    const btn = v.querySelector(".nvbtn:not(.nvagain)");
     if (btn) btn.hidden = kind !== "cut";
+  };
+  // The PC's board moved to another address (its network changed) and said
+  // so before the old address went quiet. The phone goes after it: it looks
+  // for the new address, and the moment it answers, opens it with the code it
+  // was handed. A phone that cannot reach it (the PC is on Tailscale now and
+  // this phone is not) is told so, in words, and keeps looking
+  const MOVE_LOOK = 4000;       // one look at the new address, at most
+  const MOVE_AGAIN = 5000;      // between looks while it does not answer
+  const MOVE_FAR_AFTER = 15000; // this long without an answer is "cannot reach"
+  const saidMoved = (far) => {
+    showNet("down");
+    const v = document.getElementById("netveil");
+    v.querySelector(".nvicon").textContent = "↪";
+    v.querySelector(".nvtitle").textContent = T["tui.net.moved.title"] || "This PC's address changed";
+    v.querySelector(".nvsub").textContent = (T[far ? "tui.net.moved.far" : "tui.net.moved.sub"] || "{to}")
+      .replaceAll("{to}", moving.to);
+    v.querySelector(".nvagain").hidden = !far;
+  };
+  const tryMove = async (now) => {
+    if (!moving || moving.going) return;
+    clearTimeout(moving.timer);
+    // A look that gives up after a while: a board that has just stopped can
+    // leave a connection open that never answers
+    const look = async (url, opts) => {
+      const ctl = new AbortController();
+      const stop = setTimeout(() => ctl.abort(), MOVE_LOOK);
+      try { return await fetch(url, {...opts, cache:"no-store", signal: ctl.signal}); }
+      finally { clearTimeout(stop); }
+    };
+    let reached = false;
+    try {
+      // Any answer at all from the new address will do: this only asks
+      // whether it can be reached from here, not what it says
+      await look(moving.to + "/manifest.webmanifest", {mode:"no-cors"});
+      reached = true;
+    } catch (e) {}
+    if (reached) {
+      moving.going = true;
+      location.replace(moving.to + "/#move=" + moving.code);
+      return;
+    }
+    // Or the PC came back here: the network went back the way it was while
+    // this phone could not follow, and a board answers at this address again.
+    // A board here that still says "moved" is the old one in its last
+    // moments, and is not come back to. One that does not know this phone's
+    // session (403) is a board started since: the code this phone was handed
+    // opens it as well as the one it was meant for, so it is let in here
+    try {
+      const r = await look("api/state", {});
+      if (r.status === 403) {
+        const t = await look("moved", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({code: moving.code})});
+        if (t.ok) { moving.going = true; location.reload(); return; }
+      } else if (r.ok && !(await r.json()).moved) {
+        moving.going = true;
+        location.reload();
+        return;
+      }
+    } catch (e) {}
+    if (!moving.since) moving.since = Date.now();
+    saidMoved(now || Date.now() - moving.since >= MOVE_FAR_AFTER);
+    moving.timer = setTimeout(() => tryMove(false), MOVE_AGAIN);
+  };
+  const goMoved = (m) => {
+    if (!m || !m.to || !m.code || moving) return;
+    moving = {to: String(m.to).replace(/\/+$/, ""), code: m.code, since: 0, timer: 0, going: false};
+    wsUp = false;
+    try { if (sws) sws.close(); } catch (x) {}
+    castStop();
+    saidMoved(false);
+    tryMove(false);
   };
   // The PC ended this session. Stop everything this page holds — the state
   // socket and, above all, the relay: its input line is a separate socket, and
@@ -15369,6 +15519,8 @@ if (REMOTE) {
     // the screen goes dark the moment the person there decides it does, instead
     // of at the next poll.
     if (d.cut) { cutNow(); return; }
+    if (d.moved) { goMoved(d.moved); return; }
+    if (moving) return;
     connected();
     if (d.ui) window.__state(typeof d.ui === "string" ? d.ui : JSON.stringify(d.ui));
     // The rows that moved, when the shape of the screen is unchanged. Scrolling
@@ -15409,7 +15561,7 @@ if (REMOTE) {
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
-    if (remoteCut) return;
+    if (remoteCut || moving) return;
     try {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       // Pictures of the panes nobody is looking at, at every size. Undivided
@@ -15421,15 +15573,24 @@ if (REMOTE) {
     } catch (e) { setTimeout(connectState, 1500); return; }
     sws.onopen = () => { wsUp = true; connected(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    sws.onclose = () => { wsUp = false; if (!remoteCut) setTimeout(connectState, 1500); };
+    sws.onclose = () => { wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
   };
-  connectState();
+  // Arrived from the old address with a code: this address's own cookies are
+  // asked for first, and the page loads again holding them. A code that no
+  // longer opens anything (used, or run out) leaves this phone where one with
+  // no pairing is -- the QR on the PC is the way in
+  if (MOVE_CODE) {
+    fetch("moved", {method:"POST", cache:"no-store", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({code: MOVE_CODE})})
+      .then(r => { if (r.ok) location.reload(); else cutNow(); })
+      .catch(() => cutNow());
+  } else connectState();
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
   const pull = async () => {
-    if (wsUp || remoteCut) return;
+    if (wsUp || remoteCut || moving || MOVE_CODE) return;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
       if (r.status === 403) {
@@ -20075,7 +20236,14 @@ let sAskGo = null, sAskBack = null;
 // server was marked as careful, the button waits for its name to be typed.
 // The typing is what makes the name read -- a mark beside a button is easy to
 // look past on the fortieth delete of the day, and "Production" typed out is not
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, go, back}) {
+//
+// `more` is what a question keeps folded under its words, for the reader who
+// wants the whole of it: {label, say}. The rows stay in view either way
+//
+// `no` is a second answer beside the button, for a question whose "no" is an
+// answer worth keeping rather than the question put away: {label, act}. Without
+// it the other button is Cancel, which is `back`
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -20085,10 +20253,17 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   where.hidden = !what;
   // The rows are built by whoever asked, because only they know what the
   // columns mean. All this does is hold them
+  const fold = box.querySelector(".smore");
+  const foldBody = fold.querySelector(".smorebody");
+  fold.hidden = !more;
+  fold.open = false;
+  fold.querySelector("summary").textContent = more ? more.label : "";
+  foldBody.textContent = "";
   const list = box.querySelector(".blist");
   list.textContent = "";
   list.hidden = !(rows && rows.length);
   for (const r of rows || []) list.append(r);
+  if (more && more.say) foldBody.append(el("div", {class:"vsay"}, more.say));
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";
@@ -20098,8 +20273,8 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const unasked = again.querySelector("input");
   unasked.checked = false;
   const cancel = box.querySelector(".quiet");
-  cancel.textContent = T["common.cancel"] || "";
-  cancel.onclick = () => closeAsk();
+  cancel.textContent = no ? no.label : (T["common.cancel"] || "");
+  cancel.onclick = no ? () => { sAskBack = null; closeAsk(true); no.act(); } : () => closeAsk();
   const btn = box.querySelector(".go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
@@ -21858,7 +22033,11 @@ fn spots_of(screen: &vt100::Screen) -> (Vec<Spot>, Vec<Option<usize>>) {
                 let chosen = if shikisha_shared::is_openable(target) {
                     Some(("web", target.to_string()))
                 } else {
-                    crate::termlink::file_url_path(target).map(|p| ("file", p))
+                    // A file address that names a machine keeps its address:
+                    // which machine that is, only the tab it was pressed on can
+                    // say (`termlink::file_home`)
+                    crate::termlink::file_url(target)
+                        .map(|u| ("file", if u.host.is_some() { target.to_string() } else { u.path }))
                 };
                 if let Some((kind, target)) = chosen {
                     place(i, end, kind, target, &mut spots);
@@ -25486,6 +25665,19 @@ mod tests {
             assert_eq!(with, rows_taken, "at {cols} columns: {rows:#?}");
             assert!(p.screen().contents().contains(&address), "at {cols} columns");
         }
+    }
+
+    /// A program's file link that names a machine keeps its whole address as
+    /// the place, for the tab it is pressed on to judge; one that names none
+    /// is the path
+    #[test]
+    fn a_file_link_naming_a_machine_keeps_its_address() {
+        let mut p: vt100::Parser = vt100::Parser::new(2, 60, 0);
+        p.process(b"\x1b]8;;file://nas/share/a.txt\x1b\\on the nas\x1b]8;;\x1b\\");
+        p.process(b"\r\n\x1b]8;;file:///C:/w/b.txt\x1b\\here\x1b]8;;\x1b\\");
+        let rows = screen_rows(p.screen());
+        assert!(rows[0].contains(r#"data-lk="file" data-go="file://nas/share/a.txt""#), "{rows:?}");
+        assert!(rows[1].contains(r#"data-lk="file" data-go="C:/w/b.txt""#), "{rows:?}");
     }
 
     /// Japanese in a path is drawn a character to a box; each box is part of

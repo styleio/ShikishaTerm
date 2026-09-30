@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
-use crate::profile::HookFormat;
+use crate::profile::{HookFormat, HookTrust};
 
 /// How this app's own hook entry is recognised again later.
 ///
@@ -63,6 +63,8 @@ pub struct Target {
     /// How long the CLI may wait, already in the unit that CLI counts in
     pub timeout: u32,
     pub entries: Vec<Entry>,
+    /// How the CLI is told a hook written for it is agreed to ([`approve`])
+    pub trust: Option<HookTrust>,
 }
 
 /// Where the target stands right now.
@@ -112,6 +114,7 @@ pub fn targets() -> Vec<Target> {
                 format: hook.format,
                 timeout: hook.timeout_unit.from_seconds(TIMEOUT_S),
                 entries,
+                trust: hook.trust,
             })
         })
         .collect()
@@ -123,7 +126,20 @@ fn expand(path: &str) -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_default();
-    PathBuf::from(path.replace("{home}", &home))
+    expand_at(path, &home)
+}
+
+fn expand_at(path: &str, home: &str) -> PathBuf {
+    // Put together a piece at a time, so the path is spelled the way this
+    // system spells one: it is shown to the person, in the question that asks
+    // to write there
+    path.replace("{home}", home).split(['/', '\\']).fold(PathBuf::new(), |mut at, piece| {
+        match at.as_os_str().is_empty() {
+            true => at.push(format!("{piece}{}", std::path::MAIN_SEPARATOR)),
+            false => at.push(piece),
+        }
+        at
+    })
 }
 
 /// This app, as the CLI will have to spell it.
@@ -308,17 +324,104 @@ fn wanted(t: &Target, program: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
     out
 }
 
-/// Exactly what would be added, for a person to read before agreeing to it.
+/// One line of [`preview`]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Line {
+    pub text: String,
+    /// Written by this app: the rest is the person's, as it already is
+    pub ours: bool,
+}
+
+/// What stands in for a group of ours while [`preview`] lays the file out
+const MARKED: &str = "\u{1}shikisha:";
+
+/// The CLI's settings file as it would be once ours is in, a line at a time,
+/// with the lines this app adds told from the ones already there.
 ///
 /// Shown rather than described: this writes into someone else's config, and
-/// "trust me" is not an acceptable substitute for the four lines involved
-pub fn preview(t: &Target) -> String {
-    let mut hooks = serde_json::Map::new();
-    for (event, hs) in wanted(t, &me()) {
-        hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
+/// "trust me" is not an acceptable substitute for the lines involved -- nor is
+/// showing ours alone, which says nothing of what happens to theirs. A file
+/// that cannot be read is not written to (see [`edit`]); shown for it is what
+/// ours is on its own
+pub fn preview(t: &Target) -> Vec<Line> {
+    let program = me();
+    let existing = std::fs::read_to_string(&t.file).ok();
+    let mut doc = match existing.as_deref() {
+        None => serde_json::json!({}),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')) {
+            Ok(v) if v.is_object() => v,
+            _ => {
+                let mut hooks = serde_json::Map::new();
+                for (event, hs) in wanted(t, &program) {
+                    hooks.insert(event, serde_json::json!([{ "hooks": hs }]));
+                }
+                return pretty_lines(&serde_json::json!({ "hooks": hooks }), true);
+            }
+        },
+    };
+    let had: Option<Vec<String>> = doc.get("hooks").and_then(|h| h.as_object()).map(|h| h.keys().cloned().collect());
+    let mut marks = Vec::new();
+    merge(&mut doc, t, true, &program, Some(&mut marks));
+    // The stand-in as the text spells it: quoted, the mark escaped
+    let needle = serde_json::to_string(MARKED).unwrap_or_default();
+    let needle = needle.trim_end_matches('"');
+    let mut out: Vec<Line> = Vec::new();
+    for line in pretty_lines(&doc, existing.is_none()) {
+        // A stand-in for a group of ours: the group, where it stood, indented
+        // as it stood and carrying its comma
+        let Some(at) = line.text.find(needle) else {
+            out.push(line);
+            continue;
+        };
+        let lead = &line.text[..at];
+        let rest = &line.text[at + 1..];
+        let n: usize = rest.split('"').next().and_then(|m| m.rsplit(':').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+        let comma = if line.text.trim_end().ends_with(',') { "," } else { "" };
+        let body = serde_json::to_string_pretty(&marks.get(n).cloned().unwrap_or_default()).unwrap_or_default();
+        let count = body.lines().count();
+        for (i, piece) in body.lines().enumerate() {
+            let text = match i {
+                0 => format!("{lead}{piece}"),
+                _ => format!("{}{piece}", " ".repeat(lead.len())),
+            };
+            out.push(Line { text: if i + 1 == count { format!("{text}{comma}") } else { text }, ours: true });
+        }
     }
-    serde_json::to_string_pretty(&serde_json::json!({ "hooks": hooks }))
+    // An event, or the whole list of hooks, that the file did not have: the
+    // brackets around ours are ours too
+    let opens = |text: &str, depth: usize| text.len() > depth && text[..depth].trim().is_empty() && !text[depth..].starts_with(' ');
+    let mut i = 0;
+    while i < out.len() {
+        let text = out[i].text.clone();
+        let key = text.trim_start().split('"').nth(1).unwrap_or_default().to_string();
+        let new = match &had {
+            None => opens(&text, 2) && key == "hooks",
+            Some(keys) => opens(&text, 4) && text.trim_end().ends_with('[') && !keys.contains(&key),
+        };
+        if new {
+            let depth = text.len() - text.trim_start().len();
+            let mut j = i;
+            while j < out.len() {
+                out[j].ours = true;
+                let t = out[j].text.trim_start();
+                if j > i && (out[j].text.len() - t.len()) == depth && (t.starts_with(']') || t.starts_with('}')) {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn pretty_lines(v: &serde_json::Value, ours: bool) -> Vec<Line> {
+    serde_json::to_string_pretty(v)
         .unwrap_or_default()
+        .lines()
+        .map(|l| Line { text: l.to_string(), ours })
+        .collect()
 }
 
 /// Put our entry in (or bring it up to date), leaving everything else alone.
@@ -340,6 +443,299 @@ pub fn install_as(t: &Target, program: &Path) -> Result<()> {
 /// Take our entry out, leaving everything else alone.
 pub fn uninstall(t: &Target) -> Result<()> {
     edit(t, false, &me())
+}
+
+/// The program the first entry of ours in `t`'s file runs, as written there
+fn program_named_in(t: &Target) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(&t.file).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let h = doc
+        .pointer("/hooks")?
+        .as_object()?
+        .values()
+        .filter_map(|g| g.as_array())
+        .flatten()
+        .filter_map(|g| g.pointer("/hooks").and_then(|h| h.as_array()))
+        .flatten()
+        .find(|h| is_ours(h))?;
+    program_of(h)
+}
+
+/// The program one of our handlers runs: its `command` when the arguments
+/// are apart, else the command line up to where ours begin, unquoted
+fn program_of(h: &serde_json::Value) -> Option<PathBuf> {
+    let line = h.get("command")?.as_str()?;
+    if h.get("args").is_some() {
+        return Some(PathBuf::from(line));
+    }
+    let program = line.split(&format!(" {MARK}")).next()?.trim().trim_matches('"');
+    (!program.is_empty()).then(|| PathBuf::from(program))
+}
+
+/// Whether the CLI this hook is for is used on this PC: the folder it keeps
+/// its settings in is there. A CLI never run here has none -- and nothing is
+/// written into, or asked about, a CLI nobody uses
+pub fn in_use(t: &Target) -> bool {
+    t.file.parent().is_some_and(|d| d.is_dir())
+}
+
+/// The CLIs to ask about as the program starts: used on this PC, and not
+/// answered yet. `answers` is what the settings hold ([`crate::config::Config::agent_hooks`])
+pub fn unasked(answers: &std::collections::BTreeMap<String, String>) -> Vec<Target> {
+    among(targets(), answers, None)
+}
+
+/// The CLIs the person said to set up, that are used on this PC
+pub fn agreed(answers: &std::collections::BTreeMap<String, String>) -> Vec<Target> {
+    among(targets(), answers, Some(crate::config::HOOK_ON))
+}
+
+/// Of `all`, the ones used here whose answer is `answer` (`None`: none yet)
+fn among(all: Vec<Target>, answers: &std::collections::BTreeMap<String, String>, answer: Option<&str>) -> Vec<Target> {
+    all.into_iter()
+        .filter(|t| in_use(t) && answers.get(&t.name).map(String::as_str) == answer)
+        .collect()
+}
+
+/// The question about `clis`, as the board draws it
+pub fn question(seq: u64, clis: &[Target]) -> crate::uistate::HookAskState {
+    crate::uistate::HookAskState {
+        seq,
+        clis: clis
+            .iter()
+            .map(|t| crate::uistate::HookAskCli {
+                name: t.name.clone(),
+                file: t.file.display().to_string(),
+                preview: preview(t),
+                approval: approval_file(t).map(|f| f.display().to_string()).unwrap_or_default(),
+            })
+            .collect(),
+    }
+}
+
+/// Where the CLI keeps its approval of a hook, for one that holds new hooks
+/// back ([`HookTrust`])
+pub fn approval_file(t: &Target) -> Option<PathBuf> {
+    match t.trust? {
+        HookTrust::CodexAppServer => Some(t.file.with_file_name("config.toml")),
+    }
+}
+
+/// What [`keep_right`] had to do
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Kept {
+    /// The entry was written: it was missing, or named another copy of this app
+    pub written: bool,
+    /// How many hooks the CLI was told are approved
+    pub approved: usize,
+}
+
+/// Bring one agreed CLI's hook to what it should be: written where it is
+/// missing or names another copy of this app, and approved by a CLI that
+/// wants that. Slow for a CLI that is asked to approve, so called off the
+/// thread that draws. An error leaves what was already done in place
+pub fn keep_right(t: &Target) -> Result<Kept> {
+    let mut kept = Kept::default();
+    match status(t) {
+        Status::Installed => {}
+        // Another copy of this app on this PC, complete and still there: it
+        // runs a hook exactly as well as this one does. Rewritten, two copies
+        // that both keep hooks right would take the file from each other at
+        // every start
+        Status::Stale if program_named_in(t).is_some_and(|p| p.is_file() && status_of(t, &p) == Status::Installed) => {}
+        Status::Absent | Status::NoConfig | Status::Stale => {
+            install(t)?;
+            kept.written = true;
+        }
+        Status::Unreadable(why) => anyhow::bail!(
+            "{}: {why}",
+            crate::i18n::tp("err.hookfile.unreadable", &[("path", &t.file.display().to_string())])
+        ),
+    }
+    kept.approved = approve(t)?;
+    Ok(kept)
+}
+
+/// Have the CLI approve the hooks of ours in `t`'s file, for a CLI that holds
+/// a new hook back until it is approved ([`HookTrust`]). Only ours: a hook
+/// the person put there themselves is theirs to approve.
+///
+/// `Ok(n)`: `n` approved just now, 0 when every one of them already was. Slow
+/// (a program is started and asked), so called off the thread that draws
+pub fn approve(t: &Target) -> Result<usize> {
+    match t.trust {
+        None => Ok(0),
+        Some(HookTrust::CodexAppServer) => codex_approve(&t.file),
+    }
+}
+
+/// How long Codex's app server may take over any one answer. It starts in
+/// about a second here; a first run after an update takes longer
+const APP_SERVER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The approval, asked of Codex itself (`codex app-server`, JSON-RPC over its
+/// input and output): which hooks it knows and whether each is approved
+/// (`hooks/list`), the approval of ours written the way its own "trust"
+/// button writes it (`config/batchWrite` into `hooks.state`, the hash being
+/// the one Codex computed), and asked again to be sure it took
+fn codex_approve(file: &Path) -> Result<usize> {
+    // Told which of its homes this is rather than left to find its own:
+    // Codex finds its home by asking Windows, not by the USERPROFILE the
+    // file was found by, and the approval has to land beside the hooks it is
+    // for (measured 2026-09-30 with a home of a test's own)
+    let codex_home = file.parent().context("the hook file has no folder")?;
+    let mut codex = AppServer::start(codex_home)?;
+    codex.call("initialize", serde_json::json!({ "clientInfo": { "name": "shikisha", "version": env!("CARGO_PKG_VERSION") } }))?;
+    codex.note("initialized")?;
+    let home = file.parent().and_then(|d| d.parent()).unwrap_or(file);
+    let ask = serde_json::json!({ "cwds": [home.display().to_string()] });
+    let wanted = to_approve(&codex.call("hooks/list", ask.clone())?, file);
+    if wanted.is_empty() {
+        return Ok(0);
+    }
+    let value: serde_json::Map<String, serde_json::Value> = wanted
+        .iter()
+        .map(|(key, hash)| (key.clone(), serde_json::json!({ "trusted_hash": hash })))
+        .collect();
+    codex.call(
+        "config/batchWrite",
+        serde_json::json!({
+            "edits": [{ "keyPath": "hooks.state", "value": value, "mergeStrategy": "upsert" }],
+            "reloadUserConfig": true,
+        }),
+    )?;
+    let left = to_approve(&codex.call("hooks/list", ask)?, file);
+    if !left.is_empty() {
+        anyhow::bail!(crate::i18n::tp("err.hook.trust.not_taken", &[("n", &left.len().to_string())]));
+    }
+    crate::append_hook_log(&format!("Codex approved {} hook(s) of ours in {}", wanted.len(), file.display()));
+    Ok(wanted.len())
+}
+
+/// Of the hooks a `hooks/list` answer names, the ones of ours in `file` that
+/// Codex does not yet run, as (key, the hash to approve). Pure, so what is
+/// picked can be checked: nobody else's hook, and no hook of another file
+fn to_approve(listed: &serde_json::Value, file: &Path) -> Vec<(String, String)> {
+    let same = |p: &str| {
+        let a = Path::new(p);
+        a == file || a.to_string_lossy().eq_ignore_ascii_case(&file.to_string_lossy())
+    };
+    listed
+        .pointer("/data")
+        .and_then(|d| d.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|at| at.pointer("/hooks").and_then(|h| h.as_array()).into_iter().flatten())
+        .filter(|h| h.get("sourcePath").and_then(|p| p.as_str()).is_some_and(same))
+        .filter(|h| is_ours(h))
+        .filter(|h| h.get("trustStatus").and_then(|s| s.as_str()) != Some("trusted"))
+        .filter_map(|h| Some((h.get("key")?.as_str()?.to_string(), h.get("currentHash")?.as_str()?.to_string())))
+        .fold(Vec::new(), |mut out, kh| {
+            if !out.contains(&kh) {
+                out.push(kh);
+            }
+            out
+        })
+}
+
+/// Codex's app server, started for one conversation and ended with it.
+///
+/// Held in a job object with everything it starts, so an npm shim's `node`
+/// ends with it rather than staying behind
+struct AppServer {
+    child: std::process::Child,
+    input: Option<std::process::ChildStdin>,
+    lines: std::sync::mpsc::Receiver<String>,
+    next: u64,
+    _job: Option<crate::job::Job>,
+}
+
+impl AppServer {
+    fn start(codex_home: &Path) -> Result<Self> {
+        use std::process::{Command, Stdio};
+        let path = crate::tab::resolve_command("codex").unwrap_or_else(|| PathBuf::from("codex"));
+        let script = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
+        let mut cmd = if script {
+            let mut c = Command::new("cmd.exe");
+            c.arg("/c").arg(&path);
+            c
+        } else {
+            Command::new(&path)
+        };
+        cmd.arg("app-server")
+            .env("CODEX_HOME", codex_home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        crate::detach_console(&mut cmd);
+        let mut child = cmd
+            .spawn()
+            .with_context(|| crate::i18n::tp("err.hook.trust.no_codex", &[("path", &path.display().to_string())]))?;
+        let job = crate::job::Job::new();
+        if let Some(j) = &job {
+            j.take(child.id());
+        }
+        let out = child.stdout.take().context("no output from codex app-server")?;
+        let (tx, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead as _;
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let input = child.stdin.take();
+        Ok(Self { child, input, lines, next: 0, _job: job })
+    }
+
+    fn write(&mut self, message: serde_json::Value) -> Result<()> {
+        use std::io::Write as _;
+        let input = self.input.as_mut().context("codex app-server closed its input")?;
+        writeln!(input, "{message}")?;
+        input.flush()?;
+        Ok(())
+    }
+
+    /// A request, and its answer. Whatever else it says meanwhile (notices
+    /// of its own) is passed over
+    fn call(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        self.next += 1;
+        let id = self.next;
+        self.write(serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
+        let until = std::time::Instant::now() + APP_SERVER_WAIT;
+        loop {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            let line = self
+                .lines
+                .recv_timeout(left)
+                .map_err(|_| anyhow::anyhow!(crate::i18n::tp("err.hook.trust.no_answer", &[("what", method)])))?;
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            if v.get("id").and_then(|i| i.as_u64()) != Some(id) {
+                continue;
+            }
+            if let Some(e) = v.get("error") {
+                anyhow::bail!("codex app-server, {method}: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or("error"));
+            }
+            return Ok(v.get("result").cloned().unwrap_or_default());
+        }
+    }
+
+    fn note(&mut self, method: &str) -> Result<()> {
+        self.write(serde_json::json!({ "jsonrpc": "2.0", "method": method }))
+    }
+}
+
+impl Drop for AppServer {
+    fn drop(&mut self) {
+        // Its input closed is its cue to go; the job ends whatever is left
+        self.input = None;
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
@@ -372,6 +768,30 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
         ));
     }
 
+    merge(&mut doc, t, want, program, None);
+
+    if let Some(dir) = t.file.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    // The way back, before the first change
+    if let Some(text) = existing.as_deref() {
+        let _ = std::fs::write(t.file.with_extension("bak"), text);
+    }
+    crate::crypto::write_atomic(&t.file, &serde_json::to_string_pretty(&doc)?)?;
+    crate::append_hook_log(&format!(
+        "{} hook {} in {}",
+        t.name,
+        if want { "installed" } else { "removed" },
+        t.file.display()
+    ));
+    Ok(())
+}
+
+/// Put ours into a CLI's settings as read (`want`), or take ours out of them,
+/// leaving everything else where it was. With `marks`, each group of ours is
+/// put in as a stand-in naming its place in `marks` instead, for [`preview`]
+/// to find in the text and draw as ours
+fn merge(doc: &mut serde_json::Value, t: &Target, want: bool, program: &Path, mut marks: Option<&mut Vec<serde_json::Value>>) {
     for (event, hs) in wanted(t, program) {
         let list = doc
             .as_object_mut()
@@ -396,7 +816,14 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
                 .unwrap_or(true)
         });
         if want {
-            groups.push(serde_json::json!({ "hooks": hs }));
+            let group = serde_json::json!({ "hooks": hs });
+            match marks.as_deref_mut() {
+                Some(marks) => {
+                    groups.push(serde_json::json!(format!("{MARKED}{}", marks.len())));
+                    marks.push(group);
+                }
+                None => groups.push(group),
+            }
         }
     }
     // Leave no empty scaffolding behind after a removal — including the map
@@ -411,22 +838,6 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
             o.shift_remove("hooks");
         }
     }
-
-    if let Some(dir) = t.file.parent() {
-        std::fs::create_dir_all(dir).ok();
-    }
-    // The way back, before the first change
-    if let Some(text) = existing.as_deref() {
-        let _ = std::fs::write(t.file.with_extension("bak"), text);
-    }
-    crate::crypto::write_atomic(&t.file, &serde_json::to_string_pretty(&doc)?)?;
-    crate::append_hook_log(&format!(
-        "{} hook {} in {}",
-        t.name,
-        if want { "installed" } else { "removed" },
-        t.file.display()
-    ));
-    Ok(())
 }
 
 /// What one hook event is worth keeping, once the CLI's JSON has been read.
@@ -717,6 +1128,7 @@ mod tests {
             file: PathBuf::from("unused"),
             format: HookFormat::Shell,
             timeout: TIMEOUT_S,
+            trust: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
@@ -738,6 +1150,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format,
             timeout: TIMEOUT_S,
+            trust: None,
             entries: vec![Entry { event: "SessionStart".into(), arg: "session".into() }],
         }
     }
@@ -893,6 +1306,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format: HookFormat::Bare,
             timeout: 3_000,
+            trust: None,
             entries: vec![
                 Entry { event: "BeforeAgent".into(), arg: "session".into() },
                 Entry { event: "BeforeAgent".into(), arg: "state:BUSY".into() },
@@ -920,7 +1334,8 @@ mod tests {
         assert_eq!(said("AfterAgent").len(), 1);
 
         // What the person was shown is what was written
-        let shown: serde_json::Value = serde_json::from_str(&preview(&t)).unwrap();
+        let shown = preview(&t).into_iter().map(|l| l.text).collect::<Vec<_>>().join("\n");
+        let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
         assert_eq!(shown["hooks"]["BeforeAgent"][0]["hooks"].as_array().unwrap().len(), 2);
 
         // And taking it out takes out both
@@ -939,6 +1354,7 @@ mod tests {
             file: dir.join("hooks.json"),
             format: HookFormat::Args,
             timeout: TIMEOUT_S,
+            trust: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "UserPromptSubmit".into(), arg: "state:BUSY".into() },
@@ -1080,5 +1496,118 @@ mod tests {
             1,
             "the old one is not kept"
         );
+    }
+
+    /// Asked about as the program starts: a CLI used here and never answered
+    /// about. Not one answered either way, and not one this PC does not use --
+    /// nothing is written for, or asked about, a CLI nobody runs
+    #[test]
+    fn it_asks_about_a_cli_used_here_and_never_answered_about() {
+        let dir = tmp("asked");
+        let cli = |name: &str, used: bool| {
+            let home = dir.join(name);
+            if used {
+                std::fs::create_dir_all(&home).unwrap();
+            }
+            let mut t = target(&home, HookFormat::Bare);
+            t.name = name.into();
+            t
+        };
+        let all = || vec![cli("new", true), cli("yes", true), cli("no", true), cli("absent", false)];
+        let answers: std::collections::BTreeMap<String, String> =
+            [("yes".to_string(), "on".to_string()), ("no".to_string(), "off".to_string())].into();
+        let names = |v: Vec<Target>| v.into_iter().map(|t| t.name).collect::<Vec<_>>();
+        assert_eq!(names(among(all(), &answers, None)), vec!["new"], "asked about");
+        assert_eq!(names(among(all(), &answers, Some("on"))), vec!["yes"], "kept right");
+    }
+
+    /// The file is shown as it will be written, the person's lines as they
+    /// are and ours told apart: the group added beside their hook, and an
+    /// event they had nothing under, brackets and all
+    #[test]
+    fn the_preview_is_the_file_to_be_written_with_ours_told_apart() {
+        let dir = tmp("preview");
+        let mut t = target(&dir, HookFormat::Args);
+        t.entries.push(Entry { event: "Stop".into(), arg: "state:DONE".into() });
+        let theirs = serde_json::json!({
+            "model": "opus",
+            "hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "their-beep" }] }] }
+        });
+        std::fs::write(&t.file, serde_json::to_string_pretty(&theirs).unwrap()).unwrap();
+        let lines = preview(&t);
+        let text = lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+        install(&t).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&t.file).unwrap()).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&text).unwrap(), written, "shown is not what was written:\n{text}");
+        let ours = |needle: &str| lines.iter().filter(|l| l.text.contains(needle)).all(|l| l.ours);
+        let theirs_line = |needle: &str| lines.iter().filter(|l| l.text.contains(needle)).all(|l| !l.ours);
+        assert!(theirs_line("\"model\"") && theirs_line("their-beep") && theirs_line("\"Stop\""), "{lines:#?}");
+        assert!(ours("--hook") && ours("\"SessionStart\""), "{lines:#?}");
+        assert!(lines.iter().filter(|l| l.ours).count() > 8 && lines.iter().any(|l| !l.ours));
+        // The brackets closing the event the file did not have are ours; the
+        // ones closing theirs are not
+        let start = lines.iter().position(|l| l.text.contains("\"SessionStart\"")).unwrap();
+        let close = lines[start..].iter().position(|l| l.text.trim_start().starts_with(']')).unwrap() + start;
+        assert!(lines[start..=close].iter().all(|l| l.ours), "{lines:#?}");
+        // A file that is not there yet is all ours
+        std::fs::remove_file(&t.file).unwrap();
+        assert!(preview(&t).iter().all(|l| l.ours));
+    }
+
+    /// Two copies of the app on one PC that both keep hooks right do not take
+    /// the file from each other: a complete entry naming another copy that is
+    /// still there is left as it is, and one naming a copy that is gone is
+    /// written again for this one
+    #[test]
+    fn another_copy_still_there_keeps_its_hook() {
+        for format in [HookFormat::Bare, HookFormat::Args, HookFormat::Shell] {
+            let dir = tmp(&format!("copies-{format:?}"));
+            let other = dir.join("other").join("SHIKISHA-TERM.exe");
+            std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+            std::fs::write(&other, b"").unwrap();
+            let t = target(&dir, format);
+            install_as(&t, &other).unwrap();
+            assert_eq!(status(&t), Status::Stale, "{format:?}: it names another copy");
+            assert_eq!(keep_right(&t).unwrap(), Kept::default(), "{format:?}: the other copy's hook was taken");
+            assert_eq!(program_named_in(&t).as_deref(), Some(other.as_path()), "{format:?}");
+            std::fs::remove_file(&other).unwrap();
+            assert!(keep_right(&t).unwrap().written, "{format:?}: a hook naming a copy that is gone was left");
+            assert_eq!(status(&t), Status::Installed, "{format:?}");
+        }
+    }
+
+    /// A settings file is named the way this system names one: it is shown
+    /// to the person in the question that asks to write there
+    #[test]
+    fn a_hook_file_is_spelled_the_way_this_system_spells_a_path() {
+        #[cfg(windows)]
+        assert_eq!(
+            expand_at("{home}/.codex/hooks.json", r"C:\Users\a").display().to_string(),
+            r"C:\Users\a\.codex\hooks.json"
+        );
+        #[cfg(not(windows))]
+        assert_eq!(expand_at("{home}/.codex/hooks.json", "/home/a").display().to_string(), "/home/a/.codex/hooks.json");
+    }
+
+    /// Codex is told to run the hooks of ours in our file that it holds back
+    /// -- and nothing else: not a hook the person put there, not one in
+    /// another file, not one it already runs, not one twice
+    #[test]
+    fn only_our_held_back_hooks_are_approved() {
+        let file = Path::new(r"C:\Users\a\.codex\hooks.json");
+        let hook = |key: &str, path: &str, command: &str, trust: &str| {
+            serde_json::json!({ "key": key, "sourcePath": path, "command": command,
+                "currentHash": format!("sha256:{key}"), "trustStatus": trust })
+        };
+        let ours = r"C:\PROGRA~1\SHIKISHA\SHIKISHA-TERM.exe --hook state:DONE";
+        let listed = serde_json::json!({ "data": [{ "hooks": [
+            hook("a", r"C:\Users\a\.codex\hooks.json", ours, "untrusted"),
+            hook("b", r"c:\users\a\.codex\HOOKS.json", ours, "modified"),
+            hook("c", r"C:\Users\a\.codex\hooks.json", ours, "trusted"),
+            hook("d", r"C:\Users\a\.codex\hooks.json", "notify-send done", "untrusted"),
+            hook("e", r"C:\work\.codex\hooks.json", ours, "untrusted"),
+        ] }, { "hooks": [hook("a", r"C:\Users\a\.codex\hooks.json", ours, "untrusted")] }] });
+        let keys: Vec<String> = to_approve(&listed, file).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(keys, vec!["a", "b"]);
     }
 }

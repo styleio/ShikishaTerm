@@ -1701,6 +1701,12 @@ fn restarted(t: &mut Tab, plan: tab::Resume, why: Option<&'static str>, rows: u1
 /// settings: it exists while it is open and is gone when it is closed.
 pub const EDITOR_SCRATCH: &str = "editor.here";
 
+/// How long a board the network moved away from keeps answering after its
+/// devices were told where the new one is. The message goes down a socket the
+/// moment it is sent; a device that watches by asking instead asks every
+/// second and a half, so this is a few of its asks, with room for a slow line
+const LEAVING_GRACE: Duration = Duration::from_secs(5);
+
 pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The mode flag is not a command to launch.
     // Forgetting to filter it out would send us looking for a program named `--window`.
@@ -1967,6 +1973,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut skill_view = crate::skill::statuses();
     let mut skill_seen = std::time::Instant::now();
     let mut skills_refreshed = false;
+    // The AI CLIs' hooks (see `agenthook`): whether this start has looked at
+    // them yet, the question about the ones never asked about while it waits
+    // (and the CLIs it asks about), and word of the ones being put right
+    let mut hooks_looked = false;
+    let mut hook_ask: Option<crate::uistate::HookAskState> = None;
+    let mut hook_asking: Vec<crate::agenthook::Target> = Vec::new();
+    let (hooks_tx, hooks_rx) = std::sync::mpsc::channel::<String>();
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // Which tabs each AI tab may drive -- type into a shell, operate a page --
     // because the person named them in what they last sent it (<@ID>)
@@ -2575,6 +2588,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // there was no network at all when it tried to start
     let mut remote_watch = netaddr::AutoWatch::new(Instant::now());
     let mut remote_waits_network = false;
+    // The board at the address the network moved away from, kept answering
+    // until the board at the new address is up, so the devices watching it
+    // can be told where to go (`RemoteUi::hand_over`) -- and then for a
+    // moment more, so the telling reaches them. The instant is when it goes;
+    // none yet while the new board is still starting
+    let mut leaving: Option<(remote::RemoteUi, Option<Instant>)> = None;
+    // A new board at another address for the same devices: the network under
+    // "auto" moved, or the person changed only where it listens. The old one
+    // stays up, off the loopback the new one needs, until its devices have
+    // been told where the new one is. Not for a change of who may come in (a
+    // new token or password): that is what a restart is for, and the devices
+    // are left to pair again
+    macro_rules! move_remote {
+        ($c:expr) => {{
+            if let Some(old) = remote_ui.take() {
+                old.release_loopback();
+                if let Some((earlier, _)) = leaving.replace((old, None)) {
+                    earlier.shutdown();
+                }
+            }
+            restart_remote!($c);
+        }};
+    }
 
     loop {
         // Install the remote server the moment its background bind lands.
@@ -2583,6 +2619,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Ok((ui, mut errs)) = rx.try_recv() {
                 remote_ui = ui;
                 remote_rx = None;
+                // A board the network moved away from sends its devices here
+                // now, or -- with nothing at the new address -- goes at once
+                if let Some((old, when)) = leaving.as_mut()
+                    && when.is_none()
+                {
+                    match remote_ui.as_ref().filter(|r| !r.local_only) {
+                        Some(new) => {
+                            old.hand_over(new.origin());
+                            append_hook_log(&format!("remote: the devices on the old address are sent to {}", new.origin()));
+                            *when = Some(Instant::now() + LEAVING_GRACE);
+                        }
+                        None => {
+                            old.shutdown();
+                            leaving = None;
+                        }
+                    }
+                }
                 remote_waits_network = remote_ui.is_none() && netaddr::auto_ip().is_none();
                 // Pages drawn on a connected device are driven through this
                 if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
@@ -2611,7 +2664,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Some(to) = remote_watch.poll(Instant::now(), remote_ui.as_ref().map(|r| r.bound()))
         {
             append_hook_log(&format!("remote: the network moved; listening on {to} instead"));
-            restart_remote!(c);
+            move_remote!(c);
+        }
+        // The old board's moment is over
+        if let Some((_, Some(when))) = &leaving
+            && Instant::now() >= *when
+            && let Some((old, _)) = leaving.take()
+        {
+            old.shutdown();
         }
 
         // Open the desk's declared browsers on the iteration AFTER the
@@ -3253,7 +3313,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if (want.enabled, &want.bind, want.port, want.allow_public, &want.password, want.sticky_token, &want.fixed_token)
                     != (now.enabled, &now.bind, now.port, now.allow_public, &now.password, now.sticky_token, &now.fixed_token)
                 {
-                    restart_remote!(&newcfg);
+                    // Only the address changed: the same devices, somewhere else
+                    let same_people = want.enabled
+                        && now.enabled
+                        && (&want.password, want.sticky_token, &want.fixed_token)
+                            == (&now.password, now.sticky_token, &now.fixed_token);
+                    if same_people {
+                        move_remote!(&newcfg);
+                    } else {
+                        restart_remote!(&newcfg);
+                    }
                     // Announce the INTENT (the bind hasn't landed yet); a bind
                     // failure still surfaces as a flash from the install above.
                     remote_changed = Some(if want.enabled {
@@ -3756,6 +3825,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         branch,
                         ports: held.ports,
                         programs: held.programs,
+                        hosts: held.hosts,
                         repo,
                         pr,
                         family,
@@ -5135,6 +5205,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Skill { ai, act }) => {
                         shell.mail().skills.push((ai, act));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AgentHooks { answer, seq }) => {
+                        shell.mail().agent_hooks.push((answer, seq));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Orch { act, job, decision, choice }) => {
                         shell.mail().orch.push((act, job, decision, choice));
                     }
@@ -5566,6 +5639,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             thanks: thanks_show.then(|| thanks_kind.to_string()),
             update: update::ask(),
             close_ask: close_ask.clone(),
+            hook_ask: hook_ask.clone(),
             closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.name)).unwrap_or_default(),
             quick: quick_view.clone(),
             // Where each kind of button would go right now, for the launcher
@@ -11480,6 +11554,58 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             skill_view = crate::skill::statuses();
             skill_seen = std::time::Instant::now();
         }
+        // The AI CLIs' hooks, as the person answered about each. Once, as the
+        // program starts: the ones agreed to are put right off this thread,
+        // and the ones used here and never asked about are asked about
+        if !hooks_looked {
+            hooks_looked = true;
+            let answers = cfg.as_ref().map(|c| c.agent_hooks.clone()).unwrap_or_default();
+            keep_hooks_right(crate::agenthook::agreed(&answers), hooks_tx.clone());
+            hook_asking = crate::agenthook::unasked(&answers);
+            if !hook_asking.is_empty() {
+                append_hook_log(&format!(
+                    "hooks: asking whether to set up {}",
+                    hook_asking.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")
+                ));
+                hook_ask = Some(crate::agenthook::question(1, &hook_asking));
+            }
+        }
+        for (answer, seq) in shell.mail().take_agent_hooks() {
+            // An answer to a question no longer up (answered on the other
+            // screen first) is nobody's
+            if hook_ask.as_ref().is_none_or(|a| a.seq != seq) {
+                continue;
+            }
+            hook_ask = None;
+            let clis = std::mem::take(&mut hook_asking);
+            let names = clis.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ");
+            match answer.as_str() {
+                "on" | "off" => {
+                    let on = answer == "on";
+                    // Written first: set up without the answer on record, the
+                    // next start would ask again about a hook already in
+                    let saved: Vec<crate::agenthook::Target> =
+                        clis.into_iter().filter(|t| config::save_agent_hook(&t.name, on)).collect();
+                    if let Some(c) = cfg.as_mut() {
+                        for t in &saved {
+                            c.agent_hooks.insert(t.name.clone(), if on { config::HOOK_ON } else { config::HOOK_OFF }.into());
+                        }
+                    }
+                    append_hook_log(&format!("hooks: the person said {answer} for {names}"));
+                    if saved.is_empty() {
+                        flash = Some(i18n::t("msg.hooks.not_saved"));
+                    } else if on {
+                        keep_hooks_right(saved, hooks_tx.clone());
+                    } else {
+                        flash = Some(i18n::tp("msg.hooks.off", &[("names", &names)]));
+                    }
+                }
+                _ => append_hook_log(&format!("hooks: the question about {names} was put away; it is asked again at the next start")),
+            }
+        }
+        if let Ok(said) = hooks_rx.try_recv() {
+            flash = Some(said);
+        }
         // Once, as the program starts: a skill agreed to earlier is brought up
         // to the words this version writes, and the person is told which
         if !skills_refreshed {
@@ -12744,6 +12870,42 @@ pub fn reload_providers(
 /// in pieces holds the tab until it is finished; letting a keystroke into the
 /// gaps would type it into the middle of the person's own sentence. The Enter
 /// is left where it was — the person may still be adding to what was pasted.
+/// Put the hooks of `clis` right (`agenthook::keep_right`) on a thread of its
+/// own -- a CLI asked to approve one is a program started and asked -- and
+/// send back what there is to tell the person: what was set up, or what could
+/// not be and why. Nothing when every one of them was already right
+fn keep_hooks_right(clis: Vec<crate::agenthook::Target>, said: std::sync::mpsc::Sender<String>) {
+    if clis.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        let mut done: Vec<String> = Vec::new();
+        let mut failed: Vec<String> = Vec::new();
+        for t in &clis {
+            match crate::agenthook::keep_right(t) {
+                Ok(k) if k.written || k.approved > 0 => {
+                    append_hook_log(&format!(
+                        "hooks: {} put right (written: {}, approved: {})",
+                        t.name, k.written, k.approved
+                    ));
+                    done.push(t.name.clone());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    append_hook_log(&format!("hooks: {} could not be put right: {e:#}", t.name));
+                    failed.push(format!("{}: {e:#}", t.name));
+                }
+            }
+        }
+        let word = match (failed.is_empty(), done.is_empty()) {
+            (false, _) => i18n::tp("msg.hooks.failed", &[("why", &failed.join(" / "))]),
+            (true, false) => i18n::tp("msg.hooks.set_up", &[("names", &done.join(", "))]),
+            (true, true) => return,
+        };
+        let _ = said.send(word);
+    });
+}
+
 pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, now_ms: u64) {
     for p in pending.iter_mut().filter(|p| p.serial == t.serial()) {
         let rest = p.rest(now_ms);
@@ -13260,7 +13422,49 @@ fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt
     if press.kind != "file" {
         return None;
     }
-    let spot = crate::termlink::place_of(&press.target);
+    // A program's `file://` link that names a machine: the tab's own machine,
+    // another computer's share, or somewhere out of reach. The tab's machine
+    // goes by every name it is known by here -- this PC's name for a tab on
+    // this PC; for one over there, the name its shell gave (OSC 7) and the
+    // name the connection is set up under
+    let far = matches!(place, Some(FilesAt::There { .. }));
+    let mut target = press.target.clone();
+    if let Some(url) = crate::termlink::file_url(&press.target) {
+        let names: Vec<String> = if far {
+            vec![t.said_machine(), t.host().unwrap_or_default().to_string()]
+        } else {
+            vec![std::env::var("COMPUTERNAME").unwrap_or_default()]
+        };
+        match crate::termlink::file_home(&url, &names, far) {
+            crate::termlink::FileHome::Here(path) => target = path,
+            crate::termlink::FileHome::Away(host) => {
+                return (press.act == "look")
+                    .then(|| answer(serde_json::json!({ "ok": false, "why": "elsewhere", "host": host })));
+            }
+            crate::termlink::FileHome::Share(unc) => {
+                // Not looked at before it is offered: a computer that is off,
+                // or slow to answer, would hold the whole screen still while
+                // Windows waits on it. Opening it is left to a thread for the
+                // same reason
+                let full = std::path::PathBuf::from(&unc);
+                let runs = crate::termlink::runs_when_opened(&full);
+                match press.act.as_str() {
+                    "app" if !runs => {
+                        let open = unc.clone();
+                        std::thread::spawn(move || crate::webui::open_external(&open));
+                    }
+                    "reveal" => reveal_in_folder(&full, true, false),
+                    _ => {}
+                }
+                return (press.act == "look").then(|| {
+                    answer(serde_json::json!({
+                        "ok": true, "far": false, "path": unc, "found": true, "dir": false, "runs": runs,
+                    }))
+                });
+            }
+        }
+    }
+    let spot = crate::termlink::place_of(&target);
     let reported = t.reported_cwd();
     match place {
         Some(FilesAt::There { root, .. }) => {

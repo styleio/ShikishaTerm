@@ -1063,6 +1063,14 @@ pub struct Config {
     /// screen and by the question asked in place, which are one setting
     #[serde(default)]
     pub agreed: std::collections::BTreeMap<String, Vec<String>>,
+    /// Each AI CLI's hook, as the person answered the question about it, by
+    /// the CLI's name: [`HOOK_ON`] -- put it in, and keep it right at every
+    /// start -- or [`HOOK_OFF`] -- leave that CLI's settings alone. A CLI not
+    /// named here has not been asked, and is asked at the next start
+    /// (`agenthook::unasked`). Written by that question and by the settings
+    /// screen's buttons, which are one setting
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub agent_hooks: std::collections::BTreeMap<String, String>,
     /// What a folder runs when nothing else is said: `powershell` (also what
     /// absent means), `cmd` or `gitbash`
     #[serde(default)]
@@ -6635,6 +6643,39 @@ pub fn save_setting(at: &[&str], value: serde_json::Value) {
 /// [`Config::agreed`]): the answer given in place, written where the
 /// settings screen writes its tick. What was agreed before stays agreed.
 /// Answers whether it was written
+/// The answers [`Config::agent_hooks`] holds
+pub const HOOK_ON: &str = "on";
+pub const HOOK_OFF: &str = "off";
+
+/// Write the person's answer about one CLI's hook into the settings file,
+/// leaving the rest of it as they wrote it. Returns whether it was written
+pub fn save_agent_hook(cli: &str, on: bool) -> bool {
+    save_agent_hook_at(&config_file_path(), cli, on)
+}
+
+fn save_agent_hook_at(path: &Path, cli: &str, on: bool) -> bool {
+    let cli = cli.trim();
+    if cli.is_empty() {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record the answer about a hook: settings are not readable");
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    if !doc["agent_hooks"].is_object() {
+        doc["agent_hooks"] = serde_json::json!({});
+    }
+    doc["agent_hooks"][cli] = serde_json::json!(if on { HOOK_ON } else { HOOK_OFF });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
 pub fn save_agreed(row: &str, kind: &str) -> bool {
     save_agreed_at(&config_file_path(), row, kind)
 }
@@ -7599,6 +7640,26 @@ mod tests {
         assert_eq!(consent_row("@claude/haiku"), "@claude");
         assert_eq!(consent_row(" jev/jev-latest "), "jev");
         assert_eq!(consent_row("ollama/user/model:tag"), "ollama");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The answer about a CLI's hook is written as the value it is, beside
+    /// everything else the person wrote, and a second answer replaces the first
+    #[test]
+    fn the_answer_about_a_hook_is_written_as_its_value() {
+        let dir = std::env::temp_dir().join("shikisha-agent-hooks-answer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"language": "ja", "agent_hooks": {"Claude Code": "on"}}"#).unwrap();
+        assert!(save_agent_hook_at(&path, "Codex CLI", true));
+        assert!(save_agent_hook_at(&path, "Claude Code", false), "changing one's mind");
+        assert!(!save_agent_hook_at(&path, " ", true), "no CLI named");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["agent_hooks"], serde_json::json!({"Claude Code": "off", "Codex CLI": "on"}));
+        assert_eq!(doc["language"], "ja", "other settings changed");
+        let cfg: Config = serde_json::from_value(doc).unwrap();
+        assert_eq!(cfg.agent_hooks.get("Codex CLI").map(String::as_str), Some(HOOK_ON));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

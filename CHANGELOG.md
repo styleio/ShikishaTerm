@@ -9,6 +9,25 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A phone follows the board when the address it listens on changes.** When
+  Tailscale connected after the program started (or dropped), or when only
+  where the board listens was changed in the settings, the old address went
+  quiet and a phone watching it kept trying it for ever. The phone is now
+  told the new address and opens it by itself, let in on a one-time code
+  rather than a token in its address; a phone that cannot reach the new
+  address says so, and names it, instead of spinning.
+- **A port listening on one address only opens at that address.** The ports
+  panel opened every port at localhost, so a development server told to
+  listen on the LAN address alone was listed and then answered nothing. The
+  panel now opens such a port where it listens, and names the address on its
+  line.
+- **The phone settings say where the link is really reachable from.** They
+  said only people on the same network could connect and that nothing was
+  put on the internet. The address the board listens on is a Tailscale or LAN
+  one, but a router's port forwarding, a cloud machine's public IP or a
+  firewall rule can still carry the internet to it; the settings, the README
+  and the security notes now say that, and that the program forwards nothing
+  itself.
 - **Text that ran past the edge of a terminal survives the window getting
   narrower.** Making a tab narrower cut every row at the new width, and the
   characters past it were gone for good -- the pseudo console does not draw
@@ -16,6 +35,14 @@ once it reaches its first tagged release.
   came back two characters short at every row break, and opened nowhere.
   Lines that ran on are now laid out again at the new width, scrollback
   included, the way a terminal with scrollback does.
+- **A program's file link that names another computer opens that computer's
+  file, not this PC's.** A `file://server/share/file` link was opened as
+  `/share/file` on the tab's own machine -- the name of the computer was
+  thrown away. A link naming no computer, `localhost`, or the tab's own
+  machine (as `ls --hyperlink` writes it) is still a file there. One naming
+  another computer opens as its file share (`\\server\share\file`) from a tab
+  on this PC; from a tab on another machine it is not opened, and the list
+  says why.
 - **A phone is told to stop picking with the button, not with Esc.** The pick
   button's description said "Esc on the page stops" on a phone too; on a
   screen with no keyboard it now names Stop picking.
@@ -66,6 +93,21 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **The AI command-line tools are asked, once, to report what they are doing.**
+  When the app starts and finds Claude Code, Codex or Gemini used on this PC
+  without an answer about them yet, it shows which settings file of each it
+  would add one entry to and, a press away, that file as it will be, the
+  lines it adds in blue beside the ones already there, and asks. Allowed,
+  the entries go in and every start keeps them up to date; the dot beside each
+  tab is then right, and two tabs of the same AI in one folder are told apart.
+  Not allowed, those files are left alone and the question is not asked again.
+  Closed without an answer, it is asked at the next start. The same question
+  is on the phone. The answer can be changed under Settings › Carrying
+  conversations across a restart, which shows it.
+- **The AI command-line tools' hooks: Codex runs them.** Codex holds back a
+  new hook until it is approved, so the hook set up from the settings did
+  nothing until it was approved in Codex. The app now has Codex itself record
+  the approval of its own entries (and only those) when it sets them up.
 - **A check's log, one press from the git panel.** Open CI in the git panel
   and press any check: its job's log opens in an editor tab that only reads,
   named after the check and the commit, without the runner's colour codes,

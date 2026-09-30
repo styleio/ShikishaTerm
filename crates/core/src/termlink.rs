@@ -244,21 +244,47 @@ pub fn place_of(text: &str) -> Place {
     }
 }
 
-/// The path a program's `file://` hyperlink names, the way a path on this
-/// machine is written. `file://host/C:/x%20y.txt` and `file:///C:/x` are both
-/// `C:/x y.txt`; `file:///home/me/a` is `/home/me/a`. Anything that is not a
-/// file address is `None`
-pub fn file_url_path(uri: &str) -> Option<String> {
+/// A `file://` address, read: which machine it names and the path there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileUrl {
+    /// The machine the address names. `None` when it names none -- an empty
+    /// host or `localhost`, which both mean "the machine this was said on"
+    pub host: Option<String>,
+    /// The path, decoded and written the way that machine writes one:
+    /// `/C:/x%20y.txt` is `C:/x y.txt`, `/home/me/a` stays as it is
+    pub path: String,
+}
+
+/// A program's `file://` hyperlink, or a shell's `OSC 7` address, read.
+/// Anything that is not a file address is `None`
+pub fn file_url(uri: &str) -> Option<FileUrl> {
     let rest = uri.get(..7).filter(|s| s.eq_ignore_ascii_case("file://")).map(|_| &uri[7..])?;
-    // The host is whatever comes before the path's first slash -- usually
-    // nothing, or this machine's own name
-    let path = &rest[rest.find('/')?..];
-    let bytes = path.as_bytes();
+    // RFC 8089: the host is everything before the path's first slash
+    let slash = rest.find('/')?;
+    let host = unescape(&rest[..slash])?;
+    let decoded = unescape(&rest[slash..])?;
+    // `/C:/x` is how a drive is written in an address
+    let d = decoded.as_bytes();
+    let path = if d.len() >= 3 && d[0] == b'/' && d[1].is_ascii_alphabetic() && d[2] == b':' {
+        decoded[1..].to_string()
+    } else {
+        decoded
+    };
+    if path.is_empty() || path.chars().any(char::is_control) || host.chars().any(char::is_control) {
+        return None;
+    }
+    let host = (!host.is_empty() && !host.eq_ignore_ascii_case("localhost")).then_some(host);
+    Some(FileUrl { host, path })
+}
+
+/// `%XX` back into bytes, read as UTF-8
+fn unescape(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
     let mut raw = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
-            && let Some(v) = path.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             raw.push(v);
             i += 3;
@@ -267,15 +293,51 @@ pub fn file_url_path(uri: &str) -> Option<String> {
         raw.push(bytes[i]);
         i += 1;
     }
-    let decoded = String::from_utf8(raw).ok()?;
-    // `/C:/x` is how a drive is written in an address
-    let d = decoded.as_bytes();
-    let path = if d.len() >= 3 && d[0] == b'/' && d[1].is_ascii_alphabetic() && d[2] == b':' {
-        decoded[1..].to_string()
-    } else {
-        decoded
-    };
-    (!path.is_empty() && !path.chars().any(char::is_control)).then_some(path)
+    String::from_utf8(raw).ok()
+}
+
+/// Where a pressed `file://` place is, as seen from the tab it was pressed on
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileHome {
+    /// On the tab's own machine, at this path
+    Here(String),
+    /// On another Windows computer on the network: the UNC path
+    /// (`\\server\share\file`) this PC opens it by
+    Share(String),
+    /// On another machine this tab cannot reach it on; the machine's name
+    Away(String),
+}
+
+/// Where a `file://` place is. A host that names no machine, or names the
+/// tab's own (`names`: every name that machine is known by here), is the
+/// tab's own machine -- programs such as `ls --hyperlink` write their own
+/// machine's name there. Any other host is another computer: from a tab on
+/// this PC that is a file share, the standard Windows meaning of a host in a
+/// file address; from a tab on another machine, somewhere it cannot reach.
+/// Another computer's drive letter is not reachable from anywhere here
+pub fn file_home(url: &FileUrl, names: &[String], far: bool) -> FileHome {
+    let Some(host) = &url.host else { return FileHome::Here(url.path.clone()) };
+    if names.iter().any(|n| same_machine(host, n)) {
+        return FileHome::Here(url.path.clone());
+    }
+    let drive = url.path.as_bytes().get(1) == Some(&b':');
+    let parts: Vec<&str> = url.path.split('/').filter(|p| !p.is_empty()).collect();
+    if far || drive || parts.is_empty() {
+        return FileHome::Away(host.clone());
+    }
+    FileHome::Share(format!("\\\\{host}\\{}", parts.join("\\")))
+}
+
+/// Whether two names are one machine: the same name in any case, or the
+/// same first part when one of them is written out in full with its domain
+/// (`build-01` and `build-01.corp.example`)
+fn same_machine(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let first = |s: &str| s.split('.').next().unwrap_or(s).to_ascii_lowercase();
+    a.eq_ignore_ascii_case(b) || ((a.contains('.') || b.contains('.')) && first(a) == first(b))
 }
 
 /// A path from a screen on this PC, made whole: `~` is the home folder, a
@@ -527,12 +589,47 @@ mod tests {
     }
 
     #[test]
-    fn a_file_address_becomes_a_path_on_this_machine() {
-        assert_eq!(file_url_path("file:///C:/work/a%20b.txt").as_deref(), Some("C:/work/a b.txt"));
-        assert_eq!(file_url_path("file://pc-1/C:/x").as_deref(), Some("C:/x"));
-        assert_eq!(file_url_path("file:///home/me/%E8%B3%87%E6%96%99").as_deref(), Some("/home/me/資料"));
-        assert_eq!(file_url_path("https://a.io/"), None);
-        assert_eq!(file_url_path("file://"), None);
+    fn a_file_address_is_read_with_the_machine_it_names() {
+        let read = |u: &str| file_url(u).map(|f| (f.host, f.path));
+        assert_eq!(read("file:///C:/work/a%20b.txt"), Some((None, "C:/work/a b.txt".into())));
+        assert_eq!(read("file://localhost/C:/x"), Some((None, "C:/x".into())));
+        assert_eq!(read("file://LOCALHOST/tmp/a"), Some((None, "/tmp/a".into())));
+        assert_eq!(read("file:///home/me/%E8%B3%87%E6%96%99"), Some((None, "/home/me/資料".into())));
+        assert_eq!(read("file://pc-1/C:/x"), Some((Some("pc-1".into()), "C:/x".into())));
+        assert_eq!(read("file://nas/share/a%20b.txt"), Some((Some("nas".into()), "/share/a b.txt".into())));
+        assert_eq!(read("https://a.io/"), None);
+        assert_eq!(read("file://"), None);
+        assert_eq!(read("file://host-only"), None);
+    }
+
+    /// A host that is nobody, or the tab's own machine, is the tab's machine;
+    /// any other is somewhere else -- a share from this PC, out of reach from
+    /// a machine over there
+    #[test]
+    fn where_a_file_address_is_depends_on_the_machine_it_names() {
+        let at = |u: &str, names: &[&str], far: bool| {
+            let names: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+            file_home(&file_url(u).unwrap(), &names, far)
+        };
+        use FileHome::*;
+        // No host, or localhost: the tab's own machine, here or there
+        assert_eq!(at("file:///C:/w/a.txt", &["DESK-7"], false), Here("C:/w/a.txt".into()));
+        assert_eq!(at("file://localhost/srv/a", &[], true), Here("/srv/a".into()));
+        // `ls --hyperlink` names its own machine, in whatever case
+        assert_eq!(at("file://desk-7/C:/w/a.txt", &["DESK-7"], false), Here("C:/w/a.txt".into()));
+        assert_eq!(at("file://build-01/home/me/a", &["", "build-01"], true), Here("/home/me/a".into()));
+        assert_eq!(at("file://build-01.corp.example/home/me/a", &["build-01"], true), Here("/home/me/a".into()));
+        // Another computer, from this PC: its share, by the UNC path
+        assert_eq!(at("file://nas/share/dir/a%20b.txt", &["DESK-7"], false), Share(r"\\nas\share\dir\a b.txt".into()));
+        // ... but not its drive, and not the bare machine
+        assert_eq!(at("file://pc-1/C:/x", &["DESK-7"], false), Away("pc-1".into()));
+        assert_eq!(at("file://nas/", &["DESK-7"], false), Away("nas".into()));
+        // Another computer, from a machine over there: out of reach, whatever
+        // its name is -- including when that machine's own name is not known
+        assert_eq!(at("file://nas/share/a", &["build-01"], true), Away("nas".into()));
+        assert_eq!(at("file://build-01/home/me/a", &["", ""], true), Away("build-01".into()));
+        // A name that only starts the same is another machine
+        assert_eq!(at("file://desk-70/C:/w", &["DESK-7"], false), Away("desk-70".into()));
     }
 
     #[test]

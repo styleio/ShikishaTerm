@@ -47,12 +47,19 @@ pub struct Client {
     pub added: u64,
     #[serde(default)]
     pub seen: u64,
+    /// Further keys of the same device, as hashes: one per address the board
+    /// has been reached at. A browser keeps a key per address, so a board that
+    /// moved (LAN to Tailscale, say) hands the device a key for the new
+    /// address rather than taking away the one the old address still holds
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<String>,
 }
 
 impl Client {
     /// Whether this row is the one that key opens.
     fn opens(&self, key: &str) -> bool {
-        crate::crypto::token_eq(&hash_of(key), &self.hash)
+        let h = hash_of(key);
+        crate::crypto::token_eq(&h, &self.hash) || self.more.iter().any(|m| crate::crypto::token_eq(&h, m))
     }
 }
 
@@ -135,6 +142,7 @@ pub fn pair(name: &str) -> anyhow::Result<(Client, String)> {
         hash: hash_of(&key),
         added: now(),
         seen: 0,
+        more: Vec::new(),
     };
     with_book(|book| {
         // The oldest goes when the book is full. Oldest by pairing date rather
@@ -147,6 +155,31 @@ pub fn pair(name: &str) -> anyhow::Result<(Client, String)> {
         book.clients.push(row.clone());
     })?;
     Ok((row, key))
+}
+
+/// How many further keys one device keeps. The addresses a board is reached
+/// at are few -- the LAN, Tailscale's address, a tailnet name in front of it --
+/// so this holds every one of them with room for a network that changed, and
+/// the oldest goes first beyond that
+const MAX_MORE_KEYS: usize = 4;
+
+/// Give a device already in the book one more key of its own, for an address
+/// it has not held one for, and hand the key back. The key it holds already
+/// keeps working. `None` when the device is no longer in the book
+pub fn add_key(id: &str) -> anyhow::Result<Option<String>> {
+    let key = crate::random_hex(24);
+    let hash = hash_of(&key);
+    let found = with_book(|book| match book.clients.iter_mut().find(|c| c.id == id) {
+        Some(row) => {
+            while row.more.len() >= MAX_MORE_KEYS {
+                row.more.remove(0);
+            }
+            row.more.push(hash);
+            true
+        }
+        None => false,
+    })?;
+    Ok(found.then_some(key))
 }
 
 /// Which device this key belongs to, if any still holds it.
@@ -278,6 +311,29 @@ pub(crate) mod tests {
             assert_eq!(who(&laptop_key).map(|c| c.id), Some(laptop.id), "it was locked out by mistake");
 
             assert!(!revoke(&phone.id).unwrap(), "it says it removed it a second time too");
+        });
+    }
+
+    /// A board that moved to another address gives the device a key there;
+    /// the key it holds at the old address still opens, both are the same
+    /// row, and taking the device away takes every key it had
+    #[test]
+    fn a_device_given_a_key_for_a_new_address_keeps_the_old_one() {
+        alone(|| {
+            let (phone, old) = pair("phone").unwrap();
+            let new = add_key(&phone.id).unwrap().expect("no key for a device in the book");
+            assert_ne!(new, old);
+            let text = std::fs::read_to_string(path()).unwrap();
+            assert!(!text.contains(&new), "the new key itself is written");
+            assert_eq!(who(&old).map(|c| c.id), Some(phone.id.clone()), "the old address's key stopped opening");
+            assert_eq!(who(&new).map(|c| c.id), Some(phone.id.clone()), "the new key opens someone else, or nothing");
+            // Only so many: the oldest further key goes first
+            let extra: Vec<String> = (0..MAX_MORE_KEYS).map(|_| add_key(&phone.id).unwrap().unwrap()).collect();
+            assert!(who(&new).is_none(), "the oldest further key was kept beyond the limit");
+            assert!(who(extra.last().unwrap()).is_some() && who(&old).is_some());
+            assert!(revoke(&phone.id).unwrap());
+            assert!(who(&old).is_none() && who(extra.last().unwrap()).is_none(), "a revoked device kept a key");
+            assert_eq!(add_key(&phone.id).unwrap(), None, "a device no longer in the book was given a key");
         });
     }
 

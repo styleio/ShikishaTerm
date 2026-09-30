@@ -25,7 +25,7 @@ server inside the program on your own PC, and your phone connects to it
 directly.
 
 **What you give up:** it stops at the front door. Leave the Wi-Fi and the
-address is not reachable any more. Anyone else on that same network could
+address is not reachable any more (unless a router forwards a port to this PC). Anyone else on that same network could
 reach the address too — they would still need the access code inside the QR,
 but the door is visible to them.
 

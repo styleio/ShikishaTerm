@@ -330,6 +330,10 @@ pub enum Ev {
     /// one CLI (`claude`, `codex`, `gemini`): `install` writes it, `remove`
     /// takes it out again
     Skill { ai: String, act: String },
+    /// The question about the AI CLIs' hooks, answered: `on` sets up every
+    /// CLI it asked about, `off` leaves them all alone, `later` puts it away
+    /// to be asked at the next start. `seq` is the asking this answers
+    AgentHooks { answer: String, seq: u64 },
     /// A job handed out between AI tabs, acted on from its card: `stop`
     /// stops every tab working on job `job`; `decide` makes the decision
     /// `decision` with `choice`
@@ -1165,6 +1169,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             job: v.get("job").and_then(|x| x.as_i64()).unwrap_or_default(),
             decision: v.get("decision").and_then(|x| x.as_i64()).unwrap_or_default(),
             choice: v.get("choice").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("agenthooks") => Ev::AgentHooks {
+            answer: v.get("answer").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            seq: v.get("seq").and_then(|x| x.as_u64()).unwrap_or_default(),
         },
         Some("skill") => Ev::Skill {
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

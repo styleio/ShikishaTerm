@@ -29,6 +29,9 @@ pub struct Place {
     /// recognise it by (`node.exe`, `python`), for the ports panel. A port
     /// whose holder could not be named is simply not in here
     pub programs: std::collections::BTreeMap<u16, String>,
+    /// The host to open a port at, for a port `localhost` does not reach
+    /// (`open_host`). A port not in here opens at `localhost`
+    pub hosts: std::collections::BTreeMap<u16, String>,
     /// `owner/name` on GitHub, when that is where this folder pushes to
     pub repo: Option<String>,
     /// The folder shared by this checkout and every branch cut from it. Two
@@ -315,22 +318,47 @@ pub(crate) fn tidy(path: PathBuf) -> PathBuf {
 /// Asked once and shared out, not once per tab: this is a table of the whole
 /// machine either way, and reading it several times a second per tab would be
 /// paying for the same answer over and over
-pub fn listeners() -> HashMap<u32, Vec<u16>> {
-    let mut out: HashMap<u32, Vec<u16>> = HashMap::new();
+pub fn listeners() -> HashMap<u32, std::collections::BTreeMap<u16, Vec<std::net::IpAddr>>> {
+    let mut out: HashMap<u32, std::collections::BTreeMap<u16, Vec<std::net::IpAddr>>> = HashMap::new();
     // Both families. A dev server that binds ::1 and one that binds 127.0.0.1
-    // are the same thing to the person looking at the row
+    // are the same thing to the person looking at the row; which addresses a
+    // port was bound on is kept, because it decides how the port is reached
     for family in [AF_INET, AF_INET6] {
-        for (pid, port) in listening_on(family) {
-            let slot = out.entry(pid).or_default();
-            if !slot.contains(&port) {
-                slot.push(port);
+        for (pid, port, addr) in listening_on(family) {
+            let at = out.entry(pid).or_default().entry(port).or_default();
+            if !at.contains(&addr) {
+                at.push(addr);
             }
         }
     }
-    for v in out.values_mut() {
-        v.sort_unstable();
-    }
     out
+}
+
+/// The host to open a port at, when `localhost` would not reach it.
+///
+/// A program bound to every address (`0.0.0.0`, `::`) or to the loopback
+/// answers at `localhost`, which is `None` here. One bound only to a
+/// particular address -- the LAN's, say -- answers there alone: asking
+/// `localhost` for it finds nothing listening. An IPv4 address is preferred
+/// over an IPv6 one when a port is on both, and an IPv6 one comes in the
+/// brackets an address in a URL needs
+pub fn open_host(bound: &[std::net::IpAddr]) -> Option<String> {
+    use std::net::IpAddr;
+    if bound.is_empty() || bound.iter().any(|a| a.is_loopback() || a.is_unspecified()) {
+        return None;
+    }
+    // An IPv6 address that only means something on one network card
+    // (fe80::/10) is the last choice: a URL cannot say which card
+    let link_local = |a: &IpAddr| matches!(a, IpAddr::V6(v6) if (v6.segments()[0] & 0xffc0) == 0xfe80);
+    let pick = bound
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| bound.iter().find(|a| !link_local(a)))
+        .or_else(|| bound.first())?;
+    Some(match pick {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{v6}]"),
+    })
 }
 
 /// The ports below one tab, and the program holding each.
@@ -340,6 +368,9 @@ pub struct Held {
     pub ports: Vec<u16>,
     /// By port, the program that holds it, when it could be named
     pub programs: std::collections::BTreeMap<u16, String>,
+    /// By port, the host to open it at, for a port `localhost` does not
+    /// reach (see `open_host`). A port missing here opens at `localhost`
+    pub hosts: std::collections::BTreeMap<u16, String>,
 }
 
 /// Every tab's ports, given each tab's own process.
@@ -365,11 +396,14 @@ pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Held> {
         for pid in descendants(*root, &children) {
             let Some(p) = by_pid.get(&pid) else { continue };
             let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
-            for port in p {
+            for (port, bound) in p {
                 if !held.ports.contains(port) {
                     held.ports.push(*port);
                     if let Some(n) = &name {
                         held.programs.insert(*port, n.clone());
+                    }
+                    if let Some(host) = open_host(bound) {
+                        held.hosts.insert(*port, host);
                     }
                 }
             }
@@ -510,7 +544,7 @@ fn socket_inodes() -> HashMap<u64, u32> {
 /// `family` is the same constant the Windows call takes, so the caller does not
 /// have to know which system it is on: 2 is IPv4 and 23 is IPv6.
 #[cfg(unix)]
-fn listening_on(family: u16) -> Vec<(u32, u16)> {
+fn listening_on(family: u16) -> Vec<(u32, u16, std::net::IpAddr)> {
     // 0A is TCP_LISTEN. Anything else in that column is a connection, not
     // something waiting to be connected to
     const LISTEN: &str = "0A";
@@ -531,16 +565,35 @@ fn listening_on(family: u16) -> Vec<(u32, u16)> {
         if *state != LISTEN {
             continue;
         }
-        let Some(port) = local.rsplit(':').next().and_then(|h| u16::from_str_radix(h, 16).ok())
-        else {
+        let Some((host, port)) = local.split_once(':') else { continue };
+        let (Ok(port), Some(addr)) = (u16::from_str_radix(port, 16), proc_net_addr(host)) else {
             continue;
         };
         let Some(pid) = inode.parse::<u64>().ok().and_then(|i| owners.get(&i)) else {
             continue;
         };
-        out.push((*pid, port));
+        out.push((*pid, port, addr));
     }
     out
+}
+
+/// An address as `/proc/net/tcp` and `tcp6` write it: hexadecimal, in 32-bit
+/// words each laid out the way the machine keeps a number (low byte first on
+/// the machines this runs on). `0100007F` is 127.0.0.1
+#[cfg(any(unix, test))]
+fn proc_net_addr(hex: &str) -> Option<std::net::IpAddr> {
+    let word = |i: usize| u32::from_str_radix(hex.get(i * 8..i * 8 + 8)?, 16).ok().map(u32::to_le_bytes);
+    match hex.len() {
+        8 => Some(std::net::IpAddr::from(word(0)?)),
+        32 => {
+            let mut b = [0u8; 16];
+            for i in 0..4 {
+                b[i * 4..i * 4 + 4].copy_from_slice(&word(i)?);
+            }
+            Some(std::net::IpAddr::from(b))
+        }
+        _ => None,
+    }
 }
 
 #[cfg(windows)]
@@ -585,7 +638,7 @@ pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
 
 /// The listening sockets of one address family, as (process, port).
 #[cfg(windows)]
-fn listening_on(family: u16) -> Vec<(u32, u16)> {
+fn listening_on(family: u16) -> Vec<(u32, u16, std::net::IpAddr)> {
     use windows_sys::Win32::NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
         TCP_TABLE_OWNER_PID_LISTENER,
@@ -640,8 +693,14 @@ fn listening_on(family: u16) -> Vec<(u32, u16)> {
             let pid = std::ptr::read_unaligned(row.add(pid_at).cast::<u32>());
             // The port sits in the first two bytes, in network order
             let port = u16::from_be((port_raw & 0xffff) as u16);
+            // The local address, in network order: four bytes after the
+            // state in the IPv4 row, the row's first sixteen in the IPv6 one
+            let addr = match family == AF_INET {
+                true => std::net::IpAddr::from(std::ptr::read_unaligned(row.add(4).cast::<[u8; 4]>())),
+                false => std::net::IpAddr::from(std::ptr::read_unaligned(row.cast::<[u8; 16]>())),
+            };
             if port != 0 {
-                out.push((pid, port));
+                out.push((pid, port, addr));
             }
         }
     }
@@ -959,16 +1018,50 @@ mod tests {
         let all = listeners();
         assert!(!all.is_empty(), "not a single listening port was read");
         let mine = std::process::id();
-        assert!(
-            all.get(&mine).is_some_and(|ports| ports.contains(&ours)),
-            "the port {ours} opened here does not show in the table"
-        );
+        let bound = all.get(&mine).and_then(|ports| ports.get(&ours));
+        assert!(bound.is_some(), "the port {ours} opened here does not show in the table");
+        // And with the address it was bound on, which is what says it opens
+        // at localhost
+        assert_eq!(bound.unwrap(), &vec![std::net::IpAddr::from([127, 0, 0, 1])]);
+        assert_eq!(open_host(bound.unwrap()), None);
         for (pid, ports) in &all {
             assert!(*pid > 0 || !ports.is_empty());
-            for p in ports {
+            for p in ports.keys() {
                 assert!(*p > 0, "port 0 is mixed in");
             }
         }
+    }
+
+    #[test]
+    fn a_port_bound_to_one_address_is_opened_there_and_not_at_localhost() {
+        use std::net::IpAddr;
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let v6: IpAddr = "2001:db8::5".parse().unwrap();
+        let link: IpAddr = "fe80::1".parse().unwrap();
+        // Everywhere, or the loopback: localhost reaches it
+        assert_eq!(open_host(&["0.0.0.0".parse().unwrap()]), None);
+        assert_eq!(open_host(&["::".parse().unwrap()]), None);
+        assert_eq!(open_host(&["::1".parse().unwrap()]), None);
+        assert_eq!(open_host(&[lan, "127.0.0.1".parse().unwrap()]), None);
+        // Only somewhere particular: there
+        assert_eq!(open_host(&[lan]).as_deref(), Some("192.168.1.20"));
+        assert_eq!(open_host(&[v6, lan]).as_deref(), Some("192.168.1.20"));
+        assert_eq!(open_host(&[v6]).as_deref(), Some("[2001:db8::5]"));
+        assert_eq!(open_host(&[link, v6]).as_deref(), Some("[2001:db8::5]"));
+        assert_eq!(open_host(&[]), None);
+    }
+
+    #[test]
+    fn an_address_is_read_the_way_proc_net_writes_it() {
+        use std::net::IpAddr;
+        assert_eq!(proc_net_addr("0100007F"), Some(IpAddr::from([127, 0, 0, 1])));
+        assert_eq!(proc_net_addr("1401A8C0"), Some(IpAddr::from([192, 168, 1, 20])));
+        assert_eq!(proc_net_addr("00000000"), Some(IpAddr::from([0, 0, 0, 0])));
+        assert_eq!(
+            proc_net_addr("00000000000000000000000001000000"),
+            Some("::1".parse().unwrap())
+        );
+        assert_eq!(proc_net_addr("zz"), None);
     }
 
     #[test]
