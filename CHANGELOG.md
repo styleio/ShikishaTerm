@@ -15,6 +15,15 @@ once it reaches its first tagged release.
   wheel scrolled the tab's own history instead, which a full screen does not
   have, so the tab stopped scrolling. Each tick now reaches such a program as
   three arrow keys.
+- **An AI on a MicroVM keeps working past the longest run the E2B plan
+  allows.** E2B pauses a machine once it has run for as long as the plan
+  allows (an hour on the smallest), however much time it was asked for, and
+  the work on it waited for somebody to press a key. The app now pauses and
+  starts such a machine itself at a quiet moment in the last minutes of its
+  run, which begins the run again without cutting anything off. A machine
+  that reaches the end while something is at work on it is started again at
+  once, and its terminal says that a reply an AI was receiving may have been
+  cut.
 - **A phone follows the board when the address it listens on changes.** When
   Tailscale connected after the program started (or dropped), or when only
   where the board listens was changed in the settings, the old address went
