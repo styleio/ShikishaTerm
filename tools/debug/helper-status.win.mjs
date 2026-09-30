@@ -178,7 +178,10 @@ try {
     // Claude's own line, not the request's echo of the word
     if (startedAt === null && /^\W*STARTED\s*$/m.test(s) && st !== 'BUSY') startedAt = at;
     if (!shot && startedAt !== null && st === 'BACKGROUND') shot = await photograph().catch(() => false);
-    if (endedAt === null && /helper \S+ ended/.test(log())) endedAt = at;
+    // The end of the helper that began -- Claude also reports ends of its own
+    // small helpers that no beginning was ever said for
+    const began = log().match(/helper (\S+) began/);
+    if (endedAt === null && began && log().includes(`helper ${began[1]} ended`)) endedAt = at;
     if (endedAt !== null && at - endedAt > 40) break;
     await sleep(1000);
   }
