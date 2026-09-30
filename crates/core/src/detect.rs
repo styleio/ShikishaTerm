@@ -240,6 +240,11 @@ impl Detector {
         self.profile.ignore_bottom_rows
     }
 
+    /// Whether the window title carried the profile's busy mark at the last tick
+    pub fn title_busy(&self) -> bool {
+        self.title_busy
+    }
+
     /// Whether the "working" indicator was showing at the last tick
     pub fn working_shown(&self) -> bool {
         self.working_shown

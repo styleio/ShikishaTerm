@@ -4676,6 +4676,27 @@ impl Tab {
         now_ms.saturating_sub(self.last_change_ms)
     }
 
+    /// Why this tab reads as it does, in words for the log: each of the
+    /// signals the verdict is made from, as it stood at the last tick. Asked
+    /// when a tab has read as busy for a long time, so the next time one is
+    /// held busy all night there is something to read off (2026-09-30: an AI
+    /// tab read as busy from 00:58 to 09:26 left no trace of why)
+    pub fn why_busy(&self, now_ms: u64) -> String {
+        let mut why = Vec::new();
+        if let Some(line) = self.detector.working_matched() {
+            why.push(format!("working on screen {line:?}"));
+        }
+        if self.detector.title_busy() {
+            let title = self.window_title.lock().map(|t| t.clone()).unwrap_or_default();
+            why.push(format!("busy mark in title {title:?}"));
+        }
+        if let Some(word) = self.hook_word() {
+            why.push(format!("the program said {}", word.label()));
+        }
+        why.push(format!("screen last changed {}s ago", self.ms_since_change(now_ms) / 1000));
+        why.join("; ")
+    }
+
     /// Whether the child process has output anything (a proxy for whether it started up and is moving)
     pub fn had_output(&self) -> bool {
         self.output_count() > 0

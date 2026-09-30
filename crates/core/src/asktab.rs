@@ -71,6 +71,12 @@ const BACKGROUND_GRACE: Duration = Duration::from_secs(180);
 /// started (and finished) quickly once this has passed
 const NEVER_SEEN_BUSY: Duration = Duration::from_secs(8);
 
+/// How often the record is looked at for the turn's end while the tab still
+/// reads as busy. The record is the CLI's own word and costs a file read, so
+/// not every tick; a few seconds late on an answer the screen held back for
+/// hours is nothing
+const RECORD_AGAIN: Duration = Duration::from_secs(5);
+
 /// How much of what was sent is looked for in the record, to find the turn
 /// the reply belongs to. Enough to tell two questions apart, short enough to
 /// survive a CLI trimming the end of a long paste
@@ -111,6 +117,30 @@ pub struct Ask {
     pub run: Option<RunFrom>,
     /// The reply being looked for on the machine the tab runs on
     pub far: FarRead,
+    /// When the record was last looked at for the turn's end while the
+    /// screen still read as busy (see [`reply_when_over`])
+    pub record_look: Option<Instant>,
+    /// When the log was last told why the tab still reads as busy
+    /// (see [`WHY_AGAIN`])
+    pub why_said: Option<Instant>,
+}
+
+/// How often a tab that has held an answer back for a long time has the
+/// reason it reads as busy written to the log. Not sooner than an ask's
+/// ordinary wait: a turn of a few minutes is not a mystery
+pub const WHY_AGAIN: Duration = Duration::from_secs(10 * 60);
+
+impl Ask {
+    /// Whether it is time to write down why the tab it waits on still reads
+    /// as busy, and if so, notes that it was written
+    pub fn time_to_say_why(&mut self, state: TabState) -> bool {
+        let waited = self.sent_at.unwrap_or(self.asked_at).elapsed();
+        if state != TabState::Busy || waited < WHY_AGAIN || self.why_said.is_some_and(|at| at.elapsed() < WHY_AGAIN) {
+            return false;
+        }
+        self.why_said = Some(Instant::now());
+        true
+    }
 }
 
 /// Where a shell's output starts, for `tab_run`
@@ -275,6 +305,8 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         max_rounds: 0,
         run: None,
         far: FarRead::default(),
+        record_look: None,
+        why_said: None,
     }
 }
 
@@ -337,13 +369,39 @@ pub fn reply_in(path: &Path, sent: &str) -> Option<String> {
 /// How many things said are read back to find the turn a reply belongs to
 const REPLY_TURNS: usize = 16;
 
+/// The reply to `sent` in the record at `path`, but only once the record says
+/// the turn it was given in has ended ([`crate::reader::turn_over_after`]).
+///
+/// This is the answer for a tab whose screen still reads as busy: the screen
+/// is a guess at what the CLI is doing, the record is the CLI saying so. A
+/// record with no marks of its own (Gemini) never answers here, and is left to
+/// the screen as before
+pub fn reply_when_over(path: &Path, sent: &str) -> Option<String> {
+    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+    let asked = asked_in(&page, sent)?;
+    let from = page.turns[asked].at?;
+    if !crate::reader::turn_over_after(path, from) {
+        return None;
+    }
+    reply_after(&page, asked)
+}
+
+/// Where in a page of the record `sent` was given: the last turn of the
+/// person's that holds its opening words
+fn asked_in(page: &crate::reader::Page, sent: &str) -> Option<usize> {
+    let want: String = flat(sent).chars().take(MATCH_CHARS).collect();
+    page.turns
+        .iter()
+        .rposition(|t| t.who == Who::You && flat(&t.text).contains(&want))
+}
+
 /// The reply to `sent` in a page of the record (see [`reply_in`])
 fn reply_of(page: &crate::reader::Page, sent: &str) -> Option<String> {
-    let want: String = flat(sent).chars().take(MATCH_CHARS).collect();
-    let asked = page
-        .turns
-        .iter()
-        .rposition(|t| t.who == Who::You && flat(&t.text).contains(&want))?;
+    reply_after(page, asked_in(page, sent)?)
+}
+
+/// The last thing the AI said after the turn at `asked`
+fn reply_after(page: &crate::reader::Page, asked: usize) -> Option<String> {
     page.turns[asked + 1..]
         .iter()
         .rev()
@@ -452,6 +510,25 @@ pub fn step(
             a.seen_busy = true;
             a.quiet_since = None;
             a.background_since = None;
+            // The screen says busy; the record may know better. Only a record
+            // here: one on another machine is read through the bridge, a look
+            // every few seconds, in `FarRead`
+            if a.run.is_none()
+                && a.record_look.is_none_or(|at| at.elapsed() >= RECORD_AGAIN)
+                && let Source::Here(path) = a.source(t)
+            {
+                a.record_look = Some(now);
+                if let Some(reply) = reply_when_over(&path, &a.text) {
+                    return Step::Answer(answer(
+                        a,
+                        "DONE",
+                        Some(&reply),
+                        "record",
+                        same_folder,
+                        Some("the tab's own record says the turn ended, though its screen still looked busy"),
+                    ));
+                }
+            }
         }
         TabState::Background => {
             a.seen_busy = true;
@@ -745,6 +822,69 @@ mod tests {
 
     fn said(role: &str, text: &str) -> Value {
         json!({"type": role, "message": {"role": role, "content": [{"type": "text", "text": text}]}})
+    }
+
+    /// The night of 2026-09-30: a Codex tab finished at 00:58 and its screen
+    /// went on reading as busy until 09:26, so the answer sat in its record
+    /// all night. The record said the turn was over; that is enough
+    #[test]
+    fn a_turn_the_record_says_is_over_is_answered_whatever_the_screen_says() {
+        let q = "Review far-keep-plan.ja.md adversarially and reply with the findings only.";
+        let codex_said = |role: &str, kind: &str, text: &str| {
+            json!({"type": "response_item", "payload": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}})
+        };
+        let event = |kind: &str| json!({"type": "event_msg", "payload": {"type": kind, "turn_id": "t4"}});
+        let mut lines = vec![
+            codex_said("user", "input_text", "an earlier review"),
+            codex_said("assistant", "output_text", "the earlier findings"),
+            event("task_complete"),
+            event("task_started"),
+            codex_said("user", "input_text", q),
+            codex_said("assistant", "output_text", "Reading the plan first."),
+        ];
+        let working = record(&lines);
+        assert_eq!(
+            reply_when_over(working.path(), q),
+            None,
+            "a turn still going on is not answered from the record, however much it has said"
+        );
+        lines.push(codex_said("assistant", "output_text", "Section 5 is not enough: ..."));
+        lines.push(event("task_complete"));
+        let over = record(&lines);
+        // What the AI said in one breath is read as one answer, as `reply_in` reads it
+        let reply = reply_when_over(over.path(), q).expect("the turn is over and its answer is in the record");
+        assert!(reply.ends_with("Section 5 is not enough: ..."), "{reply}");
+        assert_eq!(Some(reply), reply_in(over.path(), q), "the same answer the quiet screen would have fetched");
+        // The end of an EARLIER turn is not the end of this one
+        let early = record(&lines[..5]);
+        assert_eq!(reply_when_over(early.path(), q), None);
+    }
+
+    /// Claude Code: an answer that stops for a tool is the middle of the turn
+    #[test]
+    fn a_claude_turn_is_over_at_the_answer_that_says_it_ended() {
+        let q = "What is in secret.txt? Reply with only its contents.";
+        let stop = |text: &str, why: &str| {
+            json!({"type": "assistant", "message": {"role": "assistant", "stop_reason": why, "content": [{"type": "text", "text": text}]}})
+        };
+        let mid = record(&[said("user", q), stop("Let me look.", "tool_use")]);
+        assert_eq!(reply_when_over(mid.path(), q), None);
+        let done = record(&[said("user", q), stop("Let me look.", "tool_use"), stop("ALPHA-42", "end_turn")]);
+        let reply = reply_when_over(done.path(), q).expect("the turn ended");
+        assert!(reply.ends_with("ALPHA-42"), "{reply}");
+        assert_eq!(Some(reply), reply_in(done.path(), q));
+    }
+
+    /// A record with no marks (Gemini) is never answered from here: the
+    /// screen goes on deciding, as before
+    #[test]
+    fn a_record_without_marks_leaves_it_to_the_screen() {
+        let q = "Summarise the log.";
+        let f = record(&[
+            json!({"type": "user", "content": q}),
+            json!({"type": "gemini", "content": "The log shows three errors."}),
+        ]);
+        assert_eq!(reply_when_over(f.path(), q), None);
     }
 
     #[test]

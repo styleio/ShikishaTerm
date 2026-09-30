@@ -190,6 +190,104 @@ pub fn said_after(path: &Path, from: u64) -> Option<String> {
         .map(|t| t.text)
 }
 
+/// Where a CLI's own record says a turn stands.
+///
+/// Whether an AI is at work is read off its screen, and a screen can go on
+/// saying "working" after the work is over: Codex keeps a spinner in its
+/// window title while it names the conversation, which is not the turn, and
+/// an AI tab read as busy all night held a finished answer back until morning
+/// (2026-09-30). The record is written by the CLI itself at the two ends of a
+/// turn, so when it says the turn is over, it is.
+///
+/// Only the marks a CLI writes on purpose are read, never the shape of a line:
+/// a CLI that writes none (Gemini) reads as `None` and is judged by its screen
+/// as before, and a line this does not know is no mark at all
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TurnMark {
+    /// A turn began: the person (or a notice that the CLI answers) said something
+    Working,
+    /// The turn ended: answered, cut off, or stopped by the person
+    Over,
+}
+
+/// The mark one line of a record makes, if it makes one
+pub fn turn_mark(line: &str) -> Option<TurnMark> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    match v.get("type").and_then(Value::as_str)? {
+        // Codex files the turn's own two ends as events
+        "event_msg" => match v.pointer("/payload/type").and_then(Value::as_str)? {
+            "task_started" => Some(TurnMark::Working),
+            "task_complete" | "turn_aborted" => Some(TurnMark::Over),
+            _ => None,
+        },
+        // Claude Code says why each answer stopped. `tool_use` is the middle
+        // of a turn -- the tool runs and the turn goes on -- so only the
+        // reasons a turn ends on count
+        "assistant" => match v.pointer("/message/stop_reason").and_then(Value::as_str)? {
+            "end_turn" | "max_tokens" | "stop_sequence" | "refusal" => Some(TurnMark::Over),
+            _ => None,
+        },
+        "user" => {
+            // The person pressing Esc is filed as a message of theirs that
+            // names the answer it cut off
+            if v.get("interruptedMessageId").is_some_and(|i| !i.is_null()) {
+                return Some(TurnMark::Over);
+            }
+            // A tool's result comes back filed as the person's: the turn going
+            // on, not a new one
+            let content = v.pointer("/message/content")?;
+            let result = content.as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+            });
+            (!result).then_some(TurnMark::Working)
+        }
+        _ => None,
+    }
+}
+
+/// Whether the turn that begins at byte `from` of the record has ended: the
+/// first end the record wrote after it. A turn begun after that one does not
+/// undo it -- the question asked at `from` was answered either way.
+///
+/// Read forwards from `from`, and no further than [`TURN_READ_MAX`] bytes: a
+/// turn is found near its start, and a record that has grown past that since
+/// is read as "not known", which leaves the screen to judge
+pub fn turn_over_after(path: &Path, from: u64) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return false;
+    };
+    if from >= len {
+        return false;
+    }
+    let n = (len - from).min(TURN_READ_MAX);
+    let mut buf = vec![0u8; n as usize];
+    if file.seek(SeekFrom::Start(from)).is_err() || file.read_exact(&mut buf).is_err() {
+        return false;
+    }
+    turn_over_in(&buf)
+}
+
+/// How much of a record [`turn_over_after`] reads past the turn's start
+pub const TURN_READ_MAX: u64 = 32 * 1024 * 1024;
+
+/// [`turn_over_after`] on bytes already read. Only whole lines count: the last
+/// one may still be being written
+fn turn_over_in(bytes: &[u8]) -> bool {
+    let whole = match bytes.iter().rposition(|&b| b == b'\n') {
+        Some(end) => &bytes[..=end],
+        None => return false,
+    };
+    whole
+        .split(|&b| b == b'\n')
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .any(|line| turn_mark(line) == Some(TurnMark::Over))
+}
+
 /// The first `want` things said at or after byte `from`, read forwards: what
 /// a reader opened at one place in a conversation shows when it is asked for
 /// what came next. The same reading as [`read_back`] -- an answer said in
@@ -1896,5 +1994,57 @@ mod tests {
         assert_eq!(find_in("abc", ""), None);
         assert_eq!(find_ascii_blind(b"xxABCxx", b"abc", 0), Some(2));
         assert_eq!(find_ascii_blind(b"xxABCxx", b"abc", 3), None);
+    }
+
+    /// The marks are the ones the CLIs write on purpose, and nothing else
+    #[test]
+    fn a_turn_ends_where_the_cli_says_it_does() {
+        let codex = |t: &str| format!(r#"{{"timestamp":"x","type":"event_msg","payload":{{"type":"{t}","turn_id":"1"}}}}"#);
+        assert_eq!(turn_mark(&codex("task_started")), Some(TurnMark::Working));
+        assert_eq!(turn_mark(&codex("task_complete")), Some(TurnMark::Over));
+        assert_eq!(turn_mark(&codex("turn_aborted")), Some(TurnMark::Over));
+        assert_eq!(turn_mark(&codex("token_count")), None, "a Codex event that is not an end of the turn");
+
+        let claude = |r: &str| format!(r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":"{r}","content":[{{"type":"text","text":"x"}}]}}}}"#);
+        assert_eq!(turn_mark(&claude("end_turn")), Some(TurnMark::Over));
+        assert_eq!(turn_mark(&claude("max_tokens")), Some(TurnMark::Over));
+        assert_eq!(turn_mark(&claude("tool_use")), None, "a tool call is the middle of a turn");
+        assert_eq!(
+            turn_mark(r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"x"}]}}"#),
+            None,
+            "an answer that does not say why it stopped is not taken for the end"
+        );
+        assert_eq!(
+            turn_mark(r#"{"type":"user","message":{"role":"user","content":"do this"}}"#),
+            Some(TurnMark::Working)
+        );
+        assert_eq!(
+            turn_mark(r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#),
+            None,
+            "a tool's result is the turn going on"
+        );
+        assert_eq!(
+            turn_mark(r#"{"type":"user","interruptedMessageId":"m1","message":{"role":"user","content":"[Request interrupted]"}}"#),
+            Some(TurnMark::Over)
+        );
+        // Gemini writes no marks: left to the screen
+        assert_eq!(turn_mark(r#"{"type":"gemini","content":"hello"}"#), None);
+        assert_eq!(turn_mark("not json"), None);
+    }
+
+    #[test]
+    fn a_turn_is_over_once_an_end_is_written_after_it_and_only_whole_lines_count() {
+        let asked = r#"{"type":"user","message":{"role":"user","content":"q"}}"#;
+        let working = r#"{"type":"event_msg","payload":{"type":"agent_message"}}"#;
+        let over = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        let again = r#"{"type":"user","message":{"role":"user","content":"next"}}"#;
+        assert!(!turn_over_in(format!("{asked}\n{working}\n").as_bytes()), "still at work");
+        assert!(
+            !turn_over_in(format!("{asked}\n{working}\n{over}").as_bytes()),
+            "the end is still being written"
+        );
+        assert!(turn_over_in(format!("{asked}\n{working}\n{over}\n").as_bytes()));
+        // A new turn begun after it does not undo the end of the one asked about
+        assert!(turn_over_in(format!("{asked}\n{over}\n{again}\n").as_bytes()));
     }
 }

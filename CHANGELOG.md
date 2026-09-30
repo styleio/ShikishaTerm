@@ -8,6 +8,16 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **An answer asked of another AI tab arrives when the AI finishes, even if
+  its screen still looks busy.** A Codex tab could go on looking busy after
+  its turn was over, and the answer waited in its record until something on
+  screen changed -- once, for a whole night. The tab's own record says when a
+  turn ends (Codex and Claude Code both write it), and that is now read too.
+  Why a tab still looks busy is written to hooks.log when an answer is held
+  back for a long time, and every change of a tab's state is logged whether
+  automation is on or off.
+
 ### Removed
 - **The ? no longer offers to send a question to GitHub as an issue.** A
   question and its answer can hold names, paths and work of your own, and an

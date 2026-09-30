@@ -1002,6 +1002,7 @@ fn tend_asks(
     surfaces: &[Surface],
     tabs: &[Tab],
     orchestra: &mut crate::orch::Orchestra,
+    start: std::time::Instant,
 ) {
     use crate::asktab::{Phase, Step};
     let keys: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
@@ -1029,6 +1030,17 @@ fn tend_asks(
     };
     asks.retain_mut(|a| {
         let target = find(&a.target);
+        if let Some(t) = target
+            && a.time_to_say_why(t.state)
+        {
+            let waited = a.sent_at.unwrap_or(a.asked_at).elapsed().as_secs() / 60;
+            let now_ms = start.elapsed().as_millis() as u64;
+            append_hook_log(&format!(
+                "ask_tab: {} still reads as busy {waited} min after it was asked: {}",
+                a.target,
+                t.why_busy(now_ms)
+            ));
+        }
         let caller = a.caller.as_deref().and_then(find);
         let caller_free = caller.is_some_and(|t| crate::asktab::turn_over(t.state));
         let same_folder = match (caller.and_then(|t| t.cwd()), target.and_then(|t| t.cwd())) {
@@ -3745,6 +3757,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 let now_ms = start.elapsed().as_millis() as u64;
+                // Every change of state, whether automation is on or not: it is
+                // the one trace of what a tab was read as, and a tab read as
+                // busy all night left none while it was off (2026-09-30)
+                for &(idx, old, new) in &transitions {
+                    if old == new {
+                        continue;
+                    }
+                    let t = &tabs[idx - 1];
+                    append_hook_log(&format!(
+                        "State tab{idx} {}->{} [{}] said={:?} prompted={} working={} answered={} submit_pending={}",
+                        old.label(),
+                        new.label(),
+                        t.profile_name(),
+                        // What the program said about itself, if it says
+                        // anything: the one line that tells a state read
+                        // off the screen from a state it was told outright
+                        t.hook_word().map(|w| w.label()),
+                        t.was_prompted(),
+                        t.saw_working_flag(),
+                        t.answered_since_submit(),
+                        pending_send.iter().any(|p| p.tab == idx)
+                    ));
+                }
                 if auto_enabled {
                     for (i, fired) in started_fired.iter_mut().enumerate() {
                         // Sending right after launch gets dropped, since the AI CLI
@@ -3759,27 +3794,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             );
                         }
                     }
-                    for &(idx, old, new) in &transitions {
-                        if old == new {
-                            continue;
-                        }
-                        let t = &tabs[idx - 1];
-                        append_hook_log(&format!(
-                            "State tab{idx} {}->{} [{}] said={:?} prompted={} working={} answered={} submit_pending={}",
-                            old.label(),
-                            new.label(),
-                            t.profile_name(),
-                            // What the program said about itself, if it says
-                            // anything: the one line that tells a state read
-                            // off the screen from a state it was told outright
-                            t.hook_word().map(|w| w.label()),
-                            t.was_prompted(),
-                            t.saw_working_flag(),
-                            t.answered_since_submit(),
-                            pending_send.iter().any(|p| p.tab == idx)
-                        ));
-                    }
-
                     // Once a follow-up starts, cancel any pending completion confirmation
                     for &(idx, _, new) in &transitions {
                         if new == TabState::Busy || new == TabState::Exited {
@@ -4455,6 +4469,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         max_rounds,
                                         run: run.then(crate::asktab::RunFrom::default),
                                         far: crate::asktab::FarRead::default(),
+                                        record_look: None,
+                                        why_said: None,
                                     });
                                 }
                             }
@@ -4507,7 +4523,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Asks waiting on another tab: a look at each, every turn of the loop
         if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs, &mut orchestra);
+                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs, &mut orchestra, start);
             }
         }
         // Handed-out work: briefs waiting for their tab to be free, waits on
