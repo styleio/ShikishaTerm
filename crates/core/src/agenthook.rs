@@ -1609,16 +1609,81 @@ fn far_write(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing:
 }
 
 fn far_put(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>) -> Result<(), String> {
-    match far_edited(t, existing) {
-        Some(text) => far_write(at, t, path, existing, text, "written"),
-        None => Ok(()),
-    }
+    far_change(at, t, path, existing, &|now| far_edited(t, now), "written")
 }
 
 fn far_take_out(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, existing: Option<&str>) -> Result<(), String> {
-    match far_without(existing) {
-        Some(text) => far_write(at, t, path, existing, text, "taken out"),
-        None => Ok(()),
+    far_change(at, t, path, existing, &far_without, "taken out")
+}
+
+/// How many times a hook file that changed between being read and being
+/// written is read again before giving up. A CLI rewrites its own settings
+/// once per change it makes; a file that is different on each of three reads
+/// is being written by something else that keeps at it, and a fourth read
+/// would only race it again
+const FAR_TRIES: usize = 3;
+
+/// What to write, worked out from the file as it is at the moment of writing.
+///
+/// A hook file on another machine can be changed by the CLI there, or by the
+/// person, between this program reading it and writing it back -- and
+/// writing the text worked out from the earlier read would take that change
+/// away, with a way back that holds the earlier file too. So it is read again
+/// just before the write, and the write goes ahead only when it is still the
+/// file the text was worked out from; otherwise the text is worked out again
+/// from what is there now. `Ok(None)`: nothing to change. The moment between
+/// the last read and the write itself cannot be closed from here -- the file
+/// is written over a connection with no lock on it -- only made as short as
+/// one round trip
+fn far_settle(
+    first: Option<&str>,
+    edit: &dyn Fn(Option<&str>) -> Option<String>,
+    mut read_again: impl FnMut() -> Result<Option<String>, String>,
+) -> Result<Option<(Option<String>, String)>, FarRace> {
+    let mut seen = first.map(str::to_string);
+    for _ in 0..FAR_TRIES {
+        let Some(text) = edit(seen.as_deref()) else { return Ok(None) };
+        let now = read_again().map_err(FarRace::Unread)?;
+        if now == seen {
+            return Ok(Some((seen, text)));
+        }
+        seen = now;
+    }
+    Err(FarRace::KeptChanging)
+}
+
+/// Why a hook file was left alone while it was being changed
+#[derive(Debug, PartialEq, Eq)]
+enum FarRace {
+    /// Reading it again failed
+    Unread(String),
+    /// It was different on every read
+    KeptChanging,
+}
+
+/// Change a hook file on another machine to what `edit` makes of it, as it is
+/// when written (`far_settle`), the file as it was then kept beside it
+fn far_change(
+    at: &crate::elsewhere::Elsewhere,
+    t: &Target,
+    path: &str,
+    existing: Option<&str>,
+    edit: &dyn Fn(Option<&str>) -> Option<String>,
+    what: &str,
+) -> Result<(), String> {
+    match far_settle(existing, edit, || far_read(at, path, &t.name)) {
+        Ok(None) => Ok(()),
+        Ok(Some((base, text))) => far_write(at, t, path, base.as_deref(), text, what),
+        Err(FarRace::Unread(why)) => Err(why),
+        Err(FarRace::KeptChanging) => {
+            let why = format!(
+                "the {} hook file {path} on {} kept changing while it was being {what}, so it was left alone; try again when it is quiet",
+                t.name,
+                at.address()
+            );
+            crate::append_hook_log(&why);
+            Err(why)
+        }
     }
 }
 
@@ -1657,6 +1722,38 @@ mod tests {
         assert!(once.contains("state:DONE") && once.contains("SessionStart"));
         assert_eq!(far_edited(&t, Some(&once)), None, "a second pass writes again");
         assert_eq!(far_edited(&t, Some("{ not json")), None, "a file that does not parse is written over");
+    }
+
+    /// A hook file changed over there between the read and the write is not
+    /// written over with what was worked out from the older read: it is read
+    /// again and worked out again, the person's change kept -- and a file
+    /// that is different every time is left alone rather than raced. Before,
+    /// the text from the first read went straight back, taking the change
+    /// with it, and the way back kept beside it was the older file as well
+    #[test]
+    fn a_far_hook_file_changed_meanwhile_is_worked_out_again() {
+        let t = far_test_target(&[("Stop", "state:DONE")]);
+        let first = r#"{"model":"opus"}"#;
+        let changed = r#"{"model":"opus","theme":"dark"}"#;
+        let edit = |now: Option<&str>| far_edited(&t, now);
+        // Changed once, then still: the write is made from the changed file
+        let mut reads = vec![Ok(Some(changed.to_string())), Ok(Some(changed.to_string()))].into_iter();
+        let (base, text) = far_settle(Some(first), &edit, || reads.next().unwrap()).unwrap().unwrap();
+        assert_eq!(base.as_deref(), Some(changed), "the way back is the file as it was when written");
+        assert!(text.contains("dark") && text.contains("state:DONE"), "the change made meanwhile is kept: {text}");
+        // Unchanged: one read again, and the write goes ahead
+        let mut reads = vec![Ok(Some(first.to_string()))].into_iter();
+        assert!(far_settle(Some(first), &edit, || reads.next().unwrap()).unwrap().is_some());
+        // Different every time: left alone
+        let mut n = 0;
+        let busy = far_settle(Some(first), &edit, || {
+            n += 1;
+            Ok(Some(format!(r#"{{"n":{n}}}"#)))
+        });
+        assert_eq!(busy, Err(FarRace::KeptChanging));
+        // Nothing to change: not read again at all
+        let done = far_edited(&t, Some(first)).unwrap();
+        assert_eq!(far_settle(Some(&done), &edit, || panic!("read again for nothing")), Ok(None));
     }
 
     fn far_test_target(events: &[(&str, &str)]) -> Target {
