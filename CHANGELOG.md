@@ -169,6 +169,16 @@ once it reaches its first tagged release.
   forbids keeping it says so, and points at the DOM instead.
 
 ### Changed
+- **The bridge on a server or a MicroVM is one resident process that holds
+  its jobs.** It is started once for the account and carries every app
+  connected to it, where it used to be one program per line. A tab's
+  `shikisha` command goes to the app that started that tab, and is told at
+  once when that app is not connected, rather than waiting. It still ends a
+  few seconds after the last app goes. A machine holding an older build of
+  the same version is given this one.
+- **The server version's packages carry the bridge.** The .deb, the .rpm
+  and the tar hold it for both kinds of processor, so a server version can
+  reach servers and MicroVMs of either.
 - **The hard reload moved into Develop.** The bar's own ⟲ button is gone; a
   bar that showed it no longer does (the old setting is read and left alone),
   and Shift or Ctrl on the reload button still reloads hard.

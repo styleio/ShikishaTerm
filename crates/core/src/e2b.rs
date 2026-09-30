@@ -2810,8 +2810,6 @@ mod tests {
         assert!(!let_go_of(id), "a machine put back in the list is still refused");
     }
 
-    use super::*;
-
     /// A read off a socket is a length of bytes, not a message. Proving it at
     /// every possible split is the only way to be sure: a terminal that drops
     /// whatever straddled a read boundary loses characters at random, which is
