@@ -1854,14 +1854,26 @@ pub struct ConferSpec {
     /// another. On unless turned off: the person asked to see it happen
     #[serde(default = "yes")]
     pub open: bool,
-    /// The most characters a line may have. 0 = no limit
-    #[serde(default = "default_line_max")]
+    /// The most characters a line may have. 0 = no limit. A number too large
+    /// to be one is read as the largest there is, rather than taking every
+    /// other setting in the file down with it
+    #[serde(default = "default_line_max", deserialize_with = "saturating_u32")]
     pub line_max: u32,
 }
 
 impl Default for ConferSpec {
     fn default() -> Self {
         Self { open: true, line_max: default_line_max() }
+    }
+}
+
+/// A count as written, held to what a `u32` holds: a negative one is 0, a
+/// larger one is the largest, and one that is not a number is refused
+fn saturating_u32<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    match v.as_f64() {
+        Some(n) if n.is_finite() => Ok(n.clamp(0.0, u32::MAX as f64) as u32),
+        _ => Err(serde::de::Error::custom(format!("{v} is not a count"))),
     }
 }
 
@@ -7035,6 +7047,23 @@ mod pair_desks_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A line limit written too large to hold, or below nothing, is read as
+    /// the nearest one there is -- and the rest of the settings with it
+    #[test]
+    fn a_line_limit_out_of_range_does_not_take_the_settings_down() {
+        let read = |n: &str| {
+            serde_json::from_str::<super::Config>(&format!(r#"{{"confer": {{"line_max": {n}}}}}"#))
+                .map(|c| c.confer.line_max)
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(read("4294967296"), Ok(u32::MAX));
+        assert_eq!(read("-5"), Ok(0));
+        assert_eq!(read("80"), Ok(80));
+        assert!(read("\"long\"").is_err(), "a word is not a count");
+        let none = serde_json::from_str::<super::Config>("{}").unwrap();
+        assert_eq!((none.confer.open, none.confer.line_max), (true, 80));
+    }
+
     /// What the column remembers goes into the page as it is, so only the
     /// three kinds and names shaped like a panel's are let through
     #[test]

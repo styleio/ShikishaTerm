@@ -1163,6 +1163,12 @@ fn tend_asks(
                 if let Some(ask) = a.ask_id {
                     let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
                     let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+                    // Its line, read from its record: written first, so the
+                    // answer is not given its first sentence instead
+                    if let Some(line) = a.late_line.take() {
+                        append_hook_log(&format!("confer: {target}'s line was read from its record"));
+                        log.line(&desk, Some(&target), &line, Some(ask), "said");
+                    }
                     log.ask_answered(&desk, ask, &target, &state, v["reply"].as_str(), line_max);
                 }
                 append_hook_log(&format!(
@@ -4541,10 +4547,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     hold = serde_json::json!(why);
                                 }
                                 crate::asktab::Hear::Line(line) => {
+                                    append_hook_log(&format!("confer: {id} said its line ({} chars)", line.chars().count()));
                                     let desk = a.desk.clone().or_else(|| desks.get(desk_index).map(|d| d.id.clone())).unwrap_or_default();
                                     convo_log.line(&desk, Some(&id), &line, a.ask_id, "said");
                                 }
-                                crate::asktab::Hear::Go => {}
+                                crate::asktab::Hear::Go => {
+                                    if a.line_unheard {
+                                        append_hook_log(&format!("confer: {id} ended again and the hook heard nothing; its line is read from its record"));
+                                    }
+                                }
                             }
                         }
                     }
@@ -4868,6 +4879,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         held_at: None,
                                         line_asks: 0,
                                         lined: false,
+                                        held_idle: None,
+                                        line_unheard: false,
+                                        late_line: None,
                                     });
                                 }
                             }

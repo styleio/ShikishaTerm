@@ -99,6 +99,13 @@ const RECORD_TRUSTED_AFTER: Duration = Duration::from_secs(30);
 /// this is for a tab that never does
 pub const LINE_WAIT: Duration = Duration::from_secs(90);
 
+/// How long a tab held back for its line may sit idle before it is taken to
+/// be saying nothing more. A tab told to go on starts working within seconds;
+/// one that does not has let the end of its turn stand (a CLI can drop the
+/// "go on", measured 2026-10-01 with Codex 0.155: 2 of the first 13 asks), and
+/// the answer, already given, should not wait out the whole [`LINE_WAIT`]
+const HELD_IDLE: Duration = Duration::from_secs(20);
+
 /// How long a finished-looking tab expected to call the stop hook is given
 /// for it, before its answer is read the old way. The hook runs as the turn
 /// ends and reaches the app in a fraction of a second; the screen can read as
@@ -196,6 +203,14 @@ pub struct Ask {
     pub line_asks: u8,
     /// The answer has its line, or will not get one of its own
     pub lined: bool,
+    /// Since when a tab held back for its line has sat idle (see [`HELD_IDLE`])
+    pub held_idle: Option<Instant>,
+    /// The tab ended its turn again without the hook being told what it said
+    /// last: its line is looked for in its record instead
+    pub line_unheard: bool,
+    /// The answer's line, found in the record rather than heard from the
+    /// hook, for the loop to write down with the answer
+    pub late_line: Option<String>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -442,6 +457,9 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         held_at: None,
         line_asks: 0,
         lined: false,
+        held_idle: None,
+        line_unheard: false,
+        late_line: None,
     }
 }
 
@@ -456,6 +474,11 @@ pub enum Step {
     Hand(String),
     /// Forget it
     Drop,
+}
+
+/// A line as a person says one: quotes or ticks around it are not part of it
+fn bare_line(said: &str) -> &str {
+    said.trim().trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '「' | '」' | '“' | '”')).trim()
 }
 
 /// `tab_run(tab, command, {timeout_ms})` and `browser_do(tab, goal, ...)`,
@@ -547,6 +570,15 @@ impl Ask {
             return Hear::Go;
         }
         let said = said.trim();
+        // The end of the turn it was told to go on in, with nothing said
+        // in it as far as the hook knows. A CLI does not always hand the last
+        // message to the hook (seen with Codex 0.155, 2026-10-01: its record
+        // held the line, the hook got none) -- and asking again would be
+        // refused, a turn goes on once. What it said is in its record
+        if said.is_empty() && self.held.is_some() {
+            self.line_unheard = true;
+            return Hear::Go;
+        }
         let Some(_) = self.held else {
             if said.is_empty() {
                 // Nothing to pass on; the answer is read the ordinary way
@@ -557,10 +589,7 @@ impl Ask {
             self.line_asks = 1;
             return Hear::Hold(crate::convo::confer::stop_reason(line_max));
         };
-        // A line is said the way a person says one: quotes or ticks around it
-        // are not part of it
-        let bare = said.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '「' | '」' | '“' | '”')).trim();
-        match crate::convo::confer::check_line(bare, line_max, "That line") {
+        match crate::convo::confer::check_line(bare_line(said), line_max, "That line") {
             Ok(line) => {
                 self.lined = true;
                 Hear::Line(line)
@@ -764,7 +793,24 @@ pub fn step(
     // already given, and the line goes without its own words
     if let Some(reply) = a.held.clone() {
         let stopped = matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed);
-        if a.lined || stopped || now >= a.deadline || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
+        if quiet(t.state) {
+            a.held_idle.get_or_insert(now);
+        } else {
+            a.held_idle = None;
+        }
+        let idle = a.held_idle.is_some_and(|at| at.elapsed() >= HELD_IDLE);
+        // Its line, from its record, when the hook did not bring it: the last
+        // thing it said, if that is not the answer itself and can be a line
+        if !a.lined
+            && (a.line_unheard || idle)
+            && let Some(last) = a.recorded(t)
+            && last.trim() != reply.trim()
+            && let Ok(line) = crate::convo::confer::check_line(bare_line(&last), crate::config::confer().line_max, "the line")
+        {
+            a.late_line = Some(line);
+            a.lined = true;
+        }
+        if a.lined || stopped || idle || now >= a.deadline || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
             a.lined = true;
             return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
         }
@@ -1158,12 +1204,38 @@ mod tests {
             let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("{state:?} kept the caller waiting") };
             assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The memo says ABC.")), "{state:?}");
         }
+        // Nor while it sits idle, told to go on and not going
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        t.state = TabState::Done;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "idle a moment: still waiting");
+        a.held_idle = Some(Instant::now() - HELD_IDLE);
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "idle too long");
         // Nor past the caller's own wait
         let mut a = sent_ask();
         assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
         a.deadline = Instant::now();
         t.state = TabState::Busy;
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "past the caller's wait");
+    }
+
+    #[test]
+    fn a_line_the_hook_did_not_hear_is_read_from_the_record() {
+        let rec = record(&[
+            said("user", "review it"),
+            said("assistant", "The memo says ABC."),
+            said("user", "Your answer has been passed on in full ..."),
+            said("assistant", "I sent the memo's exact text."),
+        ]);
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        assert_eq!(a.hear_stop("", 80), Hear::Go, "nothing heard: the turn ends, not held again");
+        assert!(a.line_unheard && !a.lined);
+        // The record is where the line is (a tab with no record of its own
+        // leaves it to the first sentence)
+        let last = reply_in(rec.path(), "review it", 0).unwrap();
+        assert_eq!(last, "I sent the memo's exact text.");
+        assert_eq!(bare_line("\u{201c}Done.\u{201d}"), "Done.");
     }
 
     #[test]

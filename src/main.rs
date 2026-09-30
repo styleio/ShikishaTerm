@@ -1323,15 +1323,23 @@ fn line_hook(v: &serde_json::Value) {
     if std::env::var(api::ENV_PIPE).is_err() {
         return go();
     }
-    let said = v.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default();
-    let mut client = match api::ApiClient::from_env() {
-        Ok(c) => c,
-        Err(e) => {
-            append_hook_log(&format!("hook line could not ask: {e}"));
+    let said = v.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+    // Asked on a thread and waited for a little less than the CLI waits for
+    // this hook (10 s): an app that stopped answering must still leave the
+    // hook time to say "go on" itself
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let answer = api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into()]));
+        let _ = tx.send(answer);
+    });
+    let answer = match rx.recv_timeout(std::time::Duration::from_secs(8)) {
+        Ok(a) => a,
+        Err(_) => {
+            append_hook_log("hook line: the app did not answer in time; the turn ends");
             return go();
         }
     };
-    match client.call("confer_stop", vec![said.into()]) {
+    match answer {
         Ok(answer) if answer["ok"] == serde_json::json!(true) => match answer["result"]["hold"].as_str() {
             Some(reason) if !reason.trim().is_empty() => {
                 println!("{}", serde_json::json!({"decision": "block", "reason": reason}));

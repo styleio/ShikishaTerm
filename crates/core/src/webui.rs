@@ -10220,7 +10220,7 @@ function operateCard() {
 // the value they have, the standard one included
 function conferCard() {
   const o = current.confer = current.confer || {};
-  const max = el("input", {type:"number", min:"0", step:"1", style:"width:110px"});
+  const max = el("input", {type:"number", min:"0", max:"1000", step:"1", style:"width:110px"});
   max.value = (o.line_max ?? 80);
   max.addEventListener("input", () => { o.line_max = max.value; refreshSave(); });
   return card(T["settings.confer.title"],
@@ -16194,7 +16194,8 @@ function payload() {
   // what the app does anyway (the card shows those values as they are)
   if (out.confer) {
     const c = out.confer;
-    const n = (c.line_max === "" || c.line_max == null) ? 80 : Math.max(0, Math.round(Number(c.line_max)) || 0);
+    // A line is one sentence: more than a thousand characters is not one
+    const n = (c.line_max === "" || c.line_max == null) ? 80 : Math.min(1000, Math.max(0, Math.round(Number(c.line_max)) || 0));
     if (c.open !== false && n === 80) delete out.confer;
     else out.confer = { open: c.open !== false, line_max: n };
   }

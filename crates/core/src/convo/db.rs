@@ -346,7 +346,12 @@ impl Store {
             self.conn.execute("DELETE FROM stops WHERE stopped_at < ?1", params![before])?;
             // A line's marks go with it (ON DELETE CASCADE)
             self.conn.execute("DELETE FROM lines WHERE said_at < ?1", params![before])?;
-            self.conn.execute("DELETE FROM asks WHERE asked_at < ?1", params![before])?;
+            // An ask answered long after it was made stays as long as its
+            // answer's line does: the line opens onto its whole text
+            self.conn.execute(
+                "DELETE FROM asks WHERE asked_at < ?1 AND NOT EXISTS (SELECT 1 FROM lines WHERE lines.ask_id = asks.id)",
+                params![before],
+            )?;
             self.conn.execute("DELETE FROM shares WHERE shared_at < ?1", params![before])?;
             Ok(())
         })();
@@ -1024,6 +1029,18 @@ mod tests {
         assert!(s.conference("d", i64::MAX, 10).unwrap().is_empty());
         let marks: i64 = s.conn.query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0)).unwrap();
         assert_eq!(marks, 0);
+    }
+
+    #[test]
+    fn an_ask_stays_while_a_line_still_opens_onto_it() {
+        let s = Store::in_memory().unwrap();
+        let ask = s.ask_opened("d", None, "finch", "the whole question", 1, 0).unwrap();
+        s.ask_answered(ask, "DONE", Some("the whole answer"), KEEP_MS).unwrap();
+        s.line("d", Some("finch"), "answered late", Some(ask), "said", KEEP_MS).unwrap();
+        s.forget_old(KEEP_MS + 10).unwrap();
+        let page = s.conference("d", i64::MAX, 10).unwrap();
+        let Said::Line { ask: Some(a), .. } = &page[0] else { panic!("{page:?}") };
+        assert_eq!(a.reply.as_deref(), Some("the whole answer"));
     }
 
     #[test]
