@@ -1906,6 +1906,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A failed CI run's checks and logs, read from GitHub on a thread, and the
     // tab that fixes them opened back here
     let (ci_tx, ci_rx) = std::sync::mpsc::channel::<CiFix>();
+    // One check's log, read from GitHub on a thread and opened in an editor
+    // that only reads back here, where the editors are
+    let (ci_log_tx, ci_log_rx) = std::sync::mpsc::channel::<CiLog>();
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
@@ -2105,10 +2108,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is showing. Held here rather than in the settings, because the file
     // somebody opened this afternoon is not a setting
     let mut editors: Vec<crate::view::EditorOpen> = Vec::new();
-    // What the read-only editors are showing: a page's source or DOM, by the
-    // editor's key (see `page_view_text`), and how many have been opened
-    let mut page_views: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut page_view_n: u64 = 0;
+    // What the read-only editors are showing (a page's source or DOM, a
+    // check's log), by the editor's key -- see `readview`
+    let mut views = crate::readview::Held::default();
     // The one just asked for, to be brought into view at the top of the pass
     // (the surfaces were worked out before the press arrived)
     let mut open_editor: Option<String> = None;
@@ -6543,36 +6545,51 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let dom = what == "dom";
             let got = if dom { caps.browser_html(&page) } else { caps.browser_source(&page) };
             let text = match got {
-                Ok(t) => page_view_text(t),
+                Ok(t) => t,
                 Err(e) => {
                     append_hook_log(&format!("page view: the {what} of {page} could not be read: {e:#}"));
                     flash = Some(i18n::tp("msg.page_view.failed", &[("e", &format!("{e:#}"))]));
                     continue;
                 }
             };
-            page_view_n += 1;
-            let key = format!("{PAGE_VIEW_PREFIX}{page_view_n}");
             let label = i18n::t(if dom { "tui.dev.dom" } else { "tui.dev.source" });
             let shown = format!("{} ({label}).html", name.replace(['/', '\\'], "-"));
-            page_views.insert(key.clone(), text);
-            editors.push(crate::view::EditorOpen {
-                key: key.clone(),
-                // Under the page's own folder in the list, when it is in one on
-                // this PC -- the text is not a file of that folder, only about it
-                dir: if on.is_none() { dir } else { None },
-                showing: Some(shown),
-                stamp: None,
-                scratch: true,
-                at: None,
-                on: None,
-                diff: None,
-                read_only: true,
-            });
-            open_editor = Some(key);
+            // Under the page's own folder in the list, when it is in one on
+            // this PC -- the text is not a file of that folder, only about it
+            let under = if on.is_none() { dir } else { None };
+            open_editor = Some(views.open(&mut editors, shown, crate::readview::Kind::Html, text, under).key);
             append_hook_log(&format!("page view: the {} of {page} opened to read", if dom { "DOM" } else { "source" }));
         }
-        // A page view's text goes with its editor
-        page_views.retain(|k, _| editors.iter().any(|e| &e.key == k));
+        // A check's log, back from GitHub: into an editor that only reads,
+        // listed under the folder whose git panel asked, and the git panel told
+        // which line to open on
+        while let Ok(got) = ci_log_rx.try_recv() {
+            let js = match got.result {
+                Ok(log) => {
+                    let (text, first_error) = crate::github::log_for_reading(&log);
+                    let short: String = got.sha.chars().take(7).collect();
+                    let shown = format!("{} @ {short}", got.name.replace(['/', '\\'], "-"));
+                    let (on, dir) = crate::uistate::place_of(std::path::Path::new(&got.folder));
+                    let under = (on.is_none() && !dir.as_os_str().is_empty()).then_some(dir);
+                    let opened = views.open(&mut editors, shown.clone(), crate::readview::Kind::Log, text, under);
+                    open_editor = Some(opened.key);
+                    append_hook_log(&format!("ci log: {} of {short} opened to read", got.name));
+                    let line = first_error.map(|l| l + usize::from(opened.cut));
+                    serde_json::json!({"act": "ci_log", "ok": true, "seq": got.seq, "data": {"shown": shown, "line": line}})
+                }
+                Err(e) => {
+                    append_hook_log(&format!("ci log: {} (job {}) could not be read: {e:#}", got.name, got.job));
+                    serde_json::json!({"act": "ci_log", "ok": false, "seq": got.seq, "error": format!("{e:#}")})
+                }
+            };
+            let js = js.to_string();
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
+            }
+        }
+        // A held text goes with its editor
+        views.keep_open(&editors);
 
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
@@ -7948,6 +7965,48 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     _ => None,
                 })
                 .collect();
+            // One check's log, for a person to read. A job GitHub Actions ran
+            // and finished has one to download, on a thread. Any other check
+            // has only its page, and so does a job still running -- GitHub
+            // keeps no log of it until it ends, and its page shows it live --
+            // which is opened in a browser tab in the folder instead, and said,
+            // so that somebody who pressed for a log is not left looking at a
+            // web page wondering why
+            if act == "ci_log" {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let (project, name, sha, url, folder) = (text("project"), text("name"), text("sha"), text("url"), text("folder"));
+                let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
+                let running = args.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                if let Some(job) = args.get("job").and_then(|v| v.as_u64()).filter(|_| !running) {
+                    let tx = ci_log_tx.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::github::ci_log(&sources, &project, job, &|k| tokens.get(k).cloned());
+                        let _ = tx.send(CiLog { seq, name, job, sha, folder, result });
+                    });
+                    continue;
+                }
+                let opened = match desks.get(desk_index) {
+                    Some(desk) if crate::github::openable_link(&url) => {
+                        page_in_folder(desk, std::path::Path::new(&folder), &url, &name).map(|(id, fresh)| {
+                            reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
+                            if fresh {
+                                watcher.poke();
+                            }
+                        })
+                    }
+                    _ => Err(i18n::t("err.ci_log.no_page")),
+                };
+                let js = match opened {
+                    Ok(()) => serde_json::json!({"act": act, "ok": true, "seq": seq, "data": {"page": true, "running": running}}),
+                    Err(e) => serde_json::json!({"act": act, "ok": false, "seq": seq, "error": e}),
+                };
+                let js = js.to_string();
+                shell.push_issues(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"issues\":{js}}}"));
+                }
+                continue;
+            }
             // CI that failed on a pull request's commit, handed to an AI tab in
             // the folder its branch is checked out in
             if act == "ci_fix" {
@@ -8038,8 +8097,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is one folder of this machine or a search that stops itself; a
         // folder on another machine is asked on a thread and answers below
         for (panel, act, args) in shell.mail().take_files() {
-            // An editor showing a page's source or DOM reads what is held here
-            let held = page_views.get(&panel).and_then(|text| page_view_answer(&panel, &act, &args, text));
+            // An editor showing held text reads it from here
+            let held = views.answer(&panel, &act, &args);
             if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
                 shell.push_files(&js);
                 if let Some(r) = remote_ui.as_ref() {
@@ -13421,46 +13480,9 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
 }
 
 /// The page's answer to a file that was read, from its bytes -- the same
-/// answer whichever machine the bytes came from.
-/// How the editors showing a page's source or DOM are named. Not a name a
-/// setting can give an editor, so the two never meet
-pub const PAGE_VIEW_PREFIX: &str = "view:";
-
-/// A page's HTML as it goes into an editor that only reads. Held to the
-/// most the editor opens of a file (`files::READ_LIMIT`), cut on a character's
-/// edge, with a line at the top saying it was cut and how big it was --
-/// a page's text that stopped short with nothing said would read as the page
-pub fn page_view_text(text: String) -> String {
-    let most = crate::files::READ_LIMIT as usize;
-    if text.len() <= most {
-        return text;
-    }
-    let mut end = most;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mb = |n: usize| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
-    let note = i18n::tp("msg.page_view.cut", &[("shown", &mb(end)), ("whole", &mb(text.len()))]);
-    format!("<!-- {note} -->\n{}", &text[..end])
-}
-
-/// What the page asks of an editor showing a page's source or DOM: it reads
-/// what is held, and a save is refused. `None` for any other act, which goes
-/// on to the folder the editor stands in (the column's file list)
-fn page_view_answer(panel: &str, act: &str, args: &serde_json::Value, text: &str) -> Option<String> {
-    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
-    match act {
-        "read" => Some(read_reply(panel, path, text.as_bytes(), args, String::new())),
-        "write" => Some(
-            serde_json::json!({"act": "write", "panel": panel, "path": path, "ok": false,
-                "error": i18n::t("err.page_view.read_only")})
-            .to_string(),
-        ),
-        _ => None,
-    }
-}
-
-fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
+/// answer whichever machine the bytes came from, and for text the app holds
+/// (`readview`)
+pub(crate) fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
     let fail = |e: String| serde_json::json!({"act": "read", "panel": panel, "ok": false, "error": e}).to_string();
     // What is not text has no lines to put in an editor, and guessing at its
     // encoding would write the guess back
@@ -15592,6 +15614,20 @@ fn hand_to_ai_tab(
 
 /// What the failed checks of a pull request's commit were, as a thread read
 /// them from GitHub, for the tab that is to fix them
+/// One check's log, as it came back from GitHub
+struct CiLog {
+    seq: serde_json::Value,
+    /// The check's name and its commit, which the editor is called by
+    name: String,
+    /// GitHub's number for the job, said in the log when it goes wrong
+    job: u64,
+    sha: String,
+    /// The folder the git panel was showing, as a place key: where the editor
+    /// is listed
+    folder: String,
+    result: anyhow::Result<String>,
+}
+
 struct CiFix {
     project: String,
     number: u64,
@@ -16999,36 +17035,6 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
-    /// A page's source or DOM is read from what is held, a save of it is
-    /// refused whatever it says, and anything else goes on to the folder
-    #[test]
-    fn a_page_view_reads_and_refuses_to_save() {
-        let args = serde_json::json!({"path": "shop (Source code).html"});
-        let read: serde_json::Value =
-            serde_json::from_str(&super::page_view_answer("view:1", "read", &args, "<p>hi</p>").unwrap()).unwrap();
-        assert_eq!(read["ok"], true);
-        assert_eq!(read["text"], "<p>hi</p>");
-        let write: serde_json::Value = serde_json::from_str(
-            &super::page_view_answer("view:1", "write", &serde_json::json!({"path": "x", "text": "changed"}), "<p>hi</p>").unwrap(),
-        )
-        .unwrap();
-        assert_eq!(write["ok"], false);
-        assert!(super::page_view_answer("view:1", "ls", &args, "<p>hi</p>").is_none());
-    }
-
-    /// Past the editor's own limit the text is cut on a character's edge,
-    /// and says so on its first line
-    #[test]
-    fn a_page_view_too_big_is_cut_and_says_so() {
-        let most = crate::files::READ_LIMIT as usize;
-        assert_eq!(super::page_view_text("<p>short</p>".into()), "<p>short</p>");
-        let big = "あ".repeat(most / 3 + 10);
-        let cut = super::page_view_text(big.clone());
-        assert!(cut.starts_with("<!-- "), "no line saying it was cut");
-        let body = &cut[cut.find('\n').unwrap() + 1..];
-        assert!(body.len() <= most && big.starts_with(body));
-    }
-
     /// The sign-in address an AI prints is whole again out of the rows it
     /// was broken into: by the terminal (a wrapped row) or by the program
     /// drawing its own screen (a row written to its last column). A row

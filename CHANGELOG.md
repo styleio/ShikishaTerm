@@ -42,6 +42,13 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **A check's log, one press from the git panel.** Open CI in the git panel
+  and press any check: its job's log opens in an editor tab that only reads,
+  named after the check and the commit, without the runner's colour codes,
+  each line stamped with the time of day, and at the first error when there
+  is one. A check still running, or one with no log to download, opens its
+  page in a browser tab instead and says why. A log GitHub no longer keeps
+  says that too.
 - **A Ports panel on the right.** Press a port under a tab (`:3000`) or choose
   it from a folder's menu, and the column shows what listens in that folder:
   each port with the program holding it and the tab it came from, opened in a
