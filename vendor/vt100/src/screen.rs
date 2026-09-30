@@ -1357,3 +1357,97 @@ fn u16_to_u8(i: u16) -> Option<u8> {
         Some(i.try_into().unwrap())
     }
 }
+
+// NOTE (vendored patch): the whole state, written out and read back
+impl Screen {
+    /// Everything this screen holds -- both screens, the one shown, the
+    /// cursors, the scroll region, origin mode, the modes, the mouse, the
+    /// attributes being written with and the hyperlinks -- as bytes a screen
+    /// of the same state is made from again ([`Screen::from_snapshot`]).
+    /// At most `scrollback_most` lines of scrollback go, the newest
+    #[must_use]
+    pub fn snapshot(&self, scrollback_most: usize) -> Vec<u8> {
+        use crate::snapshot::{put_u16, put_u32};
+        let mut out = Vec::new();
+        crate::snapshot::header(&mut out);
+        out.push(self.modes);
+        out.push(match self.mouse_protocol_mode {
+            MouseProtocolMode::None => 0,
+            MouseProtocolMode::Press => 1,
+            MouseProtocolMode::PressRelease => 2,
+            MouseProtocolMode::ButtonMotion => 3,
+            MouseProtocolMode::AnyMotion => 4,
+        });
+        out.push(match self.mouse_protocol_encoding {
+            MouseProtocolEncoding::Default => 0,
+            MouseProtocolEncoding::Utf8 => 1,
+            MouseProtocolEncoding::Sgr => 2,
+        });
+        self.attrs.write_state(&mut out);
+        self.saved_attrs.write_state(&mut out);
+        put_u32(&mut out, u32::try_from(self.links.len()).unwrap_or(0));
+        for link in &self.links {
+            put_u16(&mut out, u16::try_from(link.len()).unwrap_or(0));
+            out.extend_from_slice(link.as_bytes());
+        }
+        self.grid.write_state(&mut out, scrollback_most);
+        self.alternate_grid.write_state(&mut out, 0);
+        out
+    }
+
+    /// A screen made from what [`Screen::snapshot`] wrote
+    ///
+    /// # Errors
+    /// When the bytes are not a snapshot, are one of another version, or
+    /// hold something no screen could
+    pub fn from_snapshot(bytes: &[u8]) -> Result<Self, crate::snapshot::SnapshotError> {
+        use crate::snapshot::SnapshotError::Invalid;
+        let mut r = crate::snapshot::Reader::new(bytes)?;
+        let modes = r.u8()?;
+        let mouse_protocol_mode = match r.u8()? {
+            0 => MouseProtocolMode::None,
+            1 => MouseProtocolMode::Press,
+            2 => MouseProtocolMode::PressRelease,
+            3 => MouseProtocolMode::ButtonMotion,
+            4 => MouseProtocolMode::AnyMotion,
+            _ => return Err(Invalid("mouse mode")),
+        };
+        let mouse_protocol_encoding = match r.u8()? {
+            0 => MouseProtocolEncoding::Default,
+            1 => MouseProtocolEncoding::Utf8,
+            2 => MouseProtocolEncoding::Sgr,
+            _ => return Err(Invalid("mouse encoding")),
+        };
+        let attrs = crate::attrs::Attrs::read_state(&mut r)?;
+        let saved_attrs = crate::attrs::Attrs::read_state(&mut r)?;
+        let count = usize::try_from(r.u32()?).map_err(|_| Invalid("links"))?;
+        if count > LINKS_KEPT {
+            return Err(Invalid("links"));
+        }
+        let mut links = Vec::with_capacity(count);
+        let mut link_numbers = std::collections::HashMap::new();
+        for n in 0..count {
+            let len = usize::from(r.u16()?);
+            let link = std::str::from_utf8(r.take(len)?).map_err(|_| Invalid("link"))?.to_string();
+            link_numbers.insert(link.clone(), u16::try_from(n + 1).map_err(|_| Invalid("links"))?);
+            links.push(link);
+        }
+        let grid = crate::grid::Grid::read_state(&mut r)?;
+        let alternate_grid = crate::grid::Grid::read_state(&mut r)?;
+        if grid.size() != alternate_grid.size() {
+            return Err(Invalid("alternate screen size"));
+        }
+        r.finish()?;
+        Ok(Self {
+            grid,
+            alternate_grid,
+            attrs,
+            saved_attrs,
+            modes,
+            mouse_protocol_mode,
+            mouse_protocol_encoding,
+            links,
+            link_numbers,
+        })
+    }
+}

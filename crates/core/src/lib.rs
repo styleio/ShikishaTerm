@@ -44,6 +44,7 @@ pub mod farlink;
 #[cfg(unix)]
 pub mod fardaemon;
 pub mod farops;
+pub mod termstate;
 pub mod files;
 pub mod folders;
 pub mod git;
