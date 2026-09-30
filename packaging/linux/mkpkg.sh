@@ -24,6 +24,9 @@ OUT=${4:-.}
 BRIDGES=${5:-}
 
 VERSION=${VERSION#v}
+# rpm allows no "-" in a version; "~" is how it says "before this release"
+# (0.0.0~dryrun sorts below 0.0.0), which is what a trailing part means here
+RPM_VERSION=$(printf %s "$VERSION" | tr - '~')
 HERE=$(cd "$(dirname "$0")" && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -94,7 +97,7 @@ if command -v rpmbuild >/dev/null 2>&1; then
     # same tree is handed over rather than laid out twice
     cat > "$top/SPECS/shikisha.spec" <<SPEC
 Name:           shikisha
-Version:        $VERSION
+Version:        $RPM_VERSION
 Release:        1
 Summary:        Run several AI coding agents side by side, and watch them from anywhere
 License:        MIT

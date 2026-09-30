@@ -1,0 +1,798 @@
+//! The bridge's resident process, and the door the app comes in by.
+//!
+//! The bridge (`shikisha-bridge`, see `farlink`) is this app's one program on
+//! another machine, and it takes on every job the app needs done there (the
+//! far-keep plan, §3.1): carrying the tabs' `shikisha` command, the small
+//! operations of [`crate::farops`], and more as they come. So what runs there
+//! is a **resident process that holds jobs**, not a program shaped around any
+//! one of them:
+//!
+//!   - the resident process ([`daemon`]) is started once for the account and
+//!     outlives the line it was started for. It owns the sockets, the key the
+//!     app's door has to show, and the lines the app has open to it. It knows
+//!     nothing about any one job: each is a [`Job`], found by name, and says for
+//!     itself whether it wants the process to stay
+//!   - the door ([`serve_port`]) is what the app runs over SSH, or on a MicroVM
+//!     the way a terminal is run: it starts the resident process when there is
+//!     none, shows the key, and carries the line between its own input and
+//!     output and the resident process. The app hears exactly what it heard
+//!     when the bridge was one program per line ([`crate::farlink::Frame`])
+//!
+//! Two sockets, because two kinds of caller speak first in two ways:
+//!
+//!   - `run/keep.sock`, the resident process's own: it names itself first, one
+//!     line ([`Frame::Hello`]), in a shape no version changes, and then hears
+//!     what the caller is (the app's door, with the key; or a question of
+//!     which version is here)
+//!   - `run/tabs.sock`, the tabs' `shikisha` command: it speaks first, as it
+//!     does to the pipe on the app's own machine, and the resident process
+//!     carries it to the app that started that tab. A tab of an older bridge
+//!     keeps `run/shikisha.sock`, which nothing here touches
+//!
+//! **Who may come in (§4.7):** the account's own programs. The folder is 0700,
+//! the sockets and the key file 0600, and each caller's user is checked on the
+//! socket. The key is made after the sockets are bound, so a process that lost
+//! the race to become resident never replaces the key of the one that won.
+//! No network port is opened: the app always comes in from its side, over a
+//! line it made.
+//!
+//! **How long it lives:** while an app is connected, and after that while any
+//! job wants it to. With no job holding anything (today: always), it ends a
+//! short while after the last app went, which is what the bridge did before.
+
+use std::collections::HashMap;
+use std::io::{BufRead as _, BufReader, Write};
+use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use serde_json::{Value, json};
+
+use crate::farlink::Frame;
+
+/// The resident process's own socket, beside the older bridge's (`shikisha.sock`)
+pub const KEEP_SOCK: &str = "keep.sock";
+/// The socket the tabs' `shikisha` command connects to
+pub const TABS_SOCK: &str = "tabs.sock";
+/// What the app's door has to show, written after the sockets are bound
+const KEY_FILE: &str = "keep.key";
+/// Held while deciding who becomes resident
+const LOCK_FILE: &str = "keep.lock";
+/// What the resident process says, and how large it may grow before the
+/// next start sets it aside
+const LOG_FILE: &str = "keep.log";
+const LOG_MOST: u64 = 1024 * 1024;
+/// How long the resident process stays after the last app went, when no job
+/// wants it to: an app that reconnects in a moment finds it still there
+const GRACE: Duration = Duration::from_secs(10);
+/// How long a line may be silent before the app on it is taken to be gone.
+/// The app says it is there every fifteen seconds ([`Frame::Tick`]); on a
+/// MicroVM the door's input stays open after the app is gone, so silence is
+/// the sign
+const SILENCE: Duration = Duration::from_secs(60);
+
+// ── What a job is ─────────────────────────────────────────────────────────
+
+/// One job the resident process holds. The process routes the app's frames
+/// to its jobs and asks them whether to stay; it knows no job by what it does
+pub trait Job: Send + Sync {
+    /// The job's name, as the app is told it in [`Frame::Hello`]
+    fn name(&self) -> &'static str;
+    /// A frame from the app on `line`. `true` when this job took it; a job
+    /// may look at a frame and leave it to another
+    fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool;
+    /// The app on `line` went: whatever of it the job holds ends
+    fn line_gone(&self, _core: &Arc<Core>, _line: u64) {}
+    /// Whether the resident process should stay with no app connected
+    fn wants_to_stay(&self) -> bool {
+        false
+    }
+}
+
+/// One app, connected through a door
+struct Line {
+    out: Mutex<UnixStream>,
+    heard: Mutex<Instant>,
+}
+
+/// What every job reaches through: the lines to the apps
+pub struct Core {
+    lines: Mutex<HashMap<u64, Arc<Line>>>,
+    next_line: AtomicU64,
+    /// When the last app went, while none is connected
+    alone_since: Mutex<Option<Instant>>,
+    jobs: Mutex<Vec<Arc<dyn Job>>>,
+}
+
+impl Core {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            lines: Mutex::default(),
+            next_line: AtomicU64::new(0),
+            alone_since: Mutex::new(Some(Instant::now())),
+            jobs: Mutex::default(),
+        })
+    }
+
+    /// Say a frame to the app on `line`. `false` when it cannot be said
+    pub fn say(&self, line: u64, frame: &Frame) -> bool {
+        let Some(l) = self.lines.lock().ok().and_then(|m| m.get(&line).cloned()) else { return false };
+        let mut text = serde_json::to_string(frame).unwrap_or_default();
+        text.push('\n');
+        let mut out = l.out.lock().unwrap_or_else(|e| e.into_inner());
+        out.write_all(text.as_bytes()).is_ok() && out.flush().is_ok()
+    }
+
+    /// The apps connected now
+    pub fn lines(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.lines.lock().map(|m| m.keys().copied().collect()).unwrap_or_default();
+        ids.sort_unstable();
+        ids
+    }
+
+    pub fn is_up(&self, line: u64) -> bool {
+        self.lines.lock().is_ok_and(|m| m.contains_key(&line))
+    }
+
+    fn jobs(&self) -> Vec<Arc<dyn Job>> {
+        self.jobs.lock().map(|j| j.clone()).unwrap_or_default()
+    }
+
+    fn add(self: &Arc<Self>, out: UnixStream) -> u64 {
+        let id = self.next_line.fetch_add(1, Ordering::SeqCst) + 1;
+        let line = Arc::new(Line { out: Mutex::new(out), heard: Mutex::new(Instant::now()) });
+        if let Ok(mut m) = self.lines.lock() {
+            m.insert(id, line);
+        }
+        if let Ok(mut a) = self.alone_since.lock() {
+            *a = None;
+        }
+        id
+    }
+
+    fn heard(&self, line: u64) {
+        if let Some(l) = self.lines.lock().ok().and_then(|m| m.get(&line).cloned())
+            && let Ok(mut h) = l.heard.lock()
+        {
+            *h = Instant::now();
+        }
+    }
+
+    /// The app on `line` is gone: its door is shut, and every job lets go
+    fn drop_line(self: &Arc<Self>, line: u64) {
+        let gone = self.lines.lock().ok().and_then(|mut m| {
+            let l = m.remove(&line);
+            if m.is_empty()
+                && let Ok(mut a) = self.alone_since.lock()
+            {
+                *a = Some(Instant::now());
+            }
+            l
+        });
+        let Some(gone) = gone else { return };
+        let _ = gone.out.lock().map(|o| o.shutdown(std::net::Shutdown::Both));
+        for job in self.jobs() {
+            job.line_gone(self, line);
+        }
+        log(&format!("an app went (line {line})"));
+    }
+
+    /// The lines whose app has said nothing for too long
+    fn silent(&self) -> Vec<u64> {
+        self.lines
+            .lock()
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, l)| l.heard.lock().map(|h| h.elapsed() > SILENCE).unwrap_or(true))
+                    .map(|(id, _)| *id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the resident process has nothing left to do: no app, and no job
+    /// wanting to stay, for a while
+    fn done(&self) -> bool {
+        let alone = self.alone_since.lock().ok().and_then(|a| *a).is_some_and(|since| since.elapsed() >= GRACE);
+        alone && !self.jobs().iter().any(|j| j.wants_to_stay())
+    }
+}
+
+fn log(text: &str) {
+    eprintln!("shikisha-bridge: {text}");
+}
+
+// ── Who may come in ──────────────────────────────────────────────────────
+
+/// Whether the program at the other end of a socket runs as this account
+fn same_user(conn: &UnixStream) -> bool {
+    use std::os::unix::io::AsRawFd as _;
+    let fd = conn.as_raw_fd();
+    // SAFETY: each call is given a buffer of the size it says, and the
+    // descriptor belongs to a socket that is open for the length of the call
+    unsafe {
+        #[cfg(target_os = "linux")]
+        {
+            let mut cred: libc::ucred = std::mem::zeroed();
+            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+            if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut cred as *mut libc::ucred).cast(), &mut len) != 0 {
+                return false;
+            }
+            cred.uid == libc::getuid()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let (mut uid, mut gid) = (0, 0);
+            libc::getpeereid(fd, &mut uid, &mut gid) == 0 && uid == libc::getuid()
+        }
+    }
+}
+
+/// A file read only when it is this account's and nobody else's
+fn read_private(file: &Path) -> Result<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = std::fs::metadata(file).with_context(|| format!("{} is not there", file.display()))?;
+    // SAFETY: getuid cannot fail
+    if meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o077 != 0 {
+        bail!("{} is not this account's alone; it is not read", file.display());
+    }
+    Ok(std::fs::read_to_string(file)?.trim().to_string())
+}
+
+/// Written so that only this account can read it, and never half written:
+/// made under another name first, then moved into place
+fn write_private(file: &Path, text: &str) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let part = file.with_extension(format!("part{}", std::process::id()));
+    let _ = std::fs::remove_file(&part);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&part)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&part, file)?;
+    Ok(())
+}
+
+/// The resident process as it names itself, if one answers on `sock`
+pub fn probe(sock: &Path) -> Option<Frame> {
+    let conn = UnixStream::connect(sock).ok()?;
+    conn.set_read_timeout(Some(Duration::from_secs(3))).ok()?;
+    let mut first = String::new();
+    BufReader::new(conn.try_clone().ok()?).read_line(&mut first).ok()?;
+    let hello = serde_json::from_str::<Frame>(first.trim()).ok().filter(|f| matches!(f, Frame::Hello { .. }))?;
+    let _ = (&conn).write_all(b"{\"role\":\"probe\"}\n");
+    Some(hello)
+}
+
+fn hello(core: &Core) -> Frame {
+    Frame::Hello {
+        version: env!("CARGO_PKG_VERSION").into(),
+        rev: crate::build_rev().into(),
+        jobs: core.jobs().iter().map(|j| j.name().to_string()).collect(),
+    }
+}
+
+// ── The resident process ──────────────────────────────────────────────────
+
+/// Become the account's resident bridge process, unless one is already there.
+///
+/// Who becomes it is decided under a lock, by who binds the socket: a second
+/// one started at the same moment finds the first answering and leaves
+/// without touching anything. A socket left by one that died is only removed
+/// by the one holding the lock, after it did not answer
+pub fn daemon(home: PathBuf) -> Result<()> {
+    crate::farops::set_home(home.clone());
+    let run = home.join("run");
+    std::fs::create_dir_all(&run)?;
+    std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
+    let keep = run.join(KEEP_SOCK);
+    let tabs = run.join(TABS_SOCK);
+
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(run.join(LOCK_FILE))?;
+    {
+        use std::os::unix::io::AsRawFd as _;
+        // SAFETY: the descriptor is the lock file's, open for as long as `lock`
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            bail!("could not take the lock on {}", run.display());
+        }
+    }
+    if probe(&keep).is_some() {
+        // Somebody else is resident already; the lock goes with the file
+        return Ok(());
+    }
+    for stale in [&keep, &tabs] {
+        let _ = std::fs::remove_file(stale);
+    }
+    let keep_listener = UnixListener::bind(&keep)?;
+    let tabs_listener = UnixListener::bind(&tabs)?;
+    for s in [&keep, &tabs] {
+        std::fs::set_permissions(s, std::fs::Permissions::from_mode(0o600))?;
+    }
+    // The key, only now: bound, this process is the resident one
+    let key = crate::random_hex(32);
+    write_private(&run.join(KEY_FILE), &key)?;
+    let mine = [inode(&keep), inode(&tabs)];
+    drop(lock);
+    log(&format!("resident ({}, {})", env!("CARGO_PKG_VERSION"), crate::build_rev()));
+
+    let core = Core::new();
+    let tabs_job = Arc::new(TabsJob::default());
+    if let Ok(mut j) = core.jobs.lock() {
+        j.push(tabs_job.clone());
+        j.push(Arc::new(OpsJob));
+    }
+
+    {
+        let core = Arc::clone(&core);
+        std::thread::spawn(move || {
+            for conn in keep_listener.incoming().flatten() {
+                let (core, key) = (Arc::clone(&core), key.clone());
+                std::thread::spawn(move || door(&core, conn, &key));
+            }
+        });
+    }
+    {
+        let core = Arc::clone(&core);
+        std::thread::spawn(move || {
+            for conn in tabs_listener.incoming().flatten() {
+                let (core, job) = (Arc::clone(&core), Arc::clone(&tabs_job));
+                std::thread::spawn(move || job.command(&core, conn));
+            }
+        });
+    }
+
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        for line in core.silent() {
+            log(&format!("line {line} has been silent too long"));
+            core.drop_line(line);
+        }
+        if core.done() {
+            break;
+        }
+    }
+    // Only what is still this process's own: a socket another resident process
+    // has since bound in its place is left alone
+    for (path, ino) in [(&keep, mine[0]), (&tabs, mine[1])] {
+        if ino.is_some() && inode(path) == ino {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let _ = std::fs::remove_file(run.join(KEY_FILE));
+    log("nothing left to hold; ending");
+    Ok(())
+}
+
+fn inode(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::symlink_metadata(path).ok().map(|m| m.ino())
+}
+
+/// One caller of the resident process's own socket: the app's door, or a
+/// question of which version is here
+fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
+    if !same_user(&conn) {
+        return;
+    }
+    let hi = hello(core);
+    let mut text = serde_json::to_string(&hi).unwrap_or_default();
+    text.push('\n');
+    if (&conn).write_all(text.as_bytes()).is_err() {
+        return;
+    }
+    let Ok(reader) = conn.try_clone() else { return };
+    let mut lines = BufReader::new(reader).lines();
+    let Some(Ok(first)) = lines.next() else { return };
+    let said: Value = serde_json::from_str(&first).unwrap_or_default();
+    if said.get("role").and_then(|r| r.as_str()) != Some("port") {
+        return;
+    }
+    let shown = said.get("key").and_then(|k| k.as_str()).unwrap_or_default();
+    if !crate::crypto::token_eq(key, shown) {
+        log("a door came with the wrong key");
+        return;
+    }
+    let line = core.add(conn);
+    log(&format!("an app came (line {line})"));
+    for text in lines {
+        let Ok(text) = text else { break };
+        core.heard(line);
+        let Ok(frame) = serde_json::from_str::<Frame>(&text) else { continue };
+        for job in core.jobs() {
+            if job.frame(core, line, &frame) {
+                break;
+            }
+        }
+    }
+    core.drop_line(line);
+}
+
+// ── The jobs there are today ──────────────────────────────────────────────
+
+/// Carrying each tab's `shikisha` command to the app that started the tab.
+///
+/// Which app that is, is known from the key it gave the tab ([`crate::farops`]'s
+/// `put_key`, seen on its way past). A command whose app is not connected is
+/// answered at once that it is away, and not held (far-keep plan §4.6)
+#[derive(Default)]
+struct TabsJob {
+    /// Each command connection: the line its app is on, and the socket
+    conns: Mutex<HashMap<u64, (u64, UnixStream)>>,
+    next: AtomicU64,
+    /// Each tab key given, and the line of the app that gave it
+    owners: Mutex<HashMap<String, u64>>,
+}
+
+impl TabsJob {
+    fn command(&self, core: &Arc<Core>, conn: UnixStream) {
+        if !same_user(&conn) {
+            return;
+        }
+        let Ok(reader) = conn.try_clone() else { return };
+        let mut lines = BufReader::new(reader).lines();
+        let Some(Ok(first)) = lines.next() else { return };
+        let token = serde_json::from_str::<Value>(&first)
+            .ok()
+            .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        let Some(line) = self.owner_of(core, &token) else {
+            away(conn, lines);
+            return;
+        };
+        let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(mut m) = self.conns.lock() {
+            m.insert(c, (line, conn));
+        }
+        let carried = core.say(line, &Frame::Open { c }) && core.say(line, &Frame::Line { c, l: first });
+        if carried {
+            for text in lines {
+                let Ok(l) = text else { break };
+                if !core.say(line, &Frame::Line { c, l }) {
+                    break;
+                }
+            }
+        }
+        core.say(line, &Frame::Close { c });
+        if let Ok(mut m) = self.conns.lock() {
+            m.remove(&c);
+        }
+    }
+
+    /// The app a tab's command goes to: the one that gave its key. A key
+    /// nobody here saw given -- a tab started before this resident process --
+    /// goes to the one app connected, when there is only one, as it did before
+    fn owner_of(&self, core: &Arc<Core>, token: &str) -> Option<u64> {
+        let known = self
+            .owners
+            .lock()
+            .ok()
+            .and_then(|o| o.iter().find(|(k, _)| crate::crypto::token_eq(k, token)).map(|(_, l)| *l));
+        match known {
+            Some(line) => core.is_up(line).then_some(line),
+            None => match core.lines().as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The answer to a command whose app is away: the handshake taken, and every
+/// call answered at once, in words the AI there can read and act on
+fn away(mut conn: UnixStream, lines: impl Iterator<Item = std::io::Result<String>>) {
+    const AWAY: &str = "The SHIKISHA-TERM app that started this tab is not connected to this machine right now \
+        (the PC is away). Nothing was sent. Hand over what you meant to report when it is back.";
+    let _ = writeln!(conn, r#"{{"ok":true,"result":"hello"}}"#);
+    for text in lines {
+        let Ok(l) = text else { break };
+        let id = serde_json::from_str::<Value>(&l).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+        if writeln!(conn, "{}", json!({ "id": id, "ok": false, "error": AWAY })).is_err() {
+            break;
+        }
+    }
+}
+
+impl Job for TabsJob {
+    fn name(&self) -> &'static str {
+        "tabs"
+    }
+
+    fn frame(&self, _core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
+        match frame {
+            Frame::Line { c, l } => {
+                if let Some((_, conn)) = self.conns.lock().ok().as_mut().and_then(|m| m.get_mut(c)) {
+                    let _ = writeln!(conn, "{l}");
+                }
+                true
+            }
+            Frame::Close { c } => {
+                if let Some((_, conn)) = self.conns.lock().ok().and_then(|mut m| m.remove(c)) {
+                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                }
+                true
+            }
+            // Seen on the way past, and left to the operations job to do
+            Frame::Op { op, p, .. } => {
+                let key = p.get("key").and_then(|k| k.as_str());
+                if let (Ok(mut owners), Some(key)) = (self.owners.lock(), key) {
+                    match op.as_str() {
+                        "put_key" => {
+                            owners.insert(key.to_string(), line);
+                        }
+                        "drop_key" => {
+                            owners.remove(key);
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn line_gone(&self, _core: &Arc<Core>, line: u64) {
+        // Its commands end with it; the app that answers them is gone
+        if let Ok(mut m) = self.conns.lock() {
+            m.retain(|_, (l, conn)| {
+                let keep = *l != line;
+                if !keep {
+                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                }
+                keep
+            });
+        }
+    }
+}
+
+/// The operations the app asks for by name ([`crate::farops`]), each on a
+/// thread of its own so that a slow one holds up nothing else
+struct OpsJob;
+
+impl Job for OpsJob {
+    fn name(&self) -> &'static str {
+        "ops"
+    }
+
+    fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
+        let Frame::Op { id, op, p } = frame else { return false };
+        let (core, id, op, p) = (Arc::clone(core), *id, op.clone(), p.clone());
+        std::thread::spawn(move || {
+            let (r, e) = match crate::farops::run(&op, &p) {
+                Ok(r) => (r, None),
+                Err(e) => (Value::Null, Some(e)),
+            };
+            core.say(line, &Frame::Re { id, r, e });
+        });
+        true
+    }
+}
+
+// ── The door ──────────────────────────────────────────────────────────────
+
+/// The app's way in: start the resident process if there is none, show it the
+/// key, and carry the line between this program's input and output and it.
+///
+/// Ends when either side does. The resident process stays after this does,
+/// for as long as its jobs want it to
+pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Write + Send + 'static) -> Result<()> {
+    let run = home.join("run");
+    let keep = run.join(KEEP_SOCK);
+    if probe(&keep).is_none() {
+        start_daemon(&run)?;
+        let until = Instant::now() + Duration::from_secs(10);
+        while probe(&keep).is_none() {
+            if Instant::now() >= until {
+                bail!("the resident bridge process did not start");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    let conn = UnixStream::connect(&keep).context("the resident bridge process did not answer")?;
+    let mut reader = BufReader::new(conn.try_clone()?);
+    let mut first = String::new();
+    reader.read_line(&mut first)?;
+    if !matches!(serde_json::from_str::<Frame>(first.trim()), Ok(Frame::Hello { .. })) {
+        bail!("the resident bridge process did not name itself");
+    }
+    let key = read_private(&run.join(KEY_FILE))?;
+    (&conn).write_all(format!("{}\n", json!({ "role": "port", "key": key })).as_bytes())?;
+    // The app hears the resident process name itself, as it always heard the
+    // bridge do first
+    output.write_all(first.as_bytes())?;
+    output.flush()?;
+
+    // From it to the app. When it shuts the line, the app is gone as far as
+    // it knows: this ends, whatever the input is doing
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            match reader.read_line(&mut buf) {
+                Ok(0) | Err(_) => std::process::exit(0),
+                Ok(_) => {
+                    if output.write_all(buf.as_bytes()).is_err() || output.flush().is_err() {
+                        std::process::exit(0);
+                    }
+                }
+            }
+        }
+    });
+    // From the app to it
+    let mut to = conn;
+    for line in BufReader::new(input).lines() {
+        let Ok(l) = line else { break };
+        if writeln!(to, "{l}").is_err() {
+            break;
+        }
+    }
+    let _ = to.shutdown(std::net::Shutdown::Both);
+    Ok(())
+}
+
+/// Start the resident process, cut loose from the line that started it: in a
+/// session of its own, so that the line ending does not end it. What it says
+/// goes to `run/keep.log`, the one place to look when it misbehaves
+fn start_daemon(run: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    use std::os::unix::process::CommandExt as _;
+    std::fs::create_dir_all(run)?;
+    std::fs::set_permissions(run, std::fs::Permissions::from_mode(0o700))?;
+    let log_file = run.join(LOG_FILE);
+    // Kept short: a log that only grows fills a small machine in the end
+    if std::fs::metadata(&log_file).is_ok_and(|m| m.len() > LOG_MOST) {
+        let _ = std::fs::rename(&log_file, run.join(format!("{LOG_FILE}.1")));
+    }
+    let log = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&log_file)?;
+    let exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("daemon")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log));
+    // SAFETY: setsid is async-signal-safe and touches nothing of the parent
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| anyhow!("could not start {}: {e}", exe.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An app's door, as the resident process sees one: the key shown, and
+    /// frames both ways
+    struct App {
+        to: UnixStream,
+        from: BufReader<UnixStream>,
+        hello: Frame,
+    }
+
+    impl App {
+        fn open(run: &Path) -> App {
+            let conn = UnixStream::connect(run.join(KEEP_SOCK)).unwrap();
+            conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut from = BufReader::new(conn.try_clone().unwrap());
+            let mut first = String::new();
+            from.read_line(&mut first).unwrap();
+            let hello = serde_json::from_str(first.trim()).unwrap();
+            let key = read_private(&run.join(KEY_FILE)).unwrap();
+            let mut to = conn;
+            writeln!(to, "{}", json!({ "role": "port", "key": key })).unwrap();
+            App { to, from, hello }
+        }
+
+        fn say(&mut self, f: &Frame) {
+            writeln!(self.to, "{}", serde_json::to_string(f).unwrap()).unwrap();
+        }
+
+        /// The next frame, skipping none; `None` when nothing comes in time
+        fn hear(&mut self) -> Option<Frame> {
+            let mut l = String::new();
+            match self.from.read_line(&mut l) {
+                Ok(n) if n > 0 => serde_json::from_str(l.trim()).ok(),
+                _ => None,
+            }
+        }
+
+        /// Hear until a frame `want` says yes to
+        fn hear_until(&mut self, want: impl Fn(&Frame) -> bool) -> Option<Frame> {
+            (0..20).find_map(|_| self.hear().filter(|f| want(f)))
+        }
+    }
+
+    /// A tab's `shikisha` command: the handshake with its key, and one call
+    fn command(run: &Path, key: &str) -> (UnixStream, BufReader<UnixStream>) {
+        let conn = UnixStream::connect(run.join(TABS_SOCK)).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let from = BufReader::new(conn.try_clone().unwrap());
+        let mut to = conn;
+        writeln!(to, "{}", json!({ "token": key })).unwrap();
+        (to, from)
+    }
+
+    /// The resident process of far-keep plan §4.3, stage 2 of §10: one for the
+    /// account however many start at once, the tabs' commands carried to the
+    /// app that started each tab and answered at once when it is away, the
+    /// older bridge's socket untouched, and gone -- sockets and key with it --
+    /// a short while after the last app went
+    #[test]
+    fn the_resident_process_holds_its_jobs_and_leaves_when_nothing_is_left() {
+        let home = std::env::temp_dir().join(format!("sk-fardaemon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        // The older bridge's socket, which must come through untouched
+        let old = run.join("shikisha.sock");
+        let _old_listener = UnixListener::bind(&old).unwrap();
+
+        // Two started at the same moment: one becomes resident, the other
+        // finds it and leaves
+        let (a, b) = (home.clone(), home.clone());
+        let first = std::thread::spawn(move || daemon(a));
+        let second = std::thread::spawn(move || daemon(b));
+        let until = Instant::now() + Duration::from_secs(10);
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            assert!(Instant::now() < until, "nobody became resident");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let loser_left = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(50));
+            first.is_finished() || second.is_finished()
+        });
+        assert!(loser_left, "both stayed: two resident processes");
+        let winner = if first.is_finished() { second } else { first };
+
+        let mut pc = App::open(&run);
+        let mut server = App::open(&run);
+        match &pc.hello {
+            Frame::Hello { jobs, .. } => assert!(jobs.contains(&"tabs".into()) && jobs.contains(&"ops".into()), "{jobs:?}"),
+            other => panic!("not a hello: {other:?}"),
+        }
+
+        // A key given by the PC: that tab's command goes to the PC alone
+        pc.say(&Frame::Op { id: 1, op: "put_key".into(), p: json!({ "tab": "t1", "key": "k-pc" }) });
+        assert!(pc.hear_until(|f| matches!(f, Frame::Re { id: 1, e: None, .. })).is_some(), "the key was not kept");
+        let (mut to, _from) = command(&run, "k-pc");
+        writeln!(to, r#"{{"id":"1","method":"state","params":[]}}"#).unwrap();
+        let opened = pc.hear_until(|f| matches!(f, Frame::Open { .. }));
+        assert!(opened.is_some(), "the command did not reach the app that started its tab");
+        let token = pc.hear_until(|f| matches!(f, Frame::Line { .. }));
+        assert!(matches!(token, Some(Frame::Line { ref l, .. }) if l.contains("k-pc")), "{token:?}");
+        server.to.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        server.from.get_ref().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        assert!(server.hear_until(|f| matches!(f, Frame::Open { .. })).is_none(), "another app heard a tab that is not its");
+        drop(to);
+
+        // The PC goes: its tab's command is answered at once that it is away
+        drop(pc);
+        std::thread::sleep(Duration::from_millis(300));
+        let (mut to, mut from) = command(&run, "k-pc");
+        let mut hi = String::new();
+        from.read_line(&mut hi).unwrap();
+        writeln!(to, r#"{{"id":"2","method":"state","params":[]}}"#).unwrap();
+        let mut answer = String::new();
+        from.read_line(&mut answer).unwrap();
+        assert!(answer.contains("\"ok\":false") && answer.contains("away"), "{answer}");
+        drop((to, from));
+
+        // The last app goes: after a short while the process ends, taking
+        // its sockets and key, and leaving the older bridge's socket
+        drop(server);
+        let gone = (0..300).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            winner.is_finished()
+        });
+        assert!(gone, "it stayed with nothing to hold");
+        assert!(!run.join(KEEP_SOCK).exists() && !run.join(TABS_SOCK).exists() && !run.join(KEY_FILE).exists());
+        assert!(old.exists(), "the older bridge's socket was touched");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

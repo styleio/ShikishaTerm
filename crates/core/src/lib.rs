@@ -41,6 +41,8 @@ pub mod discover;
 pub mod exchange;
 pub mod faraway;
 pub mod farlink;
+#[cfg(unix)]
+pub mod fardaemon;
 pub mod farops;
 pub mod files;
 pub mod folders;

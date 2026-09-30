@@ -325,7 +325,8 @@ try {
   console.log('2. the far AI was started with the command on its PATH');
   let farSaid = '';
   await until(async () => (farSaid = await there(`cat ${DIR}/said.txt 2>&1`)).includes('SOCK='), 'the far AI to start', 120000).catch(() => {});
-  check(farSaid.includes(`${BRIDGE_DIR}/bin`) && /SOCK=.*shikisha\.sock/.test(farSaid), 'PATH and the socket were given: ' + farSaid.split('\n').slice(0, 3).join(' | '));
+  // The resident process's socket for the tabs' command (fardaemon)
+  check(farSaid.includes(`${BRIDGE_DIR}/bin`) && /SOCK=.*run\/tabs\.sock/.test(farSaid), 'PATH and the socket were given: ' + farSaid.split('\n').slice(0, 3).join(' | '));
 
   console.log('3. the task goes there, and the far AI\'s report comes back');
   if (WHERE === 'vm') check(logSince(from).some((l) => l.includes('opened farai')), 'the MicroVM was opened for its task');
