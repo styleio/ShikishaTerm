@@ -6740,9 +6740,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .get(desk_index)
                         .and_then(|desk| crate::readview::Under::of_place(desk, std::path::Path::new(&got.folder)));
                     let opened = views.open(&mut editors, shown.clone(), crate::readview::Kind::Log, text, under);
+                    // Where the error is once the log was cut to size, or no
+                    // jump at all when the cut took it away
+                    let line = first_error.and_then(|l| opened.editor_line(l));
                     open_editor = Some(opened.key);
                     append_hook_log(&format!("ci log: {} of {short} opened to read", got.name));
-                    let line = first_error.map(|l| l + usize::from(opened.cut));
                     serde_json::json!({"act": "ci_log", "ok": true, "seq": got.seq, "data": {"shown": shown, "line": line}})
                 }
                 Err(e) => {

@@ -45,9 +45,40 @@ pub enum Kind {
 pub struct Opened {
     /// The editor's key, for it to be brought forward
     pub key: String,
-    /// Whether the text was cut, so that a line counted in the whole text is
-    /// one further down in the editor (the line saying so comes first)
-    pub cut: bool,
+    /// Which lines of the whole text the editor shows, for a caller that
+    /// knows a line of the whole text and wants it in the editor
+    lines: Kept,
+}
+
+impl Opened {
+    /// Where line `whole` (counted from 1 in the text as it was given) is in
+    /// the editor, or `None` when cutting the text to size took that line
+    /// away. The one place that knows how a cut moves lines: a caller adding
+    /// its own offset would be right only until the next kind of text
+    pub fn editor_line(&self, whole: usize) -> Option<usize> {
+        self.lines.editor_line(whole)
+    }
+}
+
+/// Which lines of a text made it into the editor after [`fit`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Kept {
+    /// Lines of the whole text before the first one kept, even in part
+    dropped_before: usize,
+    /// The last line of the whole text kept, even in part (`None`: through
+    /// the end)
+    last: Option<usize>,
+    /// Lines added in front of the text: the line saying it was cut
+    note: usize,
+}
+
+impl Kept {
+    fn editor_line(&self, whole: usize) -> Option<usize> {
+        if whole == 0 || whole <= self.dropped_before || self.last.is_some_and(|last| whole > last) {
+            return None;
+        }
+        Some(whole - self.dropped_before + self.note)
+    }
 }
 
 /// The texts being shown, by the editor's key
@@ -99,7 +130,7 @@ impl Held {
     pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<Under>) -> Opened {
         self.made += 1;
         let key = format!("{KEY_PREFIX}{}", self.made);
-        let (text, cut) = fit(text, kind);
+        let (text, lines) = fit(text, kind);
         self.texts.insert(key.clone(), text);
         let under = under.unwrap_or_default();
         editors.push(EditorOpen {
@@ -113,7 +144,7 @@ impl Held {
             diff: None,
             read_only: true,
         });
-        Opened { key, cut }
+        Opened { key, lines }
     }
 
     /// What the page asks of an editor showing held text: it reads what is
@@ -143,21 +174,24 @@ impl Held {
 /// A text as it goes into the editor: whole when it is within the editor's
 /// limit, else cut on a character's edge with a first line saying it was cut
 /// and how big it was -- a text that stopped short with nothing said would
-/// read as the whole of it. Says whether it cut
-pub fn fit(text: String, kind: Kind) -> (String, bool) {
+/// read as the whole of it. Says which lines of the whole it kept
+pub fn fit(text: String, kind: Kind) -> (String, Kept) {
     let most = crate::files::READ_LIMIT as usize;
     if text.len() <= most {
-        return (text, false);
+        return (text, Kept::default());
     }
     let mb = |n: usize| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
-    let fitted = match kind {
+    let lines_in = |s: &str| s.bytes().filter(|&b| b == b'\n').count();
+    match kind {
         Kind::Html => {
             let mut end = most;
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
             let note = i18n::tp("msg.page_view.cut", &[("shown", &mb(end)), ("whole", &mb(text.len()))]);
-            format!("<!-- {note} -->\n{}", &text[..end])
+            // The line the cut falls in is kept in part
+            let kept = Kept { dropped_before: 0, last: Some(lines_in(&text[..end]) + 1), note: 1 };
+            (format!("<!-- {note} -->\n{}", &text[..end]), kept)
         }
         Kind::Log => {
             let mut start = text.len() - most;
@@ -165,10 +199,12 @@ pub fn fit(text: String, kind: Kind) -> (String, bool) {
                 start += 1;
             }
             let note = i18n::tp("msg.ci_log.cut", &[("shown", &mb(text.len() - start)), ("whole", &mb(text.len()))]);
-            format!("{note}\n{}", &text[start..])
+            // Every line that ended before the cut is gone; the one it falls
+            // in is kept in part
+            let kept = Kept { dropped_before: lines_in(&text[..start]), last: None, note: 1 };
+            (format!("{note}\n{}", &text[start..]), kept)
         }
-    };
-    (fitted, true)
+    }
 }
 
 #[cfg(test)]
@@ -246,10 +282,10 @@ mod tests {
     #[test]
     fn html_too_big_keeps_its_start_and_says_so() {
         let most = crate::files::READ_LIMIT as usize;
-        assert_eq!(fit("<p>short</p>".into(), Kind::Html), ("<p>short</p>".to_string(), false));
+        assert_eq!(fit("<p>short</p>".into(), Kind::Html), ("<p>short</p>".to_string(), Kept::default()));
         let big = "あ".repeat(most / 3 + 10);
         let (cut, was) = fit(big.clone(), Kind::Html);
-        assert!(was);
+        assert_ne!(was, Kept::default());
         assert!(cut.starts_with("<!-- "), "no line saying it was cut");
         let body = &cut[cut.find('\n').unwrap() + 1..];
         assert!(body.len() <= most && big.starts_with(body));
@@ -260,12 +296,47 @@ mod tests {
     #[test]
     fn a_log_too_big_keeps_its_end_and_says_so() {
         let most = crate::files::READ_LIMIT as usize;
-        assert_eq!(fit("ok\n".into(), Kind::Log), ("ok\n".to_string(), false));
+        assert_eq!(fit("ok\n".into(), Kind::Log), ("ok\n".to_string(), Kept::default()));
         let big = format!("{}the end\n", "あ".repeat(most / 3 + 10));
         let (cut, was) = fit(big.clone(), Kind::Log);
-        assert!(was);
+        assert_ne!(was, Kept::default());
         let (note, body) = cut.split_once('\n').unwrap();
         assert!(!note.starts_with("<!--") && !note.is_empty(), "no plain line saying it was cut");
         assert!(body.len() <= most && big.ends_with(body) && body.ends_with("the end\n"));
+    }
+
+    /// A line of the whole text is found where the editor has it once the
+    /// text is cut: a log that lost its head moves every line up by what was
+    /// lost and down by the note, a line that was lost is nowhere, and an
+    /// HTML text that lost its tail keeps its lines where they were, below
+    /// the note. Adding only the note put the jump on the wrong line, or on a
+    /// line that did not exist, for any log too big to show whole
+    #[test]
+    fn a_line_of_the_whole_is_found_where_the_editor_has_it() {
+        let most = crate::files::READ_LIMIT as usize;
+        // A log of lines of 100 bytes, well over the limit, with an error
+        // near its end and one near its start
+        let line = |i: usize| format!("{:0>98}\n", i);
+        let count = most / 100 + 500;
+        let mut log = String::new();
+        for i in 1..=count {
+            log.push_str(&line(i));
+        }
+        let (text, kept) = fit(log.clone(), Kind::Log);
+        let lines: Vec<&str> = text.lines().collect();
+        let late = count - 3;
+        let at = kept.editor_line(late).expect("a line near the end was kept");
+        assert_eq!(lines[at - 1], line(late).trim_end(), "the jump lands on the line asked for");
+        assert_eq!(kept.editor_line(2), None, "a line cut away is nowhere");
+        assert_eq!(kept.editor_line(count).map(|n| lines[n - 1]), Some(line(count).trim_end()));
+
+        // Whole text: lines stay where they are
+        assert_eq!(fit("a\nb\n".into(), Kind::Log).1.editor_line(2), Some(2));
+
+        // HTML keeps its head, below the note; past the cut is nowhere
+        let (html, kept) = fit(log, Kind::Html);
+        let lines: Vec<&str> = html.lines().collect();
+        assert_eq!(lines[kept.editor_line(7).unwrap() - 1], line(7).trim_end());
+        assert_eq!(kept.editor_line(count), None);
     }
 }
