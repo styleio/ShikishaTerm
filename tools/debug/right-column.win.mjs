@@ -18,7 +18,8 @@
  *             are written into the settings
  *   called    a panel called up by a button (the search of every
  *             conversation, over a page) joins the strip with its own ✕, stays
- *             while another tab is looked at, and goes when the ✕ is pressed
+ *             while another tab is looked at, and goes when the ✕ is pressed;
+ *             called over a panel the person chose, its ✕ goes back to it
  *   script    `show_panel` through the external API does the same
  *   phone     a phone-sized Chrome on the remote door gets the same strips
  *
@@ -248,6 +249,17 @@ try {
   await sleep(200);
   s = await board.strip();
   check(same(s.ids, ['console']) && s.on === 'console' && s.called.length === 0, 'its ✕ takes it away again');
+  // A panel called over one the person chose: its ✕ goes back to that choice,
+  // not to the first panel of the strip (the call used to write over it)
+  await board.front('ai');
+  await board.run('sideChoose("git")');
+  await board.run('sideReveal("ports")');
+  s = await board.strip();
+  check(s.on === 'ports' && s.called.includes('ports'), 'ports called up over the AI\'s changes');
+  await board.run('document.querySelector("#side .sbar button.called .sx").click()');
+  await sleep(200);
+  s = await board.strip();
+  check(s.on === 'git' && !s.called.includes('ports'), 'its ✕ goes back to the changes the person chose, not to files: ' + s.on);
 
   console.log('4. show_panel from a script');
   const door = await openDoor();

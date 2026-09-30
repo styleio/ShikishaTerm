@@ -12546,6 +12546,11 @@ const sideChoice = Object.assign({}, {{SIDE_PANELS}});
 // just asked for vanishing because they looked at another tab would be the
 // panel losing their place
 const sideCalled = new Set();
+// The called panel standing in front of the choice, per kind of tab. Kept
+// apart from `sideChoice`: a visit that wrote over the choice left nothing
+// to go back to when its ✕ was pressed, and the column fell to its first
+// panel instead of the one the person had picked
+const sideVisit = {};
 function sideShown(kind) {
   return SIDE_PANELS.filter(([id, , when]) => sideCalled.has(id) || (when && when(kind)));
 }
@@ -12555,16 +12560,25 @@ function sideShown(kind) {
 let sidePanel = "files";
 function sideEffective(kind) {
   const shown = sideShown(kind).map(([id]) => id);
+  if (sideVisit[kind] && shown.includes(sideVisit[kind])) return sideVisit[kind];
   const want = sideChoice[kind];
   return shown.includes(want) ? want : (shown[0] || "");
+}
+// Whether a panel belongs to this kind of tab (rather than being called up)
+function sideBelongs(id, kind) {
+  return SIDE_PANELS.some(([p, , when]) => p === id && when && when(kind));
 }
 // Chosen from the strip: remembered for this kind, and told to the app. A
 // called panel is a visit, not a choice, and is not written down
 function sideChoose(id) {
   const kind = sideKind();
-  sideChoice[kind] = id;
-  const regular = SIDE_PANELS.find(([p, , when]) => p === id && when && when(kind));
-  if (regular) send({kind:"sidepanel", tab: kind, panel: id});
+  if (sideBelongs(id, kind)) {
+    sideChoice[kind] = id;
+    sideVisit[kind] = "";
+    send({kind:"sidepanel", tab: kind, panel: id});
+  } else {
+    sideVisit[kind] = id;
+  }
   drawSide();
 }
 // Open the column on a panel and switch to it, whatever is in front: what a
@@ -12572,16 +12586,23 @@ function sideChoose(id) {
 function sideReveal(id) {
   if (!SIDE_PANELS.some(([p]) => p === id)) return;
   const kind = sideKind();
-  const regular = SIDE_PANELS.find(([p, , when]) => p === id && when && when(kind));
-  if (!regular) sideCalled.add(id);
-  sideChoice[kind] = id;
+  if (sideBelongs(id, kind)) {
+    sideChoice[kind] = id;
+    sideVisit[kind] = "";
+  } else {
+    sideCalled.add(id);
+    sideVisit[kind] = id;
+  }
   if (sideWidth() <= 0) setSideWidth(lastSideW || SIDEW_DEF);
   sideStoodAside = false;
   drawSide();
 }
 window.__sideReveal = sideReveal;
+// A called panel's ✕: gone from the strip, and every kind that was visiting
+// it goes back to its own choice
 function sideDismiss(id) {
   sideCalled.delete(id);
+  for (const k of Object.keys(sideVisit)) if (sideVisit[k] === id) sideVisit[k] = "";
   drawSide();
 }
 function sideWidth() {
