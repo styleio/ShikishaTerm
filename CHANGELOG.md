@@ -9,6 +9,27 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A page's DevTools stands in the page's folder.** Opened from the phone
+  (and from the window alike), it was listed apart from every folder, far
+  from the page it inspects. It now stands under the page's folder, and
+  pressing "Developer tools" again brings forward only that page's own
+  DevTools -- a page that merely carries its name is replaced rather than
+  shown. Closing a page closes its DevTools with it.
+- **A page's source, its DOM and a check's log stand in their folder on a
+  server or a MicroVM too.** Opened for a folder on another machine, the
+  read-only editor was listed in no folder at all; it now stands in that
+  folder, on that machine.
+- **DevTools can be read on a phone.** It was drawn at the PC's width and
+  shrunk onto the phone, which left its lettering about a third of its size.
+  On a phone watching it, DevTools is now laid out at the phone's own width
+  and drawn with a pixel for every pixel of the phone's screen, and a press
+  on it lands where it is seen. In the window it goes back to its own shape
+  and size when the phone stops watching. (With the program split in two,
+  DevTools takes the phone's width but is not drawn sharper than one to one.)
+- **A page watched from a phone moves more smoothly.** Undoing each picture
+  cost most of the relay's time in a development build; that part is now
+  built optimised, and a page that changes ten times a second went from
+  about 3.5 to about 9 pictures a second at the same load on the PC.
 - **An AI on a MicroVM keeps working past the longest run the E2B plan
   allows.** E2B pauses a machine once it has run for as long as the plan
   allows (an hour on the smallest), however much time it was asked for, and
