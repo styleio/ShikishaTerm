@@ -289,6 +289,18 @@ pub fn devtools_page(screen: &str) -> Option<&str> {
     screen.strip_suffix("-devtools").filter(|p| !p.is_empty())
 }
 
+/// Whose width a page placed in the window is drawn at for a phone watching
+/// it (see [`crate::cdp::view_metrics`]), from the name it was placed under
+/// (`<desk>/<name>`). A DevTools screen takes the phone's; any other page
+/// keeps its own
+pub fn view_fit(child: &str) -> crate::cdp::ViewFit {
+    let name = child.split_once('/').map_or(child, |(_, n)| n);
+    match devtools_page(name) {
+        Some(_) => crate::cdp::ViewFit::Viewer,
+        None => crate::cdp::ViewFit::Page,
+    }
+}
+
 /// Wait window for actions (click/fill). Actions auto-wait for the element
 /// to appear and become actionable — across a navigation if need be — so
 /// they get a longer leash than a read

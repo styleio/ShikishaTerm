@@ -1364,7 +1364,7 @@ impl shikisha_shared::BrowserHost for Pages {
             }
             // A viewer said what shape its screen is. The page is re-shaped to
             // match, so a phone sees a full screen rather than a strip
-            Input::View { w, h } => {
+            Input::View { w, h, .. } => {
                 if cw >= 1.0 && ch >= 1.0 {
                     let natural = {
                         let mut open = self.open.borrow_mut();
@@ -1372,7 +1372,13 @@ impl shikisha_shared::BrowserHost for Pages {
                         page.map(|p| *p.natural.get_or_insert((cw, ch)))
                     };
                     if let Some(nat) = natural {
-                        match crate::cdp::view_metrics(nat, w, h) {
+                        // No browser zoom to put on a page here: this browser is
+                        // spoken to only through its debugging protocol, which has
+                        // none, and a CSS zoom breaks the DevTools' own layout (see
+                        // `view_metrics`). A DevTools screen takes the viewer's
+                        // width one to one -- its lettering the right size, if
+                        // softer than in the window, where the zoom is the browser's
+                        match crate::cdp::view_metrics(nat, w, h, 1.0, crate::caps::view_fit(&name)) {
                             Some(m) => {
                                 chrome.call_page(&session, "Emulation.setDeviceMetricsOverride", m)?;
                             }
