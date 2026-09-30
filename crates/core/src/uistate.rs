@@ -1070,6 +1070,10 @@ pub struct AwakeState {
     pub mode: String,
     /// Whether Windows is being asked to stay up right now
     pub held: bool,
+    /// The system turned the ask down, or this program cannot ask it here:
+    /// the PC may sleep whatever the setting says
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cannot: bool,
 }
 
 impl UsageState {
