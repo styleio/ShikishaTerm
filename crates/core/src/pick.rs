@@ -40,6 +40,82 @@ pub struct Picked {
     pub hidden: usize,
 }
 
+/// The longest markup the page sends for one element, in characters: the
+/// page cuts its markup to this and adds one "…" (`PICK_HTML` in `pagejs`, held
+/// equal by a test). Anything longer did not come from that script
+pub const PAGE_HTML_MAX: usize = 3000;
+
+/// The longest any other single string of a pick may be, in characters (the
+/// markup and the joined styles excepted). The page's longest others are the
+/// words (160), a selector and a path over five ancestors, and the address
+/// without its query; a thousand leaves room for a long address and still
+/// stops a page that pads a field to fill memory
+pub const FIELD_MAX: usize = 1000;
+
+/// The most one pick may weigh as JSON. The markup at its longest is 3000
+/// characters -- up to 12 KB if every one takes four bytes -- and the rest of
+/// a real pick measured under 3 KB; 32 KB takes both with room, and caps what
+/// twelve kept picks can hold at under half a megabyte
+pub const ITEM_MAX: usize = 32 * 1024;
+
+/// How deep a pick's JSON may nest. The page's deepest is an object of
+/// objects (the styles, the bounds): four levels is already twice that
+const DEPTH_MAX: usize = 4;
+
+/// The shortest time between two picks a page is believed for. A person's
+/// press -- down, up, and the page drawing its outline -- takes longer than
+/// this; a page sending faster is a script, not a person
+const PICK_GAP: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Why a page's report was not kept
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// It weighed more, or nested deeper, or had a longer string, than the
+    /// page's own script ever sends
+    TooBig,
+    /// It came sooner after the last one than a person presses
+    TooSoon,
+    /// It described nothing (no tag)
+    Empty,
+}
+
+/// Whether what a page said about a pick is the shape and size the page's own
+/// script sends, looked at before anything else is done with it -- before its
+/// secrets are looked for, before it is kept, before it is written out. A
+/// page's script can post whatever it likes while picking is armed
+pub fn admit(item: &Value) -> Result<(), Refused> {
+    fn fits(v: &Value, depth: usize) -> bool {
+        match v {
+            Value::String(s) => s.chars().count() <= PAGE_HTML_MAX + 1,
+            Value::Array(a) => depth < DEPTH_MAX && a.iter().all(|x| fits(x, depth + 1)),
+            Value::Object(o) => depth < DEPTH_MAX && o.iter().all(|(k, x)| k.len() <= 64 && fits(x, depth + 1)),
+            _ => true,
+        }
+    }
+    fn long_elsewhere(v: &Value, key: &str) -> bool {
+        match v {
+            // The markup, and the styles joined into one line (up to 26 of
+            // them, a font list or a grid among them), may run to the
+            // markup's length; everything else is a name, a path or an address
+            Value::String(s) => key != "html" && key != "style" && s.chars().count() > FIELD_MAX,
+            Value::Array(a) => a.iter().any(|x| long_elsewhere(x, key)),
+            Value::Object(o) => o.iter().any(|(k, x)| long_elsewhere(x, k)),
+            _ => false,
+        }
+    }
+    if item.is_null() {
+        return Ok(());
+    }
+    if !item.is_object() || item.get("tag").and_then(Value::as_str).is_none_or(str::is_empty) {
+        return Err(Refused::Empty);
+    }
+    let weight = serde_json::to_vec(item).map(|b| b.len()).unwrap_or(usize::MAX);
+    if weight > ITEM_MAX || !fits(item, 0) || long_elsewhere(item, "") {
+        return Err(Refused::TooBig);
+    }
+    Ok(())
+}
+
 /// What one page holds: whether presses on it pick right now, and what has
 /// been picked
 #[derive(Clone, Debug, Default)]
@@ -47,9 +123,21 @@ pub struct Picking {
     pub armed: bool,
     pub items: VecDeque<Picked>,
     next: u32,
+    /// When the page's last pick was kept, to tell a person from a script
+    last: Option<std::time::Instant>,
 }
 
 impl Picking {
+    /// Whether a pick arriving `now` comes soon enough after the last to be a
+    /// script rather than a person. Taking the time counts it as the last
+    pub fn too_soon(&mut self, now: std::time::Instant) -> bool {
+        if self.last.is_some_and(|last| now.saturating_duration_since(last) < PICK_GAP) {
+            return true;
+        }
+        self.last = Some(now);
+        false
+    }
+
     /// Keep one more. Whatever the page sent is kept only if it is an object
     /// with a tag -- a page's script can post anything, and a pick that
     /// describes nothing is not worth a place in somebody's list
@@ -256,6 +344,53 @@ mod tests {
         json!({"tag": tag, "name": name, "sel": "#x", "url": "http://a.test/p",
                "view": {"w": 800, "h": 600}, "box": {"x": 1, "y": 2, "w": 3, "h": 4},
                "path": ["main", "section.card"], "style": "display: flex", "html": "<b>hi</b>\n<i>x</i>"})
+    }
+
+    /// A page's report is looked at for its size before anything else: a
+    /// real pick passes, and one a page's own script could not have made --
+    /// padded markup, a padded name, a mountain of fields, deep nesting --
+    /// is refused before it is scrubbed or kept. Nothing bounded a report
+    /// before, so an armed page could fill twelve picks as large as it liked
+    #[test]
+    fn a_report_bigger_than_the_page_sends_is_refused() {
+        let real = item("button", "Save");
+        assert_eq!(admit(&real), Ok(()));
+        assert_eq!(admit(&Value::Null), Ok(()), "the Escape is not a pick to measure");
+        let longest = json!({"tag": "div", "html": format!("{}…", "x".repeat(PAGE_HTML_MAX)),
+            "style": "font-family: ".to_string() + &"a, ".repeat(900)});
+        assert_eq!(admit(&longest), Ok(()), "the page's own longest markup passes");
+
+        let mut padded = real.clone();
+        padded["html"] = json!("x".repeat(PAGE_HTML_MAX + 2));
+        assert_eq!(admit(&padded), Err(Refused::TooBig));
+        let mut named = real.clone();
+        named["name"] = json!("x".repeat(FIELD_MAX + 1));
+        assert_eq!(admit(&named), Err(Refused::TooBig));
+        let mut heavy = real.clone();
+        for i in 0..400 {
+            heavy[format!("f{i}")] = json!("y".repeat(200));
+        }
+        assert_eq!(admit(&heavy), Err(Refused::TooBig), "many small fields weigh too much together");
+        let deep = json!({"tag": "div", "a": {"b": {"c": {"d": {"e": 1}}}}});
+        assert_eq!(admit(&deep), Err(Refused::TooBig));
+        assert_eq!(admit(&json!({"name": "x"})), Err(Refused::Empty));
+    }
+
+    /// Picks come at the pace of a person's presses; a page sending them
+    /// faster is refused for the ones in between
+    #[test]
+    fn picks_faster_than_a_person_presses_are_refused() {
+        let mut p = Picking::default();
+        let t0 = std::time::Instant::now();
+        assert!(!p.too_soon(t0));
+        assert!(p.too_soon(t0 + std::time::Duration::from_millis(10)));
+        assert!(!p.too_soon(t0 + PICK_GAP), "a person's next press is taken");
+    }
+
+    /// What the page cuts its markup to is what this side expects it to be
+    #[test]
+    fn the_page_and_this_side_agree_on_the_markup_limit() {
+        assert!(crate::pagejs::AUTOMATION.contains(&format!("PICK_HTML = {PAGE_HTML_MAX}")));
     }
 
     #[test]

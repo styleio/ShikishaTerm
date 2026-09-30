@@ -6785,13 +6785,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(e.to_string());
             }
         }
-        // What pages said was picked on them: kept only where picking is armed
+        // What pages said was picked on them: kept only where picking is
+        // armed, and only at the size and pace a person's press makes
         for (child, item) in shell.mail().take_picked() {
-            let ended = item.is_null();
+            use crate::caps::PickHeard;
+            use crate::pick::Refused;
             match caps.note_picked(&child, item) {
-                Some(name) if ended => append_hook_log(&format!("pick: {name} put away from the page")),
-                Some(name) => append_hook_log(&format!("pick: one more on {name}")),
-                None => append_hook_log(&format!("pick: dropped a report from {child}, which was not picking")),
+                PickHeard::Ended(name) => append_hook_log(&format!("pick: {name} put away from the page")),
+                PickHeard::Kept(name) => append_hook_log(&format!("pick: one more on {name}")),
+                PickHeard::Refused(name, why) => {
+                    append_hook_log(&format!("pick: dropped a report from {name} ({why:?})"));
+                    // Said to the person only for a pick too big to be one
+                    // the page's own script made: a burst of presses too
+                    // fast is dropped quietly, or it would be a burst of
+                    // messages as well
+                    if why == Refused::TooBig {
+                        flash = Some(i18n::tp("msg.pick.too_big", &[("page", &name)]));
+                    }
+                }
+                PickHeard::Unasked => append_hook_log(&format!("pick: dropped a report from {child}, which was not picking")),
             }
         }
         // What the 🎯 panel asked for

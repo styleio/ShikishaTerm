@@ -9,6 +9,23 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A check's log whose line only looked stamped opened instead of stopping
+  the program.** A line starting with something shaped like a time stamp,
+  with a letter of more than one byte where a digit belongs, was cut in the
+  middle of that letter. Such a line is now shown as it is.
+- **A long check's log opens on its first error.** A log too big to show whole
+  keeps its end, and the jump to the first error did not account for the
+  lines cut from its start, so it landed on the wrong line or on none. It now
+  lands on the error, and opens at the top when the error was in the part
+  cut away.
+- **An AI's settings file on another machine is not written over a change made
+  there meanwhile.** It is read again just before being written; if it changed
+  since, what to write is worked out again from what is there now, and a file
+  that keeps changing is left alone with a line saying so.
+- **A page that is being picked on cannot fill the list with anything it
+  likes.** What a page reports as picked is kept only at the size and pace of
+  what the page's own script sends for a person's press; a report larger than
+  that is dropped with a line saying so.
 - **With the screen run as a program of its own, a locked secrets file says
   where its password goes.** The master password is not typed into that
   window (it would have to travel over the board), and starting up only said

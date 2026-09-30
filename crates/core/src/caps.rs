@@ -171,6 +171,20 @@ struct HttpJob {
     auth: Option<(String, String)>,
 }
 
+/// What became of a page's report of a pick (`Capabilities::note_picked`),
+/// each with the page's display name
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickHeard {
+    /// Kept in the page's list
+    Kept(String),
+    /// The person's Escape: picking ended on that page
+    Ended(String),
+    /// Not kept, and why
+    Refused(String, crate::pick::Refused),
+    /// A page that is not picking, or no page this program knows
+    Unasked,
+}
+
 pub struct Capabilities {
     /// What comes from config. Swapped out on reload
     spec: std::cell::RefCell<CapabilitySpec>,
@@ -1159,23 +1173,36 @@ impl Capabilities {
     }
 
     /// A page said an element was picked on it. Kept only when that page is
-    /// armed -- otherwise it is a page talking unasked, and is dropped. A pick
-    /// of nothing is the person's Escape: picking ends there. Answers the page's
-    /// display name when something changed, for the log
-    pub fn note_picked(&self, child: &str, item: serde_json::Value) -> Option<String> {
-        let name = self.name_of_child(child)?;
+    /// armed -- otherwise it is a page talking unasked, and is dropped -- and
+    /// only when it is the size and pace of what the page's own script sends
+    /// for a person's press (`crate::pick::admit`). A pick of nothing is the
+    /// person's Escape: picking ends there. Answers the page's display name
+    /// and what became of the report, for the log and the person
+    pub fn note_picked(&self, child: &str, item: serde_json::Value) -> PickHeard {
+        let Some(name) = self.name_of_child(child) else { return PickHeard::Unasked };
         let mut picks = self.picks.borrow_mut();
-        let p = picks.get_mut(child).filter(|p| p.armed)?;
+        let Some(p) = picks.get_mut(child).filter(|p| p.armed) else { return PickHeard::Unasked };
         if item.is_null() {
             p.armed = false;
-        } else {
-            // Before it is kept anywhere: what looks like a key, and every
-            // secret this program holds, is hidden here (`crate::secretscan`)
-            let tokens = self.tokens.borrow();
-            let (item, hidden) = crate::pick::scrub(item, || tokens.values().map(String::as_str).collect());
-            p.add(item, hidden)?;
+            return PickHeard::Ended(name);
         }
-        Some(name)
+        // Looked at before anything is done with it: a page can post anything
+        // while armed, and hunting secrets in it, keeping it and writing it
+        // out all cost what it weighs
+        if let Err(why) = crate::pick::admit(&item) {
+            return PickHeard::Refused(name, why);
+        }
+        if p.too_soon(std::time::Instant::now()) {
+            return PickHeard::Refused(name, crate::pick::Refused::TooSoon);
+        }
+        // Before it is kept anywhere: what looks like a key, and every secret
+        // this program holds, is hidden here (`crate::secretscan`)
+        let tokens = self.tokens.borrow();
+        let (item, hidden) = crate::pick::scrub(item, || tokens.values().map(String::as_str).collect());
+        match p.add(item, hidden) {
+            Some(_) => PickHeard::Kept(name),
+            None => PickHeard::Refused(name, crate::pick::Refused::Empty),
+        }
     }
 
     /// A page began a new document. Whatever was drawing the picking went with

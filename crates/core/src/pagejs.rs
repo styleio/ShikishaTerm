@@ -546,7 +546,9 @@ pub const AUTOMATION: &str = r##"
   // What the markup and the words are cut to. One component's markup fits in
   // 3000 characters, and a handful of picks together stay far below what an
   // AI's input takes in one paste. 160 characters is two lines of a button's
-  // or a heading's words -- more is page copy, not a name
+  // or a heading's words -- more is page copy, not a name. The program refuses
+  // a pick whose markup is longer than this (`pick::PAGE_HTML_MAX`, held equal
+  // by a test there)
   const PICK_HTML = 3000, PICK_WORDS = 160;
   // How many ancestors say where it sits. Five usually crosses the edge of the
   // component the element belongs to; longer chains are read past

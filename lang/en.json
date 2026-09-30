@@ -446,6 +446,7 @@
   "msg.page_view.failed": "Could not read the page: {e}",
   "msg.page_view.cut": "Shown up to {shown} MB of {whole} MB. The rest of the page is not here.",
   "msg.ci_log.cut": "Showing the last {shown} MB of {whole} MB. The start of the log is not here.",
+  "msg.pick.too_big": "A pick from {page} was not kept: it was larger than a pick from the page itself can be. Pick the element again.",
   "err.ci_log.no_page": "This check has no log to download and no page to open.",
   "err.page_view.read_only": "Not saved: this is the page as it was read, not a file.",
   "err.browser.no_source": "The browser holds no document for this page yet. Wait for it to load and try again.",
