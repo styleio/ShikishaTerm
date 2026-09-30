@@ -25443,6 +25443,48 @@ mod tests {
         assert!(rows[0].contains(r#"data-go="src/lib/a.rs""#) && !rows[1].contains("data-go"), "{rows:?}");
     }
 
+    /// The shape recorded on a machine where the check failed: the address was
+    /// printed while the terminal was 120 columns wide (the size a tab starts
+    /// at before the board has measured itself), and the board then made it
+    /// 118. The pseudo console does not draw the screen again after a resize,
+    /// so what the screen holds after the resize is all there is -- and it
+    /// used to be the rows cut at column 118, two characters gone at every
+    /// break: one "address" 276 characters long, opening nowhere
+    #[test]
+    fn an_address_printed_before_the_screen_narrowed_keeps_every_character() {
+        let address = format!("https://example.com/{}", "abcdefghij".repeat(26));
+        let mut p: vt100::Parser = vt100::Parser::new(30, 120, 100);
+        p.process(b"page: http://127.0.0.1:1/x\r\n");
+        p.process(format!("long {address}\r\n").as_bytes());
+        p.process(b"after\r\n");
+        p.screen_mut().set_size(30, 118);
+        let go = format!(r#"data-go="{address}" data-at="1.5""#);
+        let rows = screen_rows(p.screen());
+        let with: Vec<usize> = (0..rows.len()).filter(|&r| rows[r].contains(&go)).collect();
+        assert_eq!(with, vec![1, 2, 3], "{rows:#?}");
+        assert!(p.screen().contents().contains(&address), "{}", p.screen().contents());
+        // What came after is still after it, and the cursor under it
+        assert!(rows[4].contains("after"), "{rows:#?}");
+        assert_eq!(p.screen().cursor_position(), (5, 0));
+    }
+
+    /// Narrower, then wider than it started: at every width the address is
+    /// whole and one place, however many rows it takes
+    #[test]
+    fn an_address_stays_whole_through_narrowing_and_widening() {
+        let address = format!("https://example.com/{}", "abcdefghij".repeat(26));
+        let mut p: vt100::Parser = vt100::Parser::new(30, 118, 100);
+        p.process(format!("long {address}\r\n").as_bytes());
+        for (cols, rows_taken) in [(82u16, 4usize), (150, 2), (118, 3), (300, 1)] {
+            p.screen_mut().set_size(30, cols);
+            let go = format!(r#"data-go="{address}" data-at="0.5""#);
+            let rows = screen_rows(p.screen());
+            let with = rows.iter().filter(|r| r.contains(&go)).count();
+            assert_eq!(with, rows_taken, "at {cols} columns: {rows:#?}");
+            assert!(p.screen().contents().contains(&address), "at {cols} columns");
+        }
+    }
+
     /// Japanese in a path is drawn a character to a box; each box is part of
     /// the same place, and the sentence around it is not
     #[test]

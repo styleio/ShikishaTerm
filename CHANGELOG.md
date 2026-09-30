@@ -9,6 +9,13 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **Text that ran past the edge of a terminal survives the window getting
+  narrower.** Making a tab narrower cut every row at the new width, and the
+  characters past it were gone for good -- the pseudo console does not draw
+  the screen again after a resize. A long address printed before a resize
+  came back two characters short at every row break, and opened nowhere.
+  Lines that ran on are now laid out again at the new width, scrollback
+  included, the way a terminal with scrollback does.
 - **Messages reach the screen when the program runs in two parts, or as a
   server.** "Saved", "could not read the page" and every other message the
   program says were left out of what a window over a split program, a window

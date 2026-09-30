@@ -63,6 +63,127 @@ impl Grid {
         self.size
     }
 
+    /// NOTE (vendored patch): resizes the way a terminal whose width can
+    /// change under running text has to -- the lines that ran past the edge
+    /// are laid out again at the new width, rather than cut at it.
+    ///
+    /// Upstream truncates every row to the new width and forgets which rows
+    /// ran on. A pseudo console does not draw the screen again after a
+    /// resize (it leaves the terminal to reflow, as terminals with scrollback
+    /// do), so whatever lay past the new edge was simply gone: an address
+    /// printed at one width and read after the window narrowed came back with
+    /// characters missing at every row break. Used for the main screen only;
+    /// a program on the alternate screen draws itself again at the new size
+    pub fn set_size_reflowing(&mut self, size: Size) {
+        if size.cols == self.size.cols
+            || size.cols == 0
+            || size.rows == 0
+            || self.rows.is_empty()
+        {
+            self.set_size(size);
+            return;
+        }
+        self.reflow(size);
+    }
+
+    fn reflow(&mut self, size: Size) {
+        let cols = usize::from(size.cols);
+        let screen_rows = usize::from(size.rows);
+        let above = self.scrollback.len();
+        // Rows under the last one in use -- the cursor's, or the last with
+        // anything written on it -- are blank, and are made again at the end
+        let written = self
+            .rows
+            .iter()
+            .rposition(crate::row::Row::is_written)
+            .map_or(0, |i| i + 1);
+        let used = written
+            .max(usize::from(self.pos.row) + 1)
+            .min(self.rows.len());
+        let cursor_row = above + usize::from(self.pos.row);
+        let cursor_col = usize::from(self.pos.col);
+
+        let mut old: Vec<crate::row::Row> = self.scrollback.drain(..).collect();
+        old.extend(self.rows.drain(..).take(used));
+
+        let mut laid: Vec<crate::row::Row> = Vec::with_capacity(old.len());
+        let mut cursor: Option<(usize, usize)> = None;
+        let mut line: Vec<crate::Cell> = Vec::new();
+        let mut cursor_in_line: Option<usize> = None;
+        let last = old.len().saturating_sub(1);
+        for (i, row) in old.into_iter().enumerate() {
+            let runs_on = row.wrapped() && i < last;
+            if i == cursor_row {
+                cursor_in_line = Some(line.len() + cursor_col);
+            }
+            let mut cells = row.into_cells();
+            // A row that runs on ends in something written, unless a wide
+            // character did not fit in its last column: that column is
+            // nothing, and is not carried into the line
+            if runs_on
+                && cells
+                    .last()
+                    .is_some_and(|c| !c.has_contents() && !c.is_wide_continuation())
+            {
+                cells.pop();
+            }
+            line.extend(cells);
+            if !runs_on {
+                let at = lay_out(
+                    std::mem::take(&mut line),
+                    cursor_in_line.take(),
+                    cols,
+                    &mut laid,
+                );
+                if at.is_some() {
+                    cursor = at;
+                }
+            }
+        }
+
+        let (cursor_at, cursor_col) =
+            cursor.unwrap_or((laid.len().saturating_sub(1), 0));
+        // The screen shows the last rows laid out, as it showed the last
+        // rows before; everything above goes back into the scrollback
+        let mut top = laid.len().saturating_sub(screen_rows);
+        if cursor_at < top {
+            top = cursor_at;
+        }
+        let mut shown: Vec<crate::row::Row> = laid.split_off(top);
+        shown.truncate(screen_rows);
+        while shown.len() < screen_rows {
+            shown.push(crate::row::Row::new(size.cols));
+        }
+        let keep = laid.len().saturating_sub(self.scrollback_len);
+        self.scrollback = laid.into_iter().skip(keep).collect();
+        self.scrollback_offset = 0;
+        self.rows = shown;
+
+        // A scroll region follows the height as a plain resize has it follow
+        if self.scroll_bottom == self.size.rows - 1 {
+            self.scroll_bottom = size.rows - 1;
+        }
+        self.size = size;
+        if self.scroll_bottom >= size.rows {
+            self.scroll_bottom = size.rows - 1;
+        }
+        if self.scroll_bottom < self.scroll_top {
+            self.scroll_top = 0;
+        }
+        self.pos = Pos {
+            row: u16::try_from(cursor_at - top).unwrap_or(size.rows - 1),
+            col: u16::try_from(cursor_col).unwrap_or(size.cols - 1),
+        };
+        self.row_clamp_bottom(false);
+        self.col_clamp();
+        if self.saved_pos.row > self.size.rows - 1 {
+            self.saved_pos.row = self.size.rows - 1;
+        }
+        if self.saved_pos.col > self.size.cols - 1 {
+            self.saved_pos.col = self.size.cols - 1;
+        }
+    }
+
     pub fn set_size(&mut self, size: Size) {
         if size.cols != self.size.cols {
             for row in &mut self.rows {
@@ -743,4 +864,82 @@ pub struct Size {
 pub struct Pos {
     pub row: u16,
     pub col: u16,
+}
+
+/// NOTE (vendored patch): one line -- a row and every row it ran on into --
+/// laid out again `cols` wide onto the end of `out`. `cursor` is how many
+/// cells into the line the cursor stood, when it stood on this line; the
+/// answer is where it stands now (row in `out`, column)
+fn lay_out(
+    mut line: Vec<crate::Cell>,
+    cursor: Option<usize>,
+    cols: usize,
+    out: &mut Vec<crate::row::Row>,
+) -> Option<(usize, usize)> {
+    fn close(
+        row: &mut Vec<crate::Cell>,
+        runs_on: bool,
+        cols: usize,
+        out: &mut Vec<crate::row::Row>,
+    ) {
+        row.resize(cols, crate::Cell::new());
+        out.push(crate::row::Row::from_cells(std::mem::take(row), runs_on));
+    }
+    // What lies after the last thing written is where nothing was
+    while line
+        .last()
+        .is_some_and(|c| !c.has_contents() && !c.is_wide_continuation())
+    {
+        line.pop();
+    }
+    let mut row: Vec<crate::Cell> = Vec::with_capacity(cols);
+    let mut found = None;
+    let mut i = 0;
+    while i < line.len() {
+        // A wide character's right half travels with it
+        if line[i].is_wide_continuation() {
+            i += 1;
+            continue;
+        }
+        let wide = line[i].is_wide();
+        let width = if wide { 2 } else { 1 };
+        let half = wide && line.get(i + 1).is_some_and(crate::Cell::is_wide_continuation);
+        let step = if half { 2 } else { 1 };
+        // Too wide for any row of this screen: it cannot be drawn at all
+        if width > cols {
+            i += step;
+            continue;
+        }
+        if row.len() + width > cols {
+            close(&mut row, true, cols, out);
+        }
+        if cursor == Some(i) {
+            found = Some((out.len(), row.len()));
+        } else if half && cursor == Some(i + 1) {
+            found = Some((out.len(), row.len() + 1));
+        }
+        row.push(line[i].clone());
+        if wide {
+            let right = if half {
+                line[i + 1].clone()
+            } else {
+                let mut c = crate::Cell::new();
+                c.set_wide_continuation(true);
+                c
+            };
+            row.push(right);
+        }
+        i += step;
+    }
+    // A cursor past the written text: as far past it as it was, on the
+    // row the text ends on, never over the edge
+    if let Some(at) = cursor {
+        if found.is_none() {
+            let past = at.saturating_sub(line.len());
+            let col = (row.len() + past).min(cols.saturating_sub(1));
+            found = Some((out.len(), col));
+        }
+    }
+    close(&mut row, false, cols, out);
+    found
 }

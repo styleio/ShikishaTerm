@@ -5785,6 +5785,58 @@ mod resize_survival_tests {
     /// vendored patch must survive the whole neighborhood of that state —
     /// no catch_unwind here on purpose: a panic IS the failure
     #[test]
+    fn vendored_vt100_reflows_the_main_screen_on_a_new_width() {
+        // Text that ran past the edge -- wide characters included, one of
+        // them landing on a row break at some width -- reads the same at
+        // every width, and so does a line in the scrollback
+        let jp = "全角テキストの帯あいうえお漢字カナ混在1２３ｗ日本語".repeat(4);
+        let mut p = vt100::Parser::new(6, 40, 1000);
+        for n in 0..12 {
+            p.process(format!("{n:02} {jp}\r\n").as_bytes());
+        }
+        p.process(b"prompt> ");
+        let whole = |p: &mut vt100::Parser| {
+            // Everything, scrollback and screen, as lines of text
+            p.screen_mut().set_scrollback(usize::MAX);
+            let back = p.screen().scrollback();
+            let (rows, cols) = p.screen().size();
+            let mut text = String::new();
+            let mut offset = back;
+            loop {
+                p.screen_mut().set_scrollback(offset);
+                let from = if offset == back { 0 } else { rows.saturating_sub(1) };
+                for r in from..rows {
+                    let line = p.screen().contents_between(r, 0, r, cols);
+                    text.push_str(&line);
+                    if !p.screen().row_wrapped(r) {
+                        text.push('\n');
+                    }
+                }
+                if offset == 0 {
+                    break;
+                }
+                offset -= 1;
+            }
+            p.screen_mut().set_scrollback(0);
+            text
+        };
+        let before = whole(&mut p);
+        for &cols in &[33u16, 17, 61, 7, 120, 40] {
+            p.screen_mut().set_size(6, cols);
+            let after = whole(&mut p);
+            for n in 0..12 {
+                assert!(after.contains(&format!("{n:02} {jp}\n")), "line {n} at {cols} columns:\n{after}");
+            }
+            // The cursor is where the next thing typed goes: after the prompt
+            // (on the row below it, when the screen is narrower than the prompt)
+            let (row, col) = p.screen().cursor_position();
+            let line = p.screen().contents_between(row.saturating_sub(1), 0, row, col);
+            assert!(line.ends_with("prompt>") || line.ends_with("prompt> "), "at {cols}: {line:?}");
+        }
+        assert_eq!(before, whole(&mut p), "back at the first width, the same text");
+    }
+
+    #[test]
     fn vendored_vt100_survives_resize_with_wide_chars() {
         let line = "全角テキストの帯あいうえお漢字カナ混在1２３ｗ日本語";
         for &cols in &[51u16, 50, 34, 33, 21, 7, 3, 2, 1] {
