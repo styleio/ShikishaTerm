@@ -55,6 +55,10 @@ desk on screen.
 **The middle** is the tab in view: a terminal, a browser page, or the git panel.
 Once the window is divided, each pane's caption carries ▥ and ▤ to divide it again
 and ✕ to close that view.
+Open **CI** in the git panel to list the commit's checks. Press a check to open its
+job's log in an editor tab that only reads (at the first error, when there is one).
+A check still running, or one with no log to download, opens its page in a
+browser tab instead.
 An address or a file path in a terminal is underlined under the pointer. Press it
 for what it can be opened with -- a browser tab, the editor at that line, the
 default app, its folder -- or Ctrl+click to open it straight away (Settings >

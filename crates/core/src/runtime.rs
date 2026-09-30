@@ -1873,6 +1873,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A failed CI run's checks and logs, read from GitHub on a thread, and the
     // tab that fixes them opened back here
     let (ci_tx, ci_rx) = std::sync::mpsc::channel::<CiFix>();
+    // One check's log, read from GitHub on a thread and opened in an editor
+    // that only reads back here, where the editors are
+    let (ci_log_tx, ci_log_rx) = std::sync::mpsc::channel::<CiLog>();
     // Everything the file panel asks of a server, which is all of it: a folder
     // on the far end is a network round trip and the window cannot wait for one
     let (sftp_tx, sftp_rx) = std::sync::mpsc::channel::<String>();
@@ -2072,8 +2075,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is showing. Held here rather than in the settings, because the file
     // somebody opened this afternoon is not a setting
     let mut editors: Vec<crate::view::EditorOpen> = Vec::new();
-    // What the read-only editors are showing (a page's source or DOM), by
-    // the editor's key -- see `readview`
+    // What the read-only editors are showing (a page's source or DOM, a
+    // check's log), by the editor's key -- see `readview`
     let mut views = crate::readview::Held::default();
     // The one just asked for, to be brought into view at the top of the pass
     // (the surfaces were worked out before the press arrived)
@@ -6516,8 +6519,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Under the page's own folder in the list, when it is in one on
             // this PC -- the text is not a file of that folder, only about it
             let under = if on.is_none() { dir } else { None };
-            open_editor = Some(views.open(&mut editors, shown, crate::readview::Kind::Html, text, under));
+            open_editor = Some(views.open(&mut editors, shown, crate::readview::Kind::Html, text, under).key);
             append_hook_log(&format!("page view: the {} of {page} opened to read", if dom { "DOM" } else { "source" }));
+        }
+        // A check's log, back from GitHub: into an editor that only reads,
+        // listed under the folder whose git panel asked, and the git panel told
+        // which line to open on
+        while let Ok(got) = ci_log_rx.try_recv() {
+            let js = match got.result {
+                Ok(log) => {
+                    let (text, first_error) = crate::github::log_for_reading(&log);
+                    let short: String = got.sha.chars().take(7).collect();
+                    let shown = format!("{} @ {short}", got.name.replace(['/', '\\'], "-"));
+                    let (on, dir) = crate::uistate::place_of(std::path::Path::new(&got.folder));
+                    let under = (on.is_none() && !dir.as_os_str().is_empty()).then_some(dir);
+                    let opened = views.open(&mut editors, shown.clone(), crate::readview::Kind::Log, text, under);
+                    open_editor = Some(opened.key);
+                    append_hook_log(&format!("ci log: {} of {short} opened to read", got.name));
+                    let line = first_error.map(|l| l + usize::from(opened.cut));
+                    serde_json::json!({"act": "ci_log", "ok": true, "seq": got.seq, "data": {"shown": shown, "line": line}})
+                }
+                Err(e) => {
+                    append_hook_log(&format!("ci log: {} (job {}) could not be read: {e:#}", got.name, got.job));
+                    serde_json::json!({"act": "ci_log", "ok": false, "seq": got.seq, "error": format!("{e:#}")})
+                }
+            };
+            let js = js.to_string();
+            shell.push_issues(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"issues\":{js}}}"));
+            }
         }
         // A held text goes with its editor
         views.keep_open(&editors);
@@ -7896,6 +7927,48 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     _ => None,
                 })
                 .collect();
+            // One check's log, for a person to read. A job GitHub Actions ran
+            // and finished has one to download, on a thread. Any other check
+            // has only its page, and so does a job still running -- GitHub
+            // keeps no log of it until it ends, and its page shows it live --
+            // which is opened in a browser tab in the folder instead, and said,
+            // so that somebody who pressed for a log is not left looking at a
+            // web page wondering why
+            if act == "ci_log" {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let (project, name, sha, url, folder) = (text("project"), text("name"), text("sha"), text("url"), text("folder"));
+                let seq = args.get("seq").cloned().unwrap_or(serde_json::Value::Null);
+                let running = args.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                if let Some(job) = args.get("job").and_then(|v| v.as_u64()).filter(|_| !running) {
+                    let tx = ci_log_tx.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::github::ci_log(&sources, &project, job, &|k| tokens.get(k).cloned());
+                        let _ = tx.send(CiLog { seq, name, job, sha, folder, result });
+                    });
+                    continue;
+                }
+                let opened = match desks.get(desk_index) {
+                    Some(desk) if crate::github::openable_link(&url) => {
+                        page_in_folder(desk, std::path::Path::new(&folder), &url, &name).map(|(id, fresh)| {
+                            reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
+                            if fresh {
+                                watcher.poke();
+                            }
+                        })
+                    }
+                    _ => Err(i18n::t("err.ci_log.no_page")),
+                };
+                let js = match opened {
+                    Ok(()) => serde_json::json!({"act": act, "ok": true, "seq": seq, "data": {"page": true, "running": running}}),
+                    Err(e) => serde_json::json!({"act": act, "ok": false, "seq": seq, "error": e}),
+                };
+                let js = js.to_string();
+                shell.push_issues(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"issues\":{js}}}"));
+                }
+                continue;
+            }
             // CI that failed on a pull request's commit, handed to an AI tab in
             // the folder its branch is checked out in
             if act == "ci_fix" {
@@ -15503,6 +15576,20 @@ fn hand_to_ai_tab(
 
 /// What the failed checks of a pull request's commit were, as a thread read
 /// them from GitHub, for the tab that is to fix them
+/// One check's log, as it came back from GitHub
+struct CiLog {
+    seq: serde_json::Value,
+    /// The check's name and its commit, which the editor is called by
+    name: String,
+    /// GitHub's number for the job, said in the log when it goes wrong
+    job: u64,
+    sha: String,
+    /// The folder the git panel was showing, as a place key: where the editor
+    /// is listed
+    folder: String,
+    result: anyhow::Result<String>,
+}
+
 struct CiFix {
     project: String,
     number: u64,

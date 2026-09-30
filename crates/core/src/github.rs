@@ -656,9 +656,16 @@ impl Hub {
         )
     }
 
-    /// The end of a GitHub Actions job's log: where a failure says what failed.
-    /// GitHub answers with a redirect to the file, which is followed
+    /// The end of a GitHub Actions job's log: where a failure says what failed
     pub fn job_log_tail(&self, repo: &Repo, job: u64) -> Result<String> {
+        Ok(log_tail(&self.job_log(repo, job)?))
+    }
+
+    /// A GitHub Actions job's whole log, as GitHub keeps it. GitHub answers
+    /// with a redirect to the file, which is followed. A refusal is said the
+    /// way every other one is: an expired log, a spent allowance and a missing
+    /// sign-in each have their own words
+    pub fn job_log(&self, repo: &Repo, job: u64) -> Result<String> {
         let url = format!("https://api.github.com/repos/{}/actions/jobs/{job}/logs", repo.slug());
         let mut resp = self
             .agent
@@ -671,10 +678,16 @@ impl Hub {
             .map_err(|e| anyhow!(crate::i18n::tp("err.github.unreachable", &[("error", &e.to_string())])))?;
         let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().unwrap_or_default();
-        if !(200..300).contains(&status) {
-            bail!(crate::i18n::tp("err.github.other", &[("status", &status.to_string()), ("said", text.trim())]));
+        // Not found, from a repository whose checks were just read with the
+        // same account, is a job with no log yet: still running, or never
+        // started. Said as that, not as a repository out of reach
+        if status == 404 {
+            bail!(crate::i18n::t("err.github.no_log"));
         }
-        Ok(log_tail(&text))
+        if !(200..300).contains(&status) {
+            bail!(refusal(status, text.trim()).0);
+        }
+        Ok(text)
     }
 
     /// Open a new issue. Answers with its number and address
@@ -1117,6 +1130,8 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("list", true) | ("branch_prs", _) => "github_prs",
         // Reading a pull request's failed checks, to hand them to an AI tab
         ("ci_fix", _) => "github_pr",
+        // Reading one check's log, for a person
+        ("ci_log", _) => "github_pr",
         ("detail", false) => "github_issue",
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
@@ -1444,6 +1459,7 @@ const LOG_TAIL_CHARS: usize = 6000;
 /// everything after the last error dropped, the last lines of what is left
 pub fn log_tail(log: &str) -> String {
     let lines: Vec<&str> = log
+        .trim_start_matches('\u{feff}')
         .lines()
         .map(|l| {
             // "2026-09-17T06:20:15.6543593Z text"
@@ -1495,6 +1511,71 @@ pub fn ci_failures(
     Ok(Value::Array(out))
 }
 
+/// One GitHub Actions job's whole log, for a person to read: the project's
+/// repository and account found the way every other request finds them
+pub fn ci_log(sources: &[Source], project: &str, job: u64, look: &dyn Fn(&str) -> Option<String>) -> Result<String> {
+    let source = sources
+        .iter()
+        .find(|s| s.name == project)
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
+    let (repo, token) = target_of(source, look)?;
+    Hub::new(token).job_log(&repo, job)
+}
+
+/// A job's log as an editor shows it, and the line of its first error
+/// (1-based) when it has one.
+///
+/// The colour codes the runner wrote are taken off -- an editor draws no
+/// colour, and `[31m` in front of a line is noise -- and the time stamp at the
+/// head of each line is cut to the time of day: the date is the same all the
+/// way down a job, and the stamp's seven fractional digits push the text off
+/// to the right. The first error is where GitHub put its own mark
+pub fn log_for_reading(log: &str) -> (String, Option<usize>) {
+    let mut out = String::with_capacity(log.len());
+    let mut first_error = None;
+    // GitHub writes a job's log with a byte-order mark in front, which would
+    // hide the first line's stamp from the check below
+    for (i, line) in log.trim_start_matches('\u{feff}').lines().enumerate() {
+        let plain = without_colour(line);
+        let line = match plain.split_once(' ') {
+            // "2026-09-17T06:20:15.6543593Z text" -> "06:20:15 text"
+            Some((stamp, rest)) if stamp.len() >= 20 && stamp.ends_with('Z') && stamp.as_bytes().get(10) == Some(&b'T') => {
+                format!("{} {rest}", &stamp[11..19])
+            }
+            _ => plain,
+        };
+        if first_error.is_none() && line.contains("##[error]") {
+            first_error = Some(i + 1);
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    (out, first_error)
+}
+
+/// A line with the terminal's escape sequences taken out: the colour codes
+/// (`ESC [ ... m`) and any other `ESC [` sequence, which ends at its first
+/// letter, and a lone `ESC`
+fn without_colour(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
 fn check_verdict(done: bool, conclusion: &str) -> &'static str {
     match (done, conclusion) {
         (false, _) => "pending",
@@ -1520,6 +1601,8 @@ fn refusal(status: u16, said: &str) -> (String, bool) {
         // invalid rather than as missing; it is the same answer to a person
         422 if lower.contains("cannot be searched") => (crate::i18n::t("err.github.404"), true),
         410 if lower.contains("disabled") => (crate::i18n::t("err.github.disabled"), false),
+        // What GitHub no longer keeps: a job's log past the days it is kept
+        410 => (crate::i18n::t("err.github.gone"), false),
         _ => (
             crate::i18n::tp(
                 "err.github.other",
@@ -1584,6 +1667,28 @@ mod tests {
         let tail = super::log_tail(&long);
         assert!(tail.lines().count() <= super::LOG_TAIL_LINES, "more lines than a tail");
         assert!(tail.ends_with("line 499"), "the end of a log with no error is not its end");
+    }
+
+    /// A log for a person keeps every line, without the runner's colours and
+    /// with each stamp cut to the time of day, and knows where its first
+    /// error is
+    #[test]
+    fn a_log_for_reading_keeps_its_lines_and_finds_the_first_error() {
+        let log = "\u{feff}2026-09-17T06:20:15.6543593Z \u{1b}[36;1mcargo test\u{1b}[0m\n\
+                   2026-09-17T06:20:16.0000000Z test a ... \u{1b}[31mFAILED\u{1b}[0m\n\
+                   no stamp here\n\
+                   2026-09-17T06:20:39.5426807Z ##[error]Process completed with exit code 1.\n\
+                   2026-09-17T06:20:40.0000000Z ##[error]a second one";
+        let (text, first) = super::log_for_reading(log);
+        assert_eq!(
+            text,
+            "06:20:15 cargo test\n06:20:16 test a ... FAILED\nno stamp here\n\
+             06:20:39 ##[error]Process completed with exit code 1.\n06:20:40 ##[error]a second one\n"
+        );
+        assert_eq!(first, Some(4), "the first error is the one opened on");
+        assert_eq!(super::log_for_reading("all good\n").1, None);
+        // A lone escape, and a sequence that is not a colour, go as well
+        assert_eq!(super::without_colour("a\u{1b}[2Kb\u{1b}c"), "abc");
     }
 
     /// The branch a pull request comes from is found where it is checked out:

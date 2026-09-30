@@ -30,6 +30,13 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **A check's log, one press from the git panel.** Open CI in the git panel
+  and press any check: its job's log opens in an editor tab that only reads,
+  named after the check and the commit, without the runner's colour codes,
+  each line stamped with the time of day, and at the first error when there
+  is one. A check still running, or one with no log to download, opens its
+  page in a browser tab instead and says why. A log GitHub no longer keeps
+  says that too.
 - **Develop, on a web page's bar.** Tick it among the browser tab's controls
   and the bar gets a list of tools for somebody building the page: the hard
   reload, picking elements for an AI (the list of what was picked now stands

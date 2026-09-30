@@ -1,6 +1,7 @@
 //! Text this program made, shown to a person in an editor tab that only reads.
 //!
-//! A page's source, its DOM, and whatever comes next of the same sort: the
+//! A page's source, its DOM, a check's log from the git panel, and whatever
+//! comes next of the same sort: the
 //! app has the text, nobody is to change it, and it is not a file anywhere.
 //! Every one of them goes through here, so that each gets the same promises
 //! without writing them again (`.claude/RULES.md`, DRY):
@@ -34,6 +35,19 @@ pub enum Kind {
     /// are where a reader begins -- and the line is an HTML comment, so the
     /// text still reads as HTML
     Html,
+    /// A job's log. Its end is kept -- a run fails at its end -- and the line
+    /// is a plain line, as a log has no comments
+    Log,
+}
+
+/// An editor just opened on held text
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opened {
+    /// The editor's key, for it to be brought forward
+    pub key: String,
+    /// Whether the text was cut, so that a line counted in the whole text is
+    /// one further down in the editor (the line saying so comes first)
+    pub cut: bool,
 }
 
 /// The texts being shown, by the editor's key
@@ -48,12 +62,12 @@ pub struct Held {
 impl Held {
     /// Open `text` in an editor that only reads, called `title` on its tab
     /// ("shop (Source code).html": what it is, of what) and listed under the
-    /// folder `under` when it has one on this PC. Gives the editor's key, for
-    /// it to be brought forward
-    pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<PathBuf>) -> String {
+    /// folder `under` when it has one on this PC
+    pub fn open(&mut self, editors: &mut Vec<EditorOpen>, title: String, kind: Kind, text: String, under: Option<PathBuf>) -> Opened {
         self.made += 1;
         let key = format!("{KEY_PREFIX}{}", self.made);
-        self.texts.insert(key.clone(), fit(text, kind));
+        let (text, cut) = fit(text, kind);
+        self.texts.insert(key.clone(), text);
         editors.push(EditorOpen {
             key: key.clone(),
             dir: under,
@@ -65,7 +79,7 @@ impl Held {
             diff: None,
             read_only: true,
         });
-        key
+        Opened { key, cut }
     }
 
     /// What the page asks of an editor showing held text: it reads what is
@@ -95,14 +109,14 @@ impl Held {
 /// A text as it goes into the editor: whole when it is within the editor's
 /// limit, else cut on a character's edge with a first line saying it was cut
 /// and how big it was -- a text that stopped short with nothing said would
-/// read as the whole of it
-pub fn fit(text: String, kind: Kind) -> String {
+/// read as the whole of it. Says whether it cut
+pub fn fit(text: String, kind: Kind) -> (String, bool) {
     let most = crate::files::READ_LIMIT as usize;
     if text.len() <= most {
-        return text;
+        return (text, false);
     }
     let mb = |n: usize| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
-    match kind {
+    let fitted = match kind {
         Kind::Html => {
             let mut end = most;
             while !text.is_char_boundary(end) {
@@ -111,7 +125,16 @@ pub fn fit(text: String, kind: Kind) -> String {
             let note = i18n::tp("msg.page_view.cut", &[("shown", &mb(end)), ("whole", &mb(text.len()))]);
             format!("<!-- {note} -->\n{}", &text[..end])
         }
-    }
+        Kind::Log => {
+            let mut start = text.len() - most;
+            while !text.is_char_boundary(start) {
+                start += 1;
+            }
+            let note = i18n::tp("msg.ci_log.cut", &[("shown", &mb(text.len() - start)), ("whole", &mb(text.len()))]);
+            format!("{note}\n{}", &text[start..])
+        }
+    };
+    (fitted, true)
 }
 
 #[cfg(test)]
@@ -125,7 +148,7 @@ mod tests {
     fn held_text_reads_and_refuses_to_save() {
         let mut held = Held::default();
         let mut editors = Vec::new();
-        let key = held.open(&mut editors, "shop (Source code).html".into(), Kind::Html, "<p>hi</p>".into(), None);
+        let key = held.open(&mut editors, "shop (Source code).html".into(), Kind::Html, "<p>hi</p>".into(), None).key;
         assert!(key.starts_with(KEY_PREFIX));
         assert!(editors[0].read_only && editors[0].scratch, "the editor only reads");
         let args = serde_json::json!({"path": "shop (Source code).html"});
@@ -144,8 +167,8 @@ mod tests {
     fn a_closed_view_lets_go_of_its_text() {
         let mut held = Held::default();
         let mut editors = Vec::new();
-        let a = held.open(&mut editors, "a".into(), Kind::Html, "a".into(), None);
-        let b = held.open(&mut editors, "b".into(), Kind::Html, "b".into(), None);
+        let a = held.open(&mut editors, "a".into(), Kind::Html, "a".into(), None).key;
+        let b = held.open(&mut editors, "b".into(), Kind::Log, "b".into(), None).key;
         assert_ne!(a, b);
         editors.retain(|e| e.key != a);
         held.keep_open(&editors);
@@ -159,11 +182,26 @@ mod tests {
     #[test]
     fn html_too_big_keeps_its_start_and_says_so() {
         let most = crate::files::READ_LIMIT as usize;
-        assert_eq!(fit("<p>short</p>".into(), Kind::Html), "<p>short</p>");
+        assert_eq!(fit("<p>short</p>".into(), Kind::Html), ("<p>short</p>".to_string(), false));
         let big = "あ".repeat(most / 3 + 10);
-        let cut = fit(big.clone(), Kind::Html);
+        let (cut, was) = fit(big.clone(), Kind::Html);
+        assert!(was);
         assert!(cut.starts_with("<!-- "), "no line saying it was cut");
         let body = &cut[cut.find('\n').unwrap() + 1..];
         assert!(body.len() <= most && big.starts_with(body));
+    }
+
+    /// A log too big keeps its end, where a run fails, and says so on a
+    /// plain first line
+    #[test]
+    fn a_log_too_big_keeps_its_end_and_says_so() {
+        let most = crate::files::READ_LIMIT as usize;
+        assert_eq!(fit("ok\n".into(), Kind::Log), ("ok\n".to_string(), false));
+        let big = format!("{}the end\n", "あ".repeat(most / 3 + 10));
+        let (cut, was) = fit(big.clone(), Kind::Log);
+        assert!(was);
+        let (note, body) = cut.split_once('\n').unwrap();
+        assert!(!note.starts_with("<!--") && !note.is_empty(), "no plain line saying it was cut");
+        assert!(body.len() <= most && big.ends_with(body) && body.ends_with("the end\n"));
     }
 }

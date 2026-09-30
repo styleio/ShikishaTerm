@@ -2205,6 +2205,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gcheck .st { color:var(--dim); }
   #gitpanel .gcheck.v-failed .st { color:var(--stop); }
   #gitpanel .gcheck a { color:var(--dim); text-decoration:none; }
+  /* A check is pressed for its log: the whole row but its page's arrow */
+  #gitpanel .gcheck button.glog { display:flex; align-items:center; gap:var(--s2); flex:1 1 auto; min-width:0;
+    border:none; background:none; padding:0 var(--s1); margin-left:calc(-1 * var(--s1)); border-radius:var(--r-ctl);
+    font:inherit; color:inherit; text-align:left; cursor:pointer; min-height:24px; }
+  #gitpanel .gcheck button.glog:hover { background:var(--hover); }
+  #gitpanel .gcheck button.glog.asking .st { color:var(--live); }
+  #gitpanel .gcheck button.glog .go { color:var(--dim); }
   #gitpanel .gbasesay, #gitpanel .gconflictsay { font-size:11.5px; color:var(--text); }
   #gitpanel .gbase select { height:32px; font:inherit; font-size:12.5px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 var(--s2); }
@@ -17995,8 +18002,8 @@ function gitFresh(name) {
            // ask while GitHub is still working out whether it can merge
            prs:null, prsWhy:"", prForm:false, armed:0, prsTries:0, prsWatch:false,
            // What CI says of the commit they are at (null: none, or not known), and
-           // whether its checks are listed
-           checks:null, ciOpen:false };
+           // whether its checks are listed, and the check whose log is on its way
+           checks:null, ciOpen:false, ciLog:null };
 }
 let G = gitFresh(null);
 let gitUi = null;
@@ -19099,6 +19106,23 @@ function gitCiFix() {
   gitIssuesAsk("ci_fix", {project: g.project, number: p ? p.number : 0, head: G.branch.name,
     sha: G.checks.sha || (p && p.sha) || "", title: p ? (p.title || "") : "", url: p ? (p.url || "") : ""});
 }
+// One check's log, in an editor that only reads. Any check, passed or not: a
+// green one is read to see what ran. One asked at a time; the row says it is
+// on its way, and a second press on the same row while it is does nothing
+function gitCiLogKey(item) {
+  return (item.job == null ? "" : String(item.job)) + ":" + (item.name || "");
+}
+function gitCiLog(item) {
+  const g = gitGroup();
+  if (!g || !G.checks) return;
+  const key = gitCiLogKey(item);
+  if (G.ciLog === key) return;
+  G.ciLog = key; G.said = ""; G.bad = false;
+  drawGit();
+  gitIssuesAsk("ci_log", {project: g.project, job: item.job == null ? null : item.job, name: item.name || "",
+    sha: G.checks.sha || (gitPrsOpen()[0] || {}).sha || "", url: item.url || "", folder: g.key || "",
+    running: item.verdict === "pending"});
+}
 // Its base brought into this folder; a conflict opens an AI tab in the middle
 function gitPrResolve(p) {
   const g = gitGroup();
@@ -19159,6 +19183,23 @@ function gitIssues(d) {
     if (d.ok && I.pr && I.pr.from === "git") {
       I.pr.bases = ((d.data || {}).bases || []).filter(x => x !== I.pr.head);
       gitPrBaseFit();
+    }
+    drawGit();
+    return;
+  }
+  // A check's log: open in its editor already by the time this arrives, and
+  // taken to its first error. Nothing else the panel is doing waits on it
+  if (d.act === "ci_log") {
+    const name = (G.ciLog || "").replace(/^[^:]*:/, "");
+    G.ciLog = null;
+    if (!d.ok) { G.said = d.error || ""; G.bad = true; }
+    else if ((d.data || {}).page) {
+      G.said = (T[d.data.running ? "git.ci.log.running" : "git.ci.log.page"] || "").replaceAll("{name}", name);
+      G.bad = false;
+    }
+    else if ((d.data || {}).line) {
+      ED.goto = {path: d.data.shown, line: d.data.line, col: 1};
+      edGotoNow();
     }
     drawGit();
     return;
@@ -19435,7 +19476,7 @@ function drawGitPrs(u, next) {
   const b = G.branch || {};
   const prs = Array.isArray(G.prs) ? G.prs : [];
   const another = prs.length > 0 && !gitPrsDone() && !gitPrFormShown() && !!b.name && !b.protected && !!b.upstream && !b.ahead;
-  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another, G.checks, G.ciOpen]);
+  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another, G.checks, G.ciOpen, G.ciLog]);
   if (u.prs.dataset.sig === sig) return;
   u.prs.dataset.sig = sig;
   u.prs.textContent = "";
@@ -19472,10 +19513,14 @@ function drawGitPrs(u, next) {
       count(c.passed, "passed"), count(c.failed, "failed"), count(c.pending, "pending")));
     if (G.ciOpen) {
       for (const item of c.items || []) {
+        const asking = G.ciLog === gitCiLogKey(item);
         u.prs.append(el("div", {class:"gcheck v-" + item.verdict},
-          el("span", {class:"dot"}),
-          el("span", {class:"nm", title: item.name || ""}, item.name || ""),
-          el("span", {class:"st"}, T["issues.verdict." + item.verdict] || item.verdict || ""),
+          el("button", {type:"button", class:"glog" + (asking ? " asking" : ""), title: T["git.ci.log"] || "",
+              onclick:() => gitCiLog(item)},
+            el("span", {class:"dot"}),
+            el("span", {class:"nm"}, item.name || ""),
+            el("span", {class:"st"}, asking ? "…" : (T["issues.verdict." + item.verdict] || item.verdict || "")),
+            el("span", {class:"go"}, "›")),
           item.url ? mdLink(item.url, "↗") : null));
       }
     }
