@@ -71,6 +71,9 @@ fs.mkdirSync(path.join(APP, 'config'), { recursive: true });
 fs.writeFileSync(path.join(APP, 'config', 'config.json'), JSON.stringify({
   language: process.env.CILOG_LANG || 'ja',
   remote: { enabled: false },
+  // Answered already, so the start does not stop on the question about the
+  // AI CLIs' hooks (this checks nothing about them)
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   git_accounts: [{ name: 'check', owners: ['styleio'] }],
   desks: [{
     name: 'Check', id: 'check',

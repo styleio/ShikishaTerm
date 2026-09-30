@@ -126,6 +126,9 @@ fs.writeFileSync(path.join(APP, 'config', 'secrets.json'), JSON.stringify({ toke
 fs.writeFileSync(CONFIG, JSON.stringify({
   secrets: 'secrets.json',
   language: JA ? 'ja' : 'en',
+  // Answered already, so the start does not stop on the question about the
+  // AI CLIs' hooks (this checks nothing about them)
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'Pick', id: 'pick', folders: [{ cwd: WORK, tabs: [

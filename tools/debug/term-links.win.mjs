@@ -131,6 +131,9 @@ const PHONE_KEY = 'linkphone0123456789abcd';
 const writeConfig = (more = {}) => fs.writeFileSync(CONFIG, JSON.stringify({
   language: LANG,
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
+  // Answered already, so the start does not stop on the question about the
+  // AI CLIs' hooks, which covers the terminal (this checks nothing about them)
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: WORK, tabs: [{ name: 'shell', id: 'shell', command: 'node say.mjs' },
     // Split, a prompt to paste into: the right-click paste is the other press
     // only this PC's window may make
