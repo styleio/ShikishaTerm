@@ -9,6 +9,11 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **Messages reach the screen when the program runs in two parts, or as a
+  server.** "Saved", "could not read the page" and every other message the
+  program says were left out of what a window over a split program, a window
+  connected to a server, and a phone watching either one were given, so none
+  of them saw it. They are there now.
 - **An answer asked of another AI tab arrives when the AI finishes, even if
   its screen still looks busy.** A Codex tab could go on looking busy after
   its turn was over, and the answer waited in its record until something on
@@ -24,7 +29,31 @@ once it reaches its first tagged release.
   issue is public. Nothing you ask the ? leaves this PC except for the AI that
   answers it.
 
+### Added
+- **Develop, on a web page's bar.** Tick it among the browser tab's controls
+  and the bar gets a list of tools for somebody building the page: the hard
+  reload, picking elements for an AI (the list of what was picked now stands
+  in the right-hand column, called up by this), DevTools, and the page's
+  **source code** and **DOM** -- the HTML as the server sent it, read from what
+  the browser already holds rather than fetched again, and the HTML as it
+  stands now -- each in an editor that reads and does not save. The same list,
+  less the reload, is on the page tab's right-click menu. A page whose server
+  forbids keeping it says so, and points at the DOM instead.
+
 ### Changed
+- **The hard reload moved into Develop.** The bar's own ⟲ button is gone; a
+  bar that showed it no longer does (the old setting is read and left alone),
+  and Shift or Ctrl on the reload button still reloads hard.
+- **Picking elements for an AI left the input bar.** It is opened from
+  Develop, and its list stands in the right-hand column as Picked elements.
+- **The right-hand column holds only what the tab in view is used with.**
+  Files, Git and Chat beside an AI tab, Files and Git beside a terminal or an
+  editor, and Console beside a web page -- the rest leaves the strip instead of
+  saying "not here" when pressed. The panel chosen is remembered for each kind
+  of tab, in the settings, so a page and an AI tab each come back to their own.
+  A panel called up by a button (the search of every conversation) joins the
+  strip with its own ✕ and stays until that is pressed. Scripts call one up
+  with `shikisha.show_panel(name)`.
 - **An answer from the source code says which code it was read in.** When this
   build's own code is not public, the release of the same version is read
   before the newest code, and the answer names the one it used.

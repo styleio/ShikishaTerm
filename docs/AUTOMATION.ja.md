@@ -420,7 +420,7 @@ shikisha.draft_to_tab("ai", shikisha.browser_html(page.id))
 ```lua
 shikisha.browser_nav(page.id)                        -- 全部出す
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- 選んで出す
--- 指定できるのは back / forward / reload / reload_hard（スーパーリロード）/ url / point
+-- 指定できるのは back / forward / reload / url / develop（開発の一覧）/ point
 shikisha.browser_unnav(page.id)                      -- 引っ込める
 ```
 
@@ -429,7 +429,7 @@ shikisha.browser_unnav(page.id)                      -- 引っ込める
 | `back` | ← 戻る（戻れないときは押せません） |
 | `forward` | → 進む |
 | `reload` | ⟳ 更新 |
-| `reload_hard` | ⟲ スーパーリロード（持っているものを捨てて取り直す） |
+| `develop` | 開発の一覧。スーパーリロード・要素を選んで AI に渡す・デベロッパーツール・ソースコード・DOM |
 | `url` | URL欄。打ったものがURLならそこへ移り、そうでなければ Google で検索します |
 | `point` | クリックモード。スマホから見ているときだけ出ます（タップした場所をそのままクリックするか、なぞってポインタを動かすかの切り替え） |
 
@@ -982,6 +982,7 @@ shikisha.close_tab(t.id)
 | 命令 | 説明 |
 |---|---|
 | `shikisha.show(タブ)` | そのタブを画面に出す。`0` は盤面。「自動切り替え」を切っているとき、直前に人が画面を動かしたとき、設定画面を開いているときは何もしません |
+| `shikisha.show_panel(名前)` | 右の列をそのパネルで開き、そこに切り替える（ボタンで機能を呼び出すのと同じ）。名前は `files`・`git`・`convo`・`console`・`picks`。手前のタブに無いパネルは、✕ 付きで列に加わり、✕ を押すまで残ります。`show` と同じく、「自動切り替え」を切っているとき、直前に人が画面を動かしたとき、設定画面を開いているときは何もしません |
 | `shikisha.open_result(run)` | その実行の記録を結果ページとして開き、そこへ移動する |
 | `shikisha.split_pane("right")` | フォーカス中のペインを割る。`"right"` は横、`"down"` は下。**新しい方にフォーカスが移る** |
 | `shikisha.close_pane()` | フォーカス中のペインを閉じる。中のタブは動いたまま |
@@ -1081,8 +1082,8 @@ AI CLI 自身のフックもここを通ります。
 | `shikisha.browser_wait(id, {ask=…, selector=…, timeout_ms=…})` | 早い者勝ちで待つ。`"selector"` / `"button"` / `"timeout"` を返す |
 | `shikisha.browser_devtools(id)` | ページの DevTools を、ページの 1 つとして開く。その名前と、いま開いたかどうかを返す（開いていれば何もしない）。`split_pane("right")` で画面を分け、`show(名前)` でそこに出す（開いたばかりのページがタブになるのは次の周回からなので、`show` はその後で）。ページのタブの「隣に DevTools を開く」も同じことをする。DevTools を入れたまま書き残された分割は、アプリを起動し直すと、DevTools を開き直して戻る。AI には既定で閉じている（クッキーを含め、ページが持つものをすべて読み書きできるため） |
 | `shikisha.browser_console(id, since)` | ページがコンソールに出したもののうち、`since` 番より後の行（省けば残っている全部）。1 行 1 テーブル（`seq`・`level`＝error／warn／info／log／debug・`from`＝ページのコード／捕まえられなかったエラー／ブラウザ自身・`text`・`at`・`ms`）と、次に `since` に渡す最新の行番号を返す。最初に呼んだときに記録を始める。そのとき表示しているページが読み込まれてから出したものは含むが、それより前のページのものは残っていない |
-| `shikisha.browser_pick(id, true)` | ページで要素を選べる状態にする。`false` を渡すか、ページで Esc を押すまで、人がページの要素を押すと、押す代わりにその要素を選ぶ。入力欄の 🎯 パネルのスイッチと同じ |
-| `shikisha.browser_picks(id, clear)` | ページで選んだ要素を古い順に返す。1 要素 1 テーブル（`n`・`note`・`tag`・`role`・`name`・`sel`・`path`・`source`・`box`・`view`・`url`・`style`・`html`）。2 つ目の戻り値は、🎯 パネルが AI に渡すときと同じ書き方の文章。`clear = true` なら、読んだあとに一覧を空にする。鍵らしい値と、このアプリが持っている秘密の値は、どこにあってもすでに `[hidden]` になっている |
+| `shikisha.browser_pick(id, true)` | ページで要素を選べる状態にする。`false` を渡すか、ページで Esc を押すまで、人がページの要素を押すと、押す代わりにその要素を選ぶ。右の列の「選んだ要素」のスイッチと同じ |
+| `shikisha.browser_picks(id, clear)` | ページで選んだ要素を古い順に返す。1 要素 1 テーブル（`n`・`note`・`tag`・`role`・`name`・`sel`・`path`・`source`・`box`・`view`・`url`・`style`・`html`）。2 つ目の戻り値は、「選んだ要素」が AI に渡すときと同じ書き方の文章。`clear = true` なら、読んだあとに一覧を空にする。鍵らしい値と、このアプリが持っている秘密の値は、どこにあってもすでに `[hidden]` になっている |
 
 ### モデルに尋ねる
 

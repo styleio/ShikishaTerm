@@ -1012,6 +1012,11 @@ pub struct Config {
     /// actually in.
     #[serde(default)]
     pub side_bar_width: Option<u16>,
+    /// The panel last chosen in that column for each kind of tab in front
+    /// (`browser`, `ai`, `term`), so the next start opens each on what was
+    /// being looked at. Missing means the first panel the kind has
+    #[serde(default)]
+    pub side_panels: Option<std::collections::BTreeMap<String, String>>,
     // Where notifications go, the automation doors, who may run what, and
     // what git does are not here: each belongs to a desk (see `DeskConfig`),
     // whole, with nothing of the app's underneath. An app answer a desk
@@ -1495,6 +1500,31 @@ pub fn clamp_side_bar(px: u16) -> u16 {
 /// column costs the terminal its width, so it waits to be asked for.
 pub fn side_bar_px() -> u16 {
     load().and_then(|c| c.side_bar_width).map(clamp_side_bar).unwrap_or(0)
+}
+
+/// The kinds of tab the column remembers a panel for
+pub const SIDE_KINDS: [&str; 3] = ["browser", "ai", "term"];
+
+/// Whether a name can stand for a panel of the column. The page knows which
+/// panels there are; this only keeps what is written down to the shape of a
+/// name, since it is put into the page as it is
+pub fn side_panel_name_ok(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 24 && name.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+/// The remembered panel of each kind, as the object the page starts from
+pub fn side_panels_json() -> String {
+    side_panels_of(load().and_then(|c| c.side_panels).as_ref())
+}
+
+fn side_panels_of(kept: Option<&std::collections::BTreeMap<String, String>>) -> String {
+    let mut out = serde_json::Map::new();
+    for (kind, panel) in kept.into_iter().flatten() {
+        if SIDE_KINDS.contains(&kind.as_str()) && side_panel_name_ok(panel) {
+            out.insert(kind.clone(), serde_json::Value::String(panel.clone()));
+        }
+    }
+    serde_json::Value::Object(out).to_string()
 }
 
 /// Default order of the auxiliary key row. Backspace first (see `cast_keys`), then the
@@ -2771,10 +2801,12 @@ pub struct NavSpec {
     pub forward: bool,
     #[serde(default)]
     pub reload: bool,
-    /// The second reload: fetch it all again instead of using what is held.
-    /// Its own switch, because it is its own button
+    /// The tools for somebody building the page: a list holding the reload
+    /// that fetches it all again, picking parts of the page for an AI,
+    /// DevTools, and the page's source and DOM as it stands. A setting written
+    /// before this, with the old `reload_hard` switch, is read without it
     #[serde(default)]
-    pub reload_hard: bool,
+    pub develop: bool,
     /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
@@ -2794,7 +2826,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, reload_hard: true, url: true, point: true }
+        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true }
     }
 }
 
@@ -6892,6 +6924,26 @@ mod pair_desks_tests {
 
 #[cfg(test)]
 mod tests {
+    /// What the column remembers goes into the page as it is, so only the
+    /// three kinds and names shaped like a panel's are let through
+    #[test]
+    fn the_columns_memory_reaches_the_page_only_as_names() {
+        let kept: std::collections::BTreeMap<String, String> = [
+            ("ai", "convo"),
+            ("term", "git"),
+            ("browser", "</script><script>x"),
+            ("elsewhere", "files"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(super::side_panels_of(Some(&kept)), r#"{"ai":"convo","term":"git"}"#);
+        assert_eq!(super::side_panels_of(None), "{}");
+        assert!(super::side_panel_name_ok("console"));
+        assert!(!super::side_panel_name_ok("Console"));
+        assert!(!super::side_panel_name_ok(""));
+    }
+
     #[test]
     fn backspace_leads_the_key_row_whatever_order_was_written() {
         let keys = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();

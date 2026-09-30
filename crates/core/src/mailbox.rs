@@ -77,6 +77,9 @@ pub struct Mailbox {
     /// The width the right-hand column is now drawn at, when its edge has just
     /// been dragged or it has been put away. 0 = put away
     pub side_width: Option<u16>,
+    /// Panels of that column chosen since the last drain, each for a kind of
+    /// tab in front: `(kind, panel)`
+    pub side_panels: Vec<(String, String)>,
     /// Pages placed in the window that have taken the keyboard since the last
     /// drain, by the name automation addresses them with
     pub touches: Vec<String>,
@@ -190,6 +193,8 @@ pub struct Mailbox {
     pub console_asks: Vec<(String, String, serde_json::Value)>,
     /// Pages whose DevTools were asked for, by key
     pub devtools: Vec<String>,
+    /// Pages whose source or DOM was asked for: (key, `source` or `dom`)
+    pub page_views: Vec<(String, String)>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     pub run_luas: Vec<String>,
@@ -424,6 +429,12 @@ impl Mailbox {
     }
     pub fn take_side_width(&mut self) -> Option<u16> {
         self.side_width.take()
+    }
+    pub fn take_page_views(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.page_views)
+    }
+    pub fn take_side_panels(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.side_panels)
     }
     pub fn take_touches(&mut self) -> Vec<String> {
         std::mem::take(&mut self.touches)

@@ -700,6 +700,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.stamp.clone());
                     t.file_diff =
                         ui.editors.iter().find(|e| &e.key == key).and_then(|e| e.diff.clone());
+                    t.read_only = ui.editors.iter().any(|e| &e.key == key && e.read_only);
                     Some(t)
                 }
                 Surface::Issues { key } => Some(crate::uistate::TabState::issues(i + 1, key)),
@@ -1303,6 +1304,11 @@ pub struct EditorOpen {
     /// `work`, `staged` or `commit:<hash>` -- when a list of changes opened it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    /// Showing text the app holds rather than a file (a page's source or its
+    /// DOM, see `runtime::PageViews`): read from there, never saved, and
+    /// thrown away with the editor
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
 }
 
 pub fn surfaces_of(

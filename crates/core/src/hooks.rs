@@ -1236,6 +1236,10 @@ impl TabRef {
     }
 }
 
+/// The panels the right-hand column can be opened on, by the names the board
+/// page gives them (`SIDE_PANELS` in `shell.rs`)
+pub const PANEL_NAMES: &[&str] = &["files", "git", "convo", "console", "picks"];
+
 /// Operations requested from hooks to the Rust side. Executed by main
 #[derive(Debug)]
 pub enum Command {
@@ -1256,6 +1260,9 @@ pub enum Command {
     /// Switch the displayed tab (spectator mode: lets a human watch the
     /// AI<->browser turns). 0 = the dashboard (INDEX)
     ShowTab { target: TabRef },
+    /// Open the right-hand column on one of its panels and switch to it, the
+    /// way a button that calls a panel up does (one of [`PANEL_NAMES`])
+    ShowPanel { name: String },
     /// Put a line on a tab's screen for the person watching. Nothing is sent
     /// to the peer and nothing is expected back -- the counterpart of
     /// `SendPrompt` for a pane that must be told something without being asked
@@ -2368,6 +2375,28 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // Open the right-hand column on a panel, as a button that calls
+            // one up does. The page knows which panels there are; a name it
+            // does not know is refused here so the script hears about it
+            let c = Rc::clone(&commands);
+            shikisha
+                .set(
+                    "show_panel",
+                    lua.create_function(move |_, name: String| {
+                        if !PANEL_NAMES.contains(&name.as_str()) {
+                            return Err(mlua::Error::RuntimeError(format!(
+                                "show_panel: no panel called {name:?} (one of {})",
+                                PANEL_NAMES.join(", ")
+                            )));
+                        }
+                        c.borrow_mut().push(Command::ShowPanel { name });
+                        Ok(())
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             // The rally's final result: an exit code and reason the AI produces by judging whether the goal was met
             let c = Rc::clone(&commands);
             let o = Rc::clone(&current_origin);
@@ -2858,7 +2887,7 @@ impl HookEngine {
                                     back: get("back"),
                                     forward: get("forward"),
                                     reload: get("reload"),
-                                    reload_hard: get("reload_hard"),
+                                    develop: get("develop"),
                                     url: get("url"),
                                     point: get("point"),
                                 }

@@ -2072,6 +2072,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // is showing. Held here rather than in the settings, because the file
     // somebody opened this afternoon is not a setting
     let mut editors: Vec<crate::view::EditorOpen> = Vec::new();
+    // What the read-only editors are showing: a page's source or DOM, by the
+    // editor's key (see `page_view_text`), and how many have been opened
+    let mut page_views: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut page_view_n: u64 = 0;
     // The one just asked for, to be brought into view at the top of the pass
     // (the surfaces were worked out before the press arrived)
     let mut open_editor: Option<String> = None;
@@ -2080,6 +2084,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut font_save_at: Option<std::time::Instant> = None;
     let mut tab_save_at: Option<std::time::Instant> = None;
     let mut side_save_at: Option<std::time::Instant> = None;
+    // Panels of the column chosen and not yet written down, by kind of tab
+    let mut side_panels_kept: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut side_panels_save_at: Option<std::time::Instant> = None;
     // Whether the composer is shut, as the window's own page last said. The
     // pen a placed page draws for itself follows it
     let mut composer_shut = false;
@@ -4790,6 +4797,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::DevTools { page }) => {
                         shell.mail().devtools.push(page);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::PageView { page, what }) => {
+                        shell.mail().page_views.push((page, what));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Git { panel, act, args }) => {
                         shell.mail().gits.push((panel, act, args));
                     }
@@ -5083,6 +5093,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::SideWidth { px }) => {
                         shell.mail().side_width = Some(px);
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::SidePanel { tab, panel }) => {
+                        shell.mail().side_panels.push((tab, panel));
+                    }
                     // Convert other screen operations into the same keystrokes that come from the window
                     remote::RemoteCmd::Ui(ev) => {
                         let keys = keys_for(&ev);
@@ -5285,7 +5298,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 back: spec.back,
                 forward: spec.forward,
                 reload: spec.reload,
-                reload_hard: spec.reload_hard,
+                develop: spec.develop,
                 edit: spec.url,
                 point: spec.point,
                 can_back: w.is_some_and(|w| w.2),
@@ -5691,7 +5704,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .iter()
                 .map(|e| {
                     let mut e = e.clone();
-                    e.stamp = match (&e.at, &e.dir, &e.showing) {
+                    // Text the app holds has no disk to ask
+                    e.stamp = if e.read_only { None } else { match (&e.at, &e.dir, &e.showing) {
                         // A file on another machine: what it said last time it
                         // was asked (see `far_stamp_polls`)
                         (Some(_), _, Some(rel)) => far_seen
@@ -5701,7 +5715,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         (None, Some(d), Some(rel)) => local_under(d, rel).map(|at| crate::files::stamp_of(&at)),
                         _ => None,
                     }
-                    .filter(|s| !s.is_empty());
+                    .filter(|s| !s.is_empty()) };
                     e
                 })
                 .collect(),
@@ -5959,6 +5973,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             side_width = Some(config::clamp_side_bar(px));
             side_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
         }
+        // The panel chosen for a kind of tab, held back the same way: going
+        // along the strip to find something is several choices in a second
+        for (kind, panel) in shell.mail().take_side_panels() {
+            if config::SIDE_KINDS.contains(&kind.as_str()) && config::side_panel_name_ok(&panel) {
+                side_panels_kept.insert(kind, panel);
+                side_panels_save_at = Some(std::time::Instant::now() + Duration::from_secs(2));
+            }
+        }
+        if side_panels_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
+            side_panels_save_at = None;
+            for (kind, panel) in std::mem::take(&mut side_panels_kept) {
+                config::save_setting(&["side_panels", kind.as_str()], serde_json::json!(panel));
+            }
+            watcher.retarget(watch::watch_targets(cfg.as_ref(), &config::config_file_path()));
+        }
         if side_save_at.is_some_and(|at| std::time::Instant::now() >= at) {
             side_save_at = None;
             if let Some(px) = side_width.take() {
@@ -5989,6 +6018,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // A tab written into the settings starts when they are read again
         if asks.reread {
             watcher.poke();
+        }
+        for name in asks.panels {
+            shell.show_panel(&name);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(serde_json::json!({ "panel": name }).to_string());
+            }
         }
         for (id, down) in shell.mail().take_pane_splits() {
             if !pane_layout.focus_pane(id) {
@@ -6456,6 +6491,50 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 reveal = Some((screen, Instant::now() + Duration::from_secs(10)));
             }
         }
+
+        // The Develop list's "Source code" and "DOM": the page's HTML, read
+        // from the browser, in an editor of its own that only reads. The text
+        // is held here and nowhere on disk, and goes when the editor does
+        for (page, what) in shell.mail().take_page_views() {
+            let Some((name, dir, on)) = surfaces.iter().find_map(|s| match s {
+                Surface::Browser { key, name, dir, on } if *key == page => Some((name.clone(), dir.clone(), on.clone())),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let dom = what == "dom";
+            let got = if dom { caps.browser_html(&page) } else { caps.browser_source(&page) };
+            let text = match got {
+                Ok(t) => page_view_text(t),
+                Err(e) => {
+                    append_hook_log(&format!("page view: the {what} of {page} could not be read: {e:#}"));
+                    flash = Some(i18n::tp("msg.page_view.failed", &[("e", &format!("{e:#}"))]));
+                    continue;
+                }
+            };
+            page_view_n += 1;
+            let key = format!("{PAGE_VIEW_PREFIX}{page_view_n}");
+            let label = i18n::t(if dom { "tui.dev.dom" } else { "tui.dev.source" });
+            let shown = format!("{} ({label}).html", name.replace(['/', '\\'], "-"));
+            page_views.insert(key.clone(), text);
+            editors.push(crate::view::EditorOpen {
+                key: key.clone(),
+                // Under the page's own folder in the list, when it is in one on
+                // this PC -- the text is not a file of that folder, only about it
+                dir: if on.is_none() { dir } else { None },
+                showing: Some(shown),
+                stamp: None,
+                scratch: true,
+                at: None,
+                on: None,
+                diff: None,
+                read_only: true,
+            });
+            open_editor = Some(key);
+            append_hook_log(&format!("page view: the {} of {page} opened to read", if dom { "DOM" } else { "source" }));
+        }
+        // A page view's text goes with its editor
+        page_views.retain(|k, _| editors.iter().any(|e| &e.key == k));
 
         // 📼 record-mode toggles: arm the shown browser's recorder (off silences
         // recording everywhere — caps keeps it to one recorder at a time).
@@ -7436,17 +7515,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // machine's folder's, and one here is this PC's
             let on = machine.as_ref().and_then(|_| panel_machine(&panel, &surfaces, &tabs));
             let here_key = std::path::PathBuf::from(crate::uistate::place_key(on.as_deref(), &dir));
+            // A page's source or DOM is not somewhere a file goes: it shows
+            // what it was opened for until it is closed
+            let viewing = |key: &str| editors.iter().any(|e| e.key == key && e.read_only);
             let focused = surfaces
                 .get(pane_layout.focused_surface().wrapping_sub(1))
                 .and_then(|s| match s {
-                    Surface::Editor { key, .. } => Some(key.clone()),
+                    Surface::Editor { key, .. } if !viewing(key) => Some(key.clone()),
                     _ => None,
                 });
             let key = focused
                 .or_else(|| {
                     surfaces.iter().find_map(|s| match s {
                         Surface::Editor { key, .. }
-                            if crate::view::surface_place(s, &tabs).is_some_and(|p| crate::uistate::same_folder(&p, &here_key)) =>
+                            if !viewing(key)
+                                && crate::view::surface_place(s, &tabs).is_some_and(|p| crate::uistate::same_folder(&p, &here_key)) =>
                         {
                             Some(key.clone())
                         }
@@ -7479,6 +7562,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 on,
                 // A change is only ever of a file that is being shown
                 diff: showing.as_ref().and_then(|_| (!diff.trim().is_empty()).then(|| diff.trim().to_string())),
+                read_only: false,
             };
             match editors.iter_mut().find(|e| e.key == key) {
                 Some(e) => *e = entry,
@@ -7916,7 +8000,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is one folder of this machine or a search that stops itself; a
         // folder on another machine is asked on a thread and answers below
         for (panel, act, args) in shell.mail().take_files() {
-            if let Some(js) = files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx) {
+            // An editor showing a page's source or DOM reads what is held here
+            let held = page_views.get(&panel).and_then(|text| page_view_answer(&panel, &act, &args, text));
+            if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
                 shell.push_files(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"files\":{js}}}"));
@@ -11727,9 +11813,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Go::Back => spec.back,
                 Go::Forward => spec.forward,
                 Go::Reload => spec.reload,
-                // Its own switch. Shift on the plain button is a shortcut for
-                // it, so that is allowed wherever either is shown
-                Go::Hard => spec.reload_hard || spec.reload,
+                // In the Develop list. Shift on the plain button is a shortcut
+                // for it, so that is allowed wherever either is shown
+                Go::Hard => spec.develop || spec.reload,
                 Go::To(_) => spec.url,
             };
             if !allowed {
@@ -13298,6 +13384,44 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
 
 /// The page's answer to a file that was read, from its bytes -- the same
 /// answer whichever machine the bytes came from.
+/// How the editors showing a page's source or DOM are named. Not a name a
+/// setting can give an editor, so the two never meet
+pub const PAGE_VIEW_PREFIX: &str = "view:";
+
+/// A page's HTML as it goes into an editor that only reads. Held to the
+/// most the editor opens of a file (`files::READ_LIMIT`), cut on a character's
+/// edge, with a line at the top saying it was cut and how big it was --
+/// a page's text that stopped short with nothing said would read as the page
+pub fn page_view_text(text: String) -> String {
+    let most = crate::files::READ_LIMIT as usize;
+    if text.len() <= most {
+        return text;
+    }
+    let mut end = most;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mb = |n: usize| format!("{:.1}", n as f64 / (1024.0 * 1024.0));
+    let note = i18n::tp("msg.page_view.cut", &[("shown", &mb(end)), ("whole", &mb(text.len()))]);
+    format!("<!-- {note} -->\n{}", &text[..end])
+}
+
+/// What the page asks of an editor showing a page's source or DOM: it reads
+/// what is held, and a save is refused. `None` for any other act, which goes
+/// on to the folder the editor stands in (the column's file list)
+fn page_view_answer(panel: &str, act: &str, args: &serde_json::Value, text: &str) -> Option<String> {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+    match act {
+        "read" => Some(read_reply(panel, path, text.as_bytes(), args, String::new())),
+        "write" => Some(
+            serde_json::json!({"act": "write", "panel": panel, "path": path, "ok": false,
+                "error": i18n::t("err.page_view.read_only")})
+            .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn read_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, stamp: String) -> String {
     let fail = |e: String| serde_json::json!({"act": "read", "panel": panel, "ok": false, "error": e}).to_string();
     // What is not text has no lines to put in an editor, and guessing at its
@@ -15824,6 +15948,9 @@ pub struct LuaAsks {
     pub closes: Vec<(usize, String)>,
     /// The settings were written to (`open_tab`) and have to be read again
     pub reread: bool,
+    /// Panels of the right-hand column to open and switch to (`show_panel`).
+    /// The column is the page's, so the loop hands the name to every page
+    pub panels: Vec<String>,
 }
 
 /// How long work sent to a tab `open_tab` just wrote is held while the tab
@@ -15998,6 +16125,15 @@ pub fn exec_commands(
                     *active = pane;
                 } else {
                     *flash = Some(i18n::tp("msg.tab_not_found", &[("target", &format!("{target:?}"))]));
+                }
+            }
+            // A panel of the column, under the same say as moving the view:
+            // opening the column over what somebody is reading moves it too
+            Command::ShowPanel { name } => {
+                if view.may(now_ms) {
+                    asks.panels.push(name);
+                } else {
+                    append_hook_log(&format!("ShowPanel {name:?} ignored: the view is the person's right now"));
                 }
             }
             // A rally's final result. Written to data/last-result.json, the log, and the UI.
@@ -16825,6 +16961,36 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A page's source or DOM is read from what is held, a save of it is
+    /// refused whatever it says, and anything else goes on to the folder
+    #[test]
+    fn a_page_view_reads_and_refuses_to_save() {
+        let args = serde_json::json!({"path": "shop (Source code).html"});
+        let read: serde_json::Value =
+            serde_json::from_str(&super::page_view_answer("view:1", "read", &args, "<p>hi</p>").unwrap()).unwrap();
+        assert_eq!(read["ok"], true);
+        assert_eq!(read["text"], "<p>hi</p>");
+        let write: serde_json::Value = serde_json::from_str(
+            &super::page_view_answer("view:1", "write", &serde_json::json!({"path": "x", "text": "changed"}), "<p>hi</p>").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(write["ok"], false);
+        assert!(super::page_view_answer("view:1", "ls", &args, "<p>hi</p>").is_none());
+    }
+
+    /// Past the editor's own limit the text is cut on a character's edge,
+    /// and says so on its first line
+    #[test]
+    fn a_page_view_too_big_is_cut_and_says_so() {
+        let most = crate::files::READ_LIMIT as usize;
+        assert_eq!(super::page_view_text("<p>short</p>".into()), "<p>short</p>");
+        let big = "あ".repeat(most / 3 + 10);
+        let cut = super::page_view_text(big.clone());
+        assert!(cut.starts_with("<!-- "), "no line saying it was cut");
+        let body = &cut[cut.find('\n').unwrap() + 1..];
+        assert!(body.len() <= most && big.starts_with(body));
+    }
+
     /// The sign-in address an AI prints is whole again out of the rows it
     /// was broken into: by the terminal (a wrapped row) or by the program
     /// drawing its own screen (a row written to its last column). A row

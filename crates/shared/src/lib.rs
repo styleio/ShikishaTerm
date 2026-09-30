@@ -180,6 +180,10 @@ pub enum Ev {
     /// brought back. Same story as the tab bar: the page is already drawn that
     /// way, and this is so it opens that way next time. 0 means put away
     SideWidth { px: u16 },
+    /// A panel of that column was chosen while a tab of kind `tab` (`browser`,
+    /// `ai`, `term`) was in front. The page already shows it; this is so the
+    /// next start opens that kind on it
+    SidePanel { tab: String, panel: String },
     /// Wants to view this tab (0 = the operating board)
     Select { tab: usize },
     /// Wants to view this tab with one line of its terminal in sight: a line
@@ -595,6 +599,10 @@ pub enum Ev {
     /// "Open DevTools" on a page's tab: the page's DevTools, opened as a page
     /// of its own beside it. `page` is the browser tab's key
     DevTools { page: String },
+    /// The Develop list's "Source code" or "DOM": that page's HTML as the
+    /// server sent it (`what` = `source`) or as it stands now (`dom`), opened
+    /// in an editor that reads and never saves
+    PageView { page: String, what: String },
     /// ▶ run mode: Lua typed into the composer, to run against the shown
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
@@ -995,6 +1003,11 @@ pub trait BrowserHost {
     /// host. Answering is optional, as for the console
     fn devtools_url(&self, _to: Option<&str>) -> anyhow::Result<String> {
         anyhow::bail!("this browser cannot open the DevTools of a page")
+    }
+    /// The HTML the server sent for the page's own document, as the browser
+    /// holds it -- never fetched again. Answering is optional, as above
+    fn source(&self, _to: Option<&str>, _timeout_ms: u64) -> anyhow::Result<String> {
+        anyhow::bail!("this browser cannot say what the server sent for a page")
     }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
@@ -1398,6 +1411,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("devtools") => Ev::DevTools {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
+        Some("pageview") => Ev::PageView {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            what: v.get("what").and_then(|x| x.as_str()).unwrap_or_default().chars().take(8).collect(),
+        },
         Some("console") => Ev::Console {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1626,6 +1643,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("sidewidth") => Ev::SideWidth {
             px: v.get("px").and_then(|x| x.as_u64()).unwrap_or(0).min(u16::MAX as u64) as u16,
+        },
+        Some("sidepanel") => Ev::SidePanel {
+            tab: v.get("tab").and_then(|x| x.as_str()).unwrap_or_default().chars().take(16).collect(),
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().chars().take(32).collect(),
         },
         Some("splitpane") => Ev::SplitPane {
             id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0) as u32,

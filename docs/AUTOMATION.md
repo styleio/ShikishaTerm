@@ -423,7 +423,7 @@ survives navigation and never covers the site's own sticky header.
 ```lua
 shikisha.browser_nav(page.id)                                 -- all of them
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
--- back / forward / reload / reload_hard (fetch it all again) / url
+-- back / forward / reload / url / develop (hard reload, picking, DevTools, source, DOM)
 -- point (phone only: a tap clicks where the finger is, or moves a pointer)
 shikisha.browser_unnav(page.id)                               -- take it away
 ```
@@ -999,6 +999,7 @@ there is none that splits the screen and puts a browser there: every kind of tab
 | Command | Description |
 |---|---|
 | `shikisha.show(tab)` | Put that tab on screen. `0` is the board. Ignored if the person turned Auto-switch off, just moved the view themselves, or is in the settings |
+| `shikisha.show_panel(name)` | Open the right-hand column on one of its panels and switch to it, the way a button that calls a panel up does: `files`, `git`, `convo`, `console`, `picks`. A panel the tab in front does not have joins the column with its own ✕ and stays until that is pressed. Held by the same say as `show` |
 | `shikisha.open_result(run)` | Open that run's transcript as a result page and go to it |
 | `shikisha.split_pane("right")` | Divide the pane in focus. `"right"` beside, `"down"` below. The new half takes focus |
 | `shikisha.close_pane()` | Close the pane in focus. The tab behind it keeps running |
@@ -1099,8 +1100,8 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
 | `shikisha.browser_devtools(id)` | Open the page's DevTools as a page of its own, and return its name and whether it was opened just now (open already, it is left as it is). `split_pane("right")` divides the pane for it, and `show(name)` puts it there -- from the next turn on, since a page just opened is a tab only then. "Open DevTools beside it" on a page's tab does the same, and a split written down with DevTools in it gets them back, opened afresh, when the app starts again. Closed to an AI by default: everything the page holds, its cookies included, can be read and changed from it |
 | `shikisha.browser_console(id, since)` | What the page said on its console after line `since` (leave it out for everything kept): a table per line (`seq`, `level` -- error, warn, info, log or debug --, `from` -- the page's code, an uncaught error, or the browser about the page --, `text`, `at`, `ms`), and the number of the newest line to pass as `since` next time. The first call starts listening, and brings what the page has said since it last loaded; what it said on an earlier page is not kept |
-| `shikisha.browser_pick(id, true)` | Arm picking on a page: until it is put away (`false`, or Esc on the page), a person pressing a part of the page picks that element instead of pressing it. The same switch as the input bar's 🎯 panel |
-| `shikisha.browser_picks(id, clear)` | What has been picked on a page, oldest first: a table per element (`n`, `note`, `tag`, `role`, `name`, `sel`, `path`, `source`, `box`, `view`, `url`, `style`, `html`), and as a second value the same list written out the way the 🎯 panel hands it to an AI. `clear = true` empties the list as it is read. Values that look like keys, and the secrets the app holds, are already `[hidden]` in all of it |
+| `shikisha.browser_pick(id, true)` | Arm picking on a page: until it is put away (`false`, or Esc on the page), a person pressing a part of the page picks that element instead of pressing it. The same switch as the Picked elements panel |
+| `shikisha.browser_picks(id, clear)` | What has been picked on a page, oldest first: a table per element (`n`, `note`, `tag`, `role`, `name`, `sel`, `path`, `source`, `box`, `view`, `url`, `style`, `html`), and as a second value the same list written out the way the Picked elements panel hands it to an AI. `clear = true` empties the list as it is read. Values that look like keys, and the secrets the app holds, are already `[hidden]` in all of it |
 
 ### Asking a model
 

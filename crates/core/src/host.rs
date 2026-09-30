@@ -52,6 +52,9 @@ pub trait Shell {
     fn polled_from_afar(&self) -> bool;
     fn toggle_tab_bar(&self);
     fn toggle_side_bar(&self);
+    /// Open the right-hand column on a panel and switch to it (`show_panel`).
+    /// A surface with no column has nothing to open
+    fn show_panel(&self, _name: &str) {}
     fn take_open_settings(&mut self) -> Option<crate::mailbox::SettingsWanted>;
     fn open_vault(&self);
     fn open_palette(&self);
@@ -396,9 +399,11 @@ impl Shell for Headless {
     }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()> {
         // Nothing draws here, but the picture is still built: it is what a
-        // viewer on the network is handed, and what a shell would have drawn
-        let _ = flash;
-        self.last = Some(crate::view::ui_state_of(tabs, ui, None));
+        // viewer on the network is handed, and what a shell would have drawn.
+        // The message of the moment is part of that picture -- the viewers
+        // are where it is read, and a runtime with no window of its own
+        // (split in two, or a server) has no other place to say it
+        self.last = Some(crate::view::ui_state_of(tabs, ui, flash));
         Ok(())
     }
 }
@@ -415,6 +420,20 @@ mod tests {
     /// the keystroke it stands for and is handed to the shell. This shell used
     /// to drop them, which left a server that could be watched and not driven,
     /// and nothing said so.
+    /// What a runtime with no window says -- "saved", "could not read the
+    /// page", every message -- is in the picture its viewers are handed. The
+    /// window over a split runtime and every phone read it from there, and
+    /// this shell used to leave it out, so nothing said reached any of them
+    #[test]
+    fn a_runtime_with_no_window_hands_its_message_to_the_viewers() {
+        let mut shell = Headless::new(24, 80);
+        let ui = crate::view::Ui::default();
+        shell.draw(&[], &ui, Some("could not read the page")).unwrap();
+        assert_eq!(shell.last_drawn().and_then(|s| s.flash.as_deref()), Some("could not read the page"));
+        shell.draw(&[], &ui, None).unwrap();
+        assert_eq!(shell.last_drawn().and_then(|s| s.flash.as_deref()), None, "a message gone is gone from the picture too");
+    }
+
     #[test]
     fn a_keystroke_reaches_a_runtime_with_no_window() {
         let mut shell = Headless::new(24, 80);

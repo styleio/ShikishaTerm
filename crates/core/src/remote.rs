@@ -229,6 +229,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // has less width to spare than a window does, so this is the one it
         // needs most
         Ev::SideWidth { .. } => true,
+        // Which panel of that column is chosen for a kind of tab: the same
+        // person's preference wherever they chose it, and nothing opens or runs
+        Ev::SidePanel { .. } => true,
         // The file panel, on the same reasoning. Sending a photo from a phone
         // to a server is one of the things this exists for
         Ev::Sftp { .. } => true,
@@ -405,6 +408,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the page said, emptying the list, handing it to an AI tab as a
         // draft -- what the window's panel does, and nothing it does not
         Ev::Console { .. } => true,
+        // A page's source or DOM, opened in an editor that only reads: what
+        // the phone's own DevTools relay could show it anyway, on the board
+        Ev::PageView { .. } => true,
         // A page's DevTools, opened beside it as a page of this machine's own:
         // the phone is shown it by the relay like any other page, and works it
         // with the same real input. Nothing reaches past the page it is on

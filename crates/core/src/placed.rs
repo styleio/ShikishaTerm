@@ -254,6 +254,9 @@ impl BrowserHost for Placed {
     fn html(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.html(to, ms))
     }
+    fn source(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
+        self.on(to, |b| b.source(to, ms))
+    }
     fn digest(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.digest(to, ms))
     }
