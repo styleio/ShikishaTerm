@@ -91,7 +91,17 @@ pub trait Job: Send + Sync {
     fn wants_to_stay(&self) -> bool {
         false
     }
+    /// Whether it is still working on something the app on `line` asked
+    /// for. An app that stops talking is answered what it asked before it
+    /// stopped: its line is kept until no job holds anything of it
+    fn holds(&self, _line: u64) -> bool {
+        false
+    }
 }
+
+/// How long an app that stopped talking waits, at most, for the answers to
+/// what it asked before it stopped
+const ANSWERS_WAIT: Duration = Duration::from_secs(120);
 
 /// One app, connected through a door
 struct Line {
@@ -322,7 +332,7 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     let tabs_job = Arc::new(TabsJob::default());
     if let Ok(mut j) = core.jobs.lock() {
         j.push(tabs_job.clone());
-        j.push(Arc::new(OpsJob));
+        j.push(Arc::new(OpsJob::default()));
     }
 
     {
@@ -406,6 +416,11 @@ fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
                 break;
             }
         }
+    }
+    // It stopped talking: what it asked before that is still answered
+    let until = Instant::now() + ANSWERS_WAIT;
+    while Instant::now() < until && core.jobs().iter().any(|j| j.holds(line)) {
+        std::thread::sleep(Duration::from_millis(50));
     }
     core.drop_line(line);
 }
@@ -550,7 +565,11 @@ impl Job for TabsJob {
 
 /// The operations the app asks for by name ([`crate::farops`]), each on a
 /// thread of its own so that a slow one holds up nothing else
-struct OpsJob;
+#[derive(Default)]
+struct OpsJob {
+    /// How many operations each line has asked for and not yet been answered
+    working: Arc<Mutex<HashMap<u64, usize>>>,
+}
 
 impl Job for OpsJob {
     fn name(&self) -> &'static str {
@@ -559,15 +578,30 @@ impl Job for OpsJob {
 
     fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
         let Frame::Op { id, op, p } = frame else { return false };
-        let (core, id, op, p) = (Arc::clone(core), *id, op.clone(), p.clone());
+        if let Ok(mut w) = self.working.lock() {
+            *w.entry(line).or_default() += 1;
+        }
+        let (core, id, op, p, working) = (Arc::clone(core), *id, op.clone(), p.clone(), Arc::clone(&self.working));
         std::thread::spawn(move || {
             let (r, e) = match crate::farops::run(&op, &p) {
                 Ok(r) => (r, None),
                 Err(e) => (Value::Null, Some(e)),
             };
             core.say(line, &Frame::Re { id, r, e });
+            if let Ok(mut w) = working.lock()
+                && let Some(n) = w.get_mut(&line)
+            {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    w.remove(&line);
+                }
+            }
         });
         true
+    }
+
+    fn holds(&self, line: u64) -> bool {
+        self.working.lock().is_ok_and(|w| w.contains_key(&line))
     }
 }
 
@@ -607,7 +641,7 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
 
     // From it to the app. When it shuts the line, the app is gone as far as
     // it knows: this ends, whatever the input is doing
-    std::thread::spawn(move || {
+    let back = std::thread::spawn(move || {
         let mut buf = String::new();
         loop {
             buf.clear();
@@ -621,7 +655,9 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
             }
         }
     });
-    // From the app to it
+    // From the app to it. When the app stops talking, only this half is
+    // shut: what it asked before that is still answered, and this ends when
+    // the resident process has said all of it and shuts the line
     let mut to = conn;
     for line in BufReader::new(input).lines() {
         let Ok(l) = line else { break };
@@ -629,7 +665,8 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
             break;
         }
     }
-    let _ = to.shutdown(std::net::Shutdown::Both);
+    let _ = to.shutdown(std::net::Shutdown::Write);
+    let _ = back.join();
     Ok(())
 }
 
@@ -749,6 +786,13 @@ mod tests {
         });
         assert!(loser_left, "both stayed: two resident processes");
         let winner = if first.is_finished() { second } else { first };
+
+        // An app that asks and stops talking at once is still answered
+        let mut brief = App::open(&run);
+        brief.say(&Frame::Op { id: 7, op: "ping".into(), p: json!({}) });
+        brief.to.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(brief.hear_until(|f| matches!(f, Frame::Re { id: 7, .. })).is_some(), "asked, then silent: never answered");
+        drop(brief);
 
         let mut pc = App::open(&run);
         let mut server = App::open(&run);
