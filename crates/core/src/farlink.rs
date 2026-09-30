@@ -73,6 +73,14 @@ pub enum Frame {
     /// on a MicroVM the program's input stays open after this PC is gone, so
     /// the end of the input cannot be the only sign
     Tick,
+    /// A message of one job, by the job's name (far-keep plan §3.1): a job
+    /// added later speaks through this, both ways, and the line needs no new
+    /// kind of frame for it. A job the other side does not hold ignores it
+    Job {
+        job: String,
+        #[serde(default)]
+        m: Value,
+    },
     /// Its answer
     Re {
         id: u64,
@@ -147,6 +155,8 @@ pub struct Link {
     /// The jobs it said it holds (far-keep plan §3.1): a job this app would
     /// ask for and the bridge does not name is not asked for
     pub jobs: Mutex<Vec<String>>,
+    /// Who here hears each job's messages (see [`Frame::Job`])
+    job_listeners: Mutex<HashMap<String, Sender<Value>>>,
     /// Its folder over there (`$HOME/.local/share/shikisha/bridge`)
     pub home: String,
 }
@@ -180,6 +190,26 @@ impl Link {
         let got = rx.recv_timeout(wait).map_err(|_| format!("the bridge did not answer {op} in time"));
         self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         got?
+    }
+
+    /// Whether the bridge there holds `job` (it said so in its hello)
+    pub fn holds(&self, job: &str) -> bool {
+        self.jobs.lock().is_ok_and(|j| j.iter().any(|n| n == job))
+    }
+
+    /// Hear `job`'s messages from now on. One listener a job: a second takes
+    /// the place of the first
+    pub fn listen_job(&self, job: &str) -> Receiver<Value> {
+        let (tx, rx) = channel();
+        self.job_listeners.lock().unwrap_or_else(|e| e.into_inner()).insert(job.to_string(), tx);
+        rx
+    }
+
+    /// Say something to `job` there. `false` when it could not be said
+    pub fn to_job(&self, job: &str, m: Value) -> bool {
+        let line = Frame::Job { job: job.to_string(), m }.line();
+        let mut out = self.out.lock().unwrap_or_else(|e| e.into_inner());
+        out.write_all(line.as_bytes()).is_ok() && out.flush().is_ok()
     }
 
     /// Read what comes down the line, until it ends. One thread per link
@@ -220,6 +250,15 @@ impl Link {
                             Some(e) => Err(e),
                             None => Ok(r),
                         });
+                    }
+                }
+                // To whoever here listens for that job ([`Link::listen_job`])
+                Frame::Job { job, m } => {
+                    let mut to = self.job_listeners.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(tx) = to.get(&job)
+                        && tx.send(m).is_err()
+                    {
+                        to.remove(&job);
                     }
                 }
                 Frame::Op { .. } | Frame::Tick => {}
@@ -349,6 +388,7 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
         up: AtomicBool::new(false),
         version: Mutex::new(None),
         jobs: Mutex::new(Vec::new()),
+        job_listeners: Mutex::default(),
         home,
     });
     {
@@ -978,6 +1018,7 @@ mod tests {
             up: AtomicBool::new(false),
             version: Mutex::new(None),
             jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
             home: String::new(),
         });
         let l = Arc::clone(&link);

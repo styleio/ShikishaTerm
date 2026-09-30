@@ -43,6 +43,8 @@ pub mod faraway;
 pub mod farlink;
 #[cfg(unix)]
 pub mod fardaemon;
+#[cfg(unix)]
+pub mod farterms;
 pub mod farops;
 pub mod termstate;
 pub mod files;
@@ -559,3 +561,5 @@ mod tests {
     }
 }
 
+#[cfg(all(test, unix))]
+pub(crate) use farterms::b64 as farterms_b64;

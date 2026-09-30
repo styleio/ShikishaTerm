@@ -94,6 +94,8 @@ pub trait Job: Send + Sync {
     fn holds(&self, _line: u64) -> bool {
         false
     }
+    /// The resident process is ending: whatever the job holds ends with it
+    fn end(&self) {}
 }
 
 /// How long an app that stopped talking waits, at most, for the answers to
@@ -373,6 +375,7 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         j.push(Arc::new(HostJob));
         j.push(tabs_job.clone());
         j.push(Arc::new(OpsJob::default()));
+        j.push(Arc::new(crate::farterms::Terms::new()));
     }
 
     {
@@ -403,6 +406,9 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         if core.done() {
             break;
         }
+    }
+    for job in core.jobs() {
+        job.end();
     }
     // Only what is still this process's own: a socket another resident process
     // has since bound in its place is left alone
@@ -965,6 +971,123 @@ mod tests {
         assert_eq!(inode(&run.join(KEEP_SOCK)), before, "the slow one's socket was taken");
         assert!(!run.join(TABS_SOCK).exists(), "a second resident process started");
         let _ = held.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A job message to the terminals job
+    fn term(app: &mut App, m: Value) {
+        app.say(&Frame::Job { job: crate::farterms::NAME.into(), m });
+    }
+
+    /// The next message of the terminals job that `want` says yes to
+    fn term_said(app: &mut App, want: impl Fn(&Value) -> bool) -> Option<Value> {
+        (0..400).find_map(|_| match app.hear()? {
+            Frame::Job { m, .. } if want(&m) => Some(m),
+            _ => None,
+        })
+    }
+
+    fn unb64(v: &Value) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(v.as_str().unwrap_or_default()).unwrap_or_default()
+    }
+
+    /// What a terminal shows, put together the way a window does: the state
+    /// it was handed, its held-back tail, and the output after it
+    fn screen_of(attached: &Value, outs: &[Value]) -> String {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.restore(vt100::Screen::from_snapshot(&unb64(&attached["state"])).unwrap());
+        p.process(&unb64(&attached["pending"]));
+        let from = attached["seq"].as_u64().unwrap();
+        for o in outs.iter().filter(|o| o["seq"].as_u64().unwrap() > from) {
+            p.process(&unb64(&o["b"]));
+        }
+        p.screen().contents()
+    }
+
+    /// The terminals job (far-keep plan §4.4): a terminal opened by one app,
+    /// taken by another with its state, the first told and refused, asked
+    /// about by the wrong tab or generation answered "unknown", stopped with
+    /// its code handed over and then forgotten -- and, with nobody owning it,
+    /// its program's question answered here
+    #[test]
+    fn a_terminal_is_held_taken_over_and_answered_for() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        term(&mut pc, json!({ "do": "open", "ref": 1, "tab": "t1", "rows": 24, "cols": 80,
+            "then": "printf 'ready\\n'; exec cat" }));
+        let opened = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened");
+        let (id, generation) = (opened["term"].as_u64().unwrap(), opened["gen"].as_str().unwrap().to_string());
+        let first = term_said(&mut pc, |m| m["did"] == "attached").expect("not attached");
+        let owner = first["owner"].as_u64().unwrap();
+        let mut outs = Vec::new();
+        let seen = |outs: &mut Vec<Value>, app: &mut App, what: &str| {
+            for _ in 0..200 {
+                if screen_of(&first, outs).contains(what) {
+                    return true;
+                }
+                match term_said(app, |m| m["did"] == "out") {
+                    Some(o) => outs.push(o),
+                    None => return false,
+                }
+            }
+            false
+        };
+        assert!(seen(&mut outs, &mut pc, "ready"), "the program's first words: {:?}", screen_of(&first, &outs));
+        term(&mut pc, json!({ "do": "in", "term": id, "owner": owner, "b": crate::farterms_b64(b"hello there\r") }));
+        assert!(seen(&mut outs, &mut pc, "hello there"), "typing did not arrive: {:?}", screen_of(&first, &outs));
+
+        // Another app takes it: handed the same screen, the first told
+        let mut server = App::open(&run);
+        term(&mut server, json!({ "do": "attach", "term": id, "gen": generation, "tab": "t1", "rows": 24, "cols": 80 }));
+        let taken = term_said(&mut server, |m| m["did"] == "attached").expect("not handed over");
+        let shown = screen_of(&taken, &[]);
+        assert!(shown.contains("ready") && shown.contains("hello there"), "{shown:?}");
+        assert!(term_said(&mut pc, |m| m["did"] == "taken").is_some(), "the first owner was not told");
+        term(&mut pc, json!({ "do": "in", "term": id, "owner": owner, "b": crate::farterms_b64(b"late\r") }));
+        assert!(term_said(&mut pc, |m| m["did"] == "refused").is_some(), "an old owner's keys went in");
+
+        // The wrong tab, the wrong generation: not known, never "ended"
+        term(&mut server, json!({ "do": "attach", "term": id, "gen": generation, "tab": "t2" }));
+        assert!(term_said(&mut server, |m| m["did"] == "unknown").is_some());
+        term(&mut server, json!({ "do": "attach", "term": id, "gen": "another", "tab": "t1" }));
+        assert!(term_said(&mut server, |m| m["did"] == "unknown").is_some());
+
+        // Stopped: its code comes, is kept until said to be had, then forgotten
+        let new_owner = taken["owner"].as_u64().unwrap();
+        term(&mut server, json!({ "do": "stop", "term": id, "owner": new_owner }));
+        assert!(term_said(&mut server, |m| m["did"] == "ended").is_some(), "no end said");
+        term(&mut server, json!({ "do": "attach", "term": id, "gen": generation, "tab": "t1" }));
+        assert!(term_said(&mut server, |m| m["did"] == "over").is_some(), "an ended terminal is not said to be over");
+        term(&mut server, json!({ "do": "forget", "term": id }));
+        std::thread::sleep(Duration::from_millis(200));
+        term(&mut server, json!({ "do": "attach", "term": id, "gen": generation, "tab": "t1" }));
+        assert!(term_said(&mut server, |m| m["did"] == "unknown").is_some(), "kept after it was had");
+
+        // Nobody owns it: the program's question is answered here
+        term(&mut server, json!({ "do": "open", "ref": 2, "tab": "t3", "rows": 24, "cols": 80,
+            "then": "sleep 2; printf '\\033[6n'; IFS= read -r -s -t 5 -d R x; printf 'answer:%s\\n' \"${x#*[}\"; exec cat" }));
+        let o2 = term_said(&mut server, |m| m["did"] == "opened").unwrap();
+        let id2 = o2["term"].as_u64().unwrap();
+        drop(server);
+        std::thread::sleep(Duration::from_millis(4000));
+        let mut again = App::open(&run);
+        term(&mut again, json!({ "do": "attach", "term": id2, "gen": generation, "tab": "t3", "rows": 24, "cols": 80 }));
+        let back = term_said(&mut again, |m| m["did"] == "attached").expect("not attached again");
+        let shown = screen_of(&back, &[]);
+        assert!(shown.contains("answer:"), "the question was not answered while nobody owned it: {shown:?}");
+        drop((pc, again));
+        let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);
     }
 }

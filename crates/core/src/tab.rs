@@ -359,7 +359,7 @@ pub type KeyboardMode = Arc<Mutex<Vec<u8>>>;
 
 /// Deepest the mode stack goes. A program that pushes without popping is not
 /// going to be saved by more room, and the memory is not ours to spend
-const KEYBOARD_STACK_MAX: usize = 16;
+pub(crate) const KEYBOARD_STACK_MAX: usize = 16;
 
 /// What the program in a tab is currently asking for, or 0 if nothing.
 pub fn keyboard_flags(mode: &KeyboardMode) -> u8 {
@@ -417,7 +417,7 @@ const TITLE_MAX: usize = 256;
 /// An empty title comes back as an empty string rather than nothing: a program
 /// clearing its title is saying something, and dropping it here would leave the
 /// last words standing forever.
-fn title_of(params: &[&[u8]]) -> Option<String> {
+pub(crate) fn title_of(params: &[&[u8]]) -> Option<String> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
     match params.first().map(|p| text(p)).as_deref() {
         Some("0") | Some("2") => Some(
@@ -510,7 +510,7 @@ fn conemu_sub(params: &[&[u8]]) -> Option<u8> {
 /// an ssh session announces its directory just as eagerly as one here, and
 /// naming that path locally would be pointing at whatever happens to sit at
 /// the same place on this disk.
-fn cwd_of(params: &[&[u8]]) -> Option<String> {
+pub(crate) fn cwd_of(params: &[&[u8]]) -> Option<String> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).to_string();
     // A path may hold a semicolon, and the parser splits on those. Everything
     // after the number is the payload, semicolons included.
@@ -807,7 +807,7 @@ impl vt100::Callbacks for QueryResponder {
 /// as an escape -- is not encoded here, and saying yes to it would leave a
 /// program waiting for keys that never arrive. Answering honestly costs a
 /// feature; answering generously costs the keyboard.
-fn supported_keyboard_flags(asked: u16) -> u8 {
+pub(crate) fn supported_keyboard_flags(asked: u16) -> u8 {
     (asked & 1) as u8
 }
 
