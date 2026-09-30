@@ -1057,6 +1057,9 @@ fn tend_asks(
                 {
                     a.run = Some(crate::asktab::RunFrom::now(t));
                 }
+                // Where the record stands as the words go in: the question is
+                // looked for only after it (see `asktab::asked_in`)
+                a.record_from = target.and_then(crate::asktab::record_len);
                 send(a.caller.as_deref(), &a.target, &a.text)
             } {
                 Ok(_) => {
@@ -4478,6 +4481,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         far: crate::asktab::FarRead::default(),
                                         record_look: None,
                                         why_said: None,
+                                        record_from: None,
+                                        busy_since: None,
                                     });
                                 }
                             }

@@ -22,6 +22,16 @@ once it reaches its first tagged release.
   Why a tab still looks busy is written to hooks.log when an answer is held
   back for a long time, and every change of a tab's state is logged whether
   automation is on or off.
+- **A Codex tab still at work reads as working, even when its screen looks
+  idle.** A Codex that lost its connection mid-answer waits minutes before it
+  asks again, and all that time its screen and title look exactly like a
+  Codex with nothing to do. The tab now also reads Codex's own record of the
+  conversation, where a turn begun and not yet ended is work.
+- **An answer asked of another AI tab is the answer to that question.** Asked
+  the same thing twice in a row, a tab could be handed the first answer for
+  the second question; and an AI that answered "still waiting", left the wait
+  running and was woken by it could be handed that first reply instead of
+  the one it went on to give.
 
 ### Removed
 - **The ? no longer offers to send a question to GitHub as an issue.** A
