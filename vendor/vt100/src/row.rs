@@ -516,3 +516,29 @@ impl Row {
         (prev_pos, prev_attrs)
     }
 }
+
+// NOTE (vendored patch): written out and read back (see `snapshot`)
+impl Row {
+    pub(crate) fn write_state(&self, out: &mut Vec<u8>) {
+        crate::snapshot::put_bool(out, self.wrapped);
+        crate::snapshot::put_u16(out, self.cols());
+        for cell in &self.cells {
+            cell.write_state(out);
+        }
+    }
+
+    /// A row `cols` wide, or why it is not
+    pub(crate) fn read_state(
+        r: &mut crate::snapshot::Reader<'_>,
+        cols: u16,
+    ) -> Result<Self, crate::snapshot::SnapshotError> {
+        let wrapped = r.bool()?;
+        if r.u16()? != cols {
+            return Err(crate::snapshot::SnapshotError::Invalid("row width"));
+        }
+        let cells = (0..cols)
+            .map(|_| crate::Cell::read_state(r))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { cells, wrapped })
+    }
+}

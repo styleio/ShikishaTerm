@@ -943,3 +943,86 @@ fn lay_out(
     close(&mut row, false, cols, out);
     found
 }
+
+// NOTE (vendored patch): written out and read back (see `snapshot`).
+// At most `scrollback_most` lines of scrollback go, the newest; where the
+// view was scrolled back to does not (a new window starts at the bottom)
+impl Grid {
+    pub(crate) fn write_state(&self, out: &mut Vec<u8>, scrollback_most: usize) {
+        use crate::snapshot::{put_bool, put_u16, put_u32};
+        put_u16(out, self.size.rows);
+        put_u16(out, self.size.cols);
+        for p in [self.pos, self.saved_pos] {
+            put_u16(out, p.row);
+            put_u16(out, p.col);
+        }
+        put_u16(out, self.scroll_top);
+        put_u16(out, self.scroll_bottom);
+        put_bool(out, self.origin_mode);
+        put_bool(out, self.saved_origin_mode);
+        put_u32(out, u32::try_from(self.scrollback_len).unwrap_or(u32::MAX));
+        put_u16(out, u16::try_from(self.rows.len()).unwrap_or(0));
+        for row in &self.rows {
+            row.write_state(out);
+        }
+        let sent = self.scrollback.len().min(scrollback_most);
+        put_u32(out, u32::try_from(sent).unwrap_or(0));
+        for row in self.scrollback.iter().skip(self.scrollback.len() - sent) {
+            row.write_state(out);
+        }
+    }
+
+    pub(crate) fn read_state(
+        r: &mut crate::snapshot::Reader<'_>,
+    ) -> Result<Self, crate::snapshot::SnapshotError> {
+        use crate::snapshot::SnapshotError::Invalid;
+        let size = Size { rows: r.u16()?, cols: r.u16()? };
+        if size.rows == 0 || size.cols == 0 {
+            return Err(Invalid("size"));
+        }
+        let pos = Pos { row: r.u16()?, col: r.u16()? };
+        let saved_pos = Pos { row: r.u16()?, col: r.u16()? };
+        // A column one past the last is where a line that has just filled
+        // up waits for its next character
+        let inside = |p: Pos| p.row < size.rows && p.col <= size.cols;
+        if !inside(pos) || !inside(saved_pos) {
+            return Err(Invalid("cursor"));
+        }
+        let scroll_top = r.u16()?;
+        let scroll_bottom = r.u16()?;
+        if scroll_top > scroll_bottom || scroll_bottom >= size.rows {
+            return Err(Invalid("scroll region"));
+        }
+        let origin_mode = r.bool()?;
+        let saved_origin_mode = r.bool()?;
+        let scrollback_len = usize::try_from(r.u32()?).map_err(|_| Invalid("scrollback"))?;
+        let count = r.u16()?;
+        // An alternate screen never shown has no rows yet
+        if count != 0 && count != size.rows {
+            return Err(Invalid("row count"));
+        }
+        let rows = (0..count)
+            .map(|_| crate::row::Row::read_state(r, size.cols))
+            .collect::<Result<Vec<_>, _>>()?;
+        let kept = r.u32()?;
+        if usize::try_from(kept).map_or(true, |k| k > scrollback_len) {
+            return Err(Invalid("scrollback"));
+        }
+        let scrollback = (0..kept)
+            .map(|_| crate::row::Row::read_state(r, size.cols))
+            .collect::<Result<std::collections::VecDeque<_>, _>>()?;
+        Ok(Self {
+            size,
+            pos,
+            saved_pos,
+            rows,
+            scroll_top,
+            scroll_bottom,
+            origin_mode,
+            saved_origin_mode,
+            scrollback,
+            scrollback_len,
+            scrollback_offset: 0,
+        })
+    }
+}

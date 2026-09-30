@@ -171,3 +171,42 @@ impl Attrs {
         attrs.write_buf(contents);
     }
 }
+
+// NOTE (vendored patch): written out and read back (see `snapshot`)
+impl Attrs {
+    pub(crate) fn write_state(&self, out: &mut Vec<u8>) {
+        write_color(out, self.fgcolor);
+        write_color(out, self.bgcolor);
+        out.push(self.mode);
+        out.extend_from_slice(&self.link);
+    }
+
+    pub(crate) fn read_state(
+        r: &mut crate::snapshot::Reader<'_>,
+    ) -> Result<Self, crate::snapshot::SnapshotError> {
+        let fgcolor = read_color(r)?;
+        let bgcolor = read_color(r)?;
+        let mode = r.u8()?;
+        let link = [r.u8()?, r.u8()?];
+        Ok(Self { fgcolor, bgcolor, mode, link })
+    }
+}
+
+fn write_color(out: &mut Vec<u8>, color: Color) {
+    match color {
+        Color::Default => out.push(0),
+        Color::Idx(i) => out.extend_from_slice(&[1, i]),
+        Color::Rgb(r, g, b) => out.extend_from_slice(&[2, r, g, b]),
+    }
+}
+
+fn read_color(
+    r: &mut crate::snapshot::Reader<'_>,
+) -> Result<Color, crate::snapshot::SnapshotError> {
+    match r.u8()? {
+        0 => Ok(Color::Default),
+        1 => Ok(Color::Idx(r.u8()?)),
+        2 => Ok(Color::Rgb(r.u8()?, r.u8()?, r.u8()?)),
+        _ => Err(crate::snapshot::SnapshotError::Invalid("color")),
+    }
+}

@@ -189,3 +189,29 @@ impl Cell {
         self.attrs.inverse()
     }
 }
+
+// NOTE (vendored patch): written out and read back (see `snapshot`)
+impl Cell {
+    pub(crate) fn write_state(&self, out: &mut Vec<u8>) {
+        out.push(self.len);
+        out.extend_from_slice(&self.contents[..usize::from(self.len & LEN_BITS)]);
+        self.attrs.write_state(out);
+    }
+
+    pub(crate) fn read_state(
+        r: &mut crate::snapshot::Reader<'_>,
+    ) -> Result<Self, crate::snapshot::SnapshotError> {
+        let len = r.u8()?;
+        let n = usize::from(len & LEN_BITS);
+        if n > CONTENT_BYTES {
+            return Err(crate::snapshot::SnapshotError::Invalid("cell"));
+        }
+        let mut contents = [0; CONTENT_BYTES];
+        contents[..n].copy_from_slice(r.take(n)?);
+        if std::str::from_utf8(&contents[..n]).is_err() {
+            return Err(crate::snapshot::SnapshotError::Invalid("cell text"));
+        }
+        let attrs = crate::attrs::Attrs::read_state(r)?;
+        Ok(Self { contents, len, attrs })
+    }
+}

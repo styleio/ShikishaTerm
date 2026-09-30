@@ -49,6 +49,15 @@ impl<CB: crate::callbacks::Callbacks> Parser<CB> {
         self.parser.advance(&mut self.screen, bytes);
     }
 
+    /// NOTE (vendored patch): put `screen` in place of this parser's, as
+    /// one made by [`Screen::from_snapshot`](crate::Screen::from_snapshot)
+    /// is. The parser starts from its ground state: what was half-read of a
+    /// sequence is the sender's to hand over again
+    pub fn restore(&mut self, screen: crate::Screen) {
+        self.parser = vte::Parser::new();
+        self.screen.screen = screen;
+    }
+
     /// Returns a reference to a [`Screen`](crate::Screen) object containing
     /// the terminal state.
     #[must_use]
