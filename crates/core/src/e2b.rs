@@ -1547,6 +1547,25 @@ impl Link {
 static OPEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
     std::sync::OnceLock::new();
 
+/// A terminal of this program on a machine that is not one of this module's
+/// own: one held by the bridge there (`farterm`). Counted open for as long
+/// as it is held, so the machine is in use -- kept awake, kept up, its
+/// bridge's line kept -- exactly as for a terminal opened here
+pub struct Opened(String);
+
+impl Opened {
+    pub fn new(id: &str) -> Self {
+        count_open(id, true);
+        Self(id.to_string())
+    }
+}
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        count_open(&self.0, false);
+    }
+}
+
 fn count_open(id: &str, one_more: bool) {
     if let Ok(mut o) = OPEN.get_or_init(Default::default).lock() {
         let n = o.entry(id.to_string()).or_insert(0);

@@ -265,6 +265,9 @@ impl Link {
             }
         }
         self.up.store(false, Ordering::SeqCst);
+        // Whoever listens for a job hears the line end, and does not wait on
+        // a line that is gone
+        self.job_listeners.lock().unwrap_or_else(|e| e.into_inner()).clear();
         // Everybody still waiting is told, rather than left to time out
         for (_, tx) in self.waiting.lock().unwrap_or_else(|e| e.into_inner()).drain() {
             let _ = tx.send(Err("the bridge's line ended".into()));

@@ -811,6 +811,11 @@ pub(crate) fn supported_keyboard_flags(asked: u16) -> u8 {
     (asked & 1) as u8
 }
 
+/// Whether the bridge on `at` is connected and holds terminals
+fn far_holds(at: &crate::elsewhere::Elsewhere) -> bool {
+    crate::farlink::link(at).is_some_and(|l| l.holds("terms"))
+}
+
 pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     let mut w = writer.lock().expect("pty writer lock");
     w.write_all(bytes)?;
@@ -3116,6 +3121,9 @@ pub struct Tab {
     /// (see [`crate::ssh::shell`]): the tab is opened again once the server
     /// answers. None for anything else
     far_lost: Option<Arc<AtomicBool>>,
+    /// A terminal held by the bridge on its machine (see `farterm`): who it
+    /// is there, to be asked about again. None for any other
+    pub far_term: Option<Arc<crate::farterm::FarTerm>>,
     bell_count: Arc<AtomicU64>,
     /// Cumulative bytes read from the PTY (incremented by the reader thread)
     bytes_out: Arc<AtomicU64>,
@@ -3766,6 +3774,8 @@ impl Tab {
         // The terminal itself, and whatever ends it
         #[allow(clippy::type_complexity)]
         let mut far_lost = None;
+        // A terminal held by the bridge there (see `farterm`)
+        let mut far_term: Option<Arc<crate::farterm::FarTerm>> = None;
         let (master, killer, pid, child): (
             Box<dyn MasterPty + Send>,
             Box<dyn ChildKiller + Send + Sync>,
@@ -3781,10 +3791,24 @@ impl Tab {
             // Nothing of ours runs for a remote tab: the shell is the far end's
             // own, started by the far end, and there is no local process id to
             // put in a job object
+            // Held by the bridge there, when that machine's terminals are held
+            // (the away mode; a development switch until it can be chosen)
+            (None, Some(spec), _) if crate::farterm::wanted() && far_holds(&crate::elsewhere::Elsewhere::Ssh(spec.clone())) => {
+                let at = crate::elsewhere::Elsewhere::Ssh(spec.clone());
+                let (m, k, t) = crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+                far_term = Some(t);
+                (m, k, None, None)
+            }
             (None, Some(spec), _) => {
                 let (m, k, lost) =
                     crate::ssh::shell(spec, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
                 far_lost = Some(lost);
+                (m, k, None, None)
+            }
+            (None, None, Some(host)) if crate::farterm::wanted() && far_holds(&crate::elsewhere::Elsewhere::Cloud(host.clone())) => {
+                let at = crate::elsewhere::Elsewhere::Cloud(host.clone());
+                let (m, k, t) = crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?;
+                far_term = Some(t);
                 (m, k, None, None)
             }
             // The same, except the far end does not exist yet. Asking for it
@@ -3847,6 +3871,13 @@ impl Tab {
                     .unwrap_or(true),
             },
         )));
+        // Held by the bridge, the terminal is open from the moment it is:
+        // nothing waits for a MicroVM's own terminal to open
+        let far_live = if far_term.is_some() { None } else { far_live };
+        // A state the bridge hands over goes into this tab's own parser
+        if let Some(t) = far_term.as_ref() {
+            t.bind(Arc::clone(&parser), Arc::clone(&keyboard));
+        }
         // A model-bridge tab launches an idle placeholder process, so its screen
         // would otherwise be blank. Paint a small title card (like the CLIs show
         // on startup) so it reads as a real, identified endpoint. Done straight
@@ -3878,7 +3909,7 @@ impl Tab {
             // A terminal on a server has no process here to wait on: its end
             // is the stream stopping, said once everything before it is read
             // (and one on a MicroVM, whose shell ending is told the same way)
-            let ended = (far_lost.is_some() || opts.cloud.is_some()).then(|| Arc::clone(&child_exited));
+            let ended = (far_lost.is_some() || opts.cloud.is_some() || far_term.is_some()).then(|| Arc::clone(&child_exited));
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 let mut decoder = enc.map(|e| e.new_decoder());
@@ -4033,6 +4064,7 @@ impl Tab {
             child_exited,
             far_live,
             far_lost,
+            far_term,
             bell_count,
             bytes_out,
             job,

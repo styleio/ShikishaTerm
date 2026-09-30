@@ -209,7 +209,7 @@ impl Terms {
         let rows = m["rows"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(24);
         let cols = m["cols"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(80);
         let pty = portable_pty::native_pty_system().openpty(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
-        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
+        let shell = login_shell();
         let mut cmd = portable_pty::CommandBuilder::new(&shell);
         cmd.arg("-l");
         cmd.env("TERM", "xterm-256color");
@@ -465,4 +465,25 @@ impl Job for Terms {
             }
         }
     }
+}
+
+/// The account's own shell: what its entry in the password database names,
+/// as a login over SSH would start. The resident process was started without
+/// a login, and has no SHELL of its own to go by
+fn login_shell() -> String {
+    if let Some(s) = std::env::var("SHELL").ok().filter(|s| !s.is_empty()) {
+        return s;
+    }
+    // SAFETY: getpwuid returns a pointer into static storage, read here at
+    // once and copied before anything else could call it
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if !pw.is_null() && !(*pw).pw_shell.is_null() {
+            let s = std::ffi::CStr::from_ptr((*pw).pw_shell).to_string_lossy().into_owned();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    "/bin/sh".into()
 }
