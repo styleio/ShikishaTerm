@@ -267,8 +267,9 @@ nothing.
   with its token
 - With **[Tailscale](https://tailscale.com/)** (free) only devices in your own Tailscale
   network can reach it, encrypted, from anywhere. This is the safest way and the one to prefer
-- While Tailscale is not connected it works on the **LAN only** (the same Wi-Fi or office
-  network), and switches to Tailscale by itself once it connects. Anyone on the same network
+- While Tailscale is not connected it listens on the **LAN address** (the same Wi-Fi or office
+  network), and switches to Tailscale by itself once it connects; a phone that is watching is
+  sent to the new address, which it reaches only if it is on Tailscale too. Anyone on the same network
   who knows the URL and the token could use it — do not turn it on for shared or public Wi-Fi
 - A LAN address is **reachable from the internet as well** when something forwards to it —
   a router's port forwarding, a cloud machine's public IP, a firewall rule that lets it in.

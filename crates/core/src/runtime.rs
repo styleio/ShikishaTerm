@@ -1701,6 +1701,12 @@ fn restarted(t: &mut Tab, plan: tab::Resume, why: Option<&'static str>, rows: u1
 /// settings: it exists while it is open and is gone when it is closed.
 pub const EDITOR_SCRATCH: &str = "editor.here";
 
+/// How long a board the network moved away from keeps answering after its
+/// devices were told where the new one is. The message goes down a socket the
+/// moment it is sent; a device that watches by asking instead asks every
+/// second and a half, so this is a few of its asks, with room for a slow line
+const LEAVING_GRACE: Duration = Duration::from_secs(5);
+
 pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The mode flag is not a command to launch.
     // Forgetting to filter it out would send us looking for a program named `--window`.
@@ -2582,6 +2588,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // there was no network at all when it tried to start
     let mut remote_watch = netaddr::AutoWatch::new(Instant::now());
     let mut remote_waits_network = false;
+    // The board at the address the network moved away from, kept answering
+    // until the board at the new address is up, so the devices watching it
+    // can be told where to go (`RemoteUi::hand_over`) -- and then for a
+    // moment more, so the telling reaches them. The instant is when it goes;
+    // none yet while the new board is still starting
+    let mut leaving: Option<(remote::RemoteUi, Option<Instant>)> = None;
+    // A new board at another address for the same devices: the network under
+    // "auto" moved, or the person changed only where it listens. The old one
+    // stays up, off the loopback the new one needs, until its devices have
+    // been told where the new one is. Not for a change of who may come in (a
+    // new token or password): that is what a restart is for, and the devices
+    // are left to pair again
+    macro_rules! move_remote {
+        ($c:expr) => {{
+            if let Some(old) = remote_ui.take() {
+                old.release_loopback();
+                if let Some((earlier, _)) = leaving.replace((old, None)) {
+                    earlier.shutdown();
+                }
+            }
+            restart_remote!($c);
+        }};
+    }
 
     loop {
         // Install the remote server the moment its background bind lands.
@@ -2590,6 +2619,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Ok((ui, mut errs)) = rx.try_recv() {
                 remote_ui = ui;
                 remote_rx = None;
+                // A board the network moved away from sends its devices here
+                // now, or -- with nothing at the new address -- goes at once
+                if let Some((old, when)) = leaving.as_mut()
+                    && when.is_none()
+                {
+                    match remote_ui.as_ref().filter(|r| !r.local_only) {
+                        Some(new) => {
+                            old.hand_over(new.origin());
+                            append_hook_log(&format!("remote: the devices on the old address are sent to {}", new.origin()));
+                            *when = Some(Instant::now() + LEAVING_GRACE);
+                        }
+                        None => {
+                            old.shutdown();
+                            leaving = None;
+                        }
+                    }
+                }
                 remote_waits_network = remote_ui.is_none() && netaddr::auto_ip().is_none();
                 // Pages drawn on a connected device are driven through this
                 if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
@@ -2618,7 +2664,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             && let Some(to) = remote_watch.poll(Instant::now(), remote_ui.as_ref().map(|r| r.bound()))
         {
             append_hook_log(&format!("remote: the network moved; listening on {to} instead"));
-            restart_remote!(c);
+            move_remote!(c);
+        }
+        // The old board's moment is over
+        if let Some((_, Some(when))) = &leaving
+            && Instant::now() >= *when
+            && let Some((old, _)) = leaving.take()
+        {
+            old.shutdown();
         }
 
         // Open the desk's declared browsers on the iteration AFTER the
@@ -3260,7 +3313,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if (want.enabled, &want.bind, want.port, want.allow_public, &want.password, want.sticky_token, &want.fixed_token)
                     != (now.enabled, &now.bind, now.port, now.allow_public, &now.password, now.sticky_token, &now.fixed_token)
                 {
-                    restart_remote!(&newcfg);
+                    // Only the address changed: the same devices, somewhere else
+                    let same_people = want.enabled
+                        && now.enabled
+                        && (&want.password, want.sticky_token, &want.fixed_token)
+                            == (&now.password, now.sticky_token, &now.fixed_token);
+                    if same_people {
+                        move_remote!(&newcfg);
+                    } else {
+                        restart_remote!(&newcfg);
+                    }
                     // Announce the INTENT (the bind hasn't landed yet); a bind
                     // failure still surfaces as a flash from the install above.
                     remote_changed = Some(if want.enabled {

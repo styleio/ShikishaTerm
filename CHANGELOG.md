@@ -9,6 +9,13 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **A phone follows the board when the address it listens on changes.** When
+  Tailscale connected after the program started (or dropped), or when only
+  where the board listens was changed in the settings, the old address went
+  quiet and a phone watching it kept trying it for ever. The phone is now
+  told the new address and opens it by itself, let in on a one-time code
+  rather than a token in its address; a phone that cannot reach the new
+  address says so, and names it, instead of spinning.
 - **A port listening on one address only opens at that address.** The ports
   panel opened every port at localhost, so a development server told to
   listen on the LAN address alone was listed and then answered nothing. The
