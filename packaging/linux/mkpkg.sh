@@ -2,21 +2,26 @@
 #
 #  Makes the .deb and the .rpm, from a binary that is already built.
 #
-#      packaging/linux/mkpkg.sh <binary> <version> <arch> [out]
+#      packaging/linux/mkpkg.sh <binary> <version> <arch> [out] [bridges]
 #
 #  <arch> is what the release calls it -- x86_64 or aarch64 -- and each format
 #  is told the name it uses for the same machine. <version> may be a tag
 #  (v0.9.0); the leading v is dropped, because neither format allows one.
+#  <bridges> is a folder holding shikisha-bridge-<arch>-linux for each
+#  processor: the helper this server puts on the servers and MicroVMs it
+#  reaches, which may be of either kind. They land in /usr/lib/shikisha/bridge,
+#  where the server looks for them.
 #
 #  Run by the release workflow, and runnable by hand: what is in a package
 #  should be checkable without a tag and without CI.
 #
 set -eu
 
-BIN=${1:?usage: mkpkg.sh <binary> <version> <arch> [out]}
+BIN=${1:?usage: mkpkg.sh <binary> <version> <arch> [out] [bridges]}
 VERSION=${2:?}
 ARCH=${3:?}
 OUT=${4:-.}
+BRIDGES=${5:-}
 
 VERSION=${VERSION#v}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -42,6 +47,15 @@ sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/shikisha-server|' "$root/usr/lib/syst
 gzip -9nc "$HERE/shikisha-server.1" > "$root/usr/share/man/man1/shikisha-server.1.gz"
 chmod 644 "$root/usr/share/man/man1/shikisha-server.1.gz"
 install -m 644 "$HERE/../../LICENSE" "$root/usr/share/doc/shikisha/copyright"
+BRIDGE_FILES=""
+if [ -n "$BRIDGES" ]; then
+    mkdir -p "$root/usr/lib/shikisha/bridge"
+    for b in "$BRIDGES"/shikisha-bridge-*-linux; do
+        [ -f "$b" ] || { echo "mkpkg: no bridge in $BRIDGES" >&2; exit 1; }
+        install -m 755 "$b" "$root/usr/lib/shikisha/bridge/$(basename "$b")"
+    done
+    BRIDGE_FILES="/usr/lib/shikisha"
+fi
 
 DESCRIPTION="Run several AI coding agents side by side, and watch them from anywhere.
  SHIKISHA opens a terminal per agent, reads what each one is doing from what it
@@ -101,6 +115,7 @@ cp -a $root/. %{buildroot}/
 
 %files
 /usr/bin/shikisha-server
+$BRIDGE_FILES
 /usr/lib/systemd/user/shikisha.service
 /usr/lib/systemd/user-preset/90-shikisha.preset
 /usr/share/man/man1/shikisha-server.1.gz
