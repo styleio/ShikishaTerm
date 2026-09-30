@@ -302,25 +302,6 @@ fn carries(h: &serde_json::Value, arg: &str) -> bool {
     })
 }
 
-/// Whether a tab's CLI calls the hook that asks for an answer's line when its
-/// turn ends: on this PC (a hook on another machine has no way to answer
-/// back), its profile names the end of a turn, and the person agreed to this
-/// app's hooks for it
-pub fn line_hook_expected(t: &crate::tab::Tab) -> bool {
-    if t.is_model() || t.machine().is_some() {
-        return false;
-    }
-    let name = t.profile_name();
-    let named = crate::profile::all()
-        .into_iter()
-        .find(|p| p.name == name)
-        .and_then(|p| p.resume?.hook?.turn_end)
-        .is_some();
-    named
-        && crate::config::load()
-            .is_some_and(|c| c.agent_hooks.get(name).map(String::as_str) == Some(crate::config::HOOK_ON))
-}
-
 /// Whether a handler of ours is exactly one of the ones we would write today
 /// -- same place, same argument, same way of running it, same patience.
 ///

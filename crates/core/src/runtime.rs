@@ -2042,6 +2042,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // tab last asked another -- the page opens the conference when it moves --
     // and the cards being checked on threads, to be written here
     let mut confer_open: (u64, String) = (0, String::new());
+    // The tabs whose CLI has called the stop hook that asks for a line: an
+    // answer from one of them waits a moment for it (`asktab::Ask::hook_expected`)
+    let mut line_hooked: std::collections::HashSet<String> = std::collections::HashSet::new();
     let (card_tx, card_rx) = std::sync::mpsc::channel::<CardChecked>();
     let mut orch_looked = std::time::Instant::now();
     let mut orch_manual: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -4514,6 +4517,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let mut hold = serde_json::Value::Null;
                     if let Some(t) = me {
                         let id = crate::orch::glue::tab_id(t);
+                        line_hooked.insert(id.clone());
                         let asked = tab_asks
                             .iter_mut()
                             .filter(|a| {
@@ -4825,7 +4829,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         && tabs
                                             .iter()
                                             .find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target)
-                                            .is_some_and(crate::agenthook::line_hook_expected);
+                                            .is_some_and(|t| line_hooked.contains(&crate::orch::glue::tab_id(t)));
                                     tab_asks.push(crate::asktab::Ask {
                                         reply: Some(call.reply),
                                         caller: call.caller,
