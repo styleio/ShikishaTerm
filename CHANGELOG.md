@@ -9,6 +9,16 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **Nothing is written into an AI's settings on another machine without
+  asking.** The hook that lets an AI on a server or a MicroVM report what it
+  is doing was written into that AI's settings file there on its own. It is
+  now asked about first, per machine and per AI, on the window or a phone,
+  showing that file as it would be; without "yes" nothing is written and the
+  tab's state is read from its screen. Unticking the AI on that machine's page
+  under Settings > Where it runs takes this app's entry out the next time the
+  machine is reached, leaving the rest of the file and a `.bak` beside it.
+  Removing a server can take the entry out first. A machine an earlier
+  version already wrote into is asked about once: keep it, or take it out.
 - **A Claude Code tab stays "at work behind its prompt" while its helpers
   run.** When Claude hands work to a helper (a subagent) in the background
   and ends its own turn, the tab went blue (answered) whenever the helper was

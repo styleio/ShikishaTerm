@@ -10527,13 +10527,18 @@ function drawHookAsk() {
       show, pre);
   });
   const answer = word => { hookAskOpen = false; send({kind:"agenthooks", answer:word, seq:a.seq}); };
+  // About a CLI on another machine: the same question, naming the machine.
+  // Already written there by an earlier version without asking, the choice is
+  // to keep it or take it out -- neither is done without the answer
+  const far = a.machine || "";
+  const on = s => (s || "").replaceAll("{machine}", far);
   askQuestion({
-    title: T["tui.hooks.title"] || "",
-    say: T["tui.hooks.say"] || "",
-    more: { label: T["tui.hooks.more"] || "", say: T["tui.hooks.detail"] || "" },
+    title: on(T[far ? "tui.hooks.far.title" : "tui.hooks.title"]),
+    say: on(T[far ? (a.found ? "tui.hooks.far.found" : "tui.hooks.far.say") : "tui.hooks.say"]),
+    more: { label: T["tui.hooks.more"] || "", say: on(T[far ? "tui.hooks.far.detail" : "tui.hooks.detail"]) },
     rows,
-    label: T["tui.hooks.go"] || "",
-    no: { label: T["tui.hooks.no"] || "", act: () => answer("off") },
+    label: on(T[far ? (a.found ? "tui.hooks.far.keep" : "tui.hooks.far.go") : "tui.hooks.go"]),
+    no: { label: on(T[far ? (a.found ? "tui.hooks.far.take_out" : "tui.hooks.far.no") : "tui.hooks.no"]), act: () => answer("off") },
     go: () => answer("on"),
     back: () => answer("later"),
   });

@@ -1857,7 +1857,7 @@ pub fn shell(
                 }
                 Note::Said(text) => l.say(&text),
                 Note::Launch(line) => {
-                    crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(l.host.clone()), &l.sandbox().id, &line);
+                    crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(l.host.clone()), &l.host.name, &line);
                     if let Some(at) = l.at()
                         && let Err(e) = send_input(&l.sandbox(), &at, line.as_bytes())
                     {
@@ -1980,7 +1980,7 @@ fn wake(link: &std::sync::Arc<Link>, size: (u16, u16)) -> Result<()> {
             if let Some(line) = crate::ssh::typed_first(None, link.then.as_deref())
                 && let Some(at) = link.at()
             {
-                crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(link.host.clone()), &id, &line);
+                crate::agenthook::ensure_far_before(&crate::elsewhere::Elsewhere::Cloud(link.host.clone()), &link.host.name, &line);
                 let _ = send_input(&link.sandbox(), &at, line.as_bytes());
             }
         }

@@ -95,6 +95,32 @@ selected has nothing left to say it with. Weight is not colour: a name that is
 600 stays 600 either way, so nothing moves as tabs are switched. A summary of
 tabs that are put away is not a tab, and keeps its colours.
 
+### A tab's face
+
+Each tab has a face (`vendor/boring-avatars/beam.js`, seeded by the tab's id).
+It picks its background and its body from five colours and draws its eyes and
+mouth in one of two inks. The values are the app's, not the scheme's: a face is
+who a tab is, and it must not turn into someone else when the scheme changes.
+
+| Variable | Value |
+|---|---|
+| `--face1` | `#5fa0f5` blue |
+| `--face2` | `#f096a6` pink |
+| `--face3` | `#ffce2d` yellow |
+| `--face4` | `#8390eb` lavender |
+| `--face5` | `#f7cd9e` apricot |
+| `--face-ink` | `#212021` eyes and mouth on a light body |
+| `--face-ink-light` | `#ffffff` eyes and mouth on a dark body (none of the five today) |
+
+**Inside the face's disc and nowhere else.** Not on a name, a dot, a border, a
+bar or a background. The blue sits near `--brand` and the yellow near `--warn`;
+out of the disc they would read as a state. In it, two of them together with
+eyes and a mouth read as a character. No shadow and no outline: the faces were
+checked as they are on both a light and a dark scheme.
+
+Unlike the colours above, these mean nothing. Two faces in the same colour are
+not saying the same thing.
+
 ### Contrast
 
 Text on `--panel` and `--raise` must be `--text` or `--dim`, never a state colour
@@ -253,7 +279,7 @@ not on its page. A name changed is a name changed here too.
 | Part | Function to call | Page |
 |---|---|---|
 | Dialog (settings, `.framed`) | `openModal(...kids)` (give the returned frame `.framed`) | settings (`webui.rs`) |
-| Confirming something that cannot be undone | `confirmAction(message, action)` | settings (`webui.rs`) |
+| Confirming something that cannot be undone | `confirmAction(message, action, other)` (`other` names a second way through, only when there are two; pressed, it answers "other") | settings (`webui.rs`) |
 | A question stood over the board (`#floatbox`) | `frameOpen(spec)`. Drawn again with `frameDraw()`, closed with `frameLeave()`, "More settings" is `frameMore()`, Esc and ✕ are `frameCancel()` | settings (`webui.rs`) |
 | Field | `sfield(label, control, hint)`. A field tied to a setting: `field(obj, key, ph)`, `check(obj, key, label)`, `checkDefaultOn(obj, key, label)`, `choose(obj, key, opts)`, `pathField(obj, key, ph, kind, title)` | settings (`webui.rs`) |
 | A name and what it sets, on one line | `row(label, ...kids)` | settings (`webui.rs`) |

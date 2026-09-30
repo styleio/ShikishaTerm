@@ -93,6 +93,32 @@ AI には1つずつ色があります（`--ai`。claude `#d97757`、codex `#19c3
 のまま——切り替えても文字幅が動かない。たたんだタブの要約はタブではないので、色を
 持ったままでよい。
 
+### 顔の色
+
+タブには1つずつ顔があります（`vendor/boring-avatars/beam.js`。種はタブの ID）。
+顔は次の5色から背景と形の色を選び、目と口を2色のインクのどちらかで描きます。
+値はアプリのもので、配色からは作りません。顔は「そのタブが誰か」なので、配色を
+変えても別人に変わってはいけないからです。
+
+| 変数 | 値 |
+|---|---|
+| `--face1` | `#5fa0f5` 青 |
+| `--face2` | `#f096a6` 桃 |
+| `--face3` | `#ffce2d` 黄 |
+| `--face4` | `#8390eb` 藤 |
+| `--face5` | `#f7cd9e` 杏 |
+| `--face-ink` | `#212021` 目と口（明るい地の上） |
+| `--face-ink-light` | `#ffffff` 目と口（暗い地の上。今の5色では出ない） |
+
+**顔の円の中だけで使う。** 名前の文字、点、枠、棒、背景には使いません。青は
+`--brand`、黄は `--warn` に近い色なので、円の外に出すと状態を言っているように
+読まれます。円の中では2色が組み合わさり、目と口が乗るので、状態ではなく人物として
+読まれます。影や縁取りは足しません（明るい配色・暗い配色の両方で、そのまま読める
+ことを確かめてあります）。
+
+顔の色は色の役割と違い、意味を持ちません。同じ色の顔が2つあっても、同じ何かを
+言っているわけではありません。
+
 ### コントラスト
 
 `--panel` や `--raise` の上の文字は `--text` か `--dim`。10px の状態色の文字は
@@ -243,7 +269,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | 部品 | 呼ぶ関数 | どのページ |
 |---|---|---|
 | ダイアログ（設定・`.framed`） | `openModal(...kids)`（返ってきた枠に `.framed` を付ける） | 設定（`webui.rs`） |
-| 取り消せない操作の確認 | `confirmAction(message, action)` | 設定（`webui.rs`） |
+| 取り消せない操作の確認 | `confirmAction(message, action, other)`（取り消せない道が2つあるときだけ `other` に2つ目の名前。押されると "other" を返す） | 設定（`webui.rs`） |
 | 盤面に立てる1問（`#floatbox`） | `frameOpen(spec)`。描き直しは `frameDraw()`、閉じるのは `frameLeave()`、「詳しく設定する」は `frameMore()`、Esc と ✕ は `frameCancel()` | 設定（`webui.rs`） |
 | 欄 | `sfield(label, control, hint)`。設定の値に結びついた欄は `field(obj, key, ph)`・`check(obj, key, label)`・`checkDefaultOn(obj, key, label)`・`choose(obj, key, opts)`・`pathField(obj, key, ph, kind, title)` | 設定（`webui.rs`） |
 | 名前と項目の1行 | `row(label, ...kids)` | 設定（`webui.rs`） |
