@@ -6044,6 +6044,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     open_desk: confer_open.1.clone(),
                     auto_open: spec.open,
                     line_max: spec.line_max,
+                    max_rounds: config::operate().max_rounds,
                 }
             },
             // With a stand-in laid out there is a link to show even when

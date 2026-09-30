@@ -366,6 +366,87 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #convopanel .fsay .cshowall { height:32px; padding:0 var(--s3); margin-left:var(--s1); font:inherit; font-size:12.5px;
     border:1px solid var(--edge); border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer; }
   #convopanel .fsay .cshowall:hover { border-color:var(--edge-hi); }
+  /* AIConfer: the conference of the desk as a chat. The faces are the only
+     colour in it (STYLEGUIDE "A tab's face"); the bubbles are raised surfaces,
+     the person's on the right with no face, a card is a pressable thing with
+     its edge, a decision made is drawn in the colour of "answered" */
+  #convopanel .fsearch[hidden], #convopanel .cfcast[hidden] { display:none; }
+  #convopanel .cfcast { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:var(--s2) var(--s3);
+    padding:var(--s2) var(--s3); border-bottom:1px solid var(--line); }
+  #convopanel .cfcastone { display:flex; flex-direction:column; align-items:center; gap:2px; width:88px; min-width:0;
+    padding:2px; border:0; border-radius:var(--r-ctl); background:none; color:var(--text); cursor:pointer; font:inherit; }
+  #convopanel .cfcastone:hover { background:var(--hover); }
+  #convopanel .cfcastname { max-width:84px; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #convopanel .cfstate { display:flex; align-items:center; gap:var(--s1); max-width:84px; min-width:0; font-size:10px;
+    color:var(--dim); white-space:nowrap; }
+  #convopanel .cfstatew { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #convopanel .cfstate::before { flex:none; }
+  #convopanel .cfstate::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--line); }
+  #convopanel .cfstate.live::before { background:var(--live); }
+  #convopanel .cfstate.done::before { background:var(--brand); }
+  #convopanel .cfstate.warn::before { background:var(--warn); }
+  #convopanel .cfstate.stop::before { background:var(--stop); }
+  .cfface { flex:none; display:inline-block; width:28px; height:28px; border-radius:50%; overflow:hidden;
+    clip-path:circle(50%); line-height:0; }
+  .cfface svg { width:100%; height:100%; display:block; }
+  .cfface.sm { width:18px; height:18px; }
+  .cfface.xs { width:14px; height:14px; }
+  #convopanel .clist.cfchat { font-size:13px; line-height:1.5; }
+  #convopanel .cfgap { text-align:center; font-size:10px; color:var(--faint); margin:var(--s2) 0 var(--s3);
+    font-variant-numeric:tabular-nums; }
+  #convopanel .cfline { display:flex; gap:var(--s2); align-items:flex-start; margin:0 0 var(--s3); }
+  #convopanel .cfline.me { justify-content:flex-end; }
+  #convopanel .cfwho { flex:none; padding:0; border:0; background:none; cursor:pointer; line-height:0; border-radius:50%; }
+  #convopanel .cfwho:focus-visible { outline:1px solid var(--brand); outline-offset:2px; }
+  #convopanel .cfcol { min-width:0; max-width:calc(100% - 36px); display:flex; flex-direction:column; gap:var(--s1);
+    align-items:flex-start; }
+  #convopanel .cfline.me .cfcol { max-width:85%; align-items:flex-end; }
+  #convopanel .cfhead { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 var(--s2); font-size:12px; min-width:0; }
+  #convopanel .cfname { font-weight:600; color:var(--text); }
+  #convopanel .cfbranch { display:inline-flex; align-items:center; gap:2px; font-size:10px; color:var(--dim); }
+  #convopanel .cfbranch .ico svg { width:10px; height:10px; }
+  #convopanel .cfextra { display:inline-flex; gap:var(--s2); align-items:baseline; }
+  #convopanel .cfto { font-size:11px; color:var(--dim); }
+  #convopanel .cfround { font-size:11px; color:var(--warn); font-variant-numeric:tabular-nums; }
+  #convopanel .cfwhen { font-size:10px; color:var(--faint); font-variant-numeric:tabular-nums; }
+  #convopanel .cfbub { background:var(--raise); color:var(--text); border-radius:var(--r-card);
+    padding:var(--s2) var(--s3); overflow-wrap:anywhere; cursor:pointer; }
+  #convopanel .cfline.auto .cfbub { color:var(--dim); }
+  #convopanel .cftag { display:inline-block; margin-left:var(--s2); padding:0 var(--s1); font-size:10px;
+    color:var(--dim); border:1px solid var(--line); border-radius:var(--r-chip); vertical-align:1px; }
+  #convopanel .cfat { font-family:var(--mono); font-weight:600; }
+  #convopanel .cffold { align-self:stretch; }
+  #convopanel .cffold .vmore { font-size:11.5px; }
+  #convopanel .cffull { margin-top:var(--s1); padding:var(--s2) var(--s3); background:var(--sunk);
+    border:1px solid var(--line); border-radius:var(--r-ctl); max-height:320px; overflow:auto; font-size:12.5px; }
+  #convopanel .cffull[hidden] { display:none; }
+  #convopanel .cfmarks { display:flex; flex-wrap:wrap; gap:var(--s1); }
+  #convopanel .cfmark { display:inline-flex; align-items:center; gap:3px; height:22px; padding:0 6px; font:inherit;
+    font-size:11px; color:var(--dim); background:var(--panel); border:1px solid var(--line); border-radius:var(--r-chip);
+    cursor:pointer; }
+  #convopanel .cfmark.on { border-color:var(--brand); color:var(--text); }
+  #convopanel .cfmark .cfemo { font-size:12.5px; line-height:1; }
+  #convopanel .cfagreed { margin:0 0 var(--s3); padding:var(--s2) var(--s3); border:1px solid var(--brand);
+    border-radius:var(--r-card); display:flex; flex-direction:column; gap:var(--s1); cursor:pointer; }
+  #convopanel .cfagreedhead { display:flex; align-items:center; gap:var(--s1); font-size:11px; font-weight:600;
+    letter-spacing:.02em; color:var(--brand); }
+  #convopanel .cfagreedrow { display:flex; align-items:center; gap:var(--s2); }
+  #convopanel .cfcard { display:flex; align-items:center; gap:var(--s2); max-width:100%; padding:var(--s2) var(--s3);
+    font:inherit; text-align:left; color:var(--text); background:var(--panel); border:1px solid var(--edge);
+    border-radius:var(--r-card); cursor:pointer; }
+  #convopanel .cfcard:hover { border-color:var(--edge-hi); }
+  #convopanel .cfcicon { flex:none; color:var(--dim); line-height:0; }
+  #convopanel .cfctext { min-width:0; display:flex; flex-direction:column; }
+  #convopanel .cfctitle { font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #convopanel .cfcmeta { font-size:11px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fmenu.cfpickmenu { padding:var(--s1); }
+  .fmenu.cfpickmenu .cfpick { display:flex; gap:2px; padding:0; }
+  .fmenu.cfpickmenu .cfpick:hover { background:none; }
+  .fmenu.cfpickmenu .cfpick button { width:32px; height:32px; border:0; border-radius:var(--r-ctl); background:none;
+    font-size:16px; cursor:pointer; }
+  .fmenu.cfpickmenu .cfpick button:hover { background:var(--hover); }
+  #side .sbar .sdot { display:inline-block; width:6px; height:6px; margin-left:var(--s1); border-radius:50%;
+    background:var(--brand); vertical-align:1px; }
   /* The column's own edge, held the same way as the tab bar's */
   #sidegrip { position:absolute; top:var(--titleh); bottom:0; z-index:6; width:9px;
     right:max(0px, calc(var(--sidew) - 4px)); cursor:col-resize; }
@@ -4381,6 +4462,7 @@ let ideasOpen = false;
 {{TOAST_JS}}
 {{PUSH_JS}}
 {{QUICK_JS}}
+{{FACE_JS}}
 
 // -- A phone that should be getting notifications, and is not one yet --------
 //
@@ -8245,6 +8327,10 @@ const PICK_ICON = {
   // The browser bar's Develop list: angle brackets round a slash, the mark a
   // page's markup is known by
   develop: '<path d="M4.6 4 1.8 7l2.8 3M9.4 4l2.8 3-2.8 3"/><path d="M8.1 2.6 5.9 11.4"/>',
+  // A card of AIConfer: a commit (a dot on its line) and a file (a page with
+  // its corner turned)
+  commit: '<circle cx="7" cy="7" r="2.3"/><path d="M1 7h3.7M9.3 7H13"/>',
+  file: '<path d="M3.5 1.5h4.5l2.5 2.5v8.5h-7z"/><path d="M8 1.5v2.5h2.5"/>',
 };
 function pickIcon(name) {
   const s = el("span", {class:"ico"});
@@ -11425,6 +11511,7 @@ window.__state = function (json) {
   microvmArrived();
   drawLogin();
   mentionsArrived();
+  conferArrived(before);
   // The settings were read in again while the worktree dialog is open: what
   // it shows was worked out from the ones before, so it is asked again
   if (before && S && S.settings_gen !== before.settings_gen) {
@@ -13325,6 +13412,7 @@ function convoMerge(fresh, older) {
 }
 window.__convo = function (d) {
   if (!d || !d.act) return;
+  if (d.panel === "confer") { cfGot(d); return; }
   if (d.panel !== CV.panel) return;
   const cut = String(d.req || "").lastIndexOf("#");
   const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
@@ -13606,10 +13694,18 @@ function convoBuild(box) {
   show.append(el("label", {}, pins, T["convo.show.pins"] || "Pinned only"));
   // What sits over a conversation opened by name (the way to pick it back up)
   const head = el("div", {id: "convoHead"});
+  // Who is in the conference, over it
+  const cast = el("div", {class: "cfcast"});
+  cast.hidden = true;
   const list = el("div", {class: "clist"});
+  // A chat stays at its foot while it is read there, and stays put when
+  // somebody has scrolled up to read something earlier
+  list.addEventListener("scroll", () => {
+    if (cvConfer) CF.stick = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  }, {passive: true});
   const say = el("div", {class: "fsay"});
-  box.append(search, mode, show, head, list, say);
-  cvUi = {q, boxes, pins, list, say};
+  box.append(search, mode, show, head, cast, list, say);
+  cvUi = {q, boxes, pins, list, say, cast, search};
 }
 // What the list shows: what reading every conversation found, when words are
 // typed or pins asked for -- until that arrives, what is here narrowed at once
@@ -13628,6 +13724,16 @@ function drawConvo() {
   u.pins.checked = CV.pins;
   drawMode(u);
   drawHead();
+  if (cvConfer) {
+    const c = (S && S.confer) || {};
+    // Read when it comes into view, and again whenever it changed
+    if (CF.asked !== c.rev) { CF.asked = c.rev; cfRefresh(); }
+    CF.seen = c.rev;
+    drawConfer(u);
+    return;
+  }
+  u.cast.hidden = true;
+  u.list.classList.remove("cfchat");
   if (cvAll) { drawAll(u); return; }
   const searching = !!(CV.q || CV.pins);
   const source = convoSource();
@@ -13724,6 +13830,391 @@ function convoSoon(key) {
   }, wait);
 }
 
+// ── AIConfer ───────────────────────────────────────────
+// AIs conferring (convo::confer): the short line one tab says as it asks
+// another something, the line the other says as it answers, the marks put
+// on them and the cards shared -- as a chat, the oldest at the top, for the
+// desk on screen. Under each line, folded, the whole of what was asked or
+// answered. Kept by the app, so the phone shows the same and a restart
+// loses nothing.
+//
+// A face per tab (vendor/boring-avatars/beam.js, STYLEGUIDE "A tab's face"),
+// drawn from the desk and the tab's id so it is the same tab's face wherever
+// it appears, and made once.
+let cvConfer = false;    // the panel is showing the conference, not a conversation
+const CF = {
+  said: [],        // what has been read, oldest first
+  more: false,     // there is more before the first of it
+  seq: {},         // kind of request -> the newest one
+  rev: -1,         // the conference's revision last read (S.confer.rev)
+  seen: 0,         // the revision last looked at, for the dot on the strip
+  open: 0,         // the last "open it" counted (S.confer.open)
+  stick: true,     // the list is at its foot, and stays there as lines come
+  full: new Set(), // lines whose whole text is open
+  loading: false, bad: "",
+  drawn: "",
+};
+// A pause this long between two things said starts a new stretch, with the
+// time over it (decided 2026-10-01: a working session, not a day)
+const CF_GAP_MS = 30 * 60 * 1000;
+// The marks a line may be given; the app refuses any other (convo::confer::MARKS)
+const CF_MARKS = ["👍", "❤️", "🎉", "👀", "✅", "❓"];
+// How long after a person last touched the board the conference does not
+// open by itself: what they are reading is not taken from under them (the
+// same wait as a script's show_panel)
+const CF_HANDS_OFF_MS = 8000;
+let cfHandsAt = 0;
+for (const ev of ["pointerdown", "keydown", "wheel"]) {
+  document.addEventListener(ev, () => { cfHandsAt = Date.now(); }, {capture: true, passive: true});
+}
+
+const cfFaces = new Map();
+// The face of the tab `id`, at 28px or small (a mark's, the strip's)
+function cfFace(id, cls) {
+  const seed = ((S && S.desk_id) || "") + "/" + (id || "");
+  let svg = cfFaces.get(seed);
+  if (!svg) {
+    const css = getComputedStyle(document.documentElement);
+    const v = n => css.getPropertyValue(n).trim();
+    svg = beamFace(seed, [1, 2, 3, 4, 5].map(i => v("--face" + i)), [v("--face-ink"), v("--face-ink-light")]);
+    cfFaces.set(seed, svg);
+  }
+  const s = el("span", {class: "cfface" + (cls ? " " + cls : "")});
+  s.innerHTML = svg;
+  return s;
+}
+function cfTab(id) {
+  return ((S && S.tabs) || []).find(t => t.id === id || (!t.id && t.name === id)) || null;
+}
+// A tab's name, with its folder when another tab of the desk has the same one
+function cfName(id) {
+  const t = cfTab(id);
+  if (!t) return id || "";
+  const twin = ((S && S.tabs) || []).some(o => o !== t && o.name === t.name);
+  const g = twin && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return g && g.name ? t.name + " (" + g.name + ")" : t.name;
+}
+function cfBranch(id) {
+  const t = cfTab(id);
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return (g && g.branch) || "";
+}
+// The words of a line, with a tab named the way it appears as a badge
+function cfWords(text) {
+  const box = el("span", {class: "cfwords"});
+  const parts = String(text || "").split(/(<@[A-Za-z0-9_.-]+>)/);
+  for (const p of parts) {
+    const m = /^<@([A-Za-z0-9_.-]+)>$/.exec(p);
+    box.append(m ? el("span", {class: "cfat"}, "@" + cfName(m[1])) : p);
+  }
+  return box;
+}
+function cfAsk(act, args, slot) {
+  const s = slot || act;
+  CF.seq[s] = (CF.seq[s] || 0) + 1;
+  send({kind: "convo", panel: "confer", act, args: Object.assign({req: s + "#" + CF.seq[s]}, args || {})});
+}
+function cfRefresh() {
+  CF.loading = !CF.said.length;
+  cfAsk("confer", {});
+}
+function cfEarlier() {
+  if (!CF.more || !CF.said.length) return;
+  cfAsk("confer", {before: CF.said[0].at}, "earlier");
+}
+// A page of the conference arrived
+function cfGot(d) {
+  const cut = String(d.req || "").lastIndexOf("#");
+  const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
+  if (Number(n) !== CF.seq[slot]) return;
+  CF.loading = false;
+  if (!d.ok) { CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
+  CF.bad = "";
+  if (slot === "earlier") {
+    CF.said = (d.said || []).concat(CF.said);
+    CF.more = !!d.more;
+    CF.keepTop = true;
+  } else {
+    // The newest page, in place of the newest part of what is here: what was
+    // read further back is kept, with the page's lines taking theirs
+    const fresh = d.said || [];
+    const first = fresh.length ? fresh[0].at : Infinity;
+    const older = CF.said.filter(s => s.at < first);
+    CF.said = older.concat(fresh);
+    if (!older.length) CF.more = !!d.more;
+  }
+  CF.drawn = "";
+  drawConvo();
+}
+// What the conference needs from every state: to be read again when it
+// changed, and to be opened when one tab has just asked another
+function conferArrived(before) {
+  const c = (S && S.confer) || {};
+  if (c.rev !== CF.rev) {
+    CF.rev = c.rev;
+    if (cvConfer && sidePanel === "convo" && sideWidth() > 0) { cfRefresh(); CF.seen = c.rev; }
+  }
+  if (before && c.open && c.open !== CF.open) {
+    const fresh = CF.open !== 0 || (before.confer || {}).open !== c.open;
+    CF.open = c.open;
+    if (fresh && c.auto_open && c.open_desk === S.desk_id) cfOpenItself();
+  } else if (!before) {
+    CF.open = c.open || 0;
+  }
+}
+// One tab has asked another: the conference, in front -- unless the person
+// is in the middle of something here, or on a phone, where the column is a
+// sheet over everything and is only turned to, not opened
+function cfOpenItself() {
+  if (S.settings || S.board) return;
+  const busy = Date.now() - cfHandsAt < CF_HANDS_OFF_MS;
+  if (!busy && !phoneWidth()) sideReveal("convo");
+  if (!cvConfer) convoModeTo("confer");
+  else drawSide();
+}
+// Whether there is something in the conference nobody has looked at
+function cfUnseen() {
+  const c = (S && S.confer) || {};
+  return !!c.rev && c.rev !== CF.seen && !(cvConfer && sidePanel === "convo" && sideWidth() > 0);
+}
+// Open the conversation of a tab from its face: that tab in front, its own
+// conversation in the panel
+function cfToTab(id) {
+  const t = cfTab(id);
+  if (!t) return;
+  convoModeTo("this");
+  if (t.index !== S.active) send({kind: "select", tab: t.index});
+}
+// A card pressed: what it points at, where it belongs
+function cfOpenCard(s) {
+  const t = cfTab(s.tab);
+  const key = t ? (t.id || t.name) : s.tab;
+  if (s.kind === "url" || s.kind === "pr") {
+    send({kind: "linkpress", tab: key, target: s.target, lk: "web", act: "page", ask: ""});
+    return;
+  }
+  if (!t) { toast(T["confer.gone"] || "", true); return; }
+  if (s.kind === "file") {
+    send({kind: "editopen", panel: key, path: s.target, diff: ""});
+    return;
+  }
+  // A commit: that tab in front, and its folder's history open at it
+  if (t.index !== S.active) send({kind: "select", tab: t.index});
+  const until = Date.now() + 3000;
+  const go = () => {
+    if (S.active !== t.index) { if (Date.now() < until) setTimeout(go, 100); return; }
+    sideReveal("git");
+    const at = () => {
+      if (G.panel !== key) { if (Date.now() < until) setTimeout(at, 100); return; }
+      G.commit = s.target; G.about = null; G.sel = null; G.hunks = [];
+      if (document.getElementById("gitpanel").classList.contains("narrow")) gitPane = "about";
+      drawGit();
+      gitAsk("detail", {text: s.target});
+    };
+    at();
+  };
+  go();
+}
+// The marks, offered over the line pressed
+function cfPickMark(anchor, s, e) {
+  const row = el("div", {class: "cfpick"});
+  for (const m of CF_MARKS) {
+    row.append(el("button", {type: "button", onclick: ev => {
+      ev.stopPropagation();
+      closeFolderMenu();
+      send({kind: "convo", panel: "confer", act: "confer_mark", args: {line: s.id, mark: m}});
+    }}, m));
+  }
+  openList(anchor, [row], false, e, "cfpickmenu");
+}
+// The marks on a line, each once, with who put it there
+function cfMarks(s) {
+  if (!(s.marks || []).length) return null;
+  const box = el("div", {class: "cfmarks"});
+  const by = new Map();
+  for (const m of s.marks) {
+    if (!by.has(m.mark)) by.set(m.mark, []);
+    by.get(m.mark).push(m.by);
+  }
+  for (const [mark, who] of by) {
+    const mine = who.includes("person");
+    const chip = el("button", {type: "button", class: "cfmark" + (mine ? " on" : ""),
+      title: who.map(w => w === "person" ? (T["confer.you"] || "You") : cfName(w)).join(", "),
+      onclick: e => { e.stopPropagation(); send({kind: "convo", panel: "confer", act: "confer_mark", args: {line: s.id, mark}}); }},
+      el("span", {class: "cfemo"}, mark));
+    // Up to three faces; the count only when the faces do not already say it
+    const faces = who.filter(w => w !== "person").slice(0, 3);
+    for (const w of faces) chip.append(cfFace(w, "xs"));
+    if (who.length > 1 && who.length > faces.length) chip.append(el("span", {class: "cfn"}, String(who.length)));
+    box.append(chip);
+  }
+  return box;
+}
+// The whole of what was asked, or answered, under the line said about it
+function cfFull(s) {
+  const text = s.how === "ask" ? (s.ask && s.ask.text) : (s.how === "said" || s.how === "auto") ? (s.ask && s.ask.reply) : "";
+  if (!text) return null;
+  const words = s.how === "ask" ? (T["confer.full.ask"] || "What was asked") : (T["confer.full.reply"] || "The whole answer");
+  const wrap = el("div", {class: "cffold"});
+  const body = el("div", {class: "cffull"});
+  const open = CF.full.has(s.id);
+  body.hidden = !open;
+  if (open) body.append(rdMarkup(text));
+  const btn = el("button", {type: "button", class: "vmore"}, (open ? "▾ " : "▸ ") + words);
+  btn.onclick = e => {
+    e.stopPropagation();
+    const now = body.hidden;
+    body.hidden = !now;
+    if (now) { CF.full.add(s.id); if (!body.firstChild) body.append(rdMarkup(text)); }
+    else CF.full.delete(s.id);
+    btn.textContent = (now ? "▾ " : "▸ ") + words;
+  };
+  wrap.append(btn, body);
+  return wrap;
+}
+// The round an ask was, when the limit is near (S.confer.max_rounds)
+function cfRound(s) {
+  const max = (S.confer || {}).max_rounds || 0;
+  const n = s.ask && s.ask.round;
+  if (s.how !== "ask" || !max || !n || n < Math.ceil(max * 0.8)) return null;
+  return el("span", {class: "cfround"}, (T["confer.round"] || "Round {n}/{m}").replaceAll("{n}", n).replaceAll("{m}", max));
+}
+// Who said it, over what was said
+function cfHead(s, extra) {
+  const head = el("div", {class: "cfhead"}, el("span", {class: "cfname"}, cfName(s.tab)));
+  const br = cfBranch(s.tab);
+  if (br) head.append(el("span", {class: "cfbranch"}, pickIcon("branch"), br));
+  if (extra) head.append(extra);
+  head.append(el("span", {class: "cfwhen", title: new Date(s.at).toLocaleString()}, convoTime(s.at)));
+  return head;
+}
+function cfFaceButton(id) {
+  const b = el("button", {type: "button", class: "cfwho", title: T["confer.open.tab"] || "",
+    onclick: () => cfToTab(id)});
+  b.append(cfFace(id));
+  return b;
+}
+function cfLine(s) {
+  const me = s.how === "person";
+  const row = el("div", {class: "cfline" + (me ? " me" : "") + (s.how === "auto" ? " auto" : ""), "data-id": String(s.id)});
+  const bub = el("div", {class: "cfbub", title: T["confer.mark.title"] || ""}, cfWords(s.text));
+  if (s.how === "auto") {
+    bub.append(el("span", {class: "cftag", title: T["confer.auto.hint"] || ""}, T["confer.auto"] || "auto"));
+  }
+  bub.onclick = e => { if (!String(getSelection() || "")) cfPickMark(bub, s, e); };
+  const col = el("div", {class: "cfcol"});
+  if (!me) {
+    const to = s.how === "ask" && s.ask ? el("span", {class: "cfto"}, "→ @" + cfName(s.ask.target)) : null;
+    const extra = el("span", {class: "cfextra"});
+    if (to) extra.append(to);
+    const r = cfRound(s);
+    if (r) extra.append(r);
+    col.append(cfHead(s, extra.firstChild ? extra : null));
+  }
+  col.append(bub);
+  const full = cfFull(s);
+  if (full) col.append(full);
+  const marks = cfMarks(s);
+  if (marks) col.append(marks);
+  if (me) row.append(col);
+  else row.append(cfFaceButton(s.tab), col);
+  return row;
+}
+// A decision made in a job: what the tabs settled on, as a card of its own
+function cfAgreed(s) {
+  const card = el("div", {class: "cfagreed", "data-id": String(s.id)});
+  card.append(el("div", {class: "cfagreedhead"}, pickIcon("check"), T["confer.agreed"] || "Agreed"));
+  card.append(el("div", {class: "cfagreedrow"}, cfFace(s.tab, "sm"), el("span", {}, cfWords(s.text))));
+  const marks = cfMarks(s);
+  if (marks) card.append(marks);
+  card.onclick = e => { if (!String(getSelection() || "")) cfPickMark(card, s, e); };
+  return card;
+}
+// A card shared: what it is, and one press to open it
+function cfCard(s) {
+  const d = s.detail || {};
+  const icon = {commit: "commit", pr: "pr", file: "file", url: "globe"}[s.kind] || "open";
+  const meta = [T["confer.kind." + s.kind] || s.kind];
+  if (s.kind === "commit") meta.push(d.short, d.branch);
+  else if (s.kind === "pr") meta.push(d.number != null ? "#" + d.number : "", d.host);
+  else if (s.kind === "file") meta.push(d.folder || "");
+  else meta.push(d.host);
+  const card = el("button", {type: "button", class: "cfcard", title: s.target, onclick: () => cfOpenCard(s)},
+    el("span", {class: "cfcicon"}, pickIcon(icon)),
+    el("span", {class: "cfctext"},
+      el("span", {class: "cfctitle"}, s.title || s.target),
+      el("span", {class: "cfcmeta"}, meta.filter(Boolean).join(" · "))));
+  const row = el("div", {class: "cfline cfshare", "data-id": "c" + s.id});
+  row.append(cfFaceButton(s.tab), el("div", {class: "cfcol"}, cfHead(s), card));
+  return row;
+}
+// Who is in the conference being shown, and what each is doing now
+function cfCast() {
+  const ids = [];
+  for (const s of CF.said) {
+    for (const id of [s.tab, s.ask && s.ask.target, s.ask && s.ask.caller]) {
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids.slice(-6);
+}
+function cfStateClass(state) {
+  switch (state) {
+    case "BUSY": case "BACKGROUND": return "live";
+    case "DONE": return "done";
+    case "QUESTION": case "LIMIT": return "warn";
+    case "EXIT": case "FAILED": return "stop";
+    default: return "";
+  }
+}
+function drawCast(box) {
+  const ids = cfCast();
+  const key = ids.map(id => { const t = cfTab(id); return id + ":" + (t ? t.state + t.name : "-"); }).join("|");
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.textContent = "";
+  box.hidden = !ids.length;
+  for (const id of ids) {
+    const t = cfTab(id);
+    const who = el("button", {type: "button", class: "cfcastone", title: T["confer.open.tab"] || "", onclick: () => cfToTab(id)});
+    who.append(cfFace(id), el("span", {class: "cfcastname"}, cfName(id)));
+    const label = t ? (t.state_label || "") : (T["confer.gone.short"] || "");
+    const st = el("span", {class: "cfstate " + (t ? cfStateClass(t.state) : ""), title: label}, el("span", {class: "cfstatew"}, label));
+    who.append(st);
+    box.append(who);
+  }
+}
+// The conference, drawn into the panel's list
+function drawConfer(u) {
+  drawCast(u.cast);
+  u.say.textContent = "";
+  u.say.style.color = CF.bad ? "var(--stop)" : "";
+  const key = String(CF.rev) + "|" + CF.said.length + "|" + (CF.said.length ? CF.said[CF.said.length - 1].id : "") + "|" + CF.bad
+    + "|" + (((S && S.tabs) || []).map(t => t.id + t.name).join(","));
+  if (u.list.dataset.cf !== key || CF.drawn === "") {
+    u.list.dataset.cf = key;
+    CF.drawn = key;
+    const fromFoot = u.list.scrollHeight - u.list.scrollTop;
+    u.list.textContent = "";
+    u.list.classList.add("cfchat");
+    if (CF.more) {
+      u.list.append(el("button", {type: "button", class: "vmore cpage", onclick: cfEarlier}, "▲ " + (T["confer.earlier"] || "Earlier")));
+    }
+    let last = null;
+    for (const s of CF.said) {
+      if (last == null || s.at - last >= CF_GAP_MS) u.list.append(el("div", {class: "cfgap"}, convoTime(s.at)));
+      last = s.at;
+      u.list.append(s.k === "share" ? cfCard(s) : s.how === "agreed" ? cfAgreed(s) : cfLine(s));
+    }
+    if (CF.keepTop) { CF.keepTop = false; u.list.scrollTop = u.list.scrollHeight - fromFoot; }
+    else if (CF.stick) u.list.scrollTop = u.list.scrollHeight;
+    else u.list.scrollTop = u.list.scrollHeight - fromFoot;
+  }
+  if (CF.bad) { u.say.textContent = CF.bad; return; }
+  if (CF.loading) { u.say.textContent = T["convo.loading"] || "Reading…"; return; }
+  if (!CF.said.length) u.say.textContent = T["confer.empty"] || "";
+}
+
 // Draw the column: whether it is there, the strip along its top, and which
 // panel is standing in the body
 function drawSide() {
@@ -13747,13 +14238,16 @@ function drawSide() {
   const kind = sideKind();
   const shown = sideShown(kind);
   sidePanel = sideEffective(kind);
-  const key = shown.map(([id]) => id + (sideCalled.has(id) ? "*" : "")).join(",") + "|" + sidePanel + "|" + where;
+  const unseen = cfUnseen();
+  const key = shown.map(([id]) => id + (sideCalled.has(id) ? "*" : "")).join(",") + "|" + sidePanel + "|" + where + "|" + unseen;
   if (bar.dataset.key !== key) {
     bar.dataset.key = key;
     bar.textContent = "";
     for (const [id, label] of shown) {
       const b = el("button", {class: sidePanel === id ? "on" : "",
         onclick:() => sideChoose(id)}, label());
+      // Something new in the conference, not looked at yet
+      if (id === "convo" && unseen) b.append(el("span", {class: "sdot", title: T["confer.unseen"] || ""}));
       // A called panel carries its own way out, inside its button so the pair
       // reads as one thing and moves as one when the strip is narrow
       if (sideCalled.has(id)) {
@@ -13787,7 +14281,7 @@ function drawSide() {
   // The conversation stands on the tab being looked at, not on its folder
   const convo = document.getElementById("convopanel");
   // Every conversation stands on nothing: it is there whatever is in front
-  const convoMissing = sidePanel === "convo" && !cvAll ? convoFollow() : "";
+  const convoMissing = sidePanel === "convo" && !cvAll && !cvConfer ? convoFollow() : "";
   if (convo) convo.hidden = sidePanel !== "convo" || !!convoMissing;
   // The console stands on the page being looked at
   const cons = document.getElementById("consolepanel");
@@ -16352,11 +16846,17 @@ function allFindSoon() {
   clearTimeout(cvAllTimer);
   cvAllTimer = setTimeout(allFindNow, 180);
 }
-// This conversation, or every conversation. The words in the box carry across
-function convoModeTo(all) {
+// The conference, this conversation, or every conversation. The words in the
+// box carry across the last two. `true` and `false` are every conversation
+// and this one, as the callers from before the conference say it
+function convoModeTo(m) {
+  const mode = m === true ? "all" : m === false ? "this" : m;
   const was = cvAll;
-  cvAll = !!all;
-  if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; }
+  cvAll = mode === "all";
+  cvConfer = mode === "confer";
+  if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; delete cvUi.list.dataset.cf; }
+  CF.drawn = "";
+  if (cvConfer) CF.stick = true;
   if (cvAll && !was) allFindNow();
   if (!cvAll && was && (CV.q || CV.pins)) convoFindSoon();
   CV.rev++;
@@ -16597,14 +17097,18 @@ function foldLong(body) {
 function drawMode(u) {
   const box = document.getElementById("convoMode");
   const show = document.querySelector("#convopanel .cshow");
-  if (show) show.hidden = cvAll;
+  if (show) show.hidden = cvAll || cvConfer;
+  // The conference is read, not searched
+  u.search.hidden = cvConfer;
   u.q.placeholder = cvAll ? (T["vault.placeholder"] || "") : (T["convo.find.ph"] || "");
-  if (!box || box.dataset.on === String(cvAll)) return;
-  box.dataset.on = String(cvAll);
+  const mode = cvConfer ? "confer" : cvAll ? "all" : "this";
+  if (!box || box.dataset.on === mode) return;
+  box.dataset.on = mode;
   box.textContent = "";
   box.append(
-    el("button", {type:"button", class: cvAll ? "" : "on", onclick:() => convoModeTo(false)}, T["convo.mode.this"] || "This conversation"),
-    el("button", {type:"button", class: cvAll ? "on" : "", onclick:() => convoModeTo(true)}, T["convo.mode.all"] || "Every conversation"));
+    el("button", {type:"button", class: mode === "confer" ? "on" : "", onclick:() => convoModeTo("confer")}, T["convo.mode.confer"] || "AIConfer"),
+    el("button", {type:"button", class: mode === "this" ? "on" : "", onclick:() => convoModeTo("this")}, T["convo.mode.this"] || "This conversation"),
+    el("button", {type:"button", class: mode === "all" ? "on" : "", onclick:() => convoModeTo("all")}, T["convo.mode.all"] || "Every conversation"));
 }
 // Over a conversation opened from the list: the way back to it, and the way to
 // pick the conversation back up where it was had -- or, the folder gone, the
@@ -16614,11 +17118,11 @@ function drawHead() {
   if (!head) return;
   const past = CV.past;
   const here = cvWhere && past && cvWhere.id === past.id ? cvWhere : null;
-  const key = JSON.stringify([past, cvFromAll, cvAll, !!convoTab(), here && [here.exists, here.folder, (here.homes || []).length]]);
+  const key = JSON.stringify([past, cvFromAll, cvAll, cvConfer, !!convoTab(), here && [here.exists, here.folder, (here.homes || []).length]]);
   if (head.dataset.key === key) return;
   head.dataset.key = key;
   head.textContent = "";
-  if (cvAll) return;
+  if (cvAll || cvConfer) return;
   if (cvFromAll) {
     head.append(el("button", {type:"button", class:"hback", onclick:() => convoModeTo(true)},
       "← " + (T["vault.back.list"] || "Every conversation")));
@@ -22295,6 +22799,14 @@ fn px(n: i32) -> String {
     format!("{n}px")
 }
 
+/// A tab's face, drawn from its name (see `vendor/boring-avatars/beam.js`)
+const FACE_JS: &str = include_str!("../../../vendor/boring-avatars/beam.js");
+
+/// The page with the face drawer put in where it is asked for (`{{FACE_JS}}`)
+pub fn with_faces(page: String) -> String {
+    page.replace("{{FACE_JS}}", FACE_JS)
+}
+
 fn built(sticky: bool, by: Served) -> String {
     // Read here rather than threaded in: the page is built in several places
     // (window, phone, tests) and every one of them wants the same look
@@ -22305,7 +22817,7 @@ fn built(sticky: bool, by: Served) -> String {
     let words: std::collections::BTreeMap<&str, &str> = MENU.iter().copied().collect();
     // The message toast is the app's, not this screen's — every surface that
     // says anything to the user says it the same way (src/toast.rs)
-    crate::quick::render(crate::push::inject(crate::toast::render(PAGE.to_string()))).replace(
+    with_faces(crate::quick::render(crate::push::inject(crate::toast::render(PAGE.to_string())))).replace(
         "{{MENU_KEYS}}",
         &serde_json::to_string(&keys).unwrap_or_else(|_| "[]".into()),
     )

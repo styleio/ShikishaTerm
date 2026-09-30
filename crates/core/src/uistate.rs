@@ -2157,6 +2157,9 @@ pub struct ConferState {
     pub auto_open: bool,
     /// The longest a line may be, for the settings' own hint
     pub line_max: u32,
+    /// How many rounds a tab may ask (`operate.max_rounds`, 0 = no limit):
+    /// the round of an ask is shown once it is near
+    pub max_rounds: u32,
 }
 
 /// Everything shown on screen, all in one place.
