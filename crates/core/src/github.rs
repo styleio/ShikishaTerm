@@ -1541,10 +1541,11 @@ pub fn log_for_reading(log: &str) -> (String, Option<usize>) {
         let plain = without_colour(line);
         let line = match plain.split_once(' ') {
             // "2026-09-17T06:20:15.6543593Z text" -> "06:20:15 text"
-            Some((stamp, rest)) if stamp.len() >= 20 && stamp.ends_with('Z') && stamp.as_bytes().get(10) == Some(&b'T') => {
-                format!("{} {rest}", &stamp[11..19])
-            }
-            _ => plain,
+            Some((stamp, rest)) => match time_of_stamp(stamp) {
+                Some(time) => format!("{time} {rest}"),
+                None => plain,
+            },
+            None => plain,
         };
         if first_error.is_none() && line.contains("##[error]") {
             first_error = Some(i + 1);
@@ -1553,6 +1554,27 @@ pub fn log_for_reading(log: &str) -> (String, Option<usize>) {
         out.push('\n');
     }
     (out, first_error)
+}
+
+/// The time of day out of a runner's stamp (`2026-09-17T06:20:15.6543593Z`),
+/// or `None` when the word is not one. Read character by character in its
+/// fixed places, all of them ASCII: a log is anybody's text, and a word that
+/// only resembles a stamp has to come back as `None` rather than be cut where
+/// a character that takes several bytes happens to sit
+fn time_of_stamp(stamp: &str) -> Option<&str> {
+    let b = stamp.as_bytes();
+    let digit = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
+    let at = |i: usize, c: u8| b.get(i) == Some(&c);
+    let shaped = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18].into_iter().all(digit)
+        && at(4, b'-')
+        && at(7, b'-')
+        && at(10, b'T')
+        && at(13, b':')
+        && at(16, b':')
+        && stamp.ends_with('Z')
+        && stamp.is_ascii();
+    // Every byte is ASCII, so byte places are character places
+    shaped.then(|| &stamp[11..19])
 }
 
 /// A line with the terminal's escape sequences taken out: the colour codes
@@ -1691,6 +1713,24 @@ mod tests {
         assert_eq!(super::log_for_reading("all good\n").1, None);
         // A lone escape, and a sequence that is not a colour, go as well
         assert_eq!(super::without_colour("a\u{1b}[2Kb\u{1b}c"), "abc");
+    }
+
+    /// A line that only looks like it starts with a stamp is left as it was.
+    /// The stamp's time is cut out by position, and a letter written in more
+    /// than one byte where a digit should be put that position inside the
+    /// letter -- which panicked the program instead of showing the log
+    #[test]
+    fn a_line_that_only_looks_stamped_is_kept_whole() {
+        for odd in [
+            "2026-09-17T06:20:1\u{e9}Z message",
+            "2026-09-17T06:2\u{3042}:15.1Z message",
+            "\u{3042}\u{3042}\u{3042}\u{3042}\u{3042}\u{3042}\u{3042}Z x",
+            "2026-09-17T06-20-15.0000000Z message",
+        ] {
+            let (text, _) = super::log_for_reading(odd);
+            assert_eq!(text, format!("{odd}\n"), "kept as it was: {odd}");
+        }
+        assert_eq!(super::log_for_reading("2026-09-17T06:20:15Z ok").0, "06:20:15 ok\n");
     }
 
     /// The branch a pull request comes from is found where it is checked out:
