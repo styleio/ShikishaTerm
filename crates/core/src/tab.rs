@@ -3876,7 +3876,7 @@ impl Tab {
         let far_live = if far_term.is_some() { None } else { far_live };
         // A state the bridge hands over goes into this tab's own parser
         if let Some(t) = far_term.as_ref() {
-            t.bind(Arc::clone(&parser), Arc::clone(&keyboard));
+            t.bind(Arc::clone(&parser), Arc::clone(&keyboard), Arc::clone(&window_title), Arc::clone(&reported_cwd));
         }
         // A model-bridge tab launches an idle placeholder process, so its screen
         // would otherwise be blank. Paint a small title card (like the CLIs show

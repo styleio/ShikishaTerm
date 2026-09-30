@@ -36,6 +36,8 @@ const CONFIG = path.join(APP, 'config', 'config.json');
 const SECRETS = path.join(APP, 'config', 'secrets.json');
 const LOG = path.join(APP, 'logs', 'hooks.log');
 const BRIDGE_DIR = '/home/user/.local/share/shikisha/bridge';
+// Made-up builds put there first: unheld and marked, held, and from before the marks
+const FAKE = ['0.0.1-aaaa', '0.0.2-bbbb', '0.0.3'];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -113,6 +115,10 @@ try {
   // is a shell, so the tab is taken for an AI and still does what is typed
   await box.files.write('/tmp/claude', '#!/bin/sh\nexec bash --norc\n');
   await inside('sudo install -m 755 /tmp/claude /usr/local/bin/claude');
+  // Older builds already there: one nobody runs (to be cleared), one a
+  // process holds (to stay), and one from before the marks (to stay)
+  await inside(`mkdir -p ${BRIDGE_DIR} && cd ${BRIDGE_DIR} && for b in ${FAKE.join(' ')}; do printf x > shikisha-bridge-$b; done && touch .shikisha-bridge-0.0.1-aaaa.lock .shikisha-bridge-0.0.2-bbbb.lock`);
+  await box.commands.run(`cd ${BRIDGE_DIR} && flock -s .shikisha-bridge-0.0.2-bbbb.lock sleep 900`, { background: true });
 
   stopApp();
   fs.rmSync(RUN, { recursive: true, force: true });
@@ -132,6 +138,15 @@ try {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
   Object.assign(env, { LOCALAPPDATA: LOCAL, SHIKISHA_HOLD_TERMINALS: '1' });
   spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+
+  console.log('0. putting the bridge there clears only the builds nobody runs');
+  const cleared = async () => (await inside(`ls -a ${BRIDGE_DIR}`)).split('\n');
+  await until(() => /bridge: connected to/.test(log()), 'the bridge to connect', 240000).catch(() => {});
+  const left = await cleared();
+  check(!left.includes('shikisha-bridge-0.0.1-aaaa'), 'a build nobody runs was cleared');
+  check(left.includes('shikisha-bridge-0.0.2-bbbb'), 'a build in use stayed');
+  check(left.includes('shikisha-bridge-0.0.3'), 'a build from before the marks stayed');
+  check(left.some((n) => /^\.shikisha-bridge-.*\.lock$/.test(n) && !FAKE.some((b) => n === `.shikisha-bridge-${b}.lock`)), 'the build running now holds its mark: ' + left.filter((n) => n.startsWith('.')).join(' '));
 
   console.log('1. with the bridge connected, the tab opens its terminal in the bridge');
   await until(() => fs.existsSync(path.join(APP, 'data', 'api-token')), 'the app', 60000);
@@ -159,7 +174,9 @@ try {
     .catch(async () => check(false, 'the full screen is up: ' + (await screen()).slice(-300)));
 
   console.log('4. another app holds the resident process; the app\'s line is cut');
-  const program = (await inside(`ls ${BRIDGE_DIR} | grep '^shikisha-bridge-' | head -1`)).trim();
+  // The build this app put there: not one of the made-up builds from step 0
+  const program = (await inside(`ls ${BRIDGE_DIR}`)).split('\n')
+    .find((n) => n.startsWith('shikisha-bridge-') && !FAKE.includes(n.slice('shikisha-bridge-'.length)) && !n.endsWith('.part'));
   // Marked in its environment, so the cut below leaves it alone
   await box.commands.run(`(while true; do echo '{"t":"tick"}'; sleep 5; done) | OTHER_APP=1 ${BRIDGE_DIR}/${program} serve > /tmp/other-app.out 2>&1`, { background: true });
   await sleep(4000);

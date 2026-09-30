@@ -600,8 +600,36 @@ pub fn install(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     if !ran.out.contains(env!("CARGO_PKG_VERSION")) {
         bail!("the bridge was put on {} but did not run there: {}", at.address(), ran.err.trim());
     }
+    clear_old_builds(at, &home, &program);
     crate::append_hook_log(&format!("bridge: installed on {}", at.address()));
     Ok(())
+}
+
+/// Delete the other builds on a machine that nothing runs any more (far-keep
+/// plan §4.5): each resident process and door holds a shared lock on its
+/// build's mark while it runs, and a build is deleted only while its mark
+/// can be locked whole, without waiting -- and with the lock held, so none
+/// starts in between. A build with no mark is older than the marks and is
+/// left where it is. A machine without `flock` keeps them all
+fn clear_old_builds(at: &crate::elsewhere::Elsewhere, home: &str, keep: &str) {
+    let q = |s: &str| crate::ssh::sh_quote(s);
+    let name = keep.rsplit('/').next().unwrap_or(keep);
+    let script = format!(
+        "command -v flock >/dev/null || exit 0; cd {home} || exit 0; \
+         for f in shikisha-bridge-*; do case \"$f\" in {name}|*.part) continue;; esac; \
+         [ -e \".$f.lock\" ] || continue; \
+         flock -n -x \".$f.lock\" -c \"rm -f -- '$f' '.$f.lock'\" && echo \"cleared $f\"; done",
+        home = q(home),
+        name = name,
+    );
+    match crate::elsewhere::exec(at, &script, 60_000) {
+        Ok(ran) => {
+            for line in ran.out.lines().filter(|l| l.starts_with("cleared ")) {
+                crate::append_hook_log(&format!("bridge: {} on {}", line, at.address()));
+            }
+        }
+        Err(e) => crate::append_hook_log(&format!("bridge: old builds on {} were not cleared: {e:#}", at.address())),
+    }
 }
 
 /// Take the bridge off a machine: its line is let go, and its folder -- the

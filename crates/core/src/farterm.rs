@@ -128,13 +128,21 @@ pub struct FarTerm {
 struct Bound {
     parser: crate::tab::SharedParser,
     keyboard: crate::tab::KeyboardMode,
+    title: crate::tab::WindowTitle,
+    cwd: crate::tab::ReportedCwd,
 }
 
 impl FarTerm {
     /// The tab's parser, once it has one: states handed over go into it
-    pub fn bind(&self, parser: crate::tab::SharedParser, keyboard: crate::tab::KeyboardMode) {
+    pub fn bind(
+        &self,
+        parser: crate::tab::SharedParser,
+        keyboard: crate::tab::KeyboardMode,
+        title: crate::tab::WindowTitle,
+        cwd: crate::tab::ReportedCwd,
+    ) {
         if let Ok(mut b) = self.bound.lock() {
-            *b = Some(Bound { parser, keyboard });
+            *b = Some(Bound { parser, keyboard, title, cwd });
         }
     }
 
@@ -162,7 +170,12 @@ impl FarTerm {
     /// could not be read -- a format of another version -- and the screen
     /// is left to be drawn again by the program
     fn take_state(&self, m: &Value) -> bool {
-        let Some(b) = self.bound.lock().ok().and_then(|b| b.as_ref().map(|b| (b.parser.clone(), b.keyboard.clone()))) else {
+        let Some(b) = self
+            .bound
+            .lock()
+            .ok()
+            .and_then(|b| b.as_ref().map(|b| (b.parser.clone(), b.keyboard.clone(), b.title.clone(), b.cwd.clone())))
+        else {
             // Not bound yet: a fresh terminal, whose state is the empty screen
             return true;
         };
@@ -178,6 +191,13 @@ impl FarTerm {
         }
         if let (Ok(mut k), Some(stack)) = (b.1.lock(), m["keyboard"].as_array()) {
             *k = stack.iter().filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok())).collect();
+        }
+        // What the program called itself, and where it said it stands
+        if let (Ok(mut t), Some(title)) = (b.2.lock(), m["title"].as_str().filter(|t| !t.is_empty())) {
+            *t = title.to_string();
+        }
+        if let (Ok(mut c), Some(cwd)) = (b.3.lock(), m["cwd"].as_str().filter(|c| !c.is_empty())) {
+            *c = cwd.to_string();
         }
         true
     }
@@ -308,6 +328,14 @@ impl std::io::Read for FarReader {
                     // The code is had: nothing is kept there any more
                     self.term.say(json!({ "do": "forget", "term": self.term.term }));
                     return Ok(0);
+                }
+                // Let go of because this line fell behind: attached again at
+                // once, and handed the state with everything in it
+                "taken" if m["why"].as_str().is_some_and(|w| w.contains("keep up")) => {
+                    crate::append_hook_log(&format!("far terminal {}: fell behind; attaching again", self.term.term));
+                    let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
+                    self.term.say(json!({ "do": "attach", "term": self.term.term, "gen": self.term.generation,
+                        "tab": self.term.tab, "rows": rows, "cols": cols }));
                 }
                 "taken" => {
                     self.rest = b"\r\n[this terminal was opened from somewhere else]\r\n".to_vec();

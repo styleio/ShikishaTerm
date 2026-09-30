@@ -303,6 +303,20 @@ pub fn probe(sock: &Path) -> Option<Frame> {
     }
 }
 
+/// Say, for as long as this process runs, that this program's file is in
+/// use (far-keep plan §4.5): a shared lock on its mark beside it, which
+/// whoever clears old builds away tries to take whole, without waiting, and
+/// deletes only a build nobody holds. Held until the process ends
+fn hold_program(home: &Path) {
+    use std::os::unix::io::AsRawFd as _;
+    let mark = home.join(format!(".{}.lock", own_program()));
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&mark) else { return };
+    // SAFETY: the descriptor is the mark's, and stays open (it is kept below)
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0 {
+        std::mem::forget(file);
+    }
+}
+
 /// The file name of this program, which carries its build (`farlink::program_name`)
 fn own_program() -> String {
     std::env::current_exe()
@@ -333,6 +347,7 @@ fn hello(core: &Core) -> Frame {
 /// without touching anything. A socket left by one that died is only removed
 /// by the one holding the lock, after it did not answer
 pub fn daemon(home: PathBuf) -> Result<()> {
+    hold_program(&home);
     crate::farops::set_home(home.clone());
     let run = home.join("run");
     std::fs::create_dir_all(&run)?;
@@ -687,6 +702,7 @@ impl Job for OpsJob {
 /// Ends when either side does. The resident process stays after this does,
 /// for as long as its jobs want it to
 pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Write + Send + 'static) -> Result<()> {
+    hold_program(&home);
     let run = home.join("run");
     let keep = run.join(KEEP_SOCK);
     // Started only when nobody is there: one slow to answer is waited for,
@@ -1086,6 +1102,39 @@ mod tests {
         let back = term_said(&mut again, |m| m["did"] == "attached").expect("not attached again");
         let shown = screen_of(&back, &[]);
         assert!(shown.contains("answer:"), "the question was not answered while nobody owned it: {shown:?}");
+
+        // Owned, the program's question is the owner's to answer: the
+        // resident process keeps quiet, so the program hears one answer, the
+        // owner's (here a cursor at 9;9, which is not where it is)
+        term(&mut again, json!({ "do": "open", "ref": 3, "tab": "t4", "rows": 24, "cols": 80,
+            "then": "sleep 1; printf '\\033[6n'; IFS= read -r -s -t 5 -d R x; printf 'got:%s\\n' \"${x#*[}\"; exec cat" }));
+        let o3 = term_said(&mut again, |m| m["did"] == "opened").unwrap();
+        let id3 = o3["term"].as_u64().unwrap();
+        let first3 = term_said(&mut again, |m| m["did"] == "attached" && m["term"] == id3).unwrap();
+        let owner3 = first3["owner"].as_u64().unwrap();
+        let mut outs3: Vec<Value> = Vec::new();
+        let mut answered = false;
+        for _ in 0..300 {
+            let Some(o) = term_said(&mut again, |m| m["did"] == "out" && m["term"] == id3) else { break };
+            if !answered && unb64(&o["b"]).windows(4).any(|w| w == b"\x1b[6n") {
+                term(&mut again, json!({ "do": "in", "term": id3, "owner": owner3, "b": crate::farterms_b64(b"\x1b[9;9R") }));
+                answered = true;
+            }
+            outs3.push(o);
+            // The answer the program printed, on a line of its own (the command
+            // typed to ask it has the same word in it)
+            if screen_of(&first3, &outs3).lines().any(|l| l.trim_start().starts_with("got:")) {
+                break;
+            }
+        }
+        let shown3 = screen_of(&first3, &outs3);
+        assert!(
+            answered,
+            "the question never came: {shown3:?} after {} outputs: {:?}",
+            outs3.len(),
+            outs3.iter().map(|o| String::from_utf8_lossy(&unb64(&o["b"])).into_owned()).collect::<Vec<_>>()
+        );
+        assert!(shown3.lines().any(|l| l.trim_start().starts_with("got:9;9")), "answered by someone other than the owner: {shown3:?}");
         drop((pc, again));
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);

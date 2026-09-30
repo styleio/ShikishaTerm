@@ -20,6 +20,10 @@
 /// than any OSC the parser keeps whole
 pub const PENDING_MOST: usize = 64 * 1024;
 
+/// How many lines of scrollback go with a terminal's state: past this it
+/// takes too long to send and to take (far-keep plan §4.4, §11)
+pub const SCROLLBACK_SENT: usize = 2000;
+
 /// Where the output stands: between whole things, or partway into one
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum At {
@@ -219,6 +223,72 @@ mod tests {
                 "a window that came back at byte {cut} is not the same"
             );
         }
+    }
+
+    /// The same, over what real AI CLIs write to a terminal on Linux --
+    /// Claude Code, Codex and Gemini CLI starting up, drawing their first
+    /// screens and being typed into -- recorded by tools/debug/record-tui.py
+    /// into target/tty, which stays out of the repository (a first screen can
+    /// carry an account's name). Run when there are recordings:
+    ///
+    ///     cargo test -p shikisha-core recorded_ -- --ignored
+    #[test]
+    #[ignore = "needs recordings in target/tty (tools/debug/record-tui.win.mjs)"]
+    fn recorded_clis_can_be_moved_at_any_byte() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tty");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "bin")).collect())
+            .unwrap_or_default();
+        assert!(!files.is_empty(), "no recordings in {}", dir.display());
+        for file in files {
+            let all = std::fs::read(&file).unwrap();
+            let mut whole = vt100::Parser::new(30, 100, 1000);
+            whole.process(&all);
+            let expected = whole.screen().snapshot(1000);
+            let mut holder = vt100::Parser::new(30, 100, 1000);
+            let mut edge = Boundary::default();
+            for cut in 0..=all.len() {
+                if cut > 0 {
+                    holder.process(&edge.feed(&all[cut - 1..cut]));
+                }
+                let mut window = vt100::Parser::new(30, 100, 1000);
+                window.restore(vt100::Screen::from_snapshot(&holder.screen().snapshot(1000)).unwrap());
+                window.process(edge.pending());
+                window.process(&all[cut..]);
+                assert_eq!(
+                    window.screen().snapshot(1000),
+                    expected,
+                    "{}: a window that came back at byte {cut} of {} is not the same",
+                    file.display(),
+                    all.len()
+                );
+            }
+            eprintln!("{}: {} bytes, every one a place to come back at", file.display(), all.len());
+        }
+    }
+
+    /// The largest state a terminal of the app holds -- 5,000 lines of
+    /// scrollback, every cell written, in colour, 200 columns -- as the
+    /// resident process sends it (2,000 lines of scrollback): how big it is,
+    /// and how long it takes to take and to put, measured and held to limits
+    /// that keep a reattach quick (far-keep plan §10.1 "the largest state")
+    #[test]
+    fn the_largest_state_is_taken_and_put_quickly() {
+        let mut p = vt100::Parser::new(60, 200, 5000);
+        let line: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        for n in 0..5100 {
+            p.process(format!("\x1b[3{}m{line}\r\n", n % 8).as_bytes());
+        }
+        let at = std::time::Instant::now();
+        let bytes = p.screen().snapshot(crate::termstate::SCROLLBACK_SENT);
+        let taken = at.elapsed();
+        let at = std::time::Instant::now();
+        let screen = vt100::Screen::from_snapshot(&bytes).unwrap();
+        let put = at.elapsed();
+        eprintln!("largest state: {} bytes, taken in {taken:?}, put in {put:?}", bytes.len());
+        assert_eq!(screen.snapshot(crate::termstate::SCROLLBACK_SENT), bytes);
+        assert!(bytes.len() < 32 * 1024 * 1024, "{} bytes", bytes.len());
+        assert!(taken < std::time::Duration::from_secs(2) && put < std::time::Duration::from_secs(2), "{taken:?} {put:?}");
     }
 
     /// Where the output ends on a whole thing, nothing is held back; where it

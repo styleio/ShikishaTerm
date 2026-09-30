@@ -45,11 +45,14 @@ use crate::farlink::Frame;
 
 /// The job's name on the line
 pub const NAME: &str = "terms";
-/// How many lines of scrollback go with a terminal's state. Past this the
-/// state would take too long to send and to take (§4.4, §11)
-pub const SCROLLBACK_SENT: usize = 2000;
+pub use crate::termstate::SCROLLBACK_SENT;
 /// Scrollback kept by the resident process's own parser
 const SCROLLBACK_KEPT: usize = 5000;
+/// How much output may wait in a terminal's queue for an owner that is not
+/// taking it -- a line gone slow -- before the owner is let go of. Output is
+/// never dropped from the terminal: the owner, attaching again, is handed
+/// the state with all of it in
+const QUEUED_MOST: u64 = 32 * 1024 * 1024;
 
 pub(crate) fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -164,6 +167,8 @@ struct Term {
     killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     /// The terminal's one queue out: what goes to the app, in the order put
     queue: Sender<(u64, Frame)>,
+    /// How many bytes of output are in the queue, not yet sent
+    queued: Arc<AtomicU64>,
     next_owner: AtomicU64,
     /// The program's exit code, once it ended
     ended: Mutex<Option<i32>>,
@@ -231,6 +236,7 @@ impl Terms {
         let mut reader = pty.master.try_clone_reader()?;
         let held = Held { writer: Arc::clone(&writer), answering: true, keyboard: Vec::new(), title: String::new(), cwd: String::new() };
         let (queue, out) = channel::<(u64, Frame)>();
+        let queued = Arc::new(AtomicU64::new(0));
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let term = Arc::new(Term {
             tab: m["tab"].as_str().unwrap_or_default().to_string(),
@@ -244,6 +250,7 @@ impl Terms {
             master: Mutex::new(pty.master),
             killer: Mutex::new(child.clone_killer()),
             queue,
+            queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
             ended: Mutex::new(None),
         });
@@ -256,6 +263,12 @@ impl Terms {
             let core = Arc::clone(core);
             std::thread::spawn(move || {
                 for (line, frame) in out {
+                    if let Frame::Job { m, .. } = &frame
+                        && m["did"] == "out"
+                    {
+                        let n = m["b"].as_str().map_or(0, |b| b.len() as u64);
+                        queued.fetch_sub(n.min(queued.load(Ordering::SeqCst)), Ordering::SeqCst);
+                    }
                     core.say(line, &frame);
                 }
             });
@@ -278,8 +291,18 @@ impl Terms {
                     seen.parser.process(&whole);
                     seen.seq += n as u64;
                     if let Some((line, _)) = seen.owner {
-                        let m = json!({ "did": "out", "term": id, "seq": seen.seq, "b": b64(bytes) });
-                        let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+                        let b = b64(bytes);
+                        if term.queued.fetch_add(b.len() as u64, Ordering::SeqCst) > QUEUED_MOST {
+                            // Not taken for too long: let go of, and answering
+                            // the program here until it attaches again
+                            seen.owner = None;
+                            seen.parser.callbacks_mut().answering = true;
+                            let m = json!({ "did": "taken", "term": id, "why": "the line did not keep up" });
+                            let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+                        } else {
+                            let m = json!({ "did": "out", "term": id, "seq": seen.seq, "b": b });
+                            let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+                        }
                     }
                 }
                 // The program ended: its code is kept until the app has it
