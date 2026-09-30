@@ -163,18 +163,20 @@ try {
   for (let i = 0; i < 40 && !((await started(a)) && (await started(b))); i++) await sleep(3000);
   check((await started(a)) && (await started(b)), 'both machines are at work');
   if (process.argv.includes('--smoke')) {
-    // A pause made by the service, not by the app, while A is at work: what
-    // the end of its longest run does, minus the hour
+    // A pause made from outside the app while A is at work, and not at the
+    // end of its longest run: somebody paused it on purpose. The app leaves
+    // it paused -- starting it would start paying for it again -- and says
+    // so on its terminal; a key pressed there starts it
     say('pausing A from outside the app');
     await service('POST', '/sandboxes/' + a.sandboxId + '/pause');
-    const back = Date.now() + 120000;
-    while (Date.now() < back && !/paused while at work; started again/.test(log())) await sleep(2000);
-    check(/paused while at work; started again/.test(log()), 'A, paused while at work, was started again by the app');
-    await sleep(20000);
-    const ta = await ticks(a);
-    check(Date.now() / 1000 - ta[ta.length - 1] < 30, `A's work goes on (the longest gap in it ${longestGap(ta)}s)`);
+    const seen = Date.now() + 120000;
+    while (Date.now() < seen && !/not at the end of its longest run; left for a key/.test(log())) await sleep(2000);
+    check(/not at the end of its longest run; left for a key/.test(log()), 'A, paused from outside while at work, was seen and left');
+    await sleep(15000);
+    check((await windowOf(a.sandboxId)).state === 'paused', 'A stays paused: the app did not start it again');
+    check(!/paused at its longest run .* started again/.test(log()), 'it was not taken for the end of its longest run');
     const screen = await primitive('tab_screen', ['a']);
-    check(/started again|longest run/i.test(screen), 'A\'s terminal says why it blinked');
+    check(/not at the end of the longest run|Type in this terminal/i.test(screen), 'A\'s terminal says what happened and how to go on');
   } else {
   const deadline = Date.now() + 80 * 60 * 1000;
   let quietSaid = false;

@@ -1075,12 +1075,9 @@ fn tend_asks(
             (Some(x), Some(y)) => Some(crate::sessionfind::same_folder(x, y)),
             _ => None,
         };
-        match crate::asktab::step(a, target, caller_free, same_folder) {
+        match crate::asktab::step(a, target, caller_free, same_folder, away.is_none()) {
             Step::Nothing => true,
             Step::Drop => false,
-            // Words for a tab on a desk not in front wait for it to come back:
-            // they are typed through the desk in front, and would land there
-            Step::Send if away.is_some() => true,
             // A record on another machine: how long it is has to come back over
             // the network before the words go in, or the question could be
             // looked for where the last one was (see `asktab::asked_in`). The
@@ -11612,15 +11609,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     } else if on {
                         keep_hooks_right(saved, hooks_tx.clone());
                     } else {
-                        // One that was set up before and is now said no to
-                        // (asked again because this version adds to it) is
-                        // taken out: "do not set up" is not "leave the old one"
-                        for t in saved.iter().filter(|t| matches!(crate::agenthook::status(t), crate::agenthook::Status::Installed | crate::agenthook::Status::Stale)) {
-                            match crate::agenthook::uninstall(t) {
-                                Ok(()) => append_hook_log(&format!("hooks: {} taken out, as the person said", t.name)),
-                                Err(e) => append_hook_log(&format!("hooks: {} could not be taken out: {e:#}", t.name)),
+                        // "Do not set up" the way the settings' "Remove" is:
+                        // an entry of this app's already there (put in by an
+                        // older version, or from the settings) comes out too
+                        std::thread::spawn(move || {
+                            for t in saved {
+                                let ours = matches!(
+                                    crate::agenthook::status(&t),
+                                    crate::agenthook::Status::Installed | crate::agenthook::Status::Stale
+                                );
+                                if ours && let Err(e) = crate::agenthook::uninstall(&t) {
+                                    append_hook_log(&format!("hooks: {} could not be taken out: {e:#}", t.name));
+                                }
                             }
-                        }
+                        });
                         flash = Some(i18n::tp("msg.hooks.off", &[("names", &names)]));
                     }
                 }

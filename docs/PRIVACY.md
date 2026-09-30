@@ -27,8 +27,10 @@ starts, waits for you and finishes (for Codex, also Codex's own record that the
 entry is approved), and the skill that lets one AI hand work to another tab.
 Before writing either, the program shows exactly what it would write and where,
 and asks: about the entries when it starts, about the skill when you first name
-another tab with @. Nothing else in those files is changed, the previous file is kept
-beside it as `.bak`, and each can be taken out again in Settings.
+another tab with @. The settings already in those files are kept as they are (the
+file is written out again in a tidy layout), the previous file is kept beside it
+as `.bak` -- nothing is changed if it cannot be -- and each can be taken out again
+in Settings.
 
 API keys and webhook URLs you enter are stored **encrypted** (AES-GCM, with a key
 derived by Argon2) in that same folder, and are only ever sent to the service each

@@ -24,8 +24,7 @@ once it reaches its first tagged release.
 - **Hooks agreed to earlier are asked about again before anything is added
   to them.** A new version that adds events to an AI CLI's hook no longer
   writes them on its own: the question at start comes back, showing the file
-  as it would be and naming what this version adds. Saying no takes the old
-  entry out too.
+  as it would be and naming what this version adds.
 - **A worktree an AI made for its own helper is no longer offered as one of
   yours.** Claude Code keeps a worktree inside the project
   (`.claude\worktrees\agent-…`) for each helper it runs apart. Those were
@@ -33,6 +32,20 @@ once it reaches its first tagged release.
   a pull request's branch could be opened in one. They are now left to the
   tool. A project whose settings say its worktrees go in that very place
   keeps them as its own.
+- **A MicroVM paused by somebody on purpose is not started again.** Only a
+  machine paused by the longest run its E2B plan allows is started again at
+  once while something works on it; any other pause is said on its
+  terminal, and a key pressed there starts it. The quiet-moment restart also
+  waits while the app has work of its own running on the machine.
+- **A question for a tab on a desk not in front ends when its wait does.**
+  It used to stay queued past its time and could be sent long after the
+  asker had stopped waiting.
+- **"Do not set up" at start takes out an entry this app put in before.**
+  And a hook is not written when the file as it was cannot be kept beside it.
+- **The bridge is not taken off a machine another copy of the app is
+  using**, a resident bridge slow to answer is not replaced by a second, an
+  update leaves older builds that may still be running in place, and a
+  command cut off by its app going is told it may or may not have been done.
 - **A page's DevTools stands in the page's folder.** Opened from the phone
   (and from the window alike), it was listed apart from every folder, far
   from the page it inspects. It now stands under the page's folder, and
