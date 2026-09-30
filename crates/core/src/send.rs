@@ -66,7 +66,13 @@ pub enum Step {
 /// two seconds mid-intake, so "output has stopped" looked exactly like
 /// "finished"). Handed over in chunks, the same text sends.
 pub struct PendingSend {
+    /// Where the tab sits on the desk in front, for the screen: 0 while it is
+    /// on another desk. Found again from `serial` every pass (`follow`)
     pub tab: usize,
+    /// Which tab it is going to (`Tab::serial`). A place on the desk is not
+    /// that: a desk switched mid-paste puts another desk's tabs at the same
+    /// places, and the rest of the text, and its Enter, went into one of them
+    pub serial: u64,
     /// The paste, already encoded for the recipient, split at character
     /// boundaries. Split before encoding so no character is ever cut in half.
     chunks: Vec<Vec<u8>>,
@@ -123,9 +129,10 @@ pub fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
 impl PendingSend {
     /// `chars` is the length of the text a person wrote, in characters -- the
     /// number they would recognise, not the bytes it became on the way out.
-    pub fn new(tab: usize, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64, chars: usize) -> Self {
+    pub fn new(tab: usize, serial: u64, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64, chars: usize) -> Self {
         Self {
             tab,
+            serial,
             chunks,
             handed: 0,
             submit,

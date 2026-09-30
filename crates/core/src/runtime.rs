@@ -995,29 +995,27 @@ pub fn subject_of(caller: Option<&str>, tabs: &[Tab]) -> grants::Subject {
     }
 }
 /// One look at every ask waiting on another tab (see asktab.rs).
+#[allow(clippy::too_many_arguments)]
 fn tend_asks(
     asks: &mut Vec<crate::asktab::Ask>,
     eng: &hooks::HookEngine,
-    desk: Option<&config::Desk>,
+    desks: &[config::Desk],
+    desk_index: usize,
     surfaces: &[Surface],
     tabs: &[Tab],
+    desk_tabs: &[Vec<Tab>],
     orchestra: &mut crate::orch::Orchestra,
     start: std::time::Instant,
 ) {
     use crate::asktab::{Phase, Step};
-    let keys: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
-    let find = |name: &str| {
+    let desk = desks.get(desk_index);
+    let here = desk.map(|d| d.id.as_str());
+    let keys_here: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
+    let named = |among: &[Tab], keys: &[hooks::TabKey], name: &str| -> Option<usize> {
         hooks::TabRef::Name(name.to_string())
-            .resolve(&keys)
-            .and_then(|i| tabs.get(i - 1))
-    };
-    // A caller is kept by the name its key was minted under; its inbox by the
-    // id it is named by
-    let caller_id = |c: &str| {
-        tabs.iter()
-            .find(|t| t.called() == c)
-            .map(crate::orch::glue::tab_id)
-            .unwrap_or_else(|| c.to_string())
+            .resolve(keys)
+            .and_then(|i| i.checked_sub(1))
+            .filter(|&i| i < among.len())
     };
     let mut briefed = false;
     let mut send = |from: Option<&str>, to: &str, text: &str| {
@@ -1029,6 +1027,36 @@ fn tend_asks(
         eng.call_primitive_as(from, who, "send_to_tab", &[serde_json::json!(to), serde_json::json!(text)])
     };
     asks.retain_mut(|a| {
+        // The tabs of the desk it was asked on. A desk that is not in front
+        // keeps its tabs running and their state read (`Tab::tick_away`), so
+        // the answer is seen through there; switching desks used to find the
+        // tab missing and answer that it had been closed. A desk that is gone
+        // has no tabs
+        let away: Option<&[Tab]> = match a.desk.as_deref() {
+            Some(id) if Some(id) != here => {
+                Some(desks.iter().position(|d| d.id == id).and_then(|i| desk_tabs.get(i)).map_or(&[][..], |v| v.as_slice()))
+            }
+            _ => None,
+        };
+        let among: &[Tab] = away.unwrap_or(tabs);
+        let keys_away: Vec<hooks::TabKey>;
+        let keys: &[hooks::TabKey] = match away {
+            Some(list) => {
+                keys_away = tab_states(list).into_iter().map(|(k, _)| k).collect();
+                &keys_away
+            }
+            None => &keys_here,
+        };
+        let find = |name: &str| named(among, keys, name).map(|i| &among[i]);
+        // A caller is kept by the name its key was minted under; its inbox by
+        // the id it is named by
+        let caller_id = |c: &str| {
+            among
+                .iter()
+                .find(|t| t.called() == c)
+                .map(crate::orch::glue::tab_id)
+                .unwrap_or_else(|| c.to_string())
+        };
         let target = find(&a.target);
         if let Some(t) = target
             && a.time_to_say_why(t.state)
@@ -1050,12 +1078,17 @@ fn tend_asks(
         match crate::asktab::step(a, target, caller_free, same_folder) {
             Step::Nothing => true,
             Step::Drop => false,
+            // Words for a tab on a desk not in front wait for it to come back:
+            // they are typed through the desk in front, and would land there
+            Step::Send if away.is_some() => true,
             // A record on another machine: how long it is has to come back over
             // the network before the words go in, or the question could be
             // looked for where the last one was (see `asktab::asked_in`). The
-            // words wait for it a few seconds at most, then go without
+            // words wait for it a few seconds at most, then go without, and
+            // the screen answers (see `asktab::Ask::record_unsure`)
             Step::Send
                 if a.record_from.is_none()
+                    && !a.record_unsure
                     && let Some(record) = target
                         .and_then(|t| t.record_at())
                         .filter(crate::reader::Record::is_far) =>
@@ -1063,14 +1096,25 @@ fn tend_asks(
                 match &a.far_len {
                     None => a.far_len = Some((crate::asktab::far_len(record), std::time::Instant::now())),
                     Some((rx, asked)) => match rx.try_recv() {
-                        Ok(len) => {
+                        Ok(Ok(len)) => {
                             a.record_from = Some(len);
                             a.far_len = None;
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) if asked.elapsed() < crate::asktab::FAR_LEN_WAIT => {}
-                        // Not known in time: looked for by its opening words alone, as before
-                        _ => {
-                            a.record_from = Some(0);
+                        // Not known, or not in time. Never taken as 0: that
+                        // says the record is new, and the question would be
+                        // looked for anywhere in it
+                        not => {
+                            append_hook_log(&format!(
+                                "ask_tab: could not tell how long {}'s record is ({}); its answer is read from the screen",
+                                a.target,
+                                match not {
+                                    Ok(Err(e)) => e,
+                                    Err(std::sync::mpsc::TryRecvError::Empty) => "no answer in time".into(),
+                                    _ => "the look ended without an answer".into(),
+                                }
+                            ));
+                            a.record_unsure = true;
                             a.far_len = None;
                         }
                     },
@@ -1462,6 +1506,96 @@ fn reload_said_only_that(note: &str) -> bool {
 ///
 /// Worked out before the tab is borrowed to restart it, because by then the
 /// others are out of reach
+/// Look for the conversation each CLI in `tabs` started but never announced
+/// (see the call). `where_` names the desk in the log when it is not the
+/// one in front
+fn probe_sessions(tabs: &mut [Tab], where_: &str) {
+    for i in 0..tabs.len() {
+        let alone = only_one_here(&tabs, i);
+        let Some(t) = tabs.get_mut(i) else { continue };
+        let Some((at, left)) = t.session_probe else { continue };
+        if std::time::Instant::now() < at {
+            continue;
+        }
+        let spec = t.resume.as_ref().and_then(|r| r.record.clone());
+        let found = match (&spec, alone) {
+            (Some(spec), true) => sessionfind::find(spec, t.cwd(), t.born()),
+            _ => None,
+        };
+        match found {
+            Some(id) => {
+                let s = tab::Session { id, source: tab::SessionSource::Store };
+                append_hook_log(&format!(
+                    "{where_}tab{} \"{}\" appears to be running {}",
+                    i + 1,
+                    t.title,
+                    s.short()
+                ));
+                t.session = Some(s);
+                t.session_probe = None;
+            }
+            // Stop only where there is nothing that could ever be
+            // found. NOT after a while: one of these CLIs writes its
+            // record when the first thing is said, and a tab can sit
+            // open for an hour before anyone says it
+            None if !alone || spec.is_none() => {
+                // Said out loud, because this is the moment the tab
+                // quietly stops being able to come back tomorrow. The
+                // settings screen still shows its "carry the
+                // conversation over" tick, and nothing else on screen
+                // would ever mention that it cannot be honoured here
+                append_hook_log(&format!(
+                    "{where_}tab{} \"{}\": not looking for a conversation ({})",
+                    i + 1,
+                    t.title,
+                    match alone {
+                        false => "another tab runs the same program in the same folder",
+                        true => "this CLI keeps no records to read it from",
+                    }
+                ));
+                t.session_probe = None;
+            }
+            None => {
+                // Eager at first, then patient. Looking is cheap —
+                // yesterday's folders are skipped unread — but not free
+                let wait = if left > 0 { 2 } else { 15 };
+                // The one pass where eagerness runs out is where this
+                // is worth saying: by now the CLI has long written its
+                // record, so still not knowing means the two sides
+                // disagree about something -- and which two things
+                // failed to meet is exactly what nobody could see
+                if left == 1 {
+                    let spec = spec.as_ref().expect("checked above");
+                    let seen = sessionfind::folders_seen(spec, t.born(), 5);
+                    append_hook_log(&format!(
+                        "{where_}tab{} \"{}\": still cannot tell which conversation {} is having \
+                         (looked under {} for a record whose folder is {}; {})",
+                        i + 1,
+                        t.title,
+                        t.program(),
+                        spec.dir,
+                        t.cwd().map(|c| c.display().to_string()).unwrap_or_else(|| {
+                            "(none: the tab has no folder, so nothing can be attributed \
+                             to it)"
+                                .into()
+                        }),
+                        match seen.is_empty() {
+                            true => "it has written no records since this tab started"
+                                .to_string(),
+                            false =>
+                                format!("the records it has written say: {}", seen.join(", ")),
+                        }
+                    ));
+                }
+                t.session_probe = Some((
+                    std::time::Instant::now() + Duration::from_secs(wait),
+                    left.saturating_sub(1),
+                ))
+            }
+        }
+    }
+}
+
 pub fn only_one_here(tabs: &[Tab], index: usize) -> bool {
     let Some(me) = tabs.get(index) else {
         return false;
@@ -3637,89 +3771,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // with two of the same CLI in one folder there is nothing here to
             // tell them apart — and a tab that comes back holding someone
             // else's conversation is worse than one that comes back empty
-            for i in 0..tabs.len() {
-                let alone = only_one_here(&tabs, i);
-                let Some(t) = tabs.get_mut(i) else { continue };
-                let Some((at, left)) = t.session_probe else { continue };
-                if std::time::Instant::now() < at {
-                    continue;
-                }
-                let spec = t.resume.as_ref().and_then(|r| r.record.clone());
-                let found = match (&spec, alone) {
-                    (Some(spec), true) => sessionfind::find(spec, t.cwd(), t.born()),
-                    _ => None,
-                };
-                match found {
-                    Some(id) => {
-                        let s = tab::Session { id, source: tab::SessionSource::Store };
-                        append_hook_log(&format!(
-                            "tab{} \"{}\" appears to be running {}",
-                            i + 1,
-                            t.title,
-                            s.short()
-                        ));
-                        t.session = Some(s);
-                        t.session_probe = None;
-                    }
-                    // Stop only where there is nothing that could ever be
-                    // found. NOT after a while: one of these CLIs writes its
-                    // record when the first thing is said, and a tab can sit
-                    // open for an hour before anyone says it
-                    None if !alone || spec.is_none() => {
-                        // Said out loud, because this is the moment the tab
-                        // quietly stops being able to come back tomorrow. The
-                        // settings screen still shows its "carry the
-                        // conversation over" tick, and nothing else on screen
-                        // would ever mention that it cannot be honoured here
-                        append_hook_log(&format!(
-                            "tab{} \"{}\": not looking for a conversation ({})",
-                            i + 1,
-                            t.title,
-                            match alone {
-                                false => "another tab runs the same program in the same folder",
-                                true => "this CLI keeps no records to read it from",
-                            }
-                        ));
-                        t.session_probe = None;
-                    }
-                    None => {
-                        // Eager at first, then patient. Looking is cheap —
-                        // yesterday's folders are skipped unread — but not free
-                        let wait = if left > 0 { 2 } else { 15 };
-                        // The one pass where eagerness runs out is where this
-                        // is worth saying: by now the CLI has long written its
-                        // record, so still not knowing means the two sides
-                        // disagree about something -- and which two things
-                        // failed to meet is exactly what nobody could see
-                        if left == 1 {
-                            let spec = spec.as_ref().expect("checked above");
-                            let seen = sessionfind::folders_seen(spec, t.born(), 5);
-                            append_hook_log(&format!(
-                                "tab{} \"{}\": still cannot tell which conversation {} is having \
-                                 (looked under {} for a record whose folder is {}; {})",
-                                i + 1,
-                                t.title,
-                                t.program(),
-                                spec.dir,
-                                t.cwd().map(|c| c.display().to_string()).unwrap_or_else(|| {
-                                    "(none: the tab has no folder, so nothing can be attributed \
-                                     to it)"
-                                        .into()
-                                }),
-                                match seen.is_empty() {
-                                    true => "it has written no records since this tab started"
-                                        .to_string(),
-                                    false =>
-                                        format!("the records it has written say: {}", seen.join(", ")),
-                                }
-                            ));
-                        }
-                        t.session_probe = Some((
-                            std::time::Instant::now() + Duration::from_secs(wait),
-                            left.saturating_sub(1),
-                        ))
-                    }
-                }
+            probe_sessions(&mut tabs, "");
+            // The other desks' tabs run all the while too, and one asked
+            // something is answered from its record like any other
+            for (d, list) in desk_tabs.iter_mut().enumerate() {
+                let where_ = desks.get(d).map(|w| format!("desk \"{}\" ", w.name)).unwrap_or_default();
+                probe_sessions(list, &where_);
             }
 
             // Write down what is on screen, a moment after it last changed.
@@ -4518,6 +4575,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         record_from: None,
                                         busy_since: None,
                                         far_len: None,
+                                        record_unsure: false,
+                                        desk: desks.get(desk_index).map(|d| d.id.clone()),
                                     });
                                 }
                             }
@@ -4570,7 +4629,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Asks waiting on another tab: a look at each, every turn of the loop
         if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                tend_asks(&mut tab_asks, eng, desks.get(desk_index), &surfaces, &tabs, &mut orchestra, start);
+                tend_asks(&mut tab_asks, eng, &desks, desk_index, &surfaces, &tabs, &desk_tabs, &mut orchestra, start);
             }
         }
         // Handed-out work: briefs waiting for their tab to be free, waits on
@@ -5275,13 +5334,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // before the first one's Enter, so both were sent as one and the
             // second Enter went out onto an empty line. Sending in turn is what
             // makes two messages two messages.
-            let mut holding: Vec<usize> = Vec::new();
+            let mut holding: Vec<u64> = Vec::new();
             pending_send.retain_mut(|p| {
-                if holding.contains(&p.tab) {
+                if holding.contains(&p.serial) {
                     return true;
                 }
-                holding.push(p.tab);
-                let Some(t) = session_at(&surfaces, p.tab).and_then(|i| tabs.get(i)) else {
+                holding.push(p.serial);
+                // Found by which tab it is, wherever that is now: moved along
+                // the desk, or on a desk the person switched away from while
+                // the text was going over, where it still goes in and is sent
+                p.tab = (1..=surfaces.len())
+                    .find(|&n| session_at(&surfaces, n).and_then(|i| tabs.get(i)).is_some_and(|t| t.serial() == p.serial))
+                    .unwrap_or(0);
+                let Some(t) = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.serial() == p.serial) else {
                     return false;
                 };
                 match p.step(t.output_count(), now_ms) {
@@ -5294,8 +5359,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if p.submit {
                             let _ = t.write_bytes(b"\r");
                             append_hook_log(&format!(
-                                "submit tab{} ({})",
+                                "submit tab{} \"{}\"{} ({})",
                                 p.tab,
+                                t.title,
+                                if p.tab == 0 { " on a desk not in front" } else { "" },
                                 if settled { "after intake finished" } else { "sent while still unsettled" }
                             ));
                         }
@@ -12562,7 +12629,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             view_touched_ms = now_ms;
                             // Typed characters show up at the very bottom. Scrolled back, they're invisible.
                             to_live(t);
-                            finish_paste(&mut pending_send, t, active, now_ms);
+                            finish_paste(&mut pending_send, t, now_ms);
                             record_keys(t, &bytes, device);
                             t.write_bytes(&bytes)?;
                         }
@@ -12581,7 +12648,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         t.chain_depth = 0;
                         t.last_manual_ms = Some(now_ms);
                         to_live(t);
-                        finish_paste(&mut pending_send, t, active, now_ms);
+                        finish_paste(&mut pending_send, t, now_ms);
                         record_keys(t, text.as_bytes(), device);
                         t.write_bytes(text.as_bytes())?;
                     }
@@ -12677,8 +12744,8 @@ pub fn reload_providers(
 /// in pieces holds the tab until it is finished; letting a keystroke into the
 /// gaps would type it into the middle of the person's own sentence. The Enter
 /// is left where it was — the person may still be adding to what was pasted.
-pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, tab: usize, now_ms: u64) {
-    for p in pending.iter_mut().filter(|p| p.tab == tab) {
+pub fn finish_paste(pending: &mut [PendingSend], t: &Tab, now_ms: u64) {
+    for p in pending.iter_mut().filter(|p| p.serial == t.serial()) {
         let rest = p.rest(now_ms);
         if !rest.is_empty() {
             let _ = t.write_passthrough(&rest);
@@ -14648,7 +14715,7 @@ fn draft_into(
     };
     let seen = t.output_count();
     let chunks = paste_chunks(t, &text);
-    pending_send.push(PendingSend::new(n, chunks, false, seen, now_ms, text.chars().count()));
+    pending_send.push(PendingSend::new(n, t.serial(), chunks, false, seen, now_ms, text.chars().count()));
     append_hook_log(&format!("{stem}: drafted into {} ({} characters)", t.title, text.chars().count()));
     Ok(t.title.clone())
 }
@@ -14999,7 +15066,7 @@ pub fn hand_over(
         to_live(t);
         let seen = t.output_count();
         let chunks = paste_chunks(t, &text);
-        pending_send.push(PendingSend::new(target, chunks, submit, seen, now_ms, text.chars().count()));
+        pending_send.push(PendingSend::new(target, t.serial(), chunks, submit, seen, now_ms, text.chars().count()));
     }
     true
 }
@@ -16409,7 +16476,7 @@ pub fn exec_commands(
                     // Don't send submit (Enter). A human adds to it and sends it themselves.
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(idx, chunks, false, seen, now_ms, text.chars().count()));
+                    pending_send.push(PendingSend::new(idx, t.serial(), chunks, false, seen, now_ms, text.chars().count()));
                     // A human is part of the loop too. If they add to it and
                     // send it, the chain continues, so count the depth the same
                     // way as an auto-send.
@@ -16487,7 +16554,7 @@ pub fn exec_commands(
                 } else {
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(target, chunks, true, seen, now_ms, text.chars().count()));
+                    pending_send.push(PendingSend::new(target, t.serial(), chunks, true, seen, now_ms, text.chars().count()));
                     // Another tab's words, or the person's automation: whose
                     // they were, for the record of conversations
                     let sender = match (&from, origin) {
@@ -18911,7 +18978,7 @@ mod tests {
         let one = |n: usize| vec![vec![b'x'; 8]; n];
 
         // A one-chunk paste: out at once, then the settling rule as before
-        let mut p = PendingSend::new(1, one(1), true, 100, 1_000, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 100, 1_000, 8);
         assert!(handed(&p.step(100, 1_000)), "the first chunk is handed over at once");
         assert!(waited(&p.step(200, 1_100)), "a reaction starting is not enough to send");
         assert!(waited(&p.step(300, 2_000)), "still growing");
@@ -18921,7 +18988,7 @@ mod tests {
         assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "it sends once it settles");
 
         // Restart the measurement if activity resumes partway through
-        let mut p = PendingSend::new(1, one(1), true, 0, 0, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, 8);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert!(waited(&p.step(0, 100)), "quiet, but not long enough");
         assert!(waited(&p.step(50, 200)), "it started again, so it measures again");
@@ -18930,7 +18997,7 @@ mod tests {
         assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "settled again");
 
         // Send anyway once the cap is hit, even if it never settles
-        let mut p = PendingSend::new(1, one(1), true, 0, 0, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, 8);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
@@ -18950,7 +19017,7 @@ mod tests {
     /// of the paste, and 20,000 characters sat unsent in the input box.
     #[test]
     fn the_body_goes_over_a_piece_at_a_time_and_the_enter_comes_last() {
-        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
         assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         // Silent recipient: not a word drawn. It must not be given the rest at
         // once, and above all must not be sent Enter.
@@ -18967,7 +19034,7 @@ mod tests {
         assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "it sends after handing over everything");
 
         // A draft is placed and left alone: the body goes over, the Enter never does
-        let mut p = PendingSend::new(1, vec![vec![b'a']], false, 0, 0, 1);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a']], false, 0, 0, 1);
         assert!(handed(&p.step(0, 0)), "the text is handed over");
         assert!(waited(&p.step(0, 10)), "it starts watching for it to stop");
         assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "the text is all handed over");
@@ -18983,19 +19050,19 @@ mod tests {
     /// text I meant to send never went".
     #[test]
     fn a_second_message_waits_for_the_first_ones_enter() {
-        let mut queue = [PendingSend::new(1, vec![vec![b'A']], true, 0, 0, 1),
-            PendingSend::new(1, vec![vec![b'B']], true, 0, 0, 1),
-            PendingSend::new(2, vec![vec![b'C']], true, 0, 0, 1)];
+        let mut queue = [PendingSend::new(1, 7, vec![vec![b'A']], true, 0, 0, 1),
+            PendingSend::new(1, 7, vec![vec![b'B']], true, 0, 0, 1),
+            PendingSend::new(2, 8, vec![vec![b'C']], true, 0, 0, 1)];
         // One pass: the front one for tab1 acts, the one behind it waits, and
         // another tab is nobody's business
-        let mut holding: Vec<usize> = Vec::new();
+        let mut holding: Vec<u64> = Vec::new();
         let acted: Vec<bool> = queue
             .iter_mut()
             .map(|p| {
-                if holding.contains(&p.tab) {
+                if holding.contains(&p.serial) {
                     return false;
                 }
-                holding.push(p.tab);
+                holding.push(p.serial);
                 !waited(&p.step(0, 0))
             })
             .collect();
@@ -19010,7 +19077,7 @@ mod tests {
     /// of the paste. The rest of it goes over first, in one piece.
     #[test]
     fn typing_pushes_the_rest_of_the_paste_out_first() {
-        let mut p = PendingSend::new(1, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert_eq!(p.rest(500), b"bc".to_vec(), "the rest goes out in one go");
         assert_eq!(p.rest(500), Vec::<u8>::new(), "it is not sent twice");
@@ -19028,7 +19095,7 @@ mod tests {
     #[test]
     fn a_send_says_how_far_it_has_got() {
         let chunks = vec![vec![b'a'], vec![b'b'], vec![b'c'], vec![b'd']];
-        let mut p = PendingSend::new(1, chunks, true, 0, 0, 3_400);
+        let mut p = PendingSend::new(1, 0, chunks, true, 0, 0, 3_400);
         assert_eq!(p.sending(), (0.0, 3_400), "nothing has gone over, and it is 3,400 characters long");
         assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         assert_eq!(p.sending().0, 0.25, "one of the four is in");

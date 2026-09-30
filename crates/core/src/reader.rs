@@ -747,6 +747,36 @@ impl Record {
         }
     }
 
+    /// How long the record is: 0 while the CLI has not written it. An error
+    /// when that could not be found out, which is not 0: 0 says all of it
+    /// will be new, and a question asked then is looked for anywhere in it
+    /// (see `asktab::far_len`)
+    pub fn length(&self) -> Result<u64, String> {
+        match self {
+            Record::Here { glob, id } => Ok(crate::sessionfind::locate(glob, id)
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map_or(0, |m| m.len())),
+            Record::Far { at, glob, id } => {
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id});
+                    match crate::farlink::call(at, "record_standing", asked) {
+                        Ok(Value::Null) => return Ok(0),
+                        Ok(v) => {
+                            return Standing::from_json(&v)
+                                .map(|s| s.len)
+                                .ok_or_else(|| format!("the bridge said something unreadable: {v}"));
+                        }
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not say how long the record is ({e}); asking the long way")),
+                    }
+                }
+                match find_far(at, glob, id)? {
+                    None => Ok(0),
+                    Some(path) => far_pieces(at, &path).map(|(len, _)| len).map_err(|e| e.to_string()),
+                }
+            }
+        }
+    }
+
     /// The first `want` things said at or after byte `from` (see
     /// [`read_after`]). `None` when the CLI has not written the record yet
     pub fn after(&self, from: u64, want: usize, needle: &str) -> Option<std::io::Result<Later>> {
@@ -815,18 +845,27 @@ impl Record {
 /// found from the profile's pattern (`{home}/.../{id}.jsonl`) with the id the
 /// app handed the CLI. Waits on the machine
 pub fn locate_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Option<String> {
+    find_far(at, glob, id).ok().flatten()
+}
+
+/// [`locate_far`], telling a record that is not there (`Ok(None)`) from one
+/// that could not be looked for
+fn find_far(at: &crate::elsewhere::Elsewhere, glob: &str, id: &str) -> Result<Option<String>, String> {
     // Only what a glob and an id are made of: both go into a shell there
     let safe = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || "/*._-".contains(c));
     if !safe(id) {
-        return None;
+        return Err(format!("{id:?} is not a name that can be looked for"));
     }
-    let rest = crate::sessionfind::fill_id(glob.strip_prefix("{home}/")?, id);
+    let rest = crate::sessionfind::fill_id(
+        glob.strip_prefix("{home}/").ok_or_else(|| format!("{glob:?} is not under the home folder"))?,
+        id,
+    );
     if !safe(&rest) {
-        return None;
+        return Err(format!("{rest:?} is not a name that can be looked for"));
     }
-    let ran = crate::elsewhere::exec(at, &format!("cd \"$HOME\" && ls -1d {rest} 2>/dev/null | head -n 1 | sed \"s#^#$HOME/#\""), 30_000).ok()?;
-    let path = ran.out.lines().next()?.trim().to_string();
-    (!path.is_empty()).then_some(path)
+    let ran = crate::elsewhere::exec(at, &format!("cd \"$HOME\" && ls -1d {rest} 2>/dev/null | head -n 1 | sed \"s#^#$HOME/#\""), 30_000)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(ran.out.lines().next().map(|l| l.trim().to_string()).filter(|p| !p.is_empty()))
 }
 
 /// [`Standing`] of a record on another machine without a bridge: its length,
@@ -2224,5 +2263,20 @@ mod tests {
         assert!(turn_over_in(format!("{asked}\n{working}\n{over}\n").as_bytes()));
         // A new turn begun after it does not undo the end of the one asked about
         assert!(turn_over_in(format!("{asked}\n{over}\n{again}\n").as_bytes()));
+    }
+
+    /// Not being able to find out how long a record is must not read as an
+    /// empty one: an ask takes 0 to mean all of the record comes after its
+    /// question, and would match an earlier question with the same opening
+    #[test]
+    fn a_length_not_found_out_is_not_zero() {
+        let none = Record::Here { glob: "{home}/no-such-folder-here/*{id}*.jsonl".into(), id: "nobody".into() };
+        assert_eq!(none.length(), Ok(0), "a record not written yet is empty");
+        let far = Record::Far {
+            at: crate::elsewhere::Elsewhere::Ssh(Default::default()),
+            glob: "{home}/.codex/sessions/*{id}*.jsonl".into(),
+            id: "x; rm -rf ~".into(),
+        };
+        assert!(far.length().is_err(), "a record that cannot be looked for is not an empty one");
     }
 }
