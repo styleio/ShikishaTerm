@@ -2989,6 +2989,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #browse .vhead { padding-bottom:var(--s3); border-bottom:1px solid var(--line);
     margin-bottom:var(--s1); }
   #browse .vsay, #sask .vsay { color:var(--dim); font-size:12px; line-height:1.5; }
+  #sask .smore[hidden] { display:none; }
+  #sask .smore > summary { cursor:pointer; color:var(--accent); font-size:12px; margin-top:var(--s2); }
+  #sask .smorebody { margin-top:var(--s2); display:flex; flex-direction:column; gap:var(--s2); }
+  #sask .smorebody > .vsay { margin:0; }
   /* The thing the question is about -- a path -- quoted as it is: the mono
      well (5), quiet, broken anywhere so a long path never widens the dialog */
   #sask .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
@@ -3962,6 +3966,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div class="vbox">
         <div class="vhead"><span class="vtitle"></span><span class="vclose" title="close">&#10005;</span></div>
         <div class="vsay"></div>
+        <details class="smore" hidden><summary></summary><div class="smorebody"></div></details>
         <div class="bwhere"></div>
         <div class="blist" hidden></div>
         <label class="snever" hidden><input type="checkbox"><span></span></label>
@@ -10507,6 +10512,7 @@ function drawHookAsk() {
   askQuestion({
     title: T["tui.hooks.title"] || "",
     say: T["tui.hooks.say"] || "",
+    more: { label: T["tui.hooks.more"] || "", say: T["tui.hooks.detail"] || "" },
     rows,
     label: T["tui.hooks.go"] || "",
     no: { label: T["tui.hooks.no"] || "", act: () => answer("off") },
@@ -20126,10 +20132,14 @@ let sAskGo = null, sAskBack = null;
 // The typing is what makes the name read -- a mark beside a button is easy to
 // look past on the fortieth delete of the day, and "Production" typed out is not
 //
+// `more` is what a question keeps folded under its words, for the reader who
+// wants the whole of it: {label, say, rows}. The rows go in the fold then, not
+// under the words
+//
 // `no` is a second answer beside the button, for a question whose "no" is an
 // answer worth keeping rather than the question put away: {label, act}. Without
 // it the other button is Cancel, which is `back`
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, no, go, back}) {
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -20139,10 +20149,23 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   where.hidden = !what;
   // The rows are built by whoever asked, because only they know what the
   // columns mean. All this does is hold them
+  const fold = box.querySelector(".smore");
+  const foldBody = fold.querySelector(".smorebody");
+  fold.hidden = !more;
+  fold.open = false;
+  fold.querySelector("summary").textContent = more ? more.label : "";
+  foldBody.textContent = "";
   const list = box.querySelector(".blist");
   list.textContent = "";
   list.hidden = !(rows && rows.length);
   for (const r of rows || []) list.append(r);
+  if (more) {
+    if (more.say) foldBody.append(el("div", {class:"vsay"}, more.say));
+    // The list is the same list, moved into the fold
+    if (rows && rows.length) foldBody.append(list);
+  } else if (list.parentNode !== box.querySelector(".vbox")) {
+    box.querySelector(".vbox").insertBefore(list, box.querySelector(".snever"));
+  }
   const input = box.querySelector("#sq");
   input.hidden = !field;
   input.value = field || "";

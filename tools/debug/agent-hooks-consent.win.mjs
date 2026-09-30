@@ -23,6 +23,7 @@ import { spawn, spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
+const LANG = (process.argv.find((a) => a.startsWith('--lang=')) || '--lang=en').slice(7);
 const TOKEN = 'hooks-check-token-0123456789';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -65,15 +66,15 @@ async function codexSays(env, codexHome) {
     p.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'initialized' }) + '\n');
     const l = await req('hooks/list', { cwds: [path.dirname(codexHome)] });
     return (l.result?.data || []).flatMap((d) => d.hooks || [])
-      .filter((h) => /--hook/.test(h.command || '') && /shikisha/i.test(h.command || ''))
-      .map((h) => `${h.eventName}:${h.trustStatus}`);
+      .map((h) => `${/--hook/.test(h.command || '') && /shikisha/i.test(h.command || '') ? '' : 'theirs:'}${h.eventName}:${h.trustStatus}`);
   } finally {
     spawnSync('taskkill.exe', ['/PID', String(p.pid), '/T', '/F']);
   }
 }
 
 // The board in a headless Chrome at a phone's width: what the question says,
-// a picture of it (target/shots/agent-hooks/phone.png), and its "no" pressed
+// pictures of it folded and opened (target/shots/agent-hooks/phone-<lang>.png,
+// phone-<lang>-open.png), and its "no" pressed
 async function onThePhone(url) {
   const chromeAt = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
     .filter(Boolean).map((b) => path.join(b, 'Google', 'Chrome', 'Application', 'chrome.exe')).find((p) => fs.existsSync(p));
@@ -99,7 +100,14 @@ async function onThePhone(url) {
     const shots = path.join(ROOT, 'target', 'shots', 'agent-hooks');
     fs.mkdirSync(shots, { recursive: true });
     const shot = await cdp.call('Page.captureScreenshot', { format: 'png' });
-    fs.writeFileSync(path.join(shots, 'phone.png'), Buffer.from(shot.result.data, 'base64'));
+    fs.writeFileSync(path.join(shots, `phone-${LANG}.png`), Buffer.from(shot.result.data, 'base64'));
+    const folded = await js('getComputedStyle(document.querySelector("#sask .blist")).display === "none" || !document.querySelector("#sask .smore").open');
+    await js('document.querySelector("#sask .smore summary").click()');
+    await sleep(300);
+    const open = await js('document.querySelector("#sask .smore").open');
+    const shot2 = await cdp.call('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(shots, `phone-${LANG}-open.png`), Buffer.from(shot2.result.data, 'base64'));
+    seen.folds = folded && open;
     await js('document.querySelector("#sask .quiet").click()');
     await sleep(1000);
     return seen;
@@ -124,11 +132,17 @@ async function trial(answer) {
     fs.mkdirSync(d, { recursive: true });
   }
   ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
+  // Hooks and settings of the person's own, already there: they have to
+  // come through untouched, where they were
+  const theirCodex = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'their-notify done', timeout: 5 }] }] } };
+  const theirClaude = { model: 'opus', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'their-beep' }] }] } };
+  fs.writeFileSync(path.join(HOME, '.codex', 'hooks.json'), JSON.stringify(theirCodex, null, 2));
+  fs.writeFileSync(path.join(HOME, '.claude', 'settings.json'), JSON.stringify(theirClaude, null, 2));
   if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed');
   const port = await freePort();
   fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
   fs.writeFileSync(CONFIG, JSON.stringify({
-    language: 'en',
+    language: LANG,
     remote: { enabled: true, bind: '127.0.0.1', port, sticky_token: true, fixed_token: TOKEN },
     desks: [{ name: 'Only', id: 'only', folders: [{ cwd: path.join(RUN, 'work'), tabs: [{ name: 'shell', id: 'shell', command: ['cmd.exe'] }] }] }],
   }, null, 2));
@@ -178,7 +192,7 @@ async function trial(answer) {
       // Answered the way a person on a phone answers it: the board opened at
       // a phone's width, the question read off it, its "no" pressed
       const seen = await onThePhone(`http://127.0.0.1:${port}/?t=${TOKEN}`);
-      check(/report what they are doing/i.test(seen.title) && seen.rows >= 2,
+      check(/work together|連携/i.test(seen.title) && seen.rows >= 2 && seen.folds,
         `the phone shows the question: "${seen.title}", ${seen.rows} CLIs, buttons "${seen.no}" / "${seen.go}"`);
     } else {
       const r = await intent({ kind: 'agenthooks', answer, seq: asked?.seq });
@@ -191,12 +205,22 @@ async function trial(answer) {
       check(!/could not be put right/.test(log()), 'nothing failed' + (/could not be put right/.test(log()) ? `: ${log().split('\n').filter((l) => l.includes('could not be put right')).join(' | ')}` : ''));
       check(read(codexHooks).includes('--hook'), 'Codex hooks.json has the hook');
       check(read(claudeSettings).includes('--hook'), 'Claude Code settings.json has the hook');
+      const codexAfter = JSON.parse(read(codexHooks));
+      const claudeAfter = JSON.parse(read(claudeSettings));
+      check(JSON.stringify(codexAfter.hooks.Stop[0]) === JSON.stringify(theirCodex.hooks.Stop[0]),
+        "the person's own Codex hook is still there, first, as it was");
+      check(claudeAfter.model === 'opus' && JSON.stringify(claudeAfter.hooks.Stop[0]) === JSON.stringify(theirClaude.hooks.Stop[0]),
+        "the person's own Claude Code settings and hook are still there, as they were");
+      check(fs.existsSync(path.join(HOME, '.codex', 'hooks.bak')) && JSON.parse(read(path.join(HOME, '.codex', 'hooks.bak'))).hooks.Stop.length === 1,
+        'the file as it was is kept beside it as .bak');
       const toml = read(path.join(HOME, '.codex', 'config.toml'));
       check(/trusted_hash = "sha256:/.test(toml), 'Codex config.toml has the approval');
-      const listed = await codexSays(env, path.join(HOME, '.codex'));
+      const all = await codexSays(env, path.join(HOME, '.codex'));
+      const listed = all.filter((h) => !h.startsWith('theirs:'));
+      check(all.includes('theirs:stop:untrusted'), `the person's own Codex hook is left for them to approve: ${all.filter((h) => h.startsWith('theirs:')).join(' ')}`);
       check(listed.length > 0 && listed.every((h) => h.endsWith(':trusted')), `Codex runs them: ${listed.join(' ')}`);
     } else {
-      check(!fs.existsSync(codexHooks) && !read(claudeSettings).includes('--hook'), 'nothing was written');
+      check(!read(codexHooks).includes('--hook') && !read(claudeSettings).includes('--hook'), 'nothing was written');
     }
     const saved = JSON.parse(read(CONFIG)).agent_hooks || {};
     check(answer === 'later' ? !saved['Codex CLI'] : saved['Codex CLI'] === answer, `the answer on record: ${JSON.stringify(saved)}`);
