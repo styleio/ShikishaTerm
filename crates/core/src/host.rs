@@ -123,6 +123,16 @@ pub trait Shell {
     }
 
     fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>>;
+    /// Why `ask_password` came back with nothing when nobody pressed cancel:
+    /// this shell had no way to ask, and the person is owed where the password
+    /// can be typed instead. `None` when a `None` meant the person said no.
+    ///
+    /// Asked after the fact because only the shell knows which it was -- a
+    /// window's prompt that was dismissed and a runtime with no prompt to put
+    /// up both hand back nothing, and only one of them is a choice
+    fn why_no_password(&self) -> Option<String> {
+        None
+    }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()>;
 }
 
@@ -397,6 +407,17 @@ impl Shell for Headless {
     fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>> {
         Ok(crate::askpass::master(title, note))
     }
+    /// Nothing here puts up a prompt, so a `None` is never a person's no.
+    ///
+    /// Half of a split pair, the window is right there -- and still is not
+    /// asked: the password would have to travel from it over the board, and
+    /// the master password is the one answer that never goes over the board
+    /// (`remote::allowed_from_afar`, `Ev::Password`). So the person is told
+    /// to start without the split for once, where the program's own window
+    /// asks. On a server the ways are a credential or a terminal (`askpass`)
+    fn why_no_password(&self) -> Option<String> {
+        Some(crate::i18n::t(if self.minder.is_some() { "prompt.password.split" } else { "prompt.password.headless" }))
+    }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> anyhow::Result<()> {
         // Nothing draws here, but the picture is still built: it is what a
         // viewer on the network is handed, and what a shell would have drawn.
@@ -432,6 +453,29 @@ mod tests {
         assert_eq!(shell.last_drawn().and_then(|s| s.flash.as_deref()), Some("could not read the page"));
         shell.draw(&[], &ui, None).unwrap();
         assert_eq!(shell.last_drawn().and_then(|s| s.flash.as_deref()), None, "a message gone is gone from the picture too");
+    }
+
+    /// A runtime with no window never took a "no" from anybody, so it says
+    /// where the master password is typed instead: the program's own window
+    /// when it is half of a split pair, a terminal or a credential on a server.
+    /// And a shell that does put a prompt up keeps a dismissed one a cancel
+    #[test]
+    fn a_runtime_with_no_window_says_where_the_master_password_goes() {
+        struct Keeper;
+        impl Minder for Keeper {
+            fn board_is_at(&self, _: &str, _: &str) {}
+            fn tick(&self) -> Told { Told::default() }
+            fn show(&self) {}
+            fn hide(&self) {}
+            fn say_where_it_went(&self) {}
+            fn confirm_quit(&self, _: usize) -> bool { true }
+        }
+        let server = Headless::new(24, 80);
+        assert_eq!(server.why_no_password().as_deref(), Some(crate::i18n::t("prompt.password.headless").as_str()));
+        let split = Headless::new(24, 80).minded_by(Box::new(Keeper));
+        let said = split.why_no_password().expect("a split runtime says where to type it");
+        assert_eq!(said, crate::i18n::t("prompt.password.split"));
+        assert_ne!(said, crate::i18n::t("prompt.password.headless"), "a split runtime on a desk is not a server");
     }
 
     #[test]

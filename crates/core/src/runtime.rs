@@ -1797,10 +1797,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         refused = true;
                     }
-                    // On cancel, continue without secrets (only notifications become unusable)
+                    // On cancel, continue without secrets (only notifications become
+                    // unusable). A shell that had nowhere to ask says where to
+                    // type it instead of reporting a cancel nobody made
                     None => {
                         startup_errors
-                            .push(i18n::t("prompt.password.skipped"));
+                            .push(shell.why_no_password().unwrap_or_else(|| i18n::t("prompt.password.skipped")));
                         break;
                     }
                 }
@@ -17098,6 +17100,12 @@ pub const WORDMARK: [&str; 3] = [
 /// The wording used when collapsed to a single line
 pub const WORDMARK_SMALL: &str = "◢◤ SHIKISHA-TERM";
 
+/// What a stopped ask for the master password comes to: the person's no, or --
+/// from a shell with nowhere to ask -- where it can be typed instead
+fn cancelled(shell: &dyn Shell) -> String {
+    shell.why_no_password().unwrap_or_else(|| i18n::t("msg.password.cancelled"))
+}
+
 /// Set, change, or remove the master password (INDEX menu [k])
 pub fn manage_master_password(
     shell: &mut dyn Shell,
@@ -17118,7 +17126,7 @@ pub fn manage_master_password(
             &i18n::t("prompt.password.current_note"),
         )?
         else {
-            return Ok(i18n::t("msg.password.cancelled"));
+            return Ok(cancelled(shell));
         };
         let env: crypto::Envelope = serde_json::from_str(&text)?;
         let plain = match crypto::decrypt(&env, &old) {
@@ -17128,7 +17136,7 @@ pub fn manage_master_password(
         let Some(new) = shell.ask_password(&i18n::t("prompt.password.new"),
             &i18n::t("prompt.password.new_note"),
         )? else {
-            return Ok(i18n::t("msg.password.cancelled"));
+            return Ok(cancelled(shell));
         };
         if new.is_empty() {
             crypto::write_atomic(&path, &plain)?;
@@ -17147,7 +17155,7 @@ pub fn manage_master_password(
         let Some(new) = shell.ask_password(&i18n::t("prompt.password.set"),
             &i18n::t("prompt.password.set_note"),
         )? else {
-            return Ok(i18n::t("msg.password.cancelled"));
+            return Ok(cancelled(shell));
         };
         if new.is_empty() {
             return Ok(i18n::t("msg.password.empty"));

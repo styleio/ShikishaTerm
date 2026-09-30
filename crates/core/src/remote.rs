@@ -489,9 +489,14 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
 /// So these, and only these, are let through again -- to a session opened
 /// with the key the window was handed (`Gate::here_key`), never to a phone.
 /// What stays refused here is refused for a reason that holds at this PC as
-/// well: the window's frame and icon are answered in the window process, the
-/// settings, the guide and the master password need a window of the
-/// runtime's own, which a split runtime does not draw, and reports are not asks
+/// well: the window's frame and icon are answered in the window process, and
+/// reports are not asks. The settings and the guide are not refused so much
+/// as not needed: this window's page is a board page (`REMOTE`), and it walks
+/// to them through the same doors a phone does (`/cfg`, `/guide`), which work
+/// here as they do there. The master password stays refused on purpose: it is
+/// the one answer that never travels over the board, even from this PC's own
+/// window, and the runtime says where it can be typed instead
+/// (`host::Shell::why_no_password`)
 fn allowed_from_here(ev: &shikisha_shared::Ev) -> bool {
     use shikisha_shared::Ev;
     match ev {
