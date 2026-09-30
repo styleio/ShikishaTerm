@@ -306,6 +306,26 @@ const TOOL_SCRATCH: &[&[&str]] = &[&[".claude", "worktrees"]];
 /// one of those that points inside the scratch place was chosen by a person,
 /// and what is in it is theirs
 pub fn tool_scratch(checkout: &Path, folder: &Path, bases: &[PathBuf]) -> bool {
+    if scratch_by_name(checkout, folder, bases) {
+        return true;
+    }
+    // The same folder can be written two ways -- `RUNNER~1` for a long name,
+    // a path git wrote one way and the settings another -- and a comparison of
+    // names takes them for two. Asked of the disk only for a folder whose
+    // path has the scratch place's names in it: a question per worktree on
+    // every drawing would be paid for by every project
+    let named = TOOL_SCRATCH.iter().any(|parts| {
+        let segs: Vec<String> = folder.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+        segs.windows(parts.len()).any(|w| w.iter().zip(parts.iter()).all(|(a, b)| a == b))
+    });
+    if !named {
+        return false;
+    }
+    let bases: Vec<PathBuf> = bases.iter().map(|b| real(b.clone())).collect();
+    scratch_by_name(&real(checkout.to_path_buf()), &real(folder.to_path_buf()), &bases)
+}
+
+fn scratch_by_name(checkout: &Path, folder: &Path, bases: &[PathBuf]) -> bool {
     TOOL_SCRATCH.iter().any(|parts| {
         let root = parts.iter().fold(checkout.to_path_buf(), |p, s| p.join(s));
         crate::worktree::inside_checkout(&root, folder)
@@ -794,6 +814,35 @@ mod tests {
         assert!(!tool_scratch(&checkout, &helper, std::slice::from_ref(&chosen)));
         // A base somewhere else does not change what is inside the scratch place
         assert!(tool_scratch(&checkout, &helper, &[p("D:/trees")]));
+    }
+
+    /// The checkout reached by the short form of its folder's name, and the
+    /// helper's worktree by the long one (the way CI's runner folder comes
+    /// out), are still one checkout and its scratch place. Skipped where the
+    /// disk keeps no short names
+    #[cfg(windows)]
+    #[test]
+    fn a_helpers_worktree_is_known_under_either_spelling_of_the_checkout() {
+        let root = std::env::temp_dir().join(format!("shikisha-scratch-long-folder-name-{}", std::process::id()));
+        let helper = root.join(".claude").join("worktrees").join("agent-a1b2c3");
+        std::fs::create_dir_all(&helper).unwrap();
+        // Handed to cmd as it is written: quoted again by the usual rules, the
+        // path would reach it inside `\"`, which it does not read as quotes
+        use std::os::windows::process::CommandExt as _;
+        let out = std::process::Command::new("cmd")
+            .raw_arg(format!("/c for %I in (\"{}\") do @echo %~sI", root.display()))
+            .output()
+            .unwrap();
+        let short = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        if short.as_os_str().is_empty() || !short.to_string_lossy().contains('~') {
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
+        assert!(tool_scratch(&short, &helper, &[]), "{} and {} were taken for two folders", short.display(), helper.display());
+        assert!(!tool_scratch(&short, &root.join("elsewhere"), &[]));
+        // A place the project chose, written the long way, still exempts it
+        assert!(!tool_scratch(&short, &helper, &[root.join(".claude").join("worktrees")]));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A program is named by its file, not its whole path: the row has room

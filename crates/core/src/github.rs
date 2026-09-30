@@ -1723,7 +1723,9 @@ mod tests {
         let helper = main.join(".claude").join("worktrees").join("agent-a1b2c3");
         git(&main, &["worktree", "add", "-q", "-b", "helper", &helper.display().to_string()]).unwrap();
         assert_eq!(super::head_folder(&main, "helper", &[]), None, "a helper's worktree was taken for the branch's folder");
-        let chosen = [main.join(".claude").join("worktrees")];
+        // The place as a project's settings would hold it: the long spelling
+        let long = crate::repo::family_of(&main).and_then(|f| f.parent().map(|p| p.to_path_buf())).unwrap();
+        let chosen = [long.join(".claude").join("worktrees")];
         assert!(is(super::head_folder(&main, "helper", &chosen), &helper), "a worktree where the project chose was not found");
         let _ = std::fs::remove_dir_all(&root);
     }
