@@ -15,6 +15,12 @@
  *   5. the line comes back, the tab attaches again, and the full screen is
  *      there as it was; typing goes on; leaving the full screen brings back
  *      what was on the normal screen under it
+ *   6. the shikisha command in the terminal runs the resident process's build
+ *   7-9. the app is killed and started again (far-keep plan §7.5, stage 4):
+ *      the tab goes back to the terminal it left running, starting nothing
+ *      new; one that ended meanwhile is started again in a new terminal; and
+ *      one the bridge no longer knows starts nothing until the tab is
+ *      restarted
  *
  *     cargo build   (and a Linux bridge in bridge/, see bridge-far.win.mjs)
  *     node tools/debug/far-hold.win.mjs
@@ -101,7 +107,7 @@ let box;
 try {
   const made = await (await fetch('https://api.e2b.app/sandboxes', {
     method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ templateID: 'base', timeout: 900, autoPause: true, autoResume: { enabled: true },
+    body: JSON.stringify({ templateID: 'base', timeout: 1800, autoPause: true, autoResume: { enabled: true },
       metadata: { shikisha: '1', project: 'far-hold' } }),
   })).json();
   if (!made.sandboxID) die('no machine: ' + JSON.stringify(made));
@@ -137,7 +143,23 @@ try {
   fs.writeFileSync(SECRETS, JSON.stringify({ tokens: { e2b_api_key: KEY } }, null, 2));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
   Object.assign(env, { LOCALAPPDATA: LOCAL, SHIKISHA_HOLD_TERMINALS: '1' });
-  spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+  const startApp = () => spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+  startApp();
+  // Killed, as a crash or a power cut would, and started again: what the log
+  // says from then on
+  const restart = async () => {
+    stopApp();
+    await sleep(2000);
+    const from = log().length;
+    fs.rmSync(path.join(APP, 'data', 'api-token'), { force: true });
+    startApp();
+    await until(() => fs.existsSync(path.join(APP, 'data', 'api-token')), 'the app', 60000);
+    await sleep(3000);
+    await primitive('show', ['held']).catch(() => {});
+    return () => log().slice(from);
+  };
+  const residentPid = async () => (await inside(`pgrep -f '${BRIDGE_DIR}/shikisha-bridge-[^ ]* daemon' | head -1`)).trim();
+  const bridgeLines = (text) => text.split('\n').filter((l) => /far terminal|bridge/.test(l)).join(' | ');
 
   console.log('0. putting the bridge there clears only the builds nobody runs');
   const cleared = async () => (await inside(`ls -a ${BRIDGE_DIR}`)).split('\n');
@@ -216,6 +238,58 @@ try {
   await until(async () => (await screen()).includes(`prog=${BRIDGE_DIR}/${program}`), 'the program in the terminal', 30000)
     .then(() => check(true, 'the terminal names the resident process\'s build'))
     .catch(async () => check(false, 'the terminal names the resident process\'s build: ' + (await screen()).slice(-300)));
+
+  console.log('7. the app is killed and started again: the tab goes back to the terminal it left running');
+  await primitive('send_to_tab', ['held', 'echo before-restart-$((7*7))']);
+  await until(async () => (await screen()).includes('before-restart-49'), 'the mark before the restart', 30000);
+  let since = await restart();
+  await until(() => /went back to it/.test(since()), 'the tab to go back to its terminal', 240000)
+    .then(() => check(true, 'the tab went back to the terminal it left running'))
+    .catch(() => check(false, 'the tab went back to the terminal it left running: ' + bridgeLines(since())));
+  check(!/far terminal \d+ opened on/.test(since()), 'nothing new was started');
+  await sleep(2000);
+  check((await screen()).includes('before-restart-49'), 'what was on its screen is there');
+  await primitive('send_to_tab', ['held', 'echo after-restart-$((8*8))']);
+  await until(async () => (await screen()).includes('after-restart-64'), 'typing after the restart', 30000)
+    .then(() => check(true, 'typing goes on after the restart'))
+    .catch(async () => check(false, 'typing goes on after the restart: ' + (await screen()).slice(-300)));
+
+  console.log('8. the terminal ends while the app is away: the tab starts again in a new one');
+  stopApp();
+  await sleep(2000);
+  await inside(`pkill -9 -P ${await residentPid()}`);
+  since = await restart();
+  await until(() => /ended while away; opened \d+ in its place/.test(since()), 'a new terminal in its place', 240000)
+    .then(() => check(true, 'a terminal that ended meanwhile is started again in a new one'))
+    .catch(() => check(false, 'a terminal that ended meanwhile is started again in a new one: ' + bridgeLines(since())));
+  await sleep(3000);
+  await primitive('send_to_tab', ['held', 'echo fresh-$((3*3))']);
+  await until(async () => (await screen()).includes('fresh-9'), 'the new terminal answering', 30000)
+    .then(() => check(true, 'the new terminal answers'))
+    .catch(async () => check(false, 'the new terminal answers: ' + (await screen()).slice(-300)));
+
+  console.log('9. the bridge no longer knows the terminal: nothing starts until the tab is restarted');
+  stopApp();
+  await sleep(2000);
+  await inside(`kill -9 ${await residentPid()}`);
+  since = await restart();
+  await until(() => /not known there any more/.test(since()), 'the answer that it is not known', 240000)
+    .then(() => check(true, 'the bridge said it does not know the terminal'))
+    .catch(() => check(false, 'the bridge said it does not know the terminal: ' + bridgeLines(since())));
+  await sleep(3000);
+  check(!/far terminal \d+ opened on/.test(since()), 'nothing new was started by itself');
+  // Read as one line: the words are wrapped at the tab's width
+  const told = (await screen()).replace(/\s+/g, ' ');
+  check(told.includes('is not known'), 'the tab says so' + (told.includes('is not known') ? '' : ': ' + told.slice(-400)));
+  // Started by the person: in the bridge when its line is up, and the way a
+  // tab of a machine whose terminals are not held is when it is not (a new
+  // tab waits for the line only once the away mode can be chosen, stage 6)
+  await primitive('restart', ['held']);
+  await sleep(3000);
+  await primitive('send_to_tab', ['held', 'echo restarted-$((4*4))']);
+  await until(async () => (await screen()).includes('restarted-16'), 'the restarted tab answering', 60000)
+    .then(() => check(true, 'restarting the tab starts a new one'))
+    .catch(async () => check(false, 'restarting the tab starts a new one: ' + bridgeLines(since()) + ' / ' + (await screen()).slice(-300)));
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + (e.stack || e));

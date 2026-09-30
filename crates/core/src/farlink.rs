@@ -721,6 +721,8 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         bail!("refusing to delete {home}");
     }
     crate::elsewhere::exec(at, &format!("rm -rf {}", crate::ssh::sh_quote(&home)), 60_000)?;
+    // Its terminals went with it: none is to be gone back to
+    crate::farterm::forget_machine(at);
     crate::append_hook_log(&format!("bridge: removed from {}", at.address()));
     Ok(())
 }

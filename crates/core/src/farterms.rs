@@ -161,6 +161,9 @@ struct Term {
     /// Which tab it is for, as the app said when it opened it: asked about by
     /// another tab, it is not that tab's
     tab: String,
+    /// The folder it was opened in, as the app asked: with the tab, what an
+    /// app that lost its note of it finds it again by (far-keep plan §7.4)
+    cwd: String,
     seen: Mutex<Seen>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
@@ -245,6 +248,7 @@ impl Terms {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let term = Arc::new(Term {
             tab: m["tab"].as_str().unwrap_or_default().to_string(),
+            cwd: m["cwd"].as_str().unwrap_or_default().to_string(),
             seen: Mutex::new(Seen {
                 parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_KEPT, held),
                 edge: crate::termstate::Boundary::default(),
@@ -381,6 +385,29 @@ impl Terms {
         json!({ "did": "attaching", "term": id, "owner": owner })
     }
 
+    /// Every terminal held here: which tab and folder it is for, whether an
+    /// app owns it now, and whether it ended
+    fn list(&self, m: &Value) -> Value {
+        let terms: Vec<Value> = self
+            .terms
+            .lock()
+            .map(|t| {
+                t.iter()
+                    .map(|(id, term)| {
+                        json!({
+                            "term": id,
+                            "tab": term.tab,
+                            "cwd": term.cwd,
+                            "owned": term.seen.lock().is_ok_and(|s| s.owner.is_some()),
+                            "ended": term.ended.lock().is_ok_and(|e| e.is_some()),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({ "did": "list", "ref": m["ref"], "gen": self.generation, "terms": terms })
+    }
+
     /// The terminal, when `m` comes from its owner now; otherwise the refusal
     fn owned(&self, line: u64, m: &Value) -> Result<Arc<Term>, Value> {
         let id = m["term"].as_u64().unwrap_or(0);
@@ -451,6 +478,9 @@ impl Job for Terms {
                 }
                 Err(no) => Some(no),
             },
+            // Every terminal held here, for an app that lost its note of
+            // which were its (far-keep plan §7.4)
+            "list" => Some(self.list(m)),
             // The app has the code of an ended terminal: nothing is kept
             "forget" => {
                 let id = m["term"].as_u64().unwrap_or(0);
