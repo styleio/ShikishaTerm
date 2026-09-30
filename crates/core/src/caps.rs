@@ -941,6 +941,13 @@ impl Capabilities {
         self.with(name, |b, to| b.html(to, 30_000))
     }
 
+    /// What the server sent for the page's document, as the browser holds it
+    /// (see `pageops::source`). Two quick protocol calls; the ceiling is for a
+    /// page still arriving
+    pub fn browser_source(&self, name: &str) -> Result<String> {
+        self.with(name, |b, to| b.source(to, 10_000))
+    }
+
     /// The page distilled to its operable elements, numbered for `{ref=N}`
     /// operations (see `crate::digest`). Generous timeout: three CDP round
     /// trips, and the accessibility tree of a heavy page takes a moment

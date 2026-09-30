@@ -353,6 +353,43 @@ pub fn select(
     })
 }
 
+/// What the server sent for the page's own document, as the browser already
+/// holds it: the HTML before any script touched it.
+///
+/// Asked of the browser rather than fetched again: fetching the address a
+/// second time would send a form again, spend a one-time link, or come back
+/// different -- and what somebody wants to read is what this page was built
+/// from, not what the server would say now
+pub fn source(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
+    use base64::Engine as _;
+    let tree = s.cdp(to, "Page.getFrameTree", serde_json::json!({}), timeout_ms)?;
+    let frame = tree.pointer("/frameTree/frame").cloned().unwrap_or_default();
+    let (Some(id), Some(url)) = (frame.get("id").and_then(|v| v.as_str()), frame.get("url").and_then(|v| v.as_str()))
+    else {
+        anyhow::bail!(crate::i18n::t("err.browser.no_source"));
+    };
+    // A document the server told the browser not to keep (`no-store`) is
+    // not kept, and the only way to it again is the fetch this refuses to
+    // make. Said in words a person can act on, rather than the protocol's
+    let got = s
+        .cdp(to, "Page.getResourceContent", serde_json::json!({ "frameId": id, "url": url }), timeout_ms)
+        .map_err(|e| {
+            if format!("{e:#}").contains("not cached") {
+                anyhow::anyhow!(crate::i18n::t("err.browser.source_not_kept"))
+            } else {
+                e
+            }
+        })?;
+    let body = got.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+    if got.get("base64Encoded").and_then(|v| v.as_bool()) == Some(true) {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(body.as_bytes())
+            .map_err(|_| anyhow::anyhow!(crate::i18n::t("err.browser.no_source")))?;
+        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    Ok(body.to_string())
+}
+
 /// The full parsed HTML
 pub fn html(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
     let v = call(s, to, "__shikisha_html", &[], timeout_ms)?;
@@ -1038,5 +1075,53 @@ pub fn text_ref(s: &dyn Speaks, to: Option<&str>, r: u32, timeout_ms: u64) -> an
         .and_then(|x| x.get("value"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Speaks;
+
+    /// A browser that answers the two questions `source` asks, and writes
+    /// down what it was asked
+    struct Held {
+        base64: bool,
+        asked: std::cell::RefCell<Vec<(String, serde_json::Value)>>,
+        refs: std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>>,
+    }
+    impl Speaks for Held {
+        fn cdp(&self, _to: Option<&str>, method: &str, params: serde_json::Value, _ms: u64) -> anyhow::Result<serde_json::Value> {
+            use base64::Engine as _;
+            self.asked.borrow_mut().push((method.to_string(), params));
+            Ok(match method {
+                "Page.getFrameTree" => serde_json::json!({"frameTree": {"frame": {"id": "F1", "url": "https://example.test/form"}}}),
+                "Page.getResourceContent" if self.base64 => serde_json::json!({
+                    "content": base64::engine::general_purpose::STANDARD.encode("<p>送信済み</p>"),
+                    "base64Encoded": true,
+                }),
+                "Page.getResourceContent" => serde_json::json!({"content": "<p>sent</p>", "base64Encoded": false}),
+                _ => anyhow::bail!("not asked of this browser: {method}"),
+            })
+        }
+        fn eval(&self, _to: Option<&str>, _js: &str, _ms: u64) -> anyhow::Result<String> {
+            anyhow::bail!("the source is never read by running the page's script")
+        }
+        fn refs(&self) -> &std::sync::Mutex<std::collections::HashMap<Option<String>, Vec<i64>>> {
+            &self.refs
+        }
+    }
+
+    /// The source is what the browser holds for the page's own frame -- asked
+    /// by that frame and its address -- and never a second fetch
+    #[test]
+    fn the_source_is_what_the_browser_already_holds() {
+        for base64 in [false, true] {
+            let b = Held { base64, asked: Default::default(), refs: Default::default() };
+            let got = super::source(&b, None, 1000).unwrap();
+            assert_eq!(got, if base64 { "<p>送信済み</p>" } else { "<p>sent</p>" });
+            let asked = b.asked.borrow();
+            assert_eq!(asked.len(), 2, "two questions, nothing else: {asked:?}");
+            assert_eq!(asked[1].1, serde_json::json!({"frameId": "F1", "url": "https://example.test/form"}));
+        }
+    }
 }
 

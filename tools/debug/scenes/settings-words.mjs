@@ -108,7 +108,7 @@ export default {
       + ' k.value = "browser"; k.dispatchEvent(new Event("change")); await ' + wait(200) + ';'
       + ' const now = desks[0].tabs.find(t => t.id === "shop");'
       + ' if (!cmdToText(now.command).startsWith("browser https://www.google.com")) throw new Error("starts on " + cmdToText(now.command));'
-      + ' const off = ["back","forward","reload","reload_hard","url","point"].filter(k => !(now.nav || {})[k]);'
+      + ' const off = ["back","forward","reload","url","develop","point"].filter(k => !(now.nav || {})[k]);'
       + ' if (off.length) throw new Error("these controls start off: " + off.join(", "));'
       + ' document.getElementById("tab-words").scrollIntoView({block:"center"}); })()',
     // A page that chose nothing is driven with the assistant AI, and the

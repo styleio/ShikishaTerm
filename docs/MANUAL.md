@@ -78,11 +78,18 @@ every conversation, for one) stays in the column over other tabs until its ✕ i
 **The bar above the input box** is the convenience bar: one press sends a stock
 instruction to the AI in view (continue, explain, review, fix). The small picker at
 its left chooses what the bar holds: the stock replies, your own quick actions, the
-macro recorder, git, or an AI's command suggestion. On a browser page it also holds 🎯:
-press **Pick**, press the parts of the page an AI should look at, add a note to any of
-them, and **Hand to an AI** puts them in that AI's input as a draft -- what each one is,
-where it sits, its markup and its styles. Values that look like keys, and the secrets
-the app holds, are replaced with `[hidden]` first, and the panel says how many. What a page says on its console -- its
+macro recorder, git, or an AI's command suggestion.
+
+**Develop**, over a web page, is a list of tools for somebody building it (tick it under
+the browser tab's Controls in the settings): **Hard reload**; **Pick elements for the
+AI**, which opens **Picked elements** in the column on the right -- press **Pick**, press
+the parts of the page an AI should look at, add a note to any of them, and **Hand to an
+AI** puts them in that AI's input as a draft (what each one is, where it sits, its markup
+and its styles; values that look like keys, and the secrets the app holds, are replaced
+with `[hidden]` first, and the panel says how many); **Developer tools**; and **Source
+code** and **DOM**, which open the page's HTML as the server sent it, and as it stands
+now, in an editor that reads and does not save. The same list, less the reload, is on the
+page tab's right-click menu. What a page says on its console -- its
 own logging, errors nobody caught, files that did not load -- is on the **Console**
 tab of the column on the right, once it has been opened on that page (with what the page
 said since it last loaded); it

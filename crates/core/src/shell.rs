@@ -242,6 +242,40 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #consolepanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); }
   #consolepanel .fsay .cnow { margin-top:var(--s1); line-height:1.5; }
+  /* ── Picked elements ───────────────────────────
+     A panel called up from the browser bar's Develop list. Built like the
+     console beside it: switches along the top, a list, a line at the foot.
+     A row is what was picked -- its number, what it is -- with the note under
+     it as a field of 5.1, since writing about it is what the row is for */
+  #pickpanel[hidden] { display:none; }
+  #pickpanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; overflow:hidden; font-size:13px; }
+  #pickpanel .chead { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #pickpanel .chead .grow { flex:1 1 auto; }
+  #pickpanel .chead button { height:28px; padding:0 var(--s2); font:inherit; font-size:12px;
+    border-radius:var(--r-chip); border:1px solid var(--line); background:none; color:var(--dim); cursor:pointer; }
+  #pickpanel .chead button.on { color:var(--text); border-color:var(--brand);
+    background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #pickpanel .chead button.cgo { border-color:var(--brand); color:var(--brand); }
+  #pickpanel .chead button.cquiet { border-color:transparent; }
+  #pickpanel .chead button.cquiet:hover { color:var(--text); }
+  #pickpanel .plist { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+  #pickpanel .prow { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) 10px;
+    border-bottom:1px solid var(--line); }
+  #pickpanel .phead { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #pickpanel .pn { flex:none; min-width:18px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #pickpanel .pl { flex:1 1 auto; min-width:0; font-size:12px; color:var(--text); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #pickpanel .px { flex:none; width:22px; height:22px; padding:0; border:none; background:none; color:var(--dim);
+    border-radius:var(--r-chip); cursor:pointer; }
+  #pickpanel .px:hover { background:var(--hover); color:var(--stop); }
+  #pickpanel .prow input { height:36px; font:inherit; font-size:13px; color:var(--text); background:var(--bg);
+    border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px; outline:none; min-width:0; }
+  #pickpanel .prow input:focus { border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #pickpanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
+    font-size:11.5px; border-top:1px solid var(--line); line-height:1.5; }
+  #pickpanel .fsay .warn { color:var(--warn); margin-top:var(--s1); }
   /* ── The conversation ───────────────────────────
      What was said in the AI tab being looked at, the newest at the top. The
      search box is the file list's; the boxes are the checkboxes of the form
@@ -1559,36 +1593,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #castlua { display:flex; align-items:center; gap:var(--s3); flex:1 1 0; min-width:0;
     padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
   #castlua::-webkit-scrollbar { display:none; }
-  /* 🎯 pick: the switch, one chip per element picked (its number, what it is,
-     a note), and what to do with them. One row that scrolls sideways, as 📼's */
-  #castpick { display:flex; align-items:center; gap:var(--s2); flex:1 1 0; min-width:0;
-    padding:6px 0; overflow-x:auto; white-space:nowrap; scrollbar-width:none; }
-  #castpick::-webkit-scrollbar { display:none; }
-  /* The board speaks in the terminal's face (STYLEGUIDE §3), and a button here
-     is one of its buttons */
-  #castpick button { font:inherit; font-size:12.5px; }
-  #castpick .castgear.on { background:var(--raise); border-color:var(--brand); }
-  #castpick .castgear.pquiet { border-color:transparent; background:none; color:var(--dim); }
-  #castpick .castgear.pquiet:hover { color:var(--text); }
-  /* The way on, told the way 🗣's "agree and run" is: the brand's edge and letters.
-     Filled would make a second main button beside the input row's Send */
-  #castpick .castgear.pgo { border-color:var(--brand); color:var(--brand); }
-  #castpick .pchip { flex:none; display:flex; align-items:center; gap:var(--s1); height:32px;
-    box-sizing:border-box; padding:0 var(--s1) 0 var(--s2); border:1px solid var(--edge);
-    border-radius:var(--r-chip); background:var(--raise); font-size:12px; color:var(--text); }
-  #castpick .pchip .pn { color:var(--dim); font-variant-numeric:tabular-nums; }
-  #castpick .pchip .pl { max-width:180px; overflow:hidden; text-overflow:ellipsis; }
-  #castpick .pchip input { width:128px; height:24px; box-sizing:border-box; padding:0 var(--s2);
-    font:inherit; font-size:12px; color:var(--text); background:var(--bg);
-    border:1px solid var(--edge); border-radius:var(--r-chip); }
-  #castpick .pchip input:focus { outline:none; border-color:var(--brand); }
-  #castpick .pchip .px { width:22px; height:22px; padding:0; border:0; background:none;
-    color:var(--dim); cursor:pointer; font-size:12px; }
-  #castpick .pchip .px:hover { color:var(--stop); }
   .fmenu.picksend { min-width:220px; }
-  /* How many values were hidden: a person has to do something (read the
-     draft), so it is said in the colour for that */
-  .castnote.warn { color:var(--warn); }
   .castradio { flex:none; display:flex; align-items:center; gap:var(--s2); font-size:13px;
     color:var(--text); cursor:pointer; user-select:none; }
   .castradio input { accent-color:var(--brand); margin:0; }
@@ -2398,6 +2403,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      to press, and because it shares its mark with the forward arrow two
      buttons away -- two grey arrows in one row is one arrow too many */
   #nav button.navgo { color:var(--brand); border-color:var(--brand); }
+  /* Develop: a list, so it names itself as well as wearing its mark -- a mark
+     alone at the end of the row reads as one more arrow */
+  #nav button.navdev { width:auto; display:inline-flex; align-items:center; gap:var(--s1);
+    padding:0 var(--s2); font-size:12px; color:var(--dim); }
+  #nav button.navdev:hover { color:var(--text); }
   /* The bar that asks the person something about the page in the focused
      pane (shikisha.browser_ask): the words, and one button. Drawn HERE, under
      the page, and never inside it: a page can post anything it likes to the
@@ -3979,6 +3989,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div id="convopanel" hidden></div>
       <!-- What the page being looked at said on its console -->
       <div id="consolepanel" hidden></div>
+      <div id="pickpanel" hidden></div>
     </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
@@ -7619,6 +7630,19 @@ function openList(anchor, rows, tall, point, cls) {
   // entry would look dead
   folderMenuAway = ev => { if (!m.contains(ev.target)) closeFolderMenu(); };
   setTimeout(() => document.addEventListener("mousedown", folderMenuAway, true), 0);
+  // A page placed in the window is a window of its own, over anything drawn
+  // here: a list that opens over it -- the browser bar's Develop list, a page
+  // tab's menu -- would open underneath it. The page steps aside while the
+  // list is up, the way it does for the quick commands
+  const page = document.getElementById("page");
+  const pr = page && !page.hidden ? page.getBoundingClientRect() : null;
+  const mr = m.getBoundingClientRect();
+  const t = activeTab();
+  if (OURS && pr && t && t.kind === "browser" && pr.width > 0 &&
+      mr.left < pr.right && mr.right > pr.left && mr.top < pr.bottom && mr.bottom > pr.top) {
+    listCovers = true;
+    sayCovered();
+  }
   // The keyboard reaches it too: opened from a control that has the keyboard,
   // the first entry takes it, the arrows walk, Enter chooses, Esc puts the
   // list away and goes back -- without closing whatever dialog it opened over
@@ -7873,10 +7897,35 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // The Develop list's own rows, the page's tools, the same as over the page
+    ...(t.kind === "browser" ? devRows(t, false) : []),
+  ], false, e);
+}
+// The Develop list: the tools for somebody building the page. The same rows
+// wherever the list opens -- the browser bar's Develop button, a page tab's
+// menu -- so the two can never offer different things under one name.
+// `hard`: with the reload that fetches it all again, which belongs to the bar
+function devRows(t, hard) {
+  const page = t.id || t.name;
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  const front = S && t.index === S.active;
+  return [
+    hard ? item(T["tui.dev.hard"] || "", () => send({kind:"go", what:"hardreload"})) : null,
+    // Picking arms the page in front, so it is offered for that page only
+    front ? item(T["tui.dev.pick"] || "", () => {
+      if (!pickHere().on) send({kind:"pick", on: true, touch: window.matchMedia("(hover: none)").matches});
+      sideReveal("picks");
+      // On a phone the column is a sheet over the page, and the page is what
+      // is about to be pressed: the sheet steps aside at once, and the edge
+      // brings it back (the page's own line says so)
+      if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+    }) : null,
     // The page's DevTools, beside it. The window and a phone alike: the
     // screen is a page, relayed like any other
-    t.kind === "browser" ? item(T["tui.menu.devtools"] || "", () => send({kind:"devtools", page: t.id || t.name})) : null,
-  ], false, e);
+    item(T["tui.dev.devtools"] || "", () => send({kind:"devtools", page})),
+    item(T["tui.dev.source"] || "", () => send({kind:"pageview", page, what:"source"})),
+    item(T["tui.dev.dom"] || "", () => send({kind:"pageview", page, what:"dom"})),
+  ];
 }
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
@@ -8014,12 +8063,15 @@ function discardFolder(g) {
   });
 }
 let folderMenuAway = null;
+// Whether an open list stands over the placed page (see openList)
+let listCovers = false;
 function closeFolderMenu() {
   if (folderMenuAway) {
     document.removeEventListener("mousedown", folderMenuAway, true);
     folderMenuAway = null;
   }
   for (const m of document.querySelectorAll(".fmenu")) m.remove();
+  if (listCovers) { listCovers = false; sayCovered(); }
 }
 
 // Somewhere else to work. The list comes from the app, so this is the same
@@ -8065,6 +8117,9 @@ const PICK_ICON = {
   pin: '<path d="M5 1.8h4M5.6 1.8v3.6L3.6 7.8h6.8L8.4 5.4V1.8"/><path d="M7 7.8v4.4"/>',
   note: '<path d="M2.5 2.5h9v6l-3 3h-6z"/><path d="M8.5 11.5v-3h3"/><path d="M4.5 5h5M4.5 7h3"/>',
   trash: '<path d="M2.5 3.5h9"/><path d="M5.5 3.5V2.2h3v1.3"/><path d="M3.6 3.5 4.2 12h5.6l.6-8.5"/><path d="M6 5.8v3.8M8 5.8v3.8"/>',
+  // The browser bar's Develop list: angle brackets round a slash, the mark a
+  // page's markup is known by
+  develop: '<path d="M4.6 4 1.8 7l2.8 3M9.4 4l2.8 3-2.8 3"/><path d="M8.1 2.6 5.9 11.4"/>',
 };
 function pickIcon(name) {
   const s = el("span", {class:"ico"});
@@ -11045,12 +11100,6 @@ function drawNav() {
       if (want.loading) rb.classList.add("spin");
       n.append(rb);
     }
-    // Its own switch, so a bar can show one, the other, or both
-    if (want.reload_hard) {
-      n.append(el("button", {title:T["tui.nav.reload_hard"],
-          onclick:() => send({kind:"go", what:"hardreload"})},
-        el("span", {class:"ico"}, "⟲")));
-    }
     if (want.edit) {
       // Both an address bar and a search box, so nothing here is capitalised or
       // corrected on the way in, and a phone's keyboard is asked for a "go" key
@@ -11089,6 +11138,17 @@ function drawNav() {
         go.onclick = goTo;
         n.append(go);
       }
+    }
+    // After the address: a list of tools rather than a place to go, at the
+    // end of the row where a browser keeps its menu
+    if (want.develop) {
+      const dev = el("button", {class:"navdev", title:T["tui.nav.develop"] || ""},
+        pickIcon("develop"), el("span", {}, T["tui.nav.develop"] || ""));
+      dev.onclick = () => {
+        const t = activeTab();
+        if (t && t.kind === "browser") openList(dev, devRows(t, true), false, null, "devlist");
+      };
+      n.append(dev);
     }
   } else if (want.edit) {
     // Only fix up the enabled/disabled state of the buttons the user isn't currently typing into
@@ -11475,9 +11535,9 @@ window.__state = function (json) {
     lastWordsUnset = wordsUnsetHere();
     if (castPanel === "lua" && castDock && castDock.style.display === "flex") renderPanel();
   }
-  // 🎯's list and switch are the app's; a pick made on the page, or a press
-  // on the phone, changes them here
-  syncPickPanel();
+  // The picked elements and their switch are the app's; a pick made on the
+  // page, or a press on the phone, changes them here
+  if (sidePanel === "picks") drawPicks();
   // The panel area follows the active tab: which panels exist depends on it (a
   // browser tab gains 📼, a terminal 🤖). If the active tab changed while the
   // dock is open, rebuild whatever is showing so none of it goes stale.
@@ -12199,6 +12259,7 @@ const SIDE_PANELS = [
   ["git", () => T["tui.side.git"] || "Git", k => k !== "browser" && !!repoTab()],
   ["convo", () => T["tui.side.convo"] || "Chat", k => k === "ai"],
   ["console", () => T["tui.side.console"] || "Console", k => k === "browser"],
+  ["picks", () => T["tui.side.picks"] || "Picked elements", null],
 ];
 // Which of the three kinds of tab is in front, as far as the column is
 // concerned. A model pane is a conversation of its own rather than a CLI with
@@ -12543,7 +12604,8 @@ function editHeard(d) {
     drawEdit();
   }
 }
-function editSave() { editWrite({}); }
+// Ctrl+S reaches here too; text only read has nowhere to be saved
+function editSave() { if (!(editorTab() && editorTab().read_only)) editWrite({}); }
 // A save, and the answers already given to what it asked: `overwrite` saves
 // over a file that moved on, `lossy` over what could not be read, `replace`
 // writes ? for what the encoding cannot hold, and `encoding` changes it
@@ -12645,7 +12707,9 @@ function drawEdit() {
   }
   u.kind.style.display = diffing ? "" : "none";
   u.enc.style.display = diffing ? "" : "none";
-  u.fenc.style.display = !diffing && ED.path ? "" : "none";
+  // A page's text was decoded by the browser; there is no file to read again
+  // in another encoding
+  u.fenc.style.display = !diffing && ED.path && !(editorTab() && editorTab().read_only) ? "" : "none";
   u.toFile.style.display = diffing ? "" : "none";
   u.change.style.display = diffing ? "" : "none";
   if (diffing) {
@@ -12677,10 +12741,16 @@ function drawEdit() {
   u.say.style.display = "";
   // Still said while the file has changed underneath: the draft is still not
   // saved, and that is half of what the choice below is about
-  u.mark.textContent = ED.dirty ? (T["tui.edit.dirty"] || "") : "";
+  // A page's source or DOM: text the app holds, to read. Nothing to save it
+  // to, and no line of a file to point an AI at -- so neither is offered,
+  // and the place a change would be announced says what this is instead
+  const ro = !!(editorTab() && editorTab().read_only);
+  u.mark.textContent = ro ? (T["tui.edit.read_only"] || "") : ED.dirty ? (T["tui.edit.dirty"] || "") : "";
+  // Not a warning: nothing is waiting on the person, so it is said quietly
+  u.mark.style.color = ro ? "var(--dim)" : "";
   const shown = !!ED.path;
-  u.save.style.display = shown ? "" : "none";
-  u.tell.style.display = shown ? "" : "none";
+  u.save.style.display = shown && !ro ? "" : "none";
+  u.tell.style.display = shown && !ro ? "" : "none";
   if (shown) {
     const all = ENCODINGS.includes(ED.encoding) ? ENCODINGS : ENCODINGS.concat([ED.encoding]);
     encPickerFill(u.fenc, all.map(e => [e, e]), ED.encoding);
@@ -12769,6 +12839,10 @@ function drawEdit() {
     const mode = edModeFor(ED.path);
     const want = mode ? "ace/mode/" + mode : "ace/mode/text";
     if (edAce.session.getMode().$id !== want) edAce.session.setMode(want);
+    // Asked on every drawing: the one editor goes from a file to a page's
+    // source and back as the tab in front changes
+    const ro = !!(editorTab() && editorTab().read_only);
+    if (edAce.getReadOnly() !== ro) edAce.setReadOnly(ro);
     edAce.resize();
   });
 }
@@ -13542,6 +13616,9 @@ function drawSide() {
   const page = activeTab();
   const onPage = !!(page && page.kind === "browser" && !page.settings);
   if (cons) cons.hidden = sidePanel !== "console" || !onPage;
+  // What was picked on the page being looked at
+  const picks = document.getElementById("pickpanel");
+  if (picks) picks.hidden = sidePanel !== "picks" || !onPage;
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
@@ -13550,6 +13627,7 @@ function drawSide() {
   // is not about, and for a tab with nothing beside it at all
   const missing = !sidePanel ? (T["tui.side.notab"] || "")
     : sidePanel === "console" ? (onPage ? "" : (T["tui.console.nopage"] || ""))
+    : sidePanel === "picks" ? (onPage ? "" : (T["tui.picks.nopage"] || ""))
     : sidePanel === "convo" ? convoMissing
     : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
@@ -13573,6 +13651,7 @@ function drawSide() {
   }
   if (sidePanel === "convo") drawConvo();
   if (sidePanel === "console") drawConsole();
+  if (sidePanel === "picks") drawPicks();
 }
 
 // ── The console ─────────────────────────────────────────
@@ -16453,7 +16532,7 @@ let quickShape = "", quickFocusId = "";
 // window are windows of their own, over anything this page draws: they step
 // aside while it does. A phone has none
 function sayCovered() {
-  if (OURS) send({kind:"covered", on: quickOpen || ideasOpen});
+  if (OURS) send({kind:"covered", on: quickOpen || ideasOpen || listCovers});
 }
 // `stay`: open it, and leave it open if it already is. A key pressed in
 // another program asks to see it; closing it then would look like nothing
@@ -17497,7 +17576,7 @@ function panelOptionsHere() {
   if (gitSurfaceTab()) return base;
   // A browser tab gains 📼 (record page actions as Lua / run composer Lua on
   // the page). Otherwise it's the same sub-input bar as an AI tab.
-  if (onBrowserTab()) return base.concat("lua", "pick");
+  if (onBrowserTab()) return base.concat("lua");
   const t = activeTab();
   // A model pane is a conversation, not a command line. There is nothing to
   // suggest a command into, and Send is the message itself — so it keeps the
@@ -17582,7 +17661,6 @@ function panelName(p) {
   return p === "keys" ? (T["tui.cast.panel.keys"] || "Keys")
     : p === "actions" ? (T["tui.cast.panel.actions"] || "Actions")
     : p === "lua" ? (T["tui.cast.panel.lua"] || "Lua record / run")
-    : p === "pick" ? (T["tui.cast.panel.pick"] || "Pick parts of the page for an AI")
     : (T["tui.cast.panel.suggest"] || "AI command suggest");
 }
 // The bar's gear: one shape, wherever it points
@@ -17613,19 +17691,19 @@ function directBtn() {
 // A compact emoji for the switcher itself — text labels ate horizontal width.
 function panelLabel(p) {
   return p === "keys" ? "⌨️" : p === "actions" ? "⚡" : p === "lua" ? "📼"
-    : p === "pick" ? "🎯" : "🤖";
+    : "🤖";
 }
 function panelContent(p) {
   if (p === "keys") { castKeysEl = buildCastKeys(); return castKeysEl; }
   if (p === "actions") { return buildActions() || el("div", {class:"castpanelhint"}, T["settings.actions.empty"] || ""); }
   if (p === "lua") { return buildLuaPanel(); }
-  if (p === "pick") { return buildPickPanel(); }
   if (p === "suggest") { return buildSuggestPanel(); }
   return null;
 }
-// The 🎯 panel: point at parts of the page, then hand them to an AI. The
-// switch arms the page (a press on it then picks instead of doing what it
-// would); each pick is a chip with room for a note; "Hand to an AI" puts them
+// Picked elements: point at parts of the page, then hand them to an AI. Called
+// up from the browser bar's Develop list, it stands in the right-hand column.
+// The switch arms the page (a press on it then picks instead of doing what it
+// would); each pick is a row with room for a note; "Hand to an AI" puts them
 // all into that tab's input as a draft. What is picked lives in the app, not
 // here -- the phone and the window show the same list, and a script reads it
 function pickHere() {
@@ -17645,19 +17723,46 @@ function pickAsk(act, args) {
   if (!t || t.kind !== "browser") return;
   send({kind:"design", page: t.id || t.name, act, args: args || {}});
 }
-function buildPickPanel() {
+function drawPicks() {
+  const box = document.getElementById("pickpanel");
+  if (!box || box.hidden) return;
+  const now = pickSigNow();
+  if (now === pickSig && box.firstChild) return;
+  pickSig = now;
+  // Keep the place of a note being typed: a pick landing while somebody
+  // writes about the previous one must not take the caret away
+  const typing = document.activeElement;
+  const keep = typing && box.contains(typing) && typing.dataset ? typing.dataset.n : null;
+  const at = keep ? typing.selectionStart : null;
   const p = pickHere();
-  pickSig = pickSigNow();
-  const wrap = el("div", {id:"castpick"});
-  wrap.append(el("button", {class:"castgear" + (p.on ? " on" : ""),
+  box.textContent = "";
+  const head = el("div", {class:"chead"});
+  head.append(el("button", {class: p.on ? "on" : "", "aria-pressed": p.on ? "true" : "false",
     title: T["tui.pick.hint"] || "",
     onclick: () => send({kind:"pick", on: !p.on, touch: window.matchMedia("(hover: none)").matches})},
-    p.on ? "■ " + (T["tui.pick.stop"] || "Stop picking") : "🎯 " + (T["tui.pick.start"] || "Pick")));
-  if (!p.items.length) {
-    wrap.append(el("span", {class:"castpanelhint"},
-      p.on ? (T["tui.pick.armed"] || "") : (T["tui.pick.empty"] || "")));
-    return wrap;
+    p.on ? (T["tui.pick.stop"] || "Stop picking") : (T["tui.pick.start"] || "Pick")));
+  head.append(el("span", {class:"grow"}));
+  if (p.items.length) {
+    const go = el("button", {class:"cgo"}, (T["tui.pick.send"] || "Hand to an AI") + " ▾");
+    go.onclick = () => {
+      const ais = mentionCandidates().filter(t => t.ai);
+      const rows = ais.length ? ais.map(t => {
+        const g = t.group != null && S.groups ? S.groups[t.group] : null;
+        return el("div", {class:"mrow", onclick: () => {
+          closeFolderMenu();
+          // A note still being typed goes first, so it rides along
+          const w = document.activeElement;
+          if (w && w.dataset && w.dataset.n) pickAsk("note", {n: Number(w.dataset.n), text: w.value});
+          pickAsk("send", {to: t.id});
+        }}, markFor(t) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, t.name || t.id),
+          el("span", {class:"at"}, (g && g.name) || ""));
+      }) : [el("div", {class:"mnone"}, T["tui.pick.no_ai"] || "")];
+      openList(go, rows, false, null, "picksend");
+    };
+    head.append(go, el("button", {class:"cquiet", onclick: () => pickAsk("clear")}, T["tui.pick.clear"] || "Clear"));
   }
+  box.append(head);
+  const list = el("div", {class:"plist"});
   for (const it of p.items) {
     const note = el("input", {type:"text", value: it.note || "", "data-n": it.n,
       placeholder: T["tui.pick.note"] || "Note", maxlength: 400});
@@ -17665,51 +17770,23 @@ function buildPickPanel() {
     // keeps the note, and a note written on the phone shows at the window
     note.addEventListener("change", () => pickAsk("note", {n: it.n, text: note.value}));
     note.addEventListener("keydown", e => { if (e.key === "Enter" && !typingIME(e)) note.blur(); });
-    wrap.append(el("span", {class:"pchip", title: it.label},
-      el("span", {class:"pn"}, String(it.n)),
-      el("span", {class:"pl"}, it.label),
-      note,
-      el("button", {class:"px", title: T["tui.pick.drop"] || "", onclick: () => pickAsk("drop", {n: it.n})}, "✕")));
+    list.append(el("div", {class:"prow"},
+      el("div", {class:"phead", title: it.label},
+        el("span", {class:"pn"}, String(it.n)),
+        el("span", {class:"pl"}, it.label),
+        el("button", {class:"px", title: T["tui.pick.drop"] || "", onclick: () => pickAsk("drop", {n: it.n})}, "✕")),
+      note));
   }
-  const go = el("button", {class:"castgear pgo"}, (T["tui.pick.send"] || "Hand to an AI") + " ▾");
-  go.onclick = () => {
-    const ais = mentionCandidates().filter(t => t.ai);
-    const rows = ais.length ? ais.map(t => {
-      const g = t.group != null && S.groups ? S.groups[t.group] : null;
-      return el("div", {class:"mrow", onclick: () => {
-        closeFolderMenu();
-        // A note still being typed goes first, so it rides along
-        const typing = document.activeElement;
-        if (typing && typing.dataset && typing.dataset.n) pickAsk("note", {n: Number(typing.dataset.n), text: typing.value});
-        pickAsk("send", {to: t.id});
-      }}, markFor(t) || el("span", {class:"aim"}, "•"), el("span", {class:"nm"}, t.name || t.id),
-        el("span", {class:"at"}, (g && g.name) || ""));
-    }) : [el("div", {class:"mnone"}, T["tui.pick.no_ai"] || "")];
-    openList(go, rows, false, null, "picksend");
-  };
-  wrap.append(go, el("button", {class:"castgear pquiet", onclick: () => pickAsk("clear")},
-    T["tui.pick.clear"] || "Clear"));
-  // Said before anything is sent: the hiding is a net, not a promise, and the
-  // draft is the person's to read. On a line of its own under the row, as
-  // 📼's sentences are -- at the end of a row that scrolls sideways it would
-  // be past the edge exactly when it matters
-  if (!p.hidden) return wrap;
-  const both = document.createDocumentFragment();
-  both.append(wrap, el("span", {class:"castnote warn phidden"}, (T["tui.pick.hidden"] || "{n}").replaceAll("{n}", p.hidden)));
-  return both;
-}
-// Drawn again when what it shows changed, keeping the place of a note being
-// typed: a pick landing while somebody writes about the previous one must not
-// take the caret away
-function syncPickPanel() {
-  if (castPanel !== "pick" || !castDock || castDock.style.display !== "flex") return;
-  if (pickSigNow() === pickSig) return;
-  const typing = document.activeElement;
-  const n = typing && typing.dataset ? typing.dataset.n : null;
-  const at = n ? typing.selectionStart : null;
-  renderPanel();
-  if (n) {
-    const again = document.querySelector('#castpick input[data-n="' + n + '"]');
+  box.append(list);
+  // What to do next, and -- said before anything is sent -- how many values
+  // were hidden: the hiding is a net, not a promise, and the draft is the
+  // person's to read
+  const foot = el("div", {class:"fsay"},
+    p.items.length ? (p.on ? (T["tui.pick.armed"] || "") : "") : (p.on ? (T["tui.pick.armed"] || "") : (T["tui.pick.empty"] || "")));
+  if (p.hidden) foot.append(el("div", {class:"warn"}, (T["tui.pick.hidden"] || "{n}").replaceAll("{n}", p.hidden)));
+  if (foot.textContent) box.append(foot);
+  if (keep) {
+    const again = box.querySelector('input[data-n="' + keep + '"]');
     if (again) { again.focus(); try { again.setSelectionRange(at, at); } catch (e) {} }
   }
 }

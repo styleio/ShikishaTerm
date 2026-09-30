@@ -15337,9 +15337,9 @@ function marksCard() {
 // The controls a browser tab can show over its page, in the order they are
 // offered, each with its label. Saving writes the same list, so one offered
 // here cannot be dropped by the next save
-const NAV_PARTS = ["back", "forward", "reload", "reload_hard", "url", "point"];
+const NAV_PARTS = ["back", "forward", "reload", "url", "develop", "point"];
 const NAV_LABEL = {back:"tui.nav.back", forward:"tui.nav.forward", reload:"tui.nav.reload",
-  reload_hard:"tui.nav.reload_hard.short", url:"tui.nav.url", point:"tui.nav.point"};
+  url:"tui.nav.url", develop:"tui.nav.develop", point:"tui.nav.point"};
 
 function kindPanel(t, cmdInput, rebuild, real) {
   if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);

@@ -193,6 +193,8 @@ pub struct Mailbox {
     pub console_asks: Vec<(String, String, serde_json::Value)>,
     /// Pages whose DevTools were asked for, by key
     pub devtools: Vec<String>,
+    /// Pages whose source or DOM was asked for: (key, `source` or `dom`)
+    pub page_views: Vec<(String, String)>,
     /// ▶ Lua typed into the composer, awaiting a sandboxed run against the
     /// shown browser.
     pub run_luas: Vec<String>,
@@ -427,6 +429,9 @@ impl Mailbox {
     }
     pub fn take_side_width(&mut self) -> Option<u16> {
         self.side_width.take()
+    }
+    pub fn take_page_views(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.page_views)
     }
     pub fn take_side_panels(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.side_panels)

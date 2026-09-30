@@ -157,6 +157,10 @@ pub struct TabState {
     /// did -- which is the whole reason this travels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_stamp: Option<String>,
+    /// An editor showing text the app holds rather than a file -- a page's
+    /// source or DOM -- which is read and never saved
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     /// Which change of that file the editor is showing instead of the file
     /// itself: `work`, `staged` or `commit:<hash>`
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2056,9 +2060,10 @@ pub struct NavState {
     pub back: bool,
     pub forward: bool,
     pub reload: bool,
-    /// The second reload, which throws away what is held first
+    /// The Develop list: the reload that throws away what is held first,
+    /// picking parts of the page, DevTools, the source and the DOM
     #[serde(default)]
-    pub reload_hard: bool,
+    pub develop: bool,
     /// URL field (how a person navigates to an arbitrary page)
     pub edit: bool,
     /// The switch for how a press on a relayed page is meant. Only a phone
@@ -2410,6 +2415,7 @@ impl TabState {
             // ...and a session is not showing a file
             file: None,
             file_stamp: None,
+            read_only: false,
             file_diff: None,
             // ...and a session is drawn wherever its terminal is, which is here
             away: None,
@@ -2551,6 +2557,7 @@ impl TabState {
             ask: None,
             file: None,
             file_stamp: None,
+            read_only: false,
             file_diff: None,
             // Where it is drawn is known to the runtime, not to this; filled
             // in by `view::ui_state_of` along with everything else
@@ -3028,6 +3035,7 @@ mod tests {
             draft: None,
             file: None,
             file_stamp: None,
+            read_only: false,
             file_diff: None,
             key: format!("tab:{index}"),
             mark: None,

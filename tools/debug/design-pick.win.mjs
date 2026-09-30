@@ -1,5 +1,6 @@
 /**
- * Picking parts of a page for an AI (🎯), through the running app's own window.
+ * The browser bar's Develop list, through the running app's own window: picking
+ * parts of a page for an AI, the page's source and DOM, and the hard reload.
  *
  * This checkout's build in a folder of its own, with a small page served here
  * in a browser tab and a stand-in AI tab beside it: a program named `claude`
@@ -8,17 +9,26 @@
  * person's mouse or the phone's relayed finger reaches it.
  *
  *     cargo build
- *     node tools/debug/design-pick.win.mjs
+ *     node tools/debug/design-pick.win.mjs [--ja] [--split]
  *
  * Checked:
  *   unasked   a page reporting a pick while nobody armed it is not listed
- *   armed     the panel's switch arms the page; a press picks instead of pressing
- *             (the button's own handler does not run), and the chip appears
- *   note      a note written on a chip is kept by the app
+ *   armed     "Pick elements for the AI" in the Develop list arms the page and
+ *             calls up Picked elements in the right-hand column (the page
+ *             stepping aside while the list is over it); a press picks instead
+ *             of pressing (the button's own handler does not run), and a row
+ *             appears
+ *   note      a note written on a row is kept by the app
  *   escape    Escape on the page puts picking away, on the board as well
  *   handed    "Hand to an AI" puts the description into the stand-in's input,
  *             with the note, inside bracketed paste, and no Enter after it
- *   phone     the page a phone is served offers the same 🎯 panel on a page
+ *   source    "Source code" opens what the server sent, read from the browser
+ *             (the page is not fetched again) in an editor that only reads, and
+ *             a save of it is refused
+ *   dom       "DOM" opens the page as it stands, with what its script added
+ *   hard      "Hard reload" fetches the page again
+ *   phone     a phone's Develop list arms the page and puts the column aside for
+ *             the page to be pressed; its edge brings back the list and Stop
  *
  * Needs Windows, Node and Chrome (the phone). Photographs land in
  * target/shots. Nothing of a copy somebody is using is read, written or stopped.
@@ -67,15 +77,22 @@ const SHOWN_KEY = 'ghp_' + 'aB3cD9eF1gH7iJ5kL0mN2oP4qR6sT8uVwXy';
 const HELD = 'plain-words-held-9';
 // ── The page ──────────────────────────────────
 let pressed = 0;
+// How often the page itself was fetched: the source must not fetch it again
+let served = 0;
 const server = http.createServer((req, res) => {
   if (req.url === '/pressed') { pressed += 1; res.end('ok'); return; }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  if (req.url === '/') served += 1;
+  // The page may be kept and must be asked about again (what most pages
+  // say); /kept-nowhere is a page its server forbids keeping at all
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8',
+    'cache-control': req.url === '/kept-nowhere' ? 'no-store' : 'no-cache' });
   res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Settings</title>
 <style>.card{display:flex;gap:12px;padding:16px;border-radius:8px;background:#f3f5f8;margin:40px}
 #save{padding:6px 14px;font-size:15px;background:#2266dd;color:#fff;border:0;border-radius:6px}</style></head>
 <body><main><section class="card"><h2>Profile</h2>
 <button id="save" data-token="secret123" onclick="fetch('/pressed')">Save changes</button></section>
-<p id="keys">Your key: ${SHOWN_KEY} (and ${HELD})</p></main></body></html>`);
+<p id="keys">Your key: ${SHOWN_KEY} (and ${HELD})</p></main>
+<script>document.querySelector("main").insertAdjacentHTML("beforeend", "<p id=late>added by script</p>")</script></body></html>`);
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const pagePort = server.address().port;
@@ -113,7 +130,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'Pick', id: 'pick', folders: [{ cwd: WORK, tabs: [
     { name: 'claude', id: 'ai', command: path.join(WORK, 'claude.cmd') },
-    { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/` },
+    { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/`, nav: { reload: true, develop: true } },
   ] }] }],
 }, null, 2));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -188,7 +205,17 @@ try {
     return p && (boardTarget = (await targetsOf(p)).find((t) => t.type === 'page'));
   }, 'the window\'s page', 40000);
   const board = await connect(boardTarget);
-  await until(() => board.run('typeof renderPanel === "function" && !!S && S.tabs.length >= 2'), 'the board and its tabs', 30000);
+  await until(() => board.run('typeof devRows === "function" && !!S && S.tabs.length >= 2'), 'the board and its tabs', 30000);
+  await board.run('if (sideWidth() <= 0) setSideWidth(420)');
+  // The Develop list: its button on the bar, and one of its rows by its words
+  const develop = async (on, key) => {
+    await until(() => on.run('!!document.querySelector("#nav .navdev")'), 'the Develop button', 10000);
+    await on.run('document.querySelector("#nav .navdev").click()');
+    await until(() => on.run('!!document.querySelector(".fmenu.devlist")'), 'the Develop list', 5000);
+    const said = await on.run(`[...document.querySelectorAll(".fmenu.devlist > div")].map(d => d.textContent)`);
+    await on.run(`[...document.querySelectorAll(".fmenu.devlist > div")].find(d => d.textContent === T[${JSON.stringify(key)}]).click()`);
+    return said;
+  };
   const pageTab = await board.run('S.tabs.find(t => t.kind === "browser").index');
   await board.run(`send({kind:"select", tab:${pageTab}})`);
   await until(() => board.run(`S.active === ${pageTab}`), 'the page in front');
@@ -206,11 +233,21 @@ try {
   await sleep(1500);
   check((await picks()) === null, 'nothing is listed for the page');
 
-  console.log('2. armed from the panel, and a press on the button');
-  // A window over a runtime of its own is served the page a far device is,
-  // and opens the bar over a page the way a phone does
-  await board.run('ensureBar(); if (typeof REMOTE !== "undefined" && REMOTE) enterCast(); else openTermBar(); castPanel = "pick"; userPanel = "pick"; renderPanel();');
-  await board.run('send({kind:"pick", on:true})');
+  console.log('2. armed from the Develop list, and a press on the button');
+  await until(() => board.run('!!document.querySelector("#nav .navdev")'), 'the Develop button', 10000);
+  await board.run('document.querySelector("#nav .navdev").click()');
+  await until(() => board.run('!!document.querySelector(".fmenu.devlist")'), 'the Develop list', 5000);
+  const rows = await board.run('[...document.querySelectorAll(".fmenu.devlist > div")].map(d => d.textContent)');
+  const wanted = await board.run('["tui.dev.hard", "tui.dev.pick", "tui.dev.devtools", "tui.dev.source", "tui.dev.dom"].map(k => T[k])');
+  check(JSON.stringify(rows) === JSON.stringify(wanted),
+    'the list: ' + rows.join(' | '));
+  if (!SPLIT_MODE) check(await board.run('listCovers === true'), 'the page steps aside while the list is over it');
+  await board.shot('0-develop');
+  await board.run(`[...document.querySelectorAll(".fmenu.devlist > div")].find(d => d.textContent === T["tui.dev.pick"]).click()`);
+  check(await board.run('listCovers === false'), 'and comes back when it is gone');
+  check(await board.run('sidePanel === "picks" && sideCalled.has("picks") && !document.getElementById("pickpanel").hidden'),
+    'Picked elements stands in the column, called up');
+  check(!(await board.run('panelOptionsHere().includes("pick")')), 'the input bar no longer offers it');
   await until(async () => (await picks())?.on === true, 'the page armed');
   await until(() => page.run('!!document.documentElement.lastElementChild && getComputedStyle(document.documentElement.lastElementChild).position === "fixed"'), 'the drawing on the page');
   const c = await centre();
@@ -221,17 +258,17 @@ try {
   await page.press(k.x, k.y);
   await until(async () => (await picks())?.items?.length === 2, 'the second pick listed');
   check((await picks()).hidden >= 2, 'the key and the held value are counted as hidden: ' + (await picks()).hidden);
-  await until(() => board.run('!!document.querySelector("#castpanel .phidden")'), 'the count on the panel', 5000).catch(() => {});
-  check(await board.run('!!document.querySelector("#castpanel .phidden")'), 'the panel says how many were hidden');
+  await until(() => board.run('!!document.querySelector("#pickpanel .fsay .warn")'), 'the count on the panel', 5000).catch(() => {});
+  check(await board.run('!!document.querySelector("#pickpanel .fsay .warn")'), 'the panel says how many were hidden');
   const got = await picks();
   check(got.items[0].label === 'button "Save changes"', 'the chip names it: ' + got.items[0].label);
   await sleep(600);
   check(pressed === 0, 'the button itself was not pressed');
-  await until(() => board.run('document.querySelectorAll("#castpick .pchip").length === 2'), 'the chips on the panel');
+  await until(() => board.run('document.querySelectorAll("#pickpanel .prow").length === 2'), 'the rows on the panel');
   await page.shot('1-armed-page');
 
-  console.log('3. a note on the chip');
-  await board.run('(() => { const i = document.querySelector("#castpick .pchip input"); i.value = "make it green"; i.dispatchEvent(new Event("change")); })()');
+  console.log('3. a note on the row');
+  await board.run('(() => { const i = document.querySelector("#pickpanel .prow input"); i.value = "make it green"; i.dispatchEvent(new Event("change")); })()');
   await until(async () => (await picks())?.items?.[0]?.note === 'make it green', 'the note kept');
   check(true, 'the note is the app\'s');
   await board.shot('2-panel');
@@ -260,7 +297,57 @@ try {
   await until(async () => (await picks()) === null, 'the list emptied once handed');
   check(true, 'handed picks leave the list');
 
-  console.log('6. the phone');
+  console.log('6. the source, as the server sent it');
+  await board.run(`send({kind:"select", tab:${pageTab}})`);
+  await until(() => board.run(`S.active === ${pageTab}`), 'the page in front again');
+  const was = served;
+  await develop(board, 'tui.dev.source');
+  await until(() => board.run('(() => { const t = S.tabs.find(t => t.index === S.active); return !!t && t.kind === "editor" && t.read_only; })()'), 'a read-only editor in front', 15000);
+  await until(() => board.run('!!edAce && edAce.getValue().includes("Save changes")'), 'the source in it', 15000);
+  // The script's own words are in the source; the element it made, as the
+  // browser writes one out (quoted attribute), is only in the DOM
+  check(await board.run(`!edAce.getValue().includes('<p id="late">') && edAce.getValue().includes("insertAdjacentHTML")`), 'what the server sent, before the script ran');
+  check(served === was, 'the page was not fetched again (' + (served - was) + ')');
+  check(await board.run('edAce.getReadOnly() === true && edUi.save.style.display === "none"'), 'the editor only reads, and offers no save');
+  await board.run('editWrite({overwrite: true})');
+  await until(() => board.run('ED.bad === true'), 'the save answered', 5000).catch(() => {});
+  check(await board.run('ED.bad === true && ED.said === T["err.page_view.read_only"]'), 'a save is refused: ' + (await board.run('ED.said')));
+  await board.shot('5-source');
+
+  console.log('7. the DOM, as it stands');
+  await board.run(`send({kind:"select", tab:${pageTab}})`);
+  await until(() => board.run(`S.active === ${pageTab}`), 'the page in front again');
+  await develop(board, 'tui.dev.dom');
+  await until(() => board.run('(() => { const t = S.tabs.find(t => t.index === S.active); return !!t && t.kind === "editor" && t.read_only && /DOM/.test(t.file || ""); })()'), 'the DOM editor in front', 15000);
+  await until(() => board.run(`!!edAce && edAce.getValue().includes('<p id="late">')`), 'the DOM in it', 15000);
+  check(true, 'the DOM carries what the script added');
+
+  console.log('7b. a page its server forbids keeping');
+  await board.run(`send({kind:"select", tab:${pageTab}})`);
+  await until(() => board.run(`S.active === ${pageTab}`), 'the page in front again');
+  await page.run(`location.href = "/kept-nowhere"`).catch(() => {});
+  await until(() => page.run('location.pathname === "/kept-nowhere" && document.readyState === "complete"'), 'the kept-nowhere page', 15000);
+  const editorsBefore = await board.run('S.tabs.filter(t => t.kind === "editor").length');
+  await develop(board, 'tui.dev.source');
+  await until(() => board.run('S.flash === T["err.browser.source_not_kept"] || (S.flash || "").includes(T["err.browser.source_not_kept"])'), 'the reason said', 10000).catch(() => {});
+  // A window over a runtime of its own is not handed the runtime's messages
+  // (every message, not this one: noted, not yet mended), so the words are
+  // looked for only where they are drawn; the log says them in both
+  if (!SPLIT_MODE) check(await board.run('(S.flash || "").includes(T["err.browser.source_not_kept"])'), 'it says why there is no source, and where to look instead: ' + (await board.run('S.flash')));
+  check((await board.run('S.tabs.filter(t => t.kind === "editor").length')) === editorsBefore, 'and opens no empty editor');
+  await page.run(`location.href = "/"`).catch(() => {});
+  await until(() => page.run('location.pathname === "/" && document.readyState === "complete" && !!window.__shikisha_pick'), 'the page back', 15000);
+
+  console.log('8. the hard reload');
+  await board.run(`send({kind:"select", tab:${pageTab}})`);
+  await until(() => board.run(`S.active === ${pageTab}`), 'the page in front again');
+  const before8 = served;
+  await develop(board, 'tui.dev.hard');
+  await until(() => served > before8, 'the page fetched again', 10000).catch(() => {});
+  check(served > before8, 'Hard reload fetches the page again');
+  await until(() => page.run('document.readyState === "complete" && !!window.__shikisha_pick'), 'the page back', 15000).catch(() => {});
+
+  console.log('9. the phone');
   fs.mkdirSync(PHONE_DIR, { recursive: true });
   chrome = spawn(findChrome(), ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + PHONE_DIR,
     '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: 'ignore' });
@@ -278,21 +365,22 @@ try {
   await until(() => phone.run('typeof panelOptions === "function" && !!S && S.active != null'), 'the phone\'s board', 30000);
   await phone.run(`send({kind:"select", tab:${pageTab}})`);
   await until(() => phone.run(`S.active === ${pageTab}`), 'the page in front on the phone');
-  check((await phone.run('panelOptions()')).includes('pick'), 'the phone offers 🎯 on a page');
   check(await phone.run('window.matchMedia("(hover: none)").matches'), 'the phone is a screen with no hover');
-  await phone.run('enterCast(); castPanel = "pick"; userPanel = "pick"; renderPanel(); document.querySelector("#castpick .castgear").click();');
+  await develop(phone, 'tui.dev.pick');
   await until(async () => (await picks())?.on === true, 'armed from the phone');
-  check(true, 'the phone arms the page');
+  check(true, 'the phone arms the page from its Develop list');
+  check(await phone.run('sideStoodAside === true && document.getElementById("side").hidden'), 'the column steps aside for the page to be pressed');
   const c2 = await centre();
   await page.press(c2.x, c2.y);
   await until(async () => (await picks())?.items?.length === 1, 'a pick made while the phone armed it');
-  await phone.run('renderPanel();');
-  await until(() => phone.run('document.querySelectorAll("#castpick .pchip").length === 1'), 'the chip on the phone');
+  await phone.run('document.getElementById("sidegrip").click()');
+  await until(() => phone.run('!document.getElementById("side").hidden && sidePanel === "picks"'), 'the list back from the edge');
+  await until(() => phone.run('document.querySelectorAll("#pickpanel .prow").length === 1'), 'the row on the phone');
   check(true, 'the phone lists the same pick');
   await sleep(500);
   await phone.shot('3-phone');
   await phone.shot('4-phone-page');
-  await phone.run('document.querySelector("#castpick .castgear").click()');
+  await phone.run('document.querySelector("#pickpanel .chead button").click()');
   await until(async () => (await picks())?.on === false, 'stopped from the phone\'s panel');
   check(true, 'the phone stops picking with the panel\'s button');
 } catch (e) {

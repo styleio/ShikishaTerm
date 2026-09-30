@@ -2801,10 +2801,12 @@ pub struct NavSpec {
     pub forward: bool,
     #[serde(default)]
     pub reload: bool,
-    /// The second reload: fetch it all again instead of using what is held.
-    /// Its own switch, because it is its own button
+    /// The tools for somebody building the page: a list holding the reload
+    /// that fetches it all again, picking parts of the page for an AI,
+    /// DevTools, and the page's source and DOM as it stands. A setting written
+    /// before this, with the old `reload_hard` switch, is read without it
     #[serde(default)]
-    pub reload_hard: bool,
+    pub develop: bool,
     /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
@@ -2824,7 +2826,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, reload_hard: true, url: true, point: true }
+        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true }
     }
 }
 

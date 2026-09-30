@@ -876,6 +876,7 @@ impl WinSurface {
                 Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::Console { page, act, args } => self.mail.console_asks.push((page, act, args)),
                 Ev::DevTools { page } => self.mail.devtools.push(page),
+                Ev::PageView { page, what } => self.mail.page_views.push((page, what)),
                 Ev::ConsoleLine { from: Some(child), entry } => self.mail.console_lines.push((child, entry)),
                 Ev::RunLua { code } => self.mail.run_luas.push(code),
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),

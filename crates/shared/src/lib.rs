@@ -599,6 +599,10 @@ pub enum Ev {
     /// "Open DevTools" on a page's tab: the page's DevTools, opened as a page
     /// of its own beside it. `page` is the browser tab's key
     DevTools { page: String },
+    /// The Develop list's "Source code" or "DOM": that page's HTML as the
+    /// server sent it (`what` = `source`) or as it stands now (`dom`), opened
+    /// in an editor that reads and never saves
+    PageView { page: String, what: String },
     /// ▶ run mode: Lua typed into the composer, to run against the shown
     /// browser in the same sandbox as the rally's AI-authored code (browser
     /// functions on that one tab, nothing else).
@@ -999,6 +1003,11 @@ pub trait BrowserHost {
     /// host. Answering is optional, as for the console
     fn devtools_url(&self, _to: Option<&str>) -> anyhow::Result<String> {
         anyhow::bail!("this browser cannot open the DevTools of a page")
+    }
+    /// The HTML the server sent for the page's own document, as the browser
+    /// holds it -- never fetched again. Answering is optional, as above
+    fn source(&self, _to: Option<&str>, _timeout_ms: u64) -> anyhow::Result<String> {
+        anyhow::bail!("this browser cannot say what the server sent for a page")
     }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
@@ -1401,6 +1410,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("devtools") => Ev::DevTools {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("pageview") => Ev::PageView {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            what: v.get("what").and_then(|x| x.as_str()).unwrap_or_default().chars().take(8).collect(),
         },
         Some("console") => Ev::Console {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

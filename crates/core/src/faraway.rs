@@ -354,6 +354,9 @@ impl BrowserHost for Far {
     fn html(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::html(self, to, timeout_ms)
     }
+    fn source(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
+        crate::pageops::source(self, to, timeout_ms)
+    }
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::digest(self, to, timeout_ms)
     }

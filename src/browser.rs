@@ -4902,6 +4902,9 @@ impl BrowserHost for Browser {
     fn html(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         pageops::html(self, to, timeout_ms)
     }
+    fn source(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
+        pageops::source(self, to, timeout_ms)
+    }
     fn digest(&self, to: Option<&str>, timeout_ms: u64) -> Result<String> {
         pageops::digest(self, to, timeout_ms)
     }
