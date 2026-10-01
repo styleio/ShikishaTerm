@@ -4893,8 +4893,13 @@ impl Tab {
         const STARTING: std::time::Duration = std::time::Duration::from_secs(10);
         let busy = self.state == TabState::Busy || self.created.elapsed() < STARTING;
         let population = self.job_population(busy);
-        let (background, rest) = crate::detect::background_now(population, busy, self.job_rest);
+        let (counted, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;
+        // An AI that says for itself what it left running is believed over
+        // the count of its tab's processes (`Aside::speaks`). Only while it is
+        // the one in the tab: the shell it hands back to, in a tab it was
+        // started by hand in, is counted again
+        let background = counted && !(self.aside.speaks() && self.detector.profile_name() != crate::profile::GENERIC);
         // What the CLI itself says is running beside it: its helpers, which
         // no count of processes can see. Pressing Esc ends the turn and not
         // the helpers, so nothing about how the turn ended takes these away

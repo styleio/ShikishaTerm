@@ -177,6 +177,9 @@ pub const ASIDE_TRUST: std::time::Duration = std::time::Duration::from_secs(3 * 
 pub struct Aside {
     helpers: std::collections::HashMap<String, std::time::Instant>,
     other: Option<std::time::Instant>,
+    /// Whether the CLI has handed over its whole list at least once: from
+    /// then on it is the one that says what runs beside it (see [`Aside::speaks`])
+    listed: bool,
 }
 
 impl Aside {
@@ -198,6 +201,21 @@ impl Aside {
     pub fn replace(&mut self, running: &crate::agenthook::Running, now: std::time::Instant) {
         self.helpers = running.helpers.iter().map(|id| (id.clone(), now)).collect();
         self.other = running.other.then_some(now);
+        self.listed = true;
+    }
+
+    /// Whether the CLI says for itself what runs beside its conversation: it
+    /// has handed over its list of what it left running. Then its list is
+    /// the answer, and a count of the processes in its tab is not asked.
+    ///
+    /// The count cannot tell work from what is left over: a command the CLI
+    /// started to watch a log (`tail -F`) goes on in the tab's job after the
+    /// shell the CLI ran it in has gone -- on Windows nothing ends it -- and
+    /// the tab read as at work for hours after the CLI had said nothing of
+    /// its own was running. The CLI knows what it started and what it ended;
+    /// the count only knows how many
+    pub fn speaks(&self) -> bool {
+        self.listed
     }
 
     /// Whether anything is running beside the conversation, as of `now`.
@@ -1025,6 +1043,29 @@ mod aside_tests {
         // Heard of again, it is believed again from then
         a.helper("a1", true, t0 + ASIDE_TRUST * 2);
         assert!(a.running(t0 + ASIDE_TRUST * 2 + Duration::from_secs(60)));
+    }
+
+    /// A CLI speaks for what runs beside it once it has handed over its list
+    /// -- an empty one included, which is what a turn's end carries when
+    /// nothing is left running (as Claude Code sends it, 2026-10-02). A
+    /// helper's own events alone are not the whole list, and do not
+    #[test]
+    fn a_cli_that_lists_what_it_left_running_speaks_for_it() {
+        let t0 = Instant::now();
+        let mut a = Aside::default();
+        assert!(!a.speaks());
+        a.helper("a1", true, t0);
+        assert!(!a.speaks(), "one helper's start is not the whole list");
+        let stop = serde_json::json!({
+            "session_id": "s", "hook_event_name": "Stop", "stop_hook_active": false,
+            "last_assistant_message": "hi", "background_tasks": [], "session_crons": []
+        });
+        let listed = crate::agenthook::running_of(&stop).expect("an empty list is a list");
+        a.replace(&listed, t0);
+        assert!(a.speaks());
+        assert!(!a.running(t0), "nothing listed, nothing running");
+        let older = serde_json::json!({ "session_id": "s", "hook_event_name": "Stop" });
+        assert_eq!(crate::agenthook::running_of(&older), None, "a CLI that sends no list says nothing");
     }
 }
 
