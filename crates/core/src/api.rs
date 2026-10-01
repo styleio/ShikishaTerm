@@ -390,6 +390,37 @@ impl ApiServer {
     }
 }
 
+/// How long a client waits, in all, for a free instance of the pipe
+#[cfg(windows)]
+const PIPE_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Open the pipe as a client. Between taking one connection and offering the
+/// next instance the server has none free, and opening then fails with
+/// ERROR_PIPE_BUSY: the client waits for an instance (WaitNamedPipe) and
+/// tries again, as a pipe client should, instead of failing a call that two
+/// tabs happened to make at once
+#[cfg(windows)]
+fn open_pipe(path: &str) -> std::io::Result<std::fs::File> {
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+    let wide: Vec<u16> = format!("{path}\0").encode_utf16().collect();
+    let until = std::time::Instant::now() + PIPE_BUSY_WAIT;
+    loop {
+        match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return Err(e);
+                }
+                // A false return (the wait ran out, or the instance was taken
+                // first) only means trying again until the time is up
+                unsafe { WaitNamedPipeW(wide.as_ptr(), left.as_millis().max(1) as u32) };
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(windows)]
 fn accept_loop(
     path: &str,
@@ -819,7 +850,7 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn connect(path: &str, token: &str) -> std::io::Result<Self> {
         #[cfg(windows)]
-        let file = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let file = open_pipe(path)?;
         #[cfg(unix)]
         let file = std::os::unix::net::UnixStream::connect(path)?;
         let reader = BufReader::new(file.try_clone()?);
@@ -905,6 +936,30 @@ mod tests {
         // The caller is the tab whose token it used — it never had to say so,
         // and could not have said otherwise
         assert_eq!(got["result"]["caller"], "reviewer");
+        server.shutdown();
+    }
+
+    #[test]
+    fn tabs_calling_at_the_same_moment_all_get_through() {
+        let mut server = served(|call| {
+            let _ = call.reply.send(Ok(serde_json::json!(call.caller)));
+        });
+        let token = server.mint("many");
+        let path = server.path.clone();
+        // Enough at once that some open the pipe while the server is between
+        // one connection and offering the next instance (ERROR_PIPE_BUSY)
+        let calls: Vec<_> = (0..32)
+            .map(|_| {
+                let (path, token) = (path.clone(), token.clone());
+                std::thread::spawn(move || {
+                    ApiClient::connect(&path, &token).and_then(|mut c| c.call("show", vec![]))
+                })
+            })
+            .collect();
+        for call in calls {
+            let got = call.join().unwrap().expect("every call reaches the app");
+            assert_eq!(got["result"], "many");
+        }
         server.shutdown();
     }
 
