@@ -232,6 +232,53 @@ struct Term {
     /// The program's exit code, once it ended, and when
     ended: Mutex<Option<i32>>,
     ended_at: Mutex<Option<Instant>>,
+    /// When it was opened
+    since: Instant,
+    /// The session its shell leads (the shell's process id)
+    session: Option<u32>,
+}
+
+/// The file the terminals held are written down in, in the bridge's folder:
+/// which generation, which id, which tab, and the session its program runs
+/// in. Read by the next resident process, so that one asked about a
+/// terminal of the one before can tell whether its program still runs
+const HELD_FILE: &str = "held.json";
+
+/// A terminal of an earlier resident process, as it wrote it down
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Before {
+    #[serde(rename = "gen")]
+    generation: String,
+    term: u64,
+    tab: String,
+    /// The session its shell leads: every process of the program in it
+    session: u32,
+}
+
+/// Whether any process of a session still runs: the shell leads it, and
+/// the AI in it, and whatever that started, are in it unless they left it
+fn session_runs(session: u32) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return true };
+    dir.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            && std::fs::read_to_string(e.path().join("stat")).ok().is_some_and(|stat| {
+                // pid (comm) state ppid pgrp session ...: after the last ')'
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().nth(3)?.parse::<u32>().ok())
+                    == Some(session)
+            })
+    })
+}
+
+/// What is answered about a terminal of an earlier resident process: ended
+/// when nothing of its session runs, not known while something does
+fn answer_before(before: &[Before], id: u64, generation: &str, tab: &str, runs: impl Fn(u32) -> bool) -> Option<Value> {
+    let b = before.iter().find(|b| b.generation == generation && b.term == id && b.tab == tab)?;
+    Some(if runs(b.session) {
+        json!({ "did": "unknown", "term": id, "why": "another generation of the resident process, and its program still runs" })
+    } else {
+        json!({ "did": "over", "term": id, "code": -1, "why": "its resident process ended, and it with it" })
+    })
 }
 
 /// The job
@@ -241,11 +288,55 @@ pub struct Terms {
     generation: String,
     terms: Mutex<HashMap<u64, Arc<Term>>>,
     next: AtomicU64,
+    /// The terminals the resident process before this one wrote down
+    before: Vec<Before>,
+    /// How many of its terminals had ended when they were last written down
+    ended_written: AtomicU64,
 }
 
 impl Terms {
     pub fn new() -> Self {
-        Self { generation: crate::random_hex(8), terms: Mutex::default(), next: AtomicU64::new(0) }
+        let before = crate::farops::home()
+            .ok()
+            .and_then(|h| std::fs::read_to_string(h.join(HELD_FILE)).ok())
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        Self {
+            generation: crate::random_hex(8),
+            terms: Mutex::default(),
+            next: AtomicU64::new(0),
+            before,
+            ended_written: AtomicU64::new(0),
+        }
+    }
+
+    /// Write down the terminals held now, for the resident process after this
+    /// one. The ones the one before wrote down stay until their programs end,
+    /// so a resident process started twice in a row still knows them
+    fn write_held(&self) {
+        let Ok(home) = crate::farops::home() else { return };
+        let mut all: Vec<Before> = self.before.iter().filter(|b| session_runs(b.session)).cloned().collect();
+        if let Ok(t) = self.terms.lock() {
+            for (id, term) in t.iter() {
+                if let Some(session) = term.session
+                    && term.ended.lock().is_ok_and(|e| e.is_none())
+                {
+                    all.push(Before { generation: self.generation.clone(), term: *id, tab: term.tab.clone(), session });
+                }
+            }
+        }
+        let path = home.join(HELD_FILE);
+        let text = serde_json::to_string(&all).unwrap_or_default();
+        if let Err(e) = std::fs::write(&path, text) {
+            crate::fardaemon::log(&format!("the terminals held could not be written down: {e}"));
+        }
+    }
+
+    /// A terminal of an earlier resident process, asked about: ended when
+    /// nothing of its session runs any more (the resident process ended and
+    /// took it with it), else not known -- it may still run, out of reach
+    fn of_before(&self, id: u64, generation: &str, tab: &str) -> Option<Value> {
+        answer_before(&self.before, id, generation, tab, session_runs)
     }
 
     fn say(core: &Arc<Core>, line: u64, m: Value) {
@@ -257,6 +348,7 @@ impl Terms {
     fn open(&self, core: &Arc<Core>, line: u64, m: &Value) -> Option<Value> {
         match self.start(core, m) {
             Ok(id) => {
+                self.write_held();
                 let term = self.terms.lock().ok().and_then(|t| t.get(&id).cloned())?;
                 let opened = json!({ "did": "opened", "ref": m["ref"], "gen": self.generation, "term": id });
                 let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m: opened }));
@@ -296,6 +388,7 @@ impl Terms {
             cmd.env(crate::farlink::ENV_PROGRAM, exe);
         }
         let mut child = pty.slave.spawn_command(cmd)?;
+        let session = child.process_id();
         drop(pty.slave);
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.master.take_writer()?));
         let mut reader = pty.master.try_clone_reader()?;
@@ -322,6 +415,8 @@ impl Terms {
             next_owner: AtomicU64::new(0),
             ended: Mutex::new(None),
             ended_at: Mutex::new(None),
+            since: Instant::now(),
+            session,
         });
         if let Ok(mut t) = self.terms.lock() {
             t.insert(id, Arc::clone(&term));
@@ -404,7 +499,8 @@ impl Terms {
         let id = m["term"].as_u64().unwrap_or(0);
         let unknown = |why: &str| json!({ "did": "unknown", "term": id, "why": why });
         if m["gen"].as_str() != Some(self.generation.as_str()) {
-            return unknown("another generation of the resident process");
+            let (generation, tab) = (m["gen"].as_str().unwrap_or_default(), m["tab"].as_str().unwrap_or_default());
+            return self.of_before(id, generation, tab).unwrap_or_else(|| unknown("another generation of the resident process"));
         }
         let Some(term) = self.terms.lock().ok().and_then(|t| t.get(&id).cloned()) else {
             return unknown("no such terminal here");
@@ -463,14 +559,17 @@ impl Terms {
             .map(|t| {
                 t.iter()
                     .map(|(id, term)| {
-                        let seen = term.seen.lock().ok().map(|s| (s.owner.is_some(), s.away));
+                        let seen = term.seen.lock().ok().map(|s| (s.owner.is_some(), s.away, s.left));
                         json!({
                             "term": id,
                             "tab": term.tab,
                             "cwd": term.cwd,
-                            "owned": seen.is_some_and(|(owned, _)| owned),
-                            "away": seen.map_or(Away::Stop, |(_, a)| a).write(),
+                            "owned": seen.is_some_and(|(owned, _, _)| owned),
+                            "away": seen.map_or(Away::Stop, |(_, a, _)| a).write(),
                             "ended": term.ended.lock().is_ok_and(|e| e.is_some()),
+                            // How long ago it was opened, and its last owner went
+                            "for": term.since.elapsed().as_secs(),
+                            "left": seen.and_then(|(_, _, l)| l).map(|l| l.elapsed().as_secs()),
                         })
                     })
                     .collect()
@@ -550,8 +649,32 @@ impl Job for Terms {
                 Err(no) => Some(no),
             },
             // Every terminal held here, for an app that lost its note of
-            // which were its (far-keep plan §7.4)
+            // which were its (far-keep plan §7.4), and for the person's list
+            // of what runs while the app is away (§7.6)
             "list" => Some(self.list(m)),
+            // The person stops one from that list (§7.6): whoever owns it, if
+            // anybody. A terminal of another generation is not this one
+            "end" => {
+                let id = m["term"].as_u64().unwrap_or(0);
+                let term = (m["gen"].as_str() == Some(self.generation.as_str()))
+                    .then(|| self.terms.lock().ok().and_then(|t| t.get(&id).cloned()))
+                    .flatten();
+                Some(match term {
+                    Some(term) => {
+                        crate::fardaemon::log(&format!("terminal {id}: stopped by the person"));
+                        if let Ok(mut k) = term.killer.lock() {
+                            let _ = k.kill();
+                        }
+                        json!({ "did": "ending", "ref": m["ref"], "term": id })
+                    }
+                    None => json!({ "did": "unknown", "ref": m["ref"], "term": id, "why": "no such terminal here" }),
+                })
+            }
+            // Every one, as the bridge is taken off the machine (§7.7)
+            "end_all" => {
+                self.end();
+                Some(json!({ "did": "ending", "ref": m["ref"] }))
+            }
             // The app has the code of an ended terminal: nothing is kept
             "forget" => {
                 let id = m["term"].as_u64().unwrap_or(0);
@@ -590,6 +713,11 @@ impl Job for Terms {
     /// has been kept long enough for its app to come back for it
     fn tick(&self, _core: &Arc<Core>) {
         let terms: Vec<(u64, Arc<Term>)> = self.terms.lock().map(|t| t.iter().map(|(i, t)| (*i, Arc::clone(t))).collect()).unwrap_or_default();
+        // One that ended since they were written down is struck out there
+        let ended = terms.iter().filter(|(_, t)| t.ended.lock().is_ok_and(|e| e.is_some())).count() as u64;
+        if self.ended_written.swap(ended, Ordering::SeqCst) != ended {
+            self.write_held();
+        }
         for (id, term) in terms {
             if let Some(at) = term.ended_at.lock().ok().and_then(|e| *e) {
                 if at.elapsed() >= ENDED_KEPT
@@ -599,18 +727,20 @@ impl Job for Terms {
                 }
                 continue;
             }
-            let due = term
-                .seen
-                .lock()
-                .ok()
-                .and_then(|s| Some((s.left?, s.away)))
-                .and_then(|(left, away)| away.ends_after().map(|after| (left.elapsed() >= after, away)));
-            if let Some((true, away)) = due {
-                crate::fardaemon::log(&format!("terminal {id}: left alone past what it was to be kept for ({away:?}); ending it"));
+            // Decided and done under the terminal's lock, which an attach
+            // takes too: one that comes back at the last moment either finds
+            // it still there and keeps it, or finds it ending -- never attached
+            // and then ended under it
+            let Ok(seen) = term.seen.lock() else { continue };
+            let due = seen.owner.is_none()
+                && seen.left.zip(seen.away.ends_after()).is_some_and(|(left, after)| left.elapsed() >= after);
+            if due {
+                crate::fardaemon::log(&format!("terminal {id}: left alone past what it was to be kept for ({:?}); ending it", seen.away));
                 if let Ok(mut k) = term.killer.lock() {
                     let _ = k.kill();
                 }
             }
+            drop(seen);
         }
     }
 
@@ -657,4 +787,35 @@ fn login_shell() -> String {
         }
     }
     "/bin/sh".into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Asked about a terminal of an earlier resident process, the answer is
+    /// "ended" only when nothing of its session runs any more: a resident
+    /// process that went may have left its program running, out of reach,
+    /// and a second AI is not started beside it (far-keep plan §4.4)
+    #[test]
+    fn a_terminal_of_an_earlier_resident_process_is_ended_only_once_nothing_of_it_runs() {
+        let before = vec![Before { generation: "g1".into(), term: 4, tab: "t".into(), session: 77 }];
+        assert_eq!(answer_before(&before, 4, "g1", "t", |_| false).unwrap()["did"], "over");
+        assert_eq!(answer_before(&before, 4, "g1", "t", |_| true).unwrap()["did"], "unknown");
+        assert!(answer_before(&before, 4, "g1", "other tab", |_| false).is_none(), "another tab's");
+        assert!(answer_before(&before, 5, "g1", "t", |_| false).is_none(), "an id it never had");
+    }
+
+    /// A session runs while any of its processes does: this test's own does,
+    /// one whose only process ended does not
+    #[test]
+    fn a_session_runs_while_any_of_its_processes_does() {
+        // SAFETY: getsid only reads
+        let mine = unsafe { libc::getsid(0) } as u32;
+        assert!(session_runs(mine));
+        let mut child = std::process::Command::new("setsid").arg("true").spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        assert!(!session_runs(gone), "a session nothing runs in");
+    }
 }

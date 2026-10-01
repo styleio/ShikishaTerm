@@ -4263,6 +4263,82 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // What runs on a machine entry while the app is away (far-keep plan
+        // §7.6): every terminal the bridge holds on each of its machines this
+        // app has a line to. A machine with no line now is not asked
+        ("GET", "/api/far/held") => {
+            let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            let machines: Vec<serde_json::Value> = crate::farlink::up_for(&host)
+                .iter()
+                .filter_map(|at| {
+                    let listed = crate::farterm::list_held(at)?;
+                    Some(serde_json::json!({
+                        "machine": at.machine_key(),
+                        "address": at.address(),
+                        "gen": listed["gen"],
+                        "terms": listed["terms"],
+                    }))
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!({ "ok": true, "machines": machines })))?;
+        }
+        // Stop one of them, whoever owns it
+        ("POST", "/api/far/end") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let machine = v["machine"].as_str().unwrap_or_default();
+            let host = crate::farlink::host_of(machine).unwrap_or_default();
+            let at = crate::farlink::up_for(&host).into_iter().find(|a| a.machine_key() == machine);
+            let resp = match at {
+                Some(at) if crate::farterm::end_held(&at, v["term"].as_u64().unwrap_or(0), v["gen"].as_str().unwrap_or_default()) => {
+                    serde_json::json!({ "ok": true })
+                }
+                Some(_) => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.away.list.not_there") }),
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.away.list.no_line") }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // The calls a machine entry's tabs made while the app was away
+        // (far-keep plan §4.6), as its bridges last said
+        ("GET", "/api/far/missed") => {
+            let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            let machines: Vec<serde_json::Value> = crate::farlink::missed()
+                .into_iter()
+                .filter(|(machine, _, _)| crate::farlink::host_of(machine).as_deref() == Some(host.as_str()))
+                .map(|(machine, address, book)| serde_json::json!({ "machine": machine, "address": address, "book": book }))
+                .collect();
+            req.respond(json_resp(serde_json::json!({ "ok": true, "machines": machines })))?;
+        }
+        // Struck out, once looked at: some of them, or all
+        ("POST", "/api/far/missed/seen") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let calls: Option<Vec<crate::farmissed::Missed>> = v.get("calls").and_then(|c| serde_json::from_value(c.clone()).ok());
+            let resp = match crate::farlink::seen_missed(v["machine"].as_str().unwrap_or_default(), calls) {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // Show a tab's conversation on the board, by the name its key has
+        ("POST", "/api/far/convo") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            crate::farlink::want_convo(v["tab"].as_str().unwrap_or_default());
+            req.respond(json_resp(serde_json::json!({ "ok": true })))?;
+        }
         // Put one CLI's hook in, or take it out. Named by profile, so the page
         // never hands over a path to write to
         ("POST", "/api/resume/hook") => {
@@ -10683,6 +10759,154 @@ function hostDialog(at, redraw, kind, done) {
     el("div", {class:"hint"}, T[hookIns.length ? "settings.hosts.hooks.off" : "settings.hosts.hooks.none"]),
     ...hookIns.map(i => { const l = el("label", {class:"check"}); l.append(i, document.createTextNode(i.dataset.cli)); return l; }));
 
+  // What this machine's AIs do while the app is away (far-keep plan §4.2,
+  // §4.3, §7.6). Agreed to here, with everything it means said before the
+  // choice: the choice is the agreement. Three states, and none is picked for
+  // the person -- an entry not asked yet says what happens then, in words.
+  // Needs the bridge: the AIs are held by it
+  const awayWas = editing ? h.away : undefined;
+  const awayName = "away-" + Math.random().toString(36).slice(2);
+  const awayRadio = (value, label) => {
+    const i = el("input", {type:"radio", name: awayName, value});
+    const l = el("label", {class:"check"});
+    l.append(i, document.createTextNode(label));
+    return [i, l];
+  };
+  const [awayStop, awayStopL] = awayRadio("stop", T["settings.away.stop"]);
+  const [awayFor, awayForL] = awayRadio("for", T["settings.away.for"]);
+  const awayHours = el("input", {type:"number", min:"1", max: made ? "24" : "720", class:"mono narrow"});
+  const [awayAlways, awayAlwaysL] = awayRadio("always", T["settings.away.always"]);
+  if (awayWas === "stop") awayStop.checked = true;
+  else if (awayWas === "always" && !made) awayAlways.checked = true;
+  else if (awayWas && typeof awayWas === "object" && awayWas.minutes) {
+    awayFor.checked = true;
+    awayHours.value = String(Math.max(1, Math.round(awayWas.minutes / 60)));
+  }
+  if (!awayHours.value) awayHours.value = made ? "1" : "8";
+  awayHours.addEventListener("input", () => { awayFor.checked = true; });
+  const awayUnchosen = el("div", {class:"hint"}, T["settings.away.unchosen"]);
+  const awayChoice = () => awayStop.checked ? "stop"
+    : awayAlways.checked ? "always"
+    : awayFor.checked ? {minutes: Math.max(1, parseInt(awayHours.value, 10) || 1) * 60}
+    : undefined;
+  const awayShown = el("div", {class:"hint mono"});
+  const showAway = () => {
+    const c = awayChoice();
+    awayUnchosen.hidden = c !== undefined;
+    awayShown.textContent = c === undefined ? "" : fill(T["settings.away.written"], {value: JSON.stringify(c)});
+    const on = bridgeIn.checked;
+    for (const i of [awayStop, awayFor, awayHours, awayAlways]) i.disabled = !on;
+  };
+  for (const i of [awayStop, awayFor, awayHours, awayAlways]) i.addEventListener("change", showAway);
+  bridgeIn.addEventListener("change", showAway);
+  // What runs there now, while the app is away or not, and the calls that
+  // did not get through: only for an entry already saved with the bridge
+  const heldBox = el("div", {class:"rows"});
+  const missedBox = el("div", {class:"rows"});
+  const ago = secs => secs == null ? "" : secs < 90 ? fill(T["settings.away.list.secs"], {n: String(secs)})
+    : secs < 5400 ? fill(T["settings.away.list.mins"], {n: String(Math.round(secs / 60))})
+    : fill(T["settings.away.list.hours"], {n: String(Math.round(secs / 3600))});
+  const post = async (url, body) => {
+    try {
+      return await (await fetch(url, {method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+        body: JSON.stringify(body)})).json();
+    } catch (e) { return {ok:false, error: String(e)}; }
+  };
+  let heldNow = [];
+  async function drawHeld() {
+    const name = (h.name || "").trim();
+    let j = null;
+    try { j = await (await fetch("/api/far/held?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { j = null; }
+    heldBox.textContent = "";
+    heldNow = [];
+    const machines = (j && j.machines) || [];
+    if (!machines.length) { heldBox.append(el("div", {class:"hint"}, T["settings.away.list.no_line"])); return; }
+    for (const m of machines) for (const t of (m.terms || [])) if (!t.ended) heldNow.push({m, t});
+    if (!heldNow.length) { heldBox.append(el("div", {class:"hint"}, T["settings.away.list.none"])); return; }
+    for (const {m, t} of heldNow) {
+      const state = t.owned ? T["settings.away.list.in_use"] : fill(T["settings.away.list.left"], {ago: ago(t.left)});
+      heldBox.append(el("div", {class:"listrow"},
+        el("span", {class:"mono"}, t.tab || ""),
+        el("span", {class:"hint mono"}, t.cwd || ""),
+        el("span", {class:"hint"}, fill(T["settings.away.list.since"], {ago: ago(t.for)}) + " · " + state),
+        el("span", {class:"grow"}),
+        el("button", {class:"danger", onclick: async () => {
+          if (!await confirmAction(fill(T["settings.away.list.stop_sure"], {tab: t.tab || ""}), T["settings.away.list.stop"])) return;
+          const r = await post("/api/far/end", {machine: m.machine, term: t.term, gen: m.gen});
+          if (!r || !r.ok) msg((r && r.error) || "", true);
+          setTimeout(drawHeld, 800);
+        }}, T["settings.away.list.stop"])));
+    }
+    if (heldNow.length > 1) heldBox.append(el("div", {class:"row"},
+      el("button", {class:"danger", onclick: async () => {
+        if (!await confirmAction(fill(T["settings.away.list.stop_all_sure"], {n: String(heldNow.length), name}), T["settings.away.list.stop_all"])) return;
+        for (const {m, t} of heldNow) await post("/api/far/end", {machine: m.machine, term: t.term, gen: m.gen});
+        setTimeout(drawHeld, 800);
+      }}, T["settings.away.list.stop_all"])));
+  }
+  async function drawMissed() {
+    const name = (h.name || "").trim();
+    let j = null;
+    try { j = await (await fetch("/api/far/missed?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})).json(); }
+    catch (e) { j = null; }
+    missedBox.textContent = "";
+    const machines = (j && j.machines) || [];
+    let any = false;
+    for (const m of machines) {
+      const b = m.book || {};
+      for (const c of (b.calls || [])) {
+        any = true;
+        const when = new Date(c.at * 1000).toLocaleString();
+        const what = c.to ? c.method + " → " + c.to : c.method;
+        const line = when + "  " + (c.tab || "?") + "  " + what + (c.cut ? "  (" + T["settings.away.missed.cut"] + ")" : "");
+        missedBox.append(el("div", {class:"listrow"},
+          el("span", {class:"hint mono"}, when),
+          el("span", {class:"mono"}, c.tab || "?"),
+          el("span", {class:"mono"}, what),
+          c.cut ? el("span", {class:"hint"}, T["settings.away.missed.cut"]) : null,
+          el("span", {class:"grow"}),
+          c.tab ? el("button", {class:"quiet", onclick: () => post("/api/far/convo", {tab: c.tab})}, T["settings.away.missed.open"]) : null,
+          el("button", {class:"quiet", onclick: () => { navigator.clipboard && navigator.clipboard.writeText(line); }}, T["settings.away.missed.copy"]),
+          el("button", {class:"quiet", onclick: async () => {
+            await post("/api/far/missed/seen", {machine: m.machine, calls: [c]});
+            setTimeout(drawMissed, 800);
+          }}, T["settings.away.missed.seen"])));
+      }
+      if (b.dropped) {
+        any = true;
+        missedBox.append(el("div", {class:"hint"}, fill(T["settings.away.missed.dropped"], {
+          n: String(b.dropped),
+          from: new Date(b.dropped_from * 1000).toLocaleDateString(),
+          to: new Date(b.dropped_to * 1000).toLocaleDateString()})));
+      }
+      if ((b.calls || []).length || b.dropped) missedBox.append(el("div", {class:"row"},
+        el("button", {class:"quiet", onclick: async () => {
+          await post("/api/far/missed/seen", {machine: m.machine});
+          setTimeout(drawMissed, 800);
+        }}, T["settings.away.missed.seen_all"])));
+    }
+    if (!any) missedBox.append(el("div", {class:"hint"}, T["settings.away.missed.none"]));
+  }
+  const listed = editing && (current.bridges || []).includes((h.name || "").trim());
+  const awayBox = el("div", {class:"bridgecard"},
+    el("div", {class:"hint"}, T["settings.away.what"]),
+    el("div", {class:"hint"}, T["settings.away.calls"]),
+    el("div", {class:"hint"}, T[made ? "settings.away.cost.e2b" : "settings.away.cost.ssh"]),
+    el("div", {class:"hint"}, T["settings.away.boundary"]),
+    el("div", {class:"hint"}, T["settings.away.needs_bridge"]),
+    awayStopL,
+    el("div", {class:"row"}, awayForL, awayHours, el("span", {class:"hint"}, T["settings.away.hours"])),
+    made ? el("div", {class:"hint"}, T["settings.away.e2b_limit"]) : awayAlwaysL,
+    awayUnchosen,
+    awayShown,
+    listed ? el("div", {class:"subhead"}, T["settings.away.list"]) : null,
+    listed ? heldBox : null,
+    listed ? el("div", {class:"subhead"}, T["settings.away.missed"]) : null,
+    listed ? missedBox : null);
+  showAway();
+  if (listed) { drawHeld(); drawMissed(); }
+
   const shut = () => { back.remove(); if (done && !closedBy) done(null); };
   let closedBy = null;
   const back = openModal(
@@ -10698,12 +10922,14 @@ function hostDialog(at, redraw, kind, done) {
            field(T["settings.hosts.minutes"], minutesIn, T["settings.hosts.minutes.hint"]),
            mark ? mark.box : null,
            field(T["settings.hosts.bridge"], bridgeBox, ""),
+           field(T["settings.hosts.away"], awayBox, ""),
            field(T["settings.hosts.hooks"], hooksBox, "")]
         : [field(T["settings.hosts.at"], atIn, ""),
            mark.box,
            credential,
            field(T["settings.hosts.keepalive"], keepaliveIn, T["settings.hosts.keepalive.hint"]),
            field(T["settings.hosts.bridge"], bridgeBox, ""),
+           field(T["settings.hosts.away"], awayBox, ""),
            field(T["settings.hosts.hooks"], hooksBox, ""),
            el("div", {class:"hint"}, T["settings.hosts.projects.hint"])])),
     el("div", {class:"mfoot"},
@@ -10755,8 +10981,16 @@ function hostDialog(at, redraw, kind, done) {
     save.click();
   });
 
-  save.addEventListener("click", () => {
+  save.addEventListener("click", async () => {
     if (held) { sayWhy(); return; }
+    // Taking the bridge off a machine where AIs run stops them (far-keep
+    // plan §7.7): said, with how many, before it is done
+    if (listed && !bridgeIn.checked) {
+      await drawHeld();
+      if (heldNow.length && !await confirmAction(
+          fill(T["settings.away.remove_running"], {n: String(heldNow.length), name: (h.name || "").trim()}),
+          T["settings.away.remove_stop"])) return;
+    }
     // A host with folders on it keeps its name and its kind: the folders find
     // it by that name, and one renamed away from under them is a folder whose
     // machine nothing can reach -- or, on a MicroVM, delete
@@ -10795,6 +11029,10 @@ function hostDialog(at, redraw, kind, done) {
     const bridges = (current.bridges || []).filter(b => b !== was && b !== it.name);
     if (bridgeIn.checked && it.name) bridges.push(it.name);
     if (bridges.length) current.bridges = bridges; else delete current.bridges;
+    // What its AIs do while the app is away: only with the bridge, and only
+    // as chosen. Nothing chosen is nothing written
+    const awayNow = bridgeIn.checked ? awayChoice() : undefined;
+    if (awayNow === undefined) delete it.away; else it.away = awayNow;
     // The hook answers go with the name too. Unticked is "off": the app takes
     // its entry out of that CLI's file on the machine when it next reaches it
     const fh = current.far_hooks || {};

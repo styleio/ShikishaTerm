@@ -108,6 +108,9 @@ const ANSWERS_WAIT: Duration = Duration::from_secs(120);
 struct Line {
     out: Mutex<UnixStream>,
     heard: Mutex<Instant>,
+    /// It said it is going (`Frame::Bye`): nothing new is carried to it,
+    /// while what it asked before is still answered
+    leaving: std::sync::atomic::AtomicBool,
 }
 
 /// What every job reaches through: the lines to the apps
@@ -138,15 +141,29 @@ impl Core {
         out.write_all(text.as_bytes()).is_ok() && out.flush().is_ok()
     }
 
-    /// The apps connected now
+    /// The apps connected now, those that said they are going left out:
+    /// nothing new is for them
     pub fn lines(&self) -> Vec<u64> {
-        let mut ids: Vec<u64> = self.lines.lock().map(|m| m.keys().copied().collect()).unwrap_or_default();
+        let mut ids: Vec<u64> = self
+            .lines
+            .lock()
+            .map(|m| m.iter().filter(|(_, l)| !l.leaving.load(Ordering::SeqCst)).map(|(id, _)| *id).collect())
+            .unwrap_or_default();
         ids.sort_unstable();
         ids
     }
 
+    /// Whether the app on `line` is connected and staying
     pub fn is_up(&self, line: u64) -> bool {
-        self.lines.lock().is_ok_and(|m| m.contains_key(&line))
+        self.lines.lock().is_ok_and(|m| m.get(&line).is_some_and(|l| !l.leaving.load(Ordering::SeqCst)))
+    }
+
+    /// The app on `line` said it is going: from now on it is away to every
+    /// job that asks, while its line stays for the answers it is owed
+    fn leaving(&self, line: u64) {
+        if let Some(l) = self.lines.lock().ok().and_then(|m| m.get(&line).cloned()) {
+            l.leaving.store(true, Ordering::SeqCst);
+        }
     }
 
     fn jobs(&self) -> Vec<Arc<dyn Job>> {
@@ -155,7 +172,11 @@ impl Core {
 
     fn add(self: &Arc<Self>, out: UnixStream) -> u64 {
         let id = self.next_line.fetch_add(1, Ordering::SeqCst) + 1;
-        let line = Arc::new(Line { out: Mutex::new(out), heard: Mutex::new(Instant::now()) });
+        let line = Arc::new(Line {
+            out: Mutex::new(out),
+            heard: Mutex::new(Instant::now()),
+            leaving: std::sync::atomic::AtomicBool::new(false),
+        });
         if let Ok(mut m) = self.lines.lock() {
             m.insert(id, line);
         }
@@ -485,6 +506,7 @@ fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
         // silence its going would otherwise be known by
         if matches!(frame, Frame::Bye) {
             log(&format!("the app on line {line} said it is going"));
+            core.leaving(line);
             break;
         }
         for job in core.jobs() {
@@ -711,6 +733,9 @@ impl Job for TabsJob {
                         }
                         "drop_key" => {
                             owners.remove(key);
+                            if let Ok(mut names) = self.names.lock() {
+                                names.remove(key);
+                            }
                         }
                         _ => {}
                     }
@@ -1245,9 +1270,15 @@ mod tests {
         let mut back = App::open(&run);
         term(&mut back, json!({ "do": "attach", "term": ids[1].0, "gen": generation, "tab": "t1" }));
         assert!(term_said(&mut back, |m| m["did"] == "over").is_some(), "its end was not kept for its app");
-        let a = term_said_owner(&mut back, ids[2].0, &generation, "t2");
-        term(&mut back, json!({ "do": "stop", "term": ids[2].0, "owner": a }));
-        assert!(term_said(&mut back, |m| m["did"] == "ended" && m["term"] == ids[2].0).is_some());
+        // Stopped by the person from the list of what runs there: by its
+        // identity, without being owned (far-keep plan §7.6)
+        term(&mut back, json!({ "do": "end", "term": ids[2].0, "gen": generation }));
+        assert!(term_said(&mut back, |m| m["did"] == "ending").is_some(), "not told it is ending");
+        let ended = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            alive(ids[2].0, "t2") == "ended"
+        });
+        assert!(ended, "the one kept for good was not stopped");
         // The app has both codes: nothing is kept for it any more
         for (id, _) in &ids[1..] {
             term(&mut back, json!({ "do": "forget", "term": id }));
@@ -1260,12 +1291,6 @@ mod tests {
         });
         assert!(gone, "it stayed with nothing to keep");
         let _ = std::fs::remove_dir_all(&home);
-    }
-
-    /// Attach to a terminal, and the owner number it hands out
-    fn term_said_owner(app: &mut App, id: u64, generation: &str, tab: &str) -> u64 {
-        term(app, json!({ "do": "attach", "term": id, "gen": generation, "tab": tab, "rows": 24, "cols": 80 }));
-        term_said(app, |m| m["did"] == "attached" && m["term"] == id).expect("not attached")["owner"].as_u64().unwrap()
     }
 
     /// Two apps attach to one terminal at the same moment (far-keep plan

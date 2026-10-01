@@ -100,14 +100,36 @@ impl Book {
     }
 }
 
-/// What of a call's line is written down: its command, and the tab its first
-/// word names when it is a tab's name. A name is short and plain; a first
-/// word that is not (a sentence, a path, a secret) is not kept
+/// The commands whose first word is the tab they are addressed to: only for
+/// these is it written down. Any other command's first word may be what it
+/// says -- a short report, a token -- and is never kept
+const ADDRESSED: &[&str] = &[
+    "ask_tab",
+    "tab_run",
+    "browser_do",
+    "send_to_tab",
+    "draft_to_tab",
+    "send_keys",
+    "tab_screen",
+    "tab_read",
+    "tab_output",
+    "tab_conversation",
+    "show",
+    "restart",
+    "close_tab",
+];
+
+/// What of a call's line is written down: its command, and -- for a command
+/// addressed to a tab -- the tab its first word names, when that is a tab's
+/// name (short and plain)
 pub fn read_call(line: &str) -> (String, String) {
     let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
     let method = v["method"].as_str().unwrap_or_default().chars().take(64).collect::<String>();
     let first = v["params"].get(0).and_then(|p| p.as_str()).unwrap_or_default();
-    let named = !first.is_empty() && first.len() <= 40 && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let named = ADDRESSED.contains(&method.as_str())
+        && !first.is_empty()
+        && first.len() <= 40
+        && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
     (method, if named { first.to_string() } else { String::new() })
 }
 
@@ -158,6 +180,7 @@ mod tests {
     fn only_the_command_and_a_tab_name_are_written_down() {
         assert_eq!(read_call(r#"{"id":"1","method":"ask_tab","params":["teal","the secret is 1234"]}"#), ("ask_tab".into(), "teal".into()));
         assert_eq!(read_call(r#"{"id":"1","method":"report","params":["Here is everything I found"]}"#), ("report".into(), String::new()));
+        assert_eq!(read_call(r#"{"id":"1","method":"report","params":["ABC123SECRET"]}"#), ("report".into(), String::new()), "a short word of a command not addressed to a tab");
         assert_eq!(read_call("not a call"), (String::new(), String::new()));
     }
 }

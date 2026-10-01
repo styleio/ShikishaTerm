@@ -301,6 +301,18 @@ open that machine under Settings > Where it runs, untick the AI and save: only t
 next time the machine is reached. A machine an earlier version wrote into without asking is asked about
 once: keep it, or take it out.
 
+**Keeping a machine's AIs running while this app is away.** Open the machine under
+Settings > Where it runs, put the bridge on it, and choose under "While this app is away": stop them when SHIKISHA-TERM quits,
+keep them running for a number of hours, or (a server only) keep them running for as long as they run.
+Kept running, the AIs there go on working when SHIKISHA-TERM quits or this PC is off, and the next start
+goes back to each of them -- the same AI, its screen as it was. Quitting asks whether to leave them running
+or stop them all. While SHIKISHA-TERM is away, an AI that asks it for something is told at once that the PC
+is away; such calls are listed on that machine's page when it is back (which tab, which command, when --
+never what it said). The same page lists the AIs running there, with a button to stop each. A MicroVM kept
+running is billed for the time chosen, and no longer than your E2B plan lets it run in one go. Tabs on one
+machine, run as one user, are not kept apart by what each tab is allowed: to keep AIs apart, put them on
+separate machines.
+
 A tab that runs the `ssh` command itself still works as before (the kind is
 "SSH (ssh.exe)").
 

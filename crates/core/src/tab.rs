@@ -816,6 +816,17 @@ fn far_holds(at: &crate::elsewhere::Elsewhere) -> bool {
     crate::farlink::link(at).is_some_and(|l| l.holds("terms"))
 }
 
+/// What the AIs on the machine a tab's entry names do while the app is
+/// away, when the person chose it and put the bridge there: its terminals
+/// are then held by the bridge (far-keep plan §4.3). None: they are opened
+/// as they always were
+fn held_away(host: Option<&str>) -> Option<crate::config::Away> {
+    let host = host?;
+    let c = crate::config::load()?;
+    let away = c.hosts.iter().find(|h| h.name == host)?.away_now()?;
+    c.bridges.iter().any(|b| b == host).then_some(away)
+}
+
 pub fn pty_write(writer: &PtyWriter, bytes: &[u8]) -> Result<()> {
     let mut w = writer.lock().expect("pty writer lock");
     w.write_all(bytes)?;
@@ -3803,21 +3814,21 @@ impl Tab {
         let mut far_lost = None;
         // A terminal held by the bridge there (see `farterm`)
         let mut far_term: Option<Arc<crate::farterm::FarTerm>> = None;
-        // Held by the bridge there, when that machine's terminals are held
-        // (the away mode; a development switch until it can be chosen): the
-        // one this tab left running there, gone back to whether or not the
-        // line is up yet, or a new one when the line is up
+        // Held by the bridge there, when the person chose what that machine's
+        // AIs do while the app is away and put the bridge there (far-keep
+        // plan §4.3): the one this tab left running there, gone back to
+        // whether or not the line is up yet; or a new one, opened now or once
+        // the line is up -- never the old way for want of the line
+        let away = held_away(opts.host.as_deref());
         let held_there = match (&pair, opts.remote.as_ref(), opts.cloud.as_ref()) {
             (None, Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
             (None, None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
             _ => None,
         }
-        .filter(|_| crate::farterm::wanted())
-        .and_then(|at| {
-            match crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), opts.called(&title)) {
-                Some(left) => Some((at, Some(left))),
-                None => far_holds(&at).then_some((at, None)),
-            }
+        .zip(away)
+        .map(|(at, away)| {
+            let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), opts.called(&title));
+            (at, left, away)
         });
         let (master, killer, pid, child): (
             Box<dyn MasterPty + Send>,
@@ -3834,15 +3845,12 @@ impl Tab {
             // Nothing of ours runs for a remote tab: the shell is the far end's
             // own, started by the far end, and there is no local process id to
             // put in a job object
-            (None, _, _, Some((at, left))) => {
-                // What its AI does while this app is away, as the machine's entry says
-                let away = crate::config::load()
-                    .map(|c| crate::config::away_of(&c.hosts, opts.host.as_deref()))
-                    .unwrap_or(crate::config::Away::Stop);
+            (None, _, _, Some((at, left, away))) => {
                 let started = (opts.remote_cwd.as_deref(), far_typed.as_deref());
                 let (m, k, t) = match left {
                     Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, away),
-                    None => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, away)?,
+                    None if far_holds(&at) => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, away)?,
+                    None => crate::farterm::open_later(&at, opts.called(&title), (rows, cols), started, away),
                 };
                 far_term = Some(t);
                 (m, k, None, None)

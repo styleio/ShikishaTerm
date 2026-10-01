@@ -18,9 +18,10 @@
  *   6. the shikisha command in the terminal runs the resident process's build
  *   7-9. the app is killed and started again (far-keep plan §7.5, stage 4):
  *      the tab goes back to the terminal it left running, starting nothing
- *      new; one that ended meanwhile is started again in a new terminal; and
- *      one the bridge no longer knows starts nothing until the tab is
- *      restarted
+ *      new; one that ended meanwhile is started again in a new terminal; and,
+ *      the resident process killed, one whose session still has a process
+ *      in it starts nothing until the tab is restarted, while one with
+ *      nothing left starts again
  *   10-11. quitting (far-keep plan §7.1, stage 5): asked, with the AI set to
  *      go on, whether to leave it running -- left running, it goes on, a
  *      call it makes meanwhile is told the PC is away and is written down,
@@ -31,8 +32,8 @@
  *     cargo build   (and a Linux bridge in bridge/, see bridge-far.win.mjs)
  *     node tools/debug/far-hold.win.mjs
  *
- * Runs the app with SHIKISHA_HOLD_TERMINALS=1, the switch the held terminal
- * is behind until the away mode can be chosen. Needs E2B_API_TOKEN in
+ * The machine's entry chooses what its AIs do while the app is away, which is
+ * what has its terminals held by the bridge. Needs E2B_API_TOKEN in
  * .private/.env. One machine for a few minutes, deleted on the way out.
  */
 import fs from 'node:fs';
@@ -148,7 +149,7 @@ try {
   }, null, 2));
   fs.writeFileSync(SECRETS, JSON.stringify({ tokens: { e2b_api_key: KEY } }, null, 2));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
-  Object.assign(env, { LOCALAPPDATA: LOCAL, SHIKISHA_HOLD_TERMINALS: '1' });
+  Object.assign(env, { LOCALAPPDATA: LOCAL });
   const startApp = () => spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
   startApp();
   // Killed, as a crash or a power cut would, and started again: what the log
@@ -182,11 +183,11 @@ try {
   await sleep(3000);
   await primitive('show', ['held']).catch(() => {});
   await until(() => /bridge: connected to/.test(log()), 'the bridge to connect', 240000);
-  // Opened before the bridge was up: started again now that it is
-  await primitive('restart', ['held']);
-  await until(() => /far terminal \d+ opened on .* for held/.test(log()), 'the terminal to open in the bridge', 60000)
-    .then(() => check(true, 'the terminal was opened by the bridge'))
-    .catch(() => check(false, 'the terminal was opened by the bridge'));
+  // Started before the bridge was up, the tab waited for it rather than
+  // starting the old way, and opened its terminal there once it was
+  await until(() => /far terminal \d+ opened on vm once its line was up/.test(log()), 'the terminal to open in the bridge', 60000)
+    .then(() => check(/far terminal for held: to be opened on vm once its line is up/.test(log()), 'the tab waited for the bridge, and its terminal was opened there'))
+    .catch(() => check(false, 'the tab waited for the bridge, and its terminal was opened there: ' + log().split('\n').filter((l) => /far terminal|bridge/.test(l)).join(' | ')));
 
   console.log('2. typing arrives, and what the shell says comes back');
   await sleep(3000);
@@ -274,7 +275,11 @@ try {
     .then(() => check(true, 'the new terminal answers'))
     .catch(async () => check(false, 'the new terminal answers: ' + (await screen()).slice(-300)));
 
-  console.log('9. the bridge no longer knows the terminal: nothing starts until the tab is restarted');
+  console.log('9. the resident process is killed: what ran in it is looked for, and its AI started again only once it is gone');
+  // Something of the terminal's session that outlives the resident process:
+  // whether the AI is gone cannot be told, and nothing is started
+  await primitive('send_to_tab', ['held', 'nohup sleep 900 >/dev/null 2>&1 & echo outlives-$((9*9))']);
+  await until(async () => (await screen()).includes('outlives-81'), 'the process that outlives it', 30000);
   stopApp();
   await sleep(2000);
   await inside(`kill -9 ${await residentPid()}`);
@@ -290,12 +295,35 @@ try {
   // Started by the person: in the bridge when its line is up, and the way a
   // tab of a machine whose terminals are not held is when it is not (a new
   // tab waits for the line only once the away mode can be chosen, stage 6)
+  const restartMark = log().length;
   await primitive('restart', ['held']);
+  // It waits for its line, which is made again at once now it is wanted
+  await until(() => /far terminal \d+ opened on/.test(log().slice(restartMark)), 'the restarted tab to open', 60000).catch(() => {});
   await sleep(3000);
   await primitive('send_to_tab', ['held', 'echo restarted-$((4*4))']);
   await until(async () => (await screen()).includes('restarted-16'), 'the restarted tab answering', 60000)
     .then(() => check(true, 'restarting the tab starts a new one'))
     .catch(async () => check(false, 'restarting the tab starts a new one: ' + bridgeLines(since()) + ' / ' + (await screen()).slice(-300)));
+  await inside('pkill -f "sleep 900"');
+
+  // Nothing of it outlives the resident process: its end is known, and the
+  // tab starts again where its conversation was
+  {
+    let held = false;
+    for (let i = 0; i < 12 && !held; i++) {
+      const mark = log().length;
+      await primitive('restart', ['held']);
+      held = await until(() => /far terminal \d+ opened on/.test(log().slice(mark)), 'a held terminal', 15000).then(() => true).catch(() => false);
+      if (!held) await sleep(10000);
+    }
+    stopApp();
+    await sleep(2000);
+    await inside(`kill -9 ${await residentPid()}`);
+    since = await restart();
+    await until(() => /it ended while away; opened \d+ in its place/.test(since()), 'a new terminal in its place', 240000)
+      .then(() => check(true, 'one whose resident process ended with nothing of it left is started again'))
+      .catch(() => check(false, 'one whose resident process ended with nothing of it left is started again: ' + bridgeLines(since())));
+  }
 
   const quitApp = (answer) => ps('-File', path.join(ROOT, 'tools', 'debug', 'lib', 'quit-app.ps1'), '-Root', APP, '-Answer', answer).stdout.trim();
   const appGone = () => until(() => appPid() === '', 'the app to quit', 60000);

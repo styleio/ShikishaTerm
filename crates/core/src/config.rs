@@ -809,12 +809,6 @@ impl Away {
     }
 }
 
-/// What the AIs on the machine a tab's settings entry names do while the app
-/// is away. An entry with none written, or no entry, stops them
-pub fn away_of(hosts: &[HostSpec], host: Option<&str>) -> Away {
-    host.and_then(|h| hosts.iter().find(|s| s.name == h)).and_then(|s| s.away).unwrap_or(Away::Stop)
-}
-
 /// How many minutes a MicroVM runs untouched when its entry does not say:
 /// written into the entry's form as it is, never assumed behind it
 pub const MICROVM_MINUTES: u32 = 30;
@@ -888,6 +882,22 @@ impl HostSpec {
     /// Whether this machine has to be asked for before anything can run on it.
     pub fn is_made(&self) -> bool {
         self.kind.as_deref().map(str::trim).unwrap_or("ssh").eq_ignore_ascii_case("e2b")
+    }
+
+    /// What this machine's AIs do while the app is away, as far as it can be
+    /// carried out. Two values the settings screen never writes are not: a
+    /// set time of no minutes, and "always" on a MicroVM, which nothing keeps
+    /// up once the app has gone (far-keep plan §5). Either is taken as
+    /// stopping them -- the one choice that leaves nothing running that the
+    /// person did not mean to -- and said in the log
+    pub fn away_now(&self) -> Option<Away> {
+        let away = self.away?;
+        let bad = matches!(away, Away::Minutes(0)) || (away == Away::Always && self.is_made());
+        if bad {
+            crate::append_hook_log(&format!("host {}: away {away:?} cannot be carried out; its AIs stop with the app", self.name));
+            return Some(Away::Stop);
+        }
+        Some(away)
     }
 
     /// The same entry, naming one of its machines

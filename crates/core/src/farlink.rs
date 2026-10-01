@@ -496,6 +496,22 @@ static MISSED: Mutex<std::collections::BTreeMap<String, (String, crate::farmisse
 /// Words for the person, from the lines' own threads, for the loop to show
 static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The tabs the person asked, from the settings, to see the conversation of
+/// (far-keep plan §4.6): by the name each tab's key file has
+static CONVO_WANTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Ask the board to show a tab's conversation
+pub fn want_convo(tab_key: &str) {
+    if let Ok(mut w) = CONVO_WANTED.lock() {
+        w.push(tab_key.to_string());
+    }
+}
+
+/// The tabs asked for, taken once
+pub fn take_convo_wanted() -> Vec<String> {
+    CONVO_WANTED.lock().map(|mut w| std::mem::take(&mut *w)).unwrap_or_default()
+}
+
 /// What the bridges have to tell the person, taken once
 pub fn take_said() -> Vec<String> {
     SAID.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default()
@@ -815,12 +831,25 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     if others > 0 {
         bail!(crate::i18n::tp("err.bridge.in_use", &[("host", &at.address()), ("n", &others.to_string())]));
     }
+    // What it holds ends with it (far-keep plan §7.7): the person was told
+    // how many AIs run there before they took it off
+    crate::farterm::end_all(at);
     disconnect(at);
     let home = far_home(at)?;
     if !home.ends_with(HOME_DIR) {
         bail!("refusing to delete {home}");
     }
-    crate::elsewhere::exec(at, &format!("rm -rf {}", crate::ssh::sh_quote(&home)), 60_000)?;
+    // A resident process this app had no line to -- one holding AIs while the
+    // app was away -- is told to end too, and its terminals go with it
+    crate::elsewhere::exec(
+        at,
+        &format!(
+            "pkill -TERM -f {} 2>/dev/null; sleep 1; rm -rf {}",
+            crate::ssh::sh_quote(&format!("{home}/shikisha-bridge-[^ ]* daemon")),
+            crate::ssh::sh_quote(&home)
+        ),
+        60_000,
+    )?;
     // Its terminals went with it: none is to be gone back to
     crate::farterm::forget_machine(at);
     crate::append_hook_log(&format!("bridge: removed from {}", at.address()));
@@ -866,6 +895,27 @@ pub fn give_key(at: &crate::elsewhere::Elsewhere, tab: &str, key: &str) -> Resul
 /// The machines the person agreed to, as last read from the settings
 static AGREED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// The machines this app keeps lines to, by machine, with the name of the
+/// settings entry each is of: how the settings find a machine entry's lines
+/// (a MicroVM entry has one machine a worktree)
+static WANTED: Mutex<Vec<(String, String, crate::elsewhere::Elsewhere)>> = Mutex::new(Vec::new());
+
+/// The machines of a settings entry this app has a line to now
+pub fn up_for(host: &str) -> Vec<crate::elsewhere::Elsewhere> {
+    WANTED
+        .lock()
+        .map(|w| w.iter().filter(|(_, h, _)| h == host).map(|(_, _, at)| at.clone()).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(is_up)
+        .collect()
+}
+
+/// The settings entry a machine is of, as this app last knew it
+pub fn host_of(machine: &str) -> Option<String> {
+    WANTED.lock().ok().and_then(|w| w.iter().find(|(k, _, _)| k == machine).map(|(_, h, _)| h.clone()))
+}
+
 /// Whether the person agreed to the bridge on the machine this entry names
 pub fn agreed(host: &str) -> bool {
     AGREED.lock().is_ok_and(|a| a.iter().any(|h| h == host))
@@ -906,6 +956,9 @@ const RETRY: Duration = Duration::from_secs(60);
 impl Keeper {
     pub fn tend(&mut self, wanted: Vec<Want>) {
         let now = Instant::now();
+        if let Ok(mut w) = WANTED.lock() {
+            *w = wanted.iter().map(|w| (w.at.machine_key(), w.host.clone(), w.at.clone())).collect();
+        }
         self.retry_removals(now);
         let keys: std::collections::HashSet<String> = wanted.iter().map(|w| w.at.machine_key()).collect();
         // Nothing on it wants the line any more: let go, and the bridge there exits
@@ -914,6 +967,9 @@ impl Keeper {
             if let Some(at) = self.held.remove(&k) {
                 disconnect(&at);
             }
+            // Let go of, not failed: wanted again -- a tab waiting for its
+            // line to open its terminal -- it is made again at once
+            self.tried.remove(&k);
         }
         for w in wanted {
             let key = w.at.machine_key();

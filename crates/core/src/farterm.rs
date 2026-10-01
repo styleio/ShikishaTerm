@@ -17,10 +17,9 @@
 //! tab attaches to it if it is there, starts again where the conversation
 //! was if its end is known, and starts nothing while neither is known.
 //!
-//! Used only for a machine whose terminals are held (the away mode, far-keep
-//! plan §4.3). Until that can be chosen (stage 6), only a check that sets
-//! `SHIKISHA_HOLD_TERMINALS=1` uses it; every tab of everybody else is
-//! opened as before.
+//! Used for a machine whose AIs the person chose what to do with while the
+//! app is away (its entry's `away`, far-keep plan §4.3), with the bridge put
+//! there. Every other machine's tabs are opened as before.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -43,11 +42,6 @@ const LIST_WAIT: Duration = Duration::from_secs(10);
 /// tab is told it ended. The line is made again by the app on its own
 /// (`farlink::Keeper`), a few times a minute
 const LINE_BACK_WAIT: Duration = Duration::from_secs(10 * 60);
-
-/// The development switch this is behind until the away mode can be chosen
-pub fn wanted() -> bool {
-    std::env::var("SHIKISHA_HOLD_TERMINALS").is_ok_and(|v| v == "1")
-}
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -84,11 +78,6 @@ pub struct Saved {
     pub term: u64,
     /// When it was opened, in seconds since 1970
     pub since: u64,
-    /// Whether it was to end with the app (`Away::Stop`): a resident process
-    /// that ended took such a terminal with it, so one not known there any
-    /// more is known to have ended
-    #[serde(default)]
-    pub stops: bool,
 }
 
 impl Saved {
@@ -161,25 +150,57 @@ pub fn left_running(at: &crate::elsewhere::Elsewhere, cwd: &str, tab: &str) -> O
     if let Some(s) = read_saved().into_iter().find(|s| s.is_tab(&machine, cwd, tab)) {
         return Some(s);
     }
+    let said = list_held(at)?;
+    let generation = said["gen"].as_str().unwrap_or_default().to_string();
+    let found = said["terms"].as_array()?.iter().find(|t| {
+        t["tab"] == tab && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false
+    })?;
+    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs() };
+    crate::append_hook_log(&format!("far terminal {}: found on {} for {tab}, with nothing written down about it", s.term, at.address()));
+    change_saved(|all| put(all, s.clone()));
+    Some(s)
+}
+
+/// Ask the bridge on `at` something of its terminals job, and wait for the
+/// answer: through the one router of its line, which a second listener would
+/// take the line's messages from
+fn ask(at: &crate::elsewhere::Elsewhere, mut m: Value) -> Option<Value> {
     let link = crate::farlink::link(at).filter(|l| l.holds(JOB))?;
     let r = router(at, &link);
     let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
-    if !link.to_job(JOB, json!({ "do": "list", "ref": reference })) {
+    m["ref"] = json!(reference);
+    if !link.to_job(JOB, m) {
         return None;
     }
-    let said = rx.recv_timeout(LIST_WAIT).ok().filter(|m| m["did"] == "list")?;
-    let generation = said["gen"].as_str().unwrap_or_default().to_string();
-    let found = said["terms"].as_array()?.iter().find(|t| {
-        t["tab"] == tab && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false
-    })?;
-    // An older resident process says nothing: its terminals ended with their app
-    let stops = found["away"].is_null() || found["away"] == "stop";
-    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs(), stops };
-    crate::append_hook_log(&format!("far terminal {}: found on {} for {tab}, with nothing written down about it", s.term, at.address()));
-    change_saved(|all| put(all, s.clone()));
-    Some(s)
+    rx.recv_timeout(LIST_WAIT).ok()
+}
+
+/// Every terminal the bridge on `at` holds, with its generation: for the
+/// person's list of what runs while the app is away (far-keep plan §7.6)
+pub fn list_held(at: &crate::elsewhere::Elsewhere) -> Option<Value> {
+    ask(at, json!({ "do": "list" })).filter(|m| m["did"] == "list")
+}
+
+/// Stop one of them, whoever owns it: the person asked to, from that list
+pub fn end_held(at: &crate::elsewhere::Elsewhere, term: u64, generation: &str) -> bool {
+    let done = ask(at, json!({ "do": "end", "term": term, "gen": generation })).is_some_and(|m| m["did"] == "ending");
+    if done {
+        let machine = at.machine_key();
+        change_saved(|all| strike(all, &machine, generation, term));
+    }
+    done
+}
+
+/// Stop every one, as the bridge is taken off the machine (§7.7). Nothing
+/// is asked when the line is not up: the resident process is told to end
+/// as the folder goes
+pub fn end_all(at: &crate::elsewhere::Elsewhere) {
+    if ask(at, json!({ "do": "end_all" })).is_some() {
+        crate::append_hook_log(&format!("far terminals on {}: every one stopped, the bridge being taken off", at.address()));
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 // ── The line ────────────────────────────────────────────────────────────────
@@ -278,7 +299,6 @@ fn ask_open(
                 generation: generation.clone(),
                 term,
                 since: now_secs(),
-                stops: !away.keeps(),
             },
         )
     });
@@ -460,7 +480,7 @@ impl FarTerm {
 
 type Opened = (Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<FarTerm>);
 
-fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, stopped_with_its_app: bool) -> Opened {
+fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, fresh: bool) -> Opened {
     let (rows, cols) = term.size.lock().map(|s| *s).unwrap_or((24, 80));
     let reader = FarReader {
         from,
@@ -469,7 +489,7 @@ fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, stopped_with_its
         rest: Vec::new(),
         at: 0,
         again,
-        stopped_with_its_app,
+        fresh,
         attached: false,
         said_waiting: false,
         last: false,
@@ -513,11 +533,27 @@ pub fn reattach(
     away: crate::config::Away,
 ) -> Opened {
     crate::append_hook_log(&format!("far terminal {}: going back to it on {} for {}", saved.term, at.address(), saved.tab));
-    let stops = saved.stops;
     let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), (cwd, then), away));
     // Read as a line that went: the reader attaches as soon as it is up
     let (_, gone) = channel();
-    made(term, gone, true, stops)
+    made(term, gone, true, false)
+}
+
+/// Open a terminal for `tab` once the line to its machine is up: a tab of a
+/// machine whose AIs are held there starts there, and not the old way for
+/// want of the line at the moment it was started. The tab says it is
+/// waiting, and gives up -- starting nothing -- if the line never comes
+pub fn open_later(
+    at: &crate::elsewhere::Elsewhere,
+    tab: &str,
+    (rows, cols): (u16, u16),
+    (cwd, then): (Option<&str>, Option<&str>),
+    away: crate::config::Away,
+) -> Opened {
+    crate::append_hook_log(&format!("far terminal for {tab}: to be opened on {} once its line is up", at.address()));
+    let term = Arc::new(FarTerm::new(at, Ident { term: 0, generation: String::new() }, tab, (rows, cols), (cwd, then), away));
+    let (_, gone) = channel();
+    made(term, gone, true, true)
 }
 
 /// What comes from the terminal there, as bytes to read: its output, and
@@ -532,9 +568,8 @@ struct FarReader {
     at: usize,
     /// Gone back to after a start, and not attached to yet
     again: bool,
-    /// Gone back to, and it was to end with its app: a resident process that
-    /// does not know it any more took it with it when it ended
-    stopped_with_its_app: bool,
+    /// Not opened yet: opened once the line is up (`open_later`)
+    fresh: bool,
     attached: bool,
     said_waiting: bool,
     /// What is in `rest` is the last of it: the terminal ends after it
@@ -555,12 +590,18 @@ impl FarReader {
     }
 
     /// The terminal gone back to ended while this app was not there: its end
-    /// is known, so the tab starts where its conversation was, in a new one
+    /// is known, so the tab starts where its conversation was, in a new one.
+    /// Or there was none yet (`open_later`), and this is its first
     fn open_in_its_place(&mut self) -> bool {
         let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
         match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.away) {
             Ok((id, generation, rx, link)) => {
-                crate::append_hook_log(&format!("far terminal {}: it ended while away; opened {id} in its place", self.term.term()));
+                if self.fresh {
+                    crate::append_hook_log(&format!("far terminal {id} opened on {} once its line was up", self.term.at.address()));
+                } else {
+                    crate::append_hook_log(&format!("far terminal {}: it ended while away; opened {id} in its place", self.term.term()));
+                }
+                self.fresh = false;
                 if let Ok(mut i) = self.term.ident.lock() {
                     *i = Ident { term: id, generation };
                 }
@@ -601,7 +642,8 @@ impl std::io::Read for FarReader {
                 if self.again && !self.said_waiting {
                     // Said first, so the tab shows why it is empty
                     self.said_waiting = true;
-                    self.say(&crate::i18n::tp("msg.farterm.going_back", &[("host", &address)]));
+                    let key = if self.fresh { "msg.farterm.waiting_line" } else { "msg.farterm.going_back" };
+                    self.say(&crate::i18n::tp(key, &[("host", &address)]));
                     continue;
                 }
                 crate::append_hook_log(&format!("far terminal {}: the line went; waiting for it to come back", self.term.term()));
@@ -610,8 +652,15 @@ impl std::io::Read for FarReader {
                     if self.term.let_go.load(Ordering::SeqCst) {
                         return Ok(0);
                     }
-                    if let Some(rx) = self.term.attach_again() {
-                        break Some(rx);
+                    if self.fresh {
+                        // Nothing there yet to attach to: opened as soon as
+                        // the line is up
+                        if crate::farlink::link(&self.term.at).is_some_and(|l| l.holds(JOB)) {
+                            self.open_in_its_place();
+                            break Some(None);
+                        }
+                    } else if let Some(rx) = self.term.attach_again() {
+                        break Some(Some(rx));
                     }
                     if std::time::Instant::now() >= until {
                         break None;
@@ -619,7 +668,9 @@ impl std::io::Read for FarReader {
                     std::thread::sleep(Duration::from_secs(2));
                 };
                 match again {
-                    Some(rx) => {
+                    // Opened, or said why not
+                    Some(None) => continue,
+                    Some(Some(rx)) => {
                         crate::append_hook_log(&format!("far terminal {}: attaching again", self.term.term()));
                         self.from = rx;
                         continue;
@@ -696,15 +747,6 @@ impl std::io::Read for FarReader {
                         m["why"].as_str().unwrap_or_default()
                     ));
                     self.term.struck_out();
-                    // One that was to end with its app, asked of a resident
-                    // process of another generation: the one it was in ended,
-                    // and ended it -- known, so started again where it was
-                    let replaced = m["why"].as_str().is_some_and(|w| w.contains("another generation"));
-                    if self.again && self.stopped_with_its_app && replaced && !self.term.let_go.load(Ordering::SeqCst) {
-                        // Failing, it has said why and ends after that
-                        self.open_in_its_place();
-                        continue;
-                    }
                     self.term.ended.store(true, Ordering::SeqCst);
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;
@@ -818,13 +860,30 @@ impl portable_pty::ChildKiller for FarKiller {
     /// goes back to it again rather than starting a second AI beside it
     fn kill(&mut self) -> std::io::Result<()> {
         self.term.let_go.store(true, Ordering::SeqCst);
-        if !self.term.ended.load(Ordering::SeqCst)
-            && self.term.owner.load(Ordering::SeqCst) != 0
-            && self.term.say(json!({ "do": "stop", "term": self.term.term(), "owner": self.term.owner.load(Ordering::SeqCst) }))
-        {
-            // Asked to stop: its end comes on the line, if the line is still
-            // there to bring it; either way it is not to be gone back to
+        if self.term.ended.load(Ordering::SeqCst) || self.term.term() == 0 {
+            return Ok(());
+        }
+        // Owned from here, stopped as its owner; not attached to yet (gone
+        // back to, waiting), stopped by its identity, whoever owns it
+        let owner = self.term.owner.load(Ordering::SeqCst);
+        let told = if owner != 0 {
+            self.term.say(json!({ "do": "stop", "term": self.term.term(), "owner": owner }))
+        } else {
+            self.term.say(json!({ "do": "end", "term": self.term.term(), "gen": self.term.generation() }))
+        };
+        if told {
+            // Said on the line ahead of anything after it -- the app saying it
+            // is going, as it quits, and the wait for the line to be written
+            // out -- so it is not to be gone back to
             self.term.struck_out();
+        } else {
+            // The line is down: nothing here can stop it. It stays written
+            // down, and the next start goes back to it rather than starting a
+            // second AI beside it
+            crate::append_hook_log(&format!(
+                "far terminal {}: could not be told to stop, its line being down; it stays written down",
+                self.term.term()
+            ));
         }
         Ok(())
     }
@@ -839,7 +898,7 @@ mod tests {
     use super::*;
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
-        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, stops: false }
+        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1 }
     }
 
     /// A tab has one terminal written down, the last it opened; one is struck

@@ -6517,6 +6517,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 r.push_state(serde_json::json!({ "panel": name }).to_string());
             }
         }
+        // A tab whose conversation the person asked to see from the settings,
+        // where the calls its AI made while the app was away are listed
+        // (far-keep plan §4.6): put in front, with its conversation beside it
+        for key in crate::farlink::take_convo_wanted() {
+            let named = tabs.iter().find(|t| crate::farlink::key_name(t.called()) == key).map(|t| t.called().to_string());
+            match named.and_then(|n| hooks::TabRef::Name(n).resolve(&surface_keys(&surfaces, &tabs))) {
+                Some(at) => {
+                    active = at;
+                    shell.show_panel("convo");
+                }
+                None => flash = Some(i18n::t("msg.bridge.missed_tab_gone")),
+            }
+        }
         for (id, down) in shell.mail().take_pane_splits() {
             if !pane_layout.focus_pane(id) {
                 continue;
