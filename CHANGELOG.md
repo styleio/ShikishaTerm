@@ -8,6 +8,193 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-01
+
+### Added
+- **A browser tab can show a file on this PC.** Write its path as the tab's
+  address (`browser D:/site/index.html`) or type it in the address bar, as
+  `D:/...`, `D:\...`, `file:///...` or `\\server\share\...`. The app hands the
+  file to the tab over HTTP from a server of its own on 127.0.0.1, with the
+  file's folder and nothing above it, read fresh on every reload.
+- **A file path on a terminal's screen opens in a browser tab of that
+  terminal's folder.** Pressing the path of a page, a picture or a PDF now
+  offers "Open in a browser tab" beside the editor, and the tab is put in the
+  same folder as the terminal, the way a web address already is.
+- **A page tab that cannot open says why where the page would be.** It used
+  to stand empty, with at most a toast after a settings save; it now shows
+  the reason with "Try starting it again" and "Open settings", the way a
+  program that cannot start does.
+- **A place inside a folder a worktree inherits can come along its own way.**
+  A line of an ignore file decides a whole folder, so `.claude/` used to be
+  copied with every other agent's worktree in it. The worktree dialog's rows
+  now open to what is inside them, largest first, each with the same four
+  choices; a choice there is kept as the project's rule for that place. The
+  rules are written the way a .gitignore line is, work at any depth, and can
+  also be written under "Rules for places inside folders" in the project's
+  worktree rules. The rule for the deepest place decides; nothing is written
+  into .gitignore. A linked folder cannot follow rules inside it, and the
+  dialog says so with a button to copy it instead.
+- **The worktree dialog says when what it copies will take a while.** Once
+  it has counted what the new folder inherits, a large copy is said above
+  "More" with the amount, and a button opens the list on the row that costs
+  it. Each row of the list says how much it holds, the large ones marked;
+  making one a link or leaving it out takes the warning with it.
+- **AIConfer: watch AIs ask each other things, as a chat.** The Chat panel
+  has a third view beside "This conversation" and "Every conversation". When
+  one AI tab asks another (after you name it with `@`, or on its own), each
+  says one short line about it -- what it asks, what it found -- with a face
+  for every tab, what each is doing along the top, and the full text of the
+  request and the answer folded under each line. Press a line to mark it
+  (👍 ❤️ 🎉 👀 ✅ ❓); an AI can share a commit, a pull request, a file or a
+  page as a card that opens it; a decision made in a job shows as "Agreed".
+  It opens by itself when one AI asks another (not while you are using the
+  window; on a phone it is only chosen), and Settings > AIConfer turns that
+  off or changes how long a line may be (80 characters). For automation,
+  `ask_tab` now takes that line before what it asks
+  (`shikisha ask_tab ID "line" "text"`); the old form is refused with the
+  new one. An AI that was asked is asked once, as it finishes, for its line;
+  the answer handed back is unchanged. New commands `say`, `react` and
+  `share`. Claude Code and Codex are asked again about their hooks, since
+  the end of a turn now asks for the line.
+- **The AI command-line tools are asked, once, to report what they are doing.**
+  When the app starts and finds Claude Code, Codex or Gemini used on this PC
+  without an answer about them yet, it shows which settings file of each it
+  would add one entry to and, a press away, that file as it will be, the
+  lines it adds in blue beside the ones already there, and asks. Allowed,
+  the entries go in and every start keeps them up to date; the dot beside each
+  tab is then right, and two tabs of the same AI in one folder are told apart.
+  Not allowed, those files are left alone and the question is not asked again.
+  Closed without an answer, it is asked at the next start. The same question
+  is on the phone. The answer can be changed under Settings › Carrying
+  conversations across a restart, which shows it.
+- **The AI command-line tools' hooks: Codex runs them.** Codex holds back a
+  new hook until it is approved, so the hook set up from the settings did
+  nothing until it was approved in Codex. The app now has Codex itself record
+  the approval of its own entries (and only those) when it sets them up.
+- **A check's log, one press from the git panel.** Open CI in the git panel
+  and press any check: its job's log opens in an editor tab that only reads,
+  named after the check and the commit, without the runner's colour codes,
+  each line stamped with the time of day, and at the first error when there
+  is one. A check still running, or one with no log to download, opens its
+  page in a browser tab instead and says why. A log GitHub no longer keeps
+  says that too.
+- **A Ports panel on the right.** Press a port under a tab (`:3000`) or choose
+  it from a folder's menu, and the column shows what listens in that folder:
+  each port with the program holding it and the tab it came from, opened in a
+  browser tab with one press, or in this PC's browser, or copied. On a server
+  or a MicroVM the same panel lists what its machine answers on, asked when
+  you press Ask; it replaces the list that used to float over the folder's
+  menu. Scripts call it up with `show_panel("ports")`.
+- **Develop, on a web page's bar.** Tick it among the browser tab's controls
+  and the bar gets a list of tools for somebody building the page: the hard
+  reload, picking elements for an AI (the list of what was picked now stands
+  in the right-hand column, called up by this), DevTools, and the page's
+  **source code** and **DOM** -- the HTML as the server sent it, read from what
+  the browser already holds rather than fetched again, and the HTML as it
+  stands now -- each in an editor that reads and does not save. The same list,
+  less the reload, is on the page tab's right-click menu. A page whose server
+  forbids keeping it says so, and points at the DOM instead.
+- **A worktree being made or deleted says how many files it has copied or
+  deleted, of how many, with a bar.** A folder of many small files, such as
+  `node_modules`, can take minutes, and its row no longer sits on "Setting up"
+  with nothing moving. Stopping a worktree while it copies stops at the next
+  file.
+- **Keep the PC awake while an AI works.** Settings > Basic > "Keep the PC
+  awake": off (the default), while an AI is working, or always while the
+  program runs. While it is on, the lower row says whether the PC is being
+  kept awake right now, and pressing it changes the choice -- from the phone
+  too. What a closed laptop lid does still follows Windows's power settings.
+- **The AI allowance covers more AIs.** Gemini (signed in with a Google
+  account), Kimi, Grok, OpenCode Go and Cursor join Claude and Codex, on the
+  lower row and in Settings > AI allowance. A monthly allowance is shown for
+  the AIs billed by the month, and Claude's allowance for a single model (such
+  as Fable) is listed, and reaches the lower row once it is nearly spent. Each
+  AI's own sign-in on this PC is read and never changed.
+- **Point at parts of a page and hand them to an AI.** On a browser tab the
+  input bar's picker has 🎯: press **Pick**, then press the button, card or
+  heading an AI should look at. Each one becomes a chip with room for a note,
+  and **Hand to an AI** puts them into that AI's input as a draft, not sent:
+  what each one is, where it sits on the page, its selector, its markup and
+  the styles that shape it (and the source file, when the page's development
+  build says). The same panel works from a phone, whose presses on the page
+  pick the same way. Automation reads them with `shikisha.browser_picks`.
+  Before anything picked is kept, values that look like keys (the shapes
+  GitHub, OpenAI, Anthropic, AWS, Slack, Google and Stripe give theirs, JSON
+  Web Tokens, private keys, bearer headers, long random strings) and every
+  secret the app itself holds are replaced with `[hidden]`, and the panel says
+  how many were -- the draft is still yours to read. On a phone the page says
+  to stop with the panel's button, since there is no Escape key.
+- **Read a page's console.** The column on the right has a **Console** tab for
+  the page in view: what its code logs, errors nobody caught, and what the
+  browser says about it (a file that did not load, a request refused), with a
+  switch per kind, **Clear**, and **Hand to an AI** (a draft of the newest
+  lines). It starts listening when it is first opened on a page, with what the
+  page said since it last loaded -- listening to every page all the time would
+  trip sites that refuse a driven browser. The same tab works on a phone.
+  Automation reads it with `shikisha.browser_console`.
+- **A page's DevTools, beside it.** Right-click a page's tab (hold it on a
+  phone) and choose **Open DevTools beside it**: the browser's own DevTools
+  open as a page of their own in the other half of the pane -- elements,
+  console, network, all of it -- and a phone is shown them and works them like
+  any page. They reach their page through the app, on a key made at each
+  start, so no debugging port is opened for other programs on the PC. When the
+  app starts again, a split that had DevTools in it comes back with them,
+  opened afresh for the same page. With the window and the work running as two
+  programs, the console and DevTools work as well, on the browser the work
+  runs its pages in.
+  `shikisha.browser_devtools` opens them from automation.
+
+### Changed
+- **A tab's face is a small alien.** Each tab in the conversation between
+  AIs has a two-coloured creature of its own -- one, two or three eyes,
+  sometimes a mouth and feelers -- in the colours of the website's robots,
+  picked from the tab, so the same tab is always the same alien.
+- **Making an issue or a pull request shows how long it can take, under its
+  button.** A bar fills toward the longest the press can take (50 seconds:
+  the sign-in read at its slowest, then GitHub's answer), beside the seconds
+  so far, and fills at once when GitHub answers. The button and Cancel are
+  grey while it is made, and pressing them says why, so a second issue is
+  not made by a second press.
+- **The bridge on a server or a MicroVM is one resident process that holds
+  its jobs.** It is started once for the account and carries every app
+  connected to it, where it used to be one program per line. A tab's
+  `shikisha` command goes to the app that started that tab, and is told at
+  once when that app is not connected, rather than waiting. It still ends a
+  few seconds after the last app goes. A machine holding an older build of
+  the same version is given this one.
+- **The server version's packages carry the bridge.** The .deb, the .rpm
+  and the tar hold it for both kinds of processor, so a server version can
+  reach servers and MicroVMs of either.
+- **The hard reload moved into Develop.** The bar's own ⟲ button is gone; a
+  bar that showed it no longer does (the old setting is read and left alone),
+  and Shift or Ctrl on the reload button still reloads hard.
+- **Picking elements for an AI left the input bar.** It is opened from
+  Develop, and its list stands in the right-hand column as Picked elements.
+- **The right-hand column holds only what the tab in view is used with.**
+  Files, Git and Chat beside an AI tab, Files and Git beside a terminal or an
+  editor, and Console beside a web page -- the rest leaves the strip instead of
+  saying "not here" when pressed. The panel chosen is remembered for each kind
+  of tab, in the settings, so a page and an AI tab each come back to their own.
+  A panel called up by a button (the search of every conversation) joins the
+  strip with its own ✕ and stays until that is pressed. Scripts call one up
+  with `shikisha.show_panel(name)`.
+- **An answer from the source code says which code it was read in.** When this
+  build's own code is not public, the release of the same version is read
+  before the newest code, and the answer names the one it used.
+- **Codex's allowance is asked of Codex's service,** with the sign-in Codex
+  keeps on this PC, and read off Codex's records only when that cannot be had.
+  A window that has reset since it was read says so instead of showing 0%, and
+  every reading says when it was taken.
+- **Keeping the PC awake counts the AIs on every desk.** A desk you are not
+  looking at keeps its tabs' state current, so an AI working there keeps the PC
+  awake for as long as it works.
+
+### Removed
+- **The ? no longer offers to send a question to GitHub as an issue.** A
+  question and its answer can hold names, paths and work of your own, and an
+  issue is public. Nothing you ask the ? leaves this PC except for the AI that
+  answers it.
+
 ### Fixed
 - **A phone's moving code lets in one device, even when it reaches both doors
   at once.** The code is held while it is being used, so the same code sent
@@ -230,193 +417,6 @@ once it reaches its first tagged release.
   long its record was at the moment of asking could not be found out, the
   question could be matched with an earlier one of the same opening words;
   the answer is read from its screen then.
-
-### Removed
-- **The ? no longer offers to send a question to GitHub as an issue.** A
-  question and its answer can hold names, paths and work of your own, and an
-  issue is public. Nothing you ask the ? leaves this PC except for the AI that
-  answers it.
-
-### Added
-- **A browser tab can show a file on this PC.** Write its path as the tab's
-  address (`browser D:/site/index.html`) or type it in the address bar, as
-  `D:/...`, `D:\...`, `file:///...` or `\\server\share\...`. The app hands the
-  file to the tab over HTTP from a server of its own on 127.0.0.1, with the
-  file's folder and nothing above it, read fresh on every reload.
-- **A file path on a terminal's screen opens in a browser tab of that
-  terminal's folder.** Pressing the path of a page, a picture or a PDF now
-  offers "Open in a browser tab" beside the editor, and the tab is put in the
-  same folder as the terminal, the way a web address already is.
-- **A page tab that cannot open says why where the page would be.** It used
-  to stand empty, with at most a toast after a settings save; it now shows
-  the reason with "Try starting it again" and "Open settings", the way a
-  program that cannot start does.
-- **A place inside a folder a worktree inherits can come along its own way.**
-  A line of an ignore file decides a whole folder, so `.claude/` used to be
-  copied with every other agent's worktree in it. The worktree dialog's rows
-  now open to what is inside them, largest first, each with the same four
-  choices; a choice there is kept as the project's rule for that place. The
-  rules are written the way a .gitignore line is, work at any depth, and can
-  also be written under "Rules for places inside folders" in the project's
-  worktree rules. The rule for the deepest place decides; nothing is written
-  into .gitignore. A linked folder cannot follow rules inside it, and the
-  dialog says so with a button to copy it instead.
-- **The worktree dialog says when what it copies will take a while.** Once
-  it has counted what the new folder inherits, a large copy is said above
-  "More" with the amount, and a button opens the list on the row that costs
-  it. Each row of the list says how much it holds, the large ones marked;
-  making one a link or leaving it out takes the warning with it.
-- **AIConfer: watch AIs ask each other things, as a chat.** The Chat panel
-  has a third view beside "This conversation" and "Every conversation". When
-  one AI tab asks another (after you name it with `@`, or on its own), each
-  says one short line about it -- what it asks, what it found -- with a face
-  for every tab, what each is doing along the top, and the full text of the
-  request and the answer folded under each line. Press a line to mark it
-  (👍 ❤️ 🎉 👀 ✅ ❓); an AI can share a commit, a pull request, a file or a
-  page as a card that opens it; a decision made in a job shows as "Agreed".
-  It opens by itself when one AI asks another (not while you are using the
-  window; on a phone it is only chosen), and Settings > AIConfer turns that
-  off or changes how long a line may be (80 characters). For automation,
-  `ask_tab` now takes that line before what it asks
-  (`shikisha ask_tab ID "line" "text"`); the old form is refused with the
-  new one. An AI that was asked is asked once, as it finishes, for its line;
-  the answer handed back is unchanged. New commands `say`, `react` and
-  `share`. Claude Code and Codex are asked again about their hooks, since
-  the end of a turn now asks for the line.
-- **The AI command-line tools are asked, once, to report what they are doing.**
-  When the app starts and finds Claude Code, Codex or Gemini used on this PC
-  without an answer about them yet, it shows which settings file of each it
-  would add one entry to and, a press away, that file as it will be, the
-  lines it adds in blue beside the ones already there, and asks. Allowed,
-  the entries go in and every start keeps them up to date; the dot beside each
-  tab is then right, and two tabs of the same AI in one folder are told apart.
-  Not allowed, those files are left alone and the question is not asked again.
-  Closed without an answer, it is asked at the next start. The same question
-  is on the phone. The answer can be changed under Settings › Carrying
-  conversations across a restart, which shows it.
-- **The AI command-line tools' hooks: Codex runs them.** Codex holds back a
-  new hook until it is approved, so the hook set up from the settings did
-  nothing until it was approved in Codex. The app now has Codex itself record
-  the approval of its own entries (and only those) when it sets them up.
-- **A check's log, one press from the git panel.** Open CI in the git panel
-  and press any check: its job's log opens in an editor tab that only reads,
-  named after the check and the commit, without the runner's colour codes,
-  each line stamped with the time of day, and at the first error when there
-  is one. A check still running, or one with no log to download, opens its
-  page in a browser tab instead and says why. A log GitHub no longer keeps
-  says that too.
-- **A Ports panel on the right.** Press a port under a tab (`:3000`) or choose
-  it from a folder's menu, and the column shows what listens in that folder:
-  each port with the program holding it and the tab it came from, opened in a
-  browser tab with one press, or in this PC's browser, or copied. On a server
-  or a MicroVM the same panel lists what its machine answers on, asked when
-  you press Ask; it replaces the list that used to float over the folder's
-  menu. Scripts call it up with `show_panel("ports")`.
-- **Develop, on a web page's bar.** Tick it among the browser tab's controls
-  and the bar gets a list of tools for somebody building the page: the hard
-  reload, picking elements for an AI (the list of what was picked now stands
-  in the right-hand column, called up by this), DevTools, and the page's
-  **source code** and **DOM** -- the HTML as the server sent it, read from what
-  the browser already holds rather than fetched again, and the HTML as it
-  stands now -- each in an editor that reads and does not save. The same list,
-  less the reload, is on the page tab's right-click menu. A page whose server
-  forbids keeping it says so, and points at the DOM instead.
-
-### Changed
-- **A tab's face is a small alien.** Each tab in the conversation between
-  AIs has a two-coloured creature of its own -- one, two or three eyes,
-  sometimes a mouth and feelers -- in the colours of the website's robots,
-  picked from the tab, so the same tab is always the same alien.
-- **Making an issue or a pull request shows how long it can take, under its
-  button.** A bar fills toward the longest the press can take (50 seconds:
-  the sign-in read at its slowest, then GitHub's answer), beside the seconds
-  so far, and fills at once when GitHub answers. The button and Cancel are
-  grey while it is made, and pressing them says why, so a second issue is
-  not made by a second press.
-- **The bridge on a server or a MicroVM is one resident process that holds
-  its jobs.** It is started once for the account and carries every app
-  connected to it, where it used to be one program per line. A tab's
-  `shikisha` command goes to the app that started that tab, and is told at
-  once when that app is not connected, rather than waiting. It still ends a
-  few seconds after the last app goes. A machine holding an older build of
-  the same version is given this one.
-- **The server version's packages carry the bridge.** The .deb, the .rpm
-  and the tar hold it for both kinds of processor, so a server version can
-  reach servers and MicroVMs of either.
-- **The hard reload moved into Develop.** The bar's own ⟲ button is gone; a
-  bar that showed it no longer does (the old setting is read and left alone),
-  and Shift or Ctrl on the reload button still reloads hard.
-- **Picking elements for an AI left the input bar.** It is opened from
-  Develop, and its list stands in the right-hand column as Picked elements.
-- **The right-hand column holds only what the tab in view is used with.**
-  Files, Git and Chat beside an AI tab, Files and Git beside a terminal or an
-  editor, and Console beside a web page -- the rest leaves the strip instead of
-  saying "not here" when pressed. The panel chosen is remembered for each kind
-  of tab, in the settings, so a page and an AI tab each come back to their own.
-  A panel called up by a button (the search of every conversation) joins the
-  strip with its own ✕ and stays until that is pressed. Scripts call one up
-  with `shikisha.show_panel(name)`.
-- **An answer from the source code says which code it was read in.** When this
-  build's own code is not public, the release of the same version is read
-  before the newest code, and the answer names the one it used.
-- **Codex's allowance is asked of Codex's service,** with the sign-in Codex
-  keeps on this PC, and read off Codex's records only when that cannot be had.
-  A window that has reset since it was read says so instead of showing 0%, and
-  every reading says when it was taken.
-- **Keeping the PC awake counts the AIs on every desk.** A desk you are not
-  looking at keeps its tabs' state current, so an AI working there keeps the PC
-  awake for as long as it works.
-
-### Added
-- **A worktree being made or deleted says how many files it has copied or
-  deleted, of how many, with a bar.** A folder of many small files, such as
-  `node_modules`, can take minutes, and its row no longer sits on "Setting up"
-  with nothing moving. Stopping a worktree while it copies stops at the next
-  file.
-- **Keep the PC awake while an AI works.** Settings > Basic > "Keep the PC
-  awake": off (the default), while an AI is working, or always while the
-  program runs. While it is on, the lower row says whether the PC is being
-  kept awake right now, and pressing it changes the choice -- from the phone
-  too. What a closed laptop lid does still follows Windows's power settings.
-- **The AI allowance covers more AIs.** Gemini (signed in with a Google
-  account), Kimi, Grok, OpenCode Go and Cursor join Claude and Codex, on the
-  lower row and in Settings > AI allowance. A monthly allowance is shown for
-  the AIs billed by the month, and Claude's allowance for a single model (such
-  as Fable) is listed, and reaches the lower row once it is nearly spent. Each
-  AI's own sign-in on this PC is read and never changed.
-- **Point at parts of a page and hand them to an AI.** On a browser tab the
-  input bar's picker has 🎯: press **Pick**, then press the button, card or
-  heading an AI should look at. Each one becomes a chip with room for a note,
-  and **Hand to an AI** puts them into that AI's input as a draft, not sent:
-  what each one is, where it sits on the page, its selector, its markup and
-  the styles that shape it (and the source file, when the page's development
-  build says). The same panel works from a phone, whose presses on the page
-  pick the same way. Automation reads them with `shikisha.browser_picks`.
-  Before anything picked is kept, values that look like keys (the shapes
-  GitHub, OpenAI, Anthropic, AWS, Slack, Google and Stripe give theirs, JSON
-  Web Tokens, private keys, bearer headers, long random strings) and every
-  secret the app itself holds are replaced with `[hidden]`, and the panel says
-  how many were -- the draft is still yours to read. On a phone the page says
-  to stop with the panel's button, since there is no Escape key.
-- **Read a page's console.** The column on the right has a **Console** tab for
-  the page in view: what its code logs, errors nobody caught, and what the
-  browser says about it (a file that did not load, a request refused), with a
-  switch per kind, **Clear**, and **Hand to an AI** (a draft of the newest
-  lines). It starts listening when it is first opened on a page, with what the
-  page said since it last loaded -- listening to every page all the time would
-  trip sites that refuse a driven browser. The same tab works on a phone.
-  Automation reads it with `shikisha.browser_console`.
-- **A page's DevTools, beside it.** Right-click a page's tab (hold it on a
-  phone) and choose **Open DevTools beside it**: the browser's own DevTools
-  open as a page of their own in the other half of the pane -- elements,
-  console, network, all of it -- and a phone is shown them and works them like
-  any page. They reach their page through the app, on a key made at each
-  start, so no debugging port is opened for other programs on the PC. When the
-  app starts again, a split that had DevTools in it comes back with them,
-  opened afresh for the same page. With the window and the work running as two
-  programs, the console and DevTools work as well, on the browser the work
-  runs its pages in.
-  `shikisha.browser_devtools` opens them from automation.
 
 ## [0.22.1] - 2026-09-29
 
@@ -4192,7 +4192,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/styleio/ShikishaTerm/compare/v0.20.0...v0.21.0
