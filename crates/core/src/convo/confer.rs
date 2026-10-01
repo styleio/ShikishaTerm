@@ -253,27 +253,104 @@ pub fn card(kind: &str, target: &str, title: &str, from: &From) -> Result<Card, 
 /// each other things, and no more than the panel draws at once
 pub const PAGE: usize = 80;
 
-/// A page of the conference on `desk`, as the panel asks for it (`args`:
-/// `before`, the time of the oldest thing it has, for the page before that;
-/// `req`, handed back so the panel knows which request this answers). Read
-/// on a thread, over a connection that only reads
-pub fn page(desk: &str, args: &serde_json::Value, path: &std::path::Path) -> serde_json::Value {
-    let before = args.get("before").and_then(serde_json::Value::as_i64).unwrap_or(i64::MAX);
+/// How many conversations the choice between them offers
+pub const THREADS: usize = 30;
+
+/// What the panel asked of the conference on `desk`, answered. Read on a
+/// thread, over a connection that only reads. `act`:
+///
+/// * `confer_threads` -- the conversations, those `args.tab` takes part in
+///   when it names one, the one something was said in last first;
+/// * `confer` -- a page of the conversation `args.thread`: what was said
+///   before `args.before` (the time of the oldest thing the panel has).
+///
+/// `args.req` is handed back so the panel knows which request this answers
+pub fn page(desk: &str, act: &str, args: &serde_json::Value, path: &std::path::Path) -> serde_json::Value {
     let req = args.get("req").cloned().unwrap_or(serde_json::Value::Null);
-    let read = crate::convo::db::Store::open_read(path).and_then(|s| s.conference(desk, before, PAGE + 1));
-    match read {
-        Ok(mut said) => {
-            // One more than a page was read: whether there is anything before
-            let more = said.len() > PAGE;
-            if more {
-                said.remove(0);
+    let answer = |body: Result<serde_json::Value, anyhow::Error>| match body {
+        Ok(mut v) => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("panel".into(), "confer".into());
+                o.insert("act".into(), act.into());
+                o.insert("req".into(), req.clone());
+                o.insert("ok".into(), true.into());
+                o.insert("desk".into(), desk.into());
             }
-            serde_json::json!({"panel": "confer", "act": "confer", "req": req, "ok": true,
-                "desk": desk, "said": said, "more": more, "before": before != i64::MAX})
+            v
         }
-        Err(e) => serde_json::json!({"panel": "confer", "act": "confer", "req": req, "ok": false,
+        Err(e) => serde_json::json!({"panel": "confer", "act": act, "req": req, "ok": false,
             "error": format!("the conference could not be read: {e}")}),
+    };
+    let store = crate::convo::db::Store::open_read(path);
+    if act == "confer_threads" {
+        let tab = args.get("tab").and_then(serde_json::Value::as_str).filter(|t| !t.is_empty());
+        return answer(store.and_then(|s| s.threads(desk, tab, THREADS)).map(|t| serde_json::json!({"tab": tab, "threads": t})));
     }
+    let Some(thread) = args.get("thread").and_then(serde_json::Value::as_i64) else {
+        return answer(Err(anyhow::anyhow!("no conversation was named")));
+    };
+    let before = args.get("before").and_then(serde_json::Value::as_i64).unwrap_or(i64::MAX);
+    answer(store.and_then(|s| s.conference(desk, thread, before, PAGE + 1)).map(|mut said| {
+        // One more than a page was read: whether there is anything before
+        let more = said.len() > PAGE;
+        if more {
+            said.remove(0);
+        }
+        serde_json::json!({"thread": thread, "said": said, "more": more, "before": before != i64::MAX})
+    }))
+}
+
+/// How many of a desk's recent conversations a new one is put beside, for the
+/// deciding AI to say whether it belongs to one of them
+pub const MERGE_CANDIDATES: usize = 5;
+
+/// Whether the conversation just begun on `desk` with `line` / `text`
+/// belongs to one of the desk's recent ones, asked of the deciding AI.
+/// `Some(id)`: the one it belongs to. Run on a thread of its own: a model is
+/// a round trip away, and the conversation is shown meanwhile as it was begun
+pub fn belongs_to(
+    who: &crate::bridge::Answerer,
+    path: &std::path::Path,
+    desk: &str,
+    begun: i64,
+    line: &str,
+    text: &str,
+) -> anyhow::Result<Option<i64>> {
+    let store = crate::convo::db::Store::open_read(path)?;
+    let mut criteria = serde_json::Map::new();
+    let mut state = format!(
+        "AI tabs in a terminal app ask each other for help, and each exchange belongs to a conversation. \
+         A new conversation has just begun with this request.\nIts line: {line}\nThe request: {}\n\nRecent conversations on the same desk:",
+        text.chars().take(1200).collect::<String>()
+    );
+    for t in store.threads(desk, None, MERGE_CANDIDATES + 1)?.into_iter().filter(|t| t.id != begun).take(MERGE_CANDIDATES) {
+        let said: Vec<String> = store
+            .conference(desk, t.id, i64::MAX, 4)?
+            .into_iter()
+            .filter_map(|s| match s {
+                crate::convo::db::Said::Line { tab, text, .. } => Some(format!("  {}: {text}", tab.unwrap_or_else(|| "person".into()))),
+                crate::convo::db::Said::Share { .. } => None,
+            })
+            .collect();
+        let key = format!("t{}", t.id);
+        state.push_str(&format!("\n\n[{key}] with {}; began: {}\n{}", t.tabs.join(", "), t.first, said.join("\n")));
+        criteria.insert(key.clone(), format!("the new request continues conversation {key}: the same task or topic").into());
+    }
+    if criteria.is_empty() {
+        return Ok(None);
+    }
+    criteria.insert("new".into(), "the new request is a separate matter: none of these conversations".into());
+    let ask = serde_json::json!({
+        "state": state,
+        "questions": {"conversation": {
+            "type": "choice",
+            "criteria": criteria,
+            "instructions": "Choose the conversation the new request continues. Choose new unless it is clearly the same task or topic.",
+        }},
+    });
+    let answer = crate::bridge::choose(who, &ask)?;
+    let choice = answer["conversation"]["choice"].as_str().unwrap_or("new");
+    Ok(choice.strip_prefix('t').and_then(|n| n.parse().ok()))
 }
 
 /// What the stop hook tells an AI that has just answered another tab: in

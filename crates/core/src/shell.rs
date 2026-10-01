@@ -370,7 +370,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      colour in it (STYLEGUIDE "A tab's face"); the bubbles are raised surfaces,
      the person's on the right with no face, a card is a pressable thing with
      its edge, a decision made is drawn in the colour of "answered" */
-  #convopanel .fsearch[hidden], #convopanel .cfcast[hidden] { display:none; }
+  #convopanel .fsearch[hidden], #convopanel .cfcast[hidden], #convopanel .cfthreads[hidden] { display:none; }
+  #convopanel .cfthreads { flex:0 0 auto; padding:var(--s2) var(--s3) 0; }
+  #convopanel .cfthpick { display:flex; align-items:center; gap:var(--s2); width:100%; min-height:32px; padding:var(--s1) var(--s3);
+    font:inherit; font-size:12px; text-align:left; color:var(--text); background:var(--bg); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); cursor:pointer; }
+  #convopanel .cfthpick:hover { border-color:var(--edge-hi); }
+  .cfthfaces { flex:none; display:inline-flex; gap:2px; }
+  .cfthtext { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cfthn { flex:none; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  .fmenu.cfthmenu .cfthrow { display:flex; align-items:center; gap:var(--s2); max-width:360px; font-size:12px; }
+  .fmenu.cfthmenu .cfthrow.on { background:var(--raise); }
   #convopanel .cfcast { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:var(--s2) var(--s3);
     padding:var(--s2) var(--s3); border-bottom:1px solid var(--line); }
   #convopanel .cfcastone { display:flex; flex-direction:column; align-items:center; gap:2px; width:88px; min-width:0;
@@ -14038,7 +14048,9 @@ function convoBuild(box) {
   show.append(el("label", {}, pins, T["convo.show.pins"] || "Pinned only"));
   // What sits over a conversation opened by name (the way to pick it back up)
   const head = el("div", {id: "convoHead"});
-  // Who is in the conference, over it
+  // Which conversation, and who is in it, over it
+  const threads = el("div", {class: "cfthreads"});
+  threads.hidden = true;
   const cast = el("div", {class: "cfcast"});
   cast.hidden = true;
   const list = el("div", {class: "clist"});
@@ -14048,8 +14060,8 @@ function convoBuild(box) {
     if (cvConfer) CF.stick = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   }, {passive: true});
   const say = el("div", {class: "fsay"});
-  box.append(search, mode, show, head, cast, list, say);
-  cvUi = {q, boxes, pins, list, say, cast, search};
+  box.append(search, mode, show, head, threads, cast, list, say);
+  cvUi = {q, boxes, pins, list, say, cast, threads, search};
 }
 // What the list shows: what reading every conversation found, when words are
 // typed or pins asked for -- until that arrives, what is here narrowed at once
@@ -14078,6 +14090,7 @@ function drawConvo() {
     return;
   }
   u.cast.hidden = true;
+  u.threads.hidden = true;
   u.list.classList.remove("cfchat");
   if (cvAll) { drawAll(u); return; }
   const searching = !!(CV.q || CV.pins);
@@ -14189,7 +14202,11 @@ function convoSoon(key) {
 let cvConfer = false;    // the panel is showing the conference, not a conversation
 const CF = {
   desk: "",        // the desk what has been read belongs to
-  said: [],        // what has been read, oldest first
+  focus: null,     // the tab whose conversations are offered (the AI tab in front), or null for the desk's
+  threads: [],     // its conversations, the one something was said in last first
+  thread: null,    // the conversation shown
+  picked: false,   // chosen by the person (or opened by an ask), rather than the newest
+  said: [],        // what has been read of it, oldest first
   more: false,     // there is more before the first of it
   seq: {},         // kind of request -> the newest one
   rev: -1,         // the conference's revision last read (S.confer.rev)
@@ -14300,22 +14317,44 @@ function cfAsk(act, args, slot) {
   CF.seq[s] = (CF.seq[s] || 0) + 1;
   send({kind: "convo", panel: "confer", act, args: Object.assign({req: s + "#" + CF.seq[s]}, args || {})});
 }
+// The tab whose conversations are shown: the AI tab in front. Anything
+// else in front shows the desk's
+function cfFocus() {
+  const t = convoTab();
+  return t && t.kind === "pty" && t.ai && !t.model ? (t.id || t.name) : null;
+}
+// Read the conversations again, and the one shown. Another desk or another
+// tab in front starts over: its conversations, the newest shown
 function cfRefresh() {
-  // Another desk in front: its conference, from the start
   const desk = (S && S.desk_id) || "";
-  if (CF.desk !== desk) {
+  const focus = cfFocus();
+  if (CF.desk !== desk || CF.focus !== focus) {
     CF.desk = desk;
-    CF.said = []; CF.more = false; CF.full = new Set(); CF.stick = true; CF.drawn = "";
+    CF.focus = focus;
+    CF.threads = [];
+    if (!CF.picked) CF.thread = null;
+    cfShow(CF.thread, CF.picked);
   }
-  CF.loading = !CF.said.length;
-  cfAsk("confer", {});
+  cfAsk("confer_threads", focus ? {tab: focus} : {});
+  if (CF.thread != null) cfAsk("confer", {thread: CF.thread});
+}
+// Show one conversation, from its newest page
+function cfShow(thread, picked) {
+  if (thread !== CF.thread) {
+    CF.said = []; CF.more = false; CF.full = new Set(); CF.stick = true;
+  }
+  CF.thread = thread;
+  CF.picked = !!picked;
+  CF.loading = thread != null && !CF.said.length;
+  CF.drawn = "";
+  if (thread != null) cfAsk("confer", {thread});
 }
 // The page before what is here. Asked from a moment after the oldest thing
 // here, so what was said in the same millisecond on either side of the page
 // is not lost between the two; what comes back twice is kept once
 function cfEarlier() {
-  if (!CF.more || !CF.said.length) return;
-  cfAsk("confer", {before: CF.said[0].at + 1}, "earlier");
+  if (!CF.more || !CF.said.length || CF.thread == null) return;
+  cfAsk("confer", {thread: CF.thread, before: CF.said[0].at + 1}, "earlier");
 }
 // The same thing said, whichever page brought it
 function cfKey(s) {
@@ -14329,8 +14368,22 @@ function cfGot(d) {
   CF.loading = false;
   // Read for a desk no longer in front
   if (d.desk !== undefined && d.desk !== CF.desk) return;
-  if (!d.ok) { CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
+  if (!d.ok) { CF.loading = false; CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
   CF.bad = "";
+  if (d.act === "confer_threads") {
+    if ((d.tab || null) !== CF.focus) return;
+    CF.threads = d.threads || [];
+    // The newest, unless one was chosen and is still there
+    const keep = CF.picked && CF.threads.some(t => t.id === CF.thread);
+    const want = keep ? CF.thread : (CF.threads[0] ? CF.threads[0].id : null);
+    if (want !== CF.thread) cfShow(want, keep);
+    if (want == null) CF.loading = false;
+    CF.drawn = "";
+    drawConvo();
+    return;
+  }
+  // A page of a conversation no longer shown
+  if (d.thread !== CF.thread) return;
   if (slot === "earlier") {
     const here = new Set(CF.said.map(cfKey));
     CF.said = (d.said || []).filter(s => !here.has(cfKey(s))).concat(CF.said);
@@ -14360,7 +14413,7 @@ function conferArrived(before) {
   if (before && c.open && c.open !== CF.open) {
     const fresh = CF.open !== 0 || (before.confer || {}).open !== c.open;
     CF.open = c.open;
-    if (fresh && c.auto_open && c.open_desk === S.desk_id) cfOpenItself();
+    if (fresh && c.auto_open && c.open_desk === S.desk_id) cfOpenItself(c.open_thread);
   } else if (!before) {
     CF.open = c.open || 0;
   }
@@ -14368,9 +14421,11 @@ function conferArrived(before) {
 // One tab has asked another: the conference, in front -- unless the person
 // is in the middle of something here, or on a phone, where the column is a
 // sheet over everything and is only turned to, not opened
-function cfOpenItself() {
+function cfOpenItself(thread) {
   if (S.settings || S.board) return;
   const busy = Date.now() - cfHandsAt < CF_HANDS_OFF_MS;
+  // The conversation the ask is in: in front of whichever tab is
+  if (thread && !busy) cfShow(thread, true);
   if (!busy && !phoneWidth()) sideReveal("convo");
   if (!cvConfer) convoModeTo("confer");
   else drawSide();
@@ -14587,13 +14642,41 @@ function drawCast(box) {
     box.append(who);
   }
 }
+// Which conversation is shown, when there is more than one to choose from:
+// how it began, which of how many, and the rest a press away
+function drawThreads(box) {
+  const list = CF.threads;
+  const at = list.findIndex(t => t.id === CF.thread);
+  const key = list.map(t => t.id + ":" + t.last_at + ":" + t.tabs.join(",")).join("|") + "|" + CF.thread;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.textContent = "";
+  box.hidden = list.length < 2;
+  if (list.length < 2) return;
+  const row = (t) => {
+    const faces = el("span", {class: "cfthfaces"});
+    for (const id of t.tabs.slice(0, 4)) faces.append(cfFace(id, "xs"));
+    return [faces, el("span", {class: "cfthtext"}, cfWords(t.first)), el("span", {class: "cfwhen"}, convoTime(t.last_at))];
+  };
+  const pick = el("button", {type: "button", class: "cfthpick", title: T["confer.threads.pick"] || ""});
+  if (at >= 0) pick.append(...row(list[at]));
+  pick.append(el("span", {class: "cfthn"},
+    (T["confer.threads.n"] || "{i} of {n}").replaceAll("{i}", at + 1).replaceAll("{n}", list.length) + " ▾"));
+  // Under the button, whatever pressed it
+  pick.onclick = () => openList(pick, list.map(t => el("div", {class: "cfthrow" + (t.id === CF.thread ? " on" : ""),
+    onclick: () => { closeFolderMenu(); cfShow(t.id, true); drawConvo(); }}, ...row(t))), true, null, "cfthmenu");
+  box.append(pick);
+}
 // The conference, drawn into the panel's list
 function drawConfer(u) {
+  // Another tab in front: its conversations
+  if (CF.focus !== cfFocus() || CF.desk !== ((S && S.desk_id) || "")) cfRefresh();
+  drawThreads(u.threads);
   drawCast(u.cast);
   u.say.textContent = "";
   u.say.style.color = CF.bad ? "var(--stop)" : "";
   const key = String(CF.rev) + "|" + CF.said.length + "|" + (CF.said.length ? CF.said[CF.said.length - 1].id : "") + "|" + CF.bad
-    + "|" + (((S && S.tabs) || []).map(t => t.id + t.name).join(","));
+    + "|" + CF.thread + "|" + (((S && S.tabs) || []).map(t => t.id + t.name).join(","));
   if (u.list.dataset.cf !== key || CF.drawn === "") {
     u.list.dataset.cf = key;
     CF.drawn = key;
@@ -14615,7 +14698,7 @@ function drawConfer(u) {
   }
   if (CF.bad) { u.say.textContent = CF.bad; return; }
   if (CF.loading) { u.say.textContent = T["convo.loading"] || "Reading…"; return; }
-  if (!CF.said.length) u.say.textContent = T["confer.empty"] || "";
+  if (!CF.said.length) u.say.textContent = CF.focus ? (T["confer.empty.tab"] || "") : (T["confer.empty"] || "");
 }
 
 // Draw the column: whether it is there, the strip along its top, and which

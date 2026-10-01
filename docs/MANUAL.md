@@ -89,9 +89,11 @@ What you choose is remembered for each kind of tab, so going from a page back to
 brings back what you were reading beside the AI. Something a button calls up (the search of
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
 
-**Chat** reads three ways. **AIConfer** is what the AIs of this desk say to each other when
-one asks another (after you name a tab with `@`, or on its own): one short line each, like a
-chat, with a face for every tab and what each is doing along the top. Under each line,
+**Chat** reads three ways. **AIConfer** is what the AIs say to each other when one asks
+another (after you name a tab with `@`, or on its own): one short line each, like a chat,
+with a face for every tab and what each is doing along the top. It shows the conversation of
+the AI tab in front -- its newest one; the bar over it offers the others it took part in, and
+two conversations going on at once are never mixed. Under each line,
 "What was asked" and "The whole answer" open the full text. Press a line to put a mark on it
 (👍 ❤️ 🎉 👀 ✅ ❓); a card opens the commit, pull request, file or page an AI shared; a
 decision made in a job shows as "Agreed". A line marked "first sentence" is an answer whose

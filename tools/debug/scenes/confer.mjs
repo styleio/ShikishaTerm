@@ -72,16 +72,26 @@ const said = [
     detail: { host: 'github.com', number: 42 } },
 ];
 
-const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, req: "confer#" + CF.seq.confer}, ${JSON.stringify(msg)})); "ok"`;
+// The conversations otter (the tab in front) took part in: this one, and an
+// earlier one about something else
+const threads = [
+  { id: 1, last_at: at(1), tabs: ['otter', 'finch', 'heron'], first: said[0].text },
+  { id: 2, last_at: at(240), tabs: ['otter', 'heron'], first: 'Could you check why the staging build is slow?' },
+];
+const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, desk: "work", req: "${msg.act}#" + CF.seq["${msg.act}"]}, ${JSON.stringify(msg)})); "ok"`;
+const listed = (list) => answer({ act: 'confer_threads', tab: 'otter', threads: list });
+const page = (rows) => answer({ act: 'confer', thread: 1, said: rows, more: false });
 
 export default {
   setup,
   scenes: {
-    chat: answer({ act: 'confer', desk: 'work', said, more: false }),
+    chat: listed(threads) + ';' + page(said),
     // The whole answer opened under a line
-    full: answer({ act: 'confer', desk: 'work', said, more: false })
+    full: listed(threads) + ';' + page(said)
       + `; document.querySelectorAll('#convopanel .cffold .vmore')[1].click(); "ok"`,
+    // The other conversations this tab took part in, offered
+    threads: listed(threads) + ';' + page(said) + `; document.querySelector('#convopanel .cfthpick').click(); "ok"`,
     // Nothing yet: what the panel says instead
-    empty: answer({ act: 'confer', desk: 'work', said: [], more: false }),
+    empty: listed([]),
   },
 };
