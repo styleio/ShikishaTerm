@@ -243,6 +243,10 @@ once it reaches its first tagged release.
   `D:/...`, `D:\...`, `file:///...` or `\\server\share\...`. The app hands the
   file to the tab over HTTP from a server of its own on 127.0.0.1, with the
   file's folder and nothing above it, read fresh on every reload.
+- **A file path on a terminal's screen opens in a browser tab of that
+  terminal's folder.** Pressing the path of a page, a picture or a PDF now
+  offers "Open in a browser tab" beside the editor, and the tab is put in the
+  same folder as the terminal, the way a web address already is.
 - **A page tab that cannot open says why where the page would be.** It used
   to stand empty, with at most a toast after a settings save; it now shows
   the reason with "Try starting it again" and "Open settings", the way a

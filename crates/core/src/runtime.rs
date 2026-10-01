@@ -9968,14 +9968,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for press in shell.mail().take_link_presses() {
             let Some(t) = tabs.iter().find(|t| t.key().matches(&press.tab)) else { continue };
             let place = files_at(&press.tab, &surfaces, &tabs);
-            let said = link_press(&press, t, place.as_ref());
-            if press.act == "page" && press.kind == "web" && shikisha_shared::is_openable(&press.target) {
+            let (said, file_page) = link_press(&press, t, place.as_ref());
+            // A web address as it is; a file of this PC by its whole path,
+            // worked out from the tab and the words (crate::localpage serves it)
+            let page = match (&file_page, press.kind.as_str()) {
+                (Some(file), _) => Some((
+                    file.display().to_string(),
+                    file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "page".into()),
+                )),
+                (None, "web") if shikisha_shared::is_openable(&press.target) => Some((
+                    press.target.trim().to_string(),
+                    // The address's host is what a person would call the page
+                    press.target.split("//").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("page").to_string(),
+                )),
+                _ => None,
+            };
+            if press.act == "page"
+                && let Some((url, name)) = page
+            {
                 let Some(desk) = desks.get(desk_index) else { continue };
+                // In the folder of the tab it was pressed on, beside its tabs
                 let p = tab_place(t);
                 let key = std::path::PathBuf::from(crate::uistate::place_key(t.host(), &p.dir));
-                // The address's host is what a person would call the page
-                let name = press.target.split("//").nth(1).and_then(|r| r.split(['/', '?', '#']).next()).unwrap_or("page").to_string();
-                match page_in_folder(desk, &key, press.target.trim(), &name) {
+                match page_in_folder(desk, &key, &url, &name) {
                     Ok((id, fresh)) => {
                         reveal = Some((id, Instant::now() + Duration::from_secs(if fresh { 20 } else { 10 })));
                         if fresh {
@@ -14071,8 +14086,26 @@ fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &
 /// editor is offered only for a file inside that folder, the fence every file
 /// the editor reads goes through. A folder on another machine is not looked
 /// at from here -- the editor asks when it opens the file, and says if it is
-/// not there
-fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt>) -> Option<serde_json::Value> {
+/// not there.
+///
+/// Also answers, for a `page` press on a file of this PC that a page can
+/// show, which file: the caller opens it as a tab of the folder
+fn link_press(
+    press: &crate::mailbox::LinkPress,
+    t: &Tab,
+    place: Option<&FilesAt>,
+) -> (Option<serde_json::Value>, Option<std::path::PathBuf>) {
+    let mut page = None;
+    let said = link_said(press, t, place, &mut page);
+    (said, page)
+}
+
+fn link_said(
+    press: &crate::mailbox::LinkPress,
+    t: &Tab,
+    place: Option<&FilesAt>,
+    page: &mut Option<std::path::PathBuf>,
+) -> Option<serde_json::Value> {
     let answer = |more: serde_json::Value| {
         let mut js = serde_json::json!({ "ask": press.ask, "tab": press.tab, "target": press.target, "lk": press.kind });
         if let (Some(o), serde_json::Value::Object(m)) = (js.as_object_mut(), more) {
@@ -14116,17 +14149,19 @@ fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt
                 // same reason
                 let full = std::path::PathBuf::from(&unc);
                 let runs = crate::termlink::runs_when_opened(&full);
+                let shows = crate::localpage::shows_in_page(&full);
                 match press.act.as_str() {
                     "app" if !runs => {
                         let open = unc.clone();
                         std::thread::spawn(move || crate::webui::open_external(&open));
                     }
                     "reveal" => reveal_in_folder(&full, true, false),
+                    "page" if shows => *page = Some(full.clone()),
                     _ => {}
                 }
                 return (press.act == "look").then(|| {
                     answer(serde_json::json!({
-                        "ok": true, "far": false, "path": unc, "found": true, "dir": false, "runs": runs,
+                        "ok": true, "far": false, "path": unc, "found": true, "dir": false, "runs": runs, "page": shows,
                     }))
                 });
             }
@@ -14161,9 +14196,12 @@ fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt
             let meta = std::fs::metadata(&full).ok();
             let dir = meta.as_ref().is_some_and(|m| m.is_dir());
             let runs = !dir && crate::termlink::runs_when_opened(&full);
+            // A file a page can show: a page, a picture, a PDF
+            let shows = meta.is_some() && !dir && crate::localpage::shows_in_page(&full);
             match press.act.as_str() {
                 "app" if meta.is_some() && !runs => crate::webui::open_external(&full.display().to_string()),
                 "reveal" => reveal_in_folder(&full, meta.is_some(), dir),
+                "page" if shows => *page = Some(full.clone()),
                 _ => {}
             }
             (press.act == "look").then(|| {
@@ -14178,7 +14216,7 @@ fn link_press(press: &crate::mailbox::LinkPress, t: &Tab, place: Option<&FilesAt
                 });
                 answer(serde_json::json!({
                     "ok": true, "far": false, "path": display_path_of(&full),
-                    "found": meta.is_some(), "dir": dir, "runs": runs,
+                    "found": meta.is_some(), "dir": dir, "runs": runs, "page": shows,
                     "rel": rel.filter(|r| !r.is_empty()),
                     "line": spot.line, "col": spot.column,
                 }))

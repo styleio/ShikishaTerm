@@ -66,6 +66,16 @@ fn has_drive(s: &str) -> bool {
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\')
 }
 
+/// Whether a page is the place to show this file: a page itself, a picture, a
+/// PDF. What a terminal's link offers to open in a browser tab
+pub fn shows_in_page(file: &Path) -> bool {
+    let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "html" | "htm" | "xhtml" | "svg" | "pdf" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif"
+    )
+}
+
 /// The address a tab opens for `text`: None when it is not a file on this PC
 /// (it is opened as it is), the served address when it is, and why not when
 /// it names a file that cannot be shown
@@ -251,6 +261,13 @@ mod tests {
         assert_eq!(p("\\\\server\\share\\a.html").as_deref(), Some("//server/share/a.html"));
         for not in ["example.com/a.html", "https://example.com/", "D:", "D:a.html", "localhost:8000", "日本語"] {
             assert_eq!(p(not), None, "{not} was read as a file");
+        }
+        // What a terminal's link offers to show in a browser tab
+        for shown in ["a.html", "B.HTM", "c.svg", "d.pdf", "e.png"] {
+            assert!(shows_in_page(Path::new(shown)), "{shown} is not offered");
+        }
+        for not in ["a.rs", "b.exe", "c", "d.json"] {
+            assert!(!shows_in_page(Path::new(not)), "{not} is offered");
         }
     }
 

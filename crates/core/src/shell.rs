@@ -16321,6 +16321,10 @@ function linkChoices(w, d) {
     return out;
   }
   if (d.found && !d.dir) out.push(linkEdit(w, d));
+  // A page, a picture, a PDF: shown in a browser tab of this terminal's
+  // folder, the way a web address is. From a phone as well -- the page is
+  // drawn on the PC and watched from there like any other
+  if (d.page) out.push({label: T["tui.link.page"], run: () => linkDo(w, "page")});
   // Programs and folders of this PC open on this PC's screen: from a phone
   // there would be nothing to see, so they are not offered there
   if (AT_PC && d.found) {
