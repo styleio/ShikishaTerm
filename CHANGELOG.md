@@ -310,11 +310,10 @@ once it reaches its first tagged release.
   forbids keeping it says so, and points at the DOM instead.
 
 ### Changed
-- **A tab's face is one of the orchestra's robots.** Each tab in the
-  conversation between AIs is drawn as a robot like the ones on the website,
-  holding an instrument (a note, a violin, a trumpet, a drum, a flute, a
-  microphone), with its colours, antenna and eyes picked from the tab, so
-  the same tab is always the same player.
+- **A tab's face is a small alien.** Each tab in the conversation between
+  AIs has a two-coloured creature of its own -- one, two or three eyes,
+  sometimes a mouth and feelers -- in the colours of the website's robots,
+  picked from the tab, so the same tab is always the same alien.
 - **Making an issue or a pull request shows how long it can take, under its
   button.** A bar fills toward the longest the press can take (50 seconds:
   the sign-in read at its slowest, then GitHub's answer), beside the seconds

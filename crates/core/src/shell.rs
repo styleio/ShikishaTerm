@@ -14237,15 +14237,14 @@ for (const ev of ["pointerdown", "keydown", "wheel"]) {
 }
 
 const cfFaces = new Map();
-// Which faces are drawn: "players" (face.js, the robots of the orchestra) or
-// "beam" (vendor/boring-avatars/beam.js, the faces before them, kept so this
-// one word puts them back)
-const FACE_LOOK = "players";
-// How many colours a face is painted from: seven heads (each with a pale
-// ground of its own family, at the same index) or beam's five
+// Which faces are drawn: "aliens" (face.js) or "beam"
+// (vendor/boring-avatars/beam.js, the faces before them, kept so this one
+// word puts them back)
+const FACE_LOOK = "aliens";
+// How many colours a face is painted from: the aliens' seven or beam's five
 const FACE_COLOURS = FACE_LOOK === "beam" ? 5 : 7;
 // Every body and background two of the face colours can make, never both of
-// one: twenty for beam, forty-two for the players
+// one: twenty for beam, forty-two for the aliens
 const CF_PAIRS = [...Array(FACE_COLOURS).keys()].flatMap(b =>
   [...Array(FACE_COLOURS - 1).keys()].map(k => [b, (b + k + 1) % FACE_COLOURS]));
 let cfPairsFor = "", cfPairOf = new Map();
@@ -14288,7 +14287,7 @@ function cfPair(id) {
 function cfFace(id, cls) {
   const seed = ((S && S.desk_id) || "") + "/" + (id || "");
   const pair = cfPair(id || "");
-  // At 14px a player is drawn without what it holds (face.js, `small`)
+  // At 14px an alien is drawn with larger eyes and nothing else (face.js, `small`)
   const small = cls === "xs";
   const key = seed + "#" + pair.join(",") + (small ? "#small" : "");
   let svg = cfFaces.get(key);
@@ -14299,7 +14298,7 @@ function cfFace(id, cls) {
     const all = (name) => [...Array(FACE_COLOURS).keys()].map(i => v(name + (i + 1)));
     svg = FACE_LOOK === "beam"
       ? beamFace(seed, all("--face"), ink, pair)
-      : playerFace(seed, all("--player"), all("--player-back"), ink, small, pair);
+      : alienFace(seed, all("--alien"), ink, small, pair);
     cfFaces.set(key, svg);
   }
   const s = el("span", {class: "cfface" + (cls ? " " + cls : "")});
@@ -23337,7 +23336,7 @@ fn px(n: i32) -> String {
     format!("{n}px")
 }
 
-/// A tab's face, drawn from its name: the orchestra's robots (`face.js`), and
+/// A tab's face, drawn from its name: an alien (`face.js`), and
 /// the faces before them (`vendor/boring-avatars/beam.js`), which the page's
 /// `FACE_LOOK` can put back
 const FACE_JS: &str = concat!(
