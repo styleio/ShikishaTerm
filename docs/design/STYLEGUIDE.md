@@ -98,8 +98,10 @@ tabs that are put away is not a tab, and keeps its colours.
 ### A tab's face
 
 Each tab has a face (`vendor/boring-avatars/beam.js`, seeded by the tab's id).
-It picks its background and its body from five colours and draws its eyes and
-mouth in one of two inks. The values are the app's, not the scheme's: a face is
+It picks its background and its body from five colours -- twenty pairs, and no
+two tabs of a desk wear the same one; the body fills most of the circle, so up
+to five tabs each get a body colour of their own before any is worn twice --
+and draws its eyes and mouth in one of two inks. The values are the app's, not the scheme's: a face is
 who a tab is, and it must not turn into someone else when the scheme changes.
 
 | Variable | Value |

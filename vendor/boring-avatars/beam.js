@@ -12,21 +12,30 @@
 // - The color of the eyes and mouth is not black or white written in here:
 //   the caller hands the dark and the light ink, and the one that reads on
 //   the body's color is picked the same way the original picked.
+// - The caller may choose which two of the colors are the body and the
+//   background (`pair`, two indexes into `colors`). The original takes both
+//   from the name, the background always three colors on from the body, so
+//   five colors make five pairs and two names often share one; a board that
+//   shows several faces side by side gives each its own pair of the twenty.
 //
-// The same name and the same colors give the same face as the original.
+// The same name and the same colors, with no pair chosen, give the same face
+// as the original.
 // On the board the colors are --face1 to --face5 and the inks --face-ink and
 // --face-ink-light (docs/design/STYLEGUIDE.md, "A tab's face").
 
-function beamFace(name, colors, ink) {
-  const SIZE = 36;
-
-  // A 32-bit hash of the name, made positive
+// A 32-bit hash of the name, made positive: what a face is drawn from
+function beamHash(name) {
   let n = 0;
   for (let i = 0; i < name.length; i++) {
     n = ((n << 5) - n) + name.charCodeAt(i);
     n = n & n;
   }
-  n = Math.abs(n);
+  return Math.abs(n);
+}
+
+function beamFace(name, colors, ink, pair) {
+  const SIZE = 36;
+  const n = beamHash(name);
 
   const digit = (place) => Math.floor((n / Math.pow(10, place)) % 10);
   const even = (place) => digit(place) % 2 === 0;
@@ -49,9 +58,9 @@ function beamFace(name, colors, ink) {
   const bodyX = preX < 5 ? preX + SIZE / 9 : preX;
   const preY = unit(10, 2);
   const bodyY = preY < 5 ? preY + SIZE / 9 : preY;
-  const body = pick(n);
+  const body = pair ? colors[pair[0]] : pick(n);
   const face = inkOn(body);
-  const back = pick(n + 13);
+  const back = pair ? colors[pair[1]] : pick(n + 13);
   const bodyTurn = unit(360);
   const bodyScale = 1 + unit(SIZE / 12) / 10;
   const mouthOpen = even(2);

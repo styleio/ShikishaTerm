@@ -14039,15 +14039,55 @@ for (const ev of ["pointerdown", "keydown", "wheel"]) {
 }
 
 const cfFaces = new Map();
+// Every body and background two of the five face colors can make: twenty
+const CF_PAIRS = [0, 1, 2, 3, 4].flatMap(b => [1, 2, 3, 4].map(k => [b, (b + k) % 5]));
+let cfPairsFor = "", cfPairOf = new Map();
+// Which pair each tab of the desk wears, so no two of them look alike. The
+// body fills most of the circle, so it is the body that has to differ first:
+// each tab asks for the pair its name falls on, and takes the next one whose
+// body nobody wears yet -- five tabs, five bodies -- and after that the next
+// pair nobody wears. Worked out over the desk's AI tabs and every tab the
+// conference names, in the order of their ids -- not of the tabs on screen,
+// so moving a tab changes no face. Only a newcomer whose id sorts first can
+// move another; past twenty tabs, pairs are shared
+function cfPair(id) {
+  const ids = new Set(((S && S.tabs) || []).filter(t => t.ai).map(t => t.id || t.name));
+  for (const s of CF.said) {
+    for (const x of [s.tab, s.ask && s.ask.target, s.ask && s.ask.caller]) if (x) ids.add(x);
+  }
+  if (id) ids.add(id);
+  const desk = (S && S.desk_id) || "";
+  const list = [...ids].sort();
+  const key = desk + "|" + list.join("|");
+  if (key !== cfPairsFor) {
+    cfPairsFor = key;
+    cfPairOf = new Map();
+    const taken = new Set(), bodies = new Set();
+    const n = CF_PAIRS.length;
+    for (const x of list) {
+      const want = beamHash(desk + "/" + x) % n;
+      const from = (test) => { for (let i = 0; i < n; i++) { const k = (want + i) % n; if (test(k)) return k; } return -1; };
+      let k = from(k => !taken.has(k) && !bodies.has(CF_PAIRS[k][0]));
+      if (k < 0) k = from(k => !taken.has(k));
+      if (k < 0) k = want;
+      taken.add(k);
+      bodies.add(CF_PAIRS[k][0]);
+      cfPairOf.set(x, CF_PAIRS[k]);
+    }
+  }
+  return cfPairOf.get(id) || CF_PAIRS[0];
+}
 // The face of the tab `id`, at 28px or small (a mark's, the strip's)
 function cfFace(id, cls) {
   const seed = ((S && S.desk_id) || "") + "/" + (id || "");
-  let svg = cfFaces.get(seed);
+  const pair = cfPair(id || "");
+  const key = seed + "#" + pair.join(",");
+  let svg = cfFaces.get(key);
   if (!svg) {
     const css = getComputedStyle(document.documentElement);
     const v = n => css.getPropertyValue(n).trim();
-    svg = beamFace(seed, [1, 2, 3, 4, 5].map(i => v("--face" + i)), [v("--face-ink"), v("--face-ink-light")]);
-    cfFaces.set(seed, svg);
+    svg = beamFace(seed, [1, 2, 3, 4, 5].map(i => v("--face" + i)), [v("--face-ink"), v("--face-ink-light")], pair);
+    cfFaces.set(key, svg);
   }
   const s = el("span", {class: "cfface" + (cls ? " " + cls : "")});
   s.innerHTML = svg;
