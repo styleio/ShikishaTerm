@@ -2588,14 +2588,19 @@ fn handle(
             };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let at = std::path::PathBuf::from(p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            // The rules for places inside, as the page has them -- saved or
+            // not -- so what is said is what they would copy
+            let rules: Vec<crate::config::BringRule> =
+                p.get("inside").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
             std::thread::spawn(move || {
                 let resp = match crate::repo::main_checkout(&at) {
                     None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
                     Some(main) => {
                         let paths: Vec<String> = crate::worktree::ignored(&main).into_iter().map(|i| i.path).collect();
+                        let inside = crate::inside::Inside::of(&rules);
                         serde_json::json!({
                             "ok": true,
-                            "sizes": crate::worktree::sizes(&main, &paths, crate::inherit::SIZE_MOST),
+                            "sizes": crate::worktree::sizes(&main, &paths, crate::inherit::SIZE_MOST, &inside),
                             "large_bytes": crate::inherit::LARGE_BYTES,
                             "large_files": crate::inherit::LARGE_FILES,
                         })
@@ -13392,7 +13397,7 @@ function inheritPart(desk, p) {
   const j = known || {lines: [], ignored: [], defaults: [], tracked: []};
   // How much each line's things hold, and whether a folder where worktrees
   // go can be a second name for another: what a line can sensibly become
-  const sizes = sizesOf(root);
+  const sizes = sizesOf(root, p);
   const place = placeOf(desk, p);
   const redraw = r => { if (r && r.ok === false && r.error) toast(r.error, true); render(); };
   const matchesOf = (source, pattern) => j.ignored.filter(i => i.source === source && i.pattern === pattern);
@@ -13539,6 +13544,9 @@ function inheritPart(desk, p) {
     others.length ? el("div", {class:"hint"}, T["settings.bring.others"]) : null,
     others.length ? el("div", {class:"rows"}, ...others) : null,
     el("div", {class:"hint"}, T["settings.bring.defaults"]),
+    // A line can only speak for a folder as a whole; the places inside one
+    // are decided here, in the same card, since they are the same decision
+    insidePart(desk, p),
     // Files from anywhere else are inherited the same way, so they are part
     // of the same card rather than a card of their own
     extraFilesPart(desk, p)].filter(Boolean));
@@ -13546,18 +13554,63 @@ function inheritPart(desk, p) {
   return box;
 }
 
-// How much each thing a project's ignore files match holds, counted once
-// per page by the app (it can take a while on a large project)
+// How much each thing a project's ignore files match would copy, counted by
+// the app (it can take a while on a large project) once per page and per set
+// of rules for places inside: a rule written here changes what is copied,
+// saved or not, and the sizes say what it would be
 const SIZES = {};
-function sizesOf(root) {
-  const known = SIZES[root];
+function sizesOf(root, p) {
+  const inside = insideRules(p);
+  const key = root + "\u0000" + JSON.stringify(inside);
+  const known = SIZES[key];
   if (known) return known.j;
-  SIZES[root] = {j: null};
-  settingsApi("/api/project/sizes", {path: root}).catch(() => null).then(j => {
-    SIZES[root] = {j: j && j.ok ? j : null};
+  SIZES[key] = {j: null};
+  settingsApi("/api/project/sizes", {path: root, inside}).catch(() => null).then(j => {
+    SIZES[key] = {j: j && j.ok ? j : null};
     if (j && j.ok && !typingNow()) render();
   });
   return null;
+}
+
+// The project's rules for places inside folders, as written on this page
+function insideRules(p) {
+  return ((p.entry || {}).bring || []).filter(r => r.path != null);
+}
+// Places inside the folders that come along, each with how it comes: what a
+// line of an ignore file cannot say, since it speaks for a folder as a whole.
+// Written the way such a line is, at any depth; the deepest place decides
+function insidePart(desk, p) {
+  const rows = el("div");
+  const change = fn => { const en = ensureProject(desk, p); fn(en); sel.proj = "p:" + en.name; refreshSave(); render(); };
+  for (const r of insideRules(p)) {
+    const at = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.inside.ph"]});
+    at.value = r.path || "";
+    at.addEventListener("change", () => change(() => { r.path = at.value.trim(); }));
+    const how = BRING_HOWS.includes(r.how) ? r.how : "skip";
+    const row = el("div", {class:"listrow"},
+      at,
+      howSelect(how, true, v => change(() => { r.how = v; if (v !== "replace") delete r.replace; })),
+      el("button", {class:"quiet icon", title: T["common.delete"], onclick: () => change(en => {
+        en.bring = (en.bring || []).filter(x => x !== r);
+      })}, "✕"));
+    // Taking a place back is what "!" means in an ignore file; every rule
+    // here says how a place comes along, so there is nothing to take back
+    const bad = (r.path || "").trim().startsWith("!")
+      ? el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.bring.inside.bang"])) : null;
+    rows.append(...[row, bad].filter(Boolean));
+  }
+  if (!insideRules(p).length) rows.append(el("div", {class:"hint"}, T["settings.bring.inside.empty"]));
+  const c = el("div", {class:"subsec"},
+    el("h3", {}, T["settings.bring.inside.title"]),
+    el("div", {class:"hint"}, T["settings.bring.inside.hint"]),
+    el("div", {class:"rows"}, rows),
+    el("div", {class:"row"}, el("button", {onclick: () => change(en => {
+      en.bring = en.bring || [];
+      en.bring.push({path: "", how: "skip"});
+    })}, T["settings.bring.inside.add"])),
+    el("div", {class:"hint"}, T["settings.bring.inside.order"]));
+  c.id = "project-inside";
+  return c;
 }
 // The things one line matches, added up
 function sizeOfMatches(sizes, matched) {
@@ -13587,7 +13640,8 @@ function sizeLabel(s) {
 // worktree inherits, decided the same way
 function extraFilesPart(desk, p) {
   const e = p.entry || {};
-  const extras = (e.bring || []).filter(r => r.pattern === undefined || r.pattern === null);
+  // A rule for a place inside the worktree is neither: it has no file to bring
+  const extras = (e.bring || []).filter(r => r.pattern == null && r.path == null);
   const rows = el("div");
   extras.forEach(r => {
     const change = fn => { const en = ensureProject(desk, p); fn(r); if (r.how !== "replace") delete r.replace; sel.proj = "p:" + en.name; refreshSave(); render(); };
@@ -13967,7 +14021,7 @@ function inheritNow(desk, p) {
     askIgnore(root).then(() => { if (!typingNow()) render(); });
     return el("span", {class:"hint"}, T["settings.bring.reading"]);
   }
-  const sizes = sizesOf(root);
+  const sizes = sizesOf(root, p);
   const counts = {};
   let large = false;
   for (const d of known.defaults || []) {
@@ -17071,7 +17125,7 @@ load().then(() => {
         // the board, not the settings coming up around them
         // A link to one of the rules opens that one for changing
         const part = {"project-prefix":"prefix", "project-place":"place", "project-inherit":"inherit",
-                      "project-bring":"inherit", "project-extra":"inherit"}[sec];
+                      "project-bring":"inherit", "project-extra":"inherit", "project-inside":"inherit"}[sec];
         if (home && part) RULES_OPEN[home.key] = Object.assign(RULES_OPEN[home.key] || {}, {[part]: true});
         if (home && sec === "project-first") { enterRulesFloat(cur, home); return; }
         if (sec === "project-first") frameLeave();

@@ -2488,8 +2488,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The folder on another machine whose branches the open worktree dialog is
     // waiting for, asked of git there on a thread
     let mut bases_watch: Option<(config::HostSpec, String)> = None;
-    // The checkout, and what it offers, whose sizes the open dialog waits for
-    let mut sizes_watch: Option<(std::path::PathBuf, Vec<crate::worktree::Carry>)> = None;
+    // The checkout, what it offers, and the places the dialog has open, whose
+    // counts the open dialog waits for
+    let mut sizes_watch: Option<(std::path::PathBuf, Vec<crate::worktree::Carry>, Vec<String>)> = None;
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
@@ -4546,6 +4547,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         adopt: false,
                         auto: false,
                         seq: worktree_call_seq,
+                        look: Vec::new(),
                     });
                     worktree_calls.push(WorktreeCall {
                         seq: worktree_call_seq,
@@ -5378,8 +5380,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Branch { .. }) => {
                         shell.mail().branches.extend(shikisha_shared::BranchAsk::of(ev));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::BringLines { from, lines }) => {
-                        shell.mail().bring_lines.push((from, lines));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::BringLines { from, lines, paths }) => {
+                        shell.mail().bring_lines.push((from, lines, paths));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Repair {
                         folder,
@@ -10142,11 +10144,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // with the project. The same carrying, asked for as a copy
                 "copy_instead" if !p.unlinked.is_empty() => {
                     let names = std::mem::take(&mut p.unlinked);
-                    let carry: Vec<crate::worktree::Carry> = p
-                        .carry
+                    // A name may be a folder a rule linked inside one of them
+                    let carry: Vec<crate::worktree::Carry> = names
                         .iter()
-                        .filter(|c| names.contains(&c.name))
-                        .map(|c| crate::worktree::Carry { how: "copy".into(), ..c.clone() })
+                        .filter_map(|n| crate::worktree::carry_at(&p.carry, n))
+                        .map(|c| crate::worktree::Carry { how: "copy".into(), ..c })
                         .collect();
                     let job = crate::worktree::Making::carrying(p.making.plan.clone(), carry);
                     p.copying = Some((job, names));
@@ -11144,7 +11146,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // dialog and applied: kept as the project's own, for this worktree and
         // the ones after it. The dialog has already put the choices on its own
         // list; what is left is to write them down, and to say so if that fails
-        for (from, lines) in shell.mail().take_bring_lines() {
+        for (from, lines, paths) in shell.mail().take_bring_lines() {
             let Some(desk) = desks.get(desk_index) else { continue };
             let choices: Vec<config::BringChoice> = lines
                 .into_iter()
@@ -11157,7 +11159,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     how,
                 })
                 .collect();
-            if !config::save_bring_choices(&desk.id, std::path::Path::new(&from), &choices) {
+            let places: Vec<config::BringPlace> =
+                paths.into_iter().map(|(path, how)| config::BringPlace { path, how }).collect();
+            if !config::save_bring_choices(&desk.id, std::path::Path::new(&from), &choices, &places) {
                 flash = Some(i18n::t("msg.bring.not_saved"));
             }
         }
@@ -11228,9 +11232,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let mut carry = crate::worktree::carryables(main, &rules);
                 // Before this folder's own changes: a line says what the project says
                 let lines = crate::worktree::carry_lines(&carry);
-                // Counted on a thread; the dialog is given the count when it is in
-                let sizes = crate::worktree::carry_sizes(main, &carry, opening);
-                sizes_watch = sizes.is_none().then(|| (main.to_path_buf(), carry.clone()));
                 for c in carry.iter_mut() {
                     if let Some((_, how)) = ask.carry.iter().find(|(n, _)| *n == c.name)
                         && crate::worktree::HOWS.contains(&how.as_str())
@@ -11238,9 +11239,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         c.how = how.clone();
                     }
                 }
-                (crate::worktree::bases(main), carry, lines, sizes)
+                // Counted on threads; the dialog is given each count when it is in
+                let (sizes, looks, done) = dialog_counts(main, &carry, &ask.look, opening);
+                sizes_watch = (!done).then(|| (main.to_path_buf(), carry.clone(), ask.look.clone()));
+                (crate::worktree::bases(main), carry, lines, sizes, looks)
             });
-            let (mut bases, carryable, carry_lines, carry_sizes) = offers.unwrap_or_default();
+            let (mut bases, carryable, carry_lines, carry_sizes, looks) = offers.unwrap_or_default();
             // A folder on another machine: its branches are git's there, asked
             // on a thread and put on the dialog when they come
             let far_bases = match (&repo, &from_far) {
@@ -11375,6 +11379,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 carry: carryable.clone(),
                 carry_lines,
                 carry_sizes,
+                looks,
                 large_bytes: crate::inherit::LARGE_BYTES,
                 large_files: crate::inherit::LARGE_FILES,
                 project: checkout
@@ -11752,14 +11757,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // How much each thing offered holds, once it has been counted: put
         // on the dialog that is waiting for it
-        if let Some((main, items)) = sizes_watch.as_ref() {
+        if let Some((main, items, look)) = sizes_watch.as_ref() {
             match branch_view.as_mut() {
                 None => sizes_watch = None,
                 Some(v) => {
-                    if let Some(found) = crate::worktree::carry_sizes(main, items, false) {
-                        if v.carry.iter().map(|c| &c.name).eq(items.iter().map(|c| &c.name)) {
-                            v.carry_sizes = Some(found);
-                        }
+                    let (sizes, looks, done) = dialog_counts(main, items, look, false);
+                    if v.carry.iter().map(|c| &c.name).eq(items.iter().map(|c| &c.name)) {
+                        v.carry_sizes = sizes;
+                        v.looks = looks;
+                    }
+                    if done {
                         sizes_watch = None;
                     }
                 }
@@ -15084,6 +15091,23 @@ pub fn session_at(surfaces: &[Surface], active: usize) -> Option<usize> {
         | Surface::Issues { .. } => None,
     }
 }
+
+/// What the worktree dialog is told about how much comes along: what each
+/// thing offered would copy, and what is in each place it has open. Counted
+/// on threads (see `worktree::carry_sizes`); also answers whether every
+/// count is in yet
+fn dialog_counts(
+    main: &std::path::Path,
+    carry: &[crate::worktree::Carry],
+    look: &[String],
+    again: bool,
+) -> (Option<Vec<crate::worktree::Size>>, Vec<crate::worktree::Look>, bool) {
+    let sizes = crate::worktree::carry_sizes(main, carry, again);
+    let looks: Vec<crate::worktree::Look> = look.iter().filter_map(|at| crate::worktree::look(main, carry, at, again)).collect();
+    let done = sizes.is_some() && looks.iter().all(|l| l.items.is_some());
+    (sizes, looks, done)
+}
+
 /// What size each tab's terminal should be drawn at.
 ///
 /// The pane a tab sits in decides it; a tab in no pane keeps the whole content

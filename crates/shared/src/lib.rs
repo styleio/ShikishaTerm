@@ -284,6 +284,9 @@ pub enum Ev {
         /// An answer to the dialog as it was last time says nothing about the
         /// choices of this one
         seq: u64,
+        /// The places inside what comes along that the dialog has open, by
+        /// their names in the worktree: what is in each is answered, counted
+        look: Vec<String>,
     },
     /// Put the offered environment file in the project.
     ///
@@ -294,8 +297,12 @@ pub enum Ev {
     KeepEnv { from: String },
     /// The worktree dialog's "by .gitignore line" choices, applied: how what
     /// each line matches comes along, as (ignore file, line, how), to be kept as
-    /// the project's own. `from` is the folder whose project it is
-    BringLines { from: String, lines: Vec<(String, String, String)> },
+    /// the project's own. `from` is the folder whose project it is.
+    ///
+    /// `paths` are the dialog's choices for places inside what comes along,
+    /// as (place written the way an ignore line is, how) -- an empty how takes
+    /// the project's rule for that place away
+    BringLines { from: String, lines: Vec<(String, String, String)>, paths: Vec<(String, String)> },
     /// A colour was chosen for the project a folder belongs to. Empty means
     /// "go back to the one you work out yourselves"
     FolderColor { folder: String, color: String },
@@ -961,14 +968,15 @@ pub struct BranchAsk {
     pub adopt: bool,
     pub auto: bool,
     pub seq: u64,
+    pub look: Vec<String>,
 }
 
 impl BranchAsk {
     /// The ask carried by a branch event, or nothing for any other event.
     pub fn of(ev: Ev) -> Option<Self> {
         match ev {
-            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq } => {
-                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq })
+            Ev::Branch { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq, look } => {
+                Some(BranchAsk { from, branch, base, make, carry, start, ais, at, host, machine_ai, private, setup, link, adopt, auto, seq, look })
             }
             _ => None,
         }
@@ -1242,6 +1250,19 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            paths: v
+                .get("paths")
+                .and_then(|x| x.as_array())
+                .map(|list| {
+                    list.iter()
+                        .map(|l| {
+                            let s = |k: &str| l.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                            (s("path"), s("how"))
+                        })
+                        .filter(|(path, _)| !path.trim().is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         },
         Some("branch") => Ev::Branch {
             from: v.get("from").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
@@ -1275,6 +1296,15 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             // it sent was one somebody chose
             auto: v.get("auto").and_then(|x| x.as_bool()).unwrap_or(false),
             seq: v.get("seq").and_then(|x| x.as_u64()).unwrap_or(0),
+            look: v
+                .get("look")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
             ais: v
                 .get("ais")
                 .and_then(|x| x.as_array())
@@ -1892,3 +1922,32 @@ pub trait Clipboard: Send + Sync {
     fn set_text(&self, text: String);
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The worktree dialog's places inside reach the app as the page sends
+    /// them: the open places with the question, a rule for a place with the
+    /// lines' choices -- an empty how is kept, since it takes a rule away
+    #[test]
+    fn places_inside_are_read_from_the_page() {
+        let ev = parse_intent(&serde_json::json!({
+            "kind": "branch", "from": "D:/w", "seq": 3, "look": [".claude", " ", ".claude/worktrees"],
+        }));
+        let ask = ev.and_then(BranchAsk::of).expect("the question was not read");
+        assert_eq!(ask.look, [".claude", ".claude/worktrees"]);
+
+        let ev = parse_intent(&serde_json::json!({
+            "kind": "bringlines", "from": "D:/w", "lines": [],
+            "paths": [{"path": ".claude/worktrees/", "how": "skip"}, {"path": "cache/", "how": ""}, {"path": " ", "how": "copy"}],
+        }));
+        match ev {
+            Some(Ev::BringLines { paths, .. }) => assert_eq!(
+                paths,
+                [(".claude/worktrees/".to_string(), "skip".to_string()), ("cache/".to_string(), String::new())],
+            ),
+            other => panic!("not read as the dialog's choices: {other:?}"),
+        }
+    }
+}

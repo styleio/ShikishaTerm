@@ -238,6 +238,16 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **A place inside a folder a worktree inherits can come along its own way.**
+  A line of an ignore file decides a whole folder, so `.claude/` used to be
+  copied with every other agent's worktree in it. The worktree dialog's rows
+  now open to what is inside them, largest first, each with the same four
+  choices; a choice there is kept as the project's rule for that place. The
+  rules are written the way a .gitignore line is, work at any depth, and can
+  also be written under "Rules for places inside folders" in the project's
+  worktree rules. The rule for the deepest place decides; nothing is written
+  into .gitignore. A linked folder cannot follow rules inside it, and the
+  dialog says so with a button to copy it instead.
 - **The worktree dialog says when what it copies will take a while.** Once
   it has counted what the new folder inherits, a large copy is said above
   "More" with the amount, and a button opens the list on the row that costs

@@ -3384,10 +3384,43 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcarryf:has(> .bcarry:empty) { display:none; }
   #branch .bcarry, #branch .bclines { border:1px solid var(--line); border-radius:var(--r-ctl); }
   #branch .bcarry[hidden], #branch .bclines[hidden], #branch .bcapply[hidden] { display:none; }
-  #branch .bcarry > div, #branch .bclines > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
+  #branch .bcarry .crow, #branch .bcarry .lrow, #branch .bclines > div { display:flex; align-items:center; gap:var(--s3); padding:var(--s1) var(--s3); }
   #branch .bcarry > div + div, #branch .bclines > div + div { border-top:1px solid var(--line); }
+  /* What is inside an open place, under its row: the same rows, set in by
+     the width of the toggle and with a line down the side, so a row reads as
+     part of the one above it. One opened inside is set in again */
+  #branch .bcarry .bclook:empty { display:none; }
+  #branch .bcarry > .bclook { border-top:0; }
+  #branch .bcarry .bclook { margin-left:calc(var(--s3) + 11px); border-left:1px solid var(--line); }
+  #branch .bcarry .bclook > * + * { border-top:1px solid var(--line); }
+  #branch .bcarry .bclook .bclook { border-top:0; }
+  #branch .bcarry .bcopen { flex:none; width:22px; height:22px; padding:0; border:0; background:transparent;
+    color:var(--dim); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; border-radius:var(--r-ctl); }
+  #branch .bcarry .bcopen:hover { color:var(--text); background:var(--hover); }
+  #branch .bcarry .bcopen .caret { font-size:9px; display:inline-block; }
+  #branch .bcarry .bcopen[aria-expanded="true"] .caret { transform:rotate(90deg); }
+  #branch .bcarry .bcopen.none { cursor:default; }
+  /* The rule that decided a row: a fact, dim, cut at its end */
+  #branch .bcarry .nmcol { flex:1; min-width:0; display:flex; flex-direction:column; }
+  #branch .bcarry .by { min-width:0; display:flex; align-items:center; gap:var(--s1);
+    font-size:11px; color:var(--dim); }
+  #branch .bcarry .by:empty { display:none; }
+  #branch .bcarry .by .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #branch .bcarry .by .bcdrop { flex:none; width:22px; height:22px; padding:0; border:0; background:transparent;
+    color:var(--dim); cursor:pointer; border-radius:var(--r-ctl); font-size:11px; }
+  #branch .bcarry .by .bcdrop:hover { color:var(--text); background:var(--hover); }
+  /* Said in the place a row would be: counting, nothing there, the rest */
+  #branch .bcarry .bcsay { padding:var(--s1) var(--s3); font-size:11px; color:var(--dim); }
+  /* A link with a rule inside it: what is not followed, and the way to make it count */
+  #branch .bcarry .bclinked { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); padding:var(--s1) var(--s3);
+    font-size:11.5px; color:var(--warn); }
+  #branch .bcarry .bclinked button { height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; border:1px solid var(--edge);
+    border-radius:var(--r-ctl); background:var(--panel2); color:var(--text); cursor:pointer; }
+  #branch .bcarry .bclinked button:hover { border-color:var(--edge-hi); }
+  #branch .bcsaved { font-size:11.5px; color:var(--faint); }
+  #branch .bcsaved[hidden] { display:none; }
   /* A path is cut at its front: the end is the file's own name */
-  #branch .bcarry .nm, #branch .bclines .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
+  #branch .bcarry .nm, #branch .bclines .nm { flex:1 1 auto; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
   /* How much a row holds: a fact, read across from the name. A copy that
      makes the worktree slow is the person's to decide on, so it is warn */
@@ -3398,7 +3431,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      on a line of its own under them, rather than pushing the row wider than
      the dialog */
   @media (max-width:640px) {
-    #branch .bcarry > div:has(> .sz:not(:empty)) { flex-wrap:wrap; }
+    #branch .bcarry .crow:has(> .sz:not(:empty)), #branch .bcarry .lrow:has(> .sz:not(:empty)) { flex-wrap:wrap; }
+    /* The name column is narrow here: a name and the rule that decided it
+       are folded onto more lines rather than cut, since the cut part is the
+       part that tells two places apart */
+    #branch .bcarry .nm, #branch .bcarry .by .t { white-space:normal; overflow-wrap:anywhere; direction:ltr; }
     #branch .bcarry .sz { order:1; flex-basis:100%; white-space:normal; }
   }
   #branch .bslow[hidden] { display:none; }
@@ -4225,6 +4262,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
           <div class="bcapply" hidden><span class="say"></span><button type="button" class="bcgo"></button></div>
           <div class="bcarry"></div>
           <div class="bclines" hidden></div>
+          <div class="bcsaved" hidden></div>
         </div>
         <div class="bfield">
           <span class="blabel"></span>
@@ -8895,6 +8933,8 @@ function openBranch(g, preset) {
   carryTab = "each";
   lineChoices.clear();
   carryByHand.clear();
+  lookOpen.clear();
+  placeByHand.clear();
   branchBase = preset.base || "";
   branchBaseChosen = !!preset.base;
   // Opened for an issue or a pull request, that is what it is made from; given
@@ -9258,11 +9298,12 @@ function showMore(b, open) {
   if (!more || !extra) return;
   extra.hidden = !open;
   more.setAttribute("aria-expanded", open ? "true" : "false");
-  const n = Array.from(extra.querySelectorAll(".bcarry select")).filter(s => s.value !== "skip").length;
+  const n = Array.from(extra.querySelectorAll(".bcarry > .crow > select")).filter(s => s.value !== "skip").length;
   more.querySelector(".nm").textContent = (!open && n)
     ? (T["tui.branch.more.n"] || "More ({n} come along)").replaceAll("{n}", n)
     : (T["tui.branch.more"] || "More");
   drawSlow(b);
+  drawLooks(b);
 }
 // What each row of the list holds, and -- above the fold, where it is read
 // before the button is pressed -- that what will be copied is a lot. Only a
@@ -9275,10 +9316,10 @@ function drawSlow(b) {
   if (!box) return;
   const p = S && S.branch;
   const sizes = p && p.from === branchFrom && p.seq === branchSeq && !p.host ? p.carry_sizes : null;
-  const large = s => s.bytes >= p.large_bytes || s.files >= p.large_files;
+  const large = s => isLarge(p, s);
   let bytes = 0, files = 0, more = false, first = null, biggest = null;
   const sizesOf = [];
-  for (const pick of b.querySelectorAll(".bcarry select")) {
+  for (const pick of b.querySelectorAll(".bcarry > .crow > select")) {
     const s = sizes && sizes.find(x => x.path === pick.dataset.name);
     const sz = pick.parentElement.querySelector(".sz");
     const copied = pick.value === "copy" || pick.value === "replace";
@@ -9305,14 +9346,20 @@ function drawSlow(b) {
   box.textContent = "";
   if (!slow) return;
   // The way to the rows that cost it: the fold opened and that row brought
-  // into view with its choice in hand, where it can be made a link or left
-  // out. Found when pressed: the list may have been drawn again since
+  // into view with what is inside it open, largest first, where the heavy
+  // part can be made a link or left out. Found when pressed: the list may
+  // have been drawn again since
   box.append(warnBox(said, el("button", {type:"button", onclick:() => {
     showMore(b, true);
-    const at = b.querySelector(".bcarry .sz.top");
+    const at = b.querySelector(".bcarry > .crow > .sz.top");
     const pick = at && at.parentElement.querySelector("select");
     if (!pick) return;
-    pick.parentElement.scrollIntoView({block:"nearest"});
+    if (pick.value !== "link" && at.parentElement.querySelector("button.bcopen")) {
+      lookOpen.add(pick.dataset.name);
+      drawLooks(b);
+      askBranch();
+    }
+    pick.parentElement.scrollIntoView({block:"start"});
     pick.focus();
   }}, T["tui.branch.slow.see"] || "")));
 }
@@ -9339,7 +9386,8 @@ function askBranch() {
     const at = document.getElementById("bat");
     send({kind:"branch", from:branchFrom, branch:(q ? q.value : ""), base:basing(),
           make:false, carry:carrying(), start:starting(), ais:fanning(),
-          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate === true, seq:branchSeq});
+          at:(at ? at.value.trim() : ""), host:branchHost, setup:preparing(), link:branchLink, machine_ai:branchMachineAi, private:branchPrivate === true, seq:branchSeq,
+          look:Array.from(lookOpen)});
   }, 180);
 }
 
@@ -9539,6 +9587,7 @@ function drawBranch() {
   const fresh = here && p.seq === branchSeq;
   drawCarry(b, fresh ? (p.carry || []) : []);
   drawCarryLines(b, fresh ? (p.carry_lines || []) : []);
+  drawLooks(b);
   showMore(b, !b.querySelector(".bextra").hidden);
   drawBases(b, here ? p : null);
   drawBranchTabs(b);
@@ -10154,31 +10203,158 @@ const carryByHand = new Map();
 function drawCarry(b, items) {
   const box = b.querySelector(".bcarry");
   if (!items.length && box.children.length) return;
-  const key = items.map(i => i.name + "=" + (i.how || "")).join("\u0000");
+  const key = items.map(i => i.name + "=" + (i.how || "") + "=" + (i.by || "")).join("\u0000");
   if (box.dataset.key === key) return;
   box.dataset.key = key;
   box.textContent = "";
   if (!items.length) return;
   b.querySelector(".bcarrysay").textContent = T["tui.branch.carry"] || "Brought along";
   for (const it of items) {
-    const pick = el("select", {"data-name": it.name});
-    if (it.line) { pick.dataset.source = it.line.source; pick.dataset.pattern = it.line.pattern; }
-    for (const how of ["copy", "replace", "link", "skip"]) {
-      // A folder has no text to replace in
-      if (how === "replace" && it.folder && it.how !== "replace") continue;
-      pick.append(el("option", {value: how}, T["tui.branch.carry." + how] || how));
-    }
-    pick.value = carryByHand.get(it.name) || it.how || "skip";
-    pick.onchange = () => {
-      carryByHand.set(it.name, pick.value);
+    const now = carryByHand.get(it.name) || it.how || "skip";
+    const pick = carryPick(it.folder, it.how, how => {
+      carryByHand.set(it.name, how);
       showMore(b, !b.querySelector(".bextra").hidden);
       askBranch();
-    };
+    });
+    pick.value = now;
+    pick.dataset.name = it.name;
+    if (it.line) { pick.dataset.source = it.line.source; pick.dataset.pattern = it.line.pattern; }
     // Held left to right inside the marks: the box runs right to left so a
     // long path is cut at the front, and a folder ends in the / that says so
     const name = it.name + (it.folder ? "/" : "");
-    box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), el("span", {class:"sz"}), pick));
+    // Inside a link there is nothing to choose apart from it: the original's
+    // own folder is what the worktree sees
+    box.append(
+      el("div", {class:"crow"}, lookToggle(b, it.name, it.folder && now !== "link"),
+        el("span", {class:"nmcol"}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), ruleSaid(b, it.by, null)),
+        el("span", {class:"sz"}), pick),
+      el("div", {class:"bclook", "data-at": it.name}));
   }
+}
+
+// The four answers to how one thing comes along, as a list. A folder has no
+// text to replace in, so it is offered three -- unless that is what it says
+function carryPick(folder, now, chosen) {
+  const pick = el("select", {});
+  for (const how of ["copy", "replace", "link", "skip"]) {
+    if (how === "replace" && folder && now !== "replace") continue;
+    pick.append(el("option", {value: how}, T["tui.branch.carry." + how] || how));
+  }
+  pick.value = now;
+  pick.onchange = () => chosen(pick.value);
+  return pick;
+}
+
+// The places inside what comes along that are open, by their names in the
+// worktree. Each is asked about with the dialog's question, and counted
+const lookOpen = new Set();
+// How a place inside was chosen to come along, until the project's answer
+// says the same: the choice is the project's own rule from the moment it is
+// made, and the row must not go back while the rule is being written down
+const placeByHand = new Map();
+// The ▸ that opens what is inside a folder, or the room one would take, so
+// every name starts at the same place
+function lookToggle(b, at, can) {
+  if (!can) return el("span", {class:"bcopen none"});
+  const open = lookOpen.has(at);
+  const say = T["tui.branch.carry.open"] || "";
+  return el("button", {type:"button", class:"bcopen", "aria-expanded": String(open), title: say, "aria-label": say, onclick: () => {
+    if (lookOpen.has(at)) {
+      // Shut with everything opened inside it
+      for (const p of Array.from(lookOpen)) if (p === at || p.startsWith(at + "/")) lookOpen.delete(p);
+    } else {
+      lookOpen.add(at);
+    }
+    drawLooks(b);
+    askBranch();
+  }}, el("span", {class:"caret"}, "▸"));
+}
+// Which of the project's rules decided a row, when one did. The rule for
+// exactly this place can be taken away here (`own`, the place as a rule
+// names it); one written for many places is changed in the project's settings
+function ruleSaid(b, by, own) {
+  if (!by) return el("span", {class:"by"});
+  const said = (T["tui.branch.carry.by"] || "{rule}").replaceAll("{rule}", by);
+  const drop = own && by === own ? el("button", {type:"button", class:"bcdrop", title: T["tui.branch.carry.unrule"] || "", "aria-label": T["tui.branch.carry.unrule"] || "",
+    onclick: () => choosePlace(b, own, "")}, "✕") : null;
+  return el("span", {class:"by", title: said}, el("span", {class:"t"}, said), drop);
+}
+// A choice for a place inside, kept as the project's own rule for that place
+// (an empty one takes the rule away). Sent through the same door as a line
+// chosen as a whole, from the window and the phone alike
+function choosePlace(b, place, how) {
+  if (how) placeByHand.set(place, how); else placeByHand.delete(place);
+  send({kind:"bringlines", from:branchFrom, lines:[], paths:[{path: place, how}]});
+  drawLooks(b);
+  askBranch();
+}
+function isLarge(p, s) {
+  return !!p && (s.bytes >= p.large_bytes || s.files >= p.large_files);
+}
+// What is inside the open places, under the rows they are in; and, under a
+// row that is linked while a rule names a place inside it, that the rule
+// cannot be followed there, with the way to make it count
+function drawLooks(b) {
+  const p = S && S.branch;
+  const fresh = p && p.from === branchFrom && p.seq === branchSeq;
+  const items = fresh ? (p.carry || []) : [];
+  const looks = fresh ? (p.looks || []) : [];
+  const saved = b.querySelector(".bcsaved");
+  if (saved) {
+    saved.hidden = !lookOpen.size;
+    saved.textContent = T["tui.branch.carry.saved"] || "";
+  }
+  for (const box of b.querySelectorAll(".bcarry > .bclook")) {
+    const at = box.dataset.at;
+    const it = items.find(i => i.name === at);
+    const pick = box.previousElementSibling && box.previousElementSibling.querySelector("select");
+    if (!it || !pick) continue;
+    const linked = pick.value === "link";
+    const warn = linked && !!it.ruled_inside;
+    const toggle = box.previousElementSibling.querySelector("button.bcopen");
+    if (toggle) toggle.setAttribute("aria-expanded", String(lookOpen.has(at)));
+    // Written only when it changed: every touch of this document is another
+    // chance to shut a list that somebody has open
+    const shown = lookOpen.has(at) && !linked;
+    const key = JSON.stringify([warn, shown && looks.filter(l => l.path === at || l.path.startsWith(at + "/")),
+      Array.from(lookOpen), Array.from(placeByHand)]);
+    if (box.dataset.key === key) continue;
+    box.dataset.key = key;
+    box.textContent = "";
+    if (warn) box.append(el("div", {class:"bclinked"},
+      el("span", {}, T["tui.branch.carry.linked"] || ""),
+      el("button", {type:"button", onclick: () => { pick.value = "copy"; pick.onchange(); }}, T["tui.branch.carry.tocopy"] || "")));
+    if (shown) drawLook(b, box, at, looks, p);
+  }
+}
+// One open place: what is in it, largest first, each with the same four
+// answers. A folder in it can be opened in turn
+function drawLook(b, box, at, looks, p) {
+  const look = looks.find(l => l.path === at);
+  if (!look || !look.items) { box.append(el("div", {class:"bcsay"}, T["tui.branch.carry.counting"] || "")); return; }
+  if (!look.items.length) { box.append(el("div", {class:"bcsay"}, T["tui.branch.carry.nothing"] || "")); return; }
+  for (const i of look.items) {
+    const name = i.size.path;
+    // As a rule names it: a folder ends in the /, which keeps the rule to
+    // that folder, and a `/` inside ties it to this place and no other
+    const place = name + (i.folder ? "/" : "");
+    if (placeByHand.get(place) === i.how) placeByHand.delete(place);
+    const now = placeByHand.get(place) || i.how;
+    const pick = carryPick(i.folder, i.how, how => choosePlace(b, place, how));
+    pick.value = now;
+    const copied = now === "copy" || now === "replace";
+    const leaf = name.slice(at.length + 1) + (i.folder ? "/" : "");
+    box.append(el("div", {class:"lrow"}, lookToggle(b, name, i.folder && now !== "link"),
+      el("span", {class:"nmcol"}, el("span", {class:"nm", title: name}, "‎" + leaf + "‎"), ruleSaid(b, i.by, place)),
+      el("span", {class: "sz" + (copied && isLarge(p, i.size) ? " big" : "")}, sizeSay(i.size)), pick));
+    if (i.folder && now !== "link" && lookOpen.has(name)) {
+      const inner = el("div", {class:"bclook"});
+      box.append(inner);
+      drawLook(b, inner, name, looks, p);
+    }
+  }
+  if (look.rest) box.append(el("div", {class:"bcsay"}, (T["tui.branch.carry.rest"] || "{n}")
+    .replaceAll("{n}", look.rest.count.toLocaleString()).replaceAll("{amount}", sizeSay(look.rest))));
 }
 
 // The same things, a line of the ignore files at a time. Nothing chosen here
@@ -10249,7 +10425,7 @@ function drawCarryApply(b, lines) {
 // the project's own, for this worktree and the ones after it
 function applyCarryLines(b, lines) {
   if (!lineChoices.size) return;
-  for (const s of b.querySelectorAll(".bcarry select")) {
+  for (const s of b.querySelectorAll(".bcarry > .crow > select")) {
     if (!("pattern" in s.dataset)) continue;
     const how = lineChoices.get(lineKey(s.dataset.source, s.dataset.pattern));
     if (!how) continue;
