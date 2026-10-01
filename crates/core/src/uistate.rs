@@ -794,6 +794,10 @@ pub struct BranchPlan {
     /// before the button is pressed. None while it is still being counted
     #[serde(default)]
     pub carry_sizes: Option<Vec<crate::worktree::Size>>,
+    /// What is in each place inside them the dialog has open, to find what
+    /// makes a copy slow and choose how that comes along
+    #[serde(default)]
+    pub looks: Vec<crate::worktree::Look>,
     /// What makes one of them large (`inherit::large`): sent rather than
     /// written into the page a second time, so the dialog and the project's
     /// settings cannot disagree about it

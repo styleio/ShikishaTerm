@@ -97,7 +97,9 @@ pub fn ask(facts: &Facts, engine: Option<&str>) -> Result<Vec<Proposal>> {
         bail!(crate::i18n::t("err.inherit.nothing"));
     }
     let paths: Vec<String> = found.iter().map(|i| i.path.clone()).collect();
-    let sizes = crate::worktree::sizes(facts.main, &paths, SIZE_MOST);
+    // What each line matches as a whole: the AI is asked about lines, and a
+    // rule for a place inside one is the person's own, not a line's
+    let sizes = crate::worktree::sizes(facts.main, &paths, SIZE_MOST, &Default::default());
     let origin = name_of(facts.main);
     let prompt = crate::i18n::fill(
         crate::asking::BRING_ASK,
@@ -443,7 +445,7 @@ mod tests {
         assert!(!said.contains("vendor"), "{said}");
 
         let paths: Vec<String> = found.iter().map(|i| i.path.clone()).collect();
-        let sizes = crate::worktree::sizes(&main, &paths, SIZE_MOST);
+        let sizes = crate::worktree::sizes(&main, &paths, SIZE_MOST, &Default::default());
         let listed = describe_lines(&lines, &sizes);
         assert!(listed.contains("pattern \"config/*\": 1 match(es), files;"), "{listed}");
         assert!(listed.contains("pattern \"vendor/\": 1 match(es), folders;"), "{listed}");

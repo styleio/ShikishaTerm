@@ -1065,6 +1065,7 @@ impl Making {
 /// as ignored is the repository's own answer and it is written down already.
 pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry> {
     let found = ignored(main);
+    let inside = crate::inside::Inside::of(rules);
     let mut out: Vec<Carry> = found
         .iter()
         .map(|i| {
@@ -1079,6 +1080,8 @@ pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry>
                 from: None,
                 replace: rule.map(|r| r.replace.clone()).unwrap_or_default(),
                 line: Some(CarryLineKey { source: i.source.clone(), pattern: i.pattern.clone() }),
+                inside: inside.clone(),
+                ..Default::default()
             }
         })
         .collect();
@@ -1099,7 +1102,20 @@ pub fn carryables(main: &Path, rules: &[crate::config::BringRule]) -> Vec<Carry>
             from: Some(from.to_string()),
             replace: r.replace.clone(),
             line: None,
+            inside: inside.clone(),
+            ..Default::default()
         });
+    }
+    // A rule naming one of these places itself beats the ignore line's: it
+    // was written for that place. The lines are read off before this
+    // ([`carry_lines`] is what a line says), so a line still says its own
+    for c in out.iter_mut() {
+        if let Some(d) = inside.at(&c.name, c.folder) {
+            c.line_how = Some(std::mem::replace(&mut c.how, d.how.to_string()));
+            c.replace = d.replace.to_vec();
+            c.by = Some(d.by.to_string());
+        }
+        c.ruled_inside = c.folder && inside.says_inside(&c.name);
     }
     out
 }
@@ -1122,7 +1138,7 @@ pub fn carry_lines(offered: &[Carry]) -> Vec<CarryLine> {
             None => lines.push(CarryLine {
                 source: key.source.clone(),
                 pattern: key.pattern.clone(),
-                how: c.how.clone(),
+                how: c.line_how.clone().unwrap_or_else(|| c.how.clone()),
                 count: 1,
                 folders: c.folder,
             }),
@@ -1157,7 +1173,7 @@ pub struct CarryLine {
 pub const HOWS: [&str; 4] = ["copy", "replace", "link", "skip"];
 
 /// One thing a new folder can be given.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Default)]
 pub struct Carry {
     /// Where it goes inside the new folder, `/` between the parts
     pub name: String,
@@ -1174,6 +1190,21 @@ pub struct Carry {
     /// The ignore line that decides it; absent for what comes from elsewhere
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line: Option<CarryLineKey>,
+    /// The project's rule for this place itself, as written, when one decided
+    /// `how` rather than the ignore line (see `crate::inside`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    /// Whether a rule could name a place inside it: what a link cannot honour
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ruled_inside: bool,
+    /// The project's rules for places inside, carried with it so a copy asked
+    /// for again later is the same copy
+    #[serde(skip)]
+    pub inside: crate::inside::Inside,
+    /// What the ignore line says, when `by` decided `how` instead: a line
+    /// chosen as a whole says its own answer
+    #[serde(skip)]
+    pub line_how: Option<String>,
 }
 
 /// One thing git ignores in a checkout, and the line that makes it.
@@ -1406,24 +1437,29 @@ fn files_in(from: &Path) -> u64 {
 /// at once, and what it made is taken back by whoever asked it to stop
 pub fn carry_into_watched(plan: &Plan, items: &[Carry], tell: &dyn Fn(&FileProgress), stop: &dyn Fn() -> bool) -> Brought {
     let mut said = Brought::default();
-    let wanted: Vec<&Carry> = items.iter().filter(|c| c.how != "skip").collect();
+    // What is left out as a whole is still looked into when a rule brings
+    // something out of it (see crate::inside)
+    let wanted: Vec<&Carry> = items
+        .iter()
+        .filter(|c| c.how != "skip" || (c.folder && c.inside.brings_inside(&c.name)))
+        .collect();
     // Files are put between folders on this machine. A folder on another one
     // is a path there, and writing to it here would make a stray folder on
     // this machine and call it done, so every one of them is said as not brought
     if plan.host.is_some() {
-        said.missed = wanted.iter().map(|c| c.name.clone()).collect();
+        said.missed = wanted.iter().filter(|c| c.how != "skip").map(|c| c.name.clone()).collect();
         return said;
     }
     // Counted before the first file goes, so "of how many" is said from the
-    // start. A second name is made at once and copies nothing, so a link is
-    // not counted; a file that has to be copied because it could not be
-    // linked is one file, and is not worth a walk to foresee
+    // start, the same way the copy will walk. A second name is made at once
+    // and copies nothing, so a link is not counted; a file that has to be
+    // copied because it could not be linked is one file, and is not worth a
+    // walk to foresee
     let of: u64 = wanted
         .iter()
-        .filter(|c| c.how != "link")
-        .filter_map(|c| carry_ends(plan, c))
-        .filter(|(from, to)| from.exists() && !to.exists())
-        .map(|(from, _)| if from.is_dir() { files_in(&from) } else { 1 })
+        .filter_map(|c| carry_ends(plan, c).map(|ends| (c, ends)))
+        .filter(|(_, (from, to))| from.exists() && !to.exists())
+        .map(|(c, (from, _))| files_to_copy(&from, c))
         .sum();
     let copying = std::cell::RefCell::new(FileProgress {
         of,
@@ -1450,7 +1486,7 @@ pub fn carry_into_watched(plan: &Plan, items: &[Carry], tell: &dyn Fn(&FileProgr
             tell(&now);
         }
         if !from.exists() || to.exists() {
-            if !from.exists() {
+            if !from.exists() && c.how != "skip" {
                 said.missed.push(c.name.clone());
             }
             continue;
@@ -1458,89 +1494,111 @@ pub fn carry_into_watched(plan: &Plan, items: &[Carry], tell: &dyn Fn(&FileProgr
         if let Some(parent) = to.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let done = match (c.how.as_str(), from.is_dir()) {
-            // A folder that cannot be given a second name is carried back as a
-            // question rather than counted as lost: see [`Brought::unlinked`]
-            ("link", true) => match link_folder(&from, &to) {
-                true => true,
-                false => {
-                    said.unlinked.push(c.name.clone());
-                    continue;
-                }
-            },
-            ("link", false) => {
-                link_file(&from, &to) || {
-                    let copied = std::fs::copy(&from, &to).is_ok();
-                    if copied {
-                        said.copied.push(c.name.clone());
-                    }
-                    copied
-                }
+        // Each step of the walk, put where it goes in the new folder
+        let walked = crate::inside::walk(&from, &c.name, &c.how, &c.replace, &c.inside, &mut |at, src, step| {
+            let dest = match at.strip_prefix(c.name.as_str()).map(|rest| rest.trim_start_matches('/')) {
+                Some("") | None => to.clone(),
+                Some(rest) => to.join(rest),
+            };
+            // A parent that cannot be made is said by what then cannot be
+            // put in it: a link that cannot be made is a question, not a loss
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
-            (_, true) => match copy_folder(&from, &to, &one_more) {
-                Ok(()) => true,
-                // Stopped half way: the folder goes with the rest
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
-                Err(_) => false,
-            },
-            (how, false) => {
-                let copied = std::fs::copy(&from, &to).is_ok();
-                one_more();
-                if copied && how == "replace" && !c.replace.is_empty() {
-                    // The words a replacement writes are this worktree's own
-                    let replaces: Vec<crate::config::Replace> = c
-                        .replace
-                        .iter()
-                        .map(|r| crate::config::Replace {
-                            with: fill_words(&r.with, &plan.folder, &plan.main, r.regex),
-                            ..r.clone()
-                        })
-                        .collect();
-                    let written = std::fs::read_to_string(&to)
-                        .map_err(|e| e.to_string())
-                        .and_then(|text| apply_replaces(&text, &replaces))
-                        .and_then(|(text, unmatched)| {
-                            std::fs::write(&to, text).map_err(|e| e.to_string()).map(|()| unmatched)
-                        });
-                    match written {
-                        Err(why) => said.unreplaced.push(format!("{} ({why})", c.name)),
-                        Ok(unmatched) => said.unreplaced.extend(unmatched.iter().map(|find| {
-                            format!("{} ({})", c.name, crate::i18n::tp("err.replace.nomatch", &[("find", find)]))
-                        })),
+            match step {
+                crate::inside::Step::Folder => std::fs::create_dir_all(&dest),
+                // A folder that cannot be given a second name is carried back
+                // as a question rather than counted as lost: see
+                // [`Brought::unlinked`]
+                crate::inside::Step::Link { folder: true } => {
+                    if !link_folder(src, &dest) {
+                        said.unlinked.push(at.to_string());
+                    }
+                    Ok(())
+                }
+                crate::inside::Step::Link { folder: false } => {
+                    if !link_file(src, &dest) {
+                        std::fs::copy(src, &dest)?;
+                        said.copied.push(at.to_string());
+                    }
+                    Ok(())
+                }
+                crate::inside::Step::File { replace } => {
+                    std::fs::copy(src, &dest)?;
+                    if !replace.is_empty() {
+                        replace_in(plan, &dest, at, replace, &mut said);
+                    }
+                    match one_more() {
+                        true => Ok(()),
+                        false => Err(std::io::ErrorKind::Interrupted.into()),
                     }
                 }
-                copied
             }
-        };
-        if !done {
-            said.missed.push(c.name.clone());
+        });
+        match walked {
+            Ok(()) => {}
+            // Stopped half way: the folder goes with the rest
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => break,
+            Err(_) => said.missed.push(c.name.clone()),
         }
     }
     said
 }
 
-/// A copy of a whole folder. What is linked inside it is copied as the thing it
-/// points at would be skipped: following a link out of the folder could copy
-/// something nobody meant to bring. `each` is called after every file, and
-/// the copy stops -- as `Interrupted` -- the moment it says not to go on
-fn copy_folder(from: &Path, to: &Path, each: &dyn Fn() -> bool) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for e in std::fs::read_dir(from)? {
-        let e = e?;
-        let kind = std::fs::symlink_metadata(e.path())?.file_type();
-        let there = to.join(e.file_name());
-        if kind.is_symlink() {
-            continue;
-        } else if kind.is_dir() {
-            copy_folder(&e.path(), &there, each)?;
-        } else {
-            std::fs::copy(e.path(), &there)?;
-            if !each() {
-                return Err(std::io::ErrorKind::Interrupted.into());
-            }
-        }
+/// The thing to bring at `name`: one of `items`, or a folder inside one of
+/// them -- one a rule linked that could not be linked -- as a thing of its
+/// own, coming from the same place inside and carrying the same rules
+pub fn carry_at(items: &[Carry], name: &str) -> Option<Carry> {
+    if let Some(c) = items.iter().find(|c| c.name == name) {
+        return Some(c.clone());
     }
-    Ok(())
+    let top = items.iter().find(|c| name.starts_with(&format!("{}/", c.name)))?;
+    let rest = &name[top.name.len() + 1..];
+    Some(Carry {
+        name: name.to_string(),
+        folder: true,
+        from: top.from.as_ref().map(|f| Path::new(f).join(rest).display().to_string()),
+        inside: top.inside.clone(),
+        ..Default::default()
+    })
+}
+
+/// The files a carry of `c` from `from` will copy, walked the way the copy
+/// walks: what a rule leaves out or links is not counted
+fn files_to_copy(from: &Path, c: &Carry) -> u64 {
+    let mut n = 0;
+    let _ = crate::inside::walk(from, &c.name, &c.how, &c.replace, &c.inside, &mut |_, _, step| {
+        if matches!(step, crate::inside::Step::File { .. }) {
+            n += 1;
+        }
+        Ok(())
+    });
+    n
+}
+
+/// Writes a copied file's replacements into it. What could not be replaced
+/// is said, and the file stays as it was copied
+fn replace_in(plan: &Plan, to: &Path, name: &str, replace: &[crate::config::Replace], said: &mut Brought) {
+    // The words a replacement writes are this worktree's own
+    let replaces: Vec<crate::config::Replace> = replace
+        .iter()
+        .map(|r| crate::config::Replace {
+            with: fill_words(&r.with, &plan.folder, &plan.main, r.regex),
+            ..r.clone()
+        })
+        .collect();
+    let written = std::fs::read_to_string(to)
+        .map_err(|e| e.to_string())
+        .and_then(|text| apply_replaces(&text, &replaces))
+        .and_then(|(text, unmatched)| std::fs::write(to, text).map_err(|e| e.to_string()).map(|()| unmatched));
+    match written {
+        Err(why) => said.unreplaced.push(format!("{name} ({why})")),
+        Ok(unmatched) => said.unreplaced.extend(
+            unmatched
+                .iter()
+                .map(|find| format!("{name} ({})", crate::i18n::tp("err.replace.nomatch", &[("find", find)]))),
+        ),
+    }
 }
 
 /// A second name for one file. Windows asks for rights to make one that most
@@ -2930,39 +2988,40 @@ pub struct Size {
 /// Every file under a folder, without following a second name out of it --
 /// what a copy would copy. Stopped after `most` files in all, because a build
 /// folder can hold a million and "at least this much" is already the answer
-pub fn sizes(main: &Path, paths: &[String], most: u64) -> Vec<Size> {
+pub fn sizes(main: &Path, paths: &[String], most: u64, inside: &crate::inside::Inside) -> Vec<Size> {
     let mut left = most;
-    paths.iter().map(|p| size_of(p, &main.join(p.trim_end_matches('/')), &mut left)).collect()
+    paths
+        .iter()
+        .map(|p| {
+            let name = p.trim_end_matches('/');
+            size_of(p, &main.join(name), name, inside, &mut left)
+        })
+        .collect()
 }
 
-/// How much one thing holds, counting at most `left` files and taking
-/// what it counted off `left`
-fn size_of(path: &str, at: &Path, left: &mut u64) -> Size {
+/// How much a copy of one thing -- known in the worktree as `at` -- would
+/// copy, walked the way the copy walks it: what the rules leave out or link
+/// inside it is not counted. Counts at most `left` files, taking what it
+/// counted off `left`
+fn size_of(path: &str, from: &Path, at: &str, inside: &crate::inside::Inside, left: &mut u64) -> Size {
     let mut size = Size { path: path.to_string(), bytes: 0, files: 0, more: false };
-    let mut todo = vec![at.to_path_buf()];
-    while let Some(at) = todo.pop() {
-        if *left == 0 {
-            size.more = true;
-            break;
-        }
-        let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&at) {
-                todo.extend(entries.flatten().map(|e| e.path()));
+    let walked = crate::inside::walk(from, at, "copy", &[], inside, &mut |_, src, step| {
+        if matches!(step, crate::inside::Step::File { .. }) {
+            if *left == 0 {
+                return Err(std::io::ErrorKind::Interrupted.into());
             }
-            continue;
+            *left -= 1;
+            size.files += 1;
+            size.bytes += std::fs::symlink_metadata(src).map(|m| m.len()).unwrap_or(0);
         }
-        *left -= 1;
-        size.files += 1;
-        size.bytes += meta.len();
-    }
+        Ok(())
+    });
+    size.more = walked.is_err();
     size
 }
 
-/// How much each thing a new worktree can be given holds, by its name there.
+/// How much each thing a new worktree can be given would copy, by its name
+/// there.
 ///
 /// Each is counted on its own up to `most` files (`LARGE_FILES`: past that it
 /// is large whatever else it holds), so one build folder cannot use up the
@@ -2972,12 +3031,12 @@ fn carry_sizes_now(main: &Path, items: &[Carry], most: u64) -> Vec<Size> {
     items
         .iter()
         .map(|c| {
-            let at = match &c.from {
+            let from = match &c.from {
                 Some(from) => PathBuf::from(from),
                 None => main.join(&c.name),
             };
             let mut left = most;
-            size_of(&c.name, &at, &mut left)
+            size_of(&c.name, &from, &c.name, &c.inside, &mut left)
         })
         .collect()
 }
@@ -2988,8 +3047,7 @@ fn carry_sizes_now(main: &Path, items: &[Carry], most: u64) -> Vec<Size> {
 /// has just opened, and the folders may have grown since) while still
 /// answering with the last count, so the dialog does not lose what it says
 pub fn carry_sizes(main: &Path, items: &[Carry], again: bool) -> Option<Vec<Size>> {
-    type Known = std::collections::HashMap<String, (Option<Vec<Size>>, bool)>;
-    static KNOWN: std::sync::OnceLock<std::sync::Mutex<Known>> = std::sync::OnceLock::new();
+    static KNOWN: Counts<Vec<Size>> = std::sync::OnceLock::new();
     let mut key = main.display().to_string();
     for c in items {
         key.push('\u{1f}');
@@ -2997,22 +3055,180 @@ pub fn carry_sizes(main: &Path, items: &[Carry], again: bool) -> Option<Vec<Size
         key.push('\u{1e}');
         key.push_str(c.from.as_deref().unwrap_or_default());
     }
-    let known = KNOWN.get_or_init(Default::default);
+    if let Some(c) = items.first() {
+        key.push('\u{1d}');
+        key.push_str(&c.inside.key());
+    }
+    let (main, items) = (main.to_path_buf(), items.to_vec());
+    counted(&KNOWN, key, again, move || carry_sizes_now(&main, &items, crate::inherit::LARGE_FILES))
+}
+
+/// Answers counted on a thread, by what they are about: the last answer, and
+/// whether a count is under way
+type Counts<T> = std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (Option<T>, bool)>>>;
+
+/// The answer filed under `key`, counting it on a thread when there is none
+/// yet. None until the count is in. `again` counts afresh -- the dialog has
+/// just opened, and the folders may have grown since -- while still answering
+/// with the last count, so the dialog does not lose what it says. One count
+/// at a time per key: asked again while counting, the same wait
+fn counted<T: Clone + Send + 'static>(
+    known: &'static Counts<T>,
+    key: String,
+    again: bool,
+    count: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let known = known.get_or_init(Default::default);
     let last = {
         let mut k = known.lock().unwrap_or_else(|e| e.into_inner());
-        let (last, counting) = k.get(&key).cloned().unwrap_or_default();
+        let (last, counting) = k.get(&key).cloned().unwrap_or((None, false));
         if counting || (last.is_some() && !again) {
             return last;
         }
         k.insert(key.clone(), (last.clone(), true));
         last
     };
-    let (main, items) = (main.to_path_buf(), items.to_vec());
     std::thread::spawn(move || {
-        let found = carry_sizes_now(&main, &items, crate::inherit::LARGE_FILES);
+        let found = count();
         known.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (Some(found), false));
     });
     last
+}
+
+/// What is in one place inside what comes along, opened in the worktree
+/// dialog to find what makes a copy slow
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Look {
+    /// The place, by its name in the worktree
+    pub path: String,
+    /// What is in it, largest first, up to [`LOOK_MOST`]. None while it is
+    /// still being counted
+    pub items: Option<Vec<LookItem>>,
+    /// The rest of it, added up, when there is more than is listed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rest: Option<LookRest>,
+}
+
+/// One thing in an opened place
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LookItem {
+    /// By its name in the worktree; `size.path` is the same
+    pub size: Size,
+    pub folder: bool,
+    /// How it comes along, as the rules decide it (see crate::inside)
+    pub how: String,
+    /// The project's rule that decided it, as written, when one did. Absent
+    /// is "as the folder it is in"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// What an opened place holds beyond what is listed
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LookRest {
+    pub count: usize,
+    pub bytes: u64,
+    pub files: u64,
+    pub more: bool,
+}
+
+/// How many things of an opened place are listed. The few that make it heavy
+/// are near the top once it is sorted by size; past a dozen a row is one more
+/// small thing to read past, and the dialog says the rest in one line
+pub const LOOK_MOST: usize = 12;
+
+/// What is in the place `at` -- inside one of `items` -- answered for the
+/// dialog: each thing in it counted the way a copy of it would be (see
+/// [`carry_sizes`]), and how the rules bring it as things now stand
+pub fn look(main: &Path, items: &[Carry], at: &str, again: bool) -> Option<Look> {
+    static KNOWN: Counts<Vec<(Size, bool)>> = std::sync::OnceLock::new();
+    let (owner, from, inside) = place_in(main, items, at)?;
+    let key = format!("{}\u{1f}{}\u{1f}{}\u{1d}{}", main.display(), at, from.display(), inside.key());
+    let place = at.to_string();
+    let counts = counted(&KNOWN, key, again, move || look_now(&from, &place, &inside));
+    let Some(counts) = counts else {
+        return Some(Look { path: at.to_string(), items: None, rest: None });
+    };
+    let listed = looked(owner, &counts[..counts.len().min(LOOK_MOST)]);
+    let rest = (counts.len() > LOOK_MOST).then(|| {
+        let left = &counts[LOOK_MOST..];
+        LookRest {
+            count: left.len(),
+            bytes: left.iter().map(|(s, _)| s.bytes).sum(),
+            files: left.iter().map(|(s, _)| s.files).sum(),
+            more: left.iter().any(|(s, _)| s.more),
+        }
+    });
+    Some(Look { path: at.to_string(), items: Some(listed), rest })
+}
+
+/// The thing among `items` that the place `at` is in, where the place is on
+/// disk, and the rules that apply inside it
+fn place_in<'a>(main: &Path, items: &'a [Carry], at: &str) -> Option<(&'a Carry, PathBuf, crate::inside::Inside)> {
+    let owner = items.iter().find(|c| c.name == at || at.starts_with(&format!("{}/", c.name)))?;
+    let top = carry_at(items, at)?;
+    let from = top.from.as_ref().map(PathBuf::from).unwrap_or_else(|| main.join(at));
+    Some((owner, from, top.inside))
+}
+
+/// What was counted in a place, each with how it comes along
+fn looked(owner: &Carry, counts: &[(Size, bool)]) -> Vec<LookItem> {
+    counts
+        .iter()
+        .map(|(size, folder)| {
+            let (how, by) = how_at(owner, &size.path, *folder);
+            LookItem { size: size.clone(), folder: *folder, how, by }
+        })
+        .collect()
+}
+
+/// [`look`], counted here and now, every thing listed
+#[cfg(test)]
+fn carry_look_now(main: &Path, items: &[Carry], at: &str) -> Vec<LookItem> {
+    let (owner, from, inside) = place_in(main, items, at).expect("the place is in none of them");
+    looked(owner, &look_now(&from, at, &inside))
+}
+
+/// Everything in `from` -- the place known in the worktree as `at` -- each
+/// counted as a copy of it would copy, largest first
+fn look_now(from: &Path, at: &str, inside: &crate::inside::Inside) -> Vec<(Size, bool)> {
+    let Ok(entries) = std::fs::read_dir(from) else { return Vec::new() };
+    let mut found: Vec<(Size, bool)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = std::fs::symlink_metadata(e.path()).ok()?;
+            if meta.file_type().is_symlink() {
+                return None;
+            }
+            let name = format!("{at}/{}", e.file_name().to_string_lossy());
+            let mut left = crate::inherit::LARGE_FILES;
+            Some((size_of(&name, &e.path(), &name, inside, &mut left), meta.is_dir()))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.bytes.cmp(&a.0.bytes).then(b.0.files.cmp(&a.0.files)).then(a.0.path.cmp(&b.0.path)));
+    found
+}
+
+/// How the place `at` inside `owner` comes along, and the project's rule that
+/// decided it when one did: the deepest rule at or above it, else the way
+/// `owner` itself comes. Inside a link nothing is decided apart from it
+pub fn how_at(owner: &Carry, at: &str, folder: bool) -> (String, Option<String>) {
+    let mut decided = (owner.how.clone(), None);
+    if owner.how == "link" {
+        return decided;
+    }
+    let Some(rest) = at.strip_prefix(&format!("{}/", owner.name)) else { return decided };
+    let parts: Vec<&str> = rest.split('/').collect();
+    let mut place = owner.name.clone();
+    for (i, part) in parts.iter().enumerate() {
+        place.push('/');
+        place.push_str(part);
+        let is_folder = i + 1 < parts.len() || folder;
+        if let Some(d) = owner.inside.at(&place, is_folder) {
+            decided = (d.how.to_string(), Some(d.by.to_string()));
+        }
+    }
+    decided
 }
 
 /// Whether a whole source tree will fit under this folder.
@@ -4128,7 +4344,7 @@ origin/master
         let stray = local.join("stray");
         plan.main = local.clone();
         plan.folder = stray.clone();
-        let one = Carry { name: ".env".into(), folder: false, how: "copy".into(), from: None, replace: Vec::new(), line: None };
+        let one = Carry { name: ".env".into(), folder: false, how: "copy".into(), from: None, replace: Vec::new(), line: None, ..Default::default() };
         let missed = carry_into(&plan, &[one]).missed;
         assert_eq!(missed, [".env"], "it could not carry it, but counts as carried");
         assert!(!stray.exists(), "a folder was made on this machine under the far path's name");
@@ -4877,6 +5093,7 @@ tools/conpty.ps1"));
             from: None,
             replace: Vec::new(),
             line: None,
+            ..Default::default()
         };
         let heard = std::sync::Mutex::new(Vec::<FileProgress>::new());
         let said = carry_into_watched(
@@ -4892,6 +5109,113 @@ tools/conpty.ps1"));
         assert_eq!((last.done, last.name.as_str()), (4, ".env"), "the copy did not end at its last file");
         assert!(heard.iter().any(|p| p.name == "deps" && p.done == 3), "the folder's files were not counted one by one");
         assert!(heard.windows(2).all(|w| w[0].done <= w[1].done), "the count went backwards: {heard:?}");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A rule for a place inside a folder that comes along: what started this
+    /// -- `.claude` copied with every other agent's worktree in it. The rule
+    /// beats the ignore line at the same place, the line still says its own
+    /// answer, and the copy, its count of files and the dialog's sizes all
+    /// follow the rules
+    #[test]
+    fn a_rule_inside_a_folder_decides_what_of_it_comes_along() {
+        use crate::config::BringRule;
+        let main = scratch("carry-inside").join("proj-carry-inside");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(main.join(".gitignore"), ".claude/\ncache/\n").unwrap();
+        for (f, body) in [
+            (".claude/settings.json", "{}"),
+            (".claude/worktrees/agent-1/target/big.bin", "0123456789"),
+            (".claude/worktrees/agent-1/notes.md", "keep me"),
+            ("cache/a.bin", "aaaa"),
+        ] {
+            let p = main.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        std::fs::write(main.join("readme.md"), "hi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+
+        let rules = [
+            BringRule { pattern: Some(".claude/".into()), how: "copy".into(), ..Default::default() },
+            BringRule { path: Some(".claude/worktrees/".into()), how: "skip".into(), ..Default::default() },
+            BringRule { path: Some(".claude/worktrees/*/notes.md".into()), how: "copy".into(), ..Default::default() },
+            // Named at the same place as the line `cache/`: the rule for the place decides
+            BringRule { path: Some("cache/".into()), how: "skip".into(), ..Default::default() },
+        ];
+        let offered = carryables(&main, &rules);
+        let named = |n: &str| offered.iter().find(|c| c.name == n).cloned().unwrap_or_else(|| panic!("{n} was not offered: {offered:?}"));
+        let claude = named(".claude");
+        assert_eq!((claude.how.as_str(), claude.by.as_deref(), claude.ruled_inside), ("copy", None, true));
+        let cache = named("cache");
+        assert_eq!((cache.how.as_str(), cache.by.as_deref()), ("skip", Some("cache/")), "the rule for the place did not beat its line");
+        let lines = carry_lines(&offered);
+        let line = lines.iter().find(|l| l.pattern == "cache/").unwrap();
+        assert_eq!(line.how, "copy", "a line chosen as a whole lost its own answer to a rule for a place");
+
+        // Sized as it would be copied: the worktrees folder is not, the notes in it are
+        let sizes = carry_sizes_now(&main, &offered, 100);
+        let size = |n: &str| sizes.iter().find(|s| s.path == n).map(|s| (s.files, s.bytes));
+        assert_eq!(size(".claude"), Some((2, 2 + 7)), "{sizes:?}");
+
+        // What is in a place, largest first, and how each comes along
+        let look = carry_look_now(&main, &offered, ".claude/worktrees/agent-1");
+        assert_eq!(
+            look.iter().map(|i| (i.size.path.as_str(), i.how.as_str(), i.by.as_deref())).collect::<Vec<_>>(),
+            [
+                (".claude/worktrees/agent-1/target", "skip", Some(".claude/worktrees/")),
+                (".claude/worktrees/agent-1/notes.md", "copy", Some(".claude/worktrees/*/notes.md")),
+            ],
+        );
+
+        let cut = plan(&main, "feature/inside", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let heard = std::sync::Mutex::new(Vec::<FileProgress>::new());
+        let said = carry_into_watched(&cut, &offered, &|p| heard.lock().unwrap().push(p.clone()), &|| false);
+        assert!(said.missed.is_empty(), "{said:?}");
+        assert!(cut.folder.join(".claude/settings.json").is_file());
+        assert!(!cut.folder.join(".claude/worktrees/agent-1/target").exists(), "a folder a rule left out was copied");
+        assert_eq!(std::fs::read_to_string(cut.folder.join(".claude/worktrees/agent-1/notes.md")).unwrap(), "keep me", "a place a rule brought out of a left-out folder did not come");
+        assert!(!cut.folder.join("cache").exists(), "the rule for the place was not followed");
+        assert!(heard.into_inner().unwrap().iter().all(|p| p.of == 2), "the count of files to copy was not what the copy copies");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// A place a rule links inside a copied folder, and the same place asked
+    /// for again as a copy -- what happens when it could not be linked
+    #[test]
+    fn a_place_inside_can_be_asked_for_again_by_its_own_name() {
+        let main = repo("carry-again");
+        std::fs::create_dir_all(main.join("deps/big")).unwrap();
+        std::fs::write(main.join("deps/big/x"), "x").unwrap();
+        std::fs::write(main.join("deps/small"), "s").unwrap();
+        let inside = crate::inside::Inside::of(&[crate::config::BringRule {
+            path: Some("deps/big/".into()),
+            how: "link".into(),
+            ..Default::default()
+        }]);
+        let items = [Carry { name: "deps".into(), folder: true, how: "copy".into(), inside, ..Default::default() }];
+        assert_eq!(how_at(&items[0], "deps/big/x", false), ("link".into(), Some("deps/big/".into())));
+        assert_eq!(how_at(&items[0], "deps/small", false), ("copy".into(), None));
+        let again = carry_at(&items, "deps/big").expect("a place inside was not found by its name");
+        assert_eq!((again.name.as_str(), again.folder), ("deps/big", true));
+        let cut = plan(&main, "feature/again", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let said = carry_into(&cut, &[Carry { how: "copy".into(), ..again }]);
+        assert!(said.missed.is_empty() && said.unlinked.is_empty(), "{said:?}");
+        assert!(cut.folder.join("deps/big/x").is_file(), "the place was not copied where it belongs");
+        assert!(!cut.folder.join("deps/small").exists(), "asking for one place brought the folder around it");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
@@ -4917,6 +5241,7 @@ tools/conpty.ps1"));
             from: from.map(|p| p.display().to_string()),
             replace: Vec::new(),
             line: None,
+            ..Default::default()
         };
         let items = [carry("deps", true, None), carry(".env", false, None), carry("conf/local.txt", false, Some(&elsewhere))];
         let size = |path: &str, bytes: u64, files: u64, more: bool| Size { path: path.into(), bytes, files, more };
@@ -4963,7 +5288,7 @@ tools/conpty.ps1"));
         let cut = plan(&main, "feature/stop", None).unwrap();
         std::fs::create_dir_all(&cut.folder).unwrap();
         let last = std::sync::Mutex::new(0u64);
-        let carry = Carry { name: "deps".into(), folder: true, how: "copy".into(), from: None, replace: Vec::new(), line: None };
+        let carry = Carry { name: "deps".into(), folder: true, how: "copy".into(), from: None, replace: Vec::new(), line: None, ..Default::default() };
         carry_into_watched(&cut, &[carry], &|p| *last.lock().unwrap() = p.done, &|| *last.lock().unwrap() >= 2);
         let copied = std::fs::read_dir(cut.folder.join("deps")).unwrap().count();
         assert_eq!(copied, 2, "the copy went on after it was asked to stop");
@@ -5025,6 +5350,7 @@ tools/conpty.ps1"));
             from: Some(main.join("vendor").display().to_string()),
             replace: Vec::new(),
             line: None,
+            ..Default::default()
         };
         let said = carry_into(&cut, &[carry("gone/vendor", "link")]);
         assert_eq!(said.unlinked, ["gone/vendor"], "a folder with no second name was not asked about");
@@ -5398,6 +5724,7 @@ tools/conpty.ps1"));
             from: None,
             replace: Vec::new(),
             line: Some(CarryLineKey { source: source.into(), pattern: pattern.into() }),
+            ..Default::default()
         };
         let offered = vec![
             item("www/tmp/a", true, "link", ".gitignore", "www/tmp/*"),
@@ -5406,7 +5733,7 @@ tools/conpty.ps1"));
             item("www/tmp/c.txt", false, "link", ".gitignore", "www/tmp/*"),
             item("web/cache", true, "link", "web/.gitignore", "www/tmp/*"),
             // From elsewhere: no line to choose it by
-            Carry { name: "keys".into(), folder: true, how: "copy".into(), from: Some("D:/keys".into()), replace: Vec::new(), line: None },
+            Carry { name: "keys".into(), folder: true, how: "copy".into(), from: Some("D:/keys".into()), replace: Vec::new(), line: None, ..Default::default() },
         ];
         let lines = carry_lines(&offered);
         let said: Vec<_> = lines.iter().map(|l| (l.source.as_str(), l.pattern.as_str(), l.how.as_str(), l.count, l.folders)).collect();

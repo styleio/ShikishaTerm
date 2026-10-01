@@ -7,7 +7,8 @@
  * What the new folder inherits is counted on a thread and arrives after the
  * dialog has opened (BranchPlan.carry_sizes). A large copy is said above the
  * fold, before the button is pressed; under the fold each row says what it
- * holds, and the large ones are marked.
+ * holds, the large ones marked, and a folder opens to what is inside it
+ * (BranchPlan.looks), where a place can be given its own rule.
  */
 
 const family = 'D:/work/site/.git';
@@ -27,22 +28,54 @@ const state = JSON.stringify({
   auto_enabled: true, build: '', help_rows: [], ais: [],
 });
 
-const line = (pattern) => ({ source: '.gitignore', pattern });
-const carry = [
-  { name: 'node_modules', folder: true, how: 'copy', line: line('node_modules/') },
-  { name: 'target', folder: true, how: 'copy', line: line('/target') },
-  { name: '.env', folder: false, how: 'copy', line: line('.env') },
-  { name: 'vendor', folder: true, how: 'link', line: line('vendor/') },
-];
 const GB = 1024 * 1024 * 1024;
-const sizes = [
-  { path: 'node_modules', bytes: Math.round(0.6 * GB), files: 50000, more: true },
-  { path: 'target', bytes: Math.round(4.2 * GB), files: 18342, more: false },
-  { path: '.env', bytes: 412, files: 1, more: false },
-  { path: 'vendor', bytes: Math.round(0.3 * GB), files: 9120, more: false },
-];
+const MB = 1024 * 1024;
+const line = (pattern) => ({ source: '.gitignore', pattern });
+const size = (path, bytes, files, more = false) => ({ path, bytes: Math.round(bytes), files, more });
 
-const answer = (counted) => ({
+// Before any rule: .claude is copied whole, the other agents' worktrees in it
+const before = {
+  carry: [
+    { name: '.claude', folder: true, how: 'copy', line: line('.claude/') },
+    { name: 'node_modules', folder: true, how: 'copy', line: line('node_modules/') },
+    { name: '.env', folder: false, how: 'copy', line: line('.env') },
+    { name: 'vendor', folder: true, how: 'link', line: line('vendor/') },
+  ],
+  sizes: [
+    size('.claude', 147.7 * GB, 50000, true),
+    size('node_modules', 0.6 * GB, 41203),
+    size('.env', 412, 1),
+    size('vendor', 0.3 * GB, 9120),
+  ],
+  looks: [{
+    path: '.claude',
+    items: [
+      { size: size('.claude/worktrees', 147.6 * GB, 50000, true), folder: true, how: 'copy' },
+      { size: size('.claude/hooks', 1.2 * MB, 38), folder: true, how: 'copy' },
+      { size: size('.claude/skills', 0.4 * MB, 21), folder: true, how: 'copy' },
+      { size: size('.claude/RULES.md', 41 * 1024, 1), folder: false, how: 'copy' },
+      { size: size('.claude/settings.json', 3 * 1024, 1), folder: false, how: 'copy' },
+    ],
+  }],
+};
+
+// After "Leave out" was chosen for .claude/worktrees: the project's rule
+const after = {
+  carry: [
+    { name: '.claude', folder: true, how: 'copy', line: line('.claude/'), ruled_inside: true },
+    ...before.carry.slice(1),
+  ],
+  sizes: [size('.claude', 1.7 * MB, 61), ...before.sizes.slice(1)],
+  looks: [{
+    path: '.claude',
+    items: [
+      { size: size('.claude/worktrees', 147.6 * GB, 50000, true), folder: true, how: 'skip', by: '.claude/worktrees/' },
+      ...before.looks[0].items.slice(1),
+    ],
+  }],
+};
+
+const answer = (shown, counted) => ({
   from: 'D:/work/site',
   asked: '',
   branch: 'mighty-gannet',
@@ -51,37 +84,50 @@ const answer = (counted) => ({
   seq: 1,
   base: 'origin/main',
   bases: ['origin/main', 'main'],
-  carry,
+  carry: shown.carry,
   carry_lines: [
+    { source: '.gitignore', pattern: '.claude/', how: 'copy', count: 1, folders: true },
     { source: '.gitignore', pattern: 'node_modules/', how: 'copy', count: 1, folders: true },
-    { source: '.gitignore', pattern: '/target', how: 'copy', count: 1, folders: true },
     { source: '.gitignore', pattern: '.env', how: 'copy', count: 1, folders: false },
     { source: '.gitignore', pattern: 'vendor/', how: 'link', count: 1, folders: true },
   ],
-  carry_sizes: counted ? sizes : null,
+  carry_sizes: counted ? shown.sizes : null,
+  looks: counted ? shown.looks : [],
   large_bytes: GB, large_files: 50000,
   lines: [],
   project: 'site', project_at: 'D:/work/site', project_name: 'site',
   hosts: [], host: '', setup_from: '', setup_unresolved: [],
 });
 
-const opened = (counted, then) => `
+const opened = (shown, counted, then) => `
   window.__state(${JSON.stringify(state)});
   openBranch({folder: "D:/work/site"}, {});
   const s = JSON.parse(${JSON.stringify(state)});
-  s.branch = ${JSON.stringify(answer(counted))};
+  s.branch = ${JSON.stringify(answer(shown, counted))};
   window.__state(JSON.stringify(s));
   ${then || ''}
+  window.__state(JSON.stringify(s));
   "ok"`;
+
+const see = `document.querySelector("#branch .bslow .bwarn button").click();`;
 
 export default {
   settle: 1500,
   scenes: {
     // Still being counted: nothing said yet
-    counting: opened(false),
+    counting: opened(before, false),
     // Counted: the warning above the fold
-    warned: opened(true),
-    // Its button pressed: the fold open on the rows that cost it
-    shown: opened(true, `document.querySelector("#branch .bslow .bwarn button").click();`),
+    warned: opened(before, true),
+    // Its button pressed: the fold open on the row that costs it, opened
+    shown: opened(before, true, see),
+    // .claude/worktrees left out by the project's rule: no warning, and the
+    // row says which rule decided it
+    ruled: opened(after, true, `showMore(document.getElementById("branch"), true);
+      document.querySelector('#branch .bcarry .crow button.bcopen').click();
+      document.querySelector('#branch .bcarry').scrollIntoView({block: 'start'});`),
+    // .claude linked while a rule names a place inside it
+    linked: opened({ ...after, carry: [{ ...after.carry[0], how: 'link' }, ...after.carry.slice(1)] }, true,
+      `showMore(document.getElementById("branch"), true);
+      document.querySelector('#branch .bcarry').scrollIntoView({block: 'start'});`),
   },
 };

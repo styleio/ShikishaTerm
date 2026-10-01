@@ -165,11 +165,16 @@ impl ProjectSpec {
 /// Either a line of an ignore file -- `pattern`, as written, with the file it
 /// is written in as `source` (absent is the project's own `.gitignore`) -- and
 /// then it covers everything that line makes git ignore; or `from` a path
-/// anywhere on this machine, put at `to` inside the worktree.
+/// anywhere on this machine, put at `to` inside the worktree; or a `path`
+/// inside the worktree at any depth, written the way an ignore line is, for
+/// the places a line can only speak for as part of a whole folder (see
+/// `crate::inside`).
 #[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
 pub struct BringRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6576,6 +6581,15 @@ fn project_entry_mut<'a>(
         .and_then(|x| x.as_object_mut())
 }
 
+/// How one place inside what comes along reaches a new worktree, chosen for
+/// that place (see `crate::inside`). An empty `how` takes its rule away
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BringPlace {
+    /// Written the way an ignore line is
+    pub path: String,
+    pub how: String,
+}
+
 /// How the things one line of an ignore file makes git ignore reach a new
 /// worktree, chosen for that line as a whole
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6594,7 +6608,7 @@ pub struct BringChoice {
 /// chosen in the settings. A line's replacements are kept -- only how it
 /// comes along is chosen here. Read-modify-write on the parsed JSON, like
 /// every other change here. Returns whether it was written
-pub fn save_bring_choices(desk_id: &str, cwd: &Path, choices: &[BringChoice]) -> bool {
+pub fn save_bring_choices(desk_id: &str, cwd: &Path, choices: &[BringChoice], places: &[BringPlace]) -> bool {
     let Some(cfg) = load() else { return false };
     let (desks, _) = cfg.resolve_desks();
     let Some(desk) = desks.iter().find(|d| d.id == desk_id) else {
@@ -6607,7 +6621,7 @@ pub fn save_bring_choices(desk_id: &str, cwd: &Path, choices: &[BringChoice]) ->
         crate::append_hook_log("could not record how lines come along: settings are not readable");
         return false;
     };
-    if !write_bring_choices(&mut doc, desk, cwd, choices) {
+    if !write_bring_choices(&mut doc, desk, cwd, choices, places) {
         return false;
     }
     match serde_json::to_string_pretty(&doc) {
@@ -6617,7 +6631,7 @@ pub fn save_bring_choices(desk_id: &str, cwd: &Path, choices: &[BringChoice]) ->
 }
 
 /// The same, on a parsed settings file, for the desk `desk` as it was read
-fn write_bring_choices(doc: &mut serde_json::Value, desk: &Desk, cwd: &Path, choices: &[BringChoice]) -> bool {
+fn write_bring_choices(doc: &mut serde_json::Value, desk: &Desk, cwd: &Path, choices: &[BringChoice], places: &[BringPlace]) -> bool {
     let Some(entry) = desk_entry_mut(doc, &desk.id) else {
         return false;
     };
@@ -6648,6 +6662,26 @@ fn write_bring_choices(doc: &mut serde_json::Value, desk: &Desk, cwd: &Path, cho
                 }
                 rules.push(rule);
             }
+        }
+    }
+    // A place inside: its rule changed in place, taken away when the how is
+    // empty, or written after the others -- after, because a later rule for
+    // the same place is the one that counts
+    for c in places {
+        let place = c.path.trim();
+        let same = |r: &serde_json::Value| r.get("path").and_then(|p| p.as_str()).is_some_and(|p| p.trim() == place);
+        if !crate::worktree::HOWS.contains(&c.how.as_str()) {
+            rules.retain(|r| !same(r));
+            continue;
+        }
+        match rules.iter_mut().filter(|r| same(r)).last().and_then(|r| r.as_object_mut()) {
+            Some(rule) => {
+                rule.insert("how".into(), serde_json::Value::String(c.how.clone()));
+                if c.how != "replace" {
+                    rule.shift_remove("replace");
+                }
+            }
+            None => rules.push(serde_json::json!({ "path": place, "how": c.how })),
         }
     }
     true
@@ -7271,7 +7305,7 @@ mod tests {
             choice("web/.gitignore", "cache/", "skip"),
             choice(".gitignore", ".env", "replace"),
             choice(".gitignore", "junk", "nonsense"),
-        ]));
+        ], &[]));
         let rules = doc["desks"][0]["projects"][0]["bring"].as_array().unwrap().clone();
         assert_eq!(rules.len(), 3, "{rules:?}");
         assert_eq!(rules[0]["replace"][0]["find"], "a", "the replacements of a line still copied with them went");
@@ -7280,7 +7314,7 @@ mod tests {
 
         // Copied plainly from now on: its replacements are not kept for nothing
         let work = serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0.remove(0);
-        assert!(super::write_bring_choices(&mut doc, &work, &here, &[choice(".gitignore", ".env", "copy")]));
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[choice(".gitignore", ".env", "copy")], &[]));
         assert!(doc["desks"][0]["projects"][0]["bring"][0].get("replace").is_none());
 
         // What the project now says is what the next worktree is offered
@@ -7288,6 +7322,21 @@ mod tests {
         let rules = &work.project_of(&here).expect("the folder lost its project").bring;
         assert!(rules.iter().any(|r| r.is_for(".gitignore", "tmp/") && r.how == "skip"));
         assert!(rules.iter().any(|r| r.is_for("web/.gitignore", "cache/") && r.how == "skip"));
+
+        // A place inside: written after the lines, changed in place, taken away
+        let place = |path: &str, how: &str| super::BringPlace { path: path.into(), how: how.into() };
+        let bring = |doc: &serde_json::Value| doc["desks"][0]["projects"][0]["bring"].as_array().unwrap().clone();
+        let lines_before = bring(&doc).len();
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[], &[place(".claude/worktrees/", "skip")]));
+        assert_eq!(bring(&doc).last().unwrap(), &serde_json::json!({"path": ".claude/worktrees/", "how": "skip"}));
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[], &[place(" .claude/worktrees/ ", "link")]));
+        assert_eq!(bring(&doc).len(), lines_before + 1, "a place written again was written twice");
+        assert_eq!(bring(&doc).last().unwrap()["how"], "link");
+        let work = serde_json::from_value::<super::Config>(doc.clone()).unwrap().resolve_desks().0.remove(0);
+        let kept = &work.project_of(&here).expect("the folder lost its project").bring;
+        assert!(kept.iter().any(|r| r.path.as_deref() == Some(".claude/worktrees/") && r.how == "link"));
+        assert!(super::write_bring_choices(&mut doc, &work, &here, &[], &[place(".claude/worktrees/", "")]));
+        assert_eq!(bring(&doc).len(), lines_before, "an empty how did not take the place's rule away");
     }
 
     /// A choice made at the git column lands on the git tab it was made on, or
