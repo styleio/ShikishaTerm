@@ -24,6 +24,8 @@ The conference tables (`asks`, `lines`, `reactions`, `shares`) are the exception
 | `lines` | One bubble of AIConfer: who said it, the short line, the ask it belongs to, and how it came to be (the asker's line, the answer in its own words, the answer's first sentence taken for it, a line said on its own, a person naming a tab, a decision made) | No CLI record has these: they are said to the app, not in the conversation |
 | `reactions` | One mark on a line, and who put it there (a tab, or the person) | |
 | `shares` | One card: a commit, a pull request, a file or a page an AI put in front of the others, checked before it was taken | |
+| `threads` | One conversation of AIs: begun by a person naming a tab, or by an AI asking another, and keyed by the CLI conversation of the tab that began it. Every ask, line and card carries its id | So two conversations on one desk at once read apart |
+| `thread_tabs` | Who takes part in a conversation: named in it, asking or asked, saying, sharing or marking something | AIConfer shows the conversations of the tab in front. Written by the same writes that record those, so it cannot fall behind them |
 
 `meta` holds one row, `schema`: the version the file is at.
 
