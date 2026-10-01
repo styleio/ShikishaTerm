@@ -1552,7 +1552,7 @@ mod tests {
         let run = home.join("run");
         std::fs::create_dir_all(&run).unwrap();
         // Takes connections and says nothing
-        let silent = UnixListener::bind(run.join(KEEP_SOCK)).unwrap();
+        let silent = UnixListener::bind(&run.join(KEEP_SOCK)).unwrap();
         let held = std::thread::spawn(move || {
             let kept: Vec<UnixStream> = silent.incoming().take(1).flatten().collect();
             std::thread::sleep(Duration::from_secs(5));
