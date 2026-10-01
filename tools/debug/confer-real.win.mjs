@@ -59,6 +59,18 @@ const freePort = () => new Promise((r) => { const s = net.createServer(); s.list
 
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
+// A check of an older build says nothing about the code in front of you
+// (cargo test does not build the app itself)
+{
+  const built = fs.statSync(exe).mtimeMs;
+  const newer = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((e) => {
+    const p = path.join(dir, e.name);
+    return e.isDirectory() ? newer(p) : fs.statSync(p).mtimeMs > built;
+  });
+  if (['src', path.join('crates', 'core', 'src')].some((d) => newer(path.join(ROOT, d)))) {
+    die('the build at target\\debug is older than the sources -- run cargo build first');
+  }
+}
 for (const cli of ['claude', 'codex']) {
   if (spawnSync('where.exe', [cli], { encoding: 'utf8' }).status !== 0) die(`${cli} is not on PATH`);
 }
@@ -323,7 +335,7 @@ const summary = () => {
   // Each asker's CLI conversation is one conversation of AIs, whoever it asks
   const by = {};
   for (const r of results) (by[r.pair.split('->')[0]] ||= new Set()).add(r.thread);
-  console.log('conversations by asker:', Object.entries(by).map(([k, v]) => `${k}: ${[...v].join(',')}`).join('; '));
+  console.log('conversations by asker:', Object.entries(by).map(([k, v]) => `${k}: ${v.size} (thread ${[...v].join(', ')})`).join('; '));
 };
 
 try {
