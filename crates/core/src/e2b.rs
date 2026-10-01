@@ -623,6 +623,16 @@ pub struct KeptUntil {
     pub asked: u64,
 }
 
+/// Each machine's run as it was when it was kept up while the app is away:
+/// when the service says it began. A different beginning later is a pause
+/// and a start in between, told without either clock having to agree
+static RUN_LEFT: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// When the run a machine was in as the app went began, as the service said
+pub fn run_left(id: &str) -> Option<u64> {
+    RUN_LEFT.lock().ok().and_then(|r| r.iter().find(|(i, _)| i == id).map(|(_, s)| *s))
+}
+
 impl KeptUntil {
     /// Whether the service gave it less than was asked for
     pub fn cut(&self) -> bool {
@@ -638,6 +648,10 @@ pub fn keep_up_while_away(id: &str, minutes: u32) -> Result<KeptUntil> {
     keep_up_for(&key, id, minutes)?;
     let w = window(&key, id)?;
     crate::append_hook_log(&format!("e2b: {id} kept up while the app is away: asked until {asked}, ends at {}", w.ends));
+    if let Ok(mut r) = RUN_LEFT.lock() {
+        r.retain(|(i, _)| i != id);
+        r.push((id.to_string(), w.started));
+    }
     Ok(KeptUntil { ends: w.ends, asked })
 }
 
@@ -647,10 +661,12 @@ pub fn ends_at(id: &str) -> Option<u64> {
     window(&key, id).ok().map(|w| w.ends)
 }
 
-/// Whether a machine was begun again after `since` (seconds since 1970): it
-/// was paused in between, and whatever ran on it was frozen
-pub fn started_after(id: &str, since: u64) -> bool {
-    key().and_then(|k| window(&k, id).ok()).is_some_and(|w| w.started > since + 30)
+/// Whether a machine was begun again since the run that began at `run`
+/// (the service's own time): it was paused in between, and whatever ran on
+/// it was frozen. Not knowing is said as not known
+pub fn begun_again_since(id: &str, run: u64) -> Option<bool> {
+    let w = key().and_then(|k| window(&k, id).ok())?;
+    Some(w.started != run)
 }
 
 /// A machine given its full minutes again and again while a long piece of

@@ -153,6 +153,18 @@ impl Core {
         ids
     }
 
+    /// How many apps connected now were heard from within `d`
+    pub fn lines_heard_within(&self, d: Duration) -> usize {
+        self.lines
+            .lock()
+            .map(|m| {
+                m.values()
+                    .filter(|l| !l.leaving.load(Ordering::SeqCst) && l.heard.lock().is_ok_and(|h| h.elapsed() < d))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
     /// Whether the app on `line` is connected and staying
     pub fn is_up(&self, line: u64) -> bool {
         self.lines.lock().is_ok_and(|m| m.get(&line).is_some_and(|l| !l.leaving.load(Ordering::SeqCst)))
@@ -423,6 +435,7 @@ pub fn daemon(home: PathBuf) -> Result<()> {
 
     let core = Core::new();
     let tabs_job = Arc::new(TabsJob::default());
+    let _ = tabs_job.me.set(Arc::downgrade(&tabs_job));
     if let Ok(mut j) = core.jobs.lock() {
         j.push(Arc::new(HostJob));
         j.push(tabs_job.clone());
@@ -562,15 +575,29 @@ struct TabsJob {
     names: Mutex<HashMap<String, String>>,
     /// The calls written down, kept with the file
     book: Mutex<Option<crate::farmissed::Book>>,
+    /// Itself, for the threads that hand kept calls over
+    me: std::sync::OnceLock<std::sync::Weak<TabsJob>>,
+    /// The tabs whose kept calls are being handed over now
+    handing: Mutex<std::collections::HashSet<String>>,
 }
 
 struct Conn {
     line: u64,
-    socket: UnixStream,
+    /// Where the app's answers go: the tab's command, or a kept call being
+    /// handed over
+    out: Out,
     tab: String,
     /// The last call carried, not yet answered
     call: Option<String>,
 }
+
+enum Out {
+    Socket(UnixStream),
+    Kept(std::sync::mpsc::Sender<String>),
+}
+
+/// How long the app may take to answer a kept call handed over to it
+const HAND_WAIT: Duration = Duration::from_secs(120);
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -607,6 +634,55 @@ impl TabsJob {
         out
     }
 
+    /// A call whose app is away: kept, when it asks nothing back and its tab
+    /// is known -- answered so, to be handed over when the app is back; else
+    /// written down, and answered that the PC is away (`None`)
+    fn away_call(&self, core: &Arc<Core>, tab: &str, line: &str) -> Option<Value> {
+        let (method, _) = crate::farmissed::read_call(line);
+        if tab.is_empty() || !crate::farmissed::KEPT.contains(&method.as_str()) {
+            self.missed(core, tab, line, false);
+            return None;
+        }
+        self.with_book(|b| b.keep(tab, line, now_secs()));
+        let id = serde_json::from_str::<Value>(line).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+        const KEPT: &str = "The SHIKISHA-TERM app that started this tab is not connected to this machine right now \
+            (the PC is away). This was kept, and is handed to it when it is back.";
+        Some(json!({ "id": id, "ok": true, "result": KEPT }))
+    }
+
+    /// Hand a tab's kept calls to the app that just gave it its key, oldest
+    /// first, each on a connection of its own as the tab's command would --
+    /// under the key given now, and under an id of its own the app runs once.
+    /// Struck out once answered; on a line that goes, the rest wait for the
+    /// next time
+    fn hand_over(&self, core: &Arc<Core>, line: u64, tab: &str, key: &str) {
+        let (uid, kept) = self.with_book(|b| (b.uid.clone(), b.kept_for(tab)));
+        for k in kept {
+            let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            if let Ok(mut m) = self.conns.lock() {
+                m.insert(c, Conn { line, out: Out::Kept(tx), tab: tab.to_string(), call: None });
+            }
+            let mut call: Value = serde_json::from_str(&k.line).unwrap_or_default();
+            call["id"] = json!(crate::farmissed::kept_id(&uid, k.id));
+            let answered = core.say(line, &Frame::Open { c })
+                && core.say(line, &Frame::Line { c, l: json!({ "token": key }).to_string() })
+                && rx.recv_timeout(Duration::from_secs(30)).is_ok()
+                && core.say(line, &Frame::Line { c, l: call.to_string() })
+                && rx.recv_timeout(HAND_WAIT).is_ok();
+            core.say(line, &Frame::Close { c });
+            if let Ok(mut m) = self.conns.lock() {
+                m.remove(&c);
+            }
+            if !answered {
+                log(&format!("a kept call of {tab} was not answered; it waits for the next time"));
+                break;
+            }
+            self.with_book(|b| b.handed(k.id));
+            log(&format!("a kept call of {tab} was handed over"));
+        }
+    }
+
     /// Write down a call that did not reach its app, and tell every app
     /// connected now: the person hears of it without waiting for a reconnect
     fn missed(&self, core: &Arc<Core>, tab: &str, line: &str, cut: bool) {
@@ -637,12 +713,12 @@ impl TabsJob {
             .unwrap_or_default();
         let tab = self.tab_of(&token);
         let Some(line) = self.owner_of(core, &token) else {
-            away(conn, lines, |call| self.missed(core, &tab, call, false));
+            away(conn, lines, |call| self.away_call(core, &tab, call));
             return;
         };
         let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut m) = self.conns.lock() {
-            m.insert(c, Conn { line, socket: conn, tab, call: None });
+            m.insert(c, Conn { line, out: Out::Socket(conn), tab, call: None });
         }
         let carried = core.say(line, &Frame::Open { c }) && core.say(line, &Frame::Line { c, l: first });
         if carried {
@@ -682,17 +758,17 @@ impl TabsJob {
 }
 
 /// The answer to a command whose app is away: the handshake taken, and every
-/// call answered at once, in words the AI there can read and act on -- and
-/// each one handed to `note` to be written down
-fn away(mut conn: UnixStream, lines: impl Iterator<Item = std::io::Result<String>>, note: impl Fn(&str)) {
+/// call answered at once, in words the AI there can read and act on. Each is
+/// handed to `keep` first, which answers it itself when it keeps it
+fn away(mut conn: UnixStream, lines: impl Iterator<Item = std::io::Result<String>>, keep: impl Fn(&str) -> Option<Value>) {
     const AWAY: &str = "The SHIKISHA-TERM app that started this tab is not connected to this machine right now \
         (the PC is away). Nothing was sent. Hand over what you meant to report when it is back.";
     let _ = writeln!(conn, r#"{{"ok":true,"result":"hello"}}"#);
     for text in lines {
         let Ok(l) = text else { break };
         let id = serde_json::from_str::<Value>(&l).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
-        note(&l);
-        if writeln!(conn, "{}", json!({ "id": id, "ok": false, "error": AWAY })).is_err() {
+        let answer = keep(&l).unwrap_or_else(|| json!({ "id": id, "ok": false, "error": AWAY }));
+        if writeln!(conn, "{answer}").is_err() {
             break;
         }
     }
@@ -709,13 +785,20 @@ impl Job for TabsJob {
                 if let Some(conn) = self.conns.lock().ok().as_mut().and_then(|m| m.get_mut(c)) {
                     // Answered: nothing of it is in the middle any more
                     conn.call = None;
-                    let _ = writeln!(conn.socket, "{l}");
+                    match &mut conn.out {
+                        Out::Socket(s) => {
+                            let _ = writeln!(s, "{l}");
+                        }
+                        Out::Kept(tx) => {
+                            let _ = tx.send(l.clone());
+                        }
+                    }
                 }
                 true
             }
             Frame::Close { c } => {
-                if let Some(conn) = self.conns.lock().ok().and_then(|mut m| m.remove(c)) {
-                    let _ = conn.socket.shutdown(std::net::Shutdown::Both);
+                if let Some(Conn { out: Out::Socket(s), .. }) = self.conns.lock().ok().and_then(|mut m| m.remove(c)) {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
                 }
                 true
             }
@@ -747,6 +830,24 @@ impl Job for TabsJob {
                             owners.insert(key.to_string(), line);
                             if let (Ok(mut names), Some(tab)) = (self.names.lock(), p.get("tab").and_then(|t| t.as_str())) {
                                 names.insert(key.to_string(), tab.to_string());
+                                // The app is back for this tab: what was kept
+                                // for it while it was away is handed over, on a
+                                // thread, since its answers come by this loop
+                                let waiting = self.with_book(|b| !b.kept_for(tab).is_empty());
+                                let first = self.handing.lock().is_ok_and(|mut h| h.insert(tab.to_string()));
+                                if waiting && first
+                                    && let Some(me) = self.me.get().and_then(std::sync::Weak::upgrade)
+                                {
+                                    let (core, tab, key) = (Arc::clone(core), tab.to_string(), key.to_string());
+                                    std::thread::spawn(move || {
+                                        me.hand_over(&core, line, &tab, &key);
+                                        if let Ok(mut h) = me.handing.lock() {
+                                            h.remove(&tab);
+                                        }
+                                    });
+                                } else if first && let Ok(mut h) = self.handing.lock() {
+                                    h.remove(tab);
+                                }
                             }
                         }
                         "drop_key" => {
@@ -773,10 +874,13 @@ impl Job for TabsJob {
             m.retain(|_, conn| {
                 let keep = conn.line != line;
                 if !keep {
-                    let _ = writeln!(conn.socket, "{}", json!({ "id": null, "ok": false, "error": CUT }));
-                    let _ = conn.socket.shutdown(std::net::Shutdown::Both);
-                    if let Some(call) = conn.call.take() {
-                        cut.push((conn.tab.clone(), call));
+                    // A kept call being handed over is not cut: it stays kept
+                    if let Out::Socket(s) = &mut conn.out {
+                        let _ = writeln!(s, "{}", json!({ "id": null, "ok": false, "error": CUT }));
+                        let _ = s.shutdown(std::net::Shutdown::Both);
+                        if let Some(call) = conn.call.take() {
+                            cut.push((conn.tab.clone(), call));
+                        }
                     }
                 }
                 keep
@@ -787,6 +891,10 @@ impl Job for TabsJob {
         }
     }
 }
+
+/// Within how long an app counts as there: two of its ticks (`farlink::TICK`)
+/// and a margin
+const HEARD_LATELY: Duration = Duration::from_secs(35);
 
 /// What the resident process says about itself when asked: how many apps are
 /// connected to it (`host_lines`), so that one app does not take the bridge
@@ -801,7 +909,11 @@ impl Job for HostJob {
     fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
         match frame {
             Frame::Op { id, op, .. } if op == "host_lines" => {
-                core.say(line, &Frame::Re { id: *id, r: json!({ "lines": core.lines().len() }), e: None });
+                // Counted are the apps heard from lately: each says it is
+                // there every 15 seconds, and one killed without a word is
+                // not one using the machine, though its line waits for the
+                // silence to end it
+                core.say(line, &Frame::Re { id: *id, r: json!({ "lines": core.lines_heard_within(HEARD_LATELY) }), e: None });
                 true
             }
             _ => false,
@@ -1007,6 +1119,68 @@ mod tests {
         let mut to = conn;
         writeln!(to, "{}", json!({ "token": key })).unwrap();
         (to, from)
+    }
+
+    /// While the app is away, a call that asks nothing back is kept (far-keep
+    /// plan §4.6, the later version) and answered so; one that asks something
+    /// back is answered that the PC is away. The app back gives the tab a new
+    /// key, and the kept call is handed to it under that key and an id of its
+    /// own, and struck out once answered
+    #[test]
+    fn a_report_made_while_away_is_kept_and_handed_over_when_the_app_is_back() {
+        let home = std::env::temp_dir().join(format!("sk-fardaemon-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        pc.say(&Frame::Op { id: 1, op: "put_key".into(), p: json!({ "tab": "t1", "key": "k-old" }) });
+        assert!(pc.hear_until(|f| matches!(f, Frame::Re { id: 1, .. })).is_some());
+        pc.say(&Frame::Bye);
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (mut to, mut from) = command(&run, "k-old");
+        let mut hi = String::new();
+        from.read_line(&mut hi).unwrap();
+        writeln!(to, r#"{{"id":"7","method":"report","params":["job-1","all done"]}}"#).unwrap();
+        let mut kept = String::new();
+        from.read_line(&mut kept).unwrap();
+        assert!(kept.contains("\"ok\":true") && kept.contains("kept"), "a report was not kept: {kept}");
+        writeln!(to, r#"{{"id":"8","method":"tab_list","params":[]}}"#).unwrap();
+        let mut away = String::new();
+        from.read_line(&mut away).unwrap();
+        assert!(away.contains("\"ok\":false") && away.contains("away"), "a call that asks back was kept: {away}");
+        drop((to, from, pc));
+
+        // The app back, giving the tab a new key: the kept call comes to it
+        let mut back = App::open(&run);
+        back.say(&Frame::Op { id: 2, op: "put_key".into(), p: json!({ "tab": "t1", "key": "k-new" }) });
+        let Some(Frame::Open { c }) = back.hear_until(|f| matches!(f, Frame::Open { .. })) else { panic!("nothing was handed over") };
+        let Some(Frame::Line { l: hello, .. }) = back.hear_until(|f| matches!(f, Frame::Line { .. })) else { panic!("no handshake") };
+        assert!(hello.contains("k-new"), "not under the key given now: {hello}");
+        back.say(&Frame::Line { c, l: r#"{"ok":true,"result":"hello"}"#.into() });
+        let Some(Frame::Line { l: call, .. }) = back.hear_until(|f| matches!(f, Frame::Line { .. })) else { panic!("no call") };
+        let call: Value = serde_json::from_str(&call).unwrap();
+        assert_eq!(call["method"], "report");
+        assert_eq!(call["params"][1], "all done", "what it said was not kept whole");
+        let id = call["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("kept-"), "{id}");
+        back.say(&Frame::Line { c, l: json!({ "id": id, "ok": true, "result": null }).to_string() });
+        std::thread::sleep(Duration::from_millis(500));
+        back.say(&Frame::Job { job: "tabs".into(), m: json!({ "do": "missed" }) });
+        let Some(Frame::Job { m, .. }) = back.hear_until(|f| matches!(f, Frame::Job { job, m } if job == "tabs" && m["did"] == "missed"))
+        else {
+            panic!("no book")
+        };
+        assert_eq!(m["book"]["kept"].as_array().map(Vec::len), Some(0), "handed over and still kept: {m}");
+        assert_eq!(m["book"]["calls"][0]["method"], "tab_list", "the call that asked back was not written down: {m}");
+        drop(back);
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The app says it is going (far-keep plan §4.6): its line ends at once, a

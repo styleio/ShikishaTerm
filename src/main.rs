@@ -2158,9 +2158,15 @@ fn connect_to(url: &str) -> Result<()> {
     // SAFETY: nothing else is running yet -- the window and its threads are
     // started below -- so nobody is reading the environment while it changes
     unsafe { std::env::remove_var(shikisha_core::split::HERE_KEY_ENV) };
-    let opened = match here.trim() {
-        "" => url.to_string(),
-        key => format!("{url}{}here={key}", if url.contains('?') { "&" } else { "?" }),
+    // A server version's board, opened by this PC that was paired with it:
+    // the ticket it was handed for this window, used once (far-keep plan §6.2)
+    let ticket = std::env::var(shikisha_core::pairing::TICKET_ENV).unwrap_or_default();
+    // SAFETY: as above, nothing else is running yet
+    unsafe { std::env::remove_var(shikisha_core::pairing::TICKET_ENV) };
+    let opened = match (here.trim(), ticket.trim()) {
+        ("", "") => url.to_string(),
+        ("", t) => format!("{url}{}ticket={t}", if url.contains('?') { "&" } else { "?" }),
+        (key, _) => format!("{url}{}here={key}", if url.contains('?') { "&" } else { "?" }),
     };
     let win = std::sync::Arc::new(browser::Browser::spawn(&opened, "SHIKISHA-TERM")?);
     // Named without its query, because the query is the key to the board and

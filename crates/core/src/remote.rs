@@ -1962,6 +1962,97 @@ fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A device let in by what it brought in the link: a ticket its paired PC was
+/// handed for it (`?ticket=`), or a code used once (`?pair=`) from the QR a
+/// paired PC shows, which writes it into the book. Its row and its key
+fn arrived_by_code(req: &tiny_http::Request) -> Option<(crate::clients::Client, String)> {
+    if let Some(key) = crate::pairing::take_ticket(&query_value(req.url(), "ticket")) {
+        return crate::clients::who(&key).map(|row| (row, key));
+    }
+    let code = query_value(req.url(), "pair");
+    if code.is_empty() || crate::pairing::take(&code).is_err() {
+        return None;
+    }
+    let agent = req.headers().iter().find(|h| h.field.equiv("User-Agent")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
+    crate::clients::pair(&device_name(&agent)).ok()
+}
+
+/// The key a paired device shows, in its own header
+fn device_key(req: &tiny_http::Request) -> String {
+    req.headers().iter().find(|h| h.field.equiv("X-Device-Key")).map(|h| h.value.as_str().to_string()).unwrap_or_default()
+}
+
+/// Pairing (far-keep plan §6.2), for a PC adding this board:
+///
+///   POST /pair          {code, name}  a code used once -> a key of its own
+///   POST /pair/ticket   (its key)     -> a ticket to open the board with, once
+///   GET  /pair/status   (its key)     -> how the board stands: its tabs at work
+///   POST /pair/invite   (its key)     -> a new code, for a phone it shows a QR to
+///
+/// The key goes in the `X-Device-Key` header. A key no device holds is
+/// answered 403 and nothing else
+fn pair_route(mut req: tiny_http::Request, method: &str, path: &str, snapshot: &Arc<Mutex<Snapshot>>) -> Result<()> {
+    let body = if method == "POST" {
+        match read_body(&mut req, 2048)? {
+            Some(b) => b,
+            None => return req.respond(Response::from_string("payload too large").with_status_code(413)).map_err(Into::into),
+        }
+    } else {
+        String::new()
+    };
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+    let key = device_key(&req);
+    let device = crate::clients::who(&key);
+    let forbidden = || Response::from_string("forbidden").with_status_code(403);
+    match (method, path) {
+        ("POST", "/pair") => {
+            let code = v["code"].as_str().unwrap_or_default();
+            let name: String = v["name"].as_str().unwrap_or("PC").trim().chars().take(60).collect();
+            let answer = match crate::pairing::take(code) {
+                Ok(()) => match crate::clients::pair(if name.is_empty() { "PC" } else { &name }) {
+                    Ok((row, key)) => serde_json::json!({ "ok": true, "key": key, "id": row.id }),
+                    Err(e) => serde_json::json!({ "ok": false, "why": "book", "error": format!("{e:#}") }),
+                },
+                Err(crate::pairing::Refused::TooMany) => serde_json::json!({ "ok": false, "why": "too_many" }),
+                Err(crate::pairing::Refused::Unknown) => serde_json::json!({ "ok": false, "why": "unknown" }),
+            };
+            req.respond(json_response(answer)).map_err(Into::into)
+        }
+        ("POST", "/pair/ticket") => match device {
+            Some(row) => {
+                crate::clients::touch(&row.id);
+                req.respond(json_response(serde_json::json!({ "ok": true, "ticket": crate::pairing::ticket_for(&key) })))
+                    .map_err(Into::into)
+            }
+            None => req.respond(forbidden()).map_err(Into::into),
+        },
+        ("GET", "/pair/status") => match device {
+            Some(row) => {
+                crate::clients::touch(&row.id);
+                let (desk, tabs, working) = snapshot
+                    .lock()
+                    .map(|s| {
+                        let working = s.tabs.iter().filter(|t| matches!(t.state.as_str(), "BUSY" | "BACKGROUND" | "WAIT")).count();
+                        (s.desk.clone(), s.tabs.len(), working)
+                    })
+                    .unwrap_or_default();
+                req.respond(json_response(serde_json::json!({
+                    "ok": true, "version": env!("CARGO_PKG_VERSION"), "desk": desk, "tabs": tabs, "working": working,
+                })))
+                .map_err(Into::into)
+            }
+            None => req.respond(forbidden()).map_err(Into::into),
+        },
+        ("POST", "/pair/invite") => match device {
+            Some(_) => req
+                .respond(json_response(serde_json::json!({ "ok": true, "code": crate::pairing::new_code() })))
+                .map_err(Into::into),
+            None => req.respond(forbidden()).map_err(Into::into),
+        },
+        _ => req.respond(Response::from_string("not found").with_status_code(404)).map_err(Into::into),
+    }
+}
+
 fn handle(
     req: tiny_http::Request,
     token: &Arc<Mutex<String>>,
@@ -2043,6 +2134,13 @@ fn handle(
             .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
             .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap());
         return req.respond(resp).map_err(Into::into);
+    }
+    // Pairing by a code used once, a paired device's tickets, and its look at
+    // how the board stands (far-keep plan §6.2). Ahead of the key: a device
+    // coming with a code has nothing else yet, and a paired one shows its own
+    // key -- in a header, never in a link
+    if path == "/pair" || path.starts_with("/pair/") {
+        return pair_route(req, &method, &path, snapshot);
     }
     // A device arriving from the address this board used to have, with the
     // code it was handed there (see `RemoteUi::hand_over`). The code is the
@@ -2154,16 +2252,22 @@ fn handle(
         // Its key is looked for under both names: `rk` when the link was
         // opened here, `ri` when it was followed from another app, which is
         // when a browser keeps `rk` back (see `device_seen_cookie`)
-        let held = ["rk", "ri"].iter().find_map(|name| {
-            let key = cookie_value(&req, name);
-            crate::clients::who(&key).map(|row| (row, key))
+        // A paired PC's window, with the ticket its PC was handed for it; or
+        // a device pairing by a code from the QR a paired PC shows (§6.2)
+        let arrived = arrived_by_code(&req);
+        let held = arrived.clone().or_else(|| {
+            ["rk", "ri"].iter().find_map(|name| {
+                let key = cookie_value(&req, name);
+                crate::clients::who(&key).map(|row| (row, key))
+            })
         });
-        let opener = match opened_by(&query_value(req.url(), "t"), &token) {
-            Some(Opener::Pairing) => match &held {
+        let opener = match (&arrived, opened_by(&query_value(req.url(), "t"), &token)) {
+            (Some((row, _)), _) => Some(Opener::Paired(row.clone())),
+            (None, Some(Opener::Pairing)) => match &held {
                 Some((known, _)) => Some(Opener::Paired(known.clone())),
                 None => Some(Opener::Pairing),
             },
-            other => other,
+            (None, other) => other,
         };
         // A device that holds its key is handed both cookies again: the one
         // that was kept back comes home, a device paired before `ri` existed

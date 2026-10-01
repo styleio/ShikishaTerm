@@ -315,6 +315,11 @@ impl Terms {
     /// so a resident process started twice in a row still knows them
     fn write_held(&self) {
         let Ok(home) = crate::farops::home() else { return };
+        // One writer at a time, from the list as it is when its turn comes,
+        // and the file replaced whole: the next resident process reads either
+        // the list before or the list after, never an older one over a newer
+        static WRITING: Mutex<()> = Mutex::new(());
+        let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         let mut all: Vec<Before> = self.before.iter().filter(|b| session_runs(b.session)).cloned().collect();
         if let Ok(t) = self.terms.lock() {
             for (id, term) in t.iter() {
@@ -325,10 +330,6 @@ impl Terms {
                 }
             }
         }
-        // One writer at a time, and the file replaced whole: the next
-        // resident process reads either the list before or the list after
-        static WRITING: Mutex<()> = Mutex::new(());
-        let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         let text = serde_json::to_string(&all).unwrap_or_default();
         if let Err(e) = crate::fardaemon::write_private(&home.join(HELD_FILE), &text) {
             crate::fardaemon::log(&format!("the terminals held could not be written down: {e:#}"));

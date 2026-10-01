@@ -2549,6 +2549,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Quit with every AI stopped, those set to go on while the app is away
     // as well (far-keep plan §7.1): what the person answered on the way out
     let stop_all = std::cell::Cell::new(false);
+    // Where the last key pressed on the board came from: the device the
+    // person is working at, which the terminals are cut for (far-keep plan §6.3)
+    let mut operator: Option<crate::view::Operator> = None;
     let mut flash: Option<String> = startup_errors
         .first()
         .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]))
@@ -3218,7 +3221,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // re-measure and re-report as they redraw, so reading it here — from
         // who is actually looking — is what keeps the two of them from taking
         // the terminal off each other.
-        let watched_afar = remote_ui.as_ref().is_some_and(|r| r.watched());
+        // ...and, of the two, the one the person is working at: the last key
+        // pressed (far-keep plan §6.3)
+        let watched_afar = crate::view::far_decides(remote_ui.as_ref().is_some_and(|r| r.watched()), operator);
         (rows, cols) = pty_dims(terminal_size(
             (shell.geom_rows(), shell.geom_cols()),
             shell.phone_size(),
@@ -5138,6 +5143,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // Treat input from remote as a human operation
                     // (resets the auto-chain, and is rejected while locked)
                     remote::RemoteCmd::Send { tab, text } => {
+                        operator = Some(crate::view::Operator::Afar);
                         let excerpt = log_excerpt(&text, 120);
                         let said = text.clone();
                         if hand_line(
@@ -5194,6 +5200,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         notifier.send_opt(to, &format!("{told}\n{text}"));
                     }
                     remote::RemoteCmd::Keys { tab, keys } => {
+                        operator = Some(crate::view::Operator::Afar);
                         if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
                             if t.locked {
                                 continue;
@@ -12662,6 +12669,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             true => crate::convo::Device::Phone,
             false => crate::convo::Device::Window,
         };
+        // A key or a paste says who is at work now
+        if matches!(polled, Some(Event::Key(_) | Event::Paste(_))) {
+            operator = Some(match device {
+                crate::convo::Device::Phone => crate::view::Operator::Afar,
+                _ => crate::view::Operator::Here,
+            });
+        }
         // Once the window is gone, fall through to the same place as Ctrl+B q.
         // We want cleanup to live in exactly one place.
         if shell.mail().closed {
@@ -13293,11 +13307,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // end. One whose AI is set to go on while the app is away is let go of
     // and goes on, unless the person said to stop them all (far-keep plan §7)
     let mut kept_on: Vec<String> = Vec::new();
+    let mut kept_for: std::collections::BTreeMap<String, u32> = Default::default();
     for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
         if !stop_all.get() && t.kept_away() {
             if let Some(crate::elsewhere::Elsewhere::Cloud(h)) = t.machine()
                 && let Some(id) = h.instance.clone()
             {
+                if let Some(m) = t.kept_minutes() {
+                    let at = kept_for.entry(id.clone()).or_default();
+                    *at = (*at).max(m);
+                }
                 kept_on.push(id);
             }
             t.let_go();
@@ -13305,9 +13324,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             t.kill();
         }
     }
-    // A MicroVM whose AIs go on is not paused on the way out (far-keep plan §5)
+    // A MicroVM whose AIs go on is not paused on the way out (far-keep plan §5),
+    // and its time is set again from now: the question may have stood open a
+    // while, and the time chosen counts from the app going
     for id in &kept_on {
         crate::e2b::left_running(id);
+    }
+    for (id, minutes) in kept_for {
+        if let Err(e) = crate::e2b::keep_up_while_away(&id, minutes) {
+            crate::append_hook_log(&format!("e2b: {id} could not be kept up again on the way out: {e:#}"));
+        }
     }
     // Every bridge is told this app is going: what the tabs there ask from
     // now on is answered at once that the PC is away (far-keep plan §4.6)
@@ -18614,6 +18640,18 @@ mod tests {
     /// its pane tree on every tab switch and re-reported there, which used to
     /// snatch the terminal back to the window's width a frame after a phone had
     /// fitted it to its screen.
+    /// The device the person works at decides (far-keep plan §6.3): a phone
+    /// watching decides until somebody types at the PC, and again once the
+    /// phone is typed into; with nobody watching, the window
+    #[test]
+    fn the_device_at_work_decides_the_shape_of_the_terminal() {
+        use crate::view::{Operator, far_decides};
+        assert!(far_decides(true, None), "nobody typed yet: the far viewer that opened last decides");
+        assert!(!far_decides(true, Some(Operator::Here)), "typed at the PC: the PC's window decides");
+        assert!(far_decides(true, Some(Operator::Afar)), "typed on the phone: the phone decides");
+        assert!(!far_decides(false, Some(Operator::Afar)), "the phone went: the window decides");
+    }
+
     #[test]
     fn a_watching_phone_decides_the_shape_of_the_terminal() {
         let window = (40, 118);

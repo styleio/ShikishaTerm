@@ -2230,10 +2230,37 @@ pub fn pty_dims(size: Size) -> (u16, u16) {
 /// noticed within a few seconds, and the window then has its own shape back
 /// without anybody having to ask for it.
 pub fn terminal_size(window: (u16, u16), phone: Option<(u16, u16)>, watched: bool) -> Size {
+    // (`watched` here is `far_decides`: watching, and not set aside by
+    // somebody typing at this machine since)
     match phone {
         Some((rows, cols)) if watched => Size { width: cols, height: rows },
         _ => Size { width: window.1, height: window.0 },
     }
+}
+
+/// Where the last key pressed on the board came from (far-keep plan §6.3): the
+/// one at work is the one the terminals are cut for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+    /// This machine's own window
+    Here,
+    /// A viewer from afar -- a phone, a browser, another PC's window
+    Afar,
+}
+
+/// Whether the viewer from afar decides the shape of the terminals (far-keep
+/// plan §6.3): **the device the person is working at decides, and the one
+/// only looking is shown that shape, made smaller to fit.**
+///
+/// While a viewer from afar is watching, it decides unless the last key was
+/// pressed at this machine: somebody back at the PC types into terminals cut
+/// for the PC's window, and the phone they put down is shown that wider
+/// screen fitted to its own (it picks a font size from the columns sent with
+/// the screen). Before anybody has typed, the one that opened last -- the far
+/// viewer, which opened onto a window already there -- decides, as before.
+/// When the far viewer goes, the window has its own shape back
+pub fn far_decides(watched: bool, operator: Option<Operator>) -> bool {
+    watched && operator != Some(Operator::Here)
 }
 
 /// ...and the same question for the panes behind the one in front: **the far

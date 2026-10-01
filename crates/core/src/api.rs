@@ -507,6 +507,35 @@ fn serve<R: Read + Send + 'static, W: Write>(
     }
 }
 
+/// The calls a bridge kept while this app was away and handed over since
+/// (far-keep plan §4.6, the later version), by the id each came under: one
+/// handed over again -- its hand-over was cut before the bridge heard the
+/// answer -- is answered without being run twice. Kept in a file, since the
+/// next hand-over may come after this app started again
+const KEPT_FILE: &str = "kept-handed.json";
+/// How many are remembered: far more than a machine keeps at once
+const KEPT_REMEMBERED: usize = 2000;
+static KEPT_HANDED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Whether a kept call was handed over before; and if not, remember it now
+fn handed_before(id: &str) -> bool {
+    let mut held = KEPT_HANDED.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = held.get_or_insert_with(|| {
+        std::fs::read_to_string(crate::config::state_path(KEPT_FILE))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    });
+    if seen.iter().any(|s| s == id) {
+        return true;
+    }
+    seen.push(id.to_string());
+    let over = seen.len().saturating_sub(KEPT_REMEMBERED);
+    seen.drain(..over);
+    let _ = crate::crypto::write_atomic(&crate::config::state_path(KEPT_FILE), &serde_json::to_string(&seen).unwrap_or_default());
+    false
+}
+
 /// Turn one request line into one answer line
 fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &Sender<ApiCall>) -> String {
     let req: serde_json::Value = match serde_json::from_str(line) {
@@ -514,6 +543,19 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
         Err(e) => return error_line(&serde_json::Value::Null, &format!("bad JSON: {e}")),
     };
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    // A call a bridge kept while this app was away, handed over now: run
+    // once, however many times it is handed over
+    if let Some(kept) = id.as_str().filter(|s| s.starts_with("kept-")) {
+        if handed_before(kept) {
+            crate::append_hook_log(&format!("external API: kept call {kept} handed over again; not run twice"));
+            return serde_json::json!({"id": id, "ok": true, "result": "handed over already"}).to_string();
+        }
+        crate::append_hook_log(&format!(
+            "external API: a call kept while this app was away is handed over: {} from {}",
+            req.get("method").and_then(|m| m.as_str()).unwrap_or("?"),
+            caller.unwrap_or("?")
+        ));
+    }
     let Some(method) = req.get("method").and_then(|m| m.as_str()) else {
         return error_line(&id, "a call needs a method");
     };

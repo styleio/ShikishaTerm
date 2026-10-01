@@ -4981,7 +4981,12 @@ function drawTabs() {
     // The quick commands, beside the tools: the person's own buttons, over
     // everything, for the tab in view
     el("span", {class:"sidebtn quickbtn" + (quickOpen ? " sel" : ""), title:T["tui.quick.title"] || "Quick commands",
-        onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️")));
+        onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️"),
+    // The server versions this PC was paired with: a board each, opened in a
+    // window of its own beside this one (far-keep plan §6.1). This PC's own
+    // window only: a phone, or a server's own board, has none of its own
+    AT_PC ? el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
+        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖧") : null));
   drawCoach();
 }
 

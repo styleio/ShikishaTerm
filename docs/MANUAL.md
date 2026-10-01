@@ -306,9 +306,10 @@ Settings > Where it runs, put the bridge on it, and choose under "While this app
 keep them running for a number of hours, or (a server only) keep them running for as long as they run.
 Kept running, the AIs there go on working when SHIKISHA-TERM quits or this PC is off, and the next start
 goes back to each of them -- the same AI, its screen as it was. Quitting asks whether to leave them running
-or stop them all. While SHIKISHA-TERM is away, an AI that asks it for something is told at once that the PC
-is away; such calls are listed on that machine's page when it is back (which tab, which command, when --
-never what it said). The same page lists the AIs running there, with a button to stop each. A MicroVM kept
+or stop them all. While SHIKISHA-TERM is away, a call an AI makes that asks nothing back (a report, a note, a
+notification) is kept there and handed over when SHIKISHA-TERM is back; any other call is told at once that the
+PC is away, and is listed on that machine's page when it is back (which tab, which command, when -- never what
+it said). The same page lists the AIs running there, with a button to stop each. A MicroVM kept
 running is billed for the time chosen, and no longer than your E2B plan lets it run in one go. Tabs on one
 machine, run as one user, are not kept apart by what each tab is allowed: to keep AIs apart, put them on
 separate machines.
@@ -349,6 +350,7 @@ settings screen, so it cannot fall behind.
 - **Git accounts** — Tokens, and the sign-ins of this PC's git and gh
 - **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR
+- **Server version** — Open a SHIKISHA server's board in a window of its own
 - **Notifications** — The phones that receive notifications
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt

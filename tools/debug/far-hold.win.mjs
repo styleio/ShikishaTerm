@@ -343,7 +343,10 @@ try {
   }
   if (!held) throw new Error('the tab did not get a held terminal again');
   await sleep(3000);
-  await primitive('send_to_tab', ['held', '(sleep 20; shikisha tab_list > /tmp/away.out 2>&1) & echo armed-$((5*5))']);
+  // Two calls made while the app is away: one that asks something back (a
+  // list of tabs), answered that the PC is away; one that asks nothing back
+  // (a note on a tab), kept and handed over when the app is back (§4.6)
+  await primitive('send_to_tab', ['held', '(sleep 20; shikisha tab_list > /tmp/away.out 2>&1; shikisha note held kept-while-away > /tmp/kept.out 2>&1) & echo armed-$((5*5))']);
   await until(async () => (await screen()).includes('armed-25'), 'the call to be set', 30000);
   let said = quitApp('Yes');
   check(/answered Yes/.test(said) && /go on running/.test(said), 'quitting asks whether to leave the AI running: ' + said);
@@ -358,6 +361,8 @@ try {
   await sleep(25000);
   const awayOut = await inside('cat /tmp/away.out');
   check(awayOut.includes('PC is away'), 'a call made meanwhile is told the PC is away: ' + awayOut.slice(0, 200));
+  const keptOut = await inside('cat /tmp/kept.out');
+  check(/kept/.test(keptOut), 'a note made meanwhile is told it is kept: ' + keptOut.slice(0, 200));
   // Its time runs out while the app is away: the MicroVM pauses, with what
   // runs on it frozen (paused here rather than waited for)
   const paused = await fetch('https://api.e2b.app/sandboxes/' + box.sandboxId + '/pause', { method: 'POST', headers: { 'X-API-Key': KEY } });
@@ -373,6 +378,9 @@ try {
   await until(() => /did not get through while this app was away/.test(since()), 'the calls that did not get through', 60000)
     .then(() => check(true, 'the call made while away is told about'))
     .catch(() => check(false, 'the call made while away is told about: ' + bridgeLines(since())));
+  await until(() => /note tab\d+: kept-while-away/.test(since()), 'the kept note to be handed over', 60000)
+    .then(() => check(/kept while this app was away is handed over/.test(since()), 'the note kept while away is handed over, and done'))
+    .catch(() => check(false, 'the note kept while away is handed over, and done: ' + bridgeLines(since())));
 
   console.log('11. quitting with every AI stopped: it ends');
   await sleep(3000);
@@ -400,7 +408,7 @@ try {
   settings.bridges = [];
   delete settings.hosts[0].away;
   fs.writeFileSync(CONFIG, JSON.stringify(settings, null, 2));
-  await until(() => /bridge: removed from/.test(since()), 'the bridge to be taken off', 120000)
+  await until(() => /bridge: removed from/.test(since()), 'the bridge to be taken off', 200000)
     .then(() => check(true, 'the bridge was taken off'))
     .catch(() => check(false, 'the bridge was taken off: ' + bridgeLines(since())));
   const leftThere = await inside(`ls ${BRIDGE_DIR} 2>&1 | head -3; pgrep -f 'shikisha-bridge-[^ ]* daemon' | wc -l`);

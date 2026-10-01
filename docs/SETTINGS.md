@@ -90,6 +90,12 @@ Remote control & QR
 - **This PC only** — This address exists only inside this PC, so no phone can reach it
 - **Open to the internet** — This address is reachable from outside. Anyone who gets the link can operate this PC
 
+### Server version
+
+Open a SHIKISHA server's board in a window of its own
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
 ### Notifications
 
 The phones that receive notifications

@@ -10,6 +10,8 @@ const HELP: &str = "\
 shikisha-server -- SHIKISHA with no window
 
   shikisha-server           open the tabs in the settings and serve the board
+  shikisha-server pair      a code, used once, to add this board to a PC
+                            (SHIKISHA-TERM: Settings > Server version > Add)
 
 It reads its settings, and keeps everything it is given, under one folder:
 
@@ -23,6 +25,30 @@ written to the log beside the settings.
   -V, --version             which version this is
   -h, --help                this
 ";
+
+/// A code to add this board to a PC with, used once and good for ten
+/// minutes, and the QR of the link that carries it for a phone. Written down
+/// for the running board to take, in the folder they share (far-keep plan
+/// §6.2). Run on the server's own terminal: whoever can run it here is the
+/// server's own person
+fn pair() {
+    use shikisha_core::i18n::{t, tp};
+    let code = shikisha_core::pairing::new_code();
+    println!("{}", tp("msg.pair.code", &[("code", &code)]));
+    match shikisha_core::pairing::board() {
+        Some(base) => {
+            println!("{}", tp("msg.pair.at", &[("url", &base)]));
+            let link = format!("{base}/?pair={}", code.replace('-', ""));
+            let qr = shikisha_core::netaddr::qr_text(&link);
+            if !qr.is_empty() {
+                println!("{}", t("msg.pair.qr"));
+                println!("{qr}");
+            }
+        }
+        None => println!("{}", t("msg.pair.no_board")),
+    }
+    println!("{}", t("msg.pair.once"));
+}
 
 fn main() -> anyhow::Result<()> {
     // Every option answers and stops, so only the first one is ever read
@@ -38,6 +64,10 @@ fn main() -> anyhow::Result<()> {
             }
             "-h" | "--help" => {
                 print!("{HELP}");
+                return Ok(());
+            }
+            "pair" => {
+                pair();
                 return Ok(());
             }
             other => {

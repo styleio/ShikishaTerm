@@ -780,6 +780,21 @@ pub struct HostSpec {
     pub away: Option<Away>,
 }
 
+/// A server version this PC was paired with (far-keep plan §6.1)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub struct BoardSpec {
+    /// What it is called here
+    pub name: String,
+    /// Where its board is, without any key: `https://vps1.example.ts.net:8787`
+    pub url: String,
+}
+
+/// The name in the secrets the key a server version handed this PC is kept
+/// under
+pub fn board_key(name: &str) -> String {
+    format!("board/{}/key", name.trim())
+}
+
 /// What a machine's AIs do while the app is away (far-keep plan §4.3). Three
 /// states, written as words, and no number that means one of them: a 0 read
 /// as "stop" by one reader and as "no limit" by another does the opposite of
@@ -931,6 +946,11 @@ pub struct Config {
     /// adds one, and the picker says "this PC" and nothing else until then
     #[serde(default)]
     pub hosts: Vec<HostSpec>,
+    /// The server versions this PC was paired with, each opened in a window
+    /// of its own (far-keep plan §6.1). The key each was handed is in the
+    /// secrets (`board_key`), never here
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boards: Vec<BoardSpec>,
     /// List of desks (projects). Switched between like virtual desktops
     #[serde(default)]
     pub desks: Vec<DeskSpec>,

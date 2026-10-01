@@ -19,6 +19,15 @@
 //! let go of past that is counted, with the span it covered, so the person
 //! is told that there were more rather than shown a list that quietly stops.
 //! A call the person has looked at is struck out when they say so.
+//!
+//! **Kept, not only written down (the later version of §4.6).** A call that
+//! asks nothing back -- a report, a note, a notification, a word said
+//! ([`KEPT`]) -- is kept whole instead, what it said included, and handed to
+//! the app the next time it gives that tab its key: the AI is answered at
+//! once that it is kept. Each is handed over until the app answers it, and
+//! carries a number of its own the app runs only once ([`kept_id`]), so a
+//! hand-over cut in the middle and done again does nothing twice. The same
+//! limits hold, counted the same way.
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +38,29 @@ pub const FILE: &str = "missed.json";
 pub const MOST: usize = 200;
 /// How many days a call is kept
 pub const DAYS: u64 = 14;
+
+/// The commands that ask nothing back, kept while the app is away and handed
+/// over when it is back: a report on a job, a note, a notification, a word
+/// said. Anything else is answered that the PC is away, and written down
+pub const KEPT: &[&str] = &["report", "note", "notify", "say"];
+
+/// One call kept to be handed over: its line whole, what it said included
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Kept {
+    /// Its own number in the book
+    pub id: u64,
+    pub at: u64,
+    /// The tab that made it, by the name its key file has
+    pub tab: String,
+    /// The call as the tab sent it
+    pub line: String,
+}
+
+/// The id a kept call is handed over under: this book's own, and the
+/// call's number in it, so two machines' calls are never taken for one
+pub fn kept_id(book: &str, n: u64) -> String {
+    format!("kept-{book}-{n}")
+}
 
 /// One call that did not reach its app
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +98,12 @@ pub struct Book {
     /// The number the next call written down is given
     #[serde(default)]
     pub next: u64,
+    /// The calls kept to be handed over
+    #[serde(default)]
+    pub kept: Vec<Kept>,
+    /// This book's own name, made with it: what its kept calls are known by
+    #[serde(default)]
+    pub uid: String,
 }
 
 impl Book {
@@ -75,6 +113,28 @@ impl Book {
         call.id = self.next;
         self.calls.push(call);
         self.trim(now);
+    }
+
+    /// Keep a call to be handed over: its number, under which it goes
+    pub fn keep(&mut self, tab: &str, line: &str, now: u64) -> u64 {
+        if self.uid.is_empty() {
+            self.uid = crate::random_hex(6);
+        }
+        self.next += 1;
+        let id = self.next;
+        self.kept.push(Kept { id, at: now, tab: tab.to_string(), line: line.to_string() });
+        self.trim(now);
+        id
+    }
+
+    /// The kept calls of one tab, oldest first
+    pub fn kept_for(&self, tab: &str) -> Vec<Kept> {
+        self.kept.iter().filter(|k| k.tab == tab).cloned().collect()
+    }
+
+    /// A kept call was handed over and answered: gone
+    pub fn handed(&mut self, id: u64) {
+        self.kept.retain(|k| k.id != id);
     }
 
     /// Let go of the calls past the limits, counting them
@@ -92,10 +152,24 @@ impl Book {
             let over = self.calls.len() - MOST;
             gone.extend(self.calls.drain(..over));
         }
-        for c in gone {
+        // The kept ones by the same limits: what goes is counted with the
+        // calls let go of, since either way it did not reach the app
+        let mut gone_at: Vec<u64> = gone.iter().map(|c| c.at).collect();
+        self.kept.retain(|k| {
+            let keep = k.at >= oldest;
+            if !keep {
+                gone_at.push(k.at);
+            }
+            keep
+        });
+        if self.kept.len() > MOST {
+            let over = self.kept.len() - MOST;
+            gone_at.extend(self.kept.drain(..over).map(|k| k.at));
+        }
+        for at in gone_at {
             self.dropped += 1;
-            self.dropped_from = if self.dropped_from == 0 { c.at } else { self.dropped_from.min(c.at) };
-            self.dropped_to = self.dropped_to.max(c.at);
+            self.dropped_from = if self.dropped_from == 0 { at } else { self.dropped_from.min(at) };
+            self.dropped_to = self.dropped_to.max(at);
         }
     }
 
@@ -104,8 +178,11 @@ impl Book {
     pub fn seen(&mut self, which: Option<&[Missed]>) {
         match which {
             None => {
-                let next = self.next;
-                *self = Book { next, ..Book::default() };
+                // The calls written down go; the kept ones stay to be handed over
+                self.calls.clear();
+                self.dropped = 0;
+                self.dropped_from = 0;
+                self.dropped_to = 0;
             }
             Some(list) => self.calls.retain(|c| !list.iter().any(|s| s.id == c.id)),
         }
@@ -186,6 +263,24 @@ mod tests {
         b.dropped = 3;
         b.seen(None);
         assert_eq!((b.calls.len(), b.dropped, b.next), (0, 0, 4), "struck out, and numbers never given twice");
+    }
+
+    /// A call kept is the tab's to be handed over, oldest first, gone once
+    /// handed; looking at what was written down leaves it kept
+    #[test]
+    fn kept_calls_wait_for_their_tab_and_go_once_handed() {
+        let mut b = Book::default();
+        let one = b.keep("t1", r#"{"id":"1","method":"report","params":["done"]}"#, 10);
+        let two = b.keep("t2", r#"{"id":"2","method":"note","params":["x"]}"#, 11);
+        let three = b.keep("t1", r#"{"id":"3","method":"notify","params":["y"]}"#, 12);
+        assert!(!b.uid.is_empty());
+        assert_eq!(b.kept_for("t1").iter().map(|k| k.id).collect::<Vec<_>>(), vec![one, three]);
+        b.seen(None);
+        assert_eq!(b.kept.len(), 3, "looking at the calls written down hands nothing over");
+        b.handed(one);
+        assert_eq!(b.kept_for("t1").iter().map(|k| k.id).collect::<Vec<_>>(), vec![three]);
+        assert_eq!(b.kept_for("t2")[0].id, two);
+        assert_ne!(kept_id(&b.uid, one), kept_id("another", one), "two books' calls are two calls");
     }
 
     /// Only a command's name and a tab's name are taken from the line: never

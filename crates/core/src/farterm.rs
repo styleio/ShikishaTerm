@@ -78,7 +78,8 @@ pub struct Saved {
     pub term: u64,
     /// When it was opened, in seconds since 1970
     pub since: u64,
-    /// When this app let go of it, leaving it running, in seconds since 1970
+    /// On a MicroVM: when the run it was in as this app let go of it began,
+    /// as the service keeps time. Another run on return is a pause between
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left: Option<u64>,
     /// It was told to stop, and its end was not seen yet: the next start
@@ -443,9 +444,11 @@ impl FarTerm {
             return;
         }
         crate::append_hook_log(&format!("far terminal {}: while the app is away, now {away:?} (was {was:?})", self.term()));
+        // Said now when the line is up; the next attach -- the line back, the
+        // next start -- carries it either way
         let owner = self.owner.load(Ordering::SeqCst);
-        if owner != 0 {
-            self.say(json!({ "do": "set_away", "term": self.term(), "owner": owner, "away": on_the_line(&self.at, away) }));
+        if owner == 0 || !self.say(json!({ "do": "set_away", "term": self.term(), "owner": owner, "away": on_the_line(&self.at, away) })) {
+            crate::append_hook_log(&format!("far terminal {}: the change is said on its next attach", self.term()));
         }
     }
 
@@ -456,10 +459,14 @@ impl FarTerm {
         self.let_go.store(true, Ordering::SeqCst);
         // When, for the next start to tell whether its machine was paused
         // since (a MicroVM freezes what runs on it)
+        let run = match &self.at {
+            crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().and_then(crate::e2b::run_left),
+            crate::elsewhere::Elsewhere::Ssh(_) => None,
+        };
         let (machine, generation, term) = (self.at.machine_key(), self.generation(), self.term());
         change_saved(|all| {
             if let Some(s) = all.iter_mut().find(|s| s.machine == machine && s.generation == generation && s.term == term) {
-                s.left = Some(now_secs());
+                s.left = run;
             }
         });
         crate::append_hook_log(&format!("far terminal {}: let go of, left running ({:?})", self.term(), self.away()));
@@ -774,7 +781,7 @@ impl std::io::Read for FarReader {
                         if let (crate::elsewhere::Elsewhere::Cloud(h), Some(left)) = (&self.term.at, self.term.left.lock().ok().and_then(|l| *l))
                             && let Some(id) = h.instance.as_deref()
                         {
-                            frozen = crate::e2b::started_after(id, left);
+                            frozen = crate::e2b::begun_again_since(id, left).unwrap_or(false);
                         }
                     }
                     self.attached = true;
@@ -839,12 +846,6 @@ impl std::io::Read for FarReader {
                         m["why"].as_str().unwrap_or_default()
                     ));
                     self.term.struck_out();
-                    // One told to stop: whatever became of it, it was not to
-                    // be gone back to, and the tab starts afresh
-                    if self.again && self.term.stopping.load(Ordering::SeqCst) && !self.term.let_go.load(Ordering::SeqCst) {
-                        self.open_in_its_place();
-                        continue;
-                    }
                     self.term.ended.store(true, Ordering::SeqCst);
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;

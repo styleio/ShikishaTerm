@@ -4344,6 +4344,91 @@ fn handle(
             crate::farlink::want_convo(v["tab"].as_str().unwrap_or_default());
             req.respond(json_resp(serde_json::json!({ "ok": true })))?;
         }
+        // The server versions this PC is paired with (far-keep plan §6.1,
+        // §6.2): added by a code used once, each one's key kept in the
+        // secrets, opened in a window of its own, asked how it stands, and
+        // asked for a code for a phone
+        ("POST", "/api/boards/pair") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let name = v["name"].as_str().unwrap_or_default().trim().to_string();
+            let code = v["code"].as_str().unwrap_or_default();
+            let resp = match crate::pairing::board_url(v["url"].as_str().unwrap_or_default()) {
+                None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.board.bad_url") }),
+                Some(_) if name.is_empty() => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.boards.name_required") }),
+                Some(url) => {
+                    let me = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "PC".into());
+                    let pw = password.lock().unwrap().clone();
+                    match crate::pairing::pair_with(&url, code, &me).and_then(|key| {
+                        let meta = crate::config::SecretMeta { human: false, ai: false, urls: Vec::new(), desc: format!("SHIKISHA Server {url}") };
+                        crate::config::upsert_secret(&secrets_file(config_path), pw.as_deref(), &crate::config::board_key(&name), &meta, &key)
+                    }) {
+                        Ok(()) => serde_json::json!({ "ok": true, "url": url }),
+                        Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                    }
+                }
+            };
+            req.respond(json_resp(resp))?;
+        }
+        ("POST", "/api/boards/open") | ("POST", "/api/boards/invite") | ("POST", "/api/boards/forget") => {
+            let what = path.rsplit('/').next().unwrap_or_default().to_string();
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let name = v["name"].as_str().unwrap_or_default().trim().to_string();
+            let pw = password.lock().unwrap().clone();
+            let secrets = secrets_file(config_path);
+            let board = crate::config::load().and_then(|c| c.boards.into_iter().find(|b| b.name == name));
+            let key = crate::config::secret_value(&secrets, pw.as_deref(), &crate::config::board_key(&name));
+            let resp = match (what.as_str(), board, key) {
+                ("forget", _, _) => match crate::config::delete_secret(&secrets, pw.as_deref(), &crate::config::board_key(&name)) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+                (_, None, _) => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.boards.not_saved") }),
+                (_, Some(_), None) => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.board.no_key") }),
+                ("open", Some(b), Some(key)) => match crate::pairing::open_window(&b.url, &key) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+                (_, Some(b), Some(key)) => match crate::pairing::invite(&b.url, &key) {
+                    Ok(code) => {
+                        let link = format!("{}/?pair={}", b.url, code.replace('-', ""));
+                        serde_json::json!({ "ok": true, "code": code, "link": link, "svg": crate::netaddr::qr_svg(&link, 6) })
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                },
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // How each stands: asked of them all at once, each with a few seconds
+        ("GET", "/api/boards/status") => {
+            let pw = password.lock().unwrap().clone();
+            let secrets = secrets_file(config_path);
+            let boards = crate::config::load().map(|c| c.boards).unwrap_or_default();
+            let asked: Vec<_> = boards
+                .into_iter()
+                .map(|b| {
+                    let key = crate::config::secret_value(&secrets, pw.as_deref(), &crate::config::board_key(&b.name));
+                    std::thread::spawn(move || match key {
+                        None => serde_json::json!({ "name": b.name, "ok": false, "error": crate::i18n::t("err.board.no_key") }),
+                        Some(key) => match crate::pairing::status(&b.url, &key) {
+                            Ok(s) => serde_json::json!({ "name": b.name, "ok": true, "tabs": s["tabs"], "working": s["working"], "version": s["version"] }),
+                            Err(e) => serde_json::json!({ "name": b.name, "ok": false, "error": format!("{e:#}") }),
+                        },
+                    })
+                })
+                .collect();
+            let rows: Vec<serde_json::Value> = asked.into_iter().filter_map(|h| h.join().ok()).collect();
+            req.respond(json_resp(serde_json::json!({ "ok": true, "boards": rows })))?;
+        }
         // Put one CLI's hook in, or take it out. Named by profile, so the page
         // never hands over a path to write to
         ("POST", "/api/resume/hook") => {
@@ -8516,6 +8601,9 @@ function globalSections() {
     // tells a project that has to keep them beside itself
     {id:"worktrees", label:T["settings.sec.worktrees"], sub:T["settings.sec.worktrees.sub"], build:worktreesCard},
     {id:"remote",    label:T["settings.sec.remote"],    sub:T["settings.sec.remote.sub"],    build:remoteCard},
+    // The server versions this PC was paired with, each opened in a window
+    // of its own beside this PC's board (far-keep plan §6.1)
+    {id:"boards",    label:T["settings.sec.boards"],    sub:T["settings.sec.boards.sub"],    build:boardsCard},
     // The phones themselves are this machine's: a phone signs itself up once.
     // Which desk's messages reach it is that desk's page's question
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
@@ -15723,6 +15811,104 @@ function markDialog(machine, redraw) {
 // Every server somebody has named, to find one again and change it or take
 // its name away -- including a server no tab reaches any more, whose name
 // would otherwise sit in the settings with nowhere to be seen
+// The server versions this PC was paired with (far-keep plan §6.1, §6.2).
+// Added by a code used once that the server prints (`shikisha-server pair`):
+// what this PC is handed for it is kept in the secrets, never in the
+// settings, and the board is opened in a window of its own -- this PC's own
+// board keeps running beside it. Each row says how its board stands, asked of
+// it when the card is drawn
+function boardsCard() {
+  const listBox = el("div");
+  const post = async (url, body) => {
+    try {
+      return await (await fetch(url, {method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
+        body: JSON.stringify(body)})).json();
+    } catch (e) { return {ok:false, error: String(e)}; }
+  };
+  const said = el("div", {class:"hint"});
+  const say = (text, bad) => { said.textContent = text || ""; said.classList.toggle("bad", !!bad); };
+  const draw = async () => {
+    listBox.textContent = "";
+    const boards = current.boards = current.boards || [];
+    if (!boards.length) { listBox.append(el("div", {class:"hint"}, T["settings.boards.none"])); return; }
+    const rows = el("div", {class:"rows"});
+    const states = {};
+    for (const b of boards) {
+      const state = el("span", {class:"hint"}, T["settings.boards.asking"]);
+      states[b.name] = state;
+      rows.append(el("div", {class:"listrow"},
+        el("span", {class:"mono"}, b.name),
+        el("span", {class:"hint mono"}, b.url),
+        state,
+        el("span", {class:"grow"}),
+        el("button", {class:"primary", onclick: async () => {
+          const r = await post("/api/boards/open", {name: b.name});
+          say(r && r.ok ? fill(T["settings.boards.opened"], {name: b.name}) : ((r && r.error) || ""), !(r && r.ok));
+        }}, T["settings.boards.open"]),
+        el("button", {class:"quiet", onclick: async () => {
+          const r = await post("/api/boards/invite", {name: b.name});
+          if (!r || !r.ok) { say((r && r.error) || "", true); return; }
+          const back = openModal(
+            el("div", {class:"mhead"}, el("h2", {}, fill(T["settings.boards.phone.title"], {name: b.name})),
+              el("button", {class:"quiet icon", title:T["common.close"], onclick: () => back.remove()}, "\u2715")),
+            el("div", {class:"mbody"},
+              el("div", {class:"hint"}, T["settings.boards.phone.how"]),
+              (() => { const q = el("div", {class:"qr"}); q.innerHTML = r.svg; return q; })(),
+              el("div", {class:"mono"}, fill(T["settings.boards.phone.code"], {code: r.code})),
+              el("div", {class:"hint"}, T["settings.boards.phone.once"])));
+        }}, T["settings.boards.phone"]),
+        el("button", {class:"danger", onclick: async () => {
+          if (!await confirmAction(fill(T["settings.boards.forget.sure"], {name: b.name}), T["settings.boards.forget"])) return;
+          const r = await post("/api/boards/forget", {name: b.name});
+          if (!r || !r.ok) { say((r && r.error) || "", true); return; }
+          current.boards = current.boards.filter(x => x.name !== b.name);
+          if (!current.boards.length) delete current.boards;
+          refreshSave();
+          await save();
+          draw();
+        }}, T["settings.boards.forget"])));
+    }
+    listBox.append(rows);
+    let j = null;
+    try { j = await (await fetch("/api/boards/status", {headers:{"X-Token":TOKEN}})).json(); } catch (e) { j = null; }
+    for (const row of ((j && j.boards) || [])) {
+      const s = states[row.name];
+      if (!s) continue;
+      s.textContent = row.ok
+        ? fill(T["settings.boards.state"], {working: String(row.working), tabs: String(row.tabs)})
+        : fill(T["settings.boards.unreachable"], {why: row.error || ""});
+    }
+  };
+  // Adding one: its name here, its address, and the code it printed
+  const nameIn = el("input", {type:"text", class:"mono", placeholder:T["settings.boards.name.ph"]});
+  const urlIn = el("input", {type:"text", class:"mono grow", placeholder:T["settings.boards.url.ph"]});
+  const codeIn = el("input", {type:"text", class:"mono", placeholder:T["settings.boards.code.ph"], autocomplete:"off"});
+  const add = el("button", {onclick: async () => {
+    const name = nameIn.value.trim();
+    if ((current.boards || []).some(b => b.name === name)) { say(T["settings.boards.name_dup"], true); return; }
+    add.disabled = true;
+    say(T["settings.boards.adding"]);
+    const r = await post("/api/boards/pair", {name, url: urlIn.value, code: codeIn.value});
+    add.disabled = false;
+    if (!r || !r.ok) { say((r && r.error) || "", true); return; }
+    (current.boards = current.boards || []).push({name, url: r.url});
+    nameIn.value = ""; urlIn.value = ""; codeIn.value = "";
+    refreshSave();
+    await save();
+    say(fill(T["settings.boards.added"], {name}));
+    draw();
+  }}, T["settings.boards.add"]);
+  const c = card(T["settings.sec.boards"],
+    el("div", {class:"hint"}, T["settings.boards.what"]),
+    listBox,
+    el("h4", {}, T["settings.boards.add.title"]),
+    el("div", {class:"hint"}, T["settings.boards.add.how"]),
+    el("div", {class:"row"}, nameIn, urlIn, codeIn, add),
+    said);
+  setTimeout(draw, 0);
+  return c;
+}
+
 function marksCard() {
   const listBox = el("div");
   const draw = () => {

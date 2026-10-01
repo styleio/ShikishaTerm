@@ -72,16 +72,52 @@ fn local_now() -> (u16, u16, u16, u16, u16, u16) {
 /// it falls on a later day
 pub fn local_clock_at(epoch: u64) -> String {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let (_, _, _, hour, minute, _) = local_now();
-    let from_midnight = u64::from(hour) * 60 + u64::from(minute);
-    let then = from_midnight + epoch.saturating_sub(now) / 60;
-    let (days, of_day) = (then / (24 * 60), then % (24 * 60));
-    let clock = format!("{:02}:{:02}", of_day / 60, of_day % 60);
+    // Both moments turned into the clock on the wall by the system's own
+    // rules -- summer time included -- and the day told apart by the date
+    let (then, today) = (local_at(epoch), local_at(now));
+    let clock = format!("{:02}:{:02}", then.3, then.4);
+    let days = day_number(then) - day_number(today);
     match days {
-        0 => clock,
+        ..=0 => clock,
         1 => crate::i18n::tp("time.tomorrow_at", &[("clock", &clock)]),
         n => crate::i18n::tp("time.days_later_at", &[("clock", &clock), ("n", &n.to_string())]),
     }
+}
+
+/// A date as a count of days, for telling how many days apart two are
+fn day_number((y, m, d, _, _): (u16, u16, u16, u16, u16)) -> i64 {
+    // Days from a fixed point (the civil calendar), month by month
+    let (y, m) = if m <= 2 { (i64::from(y) - 1, i64::from(m) + 9) } else { (i64::from(y), i64::from(m) - 3) };
+    365 * y + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + i64::from(d)
+}
+
+/// The local date and time of a moment, as year, month, day, hour, minute
+#[cfg(windows)]
+fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // 100-nanosecond steps since 1601
+    let ticks = (epoch + 11_644_473_600) * 10_000_000;
+    let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+    // SAFETY: plain structures of the caller's, read and written in place
+    unsafe {
+        let mut utc: SYSTEMTIME = std::mem::zeroed();
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            let (y, mo, d, h, mi, _) = local_now();
+            return (y, mo, d, h, mi);
+        }
+        (local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute)
+    }
+}
+
+#[cfg(not(windows))]
+fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
+    let at = epoch as i64;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: as in `local_now`
+    unsafe { libc::localtime_r(&at as *const i64 as *const libc::time_t, &mut tm) };
+    ((tm.tm_year + 1900) as u16, (tm.tm_mon + 1) as u16, tm.tm_mday as u16, tm.tm_hour as u16, tm.tm_min as u16)
 }
 
 pub fn local_stamp(fmt: &str) -> String {
@@ -6005,6 +6041,19 @@ mod stamp_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Days apart are counted from the dates, across the end of a month, a
+    /// leap day and a year: what "tomorrow" in the quit question rests on
+    #[test]
+    fn days_apart_are_counted_from_the_dates() {
+        let d = |y, m, day| day_number((y, m, day, 0, 0));
+        assert_eq!(d(2026, 3, 1) - d(2026, 2, 28), 1);
+        assert_eq!(d(2028, 3, 1) - d(2028, 2, 28), 2, "2028 has a leap day");
+        assert_eq!(d(2027, 1, 1) - d(2026, 12, 31), 1);
+        assert_eq!(d(2026, 10, 3) - d(2026, 10, 1), 2);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        assert!(!local_clock_at(now).contains(' '), "now is today's clock alone: {}", local_clock_at(now));
+    }
 
     /// Tests that record a rally share one file, so they take turns -- and take
     /// a file of their own while they have the turn.

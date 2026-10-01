@@ -440,6 +440,9 @@ impl Shell for Headless {
         let line = crate::i18n::tp("msg.serve.board_at", &[("url", url)]);
         println!("{line}");
         crate::append_hook_log(&line);
+        // Where it is, without its key, for `shikisha-server pair` to put in
+        // the link of its QR (far-keep plan §6.2)
+        crate::pairing::write_board(url);
         // ...and where there is a window to open on it, it is opened now: the
         // address is the one thing it could not be started without
         if let Some(m) = &self.minder {
