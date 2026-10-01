@@ -1426,6 +1426,9 @@ ALPHA-42"
         let got = named_in("Run the tests in <@shell-2>, then ask <@finch> -- not <@ bad> or <@x");
         assert!(got.contains("shell-2") && got.contains("finch"));
         assert_eq!(got.len(), 2);
+        // Japanese puts no spaces around it, and the input bar adds none
+        let got = named_in("テストを直して、<@codex>にレビューしてもらって");
+        assert!(got.contains("codex") && got.len() == 1, "{got:?}");
     }
 
     #[test]

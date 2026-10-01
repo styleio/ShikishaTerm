@@ -22226,7 +22226,9 @@ function pickMention(t) {
   const caret = castInput.selectionStart;
   const from = mentionPick && mentionPick.at >= 0 ? mentionPick.at : caret;
   const before = v.slice(0, from);
-  const lead = before && !/\s$/.test(before) ? " " : "";
+  // A space in front only where the label would otherwise run into a word
+  // ("ask" + "@codex"); after "、" or Japanese it stands as it is
+  const lead = /[A-Za-z0-9_.\-]$/.test(before) ? " " : "";
   const next = before + lead + label + " " + v.slice(caret);
   castInput.value = next;
   const end = (before + lead + label + " ").length;
@@ -22257,6 +22259,7 @@ function mentionKey(e) {
 // After each change to the text: a badge Backspace has cut into goes as a
 // whole, an "@" at the start of a word opens the list, and an open
 // list follows what is typed after it
+const MENTION_AT = /(^|[^A-Za-z0-9_.\-@])@([^\s@]*)$/;
 function mentionInput(e) {
   if (!castInput) return;
   const v = castInput.value, caret = castInput.selectionStart;
@@ -22278,9 +22281,12 @@ function mentionInput(e) {
         || /\s/.test(mentionQuery())) closeMentions();
     else drawMentions();
   } else if (e && (e.inputType || "").startsWith("insert") && mentionHere()) {
-    // An "@" starting a word just before the caret, with what follows it --
-    // typed a key at a time, or arriving whole from an IME or a paste
-    const m = /(^|\s)@([^\s@]*)$/.exec(castInput.value.slice(0, castInput.selectionStart));
+    // An "@" just before the caret, with what follows it -- typed a key at a
+    // time, or arriving whole from an IME or a paste. It names a tab unless it
+    // stands inside a word of letters and digits, as in an address
+    // (user@example.com); after a space, a comma or any Japanese, which has
+    // no spaces to put in front of it ("直して、@", "codexに@"), it does
+    const m = MENTION_AT.exec(castInput.value.slice(0, castInput.selectionStart));
     if (m) openMentions(castInput.selectionStart - m[2].length - 1);
   }
   paintMentions();
