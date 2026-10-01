@@ -13,6 +13,13 @@ once it reaches its first tagged release.
   two arches shut in a smile, or a dark visor with a glint, and a head can
   wear pointed ears instead of feelers.
 
+### Fixed
+- **A Codex tab at rest reads as at rest while its model is Astra.** Codex
+  draws a field of twinkling dots around its input box for that model, so
+  its screen never stopped moving: the tab read as working forever, and work
+  handed to it with @ was never sent -- the asking AI waited, was told it was
+  still working, and gave up. The dots no longer count as the screen moving.
+
 ## [0.23.0] - 2026-10-01
 
 ### Added

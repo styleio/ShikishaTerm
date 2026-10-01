@@ -65,6 +65,15 @@ pub struct ProfileFile {
     /// every second)
     #[serde(default = "default_ignore_bottom_rows")]
     pub ignore_bottom_rows: u16,
+    /// Regex: what the CLI draws only as decoration, taken out of every row
+    /// before the screen-change check. Codex draws a field of twinkling
+    /// braille dots around its input box while its model is Astra, so its
+    /// screen never stops moving at rest -- and a screen that never stops is
+    /// a tab read as at work forever, which nothing can be handed to
+    /// (2026-10-01). Only what is decoration and nothing else: anything that
+    /// matches here can no longer show that the tab is at work
+    #[serde(default)]
+    pub screen_decoration: Option<String>,
     /// How long to wait, after DONE first appears, before it's confirmed as
     /// truly finished.
     ///
@@ -489,6 +498,8 @@ pub struct Profile {
     pub title_busy: Vec<String>,
     pub silence_ms: u64,
     pub ignore_bottom_rows: u16,
+    /// Decoration left out of the screen-change check (see `ProfileFile::screen_decoration`)
+    pub decoration: Option<regex::Regex>,
     pub done_confirm_ms: Option<u64>,
     pub resume: Option<ResumeSpec>,
     /// What the emergency stop presses here (see `ProfileFile::interrupt`),
@@ -514,6 +525,7 @@ impl Profile {
             title_busy: Vec::new(),
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
+            decoration: None,
             done_confirm_ms: None,
             resume: None,
             interrupt: Vec::new(),
@@ -542,6 +554,7 @@ impl Profile {
             silence_ms: f.silence_ms,
             done_confirm_ms: f.done_confirm_ms,
             ignore_bottom_rows: f.ignore_bottom_rows,
+            decoration: compile_all(f.screen_decoration.as_slice())?.pop(),
             resume: f.resume,
             interrupt: key_bytes(&f.interrupt)?,
             helpers: f.helpers,
