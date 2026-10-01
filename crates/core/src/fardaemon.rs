@@ -768,10 +768,19 @@ impl TabsJob {
             return;
         };
         // What the tab says now comes after what it said while the app was
-        // away: a report kept, then the next one, in that order
+        // away: a report kept, then the next one, in that order. A kept call
+        // the app refused is the exception: it is tried again the next time
+        // and does not hold up the rest, since a call refused once is mostly
+        // refused every time, and the line behind it would wait five returns
         while !tab.is_empty() && core.is_up(line) && self.handing.lock().is_ok_and(|h| h.contains(&tab)) {
             std::thread::sleep(Duration::from_millis(100));
         }
+        // The app may have gone while it waited: then it is away to this call
+        // too, which is kept or written down as any call to an app away is
+        let Some(line) = (if core.is_up(line) { Some(line) } else { self.owner_of(core, &token) }) else {
+            away(conn, lines, |call| self.away_call(core, &tab, call));
+            return;
+        };
         let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut m) = self.conns.lock() {
             m.insert(c, Conn { line, out: Out::Socket(conn), tab, call: None });

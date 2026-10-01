@@ -2886,6 +2886,7 @@
   "err.tab_close.not_found": "閉じるタブ {tab} がありません",
   "err.hooks.focus_dir": "focus_pane は \"left\" \"right\" \"up\" \"down\" のいずれか (受け取った値: {other})",
   "err.bridge.in_use": "{host} の中継役は、いま別の SHIKISHA-TERM（別の PC かサーバー版）{n} 台がつないで使っているので、外しませんでした。その SHIKISHA-TERM が {host} から離れてから外すか、その SHIKISHA-TERM の設定から外してください。",
+  "err.bridge.unasked": "{host} のブリッジが、ほかの SHIKISHA-TERM がつながっているかを答えなかったため、外していません。1 分後にもう一度尋ねます。",
   "err.hook.path_has_space": "{name} では、フォルダ名に空白が入っている場所にアプリがあると、この設定を使えません（今の場所: {path}）。空白のないフォルダへアプリを移してから、もう一度設定してください。",
   "err.hook.trust.no_codex": "フックを承認するために Codex を起動できませんでした（{path}）。Codex を起動し、/hooks で承認してください",
   "err.hook.trust.no_answer": "フックの承認中に Codex が答えませんでした（{what}）。Codex を起動し、/hooks で承認してください",

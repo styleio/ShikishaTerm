@@ -880,14 +880,26 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
             }
         }
     };
+    // Nothing is ended or deleted on a guess: a bridge that cannot say how
+    // many apps it has -- no answer, an answer not read, a build too old to
+    // be asked -- may be holding another's, and the removal waits
     let others = match &link {
-        Some(l) if l.jobs.lock().is_ok_and(|j| j.iter().any(|n| n == "host")) => l
-            .call("host_lines", json!({}), Duration::from_secs(20))
-            .ok()
-            .and_then(|v| v.get("lines").and_then(|n| n.as_u64()))
-            .map(|n| n.saturating_sub(1))
-            .unwrap_or(0),
-        _ => 0,
+        None => 0,
+        Some(l) => {
+            let asked = l.jobs.lock().is_ok_and(|j| j.iter().any(|n| n == "host"))
+                .then(|| l.call("host_lines", json!({}), Duration::from_secs(20)).ok())
+                .flatten()
+                .and_then(|v| v.get("lines").and_then(|n| n.as_u64()));
+            match asked {
+                Some(n) => n.saturating_sub(1),
+                None => {
+                    if !held_before {
+                        disconnect(at);
+                    }
+                    bail!(crate::i18n::tp("err.bridge.unasked", &[("host", &at.address())]));
+                }
+            }
+        }
     };
     if others > 0 {
         // The line made only to ask goes again: it is not this app wanting the machine

@@ -523,6 +523,38 @@ const KEPT_FILE: &str = "kept-handed.json";
 /// How many are remembered: far more than a machine keeps at once
 const KEPT_REMEMBERED: usize = 2000;
 static KEPT_HANDED: Mutex<Option<Vec<String>>> = Mutex::new(None);
+/// The kept calls running now: one handed over again while the first time
+/// is still running -- the bridge stopped waiting for it -- waits for that
+/// one, and runs only if it did not succeed
+static KEPT_RUNNING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Mark a kept call as running, once no other run of it is; unmarked when
+/// the guard goes
+struct Running(String);
+
+impl Running {
+    fn start(id: &str, until: std::time::Instant) -> Option<Running> {
+        loop {
+            {
+                let mut r = KEPT_RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+                if !r.iter().any(|s| s == id) {
+                    r.push(id.to_string());
+                    return Some(Running(id.to_string()));
+                }
+            }
+            if std::time::Instant::now() >= until {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        KEPT_RUNNING.lock().unwrap_or_else(|e| e.into_inner()).retain(|s| s != &self.0);
+    }
+}
 
 /// The kept calls run before, read from the file the first time
 fn with_handed<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
@@ -566,6 +598,15 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     // A call a bridge kept while this app was away, handed over now: run
     // once, however many times it is handed over
     let kept = id.as_str().filter(|s| s.starts_with("kept-"));
+    // Held for as long as this run lasts; a second run of the same call waits
+    // here for the first to end
+    let _running = match kept {
+        Some(k) => match Running::start(k, std::time::Instant::now() + std::time::Duration::from_secs(300)) {
+            Some(r) => Some(r),
+            None => return error_line(&id, "this kept call is still running from an earlier hand-over"),
+        },
+        None => None,
+    };
     if let Some(kept) = kept {
         if handed_before(kept) {
             crate::append_hook_log(&format!("external API: kept call {kept} handed over again; not run twice"));

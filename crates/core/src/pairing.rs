@@ -283,6 +283,9 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .http_status_as_error(false)
+        // Never followed: a board's answer that sends this PC elsewhere would
+        // take its key along, to an address `secure` never looked at
+        .max_redirects(0)
         .build()
         .new_agent()
 }

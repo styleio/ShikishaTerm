@@ -2889,6 +2889,7 @@
   "err.tab_close.not_found": "there is no tab {tab} to close",
   "err.hooks.focus_dir": "focus_pane takes \"left\", \"right\", \"up\" or \"down\" (got {other})",
   "err.bridge.in_use": "The bridge on {host} is in use by {n} other copy of SHIKISHA-TERM (another PC, or a server version) connected to it now, so it was not taken off. Take it off once that copy has let go of {host}, or from that copy.",
+  "err.bridge.unasked": "The bridge on {host} did not say whether another copy of SHIKISHA-TERM is connected to it, so it was not taken off. It is asked again in a minute.",
   "err.hook.path_has_space": "{name} cannot do this while the app sits in a folder whose name has a space in it (this one is at {path}). Move the app to a folder with no space in its name, then set it up again.",
   "err.hook.trust.no_codex": "Codex could not be started to approve the hook ({path}). Start Codex, open /hooks and approve it there",
   "err.hook.trust.no_answer": "Codex did not answer while the hook was being approved ({what}). Start Codex, open /hooks and approve it there",
