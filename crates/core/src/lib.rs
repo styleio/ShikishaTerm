@@ -44,11 +44,11 @@ pub mod farlink;
 pub mod farmissed;
 pub mod pairing;
 pub mod farterm;
-#[cfg(unix)]
 pub mod fardaemon;
-#[cfg(unix)]
 pub mod farterms;
 pub mod farops;
+pub mod keepipe;
+pub mod localkeep;
 pub mod termstate;
 pub mod files;
 pub mod folders;

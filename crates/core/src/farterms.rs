@@ -222,8 +222,17 @@ struct Term {
     cwd: String,
     seen: Mutex<Seen>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    master: Mutex<Box<dyn portable_pty::MasterPty + Send>>,
+    /// The pseudo terminal. Let go of once the program ended on Windows, where
+    /// a pseudo console's output stays open after its program is gone until
+    /// the console itself is closed -- the reader would wait on it forever
+    master: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
     killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
+    /// Everything the program started, ended with it (`crate::job`): a tab's
+    /// AI started through a `.cmd` is a cmd.exe holding a node, and ending the
+    /// one leaves the other. Closed when the terminal goes, and when this
+    /// process does, crash or not
+    #[cfg(windows)]
+    _job: Option<crate::job::Job>,
     /// The terminal's one queue out: what goes to the app, in the order put
     queue: Sender<(u64, Frame)>,
     /// How many bytes of output are in the queue, not yet sent
@@ -255,8 +264,30 @@ struct Before {
     session: u32,
 }
 
+/// Whether the program a terminal started still runs. On Windows every
+/// process a terminal started is in its job, closed when the resident process
+/// that held it ended -- so what is left to ask is whether its first process
+/// is still there (the process id is the one written down)
+#[cfg(windows)]
+fn session_runs(session: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: opened only to read whether it ended, and closed below
+    unsafe {
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, session);
+        if p.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(p, &mut code) != 0;
+        CloseHandle(p);
+        !ok || code == STILL_ACTIVE as u32
+    }
+}
+
 /// Whether any process of a session still runs: the shell leads it, and
 /// the AI in it, and whatever that started, are in it unless they left it
+#[cfg(unix)]
 fn session_runs(session: u32) -> bool {
     let Ok(dir) = std::fs::read_dir("/proc") else { return true };
     dir.flatten().any(|e| {
@@ -370,10 +401,7 @@ impl Terms {
         let rows = m["rows"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(24);
         let cols = m["cols"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(80);
         let pty = portable_pty::native_pty_system().openpty(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
-        let shell = login_shell();
-        let mut cmd = portable_pty::CommandBuilder::new(&shell);
-        cmd.arg("-l");
-        cmd.env("TERM", "xterm-256color");
+        let mut cmd = command_of(m)?;
         if let Some(cwd) = m["cwd"].as_str().filter(|c| !c.is_empty()) {
             cmd.cwd(cwd);
         } else if let Ok(home) = std::env::var("HOME") {
@@ -391,9 +419,12 @@ impl Terms {
         if let Ok(exe) = std::env::current_exe() {
             cmd.env(crate::farlink::ENV_PROGRAM, exe);
         }
+        #[cfg_attr(unix, allow(unused_mut))]
         let mut child = pty.slave.spawn_command(cmd)?;
         let session = child.process_id();
         drop(pty.slave);
+        #[cfg(windows)]
+        let job = crate::job::Job::new().filter(|j| session.is_some_and(|p| j.take(p)));
         let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.master.take_writer()?));
         let mut reader = pty.master.try_clone_reader()?;
         let held = Held { writer: Arc::clone(&writer), answering: true, keyboard: Vec::new(), title: String::new(), cwd: String::new() };
@@ -412,8 +443,10 @@ impl Terms {
                 away: Away::read(&m["away"]).unwrap_or(Away::Stop),
             }),
             writer,
-            master: Mutex::new(pty.master),
+            master: Mutex::new(Some(pty.master)),
             killer: Mutex::new(child.clone_killer()),
+            #[cfg(windows)]
+            _job: job,
             queue,
             queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
@@ -475,17 +508,23 @@ impl Terms {
                     }
                 }
                 // The program ended: its code is kept until the app has it
+                #[cfg(unix)]
+                ended(&term, id, child.wait().map(|s| s.exit_code() as i32).unwrap_or(-1));
+            });
+        }
+        // On Windows the output does not end when the program does: the end
+        // is the program's, waited on here. What it wrote last is read before
+        // the end is said (the pseudo console is given a moment to hand it
+        // over), and then the console is closed, which ends the reader
+        #[cfg(windows)]
+        {
+            let term = Arc::clone(&term);
+            std::thread::spawn(move || {
                 let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(-1);
-                if let Ok(mut e) = term.ended.lock() {
-                    *e = Some(code);
-                }
-                if let Ok(mut e) = term.ended_at.lock() {
-                    *e = Some(Instant::now());
-                }
-                let owner = term.seen.lock().ok().and_then(|s| s.owner);
-                if let Some((line, _)) = owner {
-                    let m = json!({ "did": "ended", "term": id, "code": code });
-                    let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+                std::thread::sleep(LAST_WORDS);
+                ended(&term, id, code);
+                if let Ok(mut m) = term.master.lock() {
+                    m.take();
                 }
             });
         }
@@ -521,7 +560,9 @@ impl Terms {
         let owner = term.next_owner.fetch_add(1, Ordering::SeqCst) + 1;
         let Ok(mut seen) = term.seen.lock() else { return unknown("the terminal could not be read") };
         if let (Some(rows), Some(cols)) = (rows, cols) {
-            if let Ok(master) = term.master.lock() {
+            if let Ok(master) = term.master.lock()
+                && let Some(master) = master.as_ref()
+            {
                 let _ = master.resize(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
             }
             seen.parser.screen_mut().set_size(rows, cols);
@@ -633,7 +674,9 @@ impl Job for Terms {
                 Ok(term) => {
                     let rows = m["rows"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(24);
                     let cols = m["cols"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0).unwrap_or(80);
-                    if let Ok(master) = term.master.lock() {
+                    if let Ok(master) = term.master.lock()
+                        && let Some(master) = master.as_ref()
+                    {
                         let _ = master.resize(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
                     }
                     if let Ok(mut seen) = term.seen.lock() {
@@ -783,9 +826,69 @@ impl Job for Terms {
     }
 }
 
+/// How long a pseudo console on Windows is given, after its program ended,
+/// to hand over what the program wrote last. Measured: ConPTY passes the last
+/// screen on within a frame or two of the program going (tens of
+/// milliseconds); a quarter of a second is several of those, and short
+/// enough that nobody waits on it
+#[cfg(windows)]
+const LAST_WORDS: Duration = Duration::from_millis(250);
+
+/// The program ended: its code is kept until the app has it, and the app
+/// owning the terminal is told -- after the output, through the same queue
+fn ended(term: &Term, id: u64, code: i32) {
+    if let Ok(mut e) = term.ended.lock() {
+        *e = Some(code);
+    }
+    if let Ok(mut e) = term.ended_at.lock() {
+        *e = Some(Instant::now());
+    }
+    let owner = term.seen.lock().ok().and_then(|s| s.owner);
+    if let Some((line, _)) = owner {
+        let m = json!({ "did": "ended", "term": id, "code": code });
+        let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+    }
+}
+
+/// What a terminal runs. On this PC (local-keeper plan §5) the app says it in
+/// full -- the program and its arguments (`argv`), and the whole environment
+/// it built for the tab (`env_all`) -- since the app is the one place a tab's
+/// command is put together, and the resident process was started with
+/// whatever environment the app had at the time. Elsewhere it is the
+/// account's login shell, as over SSH, and what is to run is typed into it
+fn command_of(m: &Value) -> anyhow::Result<portable_pty::CommandBuilder> {
+    let argv: Vec<std::ffi::OsString> = m["argv"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(std::ffi::OsString::from)).collect())
+        .unwrap_or_default();
+    let mut cmd = if argv.is_empty() {
+        #[cfg(unix)]
+        {
+            let mut c = portable_pty::CommandBuilder::new(login_shell());
+            c.arg("-l");
+            c.env("TERM", "xterm-256color");
+            c
+        }
+        #[cfg(windows)]
+        anyhow::bail!("nothing to run: this PC's terminals are given their command");
+    } else {
+        portable_pty::CommandBuilder::from_argv(argv)
+    };
+    if let Some(all) = m["env_all"].as_object() {
+        cmd.env_clear();
+        for (k, v) in all {
+            if let Some(v) = v.as_str() {
+                cmd.env(k, v);
+            }
+        }
+    }
+    Ok(cmd)
+}
+
 /// The account's own shell: what its entry in the password database names,
 /// as a login over SSH would start. The resident process was started without
 /// a login, and has no SHELL of its own to go by
+#[cfg(unix)]
 fn login_shell() -> String {
     if let Some(s) = std::env::var("SHELL").ok().filter(|s| !s.is_empty()) {
         return s;
@@ -823,6 +926,7 @@ mod tests {
 
     /// A session runs while any of its processes does: this test's own does,
     /// one whose only process ended does not
+    #[cfg(unix)]
     #[test]
     fn a_session_runs_while_any_of_its_processes_does() {
         // SAFETY: getsid only reads

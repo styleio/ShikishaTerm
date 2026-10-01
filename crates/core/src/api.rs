@@ -699,7 +699,7 @@ fn error_line(id: &serde_json::Value, msg: &str) -> String {
 /// Built from SDDL — `D:P` is a DACL that inherits nothing, `GA` is full
 /// access, and the only entry is the SID we are running under
 #[cfg(windows)]
-struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
+pub(crate) struct SecurityDescriptor(PSECURITY_DESCRIPTOR);
 
 // The descriptor is a plain allocation handed to CreateNamedPipeW; moving it to
 // the accept thread is what it is for
@@ -708,7 +708,7 @@ unsafe impl Send for SecurityDescriptor {}
 
 #[cfg(windows)]
 impl SecurityDescriptor {
-    fn only_me() -> Option<Self> {
+    pub(crate) fn only_me() -> Option<Self> {
         use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
         let sid = current_user_sid()?;
         let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid})\0").encode_utf16().collect();
@@ -724,7 +724,7 @@ impl SecurityDescriptor {
         (ok != 0).then_some(Self(sd))
     }
 
-    fn attributes(&self) -> SECURITY_ATTRIBUTES {
+    pub(crate) fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: self.0,
@@ -744,14 +744,36 @@ impl Drop for SecurityDescriptor {
 
 /// The account this process is running as, as a SID string (`S-1-5-21-…`)
 #[cfg(windows)]
-fn current_user_sid() -> Option<String> {
+pub(crate) fn current_user_sid() -> Option<String> {
+    // SAFETY: the current process's own pseudo handle, which needs no closing
+    process_token_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+}
+
+/// The account another process runs as, as a SID string. `None` when it
+/// cannot be asked (gone, or not this account's to look at)
+#[cfg(windows)]
+pub(crate) fn process_user_sid(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: opened only to read its token, and closed below
+    let p = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if p.is_null() {
+        return None;
+    }
+    let sid = process_token_sid(p);
+    // SAFETY: opened above, closed once
+    unsafe { CloseHandle(p) };
+    sid
+}
+
+#[cfg(windows)]
+fn process_token_sid(process: HANDLE) -> Option<String> {
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
     use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
 
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
             return None;
         }
         let mut len = 0u32;

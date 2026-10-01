@@ -165,7 +165,7 @@ fn main() -> Result<()> {
         // failing it.
         let quiet = matches!(
             std::env::args().nth(1).as_deref(),
-            Some("--bridge") | Some("--hook") | Some("--mcp") | Some("--cli")
+            Some("--bridge") | Some("--hook") | Some("--mcp") | Some("--cli") | Some("--keeper")
         );
         if !quiet {
             say_fatally(&format!("{e}"));
@@ -181,6 +181,14 @@ fn boot() -> Result<()> {
     // (headless HTTP calls only)
     if std::env::args().nth(1).as_deref() == Some("--bridge") {
         return bridge::run();
+    }
+    // The resident process that holds this PC's terminals while the app is
+    // closed, updated or gone (local-keeper plan): the same program, started
+    // by the app in a role with no window. It ends by itself once it holds
+    // nothing and no app is connected
+    if std::env::args().nth(1).as_deref() == Some("--keeper") {
+        let home = std::env::args().nth(2).map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("--keeper needs its folder"))?;
+        return shikisha_core::fardaemon::daemon(home);
     }
     // Hook mode. An AI CLI runs this from inside its own process tree when a
     // conversation starts, handing over its session id on stdin; this reports

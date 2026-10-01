@@ -206,6 +206,9 @@ pub struct Link {
     /// The socket itself, to be closed when the line is let go: other threads
     /// hold the link, so dropping it here would close nothing
     socket: Option<std::net::TcpStream>,
+    /// The same for a line that is not a socket (the pipe to this PC's own
+    /// resident process): what shuts it
+    closer: Option<Box<dyn Fn() + Send + Sync>>,
     waiting: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
     conns: Mutex<HashMap<u64, Sender<Vec<u8>>>>,
     next: AtomicU64,
@@ -475,9 +478,28 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
     };
     let input = stream.try_clone()?;
     let socket = stream.try_clone().ok();
+    let link = link_over(&at.machine_key(), &at.address(), Box::new(stream), input, socket, None, home)?;
+    hear_missed(at, &link);
+    Ok(link)
+}
+
+/// Make a line to a resident process out of what carries it, wait for it to
+/// name itself, and keep it under `key`: the one way a line is made, whether
+/// over SSH, to a MicroVM, or through the pipe to this PC's own resident
+/// process (local-keeper plan §2)
+pub(crate) fn link_over(
+    key: &str,
+    address: &str,
+    out: Box<dyn Write + Send>,
+    input: impl Read + Send + 'static,
+    socket: Option<std::net::TcpStream>,
+    closer: Option<Box<dyn Fn() + Send + Sync>>,
+    home: String,
+) -> Result<Arc<Link>> {
     let link = Arc::new(Link {
-        out: Mutex::new(Box::new(stream)),
+        out: Mutex::new(out),
         socket,
+        closer,
         waiting: Mutex::default(),
         conns: Mutex::default(),
         next: AtomicU64::new(0),
@@ -490,13 +512,13 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
     {
         let l = Arc::clone(&link);
         std::thread::Builder::new()
-            .name(format!("bridge {}", at.address()))
+            .name(format!("bridge {address}"))
             .spawn(move || l.listen(input))?;
     }
     // Said until the line goes down; the bridge exits once it stops hearing it
     {
         let l = Arc::clone(&link);
-        std::thread::Builder::new().name(format!("bridge tick {}", at.address())).spawn(move || {
+        std::thread::Builder::new().name(format!("bridge tick {address}")).spawn(move || {
             loop {
                 std::thread::sleep(TICK);
                 if !l.is_up() || !l.say(&Frame::Tick) {
@@ -510,15 +532,41 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
         std::thread::sleep(Duration::from_millis(100));
     }
     if !link.is_up() {
-        bail!("the bridge on {} did not start", at.address());
+        bail!("the bridge on {address} did not start");
     }
     links()
         .lock()
         .map_err(|_| anyhow!("bridge"))?
-        .insert(at.machine_key(), Arc::clone(&link));
-    crate::append_hook_log(&format!("bridge: connected to {}", at.address()));
-    hear_missed(at, &link);
+        .insert(key.to_string(), Arc::clone(&link));
+    crate::append_hook_log(&format!("bridge: connected to {address}"));
     Ok(link)
+}
+
+/// The line kept under `key`, when it is up. For the line to this PC's own
+/// resident process, which is no `Elsewhere` (`crate::localkeep`)
+pub(crate) fn link_by_key(key: &str) -> Option<Arc<Link>> {
+    links().lock().ok()?.get(key).filter(|l| l.is_up()).cloned()
+}
+
+/// Let go of the line kept under `key`, saying this app is going
+pub(crate) fn let_go_key(key: &str) {
+    if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(key)) {
+        l.say(&Frame::Bye);
+        l.close();
+    }
+}
+
+impl Link {
+    /// Shut the line: whoever reads it sees its end
+    fn close(&self) {
+        self.up.store(false, Ordering::SeqCst);
+        if let Some(s) = &self.socket {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(c) = &self.closer {
+            c();
+        }
+    }
 }
 
 /// Let go of every machine's bridge, as the app quits: each is told this app
@@ -528,10 +576,7 @@ pub fn disconnect_all() {
     let all: Vec<(String, Arc<Link>)> = links().lock().map(|mut m| m.drain().collect()).unwrap_or_default();
     for (key, l) in all {
         l.say(&Frame::Bye);
-        l.up.store(false, Ordering::SeqCst);
-        if let Some(s) = &l.socket {
-            let _ = s.shutdown(std::net::Shutdown::Both);
-        }
+        l.close();
         crate::append_hook_log(&format!("bridge: let go of {key} on the way out"));
     }
 }
@@ -633,11 +678,8 @@ pub fn seen_missed(machine: &str, calls: Option<Vec<crate::farmissed::Missed>>) 
 pub fn disconnect(at: &crate::elsewhere::Elsewhere) {
     if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(&at.machine_key())) {
         l.say(&Frame::Bye);
-        l.up.store(false, Ordering::SeqCst);
         // Closing the socket ends the program's input over there, and it exits
-        if let Some(s) = &l.socket {
-            let _ = s.shutdown(std::net::Shutdown::Both);
-        }
+        l.close();
         crate::append_hook_log(&format!("bridge: let go of {}", at.address()));
     }
 }
@@ -1378,6 +1420,7 @@ mod tests {
         let link = Arc::new(Link {
             out: Mutex::new(Box::new(here)),
             socket: None,
+            closer: None,
             waiting: Mutex::default(),
             conns: Mutex::default(),
             next: AtomicU64::new(0),

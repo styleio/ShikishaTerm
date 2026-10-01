@@ -42,9 +42,13 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+
+// The doors are sockets on a unix machine and named pipes on Windows (the
+// local-keeper plan §2); the names below are what the code has always said
+use crate::keepipe::{Conn as UnixStream, Listener as UnixListener, same_user};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -57,7 +61,9 @@ use crate::farlink::Frame;
 
 /// What the app's door has to show, written after the sockets are bound
 const KEY_FILE: &str = "keep.key";
-/// Held while deciding who becomes resident
+/// Held while deciding who becomes resident (on Windows the pipe's name is
+/// the lock, and there is no file)
+#[cfg(unix)]
 const LOCK_FILE: &str = "keep.lock";
 /// What the resident process says, and how large it may grow before the
 /// next start sets it aside
@@ -240,31 +246,8 @@ pub(crate) fn log(text: &str) {
 
 // ── Who may come in ──────────────────────────────────────────────────────
 
-/// Whether the program at the other end of a socket runs as this account
-fn same_user(conn: &UnixStream) -> bool {
-    use std::os::unix::io::AsRawFd as _;
-    let fd = conn.as_raw_fd();
-    // SAFETY: each call is given a buffer of the size it says, and the
-    // descriptor belongs to a socket that is open for the length of the call
-    unsafe {
-        #[cfg(target_os = "linux")]
-        {
-            let mut cred: libc::ucred = std::mem::zeroed();
-            let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-            if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut cred as *mut libc::ucred).cast(), &mut len) != 0 {
-                return false;
-            }
-            cred.uid == libc::getuid()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let (mut uid, mut gid) = (0, 0);
-            libc::getpeereid(fd, &mut uid, &mut gid) == 0 && uid == libc::getuid()
-        }
-    }
-}
-
 /// A file read only when it is this account's and nobody else's
+#[cfg(unix)]
 fn read_private(file: &Path) -> Result<String> {
     use std::os::unix::fs::MetadataExt as _;
     let meta = std::fs::metadata(file).with_context(|| format!("{} is not there", file.display()))?;
@@ -275,8 +258,31 @@ fn read_private(file: &Path) -> Result<String> {
     Ok(std::fs::read_to_string(file)?.trim().to_string())
 }
 
+/// The same on Windows, where the folder is the account's own under
+/// `%LOCALAPPDATA%` (local-keeper plan §2): what guards it is the profile's
+/// own permissions, which give the account and the system alone
+#[cfg(windows)]
+fn read_private(file: &Path) -> Result<String> {
+    Ok(std::fs::read_to_string(file).with_context(|| format!("{} is not there", file.display()))?.trim().to_string())
+}
+
 /// Written so that only this account can read it, and never half written:
 /// made under another name first, then moved into place
+#[cfg(windows)]
+pub(crate) fn write_private(file: &Path, text: &str) -> Result<()> {
+    let part = file.with_extension(format!("part{}", std::process::id()));
+    let _ = std::fs::remove_file(&part);
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&part)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&part, file)?;
+    Ok(())
+}
+
+/// Written so that only this account can read it, and never half written:
+/// made under another name first, then moved into place
+#[cfg(unix)]
 pub(crate) fn write_private(file: &Path, text: &str) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let part = file.with_extension(format!("part{}", std::process::id()));
@@ -286,6 +292,11 @@ pub(crate) fn write_private(file: &Path, text: &str) -> Result<()> {
     f.sync_all()?;
     std::fs::rename(&part, file)?;
     Ok(())
+}
+
+/// The key the resident process in `home` asks an app's door to show
+pub fn door_key(home: &Path) -> Result<String> {
+    read_private(&home.join("run").join(KEY_FILE))
 }
 
 /// Who is on a socket
@@ -303,7 +314,7 @@ pub enum Found {
 
 /// Who is on `sock`
 pub fn find(sock: &Path) -> Found {
-    let Ok(conn) = UnixStream::connect(sock) else { return Found::Nobody };
+    let Ok(conn) = crate::keepipe::connect(sock) else { return Found::Nobody };
     if conn.set_read_timeout(Some(Duration::from_secs(3))).is_err() {
         return Found::Silent;
     }
@@ -329,7 +340,14 @@ pub fn probe(sock: &Path) -> Option<Frame> {
 /// Say, for as long as this process runs, that this program's file is in
 /// use (far-keep plan §4.5): a shared lock on its mark beside it, which
 /// whoever clears old builds away tries to take whole, without waiting, and
-/// deletes only a build nobody holds. Held until the process ends
+/// deletes only a build nobody holds. Held until the process ends.
+///
+/// Windows needs no mark: a running program's file cannot be deleted there,
+/// only moved aside (which is how this app's own copies are replaced)
+#[cfg(windows)]
+fn hold_program(_home: &Path) {}
+
+#[cfg(unix)]
 fn hold_program(home: &Path) {
     use std::os::unix::io::AsRawFd as _;
     let mark = home.join(format!(".{}.lock", own_program()));
@@ -374,7 +392,14 @@ fn hello(core: &Core) -> Frame {
 /// the terminals' programs with it -- before it goes
 static TOLD_TO_END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn on_term(_: libc::c_int) {
+    TOLD_TO_END.store(true, Ordering::SeqCst);
+}
+
+/// Tell the resident process in this one to end what it holds and go: what
+/// SIGTERM does on a unix machine, asked on Windows over its own door
+pub fn tell_to_end() {
     TOLD_TO_END.store(true, Ordering::SeqCst);
 }
 
@@ -382,34 +407,51 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     hold_program(&home);
     // SAFETY: the handler only stores to an atomic, which is all a signal
     // handler may do
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
     crate::farops::set_home(home.clone());
     let run = home.join("run");
     std::fs::create_dir_all(&run)?;
+    #[cfg(unix)]
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
     let keep = run.join(KEEP_SOCK);
     let tabs = run.join(TABS_SOCK);
 
-    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(run.join(LOCK_FILE))?;
-    {
+    // Who becomes resident. On a unix machine: whoever, under the lock, finds
+    // nobody on the socket and binds it. On Windows the pipe's name is the
+    // lock: the first instance is one process's alone, so a second one is
+    // refused the door and leaves without touching anything
+    #[cfg(unix)]
+    let lock = {
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(run.join(LOCK_FILE))?;
         use std::os::unix::io::AsRawFd as _;
         // SAFETY: the descriptor is the lock file's, open for as long as `lock`
         if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) } != 0 {
             bail!("could not take the lock on {}", run.display());
         }
-    }
+        lock
+    };
     if !matches!(find(&keep), Found::Nobody) {
         // Somebody else is resident already -- or holds the socket and is slow
         // to say so, which is the same: the lock goes with the file
         return Ok(());
     }
+    #[cfg(unix)]
     for stale in [&keep, &tabs] {
         let _ = std::fs::remove_file(stale);
     }
-    let keep_listener = UnixListener::bind(&keep)?;
+    let keep_listener = match UnixListener::bind(&keep) {
+        Ok(l) => l,
+        // Taken between the look and the bind: the other one is resident
+        #[cfg(windows)]
+        Err(_) => return Ok(()),
+        #[cfg(unix)]
+        Err(e) => return Err(e.into()),
+    };
     let tabs_listener = UnixListener::bind(&tabs)?;
+    #[cfg(unix)]
     for s in [&keep, &tabs] {
         std::fs::set_permissions(s, std::fs::Permissions::from_mode(0o600))?;
     }
@@ -418,6 +460,7 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     write_private(&run.join(KEY_FILE), &key)?;
     let key_kept = key.clone();
     let mine = [inode(&keep), inode(&tabs)];
+    #[cfg(unix)]
     drop(lock);
     log(&format!("resident ({}, {})", env!("CARGO_PKG_VERSION"), crate::build_rev()));
 
@@ -486,9 +529,16 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn inode(path: &Path) -> Option<u64> {
     use std::os::unix::fs::MetadataExt as _;
     std::fs::symlink_metadata(path).ok().map(|m| m.ino())
+}
+
+/// A pipe leaves no file behind to be tidied: it goes with its process
+#[cfg(windows)]
+fn inode(_path: &Path) -> Option<u64> {
+    None
 }
 
 /// One caller of the resident process's own socket: the app's door, or a
@@ -977,6 +1027,15 @@ impl Job for HostJob {
                 core.say(line, &Frame::Re { id: *id, r: json!({ "lines": core.lines().len() }), e: None });
                 true
             }
+            // Asked to end everything it holds and go. A unix machine is sent
+            // SIGTERM for this; Windows has no such signal, and the door is
+            // already this account's alone and keyed
+            Frame::Op { id, op, .. } if op == "end_resident" => {
+                log(&format!("the app on line {line} asked the resident process to end"));
+                core.say(line, &Frame::Re { id: *id, r: json!({ "ending": true }), e: None });
+                tell_to_end();
+                true
+            }
             _ => false,
         }
     }
@@ -1052,7 +1111,7 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let conn = UnixStream::connect(&keep).context("the resident bridge process did not answer")?;
+    let conn = crate::keepipe::connect(&keep).context("the resident bridge process did not answer")?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut first = String::new();
     reader.read_line(&mut first)?;
@@ -1100,6 +1159,56 @@ pub fn serve_port(home: PathBuf, input: impl std::io::Read, mut output: impl Wri
 /// Start the resident process, cut loose from the line that started it: in a
 /// session of its own, so that the line ending does not end it. What it says
 /// goes to `run/keep.log`, the one place to look when it misbehaves
+#[cfg(windows)]
+fn start_daemon(run: &Path) -> Result<()> {
+    let home = run.parent().ok_or_else(|| anyhow!("{} has no folder above it", run.display()))?;
+    start_resident(home, &["--keeper".into(), home.to_string_lossy().into_owned()])
+}
+
+/// Start this program as the resident process on Windows, cut loose from the
+/// one starting it (local-keeper plan §4): no console, a process group of its
+/// own, and out of any job the starter is in when the job lets it go -- so
+/// ending the app, or the app's whole process tree, does not end it. Started
+/// in its own folder, so the folder the app runs from can go away
+#[cfg(windows)]
+pub fn start_resident(home: &Path, args: &[String]) -> Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let run = home.join("run");
+    std::fs::create_dir_all(&run)?;
+    let log_file = run.join(LOG_FILE);
+    if std::fs::metadata(&log_file).is_ok_and(|m| m.len() > LOG_MOST) {
+        let _ = std::fs::rename(&log_file, run.join(format!("{LOG_FILE}.1")));
+    }
+    let exe = std::env::current_exe()?;
+    let spawn = |flags: u32| -> std::io::Result<std::process::Child> {
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_file)?;
+        std::process::Command::new(&exe)
+            .args(args)
+            .current_dir(home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(log))
+            .creation_flags(flags)
+            .spawn()
+    };
+    let loose = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    match spawn(loose | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(_) => Ok(()),
+        // A job that does not let its processes leave refuses the breakaway:
+        // started inside it instead, and said, since ending that job ends it
+        Err(e) if e.raw_os_error() == Some(5) => {
+            log("the app is in a job that keeps its processes; the resident process starts inside it");
+            spawn(loose).map(|_| ()).map_err(|e| anyhow!("could not start {}: {e}", exe.display()))
+        }
+        Err(e) => Err(anyhow!("could not start {}: {e}", exe.display())),
+    }
+}
+
+#[cfg(unix)]
 fn start_daemon(run: &Path) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
     use std::os::unix::process::CommandExt as _;
@@ -1127,7 +1236,7 @@ fn start_daemon(run: &Path) -> Result<()> {
     cmd.spawn().map(|_| ()).map_err(|e| anyhow!("could not start {}: {e}", exe.display()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
