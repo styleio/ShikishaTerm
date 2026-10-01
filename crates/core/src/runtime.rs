@@ -17763,10 +17763,41 @@ pub fn quit_busy(tabs: &[Tab], parked: &[Vec<Tab>]) -> usize {
 /// go on once the app is gone, with how many on each (far-keep plan §7.1)
 pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
     let mut kept: std::collections::BTreeMap<String, usize> = Default::default();
+    // Each MicroVM with AIs to go on, and the longest time any of them is to
+    // go on for: kept up for it now, since nothing keeps it up once the app
+    // is gone (far-keep plan §5)
+    let mut machines: std::collections::BTreeMap<String, (String, u32)> = Default::default();
     for t in tabs.iter().chain(parked.iter().flatten()).filter(|t| t.kept_away() && !t.exited()) {
-        *kept.entry(t.host_name().unwrap_or_default().to_string()).or_default() += 1;
+        let host = t.host_name().unwrap_or_default().to_string();
+        *kept.entry(host.clone()).or_default() += 1;
+        if let (Some(crate::elsewhere::Elsewhere::Cloud(h)), Some(minutes)) = (t.machine(), t.kept_minutes())
+            && let Some(id) = h.instance.clone()
+        {
+            let at = machines.entry(id).or_insert((host, 0));
+            at.1 = at.1.max(minutes);
+        }
     }
-    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect() }
+    let notes = machines.into_iter().map(|(id, (host, minutes))| kept_up_note(&id, &host, minutes)).collect();
+    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect(), notes }
+}
+
+/// Keep a MicroVM up while the app is away, and say until when -- the time
+/// the service gave, read back, which past the longest run the account
+/// allows is shorter than the one chosen; or that it could not be done, and
+/// when it pauses then (far-keep plan §5)
+fn kept_up_note(id: &str, host: &str, minutes: u32) -> String {
+    match crate::e2b::keep_up_while_away(id, minutes) {
+        Ok(k) if k.cut() => i18n::tp(
+            "msg.quit.kept_cut",
+            &[("host", host), ("until", &hooks::local_clock_at(k.ends)), ("asked", &hooks::local_clock_at(k.asked))],
+        ),
+        Ok(k) => i18n::tp("msg.quit.kept_until", &[("host", host), ("until", &hooks::local_clock_at(k.ends))]),
+        Err(e) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let left = crate::e2b::ends_at(id).map(|t| (t.saturating_sub(now) / 60).to_string()).unwrap_or_else(|| "?".into());
+            i18n::tp("msg.quit.kept_failed", &[("host", host), ("why", &format!("{e:#}")), ("n", &left)])
+        }
+    }
 }
 
 /// Whether the answer is to quit, keeping what it said about the AIs set to

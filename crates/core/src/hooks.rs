@@ -67,6 +67,23 @@ fn local_now() -> (u16, u16, u16, u16, u16, u16) {
     )
 }
 
+/// The local clock time a moment `epoch` (seconds since 1970) will be, as
+/// "22:40" -- "22:40 (tomorrow)" in the words of the language on screen when
+/// it falls on a later day
+pub fn local_clock_at(epoch: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let (_, _, _, hour, minute, _) = local_now();
+    let from_midnight = u64::from(hour) * 60 + u64::from(minute);
+    let then = from_midnight + epoch.saturating_sub(now) / 60;
+    let (days, of_day) = (then / (24 * 60), then % (24 * 60));
+    let clock = format!("{:02}:{:02}", of_day / 60, of_day % 60);
+    match days {
+        0 => clock,
+        1 => crate::i18n::tp("time.tomorrow_at", &[("clock", &clock)]),
+        n => crate::i18n::tp("time.days_later_at", &[("clock", &clock), ("n", &n.to_string())]),
+    }
+}
+
 pub fn local_stamp(fmt: &str) -> String {
     let (year, month, day, hour, minute, second) = local_now();
     let mut out = String::with_capacity(fmt.len() + 8);

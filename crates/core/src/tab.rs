@@ -4361,6 +4361,15 @@ impl Tab {
         self.far_term.as_ref().is_some_and(|t| t.keeps())
     }
 
+    /// How many minutes this tab's AI is to go on while the app is away,
+    /// when that is a set time
+    pub fn kept_minutes(&self) -> Option<u32> {
+        match self.far_term.as_ref()?.away() {
+            crate::config::Away::Minutes(m) => Some(m),
+            _ => None,
+        }
+    }
+
     /// Leave the tab without stopping what runs in it (far-keep plan §7,
     /// "disconnect"): a terminal the bridge holds and is set to keep goes on
     /// there, and the next start goes back to it. Anything else has nothing

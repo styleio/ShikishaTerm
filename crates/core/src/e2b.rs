@@ -612,6 +612,47 @@ pub fn keep_up_for(key: &str, id: &str, minutes: u32) -> Result<()> {
     .map(|_| ())
 }
 
+/// What a machine's time became when it was asked to keep running while the
+/// app is away (far-keep plan §5): when it now pauses, and when it was asked
+/// to, in seconds since 1970. Read back, never taken from the asking: past
+/// the longest run the account allows, the service cuts it there and still
+/// says it was done
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeptUntil {
+    pub ends: u64,
+    pub asked: u64,
+}
+
+impl KeptUntil {
+    /// Whether the service gave it less than was asked for
+    pub fn cut(&self) -> bool {
+        self.ends + 60 < self.asked
+    }
+}
+
+/// Keep a machine running for `minutes` from now, as the app goes, and say
+/// what that became. One asking: nothing keeps it up after the app has gone
+pub fn keep_up_while_away(id: &str, minutes: u32) -> Result<KeptUntil> {
+    let key = key().ok_or_else(|| anyhow!(crate::i18n::t("err.e2b.no_key")))?;
+    let asked = now_secs() + u64::from(minutes) * 60;
+    keep_up_for(&key, id, minutes)?;
+    let w = window(&key, id)?;
+    crate::append_hook_log(&format!("e2b: {id} kept up while the app is away: asked until {asked}, ends at {}", w.ends));
+    Ok(KeptUntil { ends: w.ends, asked })
+}
+
+/// When a machine pauses, as the service keeps it, if it can be asked
+pub fn ends_at(id: &str) -> Option<u64> {
+    let key = key()?;
+    window(&key, id).ok().map(|w| w.ends)
+}
+
+/// Whether a machine was begun again after `since` (seconds since 1970): it
+/// was paused in between, and whatever ran on it was frozen
+pub fn started_after(id: &str, since: u64) -> bool {
+    key().and_then(|k| window(&k, id).ok()).is_some_and(|w| w.started > since + 30)
+}
+
 /// A machine given its full minutes again and again while a long piece of
 /// this app's own work runs on it -- a clone, an install, a worktree being
 /// cut -- and let go of when that is done ([`Busy`] dropped). Nothing on the

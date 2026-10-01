@@ -347,16 +347,29 @@ try {
   await until(async () => (await screen()).includes('armed-25'), 'the call to be set', 30000);
   let said = quitApp('Yes');
   check(/answered Yes/.test(said) && /go on running/.test(said), 'quitting asks whether to leave the AI running: ' + said);
+  // The MicroVM is kept up for the time chosen, as the service says it became
+  check(/vm runs (only )?until \d\d:\d\d/.test(said), 'the question says until when the MicroVM runs: ' + said);
+  const ends = await (await fetch('https://api.e2b.app/sandboxes/' + box.sandboxId, { headers: { 'X-API-Key': KEY } })).json();
+  const keptFor = (Date.parse(ends.endAt) - Date.now()) / 60000;
+  check(keptFor > 25, 'the MicroVM was kept up for the time chosen (or its plan\'s longest run): ' + Math.round(keptFor) + ' minutes left');
   await appGone().then(() => check(true, 'the app quit')).catch(() => check(false, 'the app quit'));
   await sleep(3000);
   check(Number(await children()) > 0, 'the AI goes on after the app quit');
   await sleep(25000);
   const awayOut = await inside('cat /tmp/away.out');
   check(awayOut.includes('PC is away'), 'a call made meanwhile is told the PC is away: ' + awayOut.slice(0, 200));
+  // Its time runs out while the app is away: the MicroVM pauses, with what
+  // runs on it frozen (paused here rather than waited for)
+  const paused = await fetch('https://api.e2b.app/sandboxes/' + box.sandboxId + '/pause', { method: 'POST', headers: { 'X-API-Key': KEY } });
+  check(paused.ok || paused.status === 409, 'the MicroVM paused while the app was away: ' + paused.status);
+  await sleep(5000);
   since = await restart();
   await until(() => /went back to it/.test(since()), 'the tab to go back to it', 240000)
     .then(() => check(true, 'the next start goes back to the AI left running'))
     .catch(() => check(false, 'the next start goes back to the AI left running: ' + bridgeLines(since())));
+  await until(() => /its machine was paused while the app was away/.test(since()), 'the pause to be noticed', 30000)
+    .then(() => check(true, 'the tab says its MicroVM was paused meanwhile'))
+    .catch(() => check(false, 'the tab says its MicroVM was paused meanwhile: ' + bridgeLines(since())));
   await until(() => /did not get through while this app was away/.test(since()), 'the calls that did not get through', 60000)
     .then(() => check(true, 'the call made while away is told about'))
     .catch(() => check(false, 'the call made while away is told about: ' + bridgeLines(since())));

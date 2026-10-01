@@ -23,6 +23,9 @@ pub struct QuitAsk {
     pub busy: usize,
     /// Each machine, by its entry's name, and how many of its AIs go on
     pub kept: Vec<(String, usize)>,
+    /// What else is to be said before the answer: until when each MicroVM
+    /// goes on, or that it could not be kept up (far-keep plan §5)
+    pub notes: Vec<String>,
 }
 
 /// What the person answered
@@ -53,6 +56,10 @@ impl QuitAsk {
                 .collect::<Vec<_>>()
                 .join(crate::i18n::t("msg.quit.kept_sep").as_str());
             out.push_str(&crate::i18n::tp("msg.quit.kept", &[("list", &list)]));
+            for note in &self.notes {
+                out.push_str("\n\n");
+                out.push_str(note);
+            }
             if self.busy > 0 {
                 out.push_str("\n\n");
                 out.push_str(&crate::i18n::tp("msg.quit.kept_busy", &[("n", &self.busy.to_string())]));
@@ -490,10 +497,10 @@ mod tests {
     #[test]
     fn quitting_asks_about_what_goes_on_and_what_is_lost() {
         assert!(!QuitAsk::default().worth_asking(), "nothing at work, nothing kept: nothing to ask");
-        let busy = QuitAsk { busy: 2, kept: Vec::new() };
+        let busy = QuitAsk { busy: 2, kept: Vec::new(), notes: Vec::new() };
         assert!(busy.worth_asking());
         assert!(busy.words().contains('2'), "{}", busy.words());
-        let kept = QuitAsk { busy: 1, kept: vec![("VPS1".into(), 2), ("vm".into(), 1)] };
+        let kept = QuitAsk { busy: 1, kept: vec![("VPS1".into(), 2), ("vm".into(), 1)], notes: Vec::new() };
         let words = kept.words();
         assert!(words.contains("VPS1") && words.contains("vm"), "{words}");
         assert_eq!(words.matches('\n').count(), 6, "the machines, the work in progress, and one line per answer: {words}");
