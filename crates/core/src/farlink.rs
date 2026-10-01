@@ -73,6 +73,12 @@ pub enum Frame {
     /// on a MicroVM the program's input stays open after this PC is gone, so
     /// the end of the input cannot be the only sign
     Tick,
+    /// This app is going: its line ends now. Said as it quits and as it lets
+    /// go of a machine, because on a MicroVM the end of the input is never
+    /// seen there, and until the silence runs out the bridge would carry the
+    /// tabs' calls to an app that is gone. A bridge that does not know it
+    /// goes by the silence, as before
+    Bye,
     /// A message of one job, by the job's name (far-keep plan §3.1): a job
     /// added later speaks through this, both ways, and the line needs no new
     /// kind of frame for it. A job the other side does not hold ignores it
@@ -264,7 +270,7 @@ impl Link {
                         to.remove(&job);
                     }
                 }
-                Frame::Op { .. } | Frame::Tick => {}
+                Frame::Op { .. } | Frame::Tick | Frame::Bye => {}
             }
         }
         self.up.store(false, Ordering::SeqCst);
@@ -460,12 +466,106 @@ pub fn connect(at: &crate::elsewhere::Elsewhere) -> Result<Arc<Link>> {
         .map_err(|_| anyhow!("bridge"))?
         .insert(at.machine_key(), Arc::clone(&link));
     crate::append_hook_log(&format!("bridge: connected to {}", at.address()));
+    hear_missed(at, &link);
     Ok(link)
 }
 
-/// Let go of a machine's bridge: its input ends, and it exits over there
+/// Let go of every machine's bridge, as the app quits: each is told this app
+/// is going, so what its tabs ask from now on is answered at once that the PC
+/// is away, rather than carried to an app that is gone
+pub fn disconnect_all() {
+    let all: Vec<(String, Arc<Link>)> = links().lock().map(|mut m| m.drain().collect()).unwrap_or_default();
+    for (key, l) in all {
+        l.say(&Frame::Bye);
+        l.up.store(false, Ordering::SeqCst);
+        if let Some(s) = &l.socket {
+            let _ = s.shutdown(std::net::Shutdown::Both);
+        }
+        crate::append_hook_log(&format!("bridge: let go of {key} on the way out"));
+    }
+}
+
+// ── What did not get through while the app was away ──────────────────────
+
+/// The calls each machine's tabs made while this app was away (far-keep plan
+/// §4.6), as the bridge there last said: by machine, with the name the
+/// person knows the machine by
+static MISSED: Mutex<std::collections::BTreeMap<String, (String, crate::farmissed::Book)>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Words for the person, from the lines' own threads, for the loop to show
+static SAID: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// What the bridges have to tell the person, taken once
+pub fn take_said() -> Vec<String> {
+    SAID.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default()
+}
+
+/// Every machine's calls that did not get through, as last heard: the machine
+/// (`Elsewhere::machine_key`), its name, and the calls
+pub fn missed() -> Vec<(String, String, crate::farmissed::Book)> {
+    MISSED
+        .lock()
+        .map(|m| m.iter().filter(|(_, (_, b))| !b.calls.is_empty() || b.dropped > 0).map(|(k, (n, b))| (k.clone(), n.clone(), b.clone())).collect())
+        .unwrap_or_default()
+}
+
+/// Listen for what a machine's bridge says of the calls its tabs made while
+/// this app was away, and ask for them now: the person is told how many once
+/// the line is up, and they stay listed until the person has looked
+fn hear_missed(at: &crate::elsewhere::Elsewhere, link: &Arc<Link>) {
+    if !link.holds("tabs") {
+        return;
+    }
+    let from = link.listen_job("tabs");
+    let (key, name) = (at.machine_key(), at.address());
+    std::thread::spawn(move || {
+        // How many the person has been told of: the bridge says again when
+        // one is written down while this app is connected (a call cut as an
+        // earlier line of this app went), and only a larger count is news
+        let mut told = 0;
+        for m in from {
+            if m["did"] != "missed" {
+                continue;
+            }
+            let Ok(book) = serde_json::from_value::<crate::farmissed::Book>(m["book"].clone()) else { continue };
+            let n = book.calls.len() as u64 + book.dropped;
+            if n > told {
+                told = n;
+                crate::append_hook_log(&format!("bridge: {n} call(s) from {name}'s tabs did not get through while this app was away"));
+                if let Ok(mut s) = SAID.lock() {
+                    s.push(crate::i18n::tp("msg.bridge.missed", &[("host", &name), ("n", &n.to_string())]));
+                }
+            }
+            if let Ok(mut all) = MISSED.lock() {
+                all.insert(key.clone(), (name.clone(), book));
+            }
+        }
+    });
+    link.to_job("tabs", json!({ "do": "missed" }));
+}
+
+/// Strike out the calls the person looked at on a machine (`None`: all of
+/// them). Said to the bridge there, which answers with what is left
+pub fn seen_missed(machine: &str, calls: Option<Vec<crate::farmissed::Missed>>) -> Result<(), String> {
+    let link = links()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(machine).cloned())
+        .filter(|l| l.is_up())
+        .ok_or_else(|| "the bridge is not connected".to_string())?;
+    let said = match calls {
+        Some(c) => json!({ "do": "seen", "calls": c }),
+        None => json!({ "do": "seen" }),
+    };
+    if link.to_job("tabs", said) { Ok(()) } else { Err("the bridge's line is down".into()) }
+}
+
+/// Let go of a machine's bridge: it is told this app is going, its input
+/// ends, and the door exits over there
 pub fn disconnect(at: &crate::elsewhere::Elsewhere) {
     if let Some(l) = links().lock().ok().and_then(|mut m| m.remove(&at.machine_key())) {
+        l.say(&Frame::Bye);
         l.up.store(false, Ordering::SeqCst);
         // Closing the socket ends the program's input over there, and it exits
         if let Some(s) = &l.socket {

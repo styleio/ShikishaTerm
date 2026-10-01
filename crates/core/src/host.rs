@@ -16,13 +16,64 @@ use crate::view::{Size, Ui};
 use crossterm::event::Event;
 use std::time::Duration;
 
+/// What quitting is asked with: how many tabs are at work, and which
+/// machines' AIs go on running once the app is gone (far-keep plan §7.1)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QuitAsk {
+    pub busy: usize,
+    /// Each machine, by its entry's name, and how many of its AIs go on
+    pub kept: Vec<(String, usize)>,
+}
+
+/// What the person answered
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quit {
+    /// Not now
+    No,
+    /// Quit: the AIs set to go on while the app is away go on
+    Yes,
+    /// Quit, and stop every AI, those set to go on as well
+    StopAll,
+}
+
+impl QuitAsk {
+    /// Whether there is anything to ask about
+    pub fn worth_asking(&self) -> bool {
+        self.busy > 0 || !self.kept.is_empty()
+    }
+
+    /// The question, in the words of the language on screen
+    pub fn words(&self) -> String {
+        let mut out = String::new();
+        if !self.kept.is_empty() {
+            let list = self
+                .kept
+                .iter()
+                .map(|(host, n)| crate::i18n::tp("msg.quit.kept_on", &[("host", host), ("n", &n.to_string())]))
+                .collect::<Vec<_>>()
+                .join(crate::i18n::t("msg.quit.kept_sep").as_str());
+            out.push_str(&crate::i18n::tp("msg.quit.kept", &[("list", &list)]));
+            if self.busy > 0 {
+                out.push_str("\n\n");
+                out.push_str(&crate::i18n::tp("msg.quit.kept_busy", &[("n", &self.busy.to_string())]));
+            }
+            out.push_str("\n\n");
+            out.push_str(&crate::i18n::t("msg.quit.kept_buttons"));
+        } else {
+            out.push_str(&crate::i18n::tp("msg.quit.busy", &[("n", &self.busy.to_string())]));
+        }
+        out
+    }
+}
+
 pub trait Shell {
     /// Where reports from this shell land
     fn mail(&mut self) -> &mut Mailbox;
 
-    /// Ask whether to quit with `busy` tabs still working. A shell with nobody
-    /// in front of it has nobody to ask, and says yes
-    fn confirm_quit(&mut self, busy: usize) -> bool;
+    /// Ask whether to quit, with `ask.busy` tabs still working and the AIs
+    /// in `ask.kept` going on once the app is gone. A shell with nobody in
+    /// front of it has nobody to ask, and quits as the settings say
+    fn confirm_quit(&mut self, ask: &QuitAsk) -> Quit;
 
     /// Hand a Store update to the platform. It wants a window to put its own
     /// progress on, which is why it is asked of the shell and not done here
@@ -162,8 +213,8 @@ pub trait Minder {
     fn hide(&self);
     /// Say, once, that the program is still there and where to find it
     fn say_where_it_went(&self);
-    /// Whether to stop with this many tabs at work
-    fn confirm_quit(&self, busy: usize) -> bool;
+    /// Whether to stop, and how, asked as `QuitAsk` says
+    fn confirm_quit(&self, ask: &QuitAsk) -> Quit;
 }
 
 /// What a minder noticed, in the words the loop already knows
@@ -255,10 +306,10 @@ impl Shell for Headless {
 
     /// Nobody to ask, so nothing is in the way of stopping -- unless there
     /// is a window over this runtime, and therefore a desktop to ask on
-    fn confirm_quit(&mut self, busy: usize) -> bool {
+    fn confirm_quit(&mut self, ask: &QuitAsk) -> Quit {
         match &self.minder {
-            Some(m) => m.confirm_quit(busy),
-            None => true,
+            Some(m) => m.confirm_quit(ask),
+            None => Quit::Yes,
         }
     }
 
@@ -432,6 +483,21 @@ impl Shell for Headless {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quitting asks only when there is something to lose or to leave, and
+    /// with AIs set to go on it names each machine and says what each of the
+    /// three answers does (far-keep plan §7.1)
+    #[test]
+    fn quitting_asks_about_what_goes_on_and_what_is_lost() {
+        assert!(!QuitAsk::default().worth_asking(), "nothing at work, nothing kept: nothing to ask");
+        let busy = QuitAsk { busy: 2, kept: Vec::new() };
+        assert!(busy.worth_asking());
+        assert!(busy.words().contains('2'), "{}", busy.words());
+        let kept = QuitAsk { busy: 1, kept: vec![("VPS1".into(), 2), ("vm".into(), 1)] };
+        let words = kept.words();
+        assert!(words.contains("VPS1") && words.contains("vm"), "{words}");
+        assert_eq!(words.matches('\n').count(), 6, "the machines, the work in progress, and one line per answer: {words}");
+    }
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     /// A keystroke handed to a runtime with no window comes back out of it.
@@ -468,7 +534,7 @@ mod tests {
             fn show(&self) {}
             fn hide(&self) {}
             fn say_where_it_went(&self) {}
-            fn confirm_quit(&self, _: usize) -> bool { true }
+            fn confirm_quit(&self, _: &QuitAsk) -> Quit { Quit::Yes }
         }
         let server = Headless::new(24, 80);
         assert_eq!(server.why_no_password().as_deref(), Some(crate::i18n::t("prompt.password.headless").as_str()));

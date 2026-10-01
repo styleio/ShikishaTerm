@@ -768,6 +768,51 @@ pub struct HostSpec {
     /// in the settings names a kind of machine, and a folder names one of them
     #[serde(skip)]
     pub instance: Option<String>,
+    /// What this machine's AIs do when the app goes: keep running, and for
+    /// how long, or stop with it (far-keep plan §4.3). Absent: the person
+    /// has not been asked, and they stop with it, as they always have
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub away: Option<Away>,
+}
+
+/// What a machine's AIs do while the app is away (far-keep plan §4.3). Three
+/// states, written as words, and no number that means one of them: a 0 read
+/// as "stop" by one reader and as "no limit" by another does the opposite of
+/// what was chosen.
+///
+/// Written `"stop"`, `{"minutes": 480}` or `"always"`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Away {
+    /// They stop when the app goes
+    Stop,
+    /// They go on for this many minutes after the app went, then stop
+    Minutes(u32),
+    /// They go on for as long as they run. A server only: nothing keeps a
+    /// MicroVM up once the app has gone
+    Always,
+}
+
+impl Away {
+    /// Whether the AIs go on once the app went
+    pub fn keeps(self) -> bool {
+        !matches!(self, Self::Stop)
+    }
+
+    /// As the bridge's resident process reads it (`farterms::Away`)
+    pub fn on_the_line(self) -> serde_json::Value {
+        match self {
+            Self::Stop => serde_json::json!("stop"),
+            Self::Minutes(m) => serde_json::json!({ "seconds": u64::from(m) * 60 }),
+            Self::Always => serde_json::json!("always"),
+        }
+    }
+}
+
+/// What the AIs on the machine a tab's settings entry names do while the app
+/// is away. An entry with none written, or no entry, stops them
+pub fn away_of(hosts: &[HostSpec], host: Option<&str>) -> Away {
+    host.and_then(|h| hosts.iter().find(|s| s.name == h)).and_then(|s| s.away).unwrap_or(Away::Stop)
 }
 
 /// How many minutes a MicroVM runs untouched when its entry does not say:

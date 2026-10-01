@@ -2545,6 +2545,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     for e in startup_errors.iter().filter(|e| said_already.insert(e.as_str())) {
         append_hook_log(&format!("Startup: {e}"));
     }
+    // Quit with every AI stopped, those set to go on while the app is away
+    // as well (far-keep plan §7.1): what the person answered on the way out
+    let stop_all = std::cell::Cell::new(false);
     let mut flash: Option<String> = startup_errors
         .first()
         .map(|e| i18n::tp("msg.startup_failed", &[("error", e)]))
@@ -5087,6 +5090,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 bridges.tend(wanted.into_values().collect());
                 bridges.agreed_now(&agreed, &hosts, &awake);
                 bridges.sweep(stray);
+                // What the bridges have to tell the person: calls their tabs made
+                // while this app was away (far-keep plan §4.6)
+                for said in crate::farlink::take_said() {
+                    flash = Some(said);
+                }
             }
             let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
             let fx = orchestra.tick(&scene);
@@ -12650,7 +12658,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // that has been said. The Store copy hands the job to the Store
         // instead, which ends the program itself when it is done
         if let Some(what) = update::take_apply() {
-            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
+            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
                 let store = what == update::Apply::Store;
                 update::begin_apply(what);
                 if store {
@@ -12668,7 +12676,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if close_pressed && resident {
             shell.hide();
             shell.say_where_it_went();
-        } else if (close_pressed || quit_chosen) && shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
+        } else if (close_pressed || quit_chosen) && quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
             break;
         }
         let Some(ev) = polled else {
@@ -12745,7 +12753,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(code) = meant {
                     match code {
                         KeyCode::Char('q') => {
-                            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) {
+                            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
                                 break;
                             }
                         }
@@ -13174,7 +13182,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         KeyCode::Char('f') => shell.open_vault(),
                         KeyCode::Char('p') => shell.open_palette(),
                         KeyCode::Char('q')
-                            if shell.confirm_quit(quit_busy(&tabs, &desk_tabs)) => {
+                            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) => {
                                 break;
                             }
                         _ => {}
@@ -13256,10 +13264,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         last_session.write();
     }
     // Every desk's: a desk not in front keeps its tabs running, and a shell
-    // on a MicroVM of one of them outlives this program unless it is told to end
+    // on a MicroVM of one of them outlives this program unless it is told to
+    // end. One whose AI is set to go on while the app is away is let go of
+    // and goes on, unless the person said to stop them all (far-keep plan §7)
+    let mut kept_on: Vec<String> = Vec::new();
     for t in tabs.iter_mut().chain(desk_tabs.iter_mut().flatten()) {
-        t.kill();
+        if !stop_all.get() && t.kept_away() {
+            if let Some(crate::elsewhere::Elsewhere::Cloud(h)) = t.machine()
+                && let Some(id) = h.instance.clone()
+            {
+                kept_on.push(id);
+            }
+            t.let_go();
+        } else {
+            t.kill();
+        }
     }
+    // A MicroVM whose AIs go on is not paused on the way out (far-keep plan §5)
+    for id in &kept_on {
+        crate::e2b::left_running(id);
+    }
+    // Every bridge is told this app is going: what the tabs there ask from
+    // now on is answered at once that the PC is away (far-keep plan §4.6)
+    crate::farlink::disconnect_all();
     // A shell on a MicroVM outlives this program unless it is told to end, and
     // the telling is on its way (see `e2b::settle`)
     crate::e2b::settle(Duration::from_secs(5));
@@ -17693,6 +17720,25 @@ pub fn quit_busy(tabs: &[Tab], parked: &[Vec<Tab>]) -> usize {
     let busy = |t: &Tab| t.state == TabState::Busy;
     tabs.iter().filter(|t| busy(t)).count()
         + parked.iter().flatten().filter(|t| busy(t)).count()
+}
+
+/// What quitting is asked with: the tabs at work, and the machines whose AIs
+/// go on once the app is gone, with how many on each (far-keep plan §7.1)
+pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
+    let mut kept: std::collections::BTreeMap<String, usize> = Default::default();
+    for t in tabs.iter().chain(parked.iter().flatten()).filter(|t| t.kept_away() && !t.exited()) {
+        *kept.entry(t.host_name().unwrap_or_default().to_string()).or_default() += 1;
+    }
+    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect() }
+}
+
+/// Whether the answer is to quit, keeping what it said about the AIs set to
+/// go on while the app is away
+fn quitting(answer: crate::host::Quit, stop_all: &std::cell::Cell<bool>) -> bool {
+    if answer == crate::host::Quit::StopAll {
+        stop_all.set(true);
+    }
+    answer != crate::host::Quit::No
 }
 
 /// One recorded step → one line of the dialect every Lua surface here speaks

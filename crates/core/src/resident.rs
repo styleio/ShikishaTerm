@@ -178,6 +178,39 @@ unsafe extern "system" fn procedure(hwnd: *mut c_void, msg: u32, w: WPARAM, l: L
 /// Its own window, on top of whatever is there. A runtime split from its
 /// screen still has a desktop and somebody at it, and the one question worth
 /// asking -- whether to stop with an AI mid-turn -- is worth asking there
+/// Ask the person whether to quit (far-keep plan §7.1): yes or no while
+/// nothing goes on without the app; and while AIs elsewhere are set to go on,
+/// whether to leave them running, stop them all, or not quit. A message box
+/// of the system's own, so its buttons are the system's Yes, No and Cancel,
+/// and the question says what each of them does
+pub fn ask_quit(ask: &crate::host::QuitAsk) -> crate::host::Quit {
+    use crate::host::Quit;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        IDNO, IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MB_YESNOCANCEL, MessageBoxW,
+    };
+    if !ask.worth_asking() {
+        return Quit::Yes;
+    }
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let (body, title) = (wide(&ask.words()), wide("SHIKISHA-TERM"));
+    let three = !ask.kept.is_empty();
+    let answered = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body.as_ptr(),
+            title.as_ptr(),
+            if three { MB_YESNOCANCEL } else { MB_YESNO } | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    let quit = match (answered, three) {
+        (IDYES, _) => Quit::Yes,
+        (IDNO, true) => Quit::StopAll,
+        _ => Quit::No,
+    };
+    crate::append_hook_log(&format!("quit asked ({} at work, kept {:?}): {quit:?}", ask.busy, ask.kept));
+    quit
+}
+
 pub fn ask_yes_no(title: &str, body: &str) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,

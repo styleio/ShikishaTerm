@@ -30,12 +30,18 @@
 //!     one keeps quiet -- the switch is the attach, taken under the lock
 //!   - **The code of a program that ended is kept** until the app says it
 //!     has it, so "ended" can be answered after the app was away
+//!   - **What happens while no app owns it is the app's to say** (far-keep
+//!     plan §4.3): each terminal is opened, and attached to, with what to do
+//!     when its owner goes -- end it (after a short while, so a line that
+//!     drops and comes back finds it), keep it for a set time, or keep it
+//!     for as long as its program runs ([`Away`])
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{Value, json};
@@ -53,6 +59,52 @@ const SCROLLBACK_KEPT: usize = 5000;
 /// never dropped from the terminal: the owner, attaching again, is handed
 /// the state with all of it in
 const QUEUED_MOST: u64 = 32 * 1024 * 1024;
+/// How long a terminal whose owner went is kept when it is to end with its
+/// owner: long enough for a line that dropped to come back and attach again,
+/// short enough that an app that is gone does not leave its AI running
+const STOP_GRACE: Duration = if cfg!(test) { Duration::from_secs(2) } else { Duration::from_secs(60) };
+/// How long the code of a terminal that ended while its owner was away is
+/// kept for the owner to come back for, when it was to be kept running
+const ENDED_KEPT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// What a terminal does while no app owns it (far-keep plan §4.3), as the
+/// app says on the line: `"stop"`, `{"seconds": n}`, or `"always"`. Three
+/// states, and no number that means one of them. A terminal opened by an app
+/// that says nothing -- an older one -- ends with it, as everything did
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Away {
+    Stop,
+    For(Duration),
+    Always,
+}
+
+impl Away {
+    pub fn read(v: &Value) -> Option<Self> {
+        match v {
+            Value::String(s) if s == "stop" => Some(Self::Stop),
+            Value::String(s) if s == "always" => Some(Self::Always),
+            Value::Object(o) => o.get("seconds").and_then(Value::as_u64).map(|n| Self::For(Duration::from_secs(n))),
+            _ => None,
+        }
+    }
+
+    pub fn write(self) -> Value {
+        match self {
+            Self::Stop => json!("stop"),
+            Self::For(d) => json!({ "seconds": d.as_secs() }),
+            Self::Always => json!("always"),
+        }
+    }
+
+    /// How long after its owner went the terminal is ended. None: never
+    fn ends_after(self) -> Option<Duration> {
+        match self {
+            Self::Stop => Some(STOP_GRACE),
+            Self::For(d) => Some(d),
+            Self::Always => None,
+        }
+    }
+}
 
 pub(crate) fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -154,6 +206,10 @@ struct Seen {
     seq: u64,
     /// Who owns it now: (the line, the owner number)
     owner: Option<(u64, u64)>,
+    /// When its last owner went, while nobody owns it
+    left: Option<Instant>,
+    /// What it does while nobody owns it
+    away: Away,
 }
 
 /// One terminal held here
@@ -173,8 +229,9 @@ struct Term {
     /// How many bytes of output are in the queue, not yet sent
     queued: Arc<AtomicU64>,
     next_owner: AtomicU64,
-    /// The program's exit code, once it ended
+    /// The program's exit code, once it ended, and when
     ended: Mutex<Option<i32>>,
+    ended_at: Mutex<Option<Instant>>,
 }
 
 /// The job
@@ -204,7 +261,7 @@ impl Terms {
                 let opened = json!({ "did": "opened", "ref": m["ref"], "gen": self.generation, "term": id });
                 let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m: opened }));
                 let refused = self.attach(core, line, &json!({ "term": id, "gen": self.generation, "tab": m["tab"],
-                    "rows": m["rows"], "cols": m["cols"] }));
+                    "rows": m["rows"], "cols": m["cols"], "away": m["away"] }));
                 (refused["did"] != "attaching").then_some(refused)
             }
             Err(e) => Some(json!({ "did": "failed", "ref": m["ref"], "why": format!("{e:#}") })),
@@ -254,6 +311,8 @@ impl Terms {
                 edge: crate::termstate::Boundary::default(),
                 seq: 0,
                 owner: None,
+                left: None,
+                away: Away::read(&m["away"]).unwrap_or(Away::Stop),
             }),
             writer,
             master: Mutex::new(pty.master),
@@ -262,6 +321,7 @@ impl Terms {
             queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
             ended: Mutex::new(None),
+            ended_at: Mutex::new(None),
         });
         if let Ok(mut t) = self.terms.lock() {
             t.insert(id, Arc::clone(&term));
@@ -305,6 +365,7 @@ impl Terms {
                             // Not taken for too long: let go of, and answering
                             // the program here until it attaches again
                             seen.owner = None;
+                            seen.left = Some(Instant::now());
                             seen.parser.callbacks_mut().answering = true;
                             let m = json!({ "did": "taken", "term": id, "why": "the line did not keep up" });
                             let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
@@ -318,6 +379,9 @@ impl Terms {
                 let code = child.wait().map(|s| s.exit_code() as i32).unwrap_or(-1);
                 if let Ok(mut e) = term.ended.lock() {
                     *e = Some(code);
+                }
+                if let Ok(mut e) = term.ended_at.lock() {
+                    *e = Some(Instant::now());
                 }
                 let owner = term.seen.lock().ok().and_then(|s| s.owner);
                 if let Some((line, _)) = owner {
@@ -363,6 +427,11 @@ impl Terms {
             seen.parser.screen_mut().set_size(rows, cols);
         }
         let before = seen.owner.replace((line, owner));
+        seen.left = None;
+        // The one attaching says what it is to do while nobody owns it
+        if let Some(away) = Away::read(&m["away"]) {
+            seen.away = away;
+        }
         seen.parser.callbacks_mut().answering = false;
         let held = seen.parser.callbacks();
         let state = json!({
@@ -394,11 +463,13 @@ impl Terms {
             .map(|t| {
                 t.iter()
                     .map(|(id, term)| {
+                        let seen = term.seen.lock().ok().map(|s| (s.owner.is_some(), s.away));
                         json!({
                             "term": id,
                             "tab": term.tab,
                             "cwd": term.cwd,
-                            "owned": term.seen.lock().is_ok_and(|s| s.owner.is_some()),
+                            "owned": seen.is_some_and(|(owned, _)| owned),
+                            "away": seen.map_or(Away::Stop, |(_, a)| a).write(),
                             "ended": term.ended.lock().is_ok_and(|e| e.is_some()),
                         })
                     })
@@ -508,13 +579,55 @@ impl Job for Terms {
                 && seen.owner.is_some_and(|(l, _)| l == line)
             {
                 seen.owner = None;
+                seen.left = Some(Instant::now());
                 seen.parser.callbacks_mut().answering = true;
             }
         }
     }
 
-    /// Ending: every terminal's program with it (far-keep plan §4.3). Until
-    /// the away mode is chosen (stage 6), nothing is kept once no app is here
+    /// Each terminal nobody owns, ended once it has been left for as long as
+    /// it was to be kept; and the code of one that ended, let go of once it
+    /// has been kept long enough for its app to come back for it
+    fn tick(&self, _core: &Arc<Core>) {
+        let terms: Vec<(u64, Arc<Term>)> = self.terms.lock().map(|t| t.iter().map(|(i, t)| (*i, Arc::clone(t))).collect()).unwrap_or_default();
+        for (id, term) in terms {
+            if let Some(at) = term.ended_at.lock().ok().and_then(|e| *e) {
+                if at.elapsed() >= ENDED_KEPT
+                    && let Ok(mut t) = self.terms.lock()
+                {
+                    t.remove(&id);
+                }
+                continue;
+            }
+            let due = term
+                .seen
+                .lock()
+                .ok()
+                .and_then(|s| Some((s.left?, s.away)))
+                .and_then(|(left, away)| away.ends_after().map(|after| (left.elapsed() >= after, away)));
+            if let Some((true, away)) = due {
+                crate::fardaemon::log(&format!("terminal {id}: left alone past what it was to be kept for ({away:?}); ending it"));
+                if let Ok(mut k) = term.killer.lock() {
+                    let _ = k.kill();
+                }
+            }
+        }
+    }
+
+    /// While a terminal runs, and while the code of one that was to be kept
+    /// running waits for its app to come back for it
+    fn wants_to_stay(&self) -> bool {
+        self.terms.lock().is_ok_and(|t| {
+            t.values().any(|term| match term.ended_at.lock().ok().and_then(|e| *e) {
+                None => true,
+                Some(at) => term.seen.lock().is_ok_and(|s| s.away != Away::Stop) && at.elapsed() < ENDED_KEPT,
+            })
+        })
+    }
+
+    /// Ending: every terminal's program with it (far-keep plan §4.3). The
+    /// resident process ends only once no terminal is to be kept, so what
+    /// is here then is left by a resident process told to go
     fn end(&self) {
         let terms: Vec<Arc<Term>> = self.terms.lock().map(|t| t.values().cloned().collect()).unwrap_or_default();
         for term in terms {

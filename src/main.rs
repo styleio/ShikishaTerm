@@ -2056,8 +2056,8 @@ impl shikisha_core::host::Shell for WinSurface {
         &mut self.mail
     }
 
-    fn confirm_quit(&mut self, busy: usize) -> bool {
-        quit_confirmed(busy)
+    fn confirm_quit(&mut self, ask: &shikisha_core::host::QuitAsk) -> shikisha_core::host::Quit {
+        shikisha_core::resident::ask_quit(ask)
     }
 
     fn install_store_update(&mut self) -> Result<()> {
@@ -2272,28 +2272,6 @@ fn draw_for_server(
     });
 }
 
-/// from the notification area with the window put away
-fn quit_confirmed(busy: usize) -> bool {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        IDYES, MB_ICONQUESTION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,
-    };
-    if busy == 0 {
-        return true;
-    }
-    let body = wide(&i18n::tp("msg.quit.busy", &[("n", &busy.to_string())]));
-    let title = wide("SHIKISHA-TERM");
-    let answer = unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            body.as_ptr(),
-            title.as_ptr(),
-            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
-        )
-    };
-    let yes = answer == IDYES;
-    append_hook_log(&format!("Quit asked with {busy} tab(s) at work: {}", if yes { "yes" } else { "no" }));
-    yes
-}
 
 #[cfg(test)]
 mod settings_confirm_tests;

@@ -41,6 +41,7 @@ pub mod discover;
 pub mod exchange;
 pub mod faraway;
 pub mod farlink;
+pub mod farmissed;
 pub mod farterm;
 #[cfg(unix)]
 pub mod fardaemon;

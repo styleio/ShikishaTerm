@@ -21,6 +21,12 @@
  *      new; one that ended meanwhile is started again in a new terminal; and
  *      one the bridge no longer knows starts nothing until the tab is
  *      restarted
+ *   10-11. quitting (far-keep plan §7.1, stage 5): asked, with the AI set to
+ *      go on, whether to leave it running -- left running, it goes on, a
+ *      call it makes meanwhile is told the PC is away and is written down,
+ *      and the next start goes back to it and says so; stopped, it ends
+ *
+ * The machine is set to keep its AIs for 30 minutes while the app is away.
  *
  *     cargo build   (and a Linux bridge in bridge/, see bridge-far.win.mjs)
  *     node tools/debug/far-hold.win.mjs
@@ -134,7 +140,7 @@ try {
   fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
   fs.writeFileSync(CONFIG, JSON.stringify({
     language: 'en', remote: { enabled: false }, resident: false, external_api: { access: 'user' },
-    hosts: [{ name: 'vm', kind: 'e2b', template: 'base', minutes: 15 }],
+    hosts: [{ name: 'vm', kind: 'e2b', template: 'base', minutes: 15, away: { minutes: 30 } }],
     bridges: ['vm'],
     desks: [{ name: 'Far', id: 'far', folders: [
       { cwd: '/home/user', host: 'vm', sandbox: box.sandboxId, tabs: [{ name: 'held', id: 'held', command: 'claude' }] },
@@ -290,6 +296,51 @@ try {
   await until(async () => (await screen()).includes('restarted-16'), 'the restarted tab answering', 60000)
     .then(() => check(true, 'restarting the tab starts a new one'))
     .catch(async () => check(false, 'restarting the tab starts a new one: ' + bridgeLines(since()) + ' / ' + (await screen()).slice(-300)));
+
+  const quitApp = (answer) => ps('-File', path.join(ROOT, 'tools', 'debug', 'lib', 'quit-app.ps1'), '-Root', APP, '-Answer', answer).stdout.trim();
+  const appGone = () => until(() => appPid() === '', 'the app to quit', 60000);
+  // The processes the resident process holds terminals in: none once it has ended
+  const children = async () => (await inside(`p=$(pgrep -f '${BRIDGE_DIR}/shikisha-bridge-[^ ]* daemon' | head -1); if [ -n "$p" ]; then pgrep -P "$p" | wc -l; else echo 0; fi`)).trim();
+
+  console.log('10. quitting, the AI left running: it goes on, and a call it makes meanwhile is written down');
+  // The tab's terminal held by the bridge again, now that its line is up
+  // (restarted until its line is up when it starts: a tab started without it
+  // opens the old way)
+  let held = false;
+  for (let i = 0; i < 12 && !held; i++) {
+    const mark = log().length;
+    await primitive('restart', ['held']);
+    held = await until(() => /far terminal \d+ opened on/.test(log().slice(mark)), 'a held terminal', 15000).then(() => true).catch(() => false);
+    if (!held) await sleep(10000);
+  }
+  if (!held) throw new Error('the tab did not get a held terminal again');
+  await sleep(3000);
+  await primitive('send_to_tab', ['held', '(sleep 20; shikisha tab_list > /tmp/away.out 2>&1) & echo armed-$((5*5))']);
+  await until(async () => (await screen()).includes('armed-25'), 'the call to be set', 30000);
+  let said = quitApp('Yes');
+  check(/answered Yes/.test(said) && /go on running/.test(said), 'quitting asks whether to leave the AI running: ' + said);
+  await appGone().then(() => check(true, 'the app quit')).catch(() => check(false, 'the app quit'));
+  await sleep(3000);
+  check(Number(await children()) > 0, 'the AI goes on after the app quit');
+  await sleep(25000);
+  const awayOut = await inside('cat /tmp/away.out');
+  check(awayOut.includes('PC is away'), 'a call made meanwhile is told the PC is away: ' + awayOut.slice(0, 200));
+  since = await restart();
+  await until(() => /went back to it/.test(since()), 'the tab to go back to it', 240000)
+    .then(() => check(true, 'the next start goes back to the AI left running'))
+    .catch(() => check(false, 'the next start goes back to the AI left running: ' + bridgeLines(since())));
+  await until(() => /did not get through while this app was away/.test(since()), 'the calls that did not get through', 60000)
+    .then(() => check(true, 'the call made while away is told about'))
+    .catch(() => check(false, 'the call made while away is told about: ' + bridgeLines(since())));
+
+  console.log('11. quitting with every AI stopped: it ends');
+  await sleep(3000);
+  said = quitApp('No');
+  check(/answered No/.test(said), 'quitting asked, answered to stop them all: ' + said);
+  await appGone().then(() => check(true, 'the app quit')).catch(() => check(false, 'the app quit'));
+  await until(async () => Number(await children()) === 0, 'the AI to stop', 30000)
+    .then(() => check(true, 'the AI was stopped'))
+    .catch(async () => check(false, 'the AI was stopped: ' + (await children()) + ' left'));
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + (e.stack || e));

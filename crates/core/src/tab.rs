@@ -3835,9 +3835,14 @@ impl Tab {
             // own, started by the far end, and there is no local process id to
             // put in a job object
             (None, _, _, Some((at, left))) => {
+                // What its AI does while this app is away, as the machine's entry says
+                let away = crate::config::load()
+                    .map(|c| crate::config::away_of(&c.hosts, opts.host.as_deref()))
+                    .unwrap_or(crate::config::Away::Stop);
+                let started = (opts.remote_cwd.as_deref(), far_typed.as_deref());
                 let (m, k, t) = match left {
-                    Some(left) => crate::farterm::reattach(&at, left, rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref()),
-                    None => crate::farterm::open(&at, opts.called(&title), rows, cols, opts.remote_cwd.as_deref(), far_typed.as_deref())?,
+                    Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, away),
+                    None => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, away)?,
                 };
                 far_term = Some(t);
                 (m, k, None, None)
@@ -4339,6 +4344,24 @@ impl Tab {
 
     pub fn kill(&mut self) {
         let _ = self.killer.kill();
+    }
+
+    /// Whether this tab's AI goes on running while the app is away: its
+    /// terminal is held by the bridge on a machine set to keep it (far-keep
+    /// plan §4.3)
+    pub fn kept_away(&self) -> bool {
+        self.far_term.as_ref().is_some_and(|t| t.keeps())
+    }
+
+    /// Leave the tab without stopping what runs in it (far-keep plan §7,
+    /// "disconnect"): a terminal the bridge holds and is set to keep goes on
+    /// there, and the next start goes back to it. Anything else has nothing
+    /// to go on in once this app is gone, and is stopped as before
+    pub fn let_go(&mut self) {
+        match self.far_term.as_ref().filter(|t| t.keeps()) {
+            Some(t) => t.let_go(),
+            None => self.kill(),
+        }
     }
 
     /// Recreate the session with the same settings.

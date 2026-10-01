@@ -318,17 +318,8 @@ impl Minder for Split {
     /// Asked on the machine itself, because there is somebody at it: this half
     /// of the pair has no screen, but it does have a desktop, and quitting
     /// with an AI mid-turn is worth one question
-    fn confirm_quit(&self, busy: usize) -> bool {
-        if busy == 0 {
-            return true;
-        }
-        let asked = crate::i18n::tp("msg.quit.busy", &[("n", &busy.to_string())]);
-        let yes = crate::resident::ask_yes_no("SHIKISHA-TERM", &asked);
-        crate::append_hook_log(&format!(
-            "split: quit asked with {busy} tab(s) at work: {}",
-            if yes { "yes" } else { "no" }
-        ));
-        yes
+    fn confirm_quit(&self, ask: &crate::host::QuitAsk) -> crate::host::Quit {
+        crate::resident::ask_quit(ask)
     }
 }
 

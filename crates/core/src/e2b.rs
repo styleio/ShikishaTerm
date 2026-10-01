@@ -701,7 +701,7 @@ fn pause_when_left(id: &str) {
     let id = id.to_string();
     std::thread::spawn(move || {
         std::thread::sleep(PAUSE_AFTER);
-        if awake(&id) || is_working(&id) || being_made(&id) || let_go_of(&id) {
+        if awake(&id) || is_working(&id) || being_made(&id) || let_go_of(&id) || is_left_running(&id) {
             return;
         }
         let Some(key) = key() else { return };
@@ -712,10 +712,28 @@ fn pause_when_left(id: &str) {
     });
 }
 
+/// The machines whose AIs go on once this app is gone (far-keep plan §5):
+/// not paused on the way out, nor when their last terminal here closes
+static LEFT_RUNNING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Leave a machine running as the app goes: its AIs are set to go on
+pub fn left_running(id: &str) {
+    if let Ok(mut l) = LEFT_RUNNING.lock()
+        && !l.iter().any(|i| i == id)
+    {
+        l.push(id.to_string());
+    }
+}
+
+fn is_left_running(id: &str) -> bool {
+    LEFT_RUNNING.lock().is_ok_and(|l| l.iter().any(|i| i == id))
+}
+
 /// Every machine this run spoke to, paused as the app quits -- each on a
 /// thread of its own, waited for at most `most`. A machine being made or
-/// worked on by this app is left to finish; one that could not be paused
-/// pauses when its minutes run out, as before
+/// worked on by this app is left to finish, and one whose AIs go on while the
+/// app is away is left running; one that could not be paused pauses when its
+/// minutes run out, as before
 pub fn pause_all(most: Duration) {
     let Some(key) = key() else { return };
     let ids: Vec<String> = KNOWN
@@ -725,7 +743,7 @@ pub fn pause_all(most: Duration) {
         .unwrap_or_default();
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let mut asked = 0;
-    for id in ids.into_iter().filter(|id| !is_working(id) && !being_made(id) && !let_go_of(id)) {
+    for id in ids.into_iter().filter(|id| !is_working(id) && !being_made(id) && !let_go_of(id) && !is_left_running(id)) {
         let (key, tx) = (key.clone(), tx.clone());
         asked += 1;
         std::thread::spawn(move || {
@@ -1423,10 +1441,19 @@ static ENDING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::
 /// Asked once, as this program closes
 pub fn settle(most: Duration) {
     let until = std::time::Instant::now() + most;
-    while ENDING.load(std::sync::atomic::Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+    let busy = || {
+        ENDING.load(std::sync::atomic::Ordering::SeqCst) > 0 || PIPES.load(std::sync::atomic::Ordering::SeqCst) > 0
+    };
+    while busy() && std::time::Instant::now() < until {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The programs on a machine whose input is carried from here (`pipe`),
+/// counted until what was written to them, and their end, have been handed
+/// over: the last thing written as this program quits -- the bridge told this
+/// app is going -- is still being sent when it would otherwise end
+static PIPES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// A name for this terminal, which a listing of what runs on the machine shows
 fn a_tag() -> String {
@@ -2239,6 +2266,7 @@ pub fn pipe(host: &crate::config::HostSpec, cmd: &str, args: &[String]) -> Resul
         .ok()
         .flatten()
         .ok_or_else(|| anyhow!(crate::i18n::tp("err.e2b.call", &[("e", "the program did not start")])))?;
+    PIPES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     std::thread::Builder::new().name("e2b-pipe-in".into()).spawn(move || {
         use base64::Engine as _;
         let at = serde_json::json!({ "pid": pid });
@@ -2256,6 +2284,7 @@ pub fn pipe(host: &crate::config::HostSpec, cmd: &str, args: &[String]) -> Resul
         }
         // Closed here: the program is told to end, and ends
         let _ = signal(&sandbox, &at, "SIGNAL_SIGTERM");
+        PIPES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
     })?;
     Ok(here)
 }

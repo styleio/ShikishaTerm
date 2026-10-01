@@ -96,6 +96,8 @@ pub trait Job: Send + Sync {
     }
     /// The resident process is ending: whatever the job holds ends with it
     fn end(&self) {}
+    /// Once a second, whatever the job does by the clock
+    fn tick(&self, _core: &Arc<Core>) {}
 }
 
 /// How long an app that stopped talking waits, at most, for the answers to
@@ -211,7 +213,7 @@ impl Core {
     }
 }
 
-fn log(text: &str) {
+pub(crate) fn log(text: &str) {
     eprintln!("shikisha-bridge: {text}");
 }
 
@@ -414,6 +416,9 @@ pub fn daemon(home: PathBuf) -> Result<()> {
 
     loop {
         std::thread::sleep(Duration::from_secs(1));
+        for job in core.jobs() {
+            job.tick(&core);
+        }
         for line in core.silent() {
             log(&format!("line {line} has been silent too long"));
             core.drop_line(line);
@@ -476,6 +481,12 @@ fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
         let Ok(text) = text else { break };
         core.heard(line);
         let Ok(frame) = serde_json::from_str::<Frame>(&text) else { continue };
+        // The app is going: its line ends here, without waiting for the
+        // silence its going would otherwise be known by
+        if matches!(frame, Frame::Bye) {
+            log(&format!("the app on line {line} said it is going"));
+            break;
+        }
         for job in core.jobs() {
             if job.frame(core, line, &frame) {
                 break;
@@ -496,17 +507,83 @@ fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
 ///
 /// Which app that is, is known from the key it gave the tab ([`crate::farops`]'s
 /// `put_key`, seen on its way past). A command whose app is not connected is
-/// answered at once that it is away, and not held (far-keep plan §4.6)
+/// answered at once that it is away, and not held (far-keep plan §4.6) -- and
+/// written down ([`crate::farmissed`]), as is one cut in the middle by its app
+/// going, so the person is told when the app is back
 #[derive(Default)]
 struct TabsJob {
-    /// Each command connection: the line its app is on, and the socket
-    conns: Mutex<HashMap<u64, (u64, UnixStream)>>,
+    /// Each command connection: the line its app is on, the socket, the tab
+    /// it is from, and the call it is in the middle of
+    conns: Mutex<HashMap<u64, Conn>>,
     next: AtomicU64,
     /// Each tab key given, and the line of the app that gave it
     owners: Mutex<HashMap<String, u64>>,
+    /// Each tab key given, and the tab's name
+    names: Mutex<HashMap<String, String>>,
+    /// The calls written down, kept with the file
+    book: Mutex<Option<crate::farmissed::Book>>,
+}
+
+struct Conn {
+    line: u64,
+    socket: UnixStream,
+    tab: String,
+    /// The last call carried, not yet answered
+    call: Option<String>,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 impl TabsJob {
+    /// The tab a key was given for, as far as this resident process saw
+    fn tab_of(&self, token: &str) -> String {
+        self.names
+            .lock()
+            .ok()
+            .and_then(|n| n.iter().find(|(k, _)| crate::crypto::token_eq(k, token)).map(|(_, t)| t.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The calls written down, read from the file the first time
+    fn with_book<R>(&self, f: impl FnOnce(&mut crate::farmissed::Book) -> R) -> R {
+        let path = crate::farops::home().ok().map(|h| h.join(crate::farmissed::FILE));
+        let mut held = self.book.lock().unwrap_or_else(|e| e.into_inner());
+        let book = held.get_or_insert_with(|| {
+            path.as_ref()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default()
+        });
+        let before = book.clone();
+        let out = f(book);
+        if *book != before
+            && let Some(p) = &path
+            && let Err(e) = write_private(p, &serde_json::to_string(book).unwrap_or_default())
+        {
+            log(&format!("the calls that did not get through could not be written down: {e:#}"));
+        }
+        out
+    }
+
+    /// Write down a call that did not reach its app, and tell every app
+    /// connected now: the person hears of it without waiting for a reconnect
+    fn missed(&self, core: &Arc<Core>, tab: &str, line: &str, cut: bool) {
+        let (method, to) = crate::farmissed::read_call(line);
+        if method.is_empty() {
+            return;
+        }
+        let call = crate::farmissed::Missed { at: now_secs(), tab: tab.to_string(), method, to, cut };
+        let book = self.with_book(|b| {
+            b.add(call, now_secs());
+            b.clone()
+        });
+        for l in core.lines() {
+            core.say(l, &Frame::Job { job: "tabs".into(), m: json!({ "did": "missed", "book": book }) });
+        }
+    }
+
     fn command(&self, core: &Arc<Core>, conn: UnixStream) {
         if !same_user(&conn) {
             return;
@@ -518,18 +595,22 @@ impl TabsJob {
             .ok()
             .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(str::to_string))
             .unwrap_or_default();
+        let tab = self.tab_of(&token);
         let Some(line) = self.owner_of(core, &token) else {
-            away(conn, lines);
+            away(conn, lines, |call| self.missed(core, &tab, call, false));
             return;
         };
         let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut m) = self.conns.lock() {
-            m.insert(c, (line, conn));
+            m.insert(c, Conn { line, socket: conn, tab, call: None });
         }
         let carried = core.say(line, &Frame::Open { c }) && core.say(line, &Frame::Line { c, l: first });
         if carried {
             for text in lines {
                 let Ok(l) = text else { break };
+                if let Some(conn) = self.conns.lock().ok().as_mut().and_then(|m| m.get_mut(&c)) {
+                    conn.call = Some(l.clone());
+                }
                 if !core.say(line, &Frame::Line { c, l }) {
                     break;
                 }
@@ -561,14 +642,16 @@ impl TabsJob {
 }
 
 /// The answer to a command whose app is away: the handshake taken, and every
-/// call answered at once, in words the AI there can read and act on
-fn away(mut conn: UnixStream, lines: impl Iterator<Item = std::io::Result<String>>) {
+/// call answered at once, in words the AI there can read and act on -- and
+/// each one handed to `note` to be written down
+fn away(mut conn: UnixStream, lines: impl Iterator<Item = std::io::Result<String>>, note: impl Fn(&str)) {
     const AWAY: &str = "The SHIKISHA-TERM app that started this tab is not connected to this machine right now \
         (the PC is away). Nothing was sent. Hand over what you meant to report when it is back.";
     let _ = writeln!(conn, r#"{{"ok":true,"result":"hello"}}"#);
     for text in lines {
         let Ok(l) = text else { break };
         let id = serde_json::from_str::<Value>(&l).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
+        note(&l);
         if writeln!(conn, "{}", json!({ "id": id, "ok": false, "error": AWAY })).is_err() {
             break;
         }
@@ -580,18 +663,39 @@ impl Job for TabsJob {
         "tabs"
     }
 
-    fn frame(&self, _core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
+    fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
         match frame {
             Frame::Line { c, l } => {
-                if let Some((_, conn)) = self.conns.lock().ok().as_mut().and_then(|m| m.get_mut(c)) {
-                    let _ = writeln!(conn, "{l}");
+                if let Some(conn) = self.conns.lock().ok().as_mut().and_then(|m| m.get_mut(c)) {
+                    // Answered: nothing of it is in the middle any more
+                    conn.call = None;
+                    let _ = writeln!(conn.socket, "{l}");
                 }
                 true
             }
             Frame::Close { c } => {
-                if let Some((_, conn)) = self.conns.lock().ok().and_then(|mut m| m.remove(c)) {
-                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                if let Some(conn) = self.conns.lock().ok().and_then(|mut m| m.remove(c)) {
+                    let _ = conn.socket.shutdown(std::net::Shutdown::Both);
                 }
+                true
+            }
+            // The calls written down: read by the app, and struck out once
+            // the person has looked at them
+            Frame::Job { job, m } if job == "tabs" => {
+                match m["do"].as_str().unwrap_or_default() {
+                    "missed" => {}
+                    "seen" => {
+                        let list: Option<Vec<crate::farmissed::Missed>> = m.get("calls").and_then(|c| serde_json::from_value(c.clone()).ok());
+                        self.with_book(|b| b.seen(list.as_deref()));
+                    }
+                    _ => return true,
+                }
+                let book = self.with_book(|b| {
+                    b.trim(now_secs());
+                    b.clone()
+                });
+                let said = json!({ "did": "missed", "ref": m["ref"], "book": book });
+                core.say(line, &Frame::Job { job: "tabs".into(), m: said });
                 true
             }
             // Seen on the way past, and left to the operations job to do
@@ -601,6 +705,9 @@ impl Job for TabsJob {
                     match op.as_str() {
                         "put_key" => {
                             owners.insert(key.to_string(), line);
+                            if let (Ok(mut names), Some(tab)) = (self.names.lock(), p.get("tab").and_then(|t| t.as_str())) {
+                                names.insert(key.to_string(), tab.to_string());
+                            }
                         }
                         "drop_key" => {
                             owners.remove(key);
@@ -614,19 +721,26 @@ impl Job for TabsJob {
         }
     }
 
-    fn line_gone(&self, _core: &Arc<Core>, line: u64) {
+    fn line_gone(&self, core: &Arc<Core>, line: u64) {
         // Its commands end with it; the app that answers them is gone
         // Told first, in words the command prints, since what it asked may
         // have been done, or not, as the app went: it cannot know which
+        let mut cut: Vec<(String, String)> = Vec::new();
         if let Ok(mut m) = self.conns.lock() {
-            m.retain(|_, (l, conn)| {
-                let keep = *l != line;
+            m.retain(|_, conn| {
+                let keep = conn.line != line;
                 if !keep {
-                    let _ = writeln!(conn, "{}", json!({ "id": null, "ok": false, "error": CUT }));
-                    let _ = conn.shutdown(std::net::Shutdown::Both);
+                    let _ = writeln!(conn.socket, "{}", json!({ "id": null, "ok": false, "error": CUT }));
+                    let _ = conn.socket.shutdown(std::net::Shutdown::Both);
+                    if let Some(call) = conn.call.take() {
+                        cut.push((conn.tab.clone(), call));
+                    }
                 }
                 keep
             });
+        }
+        for (tab, call) in cut {
+            self.missed(core, &tab, &call, true);
         }
     }
 }
@@ -852,6 +966,58 @@ mod tests {
         (to, from)
     }
 
+    /// The app says it is going (far-keep plan §4.6): its line ends at once, a
+    /// tab's call after that is answered that the PC is away and written down
+    /// -- the command, the tab it names and the tab that made it, never what
+    /// it said -- and an app connected then hears of it
+    #[test]
+    fn a_call_after_the_app_went_is_answered_and_written_down() {
+        let home = std::env::temp_dir().join(format!("sk-fardaemon-bye-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        pc.say(&Frame::Op { id: 1, op: "put_key".into(), p: json!({ "tab": "t1", "key": "k-bye" }) });
+        assert!(pc.hear_until(|f| matches!(f, Frame::Re { id: 1, .. })).is_some(), "the key was not taken");
+        let mut other = App::open(&run);
+        pc.say(&Frame::Bye);
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (mut to, mut from) = command(&run, "k-bye");
+        let mut hi = String::new();
+        from.read_line(&mut hi).unwrap();
+        writeln!(to, r#"{{"id":"7","method":"ask_tab","params":["teal","the secret words"]}}"#).unwrap();
+        let mut answer = String::new();
+        from.read_line(&mut answer).unwrap();
+        assert!(answer.contains("\"ok\":false") && answer.contains("away"), "not told the PC is away at once: {answer}");
+
+        let heard = other
+            .hear_until(|f| matches!(f, Frame::Job { job, m } if job == "tabs" && m["did"] == "missed"))
+            .expect("the app connected was not told");
+        let Frame::Job { m, .. } = heard else { unreachable!() };
+        let book: crate::farmissed::Book = serde_json::from_value(m["book"].clone()).unwrap();
+        assert_eq!(book.calls.len(), 1, "{book:?}");
+        let c = &book.calls[0];
+        assert_eq!((c.method.as_str(), c.to.as_str(), c.tab.as_str(), c.cut), ("ask_tab", "teal", "t1", false));
+        assert!(!m.to_string().contains("secret"), "what the call said was written down: {m}");
+
+        // Looked at: struck out, and the app hears what is left
+        other.say(&Frame::Job { job: "tabs".into(), m: json!({ "do": "seen" }) });
+        let left = other
+            .hear_until(|f| matches!(f, Frame::Job { job, m } if job == "tabs" && m["did"] == "missed"))
+            .expect("no answer to having looked");
+        let Frame::Job { m, .. } = left else { unreachable!() };
+        assert_eq!(m["book"]["calls"].as_array().map(Vec::len), Some(0), "{m}");
+        drop((to, from, pc, other));
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The resident process of far-keep plan §4.3, stage 2 of §10: one for the
     /// account however many start at once, the tabs' commands carried to the
     /// app that started each tab and answered at once when it is away, the
@@ -1021,6 +1187,87 @@ mod tests {
         p.screen().contents()
     }
 
+    /// What a terminal does while no app owns it is what the app said when it
+    /// opened it (far-keep plan §4.3): end after the short while a dropped
+    /// line gets, end after a set time, or go on -- and the resident process
+    /// stays while any is to be kept, keeps the code of one that ended for its
+    /// app to come back for, and ends once there is nothing left to keep
+    #[test]
+    fn what_a_terminal_does_while_nobody_owns_it_is_the_apps_to_say() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-away-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Three terminals, one of each: ends with its app (after the short
+        // while a dropped line gets), kept for 4 seconds, kept for good
+        let mut pc = App::open(&run);
+        let mut ids = Vec::new();
+        for (n, away) in [json!("stop"), json!({ "seconds": 4 }), json!("always")].into_iter().enumerate() {
+            term(&mut pc, json!({ "do": "open", "ref": n + 1, "tab": format!("t{n}"), "rows": 24, "cols": 80,
+                "then": "exec cat", "away": away }));
+            let opened = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened");
+            ids.push((opened["term"].as_u64().unwrap(), opened["gen"].as_str().unwrap().to_string()));
+        }
+        let generation = ids[0].1.clone();
+        // The app goes, and comes back to look at each in turn
+        drop(pc);
+        let alive = |id: u64, tab: &str| -> &'static str {
+            let mut a = App::open(&run);
+            term(&mut a, json!({ "do": "list", "ref": 99 }));
+            let listed = term_said(&mut a, |m| m["did"] == "list").expect("no list");
+            let me = listed["terms"].as_array().unwrap().iter().find(|t| t["term"] == id && t["tab"] == tab).cloned();
+            match me {
+                None => "gone",
+                Some(t) if t["ended"] == true => "ended",
+                Some(_) => "running",
+            }
+        };
+        std::thread::sleep(Duration::from_millis(1000));
+        assert_eq!(alive(ids[0].0, "t0"), "running", "ended before a dropped line could come back");
+        std::thread::sleep(Duration::from_millis(2500));
+        assert_eq!(alive(ids[0].0, "t0"), "ended", "kept after its app went for good");
+        assert_eq!(alive(ids[1].0, "t1"), "running", "the one kept for a while was not kept");
+        std::thread::sleep(Duration::from_millis(3500));
+        assert_eq!(alive(ids[1].0, "t1"), "ended", "kept past the time it was to be kept for");
+        assert_eq!(alive(ids[2].0, "t2"), "running", "the one kept for good was ended");
+        // With nobody connected, the resident process stays while one is
+        // still to be kept, and the code of the one kept for a while waits
+        // for its app to come back for it
+        std::thread::sleep(Duration::from_millis(12_000));
+        assert!(!resident.is_finished(), "the resident process went with a terminal still to be kept");
+        let mut back = App::open(&run);
+        term(&mut back, json!({ "do": "attach", "term": ids[1].0, "gen": generation, "tab": "t1" }));
+        assert!(term_said(&mut back, |m| m["did"] == "over").is_some(), "its end was not kept for its app");
+        let a = term_said_owner(&mut back, ids[2].0, &generation, "t2");
+        term(&mut back, json!({ "do": "stop", "term": ids[2].0, "owner": a }));
+        assert!(term_said(&mut back, |m| m["did"] == "ended" && m["term"] == ids[2].0).is_some());
+        // The app has both codes: nothing is kept for it any more
+        for (id, _) in &ids[1..] {
+            term(&mut back, json!({ "do": "forget", "term": id }));
+        }
+        drop(back);
+        // Nothing left to keep: it ends on its own
+        let gone = (0..300).any(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            resident.is_finished()
+        });
+        assert!(gone, "it stayed with nothing to keep");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Attach to a terminal, and the owner number it hands out
+    fn term_said_owner(app: &mut App, id: u64, generation: &str, tab: &str) -> u64 {
+        term(app, json!({ "do": "attach", "term": id, "gen": generation, "tab": tab, "rows": 24, "cols": 80 }));
+        term_said(app, |m| m["did"] == "attached" && m["term"] == id).expect("not attached")["owner"].as_u64().unwrap()
+    }
+
     /// Two apps attach to one terminal at the same moment (far-keep plan
     /// §10.1 "reconnecting at once"): one of them owns it in the end, the
     /// other is told it was taken, and only the owner's keys go in
@@ -1145,7 +1392,7 @@ mod tests {
         assert!(term_said(&mut server, |m| m["did"] == "unknown").is_some(), "kept after it was had");
 
         // Nobody owns it: the program's question is answered here
-        term(&mut server, json!({ "do": "open", "ref": 2, "tab": "t3", "rows": 24, "cols": 80,
+        term(&mut server, json!({ "do": "open", "ref": 2, "tab": "t3", "rows": 24, "cols": 80, "away": "always",
             "then": "sleep 2; printf '\\033[6n'; IFS= read -r -s -t 5 -d R x; printf 'answer:%s\\n' \"${x#*[}\"; exec cat" }));
         let o2 = term_said(&mut server, |m| m["did"] == "opened").unwrap();
         let id2 = o2["term"].as_u64().unwrap();
@@ -1189,6 +1436,11 @@ mod tests {
             outs3.iter().map(|o| String::from_utf8_lossy(&unb64(&o["b"])).into_owned()).collect::<Vec<_>>()
         );
         assert!(shown3.lines().any(|l| l.trim_start().starts_with("got:9;9")), "answered by someone other than the owner: {shown3:?}");
+        // The one kept for good is stopped, so the resident process has
+        // nothing left to keep and ends
+        term(&mut again, json!({ "do": "stop", "term": id2, "owner": back["owner"] }));
+        assert!(term_said(&mut again, |m| m["did"] == "ended" && m["term"] == id2).is_some(), "the kept one did not end");
+        term(&mut again, json!({ "do": "forget", "term": id2 }));
         drop((pc, again));
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);

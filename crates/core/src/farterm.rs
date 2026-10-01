@@ -84,6 +84,11 @@ pub struct Saved {
     pub term: u64,
     /// When it was opened, in seconds since 1970
     pub since: u64,
+    /// Whether it was to end with the app (`Away::Stop`): a resident process
+    /// that ended took such a terminal with it, so one not known there any
+    /// more is known to have ended
+    #[serde(default)]
+    pub stops: bool,
 }
 
 impl Saved {
@@ -169,7 +174,9 @@ pub fn left_running(at: &crate::elsewhere::Elsewhere, cwd: &str, tab: &str) -> O
     let found = said["terms"].as_array()?.iter().find(|t| {
         t["tab"] == tab && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false
     })?;
-    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs() };
+    // An older resident process says nothing: its terminals ended with their app
+    let stops = found["away"].is_null() || found["away"] == "stop";
+    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs(), stops };
     crate::append_hook_log(&format!("far terminal {}: found on {} for {tab}, with nothing written down about it", s.term, at.address()));
     change_saved(|all| put(all, s.clone()));
     Some(s)
@@ -239,6 +246,7 @@ fn ask_open(
     (rows, cols): (u16, u16),
     cwd: Option<&str>,
     then: Option<&str>,
+    away: crate::config::Away,
 ) -> Result<(u64, String, Receiver<Value>, Arc<crate::farlink::Link>)> {
     let link = crate::farlink::link(at).ok_or_else(|| anyhow!("the bridge on {} is not connected", at.address()))?;
     if !link.holds(JOB) {
@@ -249,7 +257,7 @@ fn ask_open(
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
     let asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
-        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default() });
+        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": away.on_the_line() });
     if !link.to_job(JOB, asked) {
         bail!("the bridge on {} could not be asked for a terminal", at.address());
     }
@@ -270,6 +278,7 @@ fn ask_open(
                 generation: generation.clone(),
                 term,
                 since: now_secs(),
+                stops: !away.keeps(),
             },
         )
     });
@@ -294,6 +303,8 @@ pub struct FarTerm {
     /// what a terminal found ended is opened again with
     cwd: Option<String>,
     then: Option<String>,
+    /// What it does while this app is away (far-keep plan §4.3)
+    away: crate::config::Away,
     owner: AtomicU64,
     /// Where it is, and the line to it now: a line that went and came back
     /// is another line
@@ -319,12 +330,20 @@ struct Bound {
 }
 
 impl FarTerm {
-    fn new(at: &crate::elsewhere::Elsewhere, ident: Ident, tab: &str, size: (u16, u16), cwd: Option<&str>, then: Option<&str>) -> Self {
+    fn new(
+        at: &crate::elsewhere::Elsewhere,
+        ident: Ident,
+        tab: &str,
+        size: (u16, u16),
+        (cwd, then): (Option<&str>, Option<&str>),
+        away: crate::config::Away,
+    ) -> Self {
         Self {
             ident: Mutex::new(ident),
             tab: tab.to_string(),
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
+            away,
             owner: AtomicU64::new(0),
             at: at.clone(),
             link: Mutex::new(None),
@@ -356,6 +375,19 @@ impl FarTerm {
         self.ident.lock().map(|i| i.term).unwrap_or(0)
     }
 
+    /// Whether its AI goes on once this app went (far-keep plan §4.3)
+    pub fn keeps(&self) -> bool {
+        self.away.keeps()
+    }
+
+    /// Let go of it without stopping it: the line is left, and what runs
+    /// there carries on as it was set to (far-keep plan §7, "disconnect").
+    /// It stays written down, so the next start goes back to it
+    pub fn let_go(&self) {
+        self.let_go.store(true, Ordering::SeqCst);
+        crate::append_hook_log(&format!("far terminal {}: let go of, left running ({:?})", self.term(), self.away));
+    }
+
     fn generation(&self) -> String {
         self.ident.lock().map(|i| i.generation.clone()).unwrap_or_default()
     }
@@ -366,7 +398,8 @@ impl FarTerm {
 
     fn attach_message(&self) -> Value {
         let (rows, cols) = self.size.lock().map(|s| *s).unwrap_or((24, 80));
-        json!({ "do": "attach", "term": self.term(), "gen": self.generation(), "tab": self.tab, "rows": rows, "cols": cols })
+        json!({ "do": "attach", "term": self.term(), "gen": self.generation(), "tab": self.tab, "rows": rows, "cols": cols,
+            "away": self.away.on_the_line() })
     }
 
     /// The line is up: be routed its messages again and attach, which hands
@@ -427,7 +460,7 @@ impl FarTerm {
 
 type Opened = (Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<FarTerm>);
 
-fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool) -> Opened {
+fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, stopped_with_its_app: bool) -> Opened {
     let (rows, cols) = term.size.lock().map(|s| *s).unwrap_or((24, 80));
     let reader = FarReader {
         from,
@@ -436,6 +469,7 @@ fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool) -> Opened {
         rest: Vec::new(),
         at: 0,
         again,
+        stopped_with_its_app,
         attached: false,
         said_waiting: false,
         last: false,
@@ -451,13 +485,19 @@ fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool) -> Opened {
 
 /// Open a terminal for `tab` in the bridge's resident process on `at`: a
 /// shell in `cwd`, with `then` typed into it
-pub fn open(at: &crate::elsewhere::Elsewhere, tab: &str, rows: u16, cols: u16, cwd: Option<&str>, then: Option<&str>) -> Result<Opened> {
-    let (id, generation, rx, link) = ask_open(at, tab, (rows, cols), cwd, then)?;
-    let term = Arc::new(FarTerm::new(at, Ident { term: id, generation }, tab, (rows, cols), cwd, then));
+pub fn open(
+    at: &crate::elsewhere::Elsewhere,
+    tab: &str,
+    (rows, cols): (u16, u16),
+    (cwd, then): (Option<&str>, Option<&str>),
+    away: crate::config::Away,
+) -> Result<Opened> {
+    let (id, generation, rx, link) = ask_open(at, tab, (rows, cols), cwd, then, away)?;
+    let term = Arc::new(FarTerm::new(at, Ident { term: id, generation }, tab, (rows, cols), (cwd, then), away));
     if let Ok(mut l) = term.link.lock() {
         *l = Some(link);
     }
-    Ok(made(term, rx, false))
+    Ok(made(term, rx, false, false))
 }
 
 /// Go back to the terminal a tab left running (far-keep plan §7.5), whether
@@ -465,12 +505,19 @@ pub fn open(at: &crate::elsewhere::Elsewhere, tab: &str, rows: u16, cols: u16, c
 /// attaches. Never starts anything by itself -- unless the bridge says the
 /// terminal ended, when a new one is opened with `then`, the way the tab
 /// starts where its conversation was
-pub fn reattach(at: &crate::elsewhere::Elsewhere, saved: Saved, rows: u16, cols: u16, cwd: Option<&str>, then: Option<&str>) -> Opened {
+pub fn reattach(
+    at: &crate::elsewhere::Elsewhere,
+    saved: Saved,
+    (rows, cols): (u16, u16),
+    (cwd, then): (Option<&str>, Option<&str>),
+    away: crate::config::Away,
+) -> Opened {
     crate::append_hook_log(&format!("far terminal {}: going back to it on {} for {}", saved.term, at.address(), saved.tab));
-    let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), cwd, then));
+    let stops = saved.stops;
+    let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), (cwd, then), away));
     // Read as a line that went: the reader attaches as soon as it is up
     let (_, gone) = channel();
-    made(term, gone, true)
+    made(term, gone, true, stops)
 }
 
 /// What comes from the terminal there, as bytes to read: its output, and
@@ -485,6 +532,9 @@ struct FarReader {
     at: usize,
     /// Gone back to after a start, and not attached to yet
     again: bool,
+    /// Gone back to, and it was to end with its app: a resident process that
+    /// does not know it any more took it with it when it ended
+    stopped_with_its_app: bool,
     attached: bool,
     said_waiting: bool,
     /// What is in `rest` is the last of it: the terminal ends after it
@@ -508,7 +558,7 @@ impl FarReader {
     /// is known, so the tab starts where its conversation was, in a new one
     fn open_in_its_place(&mut self) -> bool {
         let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
-        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref()) {
+        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.away) {
             Ok((id, generation, rx, link)) => {
                 crate::append_hook_log(&format!("far terminal {}: it ended while away; opened {id} in its place", self.term.term()));
                 if let Ok(mut i) = self.term.ident.lock() {
@@ -646,6 +696,15 @@ impl std::io::Read for FarReader {
                         m["why"].as_str().unwrap_or_default()
                     ));
                     self.term.struck_out();
+                    // One that was to end with its app, asked of a resident
+                    // process of another generation: the one it was in ended,
+                    // and ended it -- known, so started again where it was
+                    let replaced = m["why"].as_str().is_some_and(|w| w.contains("another generation"));
+                    if self.again && self.stopped_with_its_app && replaced && !self.term.let_go.load(Ordering::SeqCst) {
+                        // Failing, it has said why and ends after that
+                        self.open_in_its_place();
+                        continue;
+                    }
                     self.term.ended.store(true, Ordering::SeqCst);
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;
@@ -780,7 +839,7 @@ mod tests {
     use super::*;
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
-        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1 }
+        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, stops: false }
     }
 
     /// A tab has one terminal written down, the last it opened; one is struck
