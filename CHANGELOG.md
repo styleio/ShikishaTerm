@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-10-02
+
 ### Changed
 - **The faces have more ways to look.** Eyes can be four-pointed sparkles,
   two arches shut in a smile, or a dark visor with a glint, and a head can
@@ -4218,7 +4220,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...v0.22.0
