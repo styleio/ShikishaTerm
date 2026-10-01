@@ -14237,17 +14237,26 @@ for (const ev of ["pointerdown", "keydown", "wheel"]) {
 }
 
 const cfFaces = new Map();
-// Every body and background two of the five face colors can make: twenty
-const CF_PAIRS = [0, 1, 2, 3, 4].flatMap(b => [1, 2, 3, 4].map(k => [b, (b + k) % 5]));
+// Which faces are drawn: "players" (face.js, the robots of the orchestra) or
+// "beam" (vendor/boring-avatars/beam.js, the faces before them, kept so this
+// one word puts them back)
+const FACE_LOOK = "players";
+// How many colours a face is painted from: seven heads (each with a pale
+// ground of its own family, at the same index) or beam's five
+const FACE_COLOURS = FACE_LOOK === "beam" ? 5 : 7;
+// Every body and background two of the face colours can make, never both of
+// one: twenty for beam, forty-two for the players
+const CF_PAIRS = [...Array(FACE_COLOURS).keys()].flatMap(b =>
+  [...Array(FACE_COLOURS - 1).keys()].map(k => [b, (b + k + 1) % FACE_COLOURS]));
 let cfPairsFor = "", cfPairOf = new Map();
 // Which pair each tab of the desk wears, so no two of them look alike. The
 // body fills most of the circle, so it is the body that has to differ first:
 // each tab asks for the pair its name falls on, and takes the next one whose
-// body nobody wears yet -- five tabs, five bodies -- and after that the next
+// body nobody wears yet -- one tab per colour -- and after that the next
 // pair nobody wears. Worked out over the desk's AI tabs and every tab the
 // conference names, in the order of their ids -- not of the tabs on screen,
 // so moving a tab changes no face. Only a newcomer whose id sorts first can
-// move another; past twenty tabs, pairs are shared
+// move another; past every pair, pairs are shared
 function cfPair(id) {
   const ids = new Set(((S && S.tabs) || []).filter(t => t.ai).map(t => t.id || t.name));
   for (const s of CF.said) {
@@ -14279,12 +14288,18 @@ function cfPair(id) {
 function cfFace(id, cls) {
   const seed = ((S && S.desk_id) || "") + "/" + (id || "");
   const pair = cfPair(id || "");
-  const key = seed + "#" + pair.join(",");
+  // At 14px a player is drawn without what it holds (face.js, `small`)
+  const small = cls === "xs";
+  const key = seed + "#" + pair.join(",") + (small ? "#small" : "");
   let svg = cfFaces.get(key);
   if (!svg) {
     const css = getComputedStyle(document.documentElement);
     const v = n => css.getPropertyValue(n).trim();
-    svg = beamFace(seed, [1, 2, 3, 4, 5].map(i => v("--face" + i)), [v("--face-ink"), v("--face-ink-light")], pair);
+    const ink = [v("--face-ink"), v("--face-ink-light")];
+    const all = (name) => [...Array(FACE_COLOURS).keys()].map(i => v(name + (i + 1)));
+    svg = FACE_LOOK === "beam"
+      ? beamFace(seed, all("--face"), ink, pair)
+      : playerFace(seed, all("--player"), all("--player-back"), ink, small, pair);
     cfFaces.set(key, svg);
   }
   const s = el("span", {class: "cfface" + (cls ? " " + cls : "")});
@@ -23322,8 +23337,14 @@ fn px(n: i32) -> String {
     format!("{n}px")
 }
 
-/// A tab's face, drawn from its name (see `vendor/boring-avatars/beam.js`)
-const FACE_JS: &str = include_str!("../../../vendor/boring-avatars/beam.js");
+/// A tab's face, drawn from its name: the orchestra's robots (`face.js`), and
+/// the faces before them (`vendor/boring-avatars/beam.js`), which the page's
+/// `FACE_LOOK` can put back
+const FACE_JS: &str = concat!(
+    include_str!("face.js"),
+    "\n",
+    include_str!("../../../vendor/boring-avatars/beam.js")
+);
 
 /// The page with the face drawer put in where it is asked for (`{{FACE_JS}}`)
 pub fn with_faces(page: String) -> String {

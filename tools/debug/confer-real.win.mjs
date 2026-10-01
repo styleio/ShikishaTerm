@@ -213,7 +213,7 @@ const bringUp = async (id) => {
     if (/Couldn't set up your sandbox/i.test(s) && /non-admin sandbox/i.test(s)) {
       await door('send', id, '2'); await sleep(300); await door('send', id, '\r'); await sleep(3000); continue;
     }
-    if (/I trust this folder|Do you trust|trust the files|allow Codex to work/i.test(s)) {
+    if (/I trust this folder|Do you trust|trust the files|allow Codex to work|Trust this folder\?[\s\S]*Trust and continue/i.test(s)) {
       if (kind === 'claude') { await door('send', id, '\x1b[B'); await sleep(400); }
       await door('send', id, '\r');
       await sleep(2500);

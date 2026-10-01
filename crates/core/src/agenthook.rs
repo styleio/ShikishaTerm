@@ -1174,6 +1174,26 @@ printf '\\033]{FAR_OSC};{FAR_OSC_TAG};%s;%s;%s\\007' '{arg}' \"$(date +%s%3N)\" 
     )
 }
 
+/// The hook that answers back, on another machine: the bridge's own
+/// `shikisha` (on the tab's PATH there, `farlink`), which asks the app as the
+/// tab whose key it holds and prints the answer the way the CLI reads it --
+/// `{}` whenever it cannot ask. Waited for, like the one on this PC
+fn far_line_handler(format: HookFormat, timeout: u32) -> serde_json::Value {
+    match format {
+        HookFormat::Args => serde_json::json!({
+            "type": "command",
+            "command": "shikisha",
+            "args": [MARK, LINE_ARG],
+            "timeout": timeout,
+        }),
+        HookFormat::Bare | HookFormat::Shell => serde_json::json!({
+            "type": "command",
+            "command": format!("shikisha {MARK} {LINE_ARG}"),
+            "timeout": timeout,
+        }),
+    }
+}
+
 fn far_handler(format: HookFormat, timeout: u32, arg: &str) -> serde_json::Value {
     let line = far_line(arg);
     match format {
@@ -1210,7 +1230,11 @@ pub fn far_file(t: &Target, profile_file: &str, on_microvm: bool) -> Option<Stri
 fn far_wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
     let mut wanted: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
     for entry in &t.entries {
-        let h = far_handler(t.format, t.timeout, &entry.arg);
+        let h = if entry.arg == LINE_ARG {
+            far_line_handler(t.format, t.line_timeout)
+        } else {
+            far_handler(t.format, t.timeout, &entry.arg)
+        };
         match wanted.iter_mut().find(|(event, _)| *event == entry.event) {
             Some((_, list)) => list.push(h),
             None => wanted.push((entry.event.clone(), vec![h])),
@@ -1329,18 +1353,23 @@ pub fn far_preview(t: &Target, existing: Option<&str>) -> Vec<Line> {
     preview_of(existing.filter(|s| !s.trim().is_empty()), far_wanted(t))
 }
 
-/// The profiles' hook targets, with the file each names as the profile wrote
-/// it (`{home}/...`), for placing on another machine
-pub fn far_targets() -> Vec<(Target, String)> {
+/// The profiles' hook targets for the machine `host` (its entry's name),
+/// with the file each names as the profile wrote it (`{home}/...`), for
+/// placing there
+pub fn far_targets(host: &str) -> Vec<(Target, String)> {
+    // The hook that answers back goes through the bridge, so only onto a
+    // machine the bridge was agreed to; anywhere else what a hook says
+    // reaches this app one way, as a line on the terminal, and nothing is
+    // asked of it that would need an answer
+    let bridged = crate::config::load().is_some_and(|c| c.bridges.iter().any(|b| b == host));
     crate::profile::all()
         .into_iter()
         .filter_map(|p| {
             let file = p.resume.as_ref()?.hook.as_ref()?.file.clone();
             let mut t = targets().into_iter().find(|t| t.name == p.name)?;
-            // What a hook there says reaches this app one way, as a line on
-            // the terminal: nothing goes back to it, so nothing is asked of
-            // it that would need an answer
-            t.entries.retain(|e| e.arg != LINE_ARG);
+            if !bridged {
+                t.entries.retain(|e| e.arg != LINE_ARG);
+            }
             Some((t, file))
         })
         .collect()
@@ -1488,7 +1517,7 @@ pub fn far_look(at: crate::elsewhere::Elsewhere, host: String, machine: String, 
 
 fn far_look_now(at: &crate::elsewhere::Elsewhere, host: &str, profile: &str) -> Result<(), String> {
     let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
-    for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
+    for (t, file) in far_targets(host).into_iter().filter(|(t, _)| t.name == profile) {
         let Some(path) = far_file(&t, &file, on_microvm) else { continue };
         let existing = far_read(at, &path, &t.name)?;
         let seen = far_seen(&t, existing.as_deref());
@@ -1564,7 +1593,7 @@ pub fn far_take_out_all(host: &crate::config::HostSpec) -> Result<(), String> {
     let at = crate::elsewhere::Elsewhere::of(host).map_err(|e| format!("{e:#}"))?;
     let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
     let mut failed = Vec::new();
-    for (t, file) in far_targets() {
+    for (t, file) in far_targets(&host.name) {
         let Some(path) = far_file(&t, &file, on_microvm) else { continue };
         let done = far_read(&at, &path, &t.name).and_then(|existing| {
             if far_seen(&t, existing.as_deref()).ours {
@@ -1606,7 +1635,7 @@ pub fn ensure_far_before(at: &crate::elsewhere::Elsewhere, host: &str, line: &st
         return;
     }
     let on_microvm = matches!(at, crate::elsewhere::Elsewhere::Cloud(_));
-    for (t, file) in far_targets().into_iter().filter(|(t, _)| t.name == profile) {
+    for (t, file) in far_targets(host).into_iter().filter(|(t, _)| t.name == profile) {
         let Some(path) = far_file(&t, &file, on_microvm) else { continue };
         let Ok(existing) = far_read(at, &path, &t.name) else { return };
         // Events this version adds were not what was agreed to: they wait
@@ -1970,6 +1999,28 @@ mod tests {
             trust: None,
             entries: events.iter().map(|(e, a)| Entry { event: (*e).into(), arg: (*a).into() }).collect(),
         }
+    }
+
+    /// On a machine with the bridge, the end of a turn also asks for the
+    /// answer's line through the bridge's own `shikisha`, waited for; the
+    /// state report beside it stays a line on the terminal, not waited for
+    #[test]
+    fn a_far_line_hook_goes_through_the_bridge_and_is_waited_for() {
+        let t = far_test_target(&[("Stop", "state:DONE"), ("Stop", LINE_ARG)]);
+        let wanted = far_wanted(&t);
+        let stop = &wanted.iter().find(|(e, _)| e == "Stop").unwrap().1;
+        let line = stop.iter().find(|h| carries(h, LINE_ARG)).expect("the line hook");
+        assert_eq!(line["command"], "shikisha --hook line");
+        assert!(line.get("async").is_none(), "a hook that answers back is waited for");
+        assert_eq!(line["timeout"], LINE_TIMEOUT_S);
+        assert!(is_ours(line), "known again as this app's");
+        let report = stop.iter().find(|h| carries(h, "state:DONE")).unwrap();
+        assert_eq!(report["async"], true);
+        let text = far_edited(&t, None).unwrap();
+        assert!(far_seen(&t, Some(&text)).added.is_empty(), "written, nothing is left to ask about");
+        let without = far_test_target(&[("Stop", "state:DONE")]);
+        let older = far_edited(&without, None).unwrap();
+        assert_eq!(far_seen(&t, Some(&older)).added, vec!["Stop".to_string()], "a bridge agreed later asks again");
     }
 
     /// Taking ours out of a file on another machine leaves the person's own

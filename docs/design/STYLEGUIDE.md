@@ -97,12 +97,33 @@ tabs that are put away is not a tab, and keeps its colours.
 
 ### A tab's face
 
-Each tab has a face (`vendor/boring-avatars/beam.js`, seeded by the tab's id).
-It picks its background and its body from five colours -- twenty pairs, and no
-two tabs of a desk wear the same one; the body fills most of the circle, so up
-to five tabs each get a body colour of their own before any is worn twice --
-and draws its eyes and mouth in one of two inks. The values are the app's, not the scheme's: a face is
-who a tab is, and it must not turn into someone else when the scheme changes.
+Each tab has a face (`crates/core/src/face.js`, seeded by the desk's and the tab's id).
+It is one of the robots of the orchestra the person conducts: the robots of the
+site's pictures (a round head, a dark screen for a face with light eyes, an
+antenna, ears), drawn flat with no outline, each holding one instrument. The
+head, the ground, the antenna, the eyes and the instrument all come from the
+seed. At 14px the instrument and the ears are left out and the head is drawn
+larger. The values are the app's, not the scheme's: a face is who a tab is,
+and it must not turn into someone else when the scheme changes.
+
+Heads are `--player1` to `--player7` (the site's robots: coral, yellow, green,
+pink, blue, lavender, teal), grounds the pale colours of the same seven families
+`--player-back1` to `--player-back7` in the same order, and a head is never put
+on the ground of its own family -- forty-two pairs, and no two tabs of a desk wear the same one; the head fills most of the circle, so up to seven tabs each get a head colour of their own before any is worn twice. The screen and the instruments' lines are
+`--face-ink`, the eyes `--face-ink-light`.
+
+| Family | Head | Ground |
+|---|---|---|
+| coral | `--player1` `#ff7a59` | `--player-back1` `#ffd9cc` |
+| yellow | `--player2` `#ffcf3f` | `--player-back2` `#fff0b8` |
+| green | `--player3` `#5fd39a` | `--player-back3` `#c9f1d8` |
+| pink | `--player4` `#f590c8` | `--player-back4` `#ffd9ee` |
+| blue | `--player5` `#5fb4ff` | `--player-back5` `#cfe9ff` |
+| lavender | `--player6` `#8f7cf5` | `--player-back6` `#ddd5ff` |
+| teal | `--player7` `#4fcfc4` | `--player-back7` `#c8f0ec` |
+
+The faces before them (`vendor/boring-avatars/beam.js`) are kept: `FACE_LOOK`
+in `shell.rs` set to `"beam"` puts them back. They use these five colours.
 
 | Variable | Value |
 |---|---|
