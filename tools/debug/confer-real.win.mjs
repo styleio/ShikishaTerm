@@ -84,8 +84,11 @@ fs.writeFileSync(path.join(HOME, '.claude', 'settings.json'), JSON.stringify({ s
 // Codex's notice about WSL, answered once here for the same reason, and its
 // sandbox kept to the one that needs no administrator: the tabs run with it
 // bypassed, and the administrator one stops a fresh home at a question
+// Never an update: a CLI updating itself here updates the one this PC runs
+// everywhere (2026-10-01 an Enter pressed at Codex's update question ran
+// npm install -g and moved this PC from 0.155 to 0.159)
 fs.writeFileSync(path.join(HOME, '.codex', 'config.toml'),
-  'windows_wsl_setup_acknowledged = true\n\n[windows]\nsandbox = "unelevated"\n');
+  'windows_wsl_setup_acknowledged = true\ncheck_for_update_on_startup = false\n\n[windows]\nsandbox = "unelevated"\n');
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -119,7 +122,8 @@ fs.writeFileSync(CONFIG, JSON.stringify({
 }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|CODEX_HOME)/i.test(k)));
-Object.assign(env, { LOCALAPPDATA: path.join(RUN, 'localappdata'), USERPROFILE: HOME, HOME, CODEX_HOME: path.join(HOME, '.codex') });
+Object.assign(env, { LOCALAPPDATA: path.join(RUN, 'localappdata'), USERPROFILE: HOME, HOME, CODEX_HOME: path.join(HOME, '.codex'),
+  DISABLE_AUTOUPDATER: '1' });
 const child = spawn(appExe, ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' });
 const pid = child.pid;
 child.unref();
@@ -167,6 +171,31 @@ const hooksLog = () => {
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split(/\r?\n/) : [];
 };
 
+// ── The hooks, agreed to the way a person agrees ───────────────────────────
+// The settings say yes, but this run's home holds none of the hooks: the
+// copy asks again before writing them (agenthook::asked_again), on the board.
+// Answered there, the hooks are written into this home, and the AI tabs --
+// started before them -- are started again to read them
+const agreeToHooks = async () => {
+  let cookies = '';
+  const base = `http://127.0.0.1:${port}`;
+  const board = async () => {
+    const r = await fetch(`${base}/?t=${TOKEN}`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    cookies = r.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+  };
+  const state = async () => (await fetch(`${base}/api/state?t=${TOKEN}`, { headers: { Cookie: cookies }, signal: AbortSignal.timeout(10000) })).json();
+  await until(async () => { await board(); return /(^|; )rs=/.test(cookies); }, 'the board', 60000);
+  await until(async () => !!(await state()).ui?.hook_ask, 'the question about the hooks', 60000);
+  const asked = (await state()).ui.hook_ask;
+  await fetch(`${base}/api/intent?t=${TOKEN}`, { method: 'POST', headers: { Cookie: cookies },
+    body: JSON.stringify({ kind: 'agenthooks', answer: 'on', seq: asked.seq }), signal: AbortSignal.timeout(10000) });
+  const written = (f) => fs.existsSync(f) && fs.readFileSync(f, 'utf8').includes('--hook') && fs.readFileSync(f, 'utf8').includes('line');
+  await until(async () => written(path.join(HOME, '.claude', 'settings.json')) && written(path.join(HOME, '.codex', 'hooks.json')),
+    'the hooks to be written', 60000);
+  for (const id of Object.keys(TABS)) await door('restart', id, 'fresh');
+  await sleep(3000);
+};
+
 // ── Bringing each CLI up to its prompt ─────────────────────────────────────
 const ready = {
   claude: /bypass permissions|for shortcuts|\? for/i,
@@ -194,13 +223,14 @@ const bringUp = async (id) => {
     if (/Bypass Permissions mode/i.test(s) && /Yes, I accept/i.test(s)) {
       await door('send', id, '\x1b[B'); await sleep(400); await door('send', id, '\r'); await sleep(2500); continue;
     }
-    // Any other question on the screen is not a prompt, whatever else the
-    // screen says: its first answer is the one that goes on
-    if (/Press enter to confirm|Enter to confirm/i.test(s)) { await door('send', id, '\r'); await sleep(2000); continue; }
-    if (ready[kind].test(s)) return true;
-    if (/Skip until next version|Try the new|Continue anyway/i.test(s)) {
-      await door('send', id, '\r'); await sleep(2000); continue;
+    // An update offered is put away, never taken (see config.toml above);
+    // a question this does not know is left on the screen and fails the run,
+    // rather than answered with whatever its first choice is
+    if (/Update available|Update now/i.test(s) && /Skip/i.test(s)) {
+      await door('send', id, '\x1b'); await sleep(2000); continue;
     }
+    if (/Press enter to confirm|Enter to confirm/i.test(s)) { await sleep(1000); continue; }
+    if (ready[kind].test(s)) return true;
     await sleep(1000);
   }
   console.log(`--- ${id} did not come up; its screen ---\n${await screen(id)}\n---`);
@@ -211,11 +241,12 @@ const bringUp = async (id) => {
 const recorded = (sinceMs, target) => {
   const db = new DatabaseSync(path.join(dataDir(), 'conversations.db'), { readOnly: true });
   try {
-    const ask = db.prepare('SELECT id, caller, target, text, reply, state FROM asks WHERE target = ? AND asked_at >= ? ORDER BY id DESC LIMIT 1')
+    const ask = db.prepare('SELECT id, caller, target, text, reply, state, thread_id FROM asks WHERE target = ? AND asked_at >= ? ORDER BY id DESC LIMIT 1')
       .get(target, sinceMs);
-    if (!ask) return { ask: null, lines: [] };
-    const lines = db.prepare('SELECT tab, text, how FROM lines WHERE ask_id = ? ORDER BY id').all(ask.id);
-    return { ask, lines };
+    if (!ask) return { ask: null, lines: [], members: [] };
+    const lines = db.prepare('SELECT tab, text, how, thread_id FROM lines WHERE ask_id = ? ORDER BY id').all(ask.id);
+    const members = db.prepare('SELECT tab FROM thread_tabs WHERE thread_id = ? ORDER BY tab').all(ask.thread_id).map((r) => r.tab);
+    return { ask, lines, members };
   } finally { db.close(); }
 };
 
@@ -258,6 +289,9 @@ const trial = async (n, caller, callee) => {
   const held = hooksLog().slice(logFrom).some((l) => l.includes(`confer: ${callee} is asked for its line`));
   const problems = [
     !rec.ask && 'no ask in the record',
+    rec.ask && rec.ask.thread_id == null && 'the ask is in no conversation',
+    rec.ask && rec.lines.some((l) => l.thread_id !== rec.ask.thread_id) && 'a line is in another conversation than its ask',
+    rec.ask && !(rec.members.includes(caller) && rec.members.includes(callee)) && `the conversation's members are ${rec.members.join(',')}`,
     rec.ask && !asked && 'the ask has no line',
     rec.ask && !replyWhole && `the reply kept is not the answer: ${JSON.stringify((rec.ask.reply || '').slice(0, 120))}`,
     rec.ask && !answer && 'the answer has no line',
@@ -265,7 +299,8 @@ const trial = async (n, caller, callee) => {
   if (pass && problems.length) { pass = false; why = problems.join('; '); }
   else if (!pass && problems.length) why += '; ' + problems.join('; ');
   record({ pair: `${caller}->${callee}`, n, pass, why, ms: Date.now() - t0, value,
-    askLine: asked && asked.text, answerLine: answer && answer.text, answerHow: answer && answer.how, held, reply: rec.ask && rec.ask.reply });
+    askLine: asked && asked.text, answerLine: answer && answer.text, answerHow: answer && answer.how, held, reply: rec.ask && rec.ask.reply,
+    thread: rec.ask && rec.ask.thread_id });
   if (!pass) fs.writeFileSync(path.join(OUT, `fail-${caller}-${callee}-${n}.txt`), await screen(caller));
 };
 
@@ -285,11 +320,17 @@ const summary = () => {
       `own line ${rs.filter((r) => r.answerHow === 'said').length}, first sentence ${rs.filter((r) => r.answerHow === 'auto').length}`);
   }
   if (all) console.log(`all: ${ok}/${all} passed; answer lines: ${said} in their own words, ${auto} first sentences; held once for a line: ${held}`);
+  // Each asker's CLI conversation is one conversation of AIs, whoever it asks
+  const by = {};
+  for (const r of results) (by[r.pair.split('->')[0]] ||= new Set()).add(r.thread);
+  console.log('conversations by asker:', Object.entries(by).map(([k, v]) => `${k}: ${[...v].join(',')}`).join('; '));
 };
 
 try {
   await openDoor();
-  console.log(`the copy is up (pid ${pid}, board on port ${port}); bringing the AIs up`);
+  console.log(`the copy is up (pid ${pid}, board on port ${port}); agreeing to the hooks`);
+  await agreeToHooks();
+  console.log('the hooks are in; bringing the AIs up');
   for (const id of Object.keys(TABS)) {
     await until(async () => (await state(id)) !== undefined, `tab ${id}`, 60000);
     await bringUp(id);
