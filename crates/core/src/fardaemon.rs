@@ -639,6 +639,9 @@ impl TabsJob {
     /// written down, and answered that the PC is away (`None`)
     fn away_call(&self, core: &Arc<Core>, tab: &str, line: &str) -> Option<Value> {
         let (method, _) = crate::farmissed::read_call(line);
+        if crate::farmissed::OF_THE_MOMENT.contains(&method.as_str()) {
+            return None;
+        }
         if tab.is_empty() || !crate::farmissed::KEPT.contains(&method.as_str()) {
             self.missed(core, tab, line, false);
             return None;
@@ -1154,6 +1157,12 @@ mod tests {
         let mut away = String::new();
         from.read_line(&mut away).unwrap();
         assert!(away.contains("\"ok\":false") && away.contains("away"), "a call that asks back was kept: {away}");
+        // A hook asking whether this turn is held: answered, and not written
+        // down -- one comes every turn
+        writeln!(to, r#"{{"id":"9","method":"confer_stop","params":["done"]}}"#).unwrap();
+        let mut hook = String::new();
+        from.read_line(&mut hook).unwrap();
+        assert!(hook.contains("\"ok\":false"), "a hook was not answered at once: {hook}");
         drop((to, from, pc));
 
         // The app back, giving the tab a new key: the kept call comes to it
@@ -1178,6 +1187,7 @@ mod tests {
         };
         assert_eq!(m["book"]["kept"].as_array().map(Vec::len), Some(0), "handed over and still kept: {m}");
         assert_eq!(m["book"]["calls"][0]["method"], "tab_list", "the call that asked back was not written down: {m}");
+        assert_eq!(m["book"]["calls"].as_array().map(Vec::len), Some(1), "a hook of the moment was written down: {m}");
         drop(back);
         let _ = resident.join();
         let _ = std::fs::remove_dir_all(&home);

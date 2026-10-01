@@ -126,7 +126,15 @@ pub const KEEP_SOCK: &str = "keep.sock";
 /// bridge's socket, with the tab's key read from the file the bridge was given
 /// (`farops::put_key`). The tab says which file through its environment
 pub fn far_cli(args: &[String]) -> i32 {
+    // A hook of the AI's CLI that waits for its answer (`--hook line`): the
+    // CLI is never left waiting, whatever happens, so it is answered before
+    // anything here can fail
+    let hook = args.first().map(String::as_str) == Some("--hook");
     let (Ok(sock), Ok(key_file)) = (std::env::var(ENV_SOCK), std::env::var(ENV_KEY)) else {
+        if hook {
+            println!("{{}}");
+            return 0;
+        }
         eprintln!("[shikisha] This command works in a SHIKISHA-TERM tab; this terminal was not opened by the app.");
         return 1;
     };
@@ -137,7 +145,48 @@ pub fn far_cli(args: &[String]) -> i32 {
         std::env::set_var(crate::api::ENV_PIPE, sock);
         std::env::set_var(crate::api::ENV_TOKEN, key.trim());
     }
+    if hook {
+        return far_hook(args.get(1).map(String::as_str).unwrap_or_default());
+    }
     crate::cli::run(args)
+}
+
+/// How long a hook of the AI's CLI waits for the app, a little less than the
+/// CLI waits for the hook (10 s), so the hook always answers first
+const HOOK_WAIT: Duration = Duration::from_secs(8);
+
+/// A hook of the AI's CLI on this machine that waits for the app's answer,
+/// made as the tab whose terminal the CLI runs in -- the key in its
+/// environment -- and printed as the CLI takes it. Anything that goes wrong
+/// -- the app away, too slow, a hook it does not know -- answers `{}`, so a
+/// turn is never held up by this machine.
+///
+///   `shikisha --hook line`  the Stop event on its input; the app's
+///   `confer_stop` with the turn's last message decides whether the turn is
+///   held for a line said to the chat (`{"decision":"block","reason":...}`)
+fn far_hook(which: &str) -> i32 {
+    let mut input = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
+    let event: Value = serde_json::from_str(&input).unwrap_or_default();
+    let answer = match which {
+        "line" => {
+            let said = event.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::api::ApiClient::from_env().and_then(|mut c| c.call("confer_stop", vec![said.into()])));
+            });
+            match rx.recv_timeout(HOOK_WAIT) {
+                Ok(Ok(a)) if a["ok"] == json!(true) => a["result"]["hold"]
+                    .as_str()
+                    .filter(|r| !r.trim().is_empty())
+                    .map(|reason| json!({ "decision": "block", "reason": reason })),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    println!("{}", answer.unwrap_or_else(|| json!({})));
+    0
 }
 
 /// Where the `shikisha` command over there finds the bridge, and its tab's key

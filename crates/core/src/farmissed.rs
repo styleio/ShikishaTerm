@@ -44,6 +44,12 @@ pub const DAYS: u64 = 14;
 /// said. Anything else is answered that the PC is away, and written down
 pub const KEPT: &[&str] = &["report", "note", "notify", "say"];
 
+/// The commands whose question means something only while it is asked: a
+/// hook of the AI's CLI asking whether this turn is held. Answered that the
+/// PC is away and not written down -- one comes every turn, and once the turn
+/// is over there is nothing left to answer
+pub const OF_THE_MOMENT: &[&str] = &["confer_stop"];
+
 /// One call kept to be handed over: its line whole, what it said included
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Kept {
