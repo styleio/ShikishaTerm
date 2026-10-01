@@ -354,14 +354,18 @@ pub fn belongs_to(
 }
 
 /// What the stop hook tells an AI that has just answered another tab: in
-/// English, as every instruction to an AI is, with the limit it has to keep.
+/// English, as every instruction to an AI is, with the limit it has to keep
+/// and the language to say it in -- named, the screen's language: what the AI
+/// has in front of it is the other tab's ask, often in English whatever the
+/// person reads, and "the person's language" was answered from that.
 /// The reply that follows is the line, whole: nothing is run to say it
 pub fn stop_reason(max: u32) -> String {
     let max = if max == 0 { String::new() } else { format!("at most {max} characters, ") };
     format!(
         "Your answer has been passed on in full to the tab that asked you. The person follows the tabs as a chat: \
          reply now with only one short line about your answer, the way you would say it to a colleague -- \
-         {max}one line, in the language the person uses. Nothing else: no quotes, no heading, no repeat of the answer."
+         {max}one line. Nothing else: no quotes, no heading, no repeat of the answer. {}",
+        crate::asking::answer_in(&crate::i18n::language_name())
     )
 }
 
@@ -379,6 +383,16 @@ mod tests {
         assert!(e.starts_with("say is 81 characters; the most is 80"), "{e}");
         assert!(check_line(&"あ".repeat(80), 80, "say").is_ok(), "characters are counted, not bytes");
         assert!(check_line(&"a".repeat(500), 0, "say").is_ok(), "0 is no limit");
+    }
+
+    #[test]
+    fn the_line_is_asked_for_in_the_language_on_screen_by_name() {
+        let why = stop_reason(80);
+        assert!(why.contains("at most 80 characters"), "{why}");
+        // Named, never "the person's language": the AI would take that from
+        // the other tab's ask, which is often in English
+        assert!(why.ends_with(&crate::asking::answer_in(&crate::i18n::language_name())), "{why}");
+        assert!(!why.contains("the language the person uses"), "{why}");
     }
 
     #[test]

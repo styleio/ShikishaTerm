@@ -9,6 +9,9 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Fixed
+- **An AI that answered another tab says its line in the language on screen.**
+  It was asked for the person's language and took it from the other tab's
+  ask, which is often in English; it is now told the language by name.
 - **A phone's moving code lets in one device, even when it reaches both doors
   at once.** The code is held while it is being used, so the same code sent
   to the address and to the loopback at the same moment opens only one.
