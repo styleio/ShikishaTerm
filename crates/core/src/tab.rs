@@ -3150,6 +3150,11 @@ pub struct Tab {
     /// been asked. Read for the folder's automatic name and summary
     /// ([`crate::labels`]), and nothing else
     pub asked: Vec<String>,
+    /// What the program in this tab reported it was asked, since the loop
+    /// last looked: typed at its own prompt or put in by this app, which the
+    /// loop tells apart (`convo::Log::typed_by_app`). Read for a person naming
+    /// another tab there (`<@id>`), as from the input bar
+    typed: Vec<String>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     child_exited: Arc<AtomicBool>,
@@ -3341,6 +3346,17 @@ impl Tab {
     /// A person asked the program in this tab something (see [`Tab::asked`]).
     /// Only the latest few are kept: a tab nobody reads from for a while is
     /// not a place for requests to pile up
+    /// The program in this tab reported it was asked `text` (its hook)
+    pub fn heard_from_program(&mut self, text: &str) {
+        self.heard(text);
+        self.typed.push(text.to_string());
+    }
+
+    /// What the program reported it was asked since the last look
+    pub fn take_typed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.typed)
+    }
+
     pub fn heard(&mut self, text: &str) {
         const KEEP: usize = 8;
         self.asked.push(text.to_string());
@@ -4109,6 +4125,7 @@ impl Tab {
             last_manual_ms: None,
             far_key,
             asked: Vec::new(),
+            typed: Vec::new(),
             master,
             killer,
             child_exited,

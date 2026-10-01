@@ -1028,10 +1028,12 @@ fn tend_asks(
     orchestra: &mut crate::orch::Orchestra,
     start: std::time::Instant,
     log: &mut crate::convo::Log,
-    opened: &mut Vec<String>,
+    opened: &mut Vec<(String, i64)>,
+    begun: &mut Vec<Begun>,
 ) {
     use crate::asktab::{Phase, Step};
     let line_max = config::confer().line_max;
+    let answering = answering_in(asks);
     let desk = desks.get(desk_index);
     let here = desk.map(|d| d.id.as_str());
     let keys_here: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
@@ -1172,10 +1174,21 @@ fn tend_asks(
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
                         let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
-                        let caller = a.caller.as_deref().map(caller_id);
-                        let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
-                        a.ask_id = log.ask_opened(&desk, caller.as_deref(), &target, &a.line, &a.text, a.round);
-                        opened.push(desk);
+                        let caller_name = a.caller.as_deref().map(caller_id);
+                        let target_id = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+                        // The asker's conversation; one asked from outside every
+                        // tab grows from the tab it asked
+                        let thread = match caller {
+                            Some(c) => thread_of_tab(log, &answering, &desk, c),
+                            None => log.thread_for(&desk, &format!("outside/{target_id}")),
+                        };
+                        if let Some((thread, new)) = thread {
+                            a.ask_id = log.ask_opened(&desk, thread, caller_name.as_deref(), &target_id, &a.line, &a.text, a.round);
+                            if new {
+                                begun.push(Begun { desk: desk.clone(), thread, line: a.line.clone(), text: a.text.clone() });
+                            }
+                            opened.push((desk, thread));
+                        }
                     }
                     true
                 }
@@ -1193,9 +1206,11 @@ fn tend_asks(
                     let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
                     // Its line, read from its record: written first, so the
                     // answer is not given its first sentence instead
-                    if let Some(line) = a.late_line.take() {
+                    if let Some(line) = a.late_line.take()
+                        && let Some(thread) = log.thread_of_ask(ask)
+                    {
                         append_hook_log(&format!("confer: {target}'s line was read from its record"));
-                        log.line(&desk, Some(&target), &line, Some(ask), "said");
+                        log.line(&desk, thread, Some(&target), &line, Some(ask), "said");
                     }
                     log.ask_answered(&desk, ask, &target, &state, v["reply"].as_str(), line_max);
                 }
@@ -1244,9 +1259,55 @@ fn tend_asks(
         }
     });
 }
+/// A conversation begun by an AI asking another, for the deciding AI to
+/// place beside the desk's recent ones
+struct Begun {
+    desk: String,
+    thread: i64,
+    line: String,
+    text: String,
+}
+
+/// How long after this app put words into a tab its CLI's report of them is
+/// still taken to be those words, not something typed at the tab's prompt.
+/// A CLI reports what it was given as its turn begins, which for a long paste
+/// into a busy tab can be a while after
+const TYPED_BY_APP_MS: i64 = 10 * 60 * 1000;
+
+/// Whose conversation a tab's CLI is having: the tab and its CLI's own id for
+/// the conversation. What a conversation of AIs grows from (`convo::db::Store::thread_for`)
+fn origin_of(t: &Tab) -> String {
+    format!("{}/{}", crate::orch::glue::tab_id(t), t.session.as_ref().map_or("", |s| s.id.as_str()))
+}
+
+/// The asks being answered now, by the name of the tab answering
+fn answering_in(asks: &[crate::asktab::Ask]) -> std::collections::HashMap<String, i64> {
+    asks.iter()
+        .filter(|a| a.run.is_none() && matches!(a.phase, crate::asktab::Phase::Waiting | crate::asktab::Phase::Deliver))
+        .filter_map(|a| Some((a.target.clone(), a.ask_id?)))
+        .collect()
+}
+
+/// The conversation a tab speaks in now, on `desk`: the one it was asked in
+/// while it is answering, else the one its own CLI conversation grew (begun
+/// now if there is none -- `.1`)
+fn thread_of_tab(
+    log: &mut crate::convo::Log,
+    answering: &std::collections::HashMap<String, i64>,
+    desk: &str,
+    t: &Tab,
+) -> Option<(i64, bool)> {
+    let asked = answering.get(&crate::orch::glue::tab_id(t)).or_else(|| answering.get(t.called()));
+    if let Some(thread) = asked.and_then(|ask| log.thread_of_ask(*ask)) {
+        return Some((thread, false));
+    }
+    log.thread_for(desk, &origin_of(t))
+}
+
 /// A card checked on its thread, on its way to be written by the loop
 struct CardChecked {
     desk: String,
+    thread: i64,
     tab: String,
     card: Result<crate::convo::confer::Card, String>,
     reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
@@ -2077,7 +2138,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // AIs conferring (`convo::confer`): how many times, and on which desk, one
     // tab last asked another -- the page opens the conference when it moves --
     // and the cards being checked on threads, to be written here
-    let mut confer_open: (u64, String) = (0, String::new());
+    let mut confer_open: (u64, String, i64) = (0, String::new(), 0);
+    // A conversation just begun, put beside the desk's recent ones by the
+    // deciding AI on a thread: (the conversation, the one it belongs to)
+    let (merge_tx, merge_rx) = std::sync::mpsc::channel::<(i64, i64)>();
     // The tabs whose CLI has called the stop hook that asks for a line: an
     // answer from one of them waits a moment for it (`asktab::Ask::hook_expected`)
     let mut line_hooked: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -3564,15 +3628,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // of its own to put this beside
             convo_log.take_notes();
             // A job's decision, put in the conference of the desk its lead is on
+            let answering = answering_in(&tab_asks);
             for (lead, text, _) in crate::convo::take_agreed() {
-                if let Some(desk) = desk_of_tab(&lead, &desks, desk_index, &tabs, &desk_tabs) {
-                    convo_log.line(&desk, Some(&lead), &text, None, "agreed");
+                let tab = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| crate::orch::glue::tab_id(t) == lead);
+                if let (Some(desk), Some(tab)) = (desk_of_tab(&lead, &desks, desk_index, &tabs, &desk_tabs), tab)
+                    && let Some((thread, _)) = thread_of_tab(&mut convo_log, &answering, &desk, tab)
+                {
+                    convo_log.line(&desk, thread, Some(&lead), &text, None, "agreed");
+                }
+            }
+            // What a person typed at a tab's own prompt (heard from its CLI):
+            // naming a tab there is a conversation begun, as from the composer.
+            // What this app typed into the tab itself is not taken for it
+            if let Some(desk) = desks.get(desk_index).map(|d| d.id.clone()) {
+                for t in tabs.iter_mut() {
+                    for text in t.take_typed() {
+                        let id = crate::orch::glue::tab_id(t);
+                        if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(&id, &text, TYPED_BY_APP_MS) {
+                            continue;
+                        }
+                        mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&text));
+                        if let Some((thread, _)) = convo_log.thread_for(&desk, &origin_of(t)) {
+                            convo_log.line(&desk, thread, None, text.trim(), None, "person");
+                        }
+                    }
                 }
             }
             // Cards checked on their threads, written here, where the record is
             while let Ok(done) = card_rx.try_recv() {
                 let answer = match done.card {
-                    Ok(c) => match convo_log.shared(&done.desk, &done.tab, c.kind, &c.target, &c.title, &c.detail) {
+                    Ok(c) => match convo_log.shared(&done.desk, done.thread, &done.tab, c.kind, &c.target, &c.title, &c.detail) {
                         Some(_) => Ok(serde_json::json!({"shared": c.kind, "title": c.title})),
                         None => Err("the card could not be kept; see the log".to_string()),
                     },
@@ -3734,7 +3819,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         t.session = Some(s);
                     }
                     if let Some(prompt) = &report.prompt {
-                        t.heard(prompt);
+                        t.heard_from_program(prompt);
                     }
                     let sent = if sent == 0 { crate::hooks::epoch_ms() } else { sent };
                     t.take_report(&report, sent);
@@ -4598,7 +4683,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 crate::asktab::Hear::Line(line) => {
                                     append_hook_log(&format!("confer: {id} said its line ({} chars)", line.chars().count()));
                                     let desk = a.desk.clone().or_else(|| desks.get(desk_index).map(|d| d.id.clone())).unwrap_or_default();
-                                    convo_log.line(&desk, Some(&id), &line, a.ask_id, "said");
+                                    if let Some(thread) = a.ask_id.and_then(|ask| convo_log.thread_of_ask(ask)) {
+                                        convo_log.line(&desk, thread, Some(&id), &line, a.ask_id, "said");
+                                    }
                                 }
                                 crate::asktab::Hear::Go => {
                                     if a.line_unheard {
@@ -4638,10 +4725,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         continue;
                     };
                     let text_at = |i: usize| call.params.get(i).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+                    // The conversation this tab speaks in now
+                    let answering = answering_in(&tab_asks);
+                    let Some((thread, _)) = thread_of_tab(&mut convo_log, &answering, &desk, me) else {
+                        let _ = call.reply.send(Err("the conference could not be written; see the log".to_string()));
+                        continue;
+                    };
                     let answer = match call.method.as_str() {
                         "say" => crate::convo::confer::check_line(&text_at(0), config::confer().line_max, "say").and_then(|line| {
                             convo_log
-                                .line(&desk, Some(&id), &line, None, "aside")
+                                .line(&desk, thread, Some(&id), &line, None, "aside")
                                 .map(|n| serde_json::json!({"said": n}))
                                 .ok_or_else(|| "it could not be kept; see the log".to_string())
                         }),
@@ -4653,7 +4746,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 other => Some(other),
                             };
                             crate::convo::confer::check_mark(&text_at(1)).and_then(|mark| {
-                                let line = convo_log.last_line_of(&desk, of).ok_or_else(|| match of {
+                                // In this tab's conversation first, else wherever it was said
+                                let line = convo_log
+                                    .last_line_of(&desk, Some(thread), of)
+                                    .or_else(|| convo_log.last_line_of(&desk, None, of))
+                                    .ok_or_else(|| match of {
                                     Some(t) => format!("<@{t}> has said nothing to mark yet"),
                                     None => "the person has said nothing to mark yet".to_string(),
                                 })?;
@@ -4678,7 +4775,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let tab = id.clone();
                             std::thread::spawn(move || {
                                 let card = crate::convo::confer::card(&kind, &target, &title, &from);
-                                let _ = tx.send(CardChecked { desk, tab, card, reply });
+                                let _ = tx.send(CardChecked { desk, thread, tab, card, reply });
                             });
                             continue;
                         }
@@ -4983,7 +5080,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Asks waiting on another tab: a look at each, every turn of the loop
         if !tab_asks.is_empty() {
             if let Some(eng) = engine.as_ref() {
-                let mut opened: Vec<String> = Vec::new();
+                let mut opened: Vec<(String, i64)> = Vec::new();
+                let mut begun: Vec<Begun> = Vec::new();
                 tend_asks(
                     &mut tab_asks,
                     eng,
@@ -4996,10 +5094,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     start,
                     &mut convo_log,
                     &mut opened,
+                    &mut begun,
                 );
-                if let Some(desk) = opened.pop() {
-                    confer_open = (confer_open.0 + 1, desk);
+                if let Some((desk, thread)) = opened.pop() {
+                    confer_open = (confer_open.0 + 1, desk, thread);
                 }
+                // A conversation begun by an AI asking on its own may be one
+                // the desk already has: the deciding AI is asked, when the
+                // settings say so, while the conversation shows as begun
+                if !begun.is_empty() && cfg.as_ref().is_some_and(config::confer_merges)
+                    && let Ok(who) = caps.answerer_to_choose(None)
+                {
+                    for b in begun {
+                        let (tx, who) = (merge_tx.clone(), who.clone());
+                        std::thread::spawn(move || {
+                            match crate::convo::confer::belongs_to(&who, &crate::convo::path(), &b.desk, b.thread, &b.line, &b.text) {
+                                Ok(Some(into)) => {
+                                    let _ = tx.send((b.thread, into));
+                                }
+                                Ok(None) => {}
+                                Err(e) => append_hook_log(&format!("confer: the deciding AI could not place a conversation ({e:#})")),
+                            }
+                        });
+                    }
+                }
+            }
+        }
+        while let Ok((from, into)) = merge_rx.try_recv() {
+            append_hook_log(&format!("confer: conversation {from} belongs to {into}, the deciding AI says"));
+            convo_log.merge_thread(from, into);
+            if confer_open.2 == from {
+                confer_open.2 = into;
             }
         }
         // Handed-out work: briefs waiting for their tab to be free, waits on
@@ -6122,6 +6247,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     rev: convo_log.confer_rev,
                     open: confer_open.0,
                     open_desk: confer_open.1.clone(),
+                    open_thread: confer_open.2,
                     auto_open: spec.open,
                     line_max: spec.line_max,
                     max_rounds: config::operate().max_rounds,
@@ -6840,8 +6966,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // they said is its first line
                 if !crate::asktab::named_in(&said).is_empty()
                     && let Some(desk) = desks.get(desk_index)
+                    && let Some(Surface::Session(i)) = surfaces.get(to.wrapping_sub(1))
+                    && let Some(t) = tabs.get(*i)
+                    && let Some((thread, _)) = convo_log.thread_for(&desk.id, &origin_of(t))
                 {
-                    convo_log.line(&desk.id, None, said.trim(), None, "person");
+                    convo_log.line(&desk.id, thread, None, said.trim(), None, "person");
                 }
             } else {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
@@ -9274,7 +9403,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let shikisha_shared::Ev::Convo { panel, act, args } = ev else { continue };
             // The conference of the desk on screen: read on a thread like the
             // rest, a mark put on by the person written here
-            if act == "confer" || act == "confer_mark" {
+            if act == "confer" || act == "confer_threads" || act == "confer_mark" {
                 let desk = desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default();
                 if act == "confer_mark" {
                     let line = args.get("line").and_then(serde_json::Value::as_i64);
@@ -9289,7 +9418,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 let tx = convo_tx.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(crate::convo::read::Found { answer: crate::convo::confer::page(&desk, &args, &crate::convo::path()), forget: Vec::new() });
+                    let _ = tx.send(crate::convo::read::Found { answer: crate::convo::confer::page(&desk, &act, &args, &crate::convo::path()), forget: Vec::new() });
                 });
                 continue;
             }
@@ -17173,7 +17302,7 @@ pub fn exec_commands(
                     append_hook_log(&format!("report_prompt from tab{origin}: no such tab"));
                     continue;
                 };
-                t.heard(&text);
+                t.heard_from_program(&text);
             }
             // A tab saying what it is doing, rather than being read. Believed
             // over the screen, and dropped when it is older than something

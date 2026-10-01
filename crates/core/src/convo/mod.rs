@@ -245,11 +245,34 @@ impl Log {
         out
     }
 
-    /// An ask was sent (see [`db::Store::ask_opened`]), with the asker's line
-    pub fn ask_opened(&mut self, desk: &str, caller: Option<&str>, target: &str, line: &str, text: &str, round: u32) -> Option<i64> {
+    /// The conversation grown from `origin` (see [`db::Store::thread_for`]).
+    /// `.1`: it was begun now
+    pub fn thread_for(&mut self, desk: &str, origin: &str) -> Option<(i64, bool)> {
         let at = db::now_ms();
-        let id = self.written("an ask", |s| s.ask_opened(desk, caller, target, text, round, at))?;
-        self.written("an ask's line", |s| s.line(desk, caller, line, Some(id), "ask", at));
+        self.written("a conversation of AIs", |s| s.thread_for(desk, origin, at))
+    }
+
+    /// `from` belongs to `into` (see [`db::Store::merge_thread`])
+    pub fn merge_thread(&mut self, from: i64, into: i64) {
+        self.written("a conversation merged into another", |s| s.merge_thread(from, into));
+    }
+
+    /// An ask was sent in `thread` (see [`db::Store::ask_opened`]), with the
+    /// asker's line
+    #[allow(clippy::too_many_arguments)]
+    pub fn ask_opened(
+        &mut self,
+        desk: &str,
+        thread: i64,
+        caller: Option<&str>,
+        target: &str,
+        line: &str,
+        text: &str,
+        round: u32,
+    ) -> Option<i64> {
+        let at = db::now_ms();
+        let id = self.written("an ask", |s| s.ask_opened(desk, thread, caller, target, text, round, at))?;
+        self.written("an ask's line", |s| s.line(desk, thread, caller, line, Some(id), "ask", at));
         Some(id)
     }
 
@@ -261,20 +284,42 @@ impl Log {
         let Some(reply) = reply.filter(|_| state == "DONE") else { return };
         let has = self.store.as_ref().is_some_and(|s| s.ask_has_answer_line(ask).unwrap_or(true));
         let line = confer::first_sentence(reply, line_max);
-        if !has && !line.is_empty() {
-            self.written("an answer's line", |s| s.line(desk, Some(target), &line, Some(ask), "auto", at));
+        if !has
+            && !line.is_empty()
+            && let Some(thread) = self.thread_of_ask(ask)
+        {
+            self.written("an answer's line", |s| s.line(desk, thread, Some(target), &line, Some(ask), "auto", at));
         }
     }
 
-    /// A line said: `how` as in the `lines` table
-    pub fn line(&mut self, desk: &str, tab: Option<&str>, text: &str, ask: Option<i64>, how: &str) -> Option<i64> {
-        let at = db::now_ms();
-        self.written("a line", |s| s.line(desk, tab, text, ask, how, at))
+    /// The conversation an ask was made in
+    pub fn thread_of_ask(&self, ask: i64) -> Option<i64> {
+        self.store.as_ref()?.thread_of_ask(ask).ok()?
     }
 
-    /// The last line `tab` said on `desk`
-    pub fn last_line_of(&self, desk: &str, tab: Option<&str>) -> Option<i64> {
-        self.store.as_ref()?.last_line_of(desk, tab).ok()?
+    /// A line said in `thread`: `how` as in the `lines` table
+    pub fn line(&mut self, desk: &str, thread: i64, tab: Option<&str>, text: &str, ask: Option<i64>, how: &str) -> Option<i64> {
+        let at = db::now_ms();
+        self.written("a line", |s| s.line(desk, thread, tab, text, ask, how, at))
+    }
+
+    /// The last line `tab` said on `desk`, in `thread` when one is named
+    pub fn last_line_of(&self, desk: &str, thread: Option<i64>, tab: Option<&str>) -> Option<i64> {
+        self.store.as_ref()?.last_line_of(desk, thread, tab).ok()?
+    }
+
+    /// Whether `text` reached `tab` from this app a moment ago -- typed by
+    /// the composer, another tab, a job -- rather than by somebody at the
+    /// tab's own prompt. What a CLI reports a person typed is checked against
+    /// it, so a line the app put in is not taken for one typed there
+    pub fn typed_by_app(&mut self, tab: &str, text: &str, within_ms: i64) -> bool {
+        self.take_notes();
+        let Some(store) = self.store.as_ref() else { return false };
+        let now = db::now_ms();
+        let want = db::heads(&[text, &crate::reader::human_part(text)]);
+        store
+            .sends(tab, now - within_ms, now + 1000)
+            .is_ok_and(|sent| sent.iter().any(|s| s.heads.iter().any(|h| want.contains(h))))
     }
 
     /// The desk a line was said on
@@ -288,10 +333,20 @@ impl Log {
         self.written("a mark", |s| s.toggle_mark(line, by, mark, at))
     }
 
-    /// A card shared
-    pub fn shared(&mut self, desk: &str, tab: &str, kind: &str, target: &str, title: &str, detail: &serde_json::Value) -> Option<i64> {
+    /// A card shared in `thread`
+    #[allow(clippy::too_many_arguments)]
+    pub fn shared(
+        &mut self,
+        desk: &str,
+        thread: i64,
+        tab: &str,
+        kind: &str,
+        target: &str,
+        title: &str,
+        detail: &serde_json::Value,
+    ) -> Option<i64> {
         let at = db::now_ms();
-        self.written("a card", |s| s.shared(desk, tab, kind, target, title, detail, at))
+        self.written("a card", |s| s.shared(desk, thread, tab, kind, target, title, detail, at))
     }
 
     /// The app is closing: every stretch of time still open ends now

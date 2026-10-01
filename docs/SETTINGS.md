@@ -165,6 +165,7 @@ AIs asking each other things, shown as a chat
 
 - **Open AIConfer when one AI asks another** — The panel on the right opens to AIConfer. On a phone, it is chosen in the panel without opening it.
 - **Longest line** — Characters. An AI's line longer than this is sent back to be said shorter. 0 means no limit.
+- **Telling conversations apart** — A conversation is each AI conversation that asked another AI. With the deciding AI, a request an AI makes on its own is put with an earlier conversation when it is about the same thing. Without a deciding AI chosen under AI agents, the first is used.
 
 ### AI allowance
 
