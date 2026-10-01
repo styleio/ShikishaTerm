@@ -8402,7 +8402,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let pc = crate::pr::pc_accounts_known();
                 let gh = crate::pr::gh_accounts_known();
                 let labels = cfg.as_ref().map(|c| c.sign_in_labels.clone()).unwrap_or_default();
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "gh": gh, "labels": labels}).to_string();
+                // The longest a press that makes something can take, in
+                // seconds, for the bar under its button to fill toward
+                let make = crate::github::longest_make().as_secs();
+                let waits = serde_json::json!({"create": make, "create_pr": make});
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "gh": gh, "labels": labels, "waits": waits}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));

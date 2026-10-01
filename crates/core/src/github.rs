@@ -291,10 +291,23 @@ pub struct Hub {
 /// The newest GitHub REST version this is written against
 const API_VERSION: &str = "2022-11-28";
 
+/// The longest one request to GitHub is waited for, from connecting to the
+/// last byte of the answer
+const REQUEST_LIMIT: Duration = Duration::from_secs(20);
+
+/// The longest a press that makes one thing on GitHub -- an issue, a pull
+/// request -- can take before it is answered either way: the account's
+/// sign-in read at its slowest, then the one request. A request that reached
+/// GitHub is never sent again (a second would make a second issue), so this
+/// is the whole of it. What the screen's bar fills toward
+pub fn longest_make() -> Duration {
+    crate::pr::slowest_sign_in() + REQUEST_LIMIT
+}
+
 impl Hub {
     pub fn new(token: String) -> Hub {
         let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
+            .timeout_global(Some(REQUEST_LIMIT))
             // The answer to a refusal says why; read it rather than turning it
             // into a status code nobody can act on
             .http_status_as_error(false)

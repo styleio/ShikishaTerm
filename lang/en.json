@@ -3261,6 +3261,8 @@
   "issues.new": "New issue",
   "issues.busy": "Asking GitHub…",
   "issues.busy.secs": "{n} s",
+  "issues.busy.secs_most": "{n} s (at most {most} s)",
+  "issues.make.held": "Can't press this yet: GitHub has not answered. By the end of the bar, either the new page opens or the reason it could not be made is shown.",
   "issues.busy.draft": "The AI is writing the issue…",
   "issues.busy.pr_draft": "The AI is writing the pull request…",
   "issues.busy.pr_resolve": "Bringing the base into the branch's folder…",

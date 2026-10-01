@@ -2093,6 +2093,17 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .busyband .dot { width:8px; height:8px; border-radius:50%; flex:none; }
   #issuespanel .busyband .bt { flex:1; min-width:0; }
   #issuespanel .busyband .bs { flex:none; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+  /* A press that makes something, waited for under its button: what is being
+     done and the seconds against the longest it can take, over the bar */
+  #issuespanel .makefoot { display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel .makewait { display:flex; flex-direction:column; gap:var(--s1); }
+  #issuespanel .makewait .mw { display:flex; gap:var(--s2); font-size:11px; color:var(--dim); }
+  #issuespanel .makewait .bt { flex:1; min-width:0; }
+  #issuespanel .makewait .bs { flex:none; font-variant-numeric:tabular-nums; }
+  #issuespanel .heldwhy { font-size:11.5px; color:var(--warn); }
+  #issuespanel button.held, #issuespanel button.go.held { background:var(--panel2);
+    border-color:var(--line); color:var(--faint); cursor:not-allowed; filter:none; }
+  #issuespanel button.held:hover { background:var(--panel2); color:var(--faint); filter:none; }
   /* What a pull request carries: one line per file, opened in place */
   #issuespanel .prfiles { display:flex; flex-direction:column; border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
   #issuespanel .prfiles > .empty { padding:var(--s2) var(--s3); font-size:12px; color:var(--faint); }
@@ -5016,7 +5027,13 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // what it goes into, and the issue it closes when there is one
           pr:{project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false,
               close:false, issue:null, kept:"", files:null, open:{}, more:false},
-          busySince: 0 };
+          busySince: 0,
+          // The longest each press that makes something can take, in seconds
+          // (as the app says), and the one just made: its bar shown full until
+          // the page it made opens
+          waits:{}, made:"", madeSaid:"",
+          // The press that was answered with why it waits (makeFoot)
+          heldPress:"" };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -5025,6 +5042,7 @@ const ISSUE_PRESETS = {
   pr: [["open", {}], ["mine", {mine:true}], ["review", {review:true}], ["merged", {state:"merged"}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
 };
 function issuesAsk(act, args) {
+  if (ISSUE_MAKES.has(act)) I.made = "";
   if (!ISSUE_QUIET.has(act)) {
     I.busy = act; I.said = ""; I.bad = false;
     I.busySince = Date.now();
@@ -5048,11 +5066,45 @@ function issuesClock() {
     const at = document.getElementById("issuesbusysecs");
     if (!I.busy || !at) { if (!I.busy) { clearInterval(issuesTick); issuesTick = 0; } return; }
     at.textContent = issuesSecs();
+    const bar = document.getElementById("issuesbusybar");
+    if (bar) bar.firstChild.style.width = issueMakePct(I.busy) + "%";
   }, 1000);
 }
+// How far a press that makes something is toward the longest it can take: by
+// the end it has been made or said why not. Whole seconds, the same as the
+// number beside it
+function issueMakePct(act) {
+  const most = I.waits[act] || 0;
+  if (!most) return 0;
+  const n = Math.floor((Date.now() - (I.busySince || Date.now())) / 1000);
+  return Math.min(100, n / most * 100);
+}
+// Under the button that makes an issue or a pull request, while it is made:
+// what is being done, the seconds against the longest it can take, and a bar
+// toward that -- so a wait of a few seconds is not taken for a stall. Full at
+// once when GitHub has answered, until the page it made opens. In place of the
+// band at the top (see issueSaid), which a long form scrolls out of view
+function issueMakeWait(act) {
+  const made = I.made === act && I.busy !== act;
+  if (I.busy !== act && !made) return null;
+  const most = I.waits[act] || 0;
+  const track = progressBar(made ? 100 : issueMakePct(act));
+  if (!made) track.bar.id = "issuesbusybar";
+  return el("div", {class:"makewait"},
+    el("div", {class:"mw"},
+      el("span", {class:"bt"}, made ? I.madeSaid : (T["issues.busy." + act] || T["issues.busy"] || "")),
+      made ? null : el("span", {class:"bs", id:"issuesbusysecs"}, issuesSecs())),
+    most ? track.bar : null);
+}
+// The press that makes something is waited for under its own button
+const ISSUE_MAKES = new Set(["create", "create_pr"]);
 function issuesSecs() {
   const n = Math.max(0, Math.floor((Date.now() - (I.busySince || Date.now())) / 1000));
-  return (T["issues.busy.secs"] || "{n}").replaceAll("{n}", n);
+  // A wait whose longest is known says it beside the seconds
+  const most = I.waits[I.busy] || 0;
+  return most
+    ? (T["issues.busy.secs_most"] || "{n}").replaceAll("{n}", n).replaceAll("{most}", most)
+    : (T["issues.busy.secs"] || "{n}").replaceAll("{n}", n);
 }
 function issuesList(page) {
   I.page = page || 1;
@@ -5165,6 +5217,7 @@ window.__issues = function (d) {
   }
   if (d.act === "projects") {
     I.projects = d.projects || [];
+    I.waits = d.waits || {};
     ghLabels = d.labels || {};
     ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.label || a.name}))
       .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})))
@@ -5185,6 +5238,7 @@ window.__issues = function (d) {
   if (!d.ok) {
     I.said = d.error || ""; I.bad = true;
     I.pending = null;
+    I.made = "";
     // A merge GitHub refused is read again, so its page says why in its own
     // terms -- a conflict, with the way to settle it -- and the error stays
     if (d.act === "merge" && I.detail) {
@@ -5207,6 +5261,7 @@ window.__issues = function (d) {
     case "detail":
       I.detail = Object.assign({project: d.project, kind: d.kind}, d.data || {});
       I.view = "detail";
+      I.made = "";
       I.armed = ""; I.dupOf = "";
       prPlaceAsk();
       break;
@@ -5232,6 +5287,7 @@ window.__issues = function (d) {
       if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});
       I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
       I.said = (T["issues.created"] || "").replaceAll("{n}", (d.data || {}).number || "");
+      I.made = "create"; I.madeSaid = I.said;
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
       issuesList(1);
       return;
@@ -5280,6 +5336,7 @@ window.__issues = function (d) {
       I.pr = {project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false, close:false, issue:null, kept:"", files:null, open:{}, more:false};
       I.kind = "pr"; I.preset = "open"; I.list = null;
       I.said = (T["issues.pr.created"] || "").replaceAll("{n}", n);
+      I.made = "create_pr"; I.madeSaid = I.said;
       issuesAsk("detail", {project: d.project, number: n});
       issuesList(1);
       return;
@@ -5359,7 +5416,9 @@ function drawIssues() {
 // a gap for no reason
 function issueSaid() {
   // Waiting: the working dot, what is being done, and for how long -- the one
-  // movement the style guide allows (§6), so it cannot be mistaken for a stall
+  // movement the style guide allows (§6), so it cannot be mistaken for a stall.
+  // Not for a press that makes something: that is said under its button
+  if (I.busy && ISSUE_MAKES.has(I.busy)) return null;
   if (I.busy) {
     return el("div", {class:"busyband"},
       el("span", {class:"dot BUSY"}),
@@ -5386,7 +5445,7 @@ function drawIssueList(box) {
   pick.onchange = () => { I.project = pick.value; issuesList(1); };
   const make = I.kind === "issue"
     ? el("button", {class:"go", onclick:() => {
-        I.view = "create";
+        I.view = "create"; I.made = "";
         if (!I.create.project) I.create.project = I.project || (I.projects[0] || {}).name || "";
         if (I.create.project && !I.options[I.create.project]) issuesAsk("options", {project: I.create.project});
         drawIssues();
@@ -5658,13 +5717,11 @@ function drawIssueCreate(box) {
   who.onchange = () => { c.assignee = who.value; };
   field(T["issues.assignees"] || "", who);
 
-  form.append(el("div", {class:"foot"},
-    el("button", {class:"quiet", onclick:() => { I.view = "list"; drawIssues(); }}, T["issues.cancel"] || ""),
-    el("button", {class:"go", onclick:() => {
-      if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
-      issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: c.labels,
-        assignees: c.assignee ? [c.assignee] : []});
-    }}, T["issues.new.create"] || "")));
+  form.append(makeFoot("create", () => { I.view = "list"; drawIssues(); }, T["issues.new.create"], () => {
+    if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+    issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: c.labels,
+      assignees: c.assignee ? [c.assignee] : []});
+  }));
   box.append(form);
   setTimeout(() => { if (!c.body && !drafting) body.focus(); }, 30);
 }
@@ -5832,14 +5889,28 @@ function drawPrCreate(box) {
   }
   form.append(tick(p.draft, T["issues.pr.draft"] || "", v => { p.draft = v; }));
 
-  form.append(el("div", {class:"foot"},
-    el("button", {class:"quiet", onclick:() => { I.view = "list"; redraw(); }}, T["issues.cancel"] || ""),
-    el("button", {class:"go", onclick:() => {
-      if (!p.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
-      if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return; }
-      issuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: p.draft});
-    }}, T["issues.pr.create"] || "")));
+  form.append(makeFoot("create_pr", () => { I.view = "list"; redraw(); }, T["issues.pr.create"], () => {
+    if (!p.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+    if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return; }
+    issuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: p.draft});
+  }));
   box.append(form);
+}
+
+// The end of a form that makes something on GitHub: cancel and the button,
+// and under them, while it is made, how long it has been (issueMakeWait).
+// Neither is pressed while it is being made -- a second press would make a
+// second one, and leaving would not stop the first -- so both are grey, and
+// a press says why above them (style guide §5.4), until the answer is in
+function makeFoot(act, cancel, label, press) {
+  const making = I.busy === act;
+  if (!making) I.heldPress = "";
+  const hold = () => { I.heldPress = act; issuesSig = ""; drawIssues(); };
+  const back = el("button", {class:"quiet" + (making ? " held" : ""), onclick:() => making ? hold() : cancel()},
+    T["issues.cancel"] || "");
+  const go = el("button", {class:"go" + (making ? " held" : ""), onclick:() => making ? hold() : press()}, label || "");
+  const why = making && I.heldPress === act ? el("div", {class:"heldwhy"}, T["issues.make.held"] || "") : null;
+  return el("div", {class:"makefoot"}, why, el("div", {class:"foot"}, back, go), issueMakeWait(act));
 }
 
 // A tab that could not start: why, and what to do about it. Drawn only when

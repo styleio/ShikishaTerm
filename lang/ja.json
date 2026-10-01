@@ -3236,6 +3236,8 @@
   "issues.new": "新しい Issue",
   "issues.busy": "GitHub に聞いています…",
   "issues.busy.secs": "{n} 秒",
+  "issues.busy.secs_most": "{n} 秒（長くても {most} 秒）",
+  "issues.make.held": "まだ押せません: GitHub の答えを待っています。棒が右端に着くまでに、作ったページが開くか、作れなかった理由が出ます。",
   "issues.busy.draft": "AI が Issue を書いています…",
   "issues.busy.pr_draft": "AI がプルリクエストを書いています…",
   "issues.busy.pr_resolve": "ブランチのフォルダに起点を取り込んでいます…",

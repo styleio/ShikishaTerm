@@ -300,6 +300,12 @@ once it reaches its first tagged release.
   forbids keeping it says so, and points at the DOM instead.
 
 ### Changed
+- **Making an issue or a pull request shows how long it can take, under its
+  button.** A bar fills toward the longest the press can take (50 seconds:
+  the sign-in read at its slowest, then GitHub's answer), beside the seconds
+  so far, and fills at once when GitHub answers. The button and Cancel are
+  grey while it is made, and pressing them says why, so a second issue is
+  not made by a second press.
 - **The bridge on a server or a MicroVM is one resident process that holds
   its jobs.** It is started once for the account and carries every app
   connected to it, where it used to be one program per line. A tab's

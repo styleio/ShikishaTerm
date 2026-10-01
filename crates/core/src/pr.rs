@@ -201,7 +201,7 @@ pub fn pc_token(login: Option<&str>) -> Result<String, PcSignIn> {
         &std::env::temp_dir(),
         &["-c", "credential.interactive=never", "credential", "fill"],
         &format!("protocol=https\nhost={}\n{named}\n", crate::config::GITHUB_HOST),
-        Duration::from_secs(15),
+        STORE_LIMIT,
         &crate::git::As::default(),
     );
     let token = said.ok().and_then(|said| {
@@ -220,6 +220,18 @@ pub fn pc_token(login: Option<&str>) -> Result<String, PcSignIn> {
     }
 }
 
+/// How long git's credential store is given to answer one question. It answers
+/// in a fraction of a second; a store that takes longer is waiting on
+/// something that will not come
+const STORE_LIMIT: Duration = Duration::from_secs(15);
+
+/// The longest reading an account's sign-in can take, whichever kind it is:
+/// this PC's git asked twice (for the token, then, when there was none, for
+/// the accounts that say why), GitHub CLI once, a saved token at once
+pub fn slowest_sign_in() -> Duration {
+    (STORE_LIMIT * 2).max(GH_LIMIT)
+}
+
 /// How long the list of the PC's GitHub accounts is kept before it is read again
 const PC_ACCOUNTS_FRESH: Duration = Duration::from_secs(30);
 
@@ -234,7 +246,7 @@ pub fn pc_accounts() -> Vec<String> {
         &std::env::temp_dir(),
         &["credential-manager", "github", "list"],
         "",
-        Duration::from_secs(15),
+        STORE_LIMIT,
         &crate::git::As::default(),
     )
     .map(|out| account_names(&out))
