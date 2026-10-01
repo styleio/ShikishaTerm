@@ -2488,6 +2488,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The folder on another machine whose branches the open worktree dialog is
     // waiting for, asked of git there on a thread
     let mut bases_watch: Option<(config::HostSpec, String)> = None;
+    // The checkout, and what it offers, whose sizes the open dialog waits for
+    let mut sizes_watch: Option<(std::path::PathBuf, Vec<crate::worktree::Carry>)> = None;
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
@@ -11142,6 +11144,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if ask.from.trim().is_empty() && !ask.make {
                 branch_view = None;
                 bases_watch = None;
+                sizes_watch = None;
                 ai_signin_watch = None;
                 signin_waiting = None;
                 continue;
@@ -11189,10 +11192,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // for each file it brings from elsewhere, with whatever the dialog
             // changed for this one folder laid over it
             let rules = project.map(|p| p.bring.clone()).unwrap_or_default();
+            // Whether this ask opens the dialog. What each offered thing holds
+            // is counted afresh then -- a build folder grows between one
+            // worktree and the next -- and a MicroVM's sign-in is asked of the
+            // checkout's machine then, and again only while something of this
+            // program keeps it awake
+            let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
+            sizes_watch = None;
             let offers = repo.as_deref().map(|main| {
                 let mut carry = crate::worktree::carryables(main, &rules);
                 // Before this folder's own changes: a line says what the project says
                 let lines = crate::worktree::carry_lines(&carry);
+                // Counted on a thread; the dialog is given the count when it is in
+                let sizes = crate::worktree::carry_sizes(main, &carry, opening);
+                sizes_watch = sizes.is_none().then(|| (main.to_path_buf(), carry.clone()));
                 for c in carry.iter_mut() {
                     if let Some((_, how)) = ask.carry.iter().find(|(n, _)| *n == c.name)
                         && crate::worktree::HOWS.contains(&how.as_str())
@@ -11200,14 +11213,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         c.how = how.clone();
                     }
                 }
-                (crate::worktree::bases(main), carry, lines)
+                (crate::worktree::bases(main), carry, lines, sizes)
             });
-            let (mut bases, carryable, carry_lines) = offers.unwrap_or_default();
+            let (mut bases, carryable, carry_lines, carry_sizes) = offers.unwrap_or_default();
             // A folder on another machine: its branches are git's there, asked
             // on a thread and put on the dialog when they come
             let far_bases = match (&repo, &from_far) {
                 (None, Some(h)) => {
-                    let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
                     // On a MicroVM a new worktree is a copy of the checkout's
                     // machine, whichever folder the dialog was opened from: what
                     // it can grow from is what that machine has. A branch only
@@ -11337,6 +11349,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 bases,
                 carry: carryable.clone(),
                 carry_lines,
+                carry_sizes,
+                large_bytes: crate::inherit::LARGE_BYTES,
+                large_files: crate::inherit::LARGE_FILES,
                 project: checkout
                     .as_deref()
                     .and_then(|p| p.file_name())
@@ -11391,9 +11406,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_default(),
                 ..Default::default()
             };
-            // Asked of the checkout's machine when the dialog opens, and
-            // again only while something of this program keeps it awake
-            let first_look = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
             if fan_ais.is_empty() {
                 let at = std::path::PathBuf::from(ask.at.trim());
                 // What the project says it needs, unless somebody said not to.
@@ -11409,7 +11421,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), first_look));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), opening));
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         } else {
                             // A server: the AIs it has, to choose what the
@@ -11424,7 +11436,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 keys.iter().find(|k| k.eq_ignore_ascii_case(asked.trim())).cloned()
                                     .or_else(|| crate::serverai::choose(&keys, &chosen, QUICK_AI_ORDER))
                             });
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), first_look));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), opening));
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), ai));
                         }
                         crate::worktree::plan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), Some(ask.at.trim()))
@@ -11577,7 +11589,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if h.is_made() {
                             view.sign_in = crate::microvm::sign_in_note(&far.1, &far.2);
                             signin_waiting = view.sign_in.is_none().then(|| (far.1.clone(), far.2.clone()));
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), first_look));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), far.0.preparing.ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), opening));
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), far.0.preparing.ai.clone()));
                         } else {
                             // A server: the AIs it has, to choose what the
@@ -11592,7 +11604,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 keys.iter().find(|k| k.eq_ignore_ascii_case(asked.trim())).cloned()
                                     .or_else(|| crate::serverai::choose(&keys, &chosen, QUICK_AI_ORDER))
                             });
-                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), first_look));
+                            view.ai_sign_in = crate::microvm::ai_sign_in_note(h, far.0.home.as_ref(), ai.as_deref(), crate::microvm::sign_in_fresh(h, far.0.home.as_ref(), opening));
                             ai_signin_watch = Some((h.clone(), far.0.home.clone(), ai));
                         }
                         crate::worktree::fan_on(&far.0.of(), &wanted, &prefix, Some(&ask.base), &ask.ais)
@@ -11709,6 +11721,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             v.bases = found;
                         }
                         bases_watch = None;
+                    }
+                }
+            }
+        }
+        // How much each thing offered holds, once it has been counted: put
+        // on the dialog that is waiting for it
+        if let Some((main, items)) = sizes_watch.as_ref() {
+            match branch_view.as_mut() {
+                None => sizes_watch = None,
+                Some(v) => {
+                    if let Some(found) = crate::worktree::carry_sizes(main, items, false) {
+                        if v.carry.iter().map(|c| &c.name).eq(items.iter().map(|c| &c.name)) {
+                            v.carry_sizes = Some(found);
+                        }
+                        sizes_watch = None;
                     }
                 }
             }

@@ -238,6 +238,11 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **The worktree dialog says when what it copies will take a while.** Once
+  it has counted what the new folder inherits, a large copy is said above
+  "More" with the amount, and a button opens the list on the row that costs
+  it. Each row of the list says how much it holds, the large ones marked;
+  making one a link or leaving it out takes the warning with it.
 - **AIConfer: watch AIs ask each other things, as a chat.** The Chat panel
   has a third view beside "This conversation" and "Every conversation". When
   one AI tab asks another (after you name it with `@`, or on its own), each

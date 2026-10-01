@@ -3299,20 +3299,21 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* What a machine signs in as, and whether its AI is signed in (drawSignIn,
      drawAiSignIn), in both dialogs that make something on a MicroVM. A fact
      is a line under the control; something a person has to do is the 5.1
-     warn box, with what fixes it inside the same box as a plain button */
+     warn box (warnBox), with what fixes it inside the same box as a plain
+     button. The box is the same wherever a dialog puts one */
   .bsignin { display:flex; flex-direction:column; gap:var(--s2); }
   .bsignin[hidden] { display:none; }
   .bsignin .say { font-size:11.5px; line-height:1.5; color:var(--dim); }
-  .bsignin .bwarn { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
+  .bwarn { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
     border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--text);
     background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
-  .bsignin .bwarn .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
-  .bsignin .bwarn .row button, .bsignin .bwarn .row a { display:inline-flex; align-items:center;
+  .bwarn .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  .bwarn .row button, .bwarn .row a { display:inline-flex; align-items:center;
     font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3); box-sizing:border-box;
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel2);
     color:var(--text); text-decoration:none; cursor:pointer; }
-  .bsignin .bwarn .row button:hover, .bsignin .bwarn .row a:hover { border-color:var(--edge-hi); }
+  .bwarn .row button:hover, .bwarn .row a:hover { border-color:var(--edge-hi); }
   #branch .blabelrow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
   #branch button.bicon { min-height:22px; width:22px; padding:0; border:0; background:transparent;
     color:var(--dim); display:flex; align-items:center; justify-content:center; }
@@ -3377,6 +3378,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A path is cut at its front: the end is the file's own name */
   #branch .bcarry .nm, #branch .bclines .nm { flex:1; min-width:0; font-family:var(--mono); font-size:12px; color:var(--text);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  /* How much a row holds: a fact, read across from the name. A copy that
+     makes the worktree slow is the person's to decide on, so it is warn */
+  #branch .bcarry .sz { flex:none; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #branch .bcarry .sz:empty { display:none; }
+  #branch .bcarry .sz.big { color:var(--warn); }
+  /* Too narrow for the name, the size and the choice across: the size goes
+     on a line of its own under them, rather than pushing the row wider than
+     the dialog */
+  @media (max-width:640px) {
+    #branch .bcarry > div:has(> .sz:not(:empty)) { flex-wrap:wrap; }
+    #branch .bcarry .sz { order:1; flex-basis:100%; white-space:normal; }
+  }
+  #branch .bslow[hidden] { display:none; }
   /* A line of an ignore file reads left to right: its start is what it says */
   #branch .bclines .nm { direction:ltr; }
   #branch .bclines .n { flex:none; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
@@ -4179,6 +4193,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <div class="blabelrow"><span class="blabel"></span><button class="bicon bconf" type="button"></button></div>
         <div id="bstart" class="bpick" tabindex="0"></div>
       </div>
+      <div class="bslow" hidden></div>
       <button class="bmore" type="button" aria-expanded="false"><span class="caret">&#9656;</span><span class="nm"></span></button>
       <div class="bextra" hidden>
         <div class="bfield">
@@ -9176,6 +9191,64 @@ function showMore(b, open) {
   more.querySelector(".nm").textContent = (!open && n)
     ? (T["tui.branch.more.n"] || "More ({n} come along)").replaceAll("{n}", n)
     : (T["tui.branch.more"] || "More");
+  drawSlow(b);
+}
+// What each row of the list holds, and -- above the fold, where it is read
+// before the button is pressed -- that what will be copied is a lot. Only a
+// copy is slow: a link is made at once and what is left out costs nothing, so
+// both follow the choices on the list as they are changed. Nothing is said
+// while it is still being counted, nor when the folder is made on another
+// machine, which is given none of it
+function drawSlow(b) {
+  const box = b.querySelector(".bslow");
+  if (!box) return;
+  const p = S && S.branch;
+  const sizes = p && p.from === branchFrom && p.seq === branchSeq && !p.host ? p.carry_sizes : null;
+  const large = s => s.bytes >= p.large_bytes || s.files >= p.large_files;
+  let bytes = 0, files = 0, more = false, first = null, biggest = null;
+  const sizesOf = [];
+  for (const pick of b.querySelectorAll(".bcarry select")) {
+    const s = sizes && sizes.find(x => x.path === pick.dataset.name);
+    const sz = pick.parentElement.querySelector(".sz");
+    const copied = pick.value === "copy" || pick.value === "replace";
+    const big = !!s && copied && large(s);
+    sz.textContent = s ? sizeSay(s) : "";
+    sz.classList.toggle("big", big);
+    sizesOf.push(sz);
+    if (!s || !copied) continue;
+    bytes += s.bytes; files += s.files; more = more || s.more;
+    if (big && !first) first = sz;
+    if (!biggest || s.bytes > biggest.s.bytes) biggest = {sz, s};
+  }
+  // The row the warning points at: the first large one, or the largest
+  // when it is many small ones that add up
+  const top = first || (biggest && biggest.sz);
+  for (const sz of sizesOf) sz.classList.toggle("top", sz === top);
+  const slow = !!sizes && large({bytes, files});
+  const said = slow ? (T["tui.branch.slow"] || "{amount}").replaceAll("{amount}", sizeSay({bytes, files, more})) : "";
+  box.hidden = !slow;
+  // Written only when it changed: every touch of this document is another
+  // chance to shut a list that somebody has open
+  if (box.dataset.said === said) return;
+  box.dataset.said = said;
+  box.textContent = "";
+  if (!slow) return;
+  // The way to the rows that cost it: the fold opened and that row brought
+  // into view with its choice in hand, where it can be made a link or left
+  // out. Found when pressed: the list may have been drawn again since
+  box.append(warnBox(said, el("button", {type:"button", onclick:() => {
+    showMore(b, true);
+    const at = b.querySelector(".bcarry .sz.top");
+    const pick = at && at.parentElement.querySelector("select");
+    if (!pick) return;
+    pick.parentElement.scrollIntoView({block:"nearest"});
+    pick.focus();
+  }}, T["tui.branch.slow.see"] || "")));
+}
+// "4.2 GB · 18,000 files", or "at least" both when counting stopped early
+function sizeSay(s) {
+  return (T[s.more ? "settings.bring.size_more" : "settings.bring.size"] || "{size}")
+    .replaceAll("{size}", bytesSay(s.bytes)).replaceAll("{files}", s.files.toLocaleString());
 }
 function closeBranch() {
   const b = document.getElementById("branch");
@@ -9529,7 +9602,7 @@ function drawDest(b, p) {
     wanted.dataset.sig = wsig;
     wanted.textContent = "";
     wanted.hidden = !want;
-    if (want) wanted.append(signInWarn(
+    if (want) wanted.append(warnBox(
       (T["tui.branch.vm_ai_wanted"] || "").split("{want}").join(aiName(want)).split("{have}").join(aiName(p.vm_ai || "none")),
       el("button", {type:"button", onclick:() => { closeBranch(); openSettings("project-microvm", true, branchFrom); }},
         T["tui.branch.vm_ai_run"] || "")));
@@ -9560,15 +9633,16 @@ function drawAiSignIn(box, note) {
   // now starts the AI over, sign-in included
   if (note.state === "finishing" || note.state === "no") {
     const tab = checkoutAiTab(note.checkout, note.ai);
-    box.append(signInWarn(say("tui.aisignin." + note.state),
+    box.append(warnBox(say("tui.aisignin." + note.state),
       tab ? el("button", {type:"button", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open")) : null));
     return;
   }
-  box.append(signInWarn(say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
+  box.append(warnBox(say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
 }
-// Something a person has to do before a MicroVM is made, and what does it:
-// one box, so the problem and its fix read as one thing (5.1's warn box)
-function signInWarn(text, ...acts) {
+// Something a person has to do or know before the dialog's button is pressed,
+// and what does it: one box, so the problem and its fix read as one thing
+// (5.1's warn box). A MicroVM's sign-in and a slow copy both say it here
+function warnBox(text, ...acts) {
   const fixes = acts.filter(Boolean);
   return el("div", {class:"bwarn"}, el("div", {}, text), fixes.length ? el("div", {class:"row"}, ...fixes) : null);
 }
@@ -9922,11 +9996,11 @@ function drawSignIn(box, note, shown, change) {
   box.append(el("div", {class:"say"},
     (T["tui.signin.as"] || "{account}").replaceAll("{account}", note.account) + (kind ? " · " + kind : "")));
   const other = change ? el("button", {type:"button", onclick:change}, T["tui.signin.change"] || "") : null;
-  if (note.error) { box.append(signInWarn(note.error, other)); return; }
+  if (note.error) { box.append(warnBox(note.error, other)); return; }
   if (note.kind === "none") box.append(el("div", {class:"say"}, T["tui.signin.none"] || ""));
   // A token that never ends and may reach every repository: said, with what
   // to use instead. A token that does not say what it is: what it allows
-  if (note.kind === "classic" || note.kind === "oauth") box.append(signInWarn(T["tui.signin.broad"] || "",
+  if (note.kind === "classic" || note.kind === "oauth") box.append(warnBox(T["tui.signin.broad"] || "",
     el("a", {href:"https://github.com/settings/personal-access-tokens/new", target:"_blank", rel:"noopener"}, T["tui.signin.make_fine"] || ""),
     other));
   if (note.kind === "unknown") box.append(el("div", {class:"say"}, T["tui.signin.unknown"] || ""));
@@ -10032,7 +10106,7 @@ function drawCarry(b, items) {
     // Held left to right inside the marks: the box runs right to left so a
     // long path is cut at the front, and a folder ends in the / that says so
     const name = it.name + (it.folder ? "/" : "");
-    box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), pick));
+    box.append(el("div", {}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), el("span", {class:"sz"}), pick));
   }
 }
 

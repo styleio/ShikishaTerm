@@ -790,6 +790,17 @@ pub struct BranchPlan {
     /// what it matches -- to be chosen by line instead of one thing at a time
     #[serde(default)]
     pub carry_lines: Vec<crate::worktree::CarryLine>,
+    /// How much each of `carry` holds, by its name, so a slow copy is said
+    /// before the button is pressed. None while it is still being counted
+    #[serde(default)]
+    pub carry_sizes: Option<Vec<crate::worktree::Size>>,
+    /// What makes one of them large (`inherit::large`): sent rather than
+    /// written into the page a second time, so the dialog and the project's
+    /// settings cannot disagree about it
+    #[serde(default)]
+    pub large_bytes: u64,
+    #[serde(default)]
+    pub large_files: u64,
     /// Why it cannot be done, when it cannot
     #[serde(default)]
     pub error: Option<String>,

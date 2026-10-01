@@ -384,6 +384,8 @@
   "tui.branch.carry.in": "{line} ({file})",
   "tui.branch.carry.pending": "{n} lines changed and not on the list yet. Applying also makes them this project's default.",
   "tui.branch.carry.apply": "Apply to the list",
+  "tui.branch.slow": "Copies {amount} from the original folder. Making it takes a while.",
+  "tui.branch.slow.see": "Show what is large",
   "tui.branch.setup": "Also run the setup commands",
   "tui.branch.setup.from": "from {name}",
   "tui.branch.setup.unresolved": "{names} are not installed here. Install them with the devcontainer CLI.",

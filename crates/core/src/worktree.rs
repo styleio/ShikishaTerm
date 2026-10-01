@@ -2932,33 +2932,87 @@ pub struct Size {
 /// folder can hold a million and "at least this much" is already the answer
 pub fn sizes(main: &Path, paths: &[String], most: u64) -> Vec<Size> {
     let mut left = most;
-    paths
-        .iter()
-        .map(|p| {
-            let mut size = Size { path: p.clone(), bytes: 0, files: 0, more: false };
-            let mut todo = vec![main.join(p.trim_end_matches('/'))];
-            while let Some(at) = todo.pop() {
-                if left == 0 {
-                    size.more = true;
-                    break;
-                }
-                let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
-                if meta.file_type().is_symlink() {
-                    continue;
-                }
-                if meta.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(&at) {
-                        todo.extend(entries.flatten().map(|e| e.path()));
-                    }
-                    continue;
-                }
-                left -= 1;
-                size.files += 1;
-                size.bytes += meta.len();
+    paths.iter().map(|p| size_of(p, &main.join(p.trim_end_matches('/')), &mut left)).collect()
+}
+
+/// How much one thing holds, counting at most `left` files and taking
+/// what it counted off `left`
+fn size_of(path: &str, at: &Path, left: &mut u64) -> Size {
+    let mut size = Size { path: path.to_string(), bytes: 0, files: 0, more: false };
+    let mut todo = vec![at.to_path_buf()];
+    while let Some(at) = todo.pop() {
+        if *left == 0 {
+            size.more = true;
+            break;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&at) else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&at) {
+                todo.extend(entries.flatten().map(|e| e.path()));
             }
-            size
+            continue;
+        }
+        *left -= 1;
+        size.files += 1;
+        size.bytes += meta.len();
+    }
+    size
+}
+
+/// How much each thing a new worktree can be given holds, by its name there.
+///
+/// Each is counted on its own up to `most` files (`LARGE_FILES`: past that it
+/// is large whatever else it holds), so one build folder cannot use up the
+/// count the way [`sizes`] lets it -- the dialog has to say which of them is
+/// the slow one. A thing from elsewhere is counted where it comes from
+fn carry_sizes_now(main: &Path, items: &[Carry], most: u64) -> Vec<Size> {
+    items
+        .iter()
+        .map(|c| {
+            let at = match &c.from {
+                Some(from) => PathBuf::from(from),
+                None => main.join(&c.name),
+            };
+            let mut left = most;
+            size_of(&c.name, &at, &mut left)
         })
         .collect()
+}
+
+/// The same, for the worktree dialog: counted on a thread, since a build
+/// folder takes seconds to walk and the dialog is asked again on every
+/// keystroke. None until the count is in. `again` counts afresh (the dialog
+/// has just opened, and the folders may have grown since) while still
+/// answering with the last count, so the dialog does not lose what it says
+pub fn carry_sizes(main: &Path, items: &[Carry], again: bool) -> Option<Vec<Size>> {
+    type Known = std::collections::HashMap<String, (Option<Vec<Size>>, bool)>;
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<Known>> = std::sync::OnceLock::new();
+    let mut key = main.display().to_string();
+    for c in items {
+        key.push('\u{1f}');
+        key.push_str(&c.name);
+        key.push('\u{1e}');
+        key.push_str(c.from.as_deref().unwrap_or_default());
+    }
+    let known = KNOWN.get_or_init(Default::default);
+    let last = {
+        let mut k = known.lock().unwrap_or_else(|e| e.into_inner());
+        let (last, counting) = k.get(&key).cloned().unwrap_or_default();
+        if counting || (last.is_some() && !again) {
+            return last;
+        }
+        k.insert(key.clone(), (last.clone(), true));
+        last
+    };
+    let (main, items) = (main.to_path_buf(), items.to_vec());
+    std::thread::spawn(move || {
+        let found = carry_sizes_now(&main, &items, crate::inherit::LARGE_FILES);
+        known.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (Some(found), false));
+    });
+    last
 }
 
 /// Whether a whole source tree will fit under this folder.
@@ -4838,6 +4892,60 @@ tools/conpty.ps1"));
         assert_eq!((last.done, last.name.as_str()), (4, ".env"), "the copy did not end at its last file");
         assert!(heard.iter().any(|p| p.name == "deps" && p.done == 3), "the folder's files were not counted one by one");
         assert!(heard.windows(2).all(|w| w[0].done <= w[1].done), "the count went backwards: {heard:?}");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// What the worktree dialog says each thing holds: every one counted on
+    /// its own, so a folder past the count does not leave the next one at
+    /// nothing, and a thing from elsewhere counted where it comes from. The
+    /// dialog's own question is answered on a thread, with the same numbers
+    #[test]
+    fn each_thing_offered_is_sized_on_its_own() {
+        let main = repo("carry-size");
+        let deps = main.join("deps");
+        std::fs::create_dir_all(deps.join("a")).unwrap();
+        for (f, body) in [("one.js", "1"), ("two.js", "22"), ("a/three.js", "333")] {
+            std::fs::write(deps.join(f), body).unwrap();
+        }
+        std::fs::write(main.join(".env"), "KEY=1").unwrap();
+        let elsewhere = main.parent().unwrap().join("kept-elsewhere.txt");
+        std::fs::write(&elsewhere, "12345678").unwrap();
+        let carry = |name: &str, folder: bool, from: Option<&Path>| Carry {
+            name: name.into(),
+            folder,
+            how: "copy".into(),
+            from: from.map(|p| p.display().to_string()),
+            replace: Vec::new(),
+            line: None,
+        };
+        let items = [carry("deps", true, None), carry(".env", false, None), carry("conf/local.txt", false, Some(&elsewhere))];
+        let size = |path: &str, bytes: u64, files: u64, more: bool| Size { path: path.into(), bytes, files, more };
+
+        let all = carry_sizes_now(&main, &items, 10);
+        assert_eq!(all, [size("deps", 6, 3, false), size(".env", 5, 1, false), size("conf/local.txt", 8, 1, false)]);
+        let cut = carry_sizes_now(&main, &items, 2);
+        assert_eq!(cut[0].files, 2, "the count did not stop where it was told to");
+        assert!(cut[0].more, "a folder counted only in part was not said to hold at least this");
+        assert_eq!(&cut[1..], &all[1..], "a folder past the count left the next ones uncounted");
+
+        // Asked the way the dialog asks: nothing until the thread is done
+        let mut said = carry_sizes(&main, &items, false);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while said.is_none() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            said = carry_sizes(&main, &items, false);
+        }
+        assert_eq!(said.as_deref(), Some(&all[..]), "the dialog was not given the count");
+        // Opened again: counted afresh, still answering with the last count
+        std::fs::write(main.join(".env"), "KEY=1234").unwrap();
+        assert_eq!(carry_sizes(&main, &items, true).as_deref(), Some(&all[..]), "the count went away while it was taken again");
+        let mut again = carry_sizes(&main, &items, false);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while again.as_ref().is_some_and(|a| a[1].bytes == 5) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            again = carry_sizes(&main, &items, false);
+        }
+        assert_eq!(again.map(|a| a[1].bytes), Some(8), "opening the dialog again did not count again");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

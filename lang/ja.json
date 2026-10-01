@@ -384,6 +384,8 @@
   "tui.branch.carry.in": "{line}（{file}）",
   "tui.branch.carry.pending": "{n} 行分の変更が、まだ一覧に入っていません。反映すると、このプロジェクトの既定にもなります。",
   "tui.branch.carry.apply": "一覧に反映",
+  "tui.branch.slow": "元のフォルダから {amount}をコピーします。作るのに時間がかかります。",
+  "tui.branch.slow.see": "大きいものを見る",
   "tui.branch.setup": "セットアップのコマンドも実行する",
   "tui.branch.setup.from": "{name} より",
   "tui.branch.setup.unresolved": "{names} はここでは入りません。devcontainer CLI で入れてください",
