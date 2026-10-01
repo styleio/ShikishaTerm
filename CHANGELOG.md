@@ -196,6 +196,10 @@ once it reaches its first tagged release.
   answers it.
 
 ### Fixed
+- **An @ typed straight after Japanese opens the list of tabs.** "直して、@" or
+  "codexに@" now offers the tabs as "... @" does; an @ inside an address
+  (user@example.com) still does not, and a picked badge after Japanese takes
+  no space in front.
 - **An AI that answered another tab says its line in the language on screen.**
   It was asked for the person's language and took it from the other tab's
   ask, which is often in English; it is now told the language by name.
