@@ -1,16 +1,17 @@
 // A tab's face: a small alien drawn from a name.
 //
 // Two colours and a few marks: a soft, slightly lopsided body on a ground of
-// another colour, cut by the circle it is shown in, and on it one, two or
-// three eyes, sometimes a mouth, sometimes feelers. The name picks every
-// part, so the same name is the same alien wherever it appears.
+// another colour, cut by the circle it is shown in, and on it its eyes --
+// dots, a big shiny one, three, sparkles, a smile, a visor -- sometimes a
+// mouth, and on top now and then feelers or ears. The name picks every part,
+// so the same name is the same alien wherever it appears.
 //
 //   name    the seed (on the board: the desk's id and the tab's id)
 //   colors  the colours a body and its ground are painted in
 //   ink     [dark, light]: the eyes and the mouth take the one that reads on
 //           the body, the shine in an eye the other
-//   small   drawn for 14px: larger eyes, no mouth and no feelers, which at
-//           that size are a smudge
+//   small   drawn for 14px: larger eyes, no mouth and nothing on top, which
+//           at that size are a smudge
 //   pair    [body, ground]: indexes into colors chosen by the caller, so the
 //           tabs side by side on a board each wear their own (cfPair in
 //           shell.rs). Left out, the name picks them
@@ -71,8 +72,9 @@ function alienFace(name, colors, ink, small, pair) {
   }
   const blob = alienOutline(ring, f);
 
-  // Feelers: none, one or two, rising from the top of the body
-  const feelers = small ? 0 : one([0, 0, 0, 1, 2]);
+  // On top: nothing, one or two feelers, or a pair of pointed ears
+  const top = small ? "none" : one(["none", "none", "none", "feeler", "feelers", "ears"]);
+  const feelers = top === "feeler" ? 1 : top === "feelers" ? 2 : 0;
   let stalks = "";
   for (let i = 0; i < feelers; i++) {
     const side = feelers === 1 ? between(-0.4, 0.4) : (i === 0 ? -1 : 1) * between(0.35, 0.6);
@@ -83,11 +85,21 @@ function alienFace(name, colors, ink, small, pair) {
     stalks += `<path d="M${f(sx)} ${f(sy)}Q${f(sx + side * 0.5)} ${f(ty + 1)} ${f(tx)} ${f(ty)}" stroke="${body}" stroke-width="2" stroke-linecap="round" fill="none"/>`
       + `<circle cx="${f(tx)}" cy="${f(ty)}" r="2.1" fill="${body}"/>`;
   }
+  if (top === "ears") {
+    // Rounded triangles leaning out, their feet hidden in the body
+    const spread = between(0.42, 0.58);
+    const lift = between(5, 6.5);
+    for (const side of [-1, 1]) {
+      const bx = cx + side * spread * r;
+      const by = cy - r * 0.62;
+      stalks += `<path d="M${f(bx - 3.2)} ${f(by + 2)}L${f(bx + side * 1.6)} ${f(by - lift)}L${f(bx + 3.2)} ${f(by + 2)}Z" fill="${body}" stroke="${body}" stroke-width="2.2" stroke-linejoin="round"/>`;
+    }
+  }
 
-  // The face, near the middle of what shows: one big eye, two, or three
+  // The face, near the middle of what shows
   const fx = (cx + 18) / 2 + between(-1, 1);
   const fy = Math.min(cy, 20) - (small ? 1 : 2);
-  const kind = one(["one", "two", "two", "two", "three", "pair-big"]);
+  const kind = one(["one", "two", "two", "three", "pair-big", "sparkle", "happy", "visor"]);
   const grow = small ? 1.35 : 1;
   const dot = (x, y, rr) => `<circle cx="${f(x)}" cy="${f(y)}" r="${f(rr * grow)}" fill="${mark}"/>`;
   const shiny = (x, y, rr) => dot(x, y, rr)
@@ -99,6 +111,24 @@ function alienFace(name, colors, ink, small, pair) {
   } else if (kind === "pair-big") {
     const gap = 3.6 * grow;
     eyes = shiny(fx - gap, fy, 2) + shiny(fx + gap, fy, 2);
+  } else if (kind === "sparkle") {
+    // Four-pointed stars
+    const gap = 3.6 * grow;
+    const star = (x, y) => {
+      const k = 2.5 * grow;
+      return `<path d="M${f(x)} ${f(y - k)}Q${f(x)} ${f(y)} ${f(x + k)} ${f(y)}Q${f(x)} ${f(y)} ${f(x)} ${f(y + k)}Q${f(x)} ${f(y)} ${f(x - k)} ${f(y)}Q${f(x)} ${f(y)} ${f(x)} ${f(y - k)}Z" fill="${mark}"/>`;
+    };
+    eyes = star(fx - gap, fy) + star(fx + gap, fy);
+  } else if (kind === "happy") {
+    // Shut in a smile: two arches
+    const gap = 3.2 * grow;
+    const arch = (x) => `<path d="M${f(x - 1.7 * grow)} ${f(fy + 0.7 * grow)}q${f(1.7 * grow)} ${f(-2.4 * grow)} ${f(3.4 * grow)} 0" stroke="${mark}" stroke-width="${f(1.2 * grow)}" stroke-linecap="round" fill="none"/>`;
+    eyes = arch(fx - gap) + arch(fx + gap);
+  } else if (kind === "visor") {
+    // One dark band across, with a glint
+    const w = 10.4 * grow, hh = 3.2 * grow;
+    eyes = `<rect x="${f(fx - w / 2)}" y="${f(fy - hh / 2)}" width="${f(w)}" height="${f(hh)}" rx="${f(hh / 2)}" fill="${mark}"/>`
+      + `<path d="M${f(fx - w / 2 + 2 * grow)} ${f(fy - 0.3 * grow)}h${f(2.6 * grow)}" stroke="${shine}" stroke-width="${f(0.8 * grow)}" stroke-linecap="round"/>`;
   } else if (kind === "three") {
     const gap = 3.8 * grow;
     eyes = dot(fx - gap, fy + 0.6, 1.2) + dot(fx, fy - 0.8, 1.35) + dot(fx + gap, fy + 0.6, 1.2);

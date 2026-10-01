@@ -99,10 +99,10 @@ tabs that are put away is not a tab, and keeps its colours.
 
 Each tab has a face (`crates/core/src/face.js`, seeded by the desk's and the tab's id).
 It is a small alien: a soft, slightly lopsided body set off the middle so the
-circle cuts it, and on it one, two or three eyes, sometimes a mouth and
-feelers. Two colours only, the body and its ground, flat, with no outline and
-no shadow. The shape, the eyes, the mouth and the feelers all come from the
-seed. At 14px the mouth and the feelers are left out and the eyes drawn
+circle cuts it, and on it its eyes (dots, a big shiny one, three, sparkles,
+a smile, a visor), sometimes a mouth, and on top feelers or ears. Two colours only, the body and its ground, flat, with no outline and
+no shadow. The shape, the eyes, the mouth, the feelers and the ears all come from the
+seed. At 14px the mouth and what is on top are left out and the eyes drawn
 larger. The values are the app's, not the scheme's: a face is who a tab is,
 and it must not turn into someone else when the scheme changes.
 

@@ -8,6 +8,11 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The faces have more ways to look.** Eyes can be four-pointed sparkles,
+  two arches shut in a smile, or a dark visor with a glint, and a head can
+  wear pointed ears instead of feelers.
+
 ## [0.23.0] - 2026-10-01
 
 ### Added
