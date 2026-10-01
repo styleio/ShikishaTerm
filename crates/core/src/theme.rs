@@ -230,6 +230,14 @@ impl Scheme {
         // a disc of them reads as a character and never as a state
         out.push_str("--face1:#5fa0f5;--face2:#f096a6;--face3:#ffce2d;--face4:#8390eb;--face5:#f7cd9e;");
         out.push_str("--face-ink:#212021;--face-ink-light:#ffffff;");
+        // The orchestra's robots (face.js): seven heads, the colours of the
+        // robots on the site, and behind each a pale ground of the same seven
+        // families in the same order -- the drawer keeps a head off the ground
+        // of its own family by the order
+        out.push_str("--player1:#ff7a59;--player2:#ffcf3f;--player3:#5fd39a;--player4:#f590c8;");
+        out.push_str("--player5:#5fb4ff;--player6:#8f7cf5;--player7:#4fcfc4;");
+        out.push_str("--player-back1:#ffd9cc;--player-back2:#fff0b8;--player-back3:#c9f1d8;--player-back4:#ffd9ee;");
+        out.push_str("--player-back5:#cfe9ff;--player-back6:#ddd5ff;--player-back7:#c8f0ec;");
         match self.selection.as_deref().filter(|s| is_colour(s)) {
             Some(sel) => out.push_str(&format!("--sel:{sel};")),
             None => out.push_str(&format!("--sel:{};", mix(&bg, &fg, 0.28))),
