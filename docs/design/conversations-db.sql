@@ -1,5 +1,5 @@
 -- The record of conversations (conversations.db), as the steps in
--- crates/core/src/convo/migrations/ leave it at version 2.
+-- crates/core/src/convo/migrations/ leave it at version 3.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- conversations-db.md), then write this again:
@@ -35,7 +35,7 @@ CREATE TABLE asks (
   round INTEGER NOT NULL DEFAULT 0,   -- which round of the caller's this was
   asked_at INTEGER NOT NULL,
   answered_at INTEGER
-);
+, thread_id INTEGER REFERENCES threads(id) ON DELETE CASCADE);
 
 CREATE TABLE conversations (
   -- One conversation a tab carried on: the CLI's own conversation id, and
@@ -62,7 +62,7 @@ CREATE TABLE lines (
   text TEXT NOT NULL,
   ask_id INTEGER REFERENCES asks(id) ON DELETE SET NULL, -- the ask it opened or answered
   how TEXT NOT NULL                   -- ask (the asker's line) / said (the answer's line, in its own words) / auto (the answer's first sentence, taken for it) / aside (said on its own) / person (a person naming a tab) / agreed (a decision made)
-);
+, thread_id INTEGER REFERENCES threads(id) ON DELETE CASCADE);
 
 CREATE TABLE reactions (
   -- A mark put on a line: by a person pressing it, or by an AI
@@ -103,7 +103,7 @@ CREATE TABLE shares (
   target TEXT NOT NULL,               -- the hash, the address, or the path, as it is opened
   title TEXT NOT NULL,                -- what the card says it is: a commit's subject, a file's name, the title the AI gave
   detail TEXT NOT NULL DEFAULT '{}'   -- JSON: what else the card shows (short hash, branch, folder, host)
-);
+, thread_id INTEGER REFERENCES threads(id) ON DELETE CASCADE);
 
 CREATE TABLE spans (
   -- A stretch of time a tab spent in one state. Written when the state
@@ -129,11 +129,36 @@ CREATE TABLE stops (
   why TEXT                            -- the reason as given: the limit line, the job's word
 );
 
+CREATE TABLE thread_tabs (
+  -- Who takes part in a conversation: named in it by a person, asked or
+  -- asking in it, saying, sharing or marking something in it. Written by the
+  -- same writes that record those, so it cannot fall behind them
+  thread_id INTEGER NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  tab TEXT NOT NULL,                  -- the tab, by id
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, tab)
+);
+
+CREATE TABLE threads (
+  -- One conversation of AIs conferring. Everything asked, said and shared in
+  -- it carries its id, so two conversations on one desk at once read apart
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  desk TEXT NOT NULL,
+  origin TEXT NOT NULL,               -- whose conversation it grew from: the tab that began it and its CLI's conversation id, "tab/record"
+  merged_into INTEGER REFERENCES threads(id) ON DELETE SET NULL, -- the conversation it was found to belong to (by the deciding AI); its rows moved there
+  begun_at INTEGER NOT NULL,
+  last_at INTEGER NOT NULL            -- when anything was last said in it
+);
+
 CREATE INDEX asks_by_desk ON asks (desk, asked_at);
+
+CREATE INDEX asks_by_thread ON asks (thread_id);
 
 CREATE INDEX conversations_by_tab ON conversations (tab, first_at);
 
 CREATE INDEX lines_by_desk ON lines (desk, said_at);
+
+CREATE INDEX lines_by_thread ON lines (thread_id, said_at);
 
 CREATE UNIQUE INDEX one_open_span ON spans (tab) WHERE ended_at IS NULL;
 
@@ -141,6 +166,14 @@ CREATE INDEX sends_by_tab ON sends (tab, sent_at);
 
 CREATE INDEX shares_by_desk ON shares (desk, shared_at);
 
+CREATE INDEX shares_by_thread ON shares (thread_id, shared_at);
+
 CREATE INDEX spans_by_tab ON spans (tab, started_at);
 
 CREATE INDEX stops_by_tab ON stops (tab, stopped_at);
+
+CREATE INDEX thread_tabs_by_tab ON thread_tabs (tab, thread_id);
+
+CREATE INDEX threads_by_desk ON threads (desk, last_at);
+
+CREATE INDEX threads_by_origin ON threads (desk, origin);

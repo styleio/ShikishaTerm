@@ -1934,6 +1934,13 @@ pub struct ConferSpec {
     /// another. On unless turned off: the person asked to see it happen
     #[serde(default = "yes")]
     pub open: bool,
+    /// How the conversations of AIs are told apart: "cli" -- by the CLI
+    /// conversation of the tab that began each; "judge" -- the same, and the
+    /// deciding AI asked whether one an AI begins on its own belongs to one
+    /// the desk already has. Absent: "judge" when a deciding AI is chosen,
+    /// "cli" otherwise (the settings show which, as a value)
+    #[serde(default)]
+    pub merge: Option<String>,
     /// The most characters a line may have. 0 = no limit. A number too large
     /// to be one is read as the largest there is, rather than taking every
     /// other setting in the file down with it
@@ -1943,7 +1950,17 @@ pub struct ConferSpec {
 
 impl Default for ConferSpec {
     fn default() -> Self {
-        Self { open: true, line_max: default_line_max() }
+        Self { open: true, merge: None, line_max: default_line_max() }
+    }
+}
+
+/// Whether the deciding AI is asked where a conversation of AIs belongs (see
+/// [`ConferSpec::merge`])
+pub fn confer_merges(cfg: &Config) -> bool {
+    match cfg.confer.merge.as_deref() {
+        Some("judge") => true,
+        Some(_) => false,
+        None => cfg.decide_ai.as_deref().is_some_and(|m| !m.trim().is_empty()),
     }
 }
 

@@ -2172,6 +2172,8 @@ pub struct ConferState {
     /// to and the person is not in the middle of something
     pub open: u64,
     pub open_desk: String,
+    /// The conversation to open, by id
+    pub open_thread: i64,
     /// Whether the settings say to open it
     pub auto_open: bool,
     /// The longest a line may be, for the settings' own hint

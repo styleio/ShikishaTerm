@@ -10396,7 +10396,19 @@ function conferCard() {
     el("div", {class:"hint"}, T["settings.confer.hint"]),
     row(T["settings.confer.open"], checkDefaultOn(o, "open", T["settings.confer.open.label"]),
       el("span", {class:"hint"}, T["settings.confer.open.hint"])),
-    row(T["settings.confer.line_max"], max, el("span", {class:"hint"}, T["settings.confer.line_max.hint"])));
+    row(T["settings.confer.line_max"], max, el("span", {class:"hint"}, T["settings.confer.line_max.hint"])),
+    row(T["settings.confer.merge"], conferMerge(o), el("span", {class:"hint"}, T["settings.confer.merge.hint"])));
+}
+// How conversations are told apart, showing the value in force: written or,
+// when nothing is written, the one that follows from a deciding AI being chosen
+function conferMerge(o) {
+  const s = el("select", {style:"width:320px"});
+  for (const [v, label] of [["cli", T["settings.confer.merge.cli"]], ["judge", T["settings.confer.merge.judge"]]]) {
+    s.append(el("option", {value:v}, label));
+  }
+  s.value = o.merge || ((current.decide_ai || "").trim() ? "judge" : "cli");
+  s.addEventListener("change", () => { o.merge = s.value; refreshSave(); });
+  return s;
 }
 
 // Who may run which command: the person's own automation in one column, an AI
@@ -16687,8 +16699,9 @@ function payload() {
     const c = out.confer;
     // A line is one sentence: more than a thousand characters is not one
     const n = (c.line_max === "" || c.line_max == null) ? 80 : Math.min(1000, Math.max(0, Math.round(Number(c.line_max)) || 0));
-    if (c.open !== false && n === 80) delete out.confer;
-    else out.confer = { open: c.open !== false, line_max: n };
+    const merge = c.merge === "judge" || c.merge === "cli" ? c.merge : undefined;
+    if (c.open !== false && n === 80 && !merge) delete out.confer;
+    else out.confer = { open: c.open !== false, line_max: n, ...(merge ? {merge} : {}) };
   }
   // Quick commands, written in one shape whatever state the editor left them
   // in: what is the default is left out (the app reads it back the same), a

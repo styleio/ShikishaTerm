@@ -14,7 +14,9 @@
 //! * **stops** -- who stopped a tab, from where, and why.
 //! * **asks**, **lines**, **reactions**, **shares** -- AIs conferring: each
 //!   ask one tab made of another, the short lines said about it, the marks
-//!   put on them and the cards shared, shown together by `crate::convo::confer`.
+//!   put on them and the cards shared, shown together by `crate::convo::confer`;
+//!   **threads** and **thread_tabs** -- the conversations they belong to, and
+//!   who takes part in each.
 //!
 //! The words of a conversation are not kept here: they are in the CLI's
 //! record, and a second copy would be a second thing to drift and to leak.
@@ -47,6 +49,7 @@ const WHAT: &str = "the record of conversations";
 pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
     (2, "confer", Step::Sql(include_str!("migrations/0002_confer.sql"))),
+    (3, "threads", Step::Sql(include_str!("migrations/0003_threads.sql"))),
 ];
 
 /// The version the steps bring a record to
@@ -278,6 +281,17 @@ pub enum Said {
     },
 }
 
+/// One conversation, as the choice between them shows it
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ThreadRow {
+    pub id: i64,
+    pub last_at: i64,
+    /// Who takes part, in the order they joined
+    pub tabs: Vec<String>,
+    /// How it began: its first line
+    pub first: String,
+}
+
 impl Said {
     pub fn at(&self) -> i64 {
         match self {
@@ -353,6 +367,14 @@ impl Store {
                 params![before],
             )?;
             self.conn.execute("DELETE FROM shares WHERE shared_at < ?1", params![before])?;
+            // A conversation goes once nothing in it is kept
+            self.conn.execute(
+                "DELETE FROM threads WHERE last_at < ?1 \
+                 AND NOT EXISTS (SELECT 1 FROM lines WHERE lines.thread_id = threads.id) \
+                 AND NOT EXISTS (SELECT 1 FROM asks WHERE asks.thread_id = threads.id) \
+                 AND NOT EXISTS (SELECT 1 FROM shares WHERE shares.thread_id = threads.id)",
+                params![before],
+            )?;
             Ok(())
         })();
         match done {
@@ -467,13 +489,125 @@ impl Store {
 
     // -- the conference (the main loop) ------------------------------------------
 
-    /// An ask sent: `caller` asked `target` on `desk`. Its id, for its lines
-    pub fn ask_opened(&self, desk: &str, caller: Option<&str>, target: &str, text: &str, round: u32, at: i64) -> Result<i64> {
+    /// The conversation grown from `origin` ("tab/record": the tab that began
+    /// it and its CLI's conversation) on `desk`, begun now if there is none,
+    /// and followed to the one it was merged into. `.1`: it was begun now
+    pub fn thread_for(&self, desk: &str, origin: &str, at: i64) -> Result<(i64, bool)> {
+        let had: Option<(i64, Option<i64>)> = self
+            .conn
+            .query_row(
+                "SELECT id, merged_into FROM threads WHERE desk = ?1 AND origin = ?2 ORDER BY id DESC LIMIT 1",
+                params![desk, origin],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, into)) = had {
+            return Ok((self.followed(into.unwrap_or(id))?, false));
+        }
         self.conn.execute(
-            "INSERT INTO asks (desk, caller, target, text, state, round, asked_at) VALUES (?1, ?2, ?3, ?4, 'waiting', ?5, ?6)",
-            params![desk, caller, target, text, round, at],
+            "INSERT INTO threads (desk, origin, begun_at, last_at) VALUES (?1, ?2, ?3, ?3)",
+            params![desk, origin, at],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok((self.conn.last_insert_rowid(), true))
+    }
+
+    /// A conversation, followed through every merge to where its rows are now
+    fn followed(&self, mut id: i64) -> Result<i64> {
+        for _ in 0..16 {
+            let into: Option<i64> = self
+                .conn
+                .query_row("SELECT merged_into FROM threads WHERE id = ?1", params![id], |r| r.get(0))
+                .optional()?
+                .flatten();
+            match into {
+                Some(next) if next != id => id = next,
+                _ => break,
+            }
+        }
+        Ok(id)
+    }
+
+    /// `from` is found to be part of `into`: everything said in it, and who
+    /// took part, moves there, and `from` points on to it for whatever its
+    /// origin says next
+    pub fn merge_thread(&self, from: i64, into: i64) -> Result<()> {
+        let into = self.followed(into)?;
+        if from == into {
+            return Ok(());
+        }
+        self.conn.execute_batch("BEGIN")?;
+        let done = (|| -> Result<()> {
+            for table in ["asks", "lines", "shares"] {
+                self.conn
+                    .execute(&format!("UPDATE {table} SET thread_id = ?2 WHERE thread_id = ?1"), params![from, into])?;
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO thread_tabs (thread_id, tab, joined_at) \
+                 SELECT ?2, tab, joined_at FROM thread_tabs WHERE thread_id = ?1",
+                params![from, into],
+            )?;
+            self.conn.execute("DELETE FROM thread_tabs WHERE thread_id = ?1", params![from])?;
+            self.conn.execute(
+                "UPDATE threads SET last_at = MAX(last_at, (SELECT last_at FROM threads WHERE id = ?1)) WHERE id = ?2",
+                params![from, into],
+            )?;
+            self.conn.execute("UPDATE threads SET merged_into = ?2 WHERE id = ?1", params![from, into])?;
+            Ok(())
+        })();
+        match done {
+            Ok(()) => self.conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Something happened in a conversation at `at`, `tab` taking part
+    fn took_part(&self, thread: i64, tab: Option<&str>, at: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE threads SET last_at = MAX(last_at, ?2) WHERE id = ?1", params![thread, at])?;
+        if let Some(tab) = tab.filter(|t| !t.is_empty() && *t != "person") {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO thread_tabs (thread_id, tab, joined_at) VALUES (?1, ?2, ?3)",
+                params![thread, tab, at],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The conversation an ask was made in
+    pub fn thread_of_ask(&self, ask: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row("SELECT thread_id FROM asks WHERE id = ?1", params![ask], |r| r.get(0))
+            .optional()?
+            .flatten())
+    }
+
+    /// An ask sent in `thread`: `caller` asked `target` on `desk`. Its id,
+    /// for its lines. Both take part
+    #[allow(clippy::too_many_arguments)]
+    pub fn ask_opened(
+        &self,
+        desk: &str,
+        thread: i64,
+        caller: Option<&str>,
+        target: &str,
+        text: &str,
+        round: u32,
+        at: i64,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO asks (desk, thread_id, caller, target, text, state, round, asked_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'waiting', ?6, ?7)",
+            params![desk, thread, caller, target, text, round, at],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.took_part(thread, caller, at)?;
+        self.took_part(thread, Some(target), at)?;
+        Ok(id)
     }
 
     /// How an ask ended, and what was said back
@@ -485,13 +619,31 @@ impl Store {
         Ok(())
     }
 
-    /// A line said. Its id, for the marks put on it
-    pub fn line(&self, desk: &str, tab: Option<&str>, text: &str, ask: Option<i64>, how: &str, at: i64) -> Result<i64> {
+    /// A line said in `thread`. Its id, for the marks put on it. Who said it
+    /// takes part -- and the tabs a person names in it (`<@id>`), from then on
+    #[allow(clippy::too_many_arguments)]
+    pub fn line(
+        &self,
+        desk: &str,
+        thread: i64,
+        tab: Option<&str>,
+        text: &str,
+        ask: Option<i64>,
+        how: &str,
+        at: i64,
+    ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO lines (desk, tab, said_at, text, ask_id, how) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![desk, tab, at, text, ask, how],
+            "INSERT INTO lines (desk, thread_id, tab, said_at, text, ask_id, how) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![desk, thread, tab, at, text, ask, how],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        self.took_part(thread, tab, at)?;
+        if tab.is_none() {
+            for named in crate::asktab::named_in(text) {
+                self.took_part(thread, Some(&named), at)?;
+            }
+        }
+        Ok(id)
     }
 
     /// Whether the answer to `ask` has a line yet, in its own words or taken for it
@@ -507,14 +659,15 @@ impl Store {
             .is_some())
     }
 
-    /// The last line `tab` said on `desk` (`None`: the person's). A decision
-    /// is nobody's line to answer
-    pub fn last_line_of(&self, desk: &str, tab: Option<&str>) -> Result<Option<i64>> {
+    /// The last line `tab` said on `desk` (`None`: the person's) -- in
+    /// `thread` when one is named. A decision is nobody's line to answer
+    pub fn last_line_of(&self, desk: &str, thread: Option<i64>, tab: Option<&str>) -> Result<Option<i64>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id FROM lines WHERE desk = ?1 AND tab IS ?2 AND how != 'agreed' ORDER BY said_at DESC, id DESC LIMIT 1",
-                params![desk, tab],
+                "SELECT id FROM lines WHERE desk = ?1 AND tab IS ?2 AND how != 'agreed' AND (?3 IS NULL OR thread_id = ?3) \
+                 ORDER BY said_at DESC, id DESC LIMIT 1",
+                params![desk, tab, thread],
                 |r| r.get(0),
             )
             .optional()?)
@@ -538,14 +691,24 @@ impl Store {
             "INSERT INTO reactions (line_id, by, mark, marked_at) VALUES (?1, ?2, ?3, ?4)",
             params![line, by, mark, at],
         )?;
+        // Marking something in a conversation is taking part in it
+        let thread: Option<i64> = self
+            .conn
+            .query_row("SELECT thread_id FROM lines WHERE id = ?1", params![line], |r| r.get(0))
+            .optional()?
+            .flatten();
+        if let Some(t) = thread {
+            self.took_part(t, Some(by), at)?;
+        }
         Ok(true)
     }
 
-    /// A card shared
+    /// A card shared in `thread`
     #[allow(clippy::too_many_arguments)]
     pub fn shared(
         &self,
         desk: &str,
+        thread: i64,
         tab: &str,
         kind: &str,
         target: &str,
@@ -554,26 +717,55 @@ impl Store {
         at: i64,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO shares (desk, tab, shared_at, kind, target, title, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![desk, tab, at, kind, target, title, detail.to_string()],
+            "INSERT INTO shares (desk, thread_id, tab, shared_at, kind, target, title, detail) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![desk, thread, tab, at, kind, target, title, detail.to_string()],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        self.took_part(thread, Some(tab), at)?;
+        Ok(id)
     }
 
     // -- the conference (the panel's thread) -----------------------------------
 
-    /// A page of the conference on `desk`: what was said and shared before
-    /// `before`, the newest `want` of it, handed back oldest first -- the
-    /// way a chat reads
-    pub fn conference(&self, desk: &str, before: i64, want: usize) -> Result<Vec<Said>> {
+    /// The conversations on `desk` -- every one, or those `tab` takes part
+    /// in -- the one something was said in last first: who takes part and how
+    /// it began. One merged into another is not one of its own any more
+    pub fn threads(&self, desk: &str, tab: Option<&str>, want: usize) -> Result<Vec<ThreadRow>> {
+        let mut st = self.conn.prepare(
+            "SELECT t.id, t.last_at FROM threads t WHERE t.desk = ?1 AND t.merged_into IS NULL \
+             AND (?3 IS NULL OR EXISTS (SELECT 1 FROM thread_tabs m WHERE m.thread_id = t.id AND m.tab = ?3)) \
+             AND EXISTS (SELECT 1 FROM lines l WHERE l.thread_id = t.id) \
+             ORDER BY t.last_at DESC, t.id DESC LIMIT ?2",
+        )?;
+        let mut rows = st
+            .query_map(params![desk, want as i64, tab], |r| {
+                Ok(ThreadRow { id: r.get(0)?, last_at: r.get(1)?, tabs: Vec::new(), first: String::new() })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut who = self.conn.prepare("SELECT tab FROM thread_tabs WHERE thread_id = ?1 ORDER BY joined_at, tab")?;
+        let mut first = self
+            .conn
+            .prepare("SELECT text FROM lines WHERE thread_id = ?1 ORDER BY said_at, id LIMIT 1")?;
+        for t in rows.iter_mut() {
+            t.tabs = who.query_map(params![t.id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+            t.first = first.query_row(params![t.id], |r| r.get(0)).optional()?.unwrap_or_default();
+        }
+        Ok(rows)
+    }
+
+    /// A page of one conversation on `desk`: what was said and shared in it
+    /// before `before`, the newest `want` of it, handed back oldest first --
+    /// the way a chat reads
+    pub fn conference(&self, desk: &str, thread: i64, before: i64, want: usize) -> Result<Vec<Said>> {
         let mut out: Vec<Said> = Vec::new();
         let mut st = self.conn.prepare(
             "SELECT l.id, l.tab, l.said_at, l.text, l.how, a.id, a.caller, a.target, a.text, a.reply, a.state, a.round \
              FROM lines l LEFT JOIN asks a ON a.id = l.ask_id \
-             WHERE l.desk = ?1 AND l.said_at < ?2 ORDER BY l.said_at DESC, l.id DESC LIMIT ?3",
+             WHERE l.desk = ?1 AND l.thread_id = ?4 AND l.said_at < ?2 ORDER BY l.said_at DESC, l.id DESC LIMIT ?3",
         )?;
         let lines = st
-            .query_map(params![desk, before, want as i64], |r| {
+            .query_map(params![desk, before, want as i64, thread], |r| {
                 let ask = match r.get::<_, Option<i64>>(5)? {
                     None => None,
                     Some(id) => Some(AskRow {
@@ -600,10 +792,10 @@ impl Store {
         out.extend(lines);
         let mut st = self.conn.prepare(
             "SELECT id, tab, shared_at, kind, target, title, detail FROM shares \
-             WHERE desk = ?1 AND shared_at < ?2 ORDER BY shared_at DESC, id DESC LIMIT ?3",
+             WHERE desk = ?1 AND thread_id = ?4 AND shared_at < ?2 ORDER BY shared_at DESC, id DESC LIMIT ?3",
         )?;
         let shares = st
-            .query_map(params![desk, before, want as i64], |r| {
+            .query_map(params![desk, before, want as i64, thread], |r| {
                 Ok(Said::Share {
                     id: r.get(0)?,
                     tab: r.get(1)?,
@@ -989,56 +1181,96 @@ mod tests {
     #[test]
     fn the_conference_reads_as_a_chat_oldest_first_with_its_asks_and_marks() {
         let s = Store::in_memory().unwrap();
-        let ask = s.ask_opened("d", Some("otter"), "finch", "Review the parser in src/p.rs", 1, 10).unwrap();
-        let asked = s.line("d", Some("otter"), "Can you review the parser?", Some(ask), "ask", 10).unwrap();
+        let (t, begun) = s.thread_for("d", "otter/r1", 5).unwrap();
+        assert!(begun);
+        assert_eq!(s.thread_for("d", "otter/r1", 6).unwrap(), (t, false), "the same origin, the same conversation");
+        let ask = s.ask_opened("d", t, Some("otter"), "finch", "Review the parser in src/p.rs", 1, 10).unwrap();
+        let asked = s.line("d", t, Some("otter"), "Can you review the parser?", Some(ask), "ask", 10).unwrap();
         assert!(!s.ask_has_answer_line(ask).unwrap());
         s.ask_answered(ask, "DONE", Some("Two findings: ..."), 30).unwrap();
-        let said = s.line("d", Some("finch"), "Two small things, fixable.", Some(ask), "said", 30).unwrap();
+        let said = s.line("d", t, Some("finch"), "Two small things, fixable.", Some(ask), "said", 30).unwrap();
         assert!(s.ask_has_answer_line(ask).unwrap());
-        s.shared("d", "finch", "commit", "abc1234", "Fix the parser", &serde_json::json!({"branch": "main"}), 30).unwrap();
-        s.line("elsewhere", Some("otter"), "not this desk", None, "aside", 20).unwrap();
+        s.shared("d", t, "finch", "commit", "abc1234", "Fix the parser", &serde_json::json!({"branch": "main"}), 30).unwrap();
         assert!(s.toggle_mark(said, "otter", "👍", 40).unwrap());
         assert!(s.toggle_mark(said, "person", "👍", 41).unwrap());
         assert!(!s.toggle_mark(said, "person", "👍", 42).unwrap(), "the same mark again takes it off");
 
-        let page = s.conference("d", i64::MAX, 10).unwrap();
+        let page = s.conference("d", t, i64::MAX, 10).unwrap();
         assert_eq!(page.len(), 3, "{page:?}");
         let Said::Line { id, how, ask: Some(a), .. } = &page[0] else { panic!("{:?}", page[0]) };
         assert_eq!((*id, how.as_str(), a.target.as_str(), a.state.as_str()), (asked, "ask", "finch", "DONE"));
-        assert_eq!(a.reply.as_deref(), Some("Two findings: ..."));
         let Said::Line { marks, .. } = &page[1] else { panic!() };
         assert_eq!(marks, &vec![Mark { by: "otter".into(), mark: "👍".into() }]);
         assert!(matches!(&page[2], Said::Share { kind, .. } if kind == "commit"), "a card after the line said with it");
-
-        // Paged from the newest: the page before the last thing is what came earlier
-        let older = s.conference("d", 30, 10).unwrap();
-        assert_eq!(older.len(), 1);
-        assert_eq!(s.last_line_of("d", Some("finch")).unwrap(), Some(said));
-        assert_eq!(s.last_line_of("d", None).unwrap(), None, "the person said nothing");
+        assert_eq!(s.conference("d", t, 30, 10).unwrap().len(), 1, "the page before the last thing");
+        assert_eq!(s.last_line_of("d", Some(t), Some("finch")).unwrap(), Some(said));
         assert_eq!(s.desk_of_line(said).unwrap().as_deref(), Some("d"));
+        assert_eq!(s.thread_of_ask(ask).unwrap(), Some(t));
+    }
+
+    #[test]
+    fn two_conversations_at_once_read_apart_and_each_knows_who_is_in_it() {
+        let s = Store::in_memory().unwrap();
+        let (a, _) = s.thread_for("d", "otter/r1", 1).unwrap();
+        let (b, _) = s.thread_for("d", "heron/r9", 2).unwrap();
+        assert_ne!(a, b);
+        // A person names two tabs: both take part before either says a word
+        s.line("d", a, None, "<@otter> ask <@finch> to review it", None, "person", 3).unwrap();
+        let ask = s.ask_opened("d", b, Some("heron"), "gibbon", "deploy it", 1, 4).unwrap();
+        s.line("d", b, Some("heron"), "Can you deploy it?", Some(ask), "ask", 4).unwrap();
+        s.line("d", a, Some("otter"), "On it.", None, "aside", 5).unwrap();
+        assert_eq!(s.conference("d", a, i64::MAX, 10).unwrap().len(), 2);
+        assert_eq!(s.conference("d", b, i64::MAX, 10).unwrap().len(), 1);
+        let of = |tab: &str| s.threads("d", Some(tab), 10).unwrap().iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(of("finch"), vec![a], "named by the person, so in it");
+        assert_eq!(of("gibbon"), vec![b], "asked, so in it");
+        assert!(of("lynx").is_empty());
+        let all = s.threads("d", None, 10).unwrap();
+        assert_eq!(all.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b], "the one said in last first");
+        assert_eq!(all[0].tabs, vec!["finch".to_string(), "otter".into()]);
+        assert_eq!(all[0].first, "<@otter> ask <@finch> to review it");
+    }
+
+    #[test]
+    fn a_conversation_merged_into_another_moves_there_and_its_origin_follows() {
+        let s = Store::in_memory().unwrap();
+        let (a, _) = s.thread_for("d", "otter/r1", 1).unwrap();
+        s.line("d", a, Some("otter"), "first", None, "aside", 2).unwrap();
+        let (b, _) = s.thread_for("d", "finch/r2", 3).unwrap();
+        s.line("d", b, Some("finch"), "about the same thing", None, "aside", 4).unwrap();
+        s.merge_thread(b, a).unwrap();
+        assert_eq!(s.conference("d", a, i64::MAX, 10).unwrap().len(), 2);
+        assert_eq!(s.threads("d", None, 10).unwrap().len(), 1, "one conversation now");
+        assert_eq!(s.threads("d", Some("finch"), 10).unwrap()[0].id, a, "who took part moved with it");
+        assert_eq!(s.thread_for("d", "finch/r2", 5).unwrap(), (a, false), "its origin speaks into where it went");
     }
 
     #[test]
     fn the_conference_is_let_go_with_the_rest_and_a_line_takes_its_marks() {
         let s = Store::in_memory().unwrap();
-        let ask = s.ask_opened("d", None, "finch", "x", 1, 5).unwrap();
-        let l = s.line("d", Some("finch"), "ok", Some(ask), "said", 5).unwrap();
+        let (t, _) = s.thread_for("d", "finch/r", 5).unwrap();
+        let ask = s.ask_opened("d", t, None, "finch", "x", 1, 5).unwrap();
+        let l = s.line("d", t, Some("finch"), "ok", Some(ask), "said", 5).unwrap();
         s.toggle_mark(l, "person", "👍", 6).unwrap();
-        s.shared("d", "finch", "url", "https://example.com", "Example", &serde_json::json!({}), 5).unwrap();
-        s.forget_old(5 + KEEP_MS + 1).unwrap();
-        assert!(s.conference("d", i64::MAX, 10).unwrap().is_empty());
-        let marks: i64 = s.conn.query_row("SELECT COUNT(*) FROM reactions", [], |r| r.get(0)).unwrap();
-        assert_eq!(marks, 0);
+        s.shared("d", t, "finch", "url", "https://example.com", "Example", &serde_json::json!({}), 5).unwrap();
+        s.forget_old(6 + KEEP_MS + 1).unwrap();
+        assert!(s.conference("d", t, i64::MAX, 10).unwrap().is_empty());
+        let left: i64 = s
+            .conn
+            .query_row("SELECT (SELECT COUNT(*) FROM reactions) + (SELECT COUNT(*) FROM threads)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
     fn an_ask_stays_while_a_line_still_opens_onto_it() {
         let s = Store::in_memory().unwrap();
-        let ask = s.ask_opened("d", None, "finch", "the whole question", 1, 0).unwrap();
+        let (t, _) = s.thread_for("d", "finch/r", 0).unwrap();
+        let ask = s.ask_opened("d", t, None, "finch", "the whole question", 1, 0).unwrap();
         s.ask_answered(ask, "DONE", Some("the whole answer"), KEEP_MS).unwrap();
-        s.line("d", Some("finch"), "answered late", Some(ask), "said", KEEP_MS).unwrap();
+        s.line("d", t, Some("finch"), "answered late", Some(ask), "said", KEEP_MS).unwrap();
         s.forget_old(KEEP_MS + 10).unwrap();
-        let page = s.conference("d", i64::MAX, 10).unwrap();
+        let page = s.conference("d", t, i64::MAX, 10).unwrap();
         let Said::Line { ask: Some(a), .. } = &page[0] else { panic!("{page:?}") };
         assert_eq!(a.reply.as_deref(), Some("the whole answer"));
     }
