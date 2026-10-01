@@ -116,19 +116,8 @@ AI には1つずつ色があります（`--ai`。claude `#d97757`、codex `#19c3
 | `--alien5` | `#5fb4ff` 青 |
 | `--alien6` | `#8f7cf5` 藤 |
 | `--alien7` | `#4fcfc4` 青緑 |
-
-前の顔（`vendor/boring-avatars/beam.js`）も残してあり、`shell.rs` の `FACE_LOOK` を
-`"beam"` にすると戻ります。その顔は次の5色を使います。
-
-| 変数 | 値 |
-|---|---|
-| `--face1` | `#5fa0f5` 青 |
-| `--face2` | `#f096a6` 桃 |
-| `--face3` | `#ffce2d` 黄 |
-| `--face4` | `#8390eb` 藤 |
-| `--face5` | `#f7cd9e` 杏 |
 | `--face-ink` | `#212021` 目と口（明るい地の上） |
-| `--face-ink-light` | `#ffffff` 目と口（暗い地の上。今の5色では出ない） |
+| `--face-ink-light` | `#ffffff` 目と口（暗い地の上） |
 
 **顔の円の中だけで使う。** 名前の文字、点、枠、棒、背景には使いません。青は
 `--brand`、黄は `--warn` に近い色なので、円の外に出すと状態を言っているように

@@ -122,19 +122,8 @@ the other.
 | `--alien5` | `#5fb4ff` blue |
 | `--alien6` | `#8f7cf5` lavender |
 | `--alien7` | `#4fcfc4` teal |
-
-The faces before them (`vendor/boring-avatars/beam.js`) are kept: `FACE_LOOK`
-in `shell.rs` set to `"beam"` puts them back. They use these five colours.
-
-| Variable | Value |
-|---|---|
-| `--face1` | `#5fa0f5` blue |
-| `--face2` | `#f096a6` pink |
-| `--face3` | `#ffce2d` yellow |
-| `--face4` | `#8390eb` lavender |
-| `--face5` | `#f7cd9e` apricot |
 | `--face-ink` | `#212021` eyes and mouth on a light body |
-| `--face-ink-light` | `#ffffff` eyes and mouth on a dark body (none of the five today) |
+| `--face-ink-light` | `#ffffff` eyes and mouth on a dark body |
 
 **Inside the face's disc and nowhere else.** Not on a name, a dot, a border, a
 bar or a background. The blue sits near `--brand` and the yellow near `--warn`;

@@ -19,14 +19,21 @@
 // to a circle): the board is rebuilt several times a second, and an SVG clip
 // would need an id unique on the page.
 
-function alienFace(name, colors, ink, small, pair) {
-  // FNV-1a over the name, then a small generator from it: each part takes
-  // its own draw, so one part's choice does not decide another's
+// A name as a 32-bit number (FNV-1a): where every face starts, and what the
+// board hashes a tab by when it hands out colours (cfPair in shell.rs)
+function faceHash(name) {
   let h = 0x811c9dc5;
   for (let i = 0; i < name.length; i++) {
     h ^= name.charCodeAt(i);
     h = Math.imul(h, 0x01000193) >>> 0;
   }
+  return h;
+}
+
+function alienFace(name, colors, ink, small, pair) {
+  // A small generator from the name's hash: each part takes its own draw, so
+  // one part's choice does not decide another's
+  let h = faceHash(name);
   const next = () => {
     h = (h + 0x6d2b79f5) >>> 0;
     let t = h;

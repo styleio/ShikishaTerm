@@ -223,12 +223,9 @@ impl Scheme {
         // A surface that leans toward the accent -- the bar that is loading,
         // the button that is armed
         out.push_str(&format!("--tint:{};", mix(&bg, "#00aaff", 0.16)));
-        // A tab's face (vendor/boring-avatars/beam.js): five colours it is
-        // drawn from and the two inks its eyes and mouth take. The app's, not
-        // the scheme's, like --brand: a face is who a tab is, and it must not
-        // turn into someone else when the scheme changes. Soft on purpose, so
-        // a disc of them reads as a character and never as a state
-        out.push_str("--face1:#5fa0f5;--face2:#f096a6;--face3:#ffce2d;--face4:#8390eb;--face5:#f7cd9e;");
+        // A tab's face (face.js): the two inks its eyes and mouth take. The
+        // app's, not the scheme's, like --brand: a face is who a tab is, and
+        // it must not turn into someone else when the scheme changes
         out.push_str("--face-ink:#212021;--face-ink-light:#ffffff;");
         // The aliens (face.js): seven colours, the robots' on the site; a body
         // is painted in one and its ground in another

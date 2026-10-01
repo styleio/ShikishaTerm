@@ -14201,7 +14201,7 @@ function convoSoon(key) {
 // answered. Kept by the app, so the phone shows the same and a restart
 // loses nothing.
 //
-// A face per tab (vendor/boring-avatars/beam.js, STYLEGUIDE "A tab's face"),
+// A face per tab (face.js, STYLEGUIDE "A tab's face"),
 // drawn from the desk and the tab's id so it is the same tab's face wherever
 // it appears, and made once.
 let cvConfer = false;    // the panel is showing the conference, not a conversation
@@ -14237,14 +14237,10 @@ for (const ev of ["pointerdown", "keydown", "wheel"]) {
 }
 
 const cfFaces = new Map();
-// Which faces are drawn: "aliens" (face.js) or "beam"
-// (vendor/boring-avatars/beam.js, the faces before them, kept so this one
-// word puts them back)
-const FACE_LOOK = "aliens";
-// How many colours a face is painted from: the aliens' seven or beam's five
-const FACE_COLOURS = FACE_LOOK === "beam" ? 5 : 7;
+// How many colours a face is painted from (--alien1 to --alien7)
+const FACE_COLOURS = 7;
 // Every body and background two of the face colours can make, never both of
-// one: twenty for beam, forty-two for the aliens
+// one: forty-two
 const CF_PAIRS = [...Array(FACE_COLOURS).keys()].flatMap(b =>
   [...Array(FACE_COLOURS - 1).keys()].map(k => [b, (b + k + 1) % FACE_COLOURS]));
 let cfPairsFor = "", cfPairOf = new Map();
@@ -14271,7 +14267,7 @@ function cfPair(id) {
     const taken = new Set(), bodies = new Set();
     const n = CF_PAIRS.length;
     for (const x of list) {
-      const want = beamHash(desk + "/" + x) % n;
+      const want = faceHash(desk + "/" + x) % n;
       const from = (test) => { for (let i = 0; i < n; i++) { const k = (want + i) % n; if (test(k)) return k; } return -1; };
       let k = from(k => !taken.has(k) && !bodies.has(CF_PAIRS[k][0]));
       if (k < 0) k = from(k => !taken.has(k));
@@ -14296,9 +14292,7 @@ function cfFace(id, cls) {
     const v = n => css.getPropertyValue(n).trim();
     const ink = [v("--face-ink"), v("--face-ink-light")];
     const all = (name) => [...Array(FACE_COLOURS).keys()].map(i => v(name + (i + 1)));
-    svg = FACE_LOOK === "beam"
-      ? beamFace(seed, all("--face"), ink, pair)
-      : alienFace(seed, all("--alien"), ink, small, pair);
+    svg = alienFace(seed, all("--alien"), ink, small, pair);
     cfFaces.set(key, svg);
   }
   const s = el("span", {class: "cfface" + (cls ? " " + cls : "")});
@@ -23336,14 +23330,8 @@ fn px(n: i32) -> String {
     format!("{n}px")
 }
 
-/// A tab's face, drawn from its name: an alien (`face.js`), and
-/// the faces before them (`vendor/boring-avatars/beam.js`), which the page's
-/// `FACE_LOOK` can put back
-const FACE_JS: &str = concat!(
-    include_str!("face.js"),
-    "\n",
-    include_str!("../../../vendor/boring-avatars/beam.js")
-);
+/// A tab's face, drawn from its name: an alien (`face.js`)
+const FACE_JS: &str = include_str!("face.js");
 
 /// The page with the face drawer put in where it is asked for (`{{FACE_JS}}`)
 pub fn with_faces(page: String) -> String {
