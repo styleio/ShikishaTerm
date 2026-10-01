@@ -81,6 +81,10 @@ pub struct Saved {
     /// When this app let go of it, leaving it running, in seconds since 1970
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left: Option<u64>,
+    /// It was told to stop, and its end was not seen yet: the next start
+    /// that finds it stops it again rather than going back to it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
 }
 
 impl Saved {
@@ -133,6 +137,19 @@ fn strike(all: &mut Vec<Saved>, machine: &str, generation: &str, term: u64) {
     all.retain(|o| !(o.machine == machine && o.generation == generation && o.term == term));
 }
 
+/// What a terminal is to do while the app is away, as the resident process
+/// is told it. A MicroVM set to go on for a while is paused by the service
+/// when that time is up (`e2b::keep_up_while_away`), freezing the AI where
+/// it was, to be taken up again on the next start (far-keep plan §5): its
+/// resident process keeps the terminal, rather than ending the AI on a clock
+/// of its own that a pause stops and a start takes up again
+fn on_the_line(at: &crate::elsewhere::Elsewhere, away: crate::config::Away) -> Value {
+    match (at, away) {
+        (crate::elsewhere::Elsewhere::Cloud(_), crate::config::Away::Minutes(_)) => crate::config::Away::Always.on_the_line(),
+        _ => away.on_the_line(),
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -158,7 +175,7 @@ pub fn left_running(at: &crate::elsewhere::Elsewhere, cwd: &str, tab: &str) -> O
     let found = said["terms"].as_array()?.iter().find(|t| {
         t["tab"] == tab && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false
     })?;
-    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs(), left: None };
+    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs(), left: None, stopping: false };
     crate::append_hook_log(&format!("far terminal {}: found on {} for {tab}, with nothing written down about it", s.term, at.address()));
     change_saved(|all| put(all, s.clone()));
     Some(s)
@@ -281,7 +298,7 @@ fn ask_open(
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
     let asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
-        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": away.on_the_line() });
+        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away) });
     if !link.to_job(JOB, asked) {
         bail!("the bridge on {} could not be asked for a terminal", at.address());
     }
@@ -303,6 +320,7 @@ fn ask_open(
                 term,
                 since: now_secs(),
                 left: None,
+                stopping: false,
             },
         )
     });
@@ -327,8 +345,9 @@ pub struct FarTerm {
     /// what a terminal found ended is opened again with
     cwd: Option<String>,
     then: Option<String>,
-    /// What it does while this app is away (far-keep plan §4.3)
-    away: crate::config::Away,
+    /// What it does while this app is away (far-keep plan §4.3): changed
+    /// when the person changes the machine's setting
+    away: Mutex<crate::config::Away>,
     owner: AtomicU64,
     /// Where it is, and the line to it now: a line that went and came back
     /// is another line
@@ -343,6 +362,9 @@ pub struct FarTerm {
     let_go: AtomicBool,
     /// Gone back to after a start: when the app before let go of it
     left: Mutex<Option<u64>>,
+    /// Gone back to after a start: it was told to stop, and its end was not
+    /// seen -- stopped again if it still runs, and a new one started
+    stopping: AtomicBool,
     /// On a MicroVM, counted as a terminal of this app open there for as
     /// long as it is held: the machine is in use
     open_there: Mutex<Option<crate::e2b::Opened>>,
@@ -369,7 +391,7 @@ impl FarTerm {
             tab: tab.to_string(),
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
-            away,
+            away: Mutex::new(away),
             owner: AtomicU64::new(0),
             at: at.clone(),
             link: Mutex::new(None),
@@ -378,6 +400,7 @@ impl FarTerm {
             ended: AtomicBool::new(false),
             let_go: AtomicBool::new(false),
             left: Mutex::new(None),
+            stopping: AtomicBool::new(false),
             open_there: Mutex::new(match at {
                 crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().map(crate::e2b::Opened::new),
                 crate::elsewhere::Elsewhere::Ssh(_) => None,
@@ -404,12 +427,26 @@ impl FarTerm {
 
     /// Whether its AI goes on once this app went (far-keep plan §4.3)
     pub fn keeps(&self) -> bool {
-        self.away.keeps()
+        self.away().keeps()
     }
 
     /// What it does while this app is away
     pub fn away(&self) -> crate::config::Away {
-        self.away
+        self.away.lock().map(|a| *a).unwrap_or(crate::config::Away::Stop)
+    }
+
+    /// The person changed what its machine's AIs do while the app is away:
+    /// from now on, here and there
+    pub fn set_away(&self, away: crate::config::Away) {
+        let was = self.away.lock().map(|mut a| std::mem::replace(&mut *a, away)).unwrap_or(away);
+        if was == away {
+            return;
+        }
+        crate::append_hook_log(&format!("far terminal {}: while the app is away, now {away:?} (was {was:?})", self.term()));
+        let owner = self.owner.load(Ordering::SeqCst);
+        if owner != 0 {
+            self.say(json!({ "do": "set_away", "term": self.term(), "owner": owner, "away": on_the_line(&self.at, away) }));
+        }
     }
 
     /// Let go of it without stopping it: the line is left, and what runs
@@ -425,7 +462,7 @@ impl FarTerm {
                 s.left = Some(now_secs());
             }
         });
-        crate::append_hook_log(&format!("far terminal {}: let go of, left running ({:?})", self.term(), self.away));
+        crate::append_hook_log(&format!("far terminal {}: let go of, left running ({:?})", self.term(), self.away()));
     }
 
     fn generation(&self) -> String {
@@ -439,7 +476,7 @@ impl FarTerm {
     fn attach_message(&self) -> Value {
         let (rows, cols) = self.size.lock().map(|s| *s).unwrap_or((24, 80));
         json!({ "do": "attach", "term": self.term(), "gen": self.generation(), "tab": self.tab, "rows": rows, "cols": cols,
-            "away": self.away.on_the_line() })
+            "away": on_the_line(&self.at, self.away()) })
     }
 
     /// The line is up: be routed its messages again and attach, which hands
@@ -453,6 +490,16 @@ impl FarTerm {
             *l = Some(Arc::clone(&link));
         }
         link.to_job(JOB, self.attach_message()).then_some(rx)
+    }
+
+    /// Told to stop: written down as stopping until its end is seen
+    fn stopping(&self) {
+        let (machine, generation, term) = (self.at.machine_key(), self.generation(), self.term());
+        change_saved(|all| {
+            if let Some(s) = all.iter_mut().find(|s| s.machine == machine && s.generation == generation && s.term == term) {
+                s.stopping = true;
+            }
+        });
     }
 
     /// Nothing of it is kept there or here any more
@@ -557,6 +604,7 @@ pub fn reattach(
     if let Ok(mut l) = term.left.lock() {
         *l = saved.left;
     }
+    term.stopping.store(saved.stopping, Ordering::SeqCst);
     // Read as a line that went: the reader attaches as soon as it is up
     let (_, gone) = channel();
     made(term, gone, true, false)
@@ -617,7 +665,7 @@ impl FarReader {
     /// Or there was none yet (`open_later`), and this is its first
     fn open_in_its_place(&mut self) -> bool {
         let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
-        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.away) {
+        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.away()) {
             Ok((id, generation, rx, link)) => {
                 if self.fresh {
                     crate::append_hook_log(&format!("far terminal {id} opened on {} once its line was up", self.term.at.address()));
@@ -708,6 +756,14 @@ impl std::io::Read for FarReader {
                 }
             };
             match m["did"].as_str().unwrap_or_default() {
+                // It was told to stop, and still runs: stopped now, and once
+                // its end is seen a new one is started in its place
+                "attached" if self.again && self.term.stopping.load(Ordering::SeqCst) => {
+                    let owner = m["owner"].as_u64().unwrap_or(0);
+                    self.term.owner.store(owner, Ordering::SeqCst);
+                    crate::append_hook_log(&format!("far terminal {}: told to stop before, still running; stopped again", self.term.term()));
+                    self.term.say(json!({ "do": "stop", "term": self.term.term(), "owner": owner }));
+                }
                 "attached" => {
                     // A MicroVM paused while the app was away froze what ran
                     // on it: an AI in the middle of a reply may have lost it
@@ -783,6 +839,12 @@ impl std::io::Read for FarReader {
                         m["why"].as_str().unwrap_or_default()
                     ));
                     self.term.struck_out();
+                    // One told to stop: whatever became of it, it was not to
+                    // be gone back to, and the tab starts afresh
+                    if self.again && self.term.stopping.load(Ordering::SeqCst) && !self.term.let_go.load(Ordering::SeqCst) {
+                        self.open_in_its_place();
+                        continue;
+                    }
                     self.term.ended.store(true, Ordering::SeqCst);
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;
@@ -908,10 +970,10 @@ impl portable_pty::ChildKiller for FarKiller {
             self.term.say(json!({ "do": "end", "term": self.term.term(), "gen": self.term.generation() }))
         };
         if told {
-            // Said on the line ahead of anything after it -- the app saying it
-            // is going, as it quits, and the wait for the line to be written
-            // out -- so it is not to be gone back to
-            self.term.struck_out();
+            // Said, which is not yet heard: written down as stopping until
+            // its end comes back on the line (the reader strikes it out
+            // then). A start that finds it still running stops it again
+            self.term.stopping();
         } else {
             // The line is down: nothing here can stop it. It stays written
             // down, and the next start goes back to it rather than starting a
@@ -934,7 +996,7 @@ mod tests {
     use super::*;
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
-        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, left: None }
+        Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, left: None, stopping: false }
     }
 
     /// A tab has one terminal written down, the last it opened; one is struck

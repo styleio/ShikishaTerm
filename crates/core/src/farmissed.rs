@@ -33,6 +33,10 @@ pub const DAYS: u64 = 14;
 /// One call that did not reach its app
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Missed {
+    /// Its own number in the book, never given twice: what it is struck out
+    /// by (two calls of one tab, one command, in one second are two calls)
+    #[serde(default)]
+    pub id: u64,
     /// When, in seconds since 1970
     pub at: u64,
     /// Which tab made it, by the name its key file has (`farlink::key_name`).
@@ -59,11 +63,16 @@ pub struct Book {
     pub dropped_from: u64,
     #[serde(default)]
     pub dropped_to: u64,
+    /// The number the next call written down is given
+    #[serde(default)]
+    pub next: u64,
 }
 
 impl Book {
     /// Write a call down, letting go of what is past the limits as of `now`
-    pub fn add(&mut self, call: Missed, now: u64) {
+    pub fn add(&mut self, mut call: Missed, now: u64) {
+        self.next += 1;
+        call.id = self.next;
         self.calls.push(call);
         self.trim(now);
     }
@@ -94,8 +103,11 @@ impl Book {
     /// command. `None` strikes out every one, and the count of those let go
     pub fn seen(&mut self, which: Option<&[Missed]>) {
         match which {
-            None => *self = Book::default(),
-            Some(list) => self.calls.retain(|c| !list.iter().any(|s| s.at == c.at && s.tab == c.tab && s.method == c.method)),
+            None => {
+                let next = self.next;
+                *self = Book { next, ..Book::default() };
+            }
+            Some(list) => self.calls.retain(|c| !list.iter().any(|s| s.id == c.id)),
         }
     }
 }
@@ -138,7 +150,7 @@ mod tests {
     use super::*;
 
     fn call(at: u64) -> Missed {
-        Missed { at, tab: "t".into(), method: "ask_tab".into(), to: String::new(), cut: false }
+        Missed { id: 0, at, tab: "t".into(), method: "ask_tab".into(), to: String::new(), cut: false }
     }
 
     /// Past the count or the age, calls are let go of -- and counted, with
@@ -164,14 +176,16 @@ mod tests {
     #[test]
     fn what_was_looked_at_is_struck_out() {
         let mut b = Book::default();
-        for at in [10, 20, 30] {
+        for at in [10, 20, 20, 30] {
             b.add(call(at), 40);
         }
-        b.seen(Some(&[call(20)]));
-        assert_eq!(b.calls.iter().map(|c| c.at).collect::<Vec<_>>(), vec![10, 30]);
+        // The second of two calls in one second, by its own number
+        let second = b.calls[2].clone();
+        b.seen(Some(&[second]));
+        assert_eq!(b.calls.iter().map(|c| (c.at, c.id)).collect::<Vec<_>>(), vec![(10, 1), (20, 2), (30, 4)]);
         b.dropped = 3;
         b.seen(None);
-        assert_eq!(b, Book::default());
+        assert_eq!((b.calls.len(), b.dropped, b.next), (0, 0, 4), "struck out, and numbers never given twice");
     }
 
     /// Only a command's name and a tab's name are taken from the line: never

@@ -4370,6 +4370,22 @@ impl Tab {
         }
     }
 
+    /// The person changed what this machine's AIs do while the app is away:
+    /// a terminal the bridge holds follows it from now on. Whether a tab's
+    /// terminal is held at all is settled when it starts, and changes with a
+    /// restart of the tab
+    pub fn refresh_away(&self, cfg: &crate::config::Config) {
+        let Some(t) = self.far_term.as_ref() else { return };
+        let away = self
+            .opts
+            .host
+            .as_deref()
+            .and_then(|h| cfg.hosts.iter().find(|s| s.name == h))
+            .and_then(|s| s.away_now())
+            .unwrap_or(crate::config::Away::Stop);
+        t.set_away(away);
+    }
+
     /// Leave the tab without stopping what runs in it (far-keep plan §7,
     /// "disconnect"): a terminal the bridge holds and is set to keep goes on
     /// there, and the next start goes back to it. Anything else has nothing

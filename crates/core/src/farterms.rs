@@ -325,10 +325,13 @@ impl Terms {
                 }
             }
         }
-        let path = home.join(HELD_FILE);
+        // One writer at a time, and the file replaced whole: the next
+        // resident process reads either the list before or the list after
+        static WRITING: Mutex<()> = Mutex::new(());
+        let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         let text = serde_json::to_string(&all).unwrap_or_default();
-        if let Err(e) = std::fs::write(&path, text) {
-            crate::fardaemon::log(&format!("the terminals held could not be written down: {e}"));
+        if let Err(e) = crate::fardaemon::write_private(&home.join(HELD_FILE), &text) {
+            crate::fardaemon::log(&format!("the terminals held could not be written down: {e:#}"));
         }
     }
 
@@ -670,6 +673,17 @@ impl Job for Terms {
                     None => json!({ "did": "unknown", "ref": m["ref"], "term": id, "why": "no such terminal here" }),
                 })
             }
+            // What it does while nobody owns it, changed by its owner: the
+            // person changed the machine's setting while the app runs (§4.3)
+            "set_away" => match self.owned(line, m) {
+                Ok(term) => {
+                    if let (Some(away), Ok(mut seen)) = (Away::read(&m["away"]), term.seen.lock()) {
+                        seen.away = away;
+                    }
+                    None
+                }
+                Err(no) => Some(no),
+            },
             // Every one, as the bridge is taken off the machine (§7.7)
             "end_all" => {
                 self.end();

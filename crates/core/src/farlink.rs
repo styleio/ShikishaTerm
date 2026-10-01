@@ -840,16 +840,23 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         bail!("refusing to delete {home}");
     }
     // A resident process this app had no line to -- one holding AIs while the
-    // app was away -- is told to end too, and its terminals go with it
-    crate::elsewhere::exec(
+    // app was away -- is told to end too (it ends its terminals' programs
+    // first), and the folder goes only once it is seen gone: one that does
+    // not go leaves the removal undone, to be tried again
+    let daemon = crate::ssh::sh_quote(&format!("{home}/shikisha-bridge-[^ ]* daemon"));
+    let ran = crate::elsewhere::exec(
         at,
         &format!(
-            "pkill -TERM -f {} 2>/dev/null; sleep 1; rm -rf {}",
-            crate::ssh::sh_quote(&format!("{home}/shikisha-bridge-[^ ]* daemon")),
-            crate::ssh::sh_quote(&home)
+            "pkill -TERM -f {daemon} 2>/dev/null; i=0; \
+             while pgrep -f {daemon} >/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done; \
+             if pgrep -f {daemon} >/dev/null; then echo still-running; else rm -rf {home}; fi",
+            home = crate::ssh::sh_quote(&home)
         ),
         60_000,
     )?;
+    if ran.out.contains("still-running") {
+        bail!("the bridge's resident process on {} did not end; its folder is left, to be taken off again", at.address());
+    }
     // Its terminals went with it: none is to be gone back to
     crate::farterm::forget_machine(at);
     crate::append_hook_log(&format!("bridge: removed from {}", at.address()));

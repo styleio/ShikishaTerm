@@ -382,6 +382,29 @@ try {
   await until(async () => Number(await children()) === 0, 'the AI to stop', 30000)
     .then(() => check(true, 'the AI was stopped'))
     .catch(async () => check(false, 'the AI was stopped: ' + (await children()) + ' left'));
+
+  console.log('12. the setting changed while the app runs reaches what is held; taking the bridge off stops it all');
+  since = await restart();
+  await until(() => /far terminal \d+ opened on/.test(since()), 'a held terminal', 240000);
+  const settings = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+  settings.hosts[0].away = 'stop';
+  fs.writeFileSync(CONFIG, JSON.stringify(settings, null, 2));
+  await until(() => /while the app is away, now Stop/.test(since()), 'the change to reach the held terminal', 60000)
+    .then(() => check(true, 'a change of the setting reaches the AI held now'))
+    .catch(() => check(false, 'a change of the setting reaches the AI held now: ' + bridgeLines(since())));
+  await sleep(2000);
+  // The other app of step 4 lets go first: taking the bridge off from under
+  // an app still connected to it is refused, as it should be
+  await inside(`pkill -f '${BRIDGE_DIR}/shikisha-bridge-0.0.9-otherbuild serve'; pkill -f 'sleep 5'; true`);
+  await sleep(3000);
+  settings.bridges = [];
+  delete settings.hosts[0].away;
+  fs.writeFileSync(CONFIG, JSON.stringify(settings, null, 2));
+  await until(() => /bridge: removed from/.test(since()), 'the bridge to be taken off', 120000)
+    .then(() => check(true, 'the bridge was taken off'))
+    .catch(() => check(false, 'the bridge was taken off: ' + bridgeLines(since())));
+  const leftThere = await inside(`ls ${BRIDGE_DIR} 2>&1 | head -3; pgrep -f 'shikisha-bridge-[^ ]* daemon' | wc -l`);
+  check(/No such file/.test(leftThere) && /\b0\s*$/.test(leftThere), 'nothing of it is left there, and its resident process ended: ' + leftThere);
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + (e.stack || e));

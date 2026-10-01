@@ -3250,6 +3250,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Reload and apply once the config is saved (no app restart needed)
         if watcher.changed()
             && let Some(newcfg) = config::load() {
+                // What each held terminal does while the app is away follows the
+                // machine's setting as it is now (far-keep plan §4.3)
+                for t in tabs.iter().chain(desk_tabs.iter().flatten()) {
+                    t.refresh_away(&newcfg);
+                }
                 let (new_ws, errs) = newcfg.resolve_desks();
                 startup_errors.extend(errs);
                 // Which desk was active before this reload. Its live tabs are

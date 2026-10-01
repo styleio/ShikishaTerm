@@ -277,7 +277,7 @@ fn read_private(file: &Path) -> Result<String> {
 
 /// Written so that only this account can read it, and never half written:
 /// made under another name first, then moved into place
-fn write_private(file: &Path, text: &str) -> Result<()> {
+pub(crate) fn write_private(file: &Path, text: &str) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt as _;
     let part = file.with_extension(format!("part{}", std::process::id()));
     let _ = std::fs::remove_file(&part);
@@ -369,8 +369,22 @@ fn hello(core: &Core) -> Frame {
 /// one started at the same moment finds the first answering and leaves
 /// without touching anything. A socket left by one that died is only removed
 /// by the one holding the lock, after it did not answer
+/// Set when the resident process is told to end (SIGTERM): it leaves its
+/// loop as if nothing were left to hold, so every job ends what it holds --
+/// the terminals' programs with it -- before it goes
+static TOLD_TO_END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_term(_: libc::c_int) {
+    TOLD_TO_END.store(true, Ordering::SeqCst);
+}
+
 pub fn daemon(home: PathBuf) -> Result<()> {
     hold_program(&home);
+    // SAFETY: the handler only stores to an atomic, which is all a signal
+    // handler may do
+    unsafe {
+        libc::signal(libc::SIGTERM, on_term as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
     crate::farops::set_home(home.clone());
     let run = home.join("run");
     std::fs::create_dir_all(&run)?;
@@ -445,6 +459,10 @@ pub fn daemon(home: PathBuf) -> Result<()> {
             core.drop_line(line);
         }
         if core.done() {
+            break;
+        }
+        if TOLD_TO_END.load(Ordering::SeqCst) {
+            log("told to end; ending what is held");
             break;
         }
     }
@@ -596,7 +614,7 @@ impl TabsJob {
         if method.is_empty() {
             return;
         }
-        let call = crate::farmissed::Missed { at: now_secs(), tab: tab.to_string(), method, to, cut };
+        let call = crate::farmissed::Missed { id: 0, at: now_secs(), tab: tab.to_string(), method, to, cut };
         let book = self.with_book(|b| {
             b.add(call, now_secs());
             b.clone()

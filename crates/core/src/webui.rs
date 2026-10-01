@@ -10690,6 +10690,10 @@ function hostDialog(at, redraw, kind, done) {
       fieldFault(atIn, atWhy);
       if (atWhy && !first) first = {at: atIn, why: atWhy};
     }
+    // A set time with no time typed: nothing would be written for it
+    if (!first && bridgeIn.checked && awayFor.checked && !awayHoursGiven()) {
+      first = {at: awayHours, why: T["settings.away.hours_required"]};
+    }
     held = first;
     save.classList.toggle("held", !!held);
     if (!held) why.hidden = true;
@@ -10787,12 +10791,13 @@ function hostDialog(at, redraw, kind, done) {
     awayFor.checked = true;
     awayHours.value = String(Math.max(1, Math.round(awayWas.minutes / 60)));
   }
-  if (!awayHours.value) awayHours.value = made ? "1" : "8";
-  awayHours.addEventListener("input", () => { awayFor.checked = true; });
+  // No number is put in for the person: a time is theirs to type
+  awayHours.addEventListener("input", () => { awayFor.checked = true; showAway(); recheck(); });
   const awayUnchosen = el("div", {class:"hint"}, T["settings.away.unchosen"]);
+  const awayHoursGiven = () => { const n = parseInt(awayHours.value, 10); return Number.isFinite(n) && n > 0 ? n : null; };
   const awayChoice = () => awayStop.checked ? "stop"
     : awayAlways.checked ? "always"
-    : awayFor.checked ? {minutes: Math.max(1, parseInt(awayHours.value, 10) || 1) * 60}
+    : awayFor.checked && awayHoursGiven() ? {minutes: awayHoursGiven() * 60}
     : undefined;
   const awayShown = el("div", {class:"hint mono"});
   const showAway = () => {
@@ -10802,7 +10807,7 @@ function hostDialog(at, redraw, kind, done) {
     const on = bridgeIn.checked;
     for (const i of [awayStop, awayFor, awayHours, awayAlways]) i.disabled = !on;
   };
-  for (const i of [awayStop, awayFor, awayHours, awayAlways]) i.addEventListener("change", showAway);
+  for (const i of [awayStop, awayFor, awayHours, awayAlways]) i.addEventListener("change", () => { showAway(); recheck(); });
   bridgeIn.addEventListener("change", showAway);
   // What runs there now, while the app is away or not, and the calls that
   // did not get through: only for an entry already saved with the bridge
@@ -10818,6 +10823,8 @@ function hostDialog(at, redraw, kind, done) {
     } catch (e) { return {ok:false, error: String(e)}; }
   };
   let heldNow = [];
+  // Whether what runs there could be listed: no line, no count
+  let heldKnown = false;
   async function drawHeld() {
     const name = (h.name || "").trim();
     let j = null;
@@ -10826,6 +10833,7 @@ function hostDialog(at, redraw, kind, done) {
     heldBox.textContent = "";
     heldNow = [];
     const machines = (j && j.machines) || [];
+    heldKnown = machines.length > 0;
     if (!machines.length) { heldBox.append(el("div", {class:"hint"}, T["settings.away.list.no_line"])); return; }
     for (const m of machines) for (const t of (m.terms || [])) if (!t.ended) heldNow.push({m, t});
     if (!heldNow.length) { heldBox.append(el("div", {class:"hint"}, T["settings.away.list.none"])); return; }
@@ -10900,6 +10908,7 @@ function hostDialog(at, redraw, kind, done) {
     el("div", {class:"hint"}, T[made ? "settings.away.cost.e2b" : "settings.away.cost.ssh"]),
     el("div", {class:"hint"}, T["settings.away.boundary"]),
     el("div", {class:"hint"}, T["settings.away.needs_bridge"]),
+    el("div", {class:"hint"}, T["settings.away.applies"]),
     awayStopL,
     el("div", {class:"row"}, awayForL, awayHours, el("span", {class:"hint"}, T["settings.away.hours"])),
     made ? el("div", {class:"hint"}, T["settings.away.e2b_limit"]) : awayAlwaysL,
@@ -10992,9 +11001,13 @@ function hostDialog(at, redraw, kind, done) {
     // plan §7.7): said, with how many, before it is done
     if (listed && !bridgeIn.checked) {
       await drawHeld();
-      if (heldNow.length && !await confirmAction(
-          fill(T["settings.away.remove_running"], {n: String(heldNow.length), name: (h.name || "").trim()}),
-          T["settings.away.remove_stop"])) return;
+      const name = (h.name || "").trim();
+      // Not counted -- this app has no line there now -- is said as not
+      // known, never taken for none
+      const asked = !heldKnown ? fill(T["settings.away.remove_unknown"], {name})
+        : heldNow.length ? fill(T["settings.away.remove_running"], {n: String(heldNow.length), name})
+        : null;
+      if (asked && !await confirmAction(asked, T["settings.away.remove_stop"])) return;
     }
     // A host with folders on it keeps its name and its kind: the folders find
     // it by that name, and one renamed away from under them is a folder whose
