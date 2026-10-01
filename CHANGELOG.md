@@ -19,6 +19,13 @@ once it reaches its first tagged release.
   its screen never stopped moving: the tab read as working forever, and work
   handed to it with @ was never sent -- the asking AI waited, was told it was
   still working, and gave up. The dots no longer count as the screen moving.
+- **A Claude Code tab whose turn has ended is not held "running in the
+  background" by a log watcher it left behind.** A watcher such as `tail -F`
+  goes on after the shell that started it has gone, since on Windows nothing
+  ends it, and the tab stayed in the background state for hours (6 h 40 min,
+  measured). When the AI says what it left running as its turn ends, that is
+  believed over the count of the tab's processes; an AI that says nothing,
+  and a plain shell tab, are counted as before.
 
 ## [0.23.0] - 2026-10-01
 
