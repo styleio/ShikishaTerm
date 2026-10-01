@@ -33,7 +33,13 @@ written to the log beside the settings.
 /// server's own person
 fn pair() {
     use shikisha_core::i18n::{t, tp};
-    let code = shikisha_core::pairing::new_code();
+    let code = match shikisha_core::pairing::new_code() {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("{}", tp("err.pair.not_written", &[("e", &format!("{e:#}"))]));
+            std::process::exit(1);
+        }
+    };
     println!("{}", tp("msg.pair.code", &[("code", &code)]));
     match shikisha_core::pairing::board() {
         Some(base) => {
@@ -77,5 +83,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // A device is let in here by a code from `shikisha-server pair`, never
+    // for bringing the board's key in its link (far-keep plan §6.2)
+    shikisha_core::pairing::let_in_by_code_only();
     shikisha_core::serve::run()
 }

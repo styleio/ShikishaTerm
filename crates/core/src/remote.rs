@@ -1962,19 +1962,57 @@ fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option
 }
 
 #[allow(clippy::too_many_arguments)]
-/// A device let in by what it brought in the link: a ticket its paired PC was
-/// handed for it (`?ticket=`), or a code used once (`?pair=`) from the QR a
-/// paired PC shows, which writes it into the book. Its row and its key
-fn arrived_by_code(req: &tiny_http::Request) -> Option<(crate::clients::Client, String)> {
-    if let Some(key) = crate::pairing::take_ticket(&query_value(req.url(), "ticket")) {
-        return crate::clients::who(&key).map(|row| (row, key));
-    }
-    let code = query_value(req.url(), "pair");
-    if code.is_empty() || crate::pairing::take(&code).is_err() {
-        return None;
-    }
-    let agent = req.headers().iter().find(|h| h.field.equiv("User-Agent")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
-    crate::clients::pair(&device_name(&agent)).ok()
+/// A paired PC's window, let in by the ticket its PC was handed for it
+/// (`?ticket=`). Its row and its key
+fn arrived_by_ticket(req: &tiny_http::Request) -> Option<(crate::clients::Client, String)> {
+    let key = crate::pairing::take_ticket(&query_value(req.url(), "ticket"))?;
+    crate::clients::who(&key).map(|row| (row, key))
+}
+
+/// A page of one message, or of the question whether to add this device
+/// with the code its link brought (`code`): asked, and the code used only
+/// when the person says yes. A link is opened by more than the person -- a
+/// chat's preview, a mail scanner -- and a code used by one of those would
+/// have paired it, and left the person's own device a code used already
+fn pair_page(code: Option<&str>, said: &str) -> String {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let form = match code {
+        Some(code) => format!(
+            r#"<form method="post" action="/pair/arrive"><input type="hidden" name="code" value="{code}"><button>{go}</button></form>"#,
+            code = esc(code),
+            go = esc(&crate::i18n::t("page.pair.go")),
+        ),
+        None => String::new(),
+    };
+    format!(
+        r#"<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SHIKISHA-TERM</title>
+<style>body {{ margin:0; background:#11131a; color:#e8eaf0; padding:24px;
+  font:16px/1.7 system-ui,"Segoe UI","Noto Sans JP",sans-serif; }}
+p {{ max-width:32em; }}
+button {{ font:inherit; padding:10px 22px; border-radius:8px; border:0; background:#4f7cff; color:#fff; }}</style></head><body>
+<p>{said}</p>{form}</body></html>"#,
+        lang = esc(&crate::i18n::lang()),
+        said = esc(said),
+    )
+}
+
+fn html_page(body: String, status: u16) -> Response<std::io::Cursor<Vec<u8>>> {
+    Response::from_string(body)
+        .with_status_code(status)
+        .with_header(Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+        .with_header(Header::from_bytes(&b"Referrer-Policy"[..], &b"no-referrer"[..]).unwrap())
+}
+
+/// What a code not taken is told, in words
+fn code_refused(why: crate::pairing::Refused) -> String {
+    crate::i18n::t(match why {
+        crate::pairing::Refused::TooMany => "err.board.too_many",
+        crate::pairing::Refused::Unknown => "err.board.bad_code",
+        crate::pairing::Refused::Unwritten => "err.pair.unwritten",
+    })
 }
 
 /// The key a paired device shows, in its own header
@@ -2015,6 +2053,7 @@ fn pair_route(mut req: tiny_http::Request, method: &str, path: &str, snapshot: &
                 },
                 Err(crate::pairing::Refused::TooMany) => serde_json::json!({ "ok": false, "why": "too_many" }),
                 Err(crate::pairing::Refused::Unknown) => serde_json::json!({ "ok": false, "why": "unknown" }),
+                Err(crate::pairing::Refused::Unwritten) => serde_json::json!({ "ok": false, "why": "unwritten" }),
             };
             req.respond(json_response(answer)).map_err(Into::into)
         }
@@ -2044,9 +2083,13 @@ fn pair_route(mut req: tiny_http::Request, method: &str, path: &str, snapshot: &
             None => req.respond(forbidden()).map_err(Into::into),
         },
         ("POST", "/pair/invite") => match device {
-            Some(_) => req
-                .respond(json_response(serde_json::json!({ "ok": true, "code": crate::pairing::new_code() })))
-                .map_err(Into::into),
+            Some(_) => {
+                let answer = match crate::pairing::new_code() {
+                    Ok(code) => serde_json::json!({ "ok": true, "code": code }),
+                    Err(e) => serde_json::json!({ "ok": false, "why": "unwritten", "error": format!("{e:#}") }),
+                };
+                req.respond(json_response(answer)).map_err(Into::into)
+            }
             None => req.respond(forbidden()).map_err(Into::into),
         },
         _ => req.respond(Response::from_string("not found").with_status_code(404)).map_err(Into::into),
@@ -2139,6 +2182,36 @@ fn handle(
     // how the board stands (far-keep plan §6.2). Ahead of the key: a device
     // coming with a code has nothing else yet, and a paired one shows its own
     // key -- in a header, never in a link
+    // A device saying yes to the page its code brought it to (`pair_page`):
+    // the code used now, the device written into the book, and let in
+    if method == "POST" && path == "/pair/arrive" {
+        let mut req = req;
+        let body = read_body(&mut req, 256)?.unwrap_or_default();
+        let code: String = body
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("code="))
+            .unwrap_or_default()
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect();
+        if let Err(why) = crate::pairing::take(&code) {
+            return req.respond(html_page(pair_page(None, &code_refused(why)), 403)).map_err(Into::into);
+        }
+        let agent = req.headers().iter().find(|h| h.field.equiv("User-Agent")).map(|h| h.value.as_str().to_string()).unwrap_or_default();
+        let Ok((row, key)) = crate::clients::pair(&device_name(&agent)) else {
+            return req.respond(html_page(pair_page(None, &crate::i18n::t("err.pair.unwritten")), 500)).map_err(Into::into);
+        };
+        let id = gate.grants.keep_for(&session, Some(row.id));
+        let mut resp = Response::from_string("")
+            .with_status_code(303)
+            .with_header(Header::from_bytes(&b"Location"[..], &b"/"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap());
+        for c in device_cookies(&key) {
+            resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], c.as_bytes()).unwrap());
+        }
+        return req.respond(resp).map_err(Into::into);
+    }
     if path == "/pair" || path.starts_with("/pair/") {
         return pair_route(req, &method, &path, snapshot);
     }
@@ -2252,9 +2325,16 @@ fn handle(
         // Its key is looked for under both names: `rk` when the link was
         // opened here, `ri` when it was followed from another app, which is
         // when a browser keeps `rk` back (see `device_seen_cookie`)
-        // A paired PC's window, with the ticket its PC was handed for it; or
-        // a device pairing by a code from the QR a paired PC shows (§6.2)
-        let arrived = arrived_by_code(&req);
+        // A device coming with a code (§6.2), from the QR a paired PC shows
+        // or the one `shikisha-server pair` prints: asked first, and the
+        // code used only on its yes (`pair_page`)
+        let pairing_code: String = query_value(req.url(), "pair").chars().filter(char::is_ascii_alphanumeric).collect();
+        if !pairing_code.is_empty() {
+            let page = pair_page(Some(&pairing_code), &crate::i18n::t("page.pair.ask"));
+            return req.respond(html_page(page, 200)).map_err(Into::into);
+        }
+        // A paired PC's window, with the ticket its PC was handed for it
+        let arrived = arrived_by_ticket(&req);
         let held = arrived.clone().or_else(|| {
             ["rk", "ri"].iter().find_map(|name| {
                 let key = cookie_value(&req, name);
@@ -2278,6 +2358,14 @@ fn handle(
             }
         }
         match opener {
+            // The server version writes a new device into the book by a code
+            // only: the board's key in a link is not the person's say-so --
+            // it is printed to a log, kept in a shell's history, passed on --
+            // and a device paired by it is a device nobody added
+            Some(Opener::Pairing) if crate::pairing::by_code_only() => {
+                let page = pair_page(None, &crate::i18n::t("page.pair.by_code"));
+                return req.respond(html_page(page, 403)).map_err(Into::into);
+            }
             Some(Opener::Pairing) => {
                 let agent = req
                     .headers()

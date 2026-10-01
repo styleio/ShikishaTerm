@@ -15,7 +15,9 @@
  *   5. the line comes back, the tab attaches again, and the full screen is
  *      there as it was; typing goes on; leaving the full screen brings back
  *      what was on the normal screen under it
- *   6. the shikisha command in the terminal runs the resident process's build
+ *   6. the shikisha command in the terminal runs the resident process's build,
+ *      and a hook of the AI's CLI there (`--hook line`) is answered as the CLI
+ *      takes it -- by the app now, and at once while the app is away (10)
  *   7-9. the app is killed and started again (far-keep plan §7.5, stage 4):
  *      the tab goes back to the terminal it left running, starting nothing
  *      new; one that ended meanwhile is started again in a new terminal; and,
@@ -245,6 +247,15 @@ try {
   await until(async () => (await screen()).includes(`prog=${BRIDGE_DIR}/${program}`), 'the program in the terminal', 30000)
     .then(() => check(true, 'the terminal names the resident process\'s build'))
     .catch(async () => check(false, 'the terminal names the resident process\'s build: ' + (await screen()).slice(-300)));
+  // The hook the CLI runs at the end of a turn, as the tab: nothing asked of
+  // it, so the turn goes on (`{}`), and the time it took is well inside the CLI's
+  await primitive('send_to_tab', ['held', 'echo \'{"last_assistant_message":"done"}\' | (s=$(date +%s%N); x=$(shikisha --hook line); r=$?; echo "hook-out=$x hook-rc=$r hook-ms=$(( ($(date +%s%N)-s)/1000000 ))")']);
+  await until(async () => /hook-out=\{\} hook-rc=0 hook-ms=\d+/.test(await screen()), 'the hook\'s answer', 30000)
+    .then(async () => {
+      const ms = Number((await screen()).match(/hook-out=\{\} hook-rc=0 hook-ms=(\d+)/)[1]);
+      check(ms < 8000, 'the hook is answered by the app as the CLI takes it ({}), in ' + ms + ' ms');
+    })
+    .catch(async () => check(false, 'the hook is answered by the app as the CLI takes it: ' + (await screen()).slice(-300)));
 
   console.log('7. the app is killed and started again: the tab goes back to the terminal it left running');
   await primitive('send_to_tab', ['held', 'echo before-restart-$((7*7))']);
@@ -346,7 +357,7 @@ try {
   // Two calls made while the app is away: one that asks something back (a
   // list of tabs), answered that the PC is away; one that asks nothing back
   // (a note on a tab), kept and handed over when the app is back (§4.6)
-  await primitive('send_to_tab', ['held', '(sleep 20; shikisha tab_list > /tmp/away.out 2>&1; shikisha note held kept-while-away > /tmp/kept.out 2>&1) & echo armed-$((5*5))']);
+  await primitive('send_to_tab', ['held', '(sleep 20; shikisha tab_list > /tmp/away.out 2>&1; shikisha note held kept-while-away > /tmp/kept.out 2>&1; echo {} | shikisha --hook line > /tmp/hook.out 2>&1) & echo armed-$((5*5))']);
   await until(async () => (await screen()).includes('armed-25'), 'the call to be set', 30000);
   let said = quitApp('Yes');
   check(/answered Yes/.test(said) && /go on running/.test(said), 'quitting asks whether to leave the AI running: ' + said);
@@ -363,6 +374,8 @@ try {
   check(awayOut.includes('PC is away'), 'a call made meanwhile is told the PC is away: ' + awayOut.slice(0, 200));
   const keptOut = await inside('cat /tmp/kept.out');
   check(/kept/.test(keptOut), 'a note made meanwhile is told it is kept: ' + keptOut.slice(0, 200));
+  const hookOut = (await inside('cat /tmp/hook.out')).trim();
+  check(hookOut === '{}', 'a hook meanwhile lets the turn go on at once: ' + hookOut.slice(0, 200));
   // Its time runs out while the app is away: the MicroVM pauses, with what
   // runs on it frozen (paused here rather than waited for)
   const paused = await fetch('https://api.e2b.app/sandboxes/' + box.sandboxId + '/pause', { method: 'POST', headers: { 'X-API-Key': KEY } });
@@ -410,7 +423,11 @@ try {
   fs.writeFileSync(CONFIG, JSON.stringify(settings, null, 2));
   await until(() => /bridge: removed from/.test(since()), 'the bridge to be taken off', 200000)
     .then(() => check(true, 'the bridge was taken off'))
-    .catch(() => check(false, 'the bridge was taken off: ' + bridgeLines(since())));
+    .catch(async () => {
+      check(false, 'the bridge was taken off: ' + bridgeLines(since()));
+      // Why it was held: what runs there, and what the resident process said
+      console.log(await inside(`ps -eo pid,ppid,etimes,args | grep -v grep | grep -E 'shikisha|sleep' ; tail -n 40 ${BRIDGE_DIR}/run/keep.log 2>&1`));
+    });
   const leftThere = await inside(`ls ${BRIDGE_DIR} 2>&1 | head -3; pgrep -f 'shikisha-bridge-[^ ]* daemon' | wc -l`);
   check(/No such file/.test(leftThere) && /\b0\s*$/.test(leftThere), 'nothing of it is left there, and its resident process ended: ' + leftThere);
 } catch (e) {

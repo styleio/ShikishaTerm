@@ -60,7 +60,20 @@ pub struct Kept {
     pub tab: String,
     /// The call as the tab sent it
     pub line: String,
+    /// How many times the app answered it with a refusal: given up after
+    /// [`TRIES`]
+    #[serde(default)]
+    pub tries: u32,
 }
+
+/// The longest call kept: a report or a note is far shorter, and one longer
+/// is written down instead (only its command and tab), not kept whole
+pub const KEPT_LINE_MOST: usize = 64 * 1024;
+/// The most the kept calls may hold together, the file read whole each time
+pub const KEPT_BYTES_MOST: usize = 4 * 1024 * 1024;
+/// How many refusals a kept call is handed over through before it is given
+/// up: one the app turns away every time does not stand in line for ever
+pub const TRIES: u32 = 5;
 
 /// The id a kept call is handed over under: this book's own, and the
 /// call's number in it, so two machines' calls are never taken for one
@@ -121,16 +134,38 @@ impl Book {
         self.trim(now);
     }
 
-    /// Keep a call to be handed over: its number, under which it goes
-    pub fn keep(&mut self, tab: &str, line: &str, now: u64) -> u64 {
+    /// Keep a call to be handed over: its number, under which it goes.
+    /// `None` when it is past the limits of size (`KEPT_LINE_MOST`,
+    /// `KEPT_BYTES_MOST`): then it is not kept at all
+    pub fn keep(&mut self, tab: &str, line: &str, now: u64) -> Option<u64> {
+        let held: usize = self.kept.iter().map(|k| k.line.len()).sum();
+        if line.len() > KEPT_LINE_MOST || held + line.len() > KEPT_BYTES_MOST {
+            return None;
+        }
         if self.uid.is_empty() {
             self.uid = crate::random_hex(6);
         }
         self.next += 1;
         let id = self.next;
-        self.kept.push(Kept { id, at: now, tab: tab.to_string(), line: line.to_string() });
+        self.kept.push(Kept { id, at: now, tab: tab.to_string(), line: line.to_string(), tries: 0 });
         self.trim(now);
-        id
+        Some(id)
+    }
+
+    /// A kept call was refused by the app: tried once more, and given up --
+    /// counted with those let go of -- after [`TRIES`]. Whether it was
+    pub fn refused(&mut self, id: u64) -> bool {
+        let Some(k) = self.kept.iter_mut().find(|k| k.id == id) else { return false };
+        k.tries += 1;
+        if k.tries < TRIES {
+            return false;
+        }
+        let at = k.at;
+        self.kept.retain(|k| k.id != id);
+        self.dropped += 1;
+        self.dropped_from = if self.dropped_from == 0 { at } else { self.dropped_from.min(at) };
+        self.dropped_to = self.dropped_to.max(at);
+        true
     }
 
     /// The kept calls of one tab, oldest first
@@ -276,9 +311,9 @@ mod tests {
     #[test]
     fn kept_calls_wait_for_their_tab_and_go_once_handed() {
         let mut b = Book::default();
-        let one = b.keep("t1", r#"{"id":"1","method":"report","params":["done"]}"#, 10);
-        let two = b.keep("t2", r#"{"id":"2","method":"note","params":["x"]}"#, 11);
-        let three = b.keep("t1", r#"{"id":"3","method":"notify","params":["y"]}"#, 12);
+        let one = b.keep("t1", r#"{"id":"1","method":"report","params":["done"]}"#, 10).unwrap();
+        let two = b.keep("t2", r#"{"id":"2","method":"note","params":["x"]}"#, 11).unwrap();
+        let three = b.keep("t1", r#"{"id":"3","method":"notify","params":["y"]}"#, 12).unwrap();
         assert!(!b.uid.is_empty());
         assert_eq!(b.kept_for("t1").iter().map(|k| k.id).collect::<Vec<_>>(), vec![one, three]);
         b.seen(None);
@@ -287,6 +322,31 @@ mod tests {
         assert_eq!(b.kept_for("t1").iter().map(|k| k.id).collect::<Vec<_>>(), vec![three]);
         assert_eq!(b.kept_for("t2")[0].id, two);
         assert_ne!(kept_id(&b.uid, one), kept_id("another", one), "two books' calls are two calls");
+    }
+
+    /// A call too long, or one that would take the kept calls past their
+    /// whole, is not kept; one the app refuses every time is given up after
+    /// `TRIES`, counted with those let go of
+    #[test]
+    fn kept_calls_have_limits_of_size_and_of_refusals() {
+        let mut b = Book::default();
+        let long = format!(r#"{{"id":"1","method":"note","params":["{}"]}}"#, "x".repeat(KEPT_LINE_MOST));
+        assert_eq!(b.keep("t1", &long, 10), None, "a call past the longest was kept");
+        let big = format!(r#"{{"id":"1","method":"note","params":["{}"]}}"#, "x".repeat(KEPT_LINE_MOST - 100));
+        let fit = KEPT_BYTES_MOST / big.len();
+        for _ in 0..fit {
+            assert!(b.keep("t1", &big, 10).is_some());
+        }
+        assert_eq!(b.keep("t1", &big, 10), None, "kept past the whole");
+        assert_eq!(b.kept.len(), fit);
+
+        let id = b.kept[0].id;
+        for _ in 1..TRIES {
+            assert!(!b.refused(id));
+        }
+        assert!(b.refused(id), "not given up after {TRIES} refusals");
+        assert_eq!((b.kept.len(), b.dropped), (fit - 1, 1));
+        assert!(!b.refused(id), "a call no longer kept");
     }
 
     /// Only a command's name and a tab's name are taken from the line: never

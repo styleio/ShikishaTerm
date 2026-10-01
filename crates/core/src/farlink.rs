@@ -40,7 +40,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -159,9 +159,11 @@ const HOOK_WAIT: Duration = Duration::from_secs(8);
 /// made as the tab whose terminal the CLI runs in -- the key in its
 /// environment -- and printed as the CLI takes it. Anything that goes wrong
 /// -- the app away, too slow, a hook it does not know -- answers `{}`, so a
-/// turn is never held up by this machine.
+/// turn is never held up by this machine. Reached as the tabs' command there
+/// (`bin/shikisha`) with `--hook` and the hook's name -- on this machine
+/// only: a tab on the PC runs the app's own program for its hooks
 ///
-///   `shikisha --hook line`  the Stop event on its input; the app's
+///   `line`  the Stop event on its input; the app's
 ///   `confer_stop` with the turn's last message decides whether the turn is
 ///   held for a line said to the chat (`{"decision":"block","reason":...}`)
 fn far_hook(which: &str) -> i32 {
@@ -860,24 +862,38 @@ fn clear_old_builds(at: &crate::elsewhere::Elsewhere, home: &str, keep: &str) {
 pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     // Not from under another app: the folder, its sockets and its key are
     // every app's on that machine, and one app's "no" is not theirs
-    let others = match link(at) {
+    // Not connected from here -- this app let go of it first, as it does the
+    // moment the person withdraws their yes -- while a resident process is
+    // there: it may be holding only this app's own (the AIs left running, the
+    // codes of those that ended), or another app's line. Only it can say
+    // which, so it is asked over a line of this removal's own
+    let held_before = link(at).is_some();
+    let link = match link(at) {
+        Some(l) => Some(l),
+        None => {
+            let home = far_home(at)?;
+            let sock = format!("{home}/run/{}", KEEP_SOCK);
+            let ran = crate::elsewhere::exec(at, &format!("test -S {} && echo held", crate::ssh::sh_quote(&sock)), 30_000)?;
+            match ran.out.contains("held") {
+                false => None,
+                true => Some(connect(at).context("the bridge there could not be asked whether another app uses it")?),
+            }
+        }
+    };
+    let others = match &link {
         Some(l) if l.jobs.lock().is_ok_and(|j| j.iter().any(|n| n == "host")) => l
             .call("host_lines", json!({}), Duration::from_secs(20))
             .ok()
             .and_then(|v| v.get("lines").and_then(|n| n.as_u64()))
             .map(|n| n.saturating_sub(1))
             .unwrap_or(0),
-        Some(_) => 0,
-        // Not connected from here: a resident process there is holding some
-        // other app's line (it leaves a few seconds after the last one goes)
-        None => {
-            let home = far_home(at)?;
-            let sock = format!("{home}/run/{}", KEEP_SOCK);
-            let ran = crate::elsewhere::exec(at, &format!("test -S {} && echo held", crate::ssh::sh_quote(&sock)), 30_000)?;
-            u64::from(ran.out.contains("held"))
-        }
+        _ => 0,
     };
     if others > 0 {
+        // The line made only to ask goes again: it is not this app wanting the machine
+        if !held_before {
+            disconnect(at);
+        }
         bail!(crate::i18n::tp("err.bridge.in_use", &[("host", &at.address()), ("n", &others.to_string())]));
     }
     // What it holds ends with it (far-keep plan §7.7): the person was told

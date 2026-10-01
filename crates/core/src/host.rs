@@ -437,7 +437,14 @@ impl Shell for Headless {
     /// and no way to learn the address short of reading the settings and the
     /// token file and putting the two together
     fn board_is_at(&self, url: &str, here_key: &str) {
-        let line = crate::i18n::tp("msg.serve.board_at", &[("url", url)]);
+        // The server version lets a device in by a code only: its address is
+        // said without the key, and how to add a device with it
+        let line = if crate::pairing::by_code_only() {
+            let base = url.split('?').next().unwrap_or(url).trim_end_matches('/');
+            crate::i18n::tp("msg.serve.board_at_pair", &[("url", base)])
+        } else {
+            crate::i18n::tp("msg.serve.board_at", &[("url", url)])
+        };
         println!("{line}");
         crate::append_hook_log(&line);
         // Where it is, without its key, for `shikisha-server pair` to put in

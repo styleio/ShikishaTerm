@@ -17,9 +17,20 @@
 //! **A ticket** is how a paired PC opens the board in a window without its
 //! key being in the window's address: it asks for one with its key, and the
 //! window brings it once, within a minute. It is kept in memory only.
+//!
+//! **The server version lets devices in by a code only** ([`by_code_only`]):
+//! the link with the board's key in it (`?t=`) opens the board for a device
+//! paired before, and never writes a new one into the book. A PC's own board
+//! keeps that link for the phone QR on its settings screen, where the person
+//! who shows it is at the PC.
+//!
+//! **Only over a line nobody else reads** ([`secure`]): a PC's key goes in
+//! every request it makes, so a board is added by https, or by http only on
+//! this machine or on the person's own Tailscale network.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -59,25 +70,41 @@ fn hash(code: &str) -> String {
     sha2::Sha256::digest(plain.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// One writer at a time: the command and the board are two processes, but
-/// within one of them the file is read, changed and written whole
+/// The file the codes are read, changed and written whole under, by one
+/// process at a time: the command that makes a code and the board that takes
+/// one are two processes, and two writes crossing would bring a code used up
+/// back, or lose one just made
+const LOCK_FILE: &str = "pair-codes.lock";
+/// The same within one process, where a file lock may not tell two threads
+/// apart
 static LOCK: Mutex<()> = Mutex::new(());
 
-fn with_codes<R>(f: impl FnOnce(&mut Codes) -> R) -> R {
+/// The codes, changed by `f` and written back. An error when they could not
+/// be read under the lock or written: then nothing `f` did happened
+fn with_codes<R>(f: impl FnOnce(&mut Codes) -> R) -> anyhow::Result<R> {
     let _one = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(crate::config::state_path(LOCK_FILE))?;
+    lock.lock()?;
     let path = crate::config::state_path(FILE);
     let mut codes: Codes = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
     let n = now();
     codes.waiting.retain(|w| w.until > n);
     let out = f(&mut codes);
-    if let Err(e) = crate::crypto::write_atomic(&path, &serde_json::to_string(&codes).unwrap_or_default()) {
+    let written = crate::crypto::write_atomic(&path, &serde_json::to_string(&codes).unwrap_or_default());
+    let _ = lock.unlock();
+    if let Err(e) = written {
         crate::append_hook_log(&format!("pairing: the codes could not be written down: {e:#}"));
+        return Err(e);
     }
-    out
+    Ok(out)
 }
 
 /// A new code, written down (as its hash) for the board to take
-pub fn new_code() -> String {
+pub fn new_code() -> anyhow::Result<String> {
     // Drawn from the system's random bytes, each kept only below the last
     // whole round of the alphabet, so every letter is as likely as any other
     let mut code = String::new();
@@ -91,8 +118,8 @@ pub fn new_code() -> String {
     }
     let until = now() + CODE_LIFE.as_secs();
     let h = hash(&code);
-    with_codes(|c| c.waiting.push(Waiting { hash: h, until }));
-    format!("{}-{}", &code[..4], &code[4..])
+    with_codes(|c| c.waiting.push(Waiting { hash: h, until }))?;
+    Ok(format!("{}-{}", &code[..4], &code[4..]))
 }
 
 /// Why a code was not taken
@@ -102,6 +129,9 @@ pub enum Refused {
     Unknown,
     /// Too many wrong codes lately: none is taken for a while
     TooMany,
+    /// The codes could not be read or written: none is taken, since one
+    /// taken and not struck out would be good a second time
+    Unwritten,
 }
 
 /// The wrong codes lately, by when
@@ -121,6 +151,9 @@ pub fn take(code: &str) -> Result<(), Refused> {
         let at = c.waiting.iter().position(|w| crate::crypto::token_eq(&w.hash, &h));
         at.map(|i| c.waiting.remove(i)).is_some()
     });
+    let Ok(found) = found else {
+        return Err(Refused::Unwritten);
+    };
     if found {
         crate::append_hook_log("pairing: a code was given back, and used up");
         Ok(())
@@ -129,6 +162,20 @@ pub fn take(code: &str) -> Result<(), Refused> {
         crate::append_hook_log("pairing: a wrong code was given");
         Err(Refused::Unknown)
     }
+}
+
+/// Set by the server version: a device is let in by a code only, never
+/// written into the book for bringing the board's key in its link
+static BY_CODE_ONLY: AtomicBool = AtomicBool::new(false);
+
+/// This is the server version: from now on a device pairs by a code only
+pub fn let_in_by_code_only() {
+    BY_CODE_ONLY.store(true, Ordering::SeqCst);
+}
+
+/// Whether a device is let in by a code only
+pub fn by_code_only() -> bool {
+    BY_CODE_ONLY.load(Ordering::SeqCst)
 }
 
 /// Tickets handed out, to the device key each stands for
@@ -195,6 +242,43 @@ pub fn board_url(text: &str) -> Option<String> {
     (!rest.is_empty() && !rest.contains('/') && !rest.contains('@')).then(|| t.to_string())
 }
 
+/// Whether this PC's key may go to the board at `url` (an address as
+/// [`board_url`] gives it): by https anywhere; by http only to this machine,
+/// or within Tailscale -- an address of 100.64.0.0/10, or a name under
+/// .ts.net -- whose line is encrypted end to end on its own. Anywhere else a
+/// key sent by http is read by whoever is on the way
+pub fn secure(url: &str) -> bool {
+    if url.starts_with("https://") {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else { return false };
+    let host = match rest.strip_prefix('[') {
+        // [::1]:8787
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => rest.rsplit_once(':').map_or(rest, |(h, _)| h),
+    }
+    .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".ts.net") {
+        return true;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback() || (a == 100 && (64..128).contains(&b))
+        }
+        Ok(std::net::IpAddr::V6(ip)) => ip.is_loopback(),
+        Err(_) => false,
+    }
+}
+
+/// Refuse a board this PC's key may not go to (see [`secure`])
+fn must_be_secure(url: &str) -> anyhow::Result<()> {
+    if !secure(url) {
+        anyhow::bail!(crate::i18n::t("err.board.not_secure"));
+    }
+    Ok(())
+}
+
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
@@ -216,6 +300,7 @@ fn answer(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> anyhow::R
 /// Give a code back to the board at `url`, as this PC, named `name`: the
 /// key it hands this PC in exchange
 pub fn pair_with(url: &str, code: &str, name: &str) -> anyhow::Result<String> {
+    must_be_secure(url)?;
     let v = answer(agent().post(&format!("{url}/pair")).send_json(serde_json::json!({ "code": code, "name": name })))?;
     match (v["ok"].as_bool(), v["key"].as_str(), v["why"].as_str()) {
         (Some(true), Some(key), _) => Ok(key.to_string()),
@@ -226,17 +311,20 @@ pub fn pair_with(url: &str, code: &str, name: &str) -> anyhow::Result<String> {
 
 /// A ticket to open the board in a window with, once
 pub fn ticket(url: &str, key: &str) -> anyhow::Result<String> {
+    must_be_secure(url)?;
     let v = answer(agent().post(&format!("{url}/pair/ticket")).header("X-Device-Key", key).send(""))?;
     v["ticket"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.board.bad_answer")))
 }
 
 /// How the board stands: its tabs, and how many are at work
 pub fn status(url: &str, key: &str) -> anyhow::Result<serde_json::Value> {
+    must_be_secure(url)?;
     answer(agent().get(&format!("{url}/pair/status")).header("X-Device-Key", key).call())
 }
 
 /// A new code for a phone, which this PC shows as a QR
 pub fn invite(url: &str, key: &str) -> anyhow::Result<String> {
+    must_be_secure(url)?;
     let v = answer(agent().post(&format!("{url}/pair/invite")).header("X-Device-Key", key).send(""))?;
     v["code"].as_str().map(str::to_string).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.board.bad_answer")))
 }
@@ -249,12 +337,12 @@ mod tests {
     /// refused, and past the limit every code is, for a while
     #[test]
     fn a_code_is_taken_once_and_guessing_is_stopped() {
-        let code = new_code();
+        let code = new_code().unwrap();
         assert_eq!(code.len(), 9, "{code}");
         assert!(code.chars().all(|c| c == '-' || ALPHABET.contains(&(c as u8))), "{code}");
         assert_eq!(take(&code.to_lowercase().replace('-', "")), Ok(()));
         assert_eq!(take(&code), Err(Refused::Unknown), "used twice");
-        let more = new_code();
+        let more = new_code().unwrap();
         for _ in 0..TRIES {
             let _ = take("WRONG-CODE");
         }
@@ -271,6 +359,34 @@ mod tests {
         assert_eq!(board_url("http://10.0.0.2:8787/settings"), None);
         assert_eq!(board_url("ftp://x"), None);
         assert_eq!(board_url("https://user@host"), None);
+    }
+
+    /// A key goes by https anywhere, and by http only on this machine or
+    /// within Tailscale
+    #[test]
+    fn a_key_goes_only_over_a_line_nobody_else_reads() {
+        for ok in [
+            "https://board.example.com:8787",
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "http://[::1]:8787",
+            "http://100.64.0.1:8787",
+            "http://100.127.255.254:8787",
+            "http://vps1.tail1234.ts.net:8787",
+        ] {
+            assert!(secure(ok), "{ok}");
+        }
+        for no in [
+            "http://10.0.0.2:8787",
+            "http://192.168.1.5:8787",
+            "http://100.63.0.1:8787",
+            "http://100.128.0.1:8787",
+            "http://board.example.com:8787",
+            "http://ts.net.example.com:8787",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(!secure(no), "{no}");
+        }
     }
 
     /// This PC's side against a board that runs (tools/debug/board-pair.win.mjs

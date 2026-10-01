@@ -511,14 +511,21 @@ fn serve<R: Read + Send + 'static, W: Write>(
 /// (far-keep plan §4.6, the later version), by the id each came under: one
 /// handed over again -- its hand-over was cut before the bridge heard the
 /// answer -- is answered without being run twice. Kept in a file, since the
-/// next hand-over may come after this app started again
+/// next hand-over may come after this app started again.
+///
+/// Remembered once it has run, not when it arrives: a call this app took and
+/// never finished (it quit, or the call failed) is run when it comes again.
+/// So a kept call runs at least once, and once in every case but one -- the
+/// app ending between running it and writing that down -- and the calls kept
+/// are the ones that ask nothing back (a report, a note), for which twice is
+/// the lesser harm than never
 const KEPT_FILE: &str = "kept-handed.json";
 /// How many are remembered: far more than a machine keeps at once
 const KEPT_REMEMBERED: usize = 2000;
 static KEPT_HANDED: Mutex<Option<Vec<String>>> = Mutex::new(None);
 
-/// Whether a kept call was handed over before; and if not, remember it now
-fn handed_before(id: &str) -> bool {
+/// The kept calls run before, read from the file the first time
+fn with_handed<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
     let mut held = KEPT_HANDED.lock().unwrap_or_else(|e| e.into_inner());
     let seen = held.get_or_insert_with(|| {
         std::fs::read_to_string(crate::config::state_path(KEPT_FILE))
@@ -526,14 +533,27 @@ fn handed_before(id: &str) -> bool {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     });
-    if seen.iter().any(|s| s == id) {
-        return true;
-    }
-    seen.push(id.to_string());
-    let over = seen.len().saturating_sub(KEPT_REMEMBERED);
-    seen.drain(..over);
-    let _ = crate::crypto::write_atomic(&crate::config::state_path(KEPT_FILE), &serde_json::to_string(&seen).unwrap_or_default());
-    false
+    f(seen)
+}
+
+/// Whether a kept call has run before
+fn handed_before(id: &str) -> bool {
+    with_handed(|seen| seen.iter().any(|s| s == id))
+}
+
+/// A kept call has run: never again
+fn handed_now(id: &str) {
+    with_handed(|seen| {
+        if seen.iter().any(|s| s == id) {
+            return;
+        }
+        seen.push(id.to_string());
+        let over = seen.len().saturating_sub(KEPT_REMEMBERED);
+        seen.drain(..over);
+        if let Err(e) = crate::crypto::write_atomic(&crate::config::state_path(KEPT_FILE), &serde_json::to_string(&seen).unwrap_or_default()) {
+            crate::append_hook_log(&format!("external API: could not write down that kept call {id} ran: {e:#}"));
+        }
+    });
 }
 
 /// Turn one request line into one answer line
@@ -545,7 +565,8 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
     // A call a bridge kept while this app was away, handed over now: run
     // once, however many times it is handed over
-    if let Some(kept) = id.as_str().filter(|s| s.starts_with("kept-")) {
+    let kept = id.as_str().filter(|s| s.starts_with("kept-"));
+    if let Some(kept) = kept {
         if handed_before(kept) {
             crate::append_hook_log(&format!("external API: kept call {kept} handed over again; not run twice"));
             return serde_json::json!({"id": id, "ok": true, "result": "handed over already"}).to_string();
@@ -586,7 +607,12 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     // Generous: a primitive may be waiting on a page, and a caller that asked
     // for that is not helped by being told "timeout" while it is still working
     match wait.recv_timeout(hold) {
-        Ok(Ok(result)) => serde_json::json!({"id": id, "ok": true, "result": result}).to_string(),
+        Ok(Ok(result)) => {
+            if let Some(kept) = kept {
+                handed_now(kept);
+            }
+            serde_json::json!({"id": id, "ok": true, "result": result}).to_string()
+        }
         Ok(Err(e)) => error_line(&id, &e),
         Err(_) => error_line(&id, "the app did not answer"),
     }

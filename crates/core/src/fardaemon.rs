@@ -153,18 +153,6 @@ impl Core {
         ids
     }
 
-    /// How many apps connected now were heard from within `d`
-    pub fn lines_heard_within(&self, d: Duration) -> usize {
-        self.lines
-            .lock()
-            .map(|m| {
-                m.values()
-                    .filter(|l| !l.leaving.load(Ordering::SeqCst) && l.heard.lock().is_ok_and(|h| h.elapsed() < d))
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
     /// Whether the app on `line` is connected and staying
     pub fn is_up(&self, line: u64) -> bool {
         self.lines.lock().is_ok_and(|m| m.get(&line).is_some_and(|l| !l.leaving.load(Ordering::SeqCst)))
@@ -615,6 +603,11 @@ impl TabsJob {
 
     /// The calls written down, read from the file the first time
     fn with_book<R>(&self, f: impl FnOnce(&mut crate::farmissed::Book) -> R) -> R {
+        self.with_book_saved(f).0
+    }
+
+    /// The same, and whether what changed is in the file
+    fn with_book_saved<R>(&self, f: impl FnOnce(&mut crate::farmissed::Book) -> R) -> (R, bool) {
         let path = crate::farops::home().ok().map(|h| h.join(crate::farmissed::FILE));
         let mut held = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let book = held.get_or_insert_with(|| {
@@ -625,13 +618,35 @@ impl TabsJob {
         });
         let before = book.clone();
         let out = f(book);
-        if *book != before
-            && let Some(p) = &path
-            && let Err(e) = write_private(p, &serde_json::to_string(book).unwrap_or_default())
-        {
+        if *book == before {
+            return (out, true);
+        }
+        let saved = match &path {
+            Some(p) => write_private(p, &serde_json::to_string(book).unwrap_or_default()),
+            None => Err(anyhow!("no folder of its own")),
+        };
+        if let Err(e) = &saved {
             log(&format!("the calls that did not get through could not be written down: {e:#}"));
         }
-        out
+        (out, saved.is_ok())
+    }
+
+    /// Keep a call to be handed over. Only a call that is in the file counts
+    /// as kept -- the AI is told it is, and a resident process that ends
+    /// must not take it along -- so one not written is taken back out
+    fn keep(&self, tab: &str, line: &str) -> bool {
+        let (id, saved) = self.with_book_saved(|b| b.keep(tab, line, now_secs()));
+        match (id, saved) {
+            (Some(_), true) => true,
+            (Some(id), false) => {
+                self.with_book(|b| b.handed(id));
+                false
+            }
+            (None, _) => {
+                log(&format!("a call of {tab} is too long to keep; it is written down instead"));
+                false
+            }
+        }
     }
 
     /// A call whose app is away: kept, when it asks nothing back and its tab
@@ -646,7 +661,10 @@ impl TabsJob {
             self.missed(core, tab, line, false);
             return None;
         }
-        self.with_book(|b| b.keep(tab, line, now_secs()));
+        if !self.keep(tab, line) {
+            self.missed(core, tab, line, false);
+            return None;
+        }
         let id = serde_json::from_str::<Value>(line).ok().and_then(|v| v.get("id").cloned()).unwrap_or(Value::Null);
         const KEPT: &str = "The SHIKISHA-TERM app that started this tab is not connected to this machine right now \
             (the PC is away). This was kept, and is handed to it when it is back.";
@@ -667,22 +685,52 @@ impl TabsJob {
                 m.insert(c, Conn { line, out: Out::Kept(tx), tab: tab.to_string(), call: None });
             }
             let mut call: Value = serde_json::from_str(&k.line).unwrap_or_default();
-            call["id"] = json!(crate::farmissed::kept_id(&uid, k.id));
-            let answered = core.say(line, &Frame::Open { c })
+            let id = crate::farmissed::kept_id(&uid, k.id);
+            call["id"] = json!(id);
+            let ok = |a: &str| serde_json::from_str::<Value>(a).is_ok_and(|v| v["ok"] == json!(true));
+            // The key taken first; a key refused is the app not knowing the
+            // tab any more, and nothing of it is handed over now
+            let took_key = core.say(line, &Frame::Open { c })
                 && core.say(line, &Frame::Line { c, l: json!({ "token": key }).to_string() })
-                && rx.recv_timeout(Duration::from_secs(30)).is_ok()
-                && core.say(line, &Frame::Line { c, l: call.to_string() })
-                && rx.recv_timeout(HAND_WAIT).is_ok();
+                && rx.recv_timeout(Duration::from_secs(30)).is_ok_and(|a| ok(&a));
+            // Its own answer: under its id, any other line is not one
+            let answer = if took_key && core.say(line, &Frame::Line { c, l: call.to_string() }) {
+                let until = std::time::Instant::now() + HAND_WAIT;
+                loop {
+                    let left = until.saturating_duration_since(std::time::Instant::now());
+                    match rx.recv_timeout(left) {
+                        Ok(a) => match serde_json::from_str::<Value>(&a) {
+                            Ok(v) if v["id"] == json!(id) => break Some(v),
+                            _ => continue,
+                        },
+                        Err(_) => break None,
+                    }
+                }
+            } else {
+                None
+            };
             core.say(line, &Frame::Close { c });
             if let Ok(mut m) = self.conns.lock() {
                 m.remove(&c);
             }
-            if !answered {
-                log(&format!("a kept call of {tab} was not answered; it waits for the next time"));
-                break;
+            match answer {
+                None => {
+                    log(&format!("a kept call of {tab} was not answered; it waits for the next time"));
+                    break;
+                }
+                Some(a) if a["ok"] == json!(true) => {
+                    self.with_book(|b| b.handed(k.id));
+                    log(&format!("a kept call of {tab} was handed over"));
+                }
+                Some(a) => {
+                    let given_up = self.with_book(|b| b.refused(k.id));
+                    log(&format!(
+                        "a kept call of {tab} was refused ({}){}",
+                        a["error"].as_str().unwrap_or("no reason"),
+                        if given_up { "; given up" } else { "; it is tried again the next time" }
+                    ));
+                }
             }
-            self.with_book(|b| b.handed(k.id));
-            log(&format!("a kept call of {tab} was handed over"));
         }
     }
 
@@ -719,6 +767,11 @@ impl TabsJob {
             away(conn, lines, |call| self.away_call(core, &tab, call));
             return;
         };
+        // What the tab says now comes after what it said while the app was
+        // away: a report kept, then the next one, in that order
+        while !tab.is_empty() && core.is_up(line) && self.handing.lock().is_ok_and(|h| h.contains(&tab)) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         let c = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut m) = self.conns.lock() {
             m.insert(c, Conn { line, out: Out::Socket(conn), tab, call: None });
@@ -895,10 +948,6 @@ impl Job for TabsJob {
     }
 }
 
-/// Within how long an app counts as there: two of its ticks (`farlink::TICK`)
-/// and a margin
-const HEARD_LATELY: Duration = Duration::from_secs(35);
-
 /// What the resident process says about itself when asked: how many apps are
 /// connected to it (`host_lines`), so that one app does not take the bridge
 /// off a machine another is using
@@ -912,11 +961,11 @@ impl Job for HostJob {
     fn frame(&self, core: &Arc<Core>, line: u64, frame: &Frame) -> bool {
         match frame {
             Frame::Op { id, op, .. } if op == "host_lines" => {
-                // Counted are the apps heard from lately: each says it is
-                // there every 15 seconds, and one killed without a word is
-                // not one using the machine, though its line waits for the
-                // silence to end it
-                core.say(line, &Frame::Re { id: *id, r: json!({ "lines": core.lines_heard_within(HEARD_LATELY) }), e: None });
+                // Every line not leaving is counted, a quiet one too: taking
+                // the bridge off a machine an app is still on is what this
+                // guards against, and a line that is really gone is ended by
+                // its silence (`SILENCE`) soon enough to be asked again
+                core.say(line, &Frame::Re { id: *id, r: json!({ "lines": core.lines().len() }), e: None });
                 true
             }
             _ => false,
@@ -1163,6 +1212,11 @@ mod tests {
         let mut hook = String::new();
         from.read_line(&mut hook).unwrap();
         assert!(hook.contains("\"ok\":false"), "a hook was not answered at once: {hook}");
+        // A second one kept, which the app will refuse
+        writeln!(to, r#"{{"id":"10","method":"note","params":["t1","refused"]}}"#).unwrap();
+        let mut kept2 = String::new();
+        from.read_line(&mut kept2).unwrap();
+        assert!(kept2.contains("\"ok\":true"), "a second report was not kept: {kept2}");
         drop((to, from, pc));
 
         // The app back, giving the tab a new key: the kept call comes to it
@@ -1178,14 +1232,26 @@ mod tests {
         assert_eq!(call["params"][1], "all done", "what it said was not kept whole");
         let id = call["id"].as_str().unwrap().to_string();
         assert!(id.starts_with("kept-"), "{id}");
+        // A line under another id is not its answer
+        back.say(&Frame::Line { c, l: json!({ "id": "other", "ok": true, "result": null }).to_string() });
         back.say(&Frame::Line { c, l: json!({ "id": id, "ok": true, "result": null }).to_string() });
+
+        // The second: refused by the app, so it stays kept, tried once
+        let Some(Frame::Open { c }) = back.hear_until(|f| matches!(f, Frame::Open { .. })) else { panic!("the second was not handed over") };
+        assert!(back.hear_until(|f| matches!(f, Frame::Line { .. })).is_some(), "no handshake for the second");
+        back.say(&Frame::Line { c, l: r#"{"ok":true,"result":"hello"}"#.into() });
+        let Some(Frame::Line { l: call, .. }) = back.hear_until(|f| matches!(f, Frame::Line { .. })) else { panic!("no second call") };
+        let call: Value = serde_json::from_str(&call).unwrap();
+        assert_eq!(call["params"][1], "refused");
+        back.say(&Frame::Line { c, l: json!({ "id": call["id"], "ok": false, "error": "no" }).to_string() });
         std::thread::sleep(Duration::from_millis(500));
         back.say(&Frame::Job { job: "tabs".into(), m: json!({ "do": "missed" }) });
         let Some(Frame::Job { m, .. }) = back.hear_until(|f| matches!(f, Frame::Job { job, m } if job == "tabs" && m["did"] == "missed"))
         else {
             panic!("no book")
         };
-        assert_eq!(m["book"]["kept"].as_array().map(Vec::len), Some(0), "handed over and still kept: {m}");
+        assert_eq!(m["book"]["kept"].as_array().map(Vec::len), Some(1), "the one answered is not struck out alone: {m}");
+        assert_eq!((m["book"]["kept"][0]["tries"].as_u64(), m["book"]["kept"][0]["line"].as_str().is_some_and(|l| l.contains("refused"))), (Some(1), true), "{m}");
         assert_eq!(m["book"]["calls"][0]["method"], "tab_list", "the call that asked back was not written down: {m}");
         assert_eq!(m["book"]["calls"].as_array().map(Vec::len), Some(1), "a hook of the moment was written down: {m}");
         drop(back);

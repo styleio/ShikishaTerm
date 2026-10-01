@@ -8,10 +8,13 @@
  *   3. the key gets a ticket, and the ticket -- once -- opens the board with
  *      the device's own key and a session, no token in the link
  *   4. the key asks how the board stands; a key nobody holds is refused
- *   5. a paired PC gets a code for a phone, and the phone's link lets it in
+ *   5. a paired PC gets a code for a phone; the phone's link asks first and
+ *      uses nothing, and its yes lets it in
  *   6. this PC's own side of it (the Rust functions the settings call) does
  *      the same against the same board (`cargo test ... live_board`)
- *   7. wrong codes past the limit stop every code for a while
+ *   7. the board's key in a link writes no new device into the book, and the
+ *      address the server prints carries no key
+ *   8. wrong codes past the limit stop every code for a while
  *
  *     node tools/debug/board-pair.win.mjs
  *
@@ -95,9 +98,20 @@ try {
   const inv = await post('/pair/invite', {}, key);
   const phoneCode = inv.json && inv.json.code;
   check(!!phoneCode, 'a paired PC gets a code for a phone');
-  const phone = await fetch(`${BOARD}/?pair=${phoneCode.replace('-', '')}`, { redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (iPhone)' } });
-  const phoneCookies = phone.headers.getSetCookie ? phone.headers.getSetCookie() : [];
-  check(phoneCookies.some((c) => c.startsWith('rk=')), 'the phone\'s link lets it in with a key of its own');
+  const plain = phoneCode.replace('-', '');
+  const iphone = { 'User-Agent': 'Mozilla/5.0 (iPhone)' };
+  // Opened twice, as a chat's preview and then the person would: neither uses the code
+  for (const who of ['a preview', 'the person']) {
+    const look = await fetch(`${BOARD}/?pair=${plain}`, { redirect: 'manual', headers: iphone });
+    const lookCookies = look.headers.getSetCookie ? look.headers.getSetCookie() : [];
+    const html = await look.text();
+    check(look.status === 200 && !lookCookies.some((c) => c.startsWith('rk=')) && html.includes('action="/pair/arrive"'), `the link opened by ${who} asks, and lets nobody in yet`);
+  }
+  const yes = await fetch(BOARD + '/pair/arrive', { method: 'POST', redirect: 'manual', headers: { ...iphone, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'code=' + plain });
+  const phoneCookies = yes.headers.getSetCookie ? yes.headers.getSetCookie() : [];
+  check(yes.status === 303 && phoneCookies.some((c) => c.startsWith('rk=')) && phoneCookies.some((c) => c.startsWith('rs=')), 'its yes lets it in with a key of its own: ' + yes.status);
+  const yesAgain = await fetch(BOARD + '/pair/arrive', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'code=' + plain });
+  check(yesAgain.status === 403, 'the same code said yes to twice is refused: ' + yesAgain.status);
 
   console.log('6. this PC\'s side, against the same board');
   // The Rust the settings call: paired by a code of its own, a ticket, how
@@ -108,7 +122,17 @@ try {
     { cwd: ROOT, encoding: 'utf8', env: { ...process.env, SHIKISHA_TEST_BOARD: BOARD, SHIKISHA_TEST_CODE: pcCode } });
   check(/test result: ok\. 1 passed/.test(cargo.stdout), 'the settings\' own calls pair, ask a ticket, a status and a phone code: ' + (cargo.stdout + cargo.stderr).split('\n').filter((l) => /panicked|result|live/.test(l)).join(' | '));
 
-  console.log('7. guessing is stopped');
+  console.log('7. the board\'s key in a link pairs nobody');
+  const token = wsl(`cat ${HOME}/data/remote-token`).stdout.trim();
+  check(token.length >= 16, 'the board has its key');
+  const byKey = await fetch(`${BOARD}/?t=${token}`, { redirect: 'manual', headers: { 'User-Agent': 'Mozilla/5.0 (Android)' } });
+  const byKeyCookies = byKey.headers.getSetCookie ? byKey.headers.getSetCookie() : [];
+  const byKeyHtml = await byKey.text();
+  check(byKey.status === 403 && !byKeyCookies.some((c) => c.startsWith('rk=')) && byKeyHtml.includes('shikisha-server pair'), 'a new device with the key is told to pair by a code: ' + byKey.status);
+  const printed = wsl(`cat ${HOME}/out.log`).stdout;
+  check(printed.includes('shikisha-server pair') && !printed.includes(token), 'the address printed carries no key, and says how to add a device');
+
+  console.log('8. guessing is stopped');
   const kept = wsl(`SHIKISHA_HOME=${HOME} ${SERVER} pair`).stdout.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/)[0];
   for (let i = 0; i < 10; i++) await post('/pair', { code: 'AAAA-AAAA', name: 'x' });
   const stopped = await post('/pair', { code: kept, name: 'x' });
