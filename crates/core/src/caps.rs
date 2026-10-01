@@ -693,10 +693,17 @@ impl Capabilities {
             .map(std::rc::Rc::clone)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
         let desk = self.desk.get();
+        // Kept as it was asked for: a file on this PC is served afresh each
+        // time it is opened, at an address that is not the same after a restart
         self.opened.borrow_mut().insert(
             Self::key(desk, name),
             (url.to_string(), profile.clone()),
         );
+        let url = match crate::localpage::address(url) {
+            Some(served) => served.map_err(|why| anyhow::anyhow!(why))?,
+            None => url.to_string(),
+        };
+        let url = url.as_str();
         host.open_child(&Self::key(desk, name), url, self.area.get(), profile)?;
         let mut hosted = self.hosted.borrow_mut();
         if !hosted.iter().any(|(w, x)| *w == desk && x == name) {
@@ -1379,6 +1386,14 @@ impl Capabilities {
     /// Navigate a page. Converting the display name to the in-window name is this side's job.
     /// If the caller had to do that conversion, forgetting it would show up as "nothing happens"
     pub fn browser_go(&self, name: &str, go: shikisha_shared::Go) -> Result<()> {
+        // A file on this PC goes over HTTP, the way an open does (crate::localpage)
+        let go = match go {
+            shikisha_shared::Go::To(url) => match crate::localpage::address(&url) {
+                Some(served) => shikisha_shared::Go::To(served.map_err(|why| anyhow::anyhow!(why))?),
+                None => shikisha_shared::Go::To(url),
+            },
+            other => other,
+        };
         self.with(name, |b, to| b.go(to, go))
     }
 

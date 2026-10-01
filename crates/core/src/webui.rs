@@ -6491,8 +6491,11 @@ function parseBrowser(c) {
   return m ? {head: m[1], url: m[2].trim()} : null;
 }
 const buildBrowser = o => (o.head || "browser") + " " + (o.url || "");
-/// Whether the URL can be embedded in the window. file: and data: can't be opened
-const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim()) || !!farPortOf(u);
+/// Whether the URL can be embedded in the window: a web page, a port of the
+/// folder's machine, or a file on this PC (served to the page over HTTP by the
+/// app, crate::localpage -- the same forms it reads: file://, a drive, \\server)
+const openableUrl = u => /^https?:\/\/\S/i.test((u || "").trim()) || !!farPortOf(u) || localFileOf(u);
+const localFileOf = u => /^(file:\/\/|[A-Za-z]:[\\/]|\\\\)/i.test((u || "").trim());
 // A port of the folder's machine, carried to this PC when the page is opened
 const farPortOf = u => { const m = /^far:\/\/(\d+)\/?$/i.exec((u || "").trim()); return m ? m[1] : null; };
 

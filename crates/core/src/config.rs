@@ -3924,7 +3924,9 @@ pub fn browser_url_of(argv: &[String]) -> Option<String> {
     if !head.eq_ignore_ascii_case("browser") && !head.eq_ignore_ascii_case("web") {
         return None;
     }
-    let url = rest.first()?.trim().to_string();
+    // Everything after the word: a web address has no spaces, but the path of
+    // a file on this PC may (`browser D:/my site/index.html`)
+    let url = rest.join(" ").trim().to_string();
     (!url.is_empty()).then_some(url)
 }
 

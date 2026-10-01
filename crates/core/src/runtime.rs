@@ -1519,22 +1519,27 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
 /// surface is. The same road the settings take to launch what they name, so an
 /// install made a minute ago is found the way the first attempt looked for it.
 /// None for any other surface, which the ordinary restart handles
+#[allow(clippy::too_many_arguments)]
 pub fn retry_failed(
     at: usize,
     surfaces: &[Surface],
     tabs: &mut Vec<Tab>,
     desk: Option<&config::Desk>,
+    caps: &hooks::Caps,
     rows: u16,
     cols: u16,
     carry: Option<&crate::lastsession::Saved>,
 ) -> Option<String> {
-    let Some(Surface::Failed { name, .. }) = surfaces.get(at.checked_sub(1)?) else {
+    let Some(Surface::Failed { key, name, .. }) = surfaces.get(at.checked_sub(1)?) else {
         return None;
     };
     let desk = desk?;
     let mut errors = Vec::new();
     crate::desk::apply_ws_config(tabs, desk, rows, cols, &mut errors, &mut Default::default(), carry);
-    Some(match crate::desk::launch_failure(&desk.name, name) {
+    // A page that could not open is opened the way the settings open one
+    open_declared_browsers(desk, caps, &mut errors);
+    // A program is remembered by its title, a page by its key
+    Some(match crate::desk::launch_failure(&desk.name, name).or_else(|| crate::desk::launch_failure(&desk.name, key)) {
         Some(still) => still.why,
         None => i18n::tp("msg.failed.started", &[("name", name)]),
     })
@@ -6739,7 +6744,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             active = pane_layout.focused_surface();
             view_touched_ms = start.elapsed().as_millis() as u64;
-            if let Some(msg) = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols, Some(&last_session))
+            if let Some(msg) = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), &caps, rows, cols, Some(&last_session))
                 .or_else(|| restart_surface(active, keep, &mut tabs, &surfaces, &mut engine, &caps, rows, cols))
             {
                 flash = Some(msg);
@@ -12732,7 +12737,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             // Check that text a human typed is an allowed destination before passing it along
+            // A file on this PC is kept as it was typed: going there serves it
+            // (crate::localpage), and says why when it cannot be
             let go = match go {
+                Go::To(raw) if crate::localpage::local_file(&raw).is_some() => Go::To(raw.trim().to_string()),
                 Go::To(raw) => match crate::view::openable(&raw) {
                     Some(u) => Go::To(u),
                     None => {
@@ -12743,7 +12751,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 other => other,
             };
             append_hook_log(&format!("Navigate {key}: {go:?}"));
-            let _ = caps.browser_go(key, go);
+            if let Err(e) = caps.browser_go(key, go) {
+                flash = Some(format!("{e:#}"));
+            }
             // The location changes right after navigating. Make the next draw ask again.
             asked_where_ms = 0;
         }
@@ -12976,7 +12986,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // conversation back, while wanting a clean slate has an
                         // answer inside the CLI already (/clear)
                         KeyCode::Char('r') | KeyCode::Char('R') => {
-                            flash = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), rows, cols, Some(&last_session))
+                            flash = retry_failed(active, &surfaces, &mut tabs, desks.get(desk_index), &caps, rows, cols, Some(&last_session))
                                 .or_else(|| {
                                     restart_surface(
                                         active,

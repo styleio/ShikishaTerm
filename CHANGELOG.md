@@ -238,6 +238,15 @@ once it reaches its first tagged release.
   answers it.
 
 ### Added
+- **A browser tab can show a file on this PC.** Write its path as the tab's
+  address (`browser D:/site/index.html`) or type it in the address bar, as
+  `D:/...`, `D:\...`, `file:///...` or `\\server\share\...`. The app hands the
+  file to the tab over HTTP from a server of its own on 127.0.0.1, with the
+  file's folder and nothing above it, read fresh on every reload.
+- **A page tab that cannot open says why where the page would be.** It used
+  to stand empty, with at most a toast after a settings save; it now shows
+  the reason with "Try starting it again" and "Open settings", the way a
+  program that cannot start does.
 - **A place inside a folder a worktree inherits can come along its own way.**
   A line of an ignore file decides a whole folder, so `.claude/` used to be
   copied with every other agent's worktree in it. The worktree dialog's rows

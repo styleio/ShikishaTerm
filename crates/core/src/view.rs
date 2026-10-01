@@ -1513,10 +1513,30 @@ pub fn surfaces_written(
                 // Keeps a position even if it isn't open. If numbering shifted
                 // based on open order, whatever a script points to would change
                 // on every run.
-                if let Some(h) = hosted.iter().find(|h| **h == key) {
+                let open = hosted.iter().find(|h| **h == key);
+                if let Some(h) = open {
                     used_web.push(h);
                 }
                 let name = ft.cfg.name.clone().unwrap_or_else(|| key.clone());
+                // Written in the settings and not open because it could not
+                // be: it keeps its place, saying why, as a program does
+                if open.is_none()
+                    && let Some(failed) = crate::desk::launch_failure(&desk.name, &key)
+                {
+                    out.push((
+                        Surface::Failed {
+                            key,
+                            name,
+                            dir: desk.cwd_of(ft),
+                            on: desk.machine_of(ft),
+                            why: failed.why,
+                            install_url: None,
+                            machine: None,
+                        },
+                        Some(written),
+                    ));
+                    continue;
+                }
                 out.push((Surface::Browser { key, name, dir: desk.cwd_of(ft), on: desk.machine_of(ft) }, Some(written)));
                 continue;
             }
@@ -2331,9 +2351,11 @@ mod panes_geom_tests {
 /// Works like a browser's combined address/search box: text that reads as a
 /// web address goes there (`example.com` -> `https://example.com`), and
 /// anything else — words with spaces, Japanese text, a lone word — becomes a
-/// Google search. `file:` can read local files and `javascript:` can hijack
-/// the current page, so neither passes through an address bar — a "gateway
-/// to anywhere"; they too fall through to search, which is inert.
+/// Google search. `file:` would hand a page the whole disk and `javascript:`
+/// can hijack the current page, so neither passes through an address bar — a
+/// "gateway to anywhere"; they too fall through to search, which is inert. A
+/// file on this PC typed as a path is taken before this is asked and served
+/// over HTTP with its own folder only (`crate::localpage`).
 pub fn openable(raw: &str) -> Option<String> {
     let s = raw.trim();
     if s.is_empty() {
@@ -2352,7 +2374,8 @@ pub fn openable(raw: &str) -> Option<String> {
     // 127.0.0.1) or is localhost reads as an address; everything else —
     // including `javascript:alert(1)`, which has no dot — reads as words
     let host = s.split(['/', '?', '#']).next().unwrap_or("");
-    let address_like = !s.chars().any(char::is_whitespace)
+    // A `\` is never part of a web address: `D:\a.html` is a path, not a host
+    let address_like = !s.chars().any(|c| c.is_whitespace() || c == '\\')
         && (host.contains('.') || host == "localhost" || host.starts_with("localhost:"));
     if address_like {
         Some(format!("https://{s}"))

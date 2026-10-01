@@ -178,6 +178,7 @@ pub fn apply_ws_config(
     let mut staged = 0usize;
 
     // Close tabs no longer in config (removed via the GUI = an explicit instruction)
+    // A page is remembered by its key, the name it is placed under
     let wanted: Vec<String> = desk
         .tabs
         .iter()
@@ -187,6 +188,7 @@ pub fn apply_ws_config(
                 .clone()
                 .unwrap_or_else(|| title_of(&f.cfg.command.argv()))
         })
+        .chain(desk.tabs.iter().filter(|f| config::browser_url_of(&f.cfg.command.argv()).is_some()).map(|f| f.page_key()))
         .collect();
     // A tab taken out of the settings takes its failure with it
     failures().retain(|f| f.desk != desk.name || wanted.contains(&f.title));
@@ -1333,19 +1335,19 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
                 ft.cfg.private,
             )
             .calling_itself(ft.cfg.user_agent.clone());
-            let url = match page_address(desk, ft, &url) {
-                Ok(u) => u,
+            // A page that cannot open keeps its place and says why, the way a
+            // program that cannot start does (see LaunchFailure): a toast
+            // after a settings save was the only word of it, and the tab
+            // stood empty
+            let opened = page_address(desk, ft, &url)
+                .and_then(|u| caps.browser_open(&name, &u, profile).map_err(|e| format!("{e:#}")));
+            match opened {
+                Ok(()) => forget_failure(&desk.name, &name),
                 Err(e) => {
+                    remember_failure(&desk.name, &name, "browser", &e);
                     errors.push(crate::i18n::tp("err.desk.browser_open", &[("id", &name), ("e", &e)]));
                     continue;
                 }
-            };
-            if let Err(e) = caps.browser_open(&name, &url, profile) {
-                errors.push(crate::i18n::tp(
-                    "err.desk.browser_open",
-                    &[("id", &name), ("e", &format!("{e:#}"))],
-                ));
-                continue;
             }
         }
         caps.note_declared(&name);

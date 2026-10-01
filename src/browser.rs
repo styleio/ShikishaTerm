@@ -3431,8 +3431,10 @@ mod nav_tests {
         for empty in ["", "   "] {
             assert!(openable(empty).is_none(), "it opens: {empty}");
         }
-        // Dangerous schemes never reach the page — they become an inert search instead
-        for bad in ["file:///C:/secret.txt", "ftp://x/y", "javascript:alert(1)"] {
+        // Dangerous schemes never reach the page — they become an inert search
+        // instead. A file on this PC is taken before this and served over
+        // HTTP (crate::localpage); a `\` path is never read as a host
+        for bad in ["file:///C:/secret.txt", "ftp://x/y", "javascript:alert(1)", "D:\\site\\index.html"] {
             let got = openable(bad).unwrap_or_default();
             assert!(
                 got.starts_with("https://www.google.com/search?q="),
