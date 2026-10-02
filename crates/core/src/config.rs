@@ -6640,6 +6640,20 @@ pub fn add_tab_at(
     host: Option<&str>,
     new_folder: NewFolder,
 ) -> std::result::Result<String, String> {
+    add_tab_with_uid_at(path, desk, tab, cwd, host, new_folder).map(|(id, _)| id)
+}
+
+/// [`add_tab_at`], answering who the tab is as well as what it is called:
+/// for what keeps something about it from the moment it is made, before the
+/// settings are read again (a job that opened it)
+pub fn add_tab_with_uid_at(
+    path: &Path,
+    desk: &str,
+    tab: serde_json::Value,
+    cwd: Option<&Path>,
+    host: Option<&str>,
+    new_folder: NewFolder,
+) -> std::result::Result<(String, String), String> {
     use crate::i18n::{t, tp};
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let mut doc = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
@@ -6697,11 +6711,12 @@ pub fn add_tab_at(
         .and_then(|i| i.as_str())
         .map(str::to_string)
         .ok_or_else(|| t("err.tab_add.no_command"))?;
+    let uid = tab.get("uid").and_then(|u| u.as_str()).unwrap_or_default().to_string();
     let at = spelled.or_else(|| cwd.map(Path::to_path_buf));
     folder_tabs_on(holder, at.as_deref(), host).push(tab);
     let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     crate::crypto::write_atomic(path, &out).map_err(|e| e.to_string())?;
-    Ok(id)
+    Ok((id, uid))
 }
 
 /// Put one key on the tab with this automation name, wherever in the settings

@@ -23,12 +23,22 @@ keeps what was handed to whom, what came back, and what is still open in a SQLit
 | `questions` | a worker waiting on its lead | so the answer reaches the worker whether it is still waiting or not |
 | `decisions` | a task held until the lead or the person decides | so a merge to main, say, waits for the person |
 | `raised` | something the watcher has already said | so each is said once |
+| `tab_names` | what a tab is called, by its uid; kept after the tab closes | so what is said about a tab says its name, and a job's history still reads with it |
 
-`meta` holds one row, `schema`: the version the file is at.
+`meta` holds `schema`, the version the file is at, and `tab_uids` once the rows an older version
+wrote under tabs' names have been rewritten under their uids.
+
+**A tab is its uid.** `jobs.lead`, `assignments.tab`, `opened_tabs.tab` and a tab's own mailbox
+(`tab:<uid>`) hold the tab's uid (`config::TabConfig::uid`), never its name: a name goes back in the
+bag when its tab closes, and the next tab to draw it was handed the first one's jobs, its task and
+its mail. Who sent mail and who made a decision keep the name they had then. On the first start
+after this step, the rows written under names are rewritten once from the settings
+(`Store::adopt_uids`): a name only one tab of the settings has goes to that tab, and any other -- a
+closed tab, a name two desks share -- to a uid no tab has.
 
 The steps so far: **1** is the layout the first version shipped with, in the words it used then
 (runs, dispatches, messages, gates); **2** carries a file written by it, rows and all, into the
-words used now. A new file runs both.
+words used now; **3** adds `tab_names`. A new file runs them all.
 
 States (`state`, `held_by`, `afterwards` ...) are plain text. There is no CHECK on them in the
 tables: which state may follow which is decided in one place in the code, `Store::shift`, which

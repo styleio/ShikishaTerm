@@ -1088,6 +1088,15 @@ fn tend_asks(
                 .map(crate::orch::glue::tab_id)
                 .unwrap_or_else(|| c.to_string())
         };
+        // ...and who it is, for its inbox: a caller closed since has none,
+        // and a tab given its name since is somebody else
+        let caller_uid = |c: &str| {
+            among
+                .iter()
+                .find(|t| t.called() == c)
+                .map(|t| t.uid().to_string())
+                .unwrap_or_else(|| crate::convo::db::gone_uid("", c))
+        };
         let target = find(&a.target);
         if let Some(t) = target
             && a.time_to_say_why(t.state)
@@ -1242,8 +1251,9 @@ fn tend_asks(
                         true
                     }
                     ("DONE", Some(r)) if a.caller.is_some() => {
-                        let to = caller_id(a.caller.as_deref().unwrap_or_default());
-                        orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &r);
+                        let caller = a.caller.as_deref().unwrap_or_default();
+                        let to = caller_id(caller);
+                        orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &r);
                         append_hook_log(&format!("ask_tab: {}'s reply is in {to}'s inbox", a.target));
                         false
                     }
@@ -1251,8 +1261,9 @@ fn tend_asks(
                 }
             }
             Step::Hand(text) => {
-                let to = caller_id(a.caller.as_deref().unwrap_or_default());
-                orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &text);
+                let caller = a.caller.as_deref().unwrap_or_default();
+                let to = caller_id(caller);
+                orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &text);
                 append_hook_log(&format!("ask_tab: {}'s answer is in {to}'s inbox", a.target));
                 false
             }
@@ -2135,6 +2146,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // record, what each profile says about pasting, and when the tabs were
     // last looked at for it
     let mut orchestra = crate::orch::Orchestra::default();
+    // What an older version wrote under the tabs' names goes under their
+    // uids, before anything new is written beside it
+    orchestra.adopt(
+        &desks
+            .iter()
+            .flat_map(|d| d.tabs.iter().map(|t| (t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
+            .collect::<Vec<_>>(),
+    );
     let mut orch_profiles = crate::orch::glue::Profiles::default();
     // What only this app saw of each AI tab's conversation (`convo`): which
     // conversation it is on, who sent what into it, who answered its
@@ -3663,11 +3682,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A job's decision, put in the conference of the desk its lead is on
             let answering = answering_in(&tab_asks);
             for (lead, text, _) in crate::convo::take_agreed() {
-                let tab = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| crate::orch::glue::tab_id(t) == lead);
-                if let (Some(desk), Some(tab)) = (desk_of_tab(&lead, &desks, desk_index, &tabs, &desk_tabs), tab)
+                // The lead, by uid: a job's lead that has closed says nothing
+                let tab = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.uid() == lead);
+                let name = tab.map(crate::orch::glue::tab_id).unwrap_or_default();
+                if let (Some(desk), Some(tab)) = (desk_of_tab(&name, &desks, desk_index, &tabs, &desk_tabs), tab)
                     && let Some((thread, _)) = thread_of_tab(&mut convo_log, &answering, &desk, tab)
                 {
-                    convo_log.line(&desk, thread, Some(&lead), &text, None, "agreed");
+                    convo_log.line(&desk, thread, Some(&name), &text, None, "agreed");
                 }
             }
             // What a person typed at a tab's own prompt (heard from its CLI):
@@ -5094,9 +5115,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // without the person naming it, and closes it when it is done
                 let answer = match answer {
                     Ok(mut v) if call.method == "open_ai_tab" || call.method == "open_tab" => {
-                        if let Some(id) = v.get("id").and_then(serde_json::Value::as_str).map(str::to_string) {
+                        // Who the new tab is goes to the job and no further:
+                        // what an AI calls a tab is its id
+                        let uid = v.as_object_mut().and_then(|o| o.remove("uid")).and_then(|u| u.as_str().map(str::to_string));
+                        if let (Some(id), Some(uid)) = (v.get("id").and_then(serde_json::Value::as_str).map(str::to_string), uid) {
                             let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
-                            if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id) {
+                            if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id, &uid) {
                                 v["next"] = next;
                             }
                         }
@@ -5166,10 +5190,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A person typing into a tab a job opened makes it theirs
             for t in tabs.iter() {
                 if let Some(ms) = t.last_manual_ms {
-                    let id = crate::orch::glue::tab_id(t);
-                    if orch_manual.get(&id).is_none_or(|seen| *seen < ms) {
-                        if orch_manual.insert(id.clone(), ms).is_some() {
-                            orchestra.person_typed(&id);
+                    let uid = t.uid().to_string();
+                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms) {
+                        if orch_manual.insert(uid.clone(), ms).is_some() {
+                            orchestra.person_typed(&uid);
                         }
                     }
                 }
@@ -17591,7 +17615,7 @@ pub fn exec_commands(
                 // Words from another tab are not the person's: what they name
                 // does not let this tab drive anything (see orch::glue::named_for)
                 if origin != 0 && from.is_some() {
-                    crate::orch::glue::note_typed(&crate::orch::glue::tab_id(t), &text);
+                    crate::orch::glue::note_typed(t.uid(), &text);
                 }
                 if t.is_model() {
                     // model bridge: a turn of the tab's own conversation, shown

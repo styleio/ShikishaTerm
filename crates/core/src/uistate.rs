@@ -23,6 +23,10 @@ pub struct TabState {
     pub name: String,
     /// Name referenced from automation
     pub id: Option<String>,
+    /// Who the tab is (`Tab::uid`): what a job on the board names its lead
+    /// and its workers by. Absent for a row with no tab of its own (a page)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// WAIT / BUSY / DONE / QUESTION / EXIT, exactly as `TabState::label`
     /// spells them — the page uses this as a CSS class. Used to pick the display
     pub state: String,
@@ -2471,6 +2475,7 @@ impl TabState {
             index,
             name: t.title.clone(),
             id: t.id.clone(),
+            uid: Some(t.uid().to_string()),
             state: t.state.label().to_string(),
             state_label: t.state.display(),
             since: t.state_since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()),
@@ -2613,6 +2618,7 @@ impl TabState {
             index,
             name: name.to_string(),
             id: Some(key.to_string()),
+            uid: None,
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
             since: None,
@@ -3098,6 +3104,7 @@ mod tests {
             index,
             name: name.into(),
             id: None,
+            uid: None,
             state: "WAIT".into(),
             state_label: "WAIT".into(),
             since: None,

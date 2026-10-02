@@ -7704,13 +7704,14 @@ function emptyRow(g, card) {
 // The open jobs a tab leads (see `orch`): drawn under its row, here and on
 // the phone, since the phone draws this same list
 function jobsOf(t) {
-  return (S.jobs || []).filter(j => j.lead === (t.id || t.name));
+  // By who the tab is: a tab given a closed lead's name is not its lead
+  return t.uid ? (S.jobs || []).filter(j => j.lead === t.uid) : [];
 }
 // One job: what it is, each task with what it is doing and the tab on it (a
 // press goes to that tab), the decisions waiting for the person, and the one
 // way to stop it all. Stopping cuts AIs off mid-work, so it is asked first
 function jobRow(j) {
-  const tabOf = id => (S.tabs || []).find(t => (t.id || t.name) === id);
+  const tabOf = uid => (S.tabs || []).find(t => t.uid === uid);
   const waiting = (j.decisions || []).some(d => d.who === "person");
   const box = el("div", {class:"job"});
   box.append(el("div", {class:"jhead"},

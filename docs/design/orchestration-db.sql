@@ -1,5 +1,5 @@
 -- The record of work handed between AI tabs (orchestration.db), as the
--- steps in crates/core/src/orch/migrations/ leave it at version 2.
+-- steps in crates/core/src/orch/migrations/ leave it at version 3.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- orchestration-db.md), then write this again:
@@ -118,6 +118,14 @@ CREATE TABLE questions (
 CREATE TABLE raised (
   key TEXT PRIMARY KEY,
   raised_at INTEGER NOT NULL
+);
+
+CREATE TABLE tab_names (
+  uid TEXT PRIMARY KEY,
+  -- the tab's id, what <@ID> names
+  name TEXT NOT NULL,
+  -- when it was last seen called that
+  seen_at INTEGER NOT NULL
 );
 
 CREATE TABLE tasks (
