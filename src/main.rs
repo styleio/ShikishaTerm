@@ -251,6 +251,9 @@ fn boot() -> Result<()> {
         // An update that was interrupted mid-swap is put back, and one that
         // finished is tidied, before any of the files it touched is read
         update::finish_last();
+        // A settings save this program did not live to finish is put back to
+        // what was there before it, before anything reads the settings
+        webui::finish_settings_save(&config::config_file_path());
         // Old layouts are moved into place, and the first start of a version
         // keeps a copy of the files and carries them forward (migrate.rs). Before
         // anything reads them, so what is read is already in this version's shape

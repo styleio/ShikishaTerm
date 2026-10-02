@@ -61,7 +61,13 @@ once it reaches its first tagged release.
   one: when any part cannot be written, the parts already written are put
   back, where a failed save used to leave the secrets moved under ids the
   settings did not have. A value that names a moved secret (`@name`) is
-  pointed at its new name, wherever it is in the settings.
+  pointed at its new name, wherever it is in the settings. A save cut short
+  by the app ending in the middle of it is put back at the next start, and a
+  save may hold as many desk files as could be saved one by one before; one
+  too large says which, and nothing is saved.
+- **A resident process that could not be reached is no longer taken for
+  none.** Its door busy or refusing used to read as no resident process: the
+  settings counted its terminals as none, and a second one could be started.
 - **What was typed into a held terminal before it was reached is kept if the
   line drops just then**, and goes in when the terminal is reached again.
 - **The settings say what they do.** "Keep the PC awake" no longer says

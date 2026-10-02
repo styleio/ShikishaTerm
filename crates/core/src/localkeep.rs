@@ -300,8 +300,10 @@ pub fn let_go() {
 /// the terminals still running and the one press that stops them. Blocks
 /// for an answer; call off the loop
 pub fn held_count() -> Result<usize> {
-    if matches!(crate::fardaemon::find(&keep_door()?), crate::fardaemon::Found::Nobody) {
-        return Ok(0);
+    match crate::fardaemon::find(&keep_door()?) {
+        crate::fardaemon::Found::Nobody => return Ok(0),
+        crate::fardaemon::Found::Unreachable(why) => bail!("this PC's resident process could not be reached: {why}"),
+        _ => {}
     }
     connect_existing()?;
     crate::farterm::list_held(&crate::farterm::Place::Here)
