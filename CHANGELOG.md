@@ -36,6 +36,11 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **A file on this PC opened in a browser tab can no longer reach outside its
+  folder through a link.** A link named `index.html` in a shared folder, or a
+  name swapped for a link between the check and the opening, served whatever
+  it led to. The file is now checked where it really is once opened, and a
+  name holding a stream (`a.html:x`) or a control character is refused.
 - **A new tab no longer inherits a closed tab's record because it was given
   the same name.** A tab's conversations, the jobs it leads and the work it was
   handed, its mail, its place in a split, the key its programs call the app
@@ -54,7 +59,8 @@ once it reaches its first tagged release.
 - **A name with `</script>` in it cannot run code in the settings page.**
   Values the settings, the ? and the manual pages put into their scripts --
   a project's name among them -- are written so that nothing in them can
-  end the script.
+  end the script, and are put in once: a project called `__DICT__` no longer
+  breaks the settings page.
 - **The worktree dialog no longer waits on counting what is left out.** The
   places the rules leave out are counted to one limit for the whole dialog,
   not one each.

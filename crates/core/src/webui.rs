@@ -1490,6 +1490,34 @@ fn secure<R: std::io::Read>(resp: Response<R>) -> Response<R> {
         .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap())
 }
 
+/// A page with its placeholders (`__NAME__`) filled, each from `values`, in
+/// one pass over the page as written.
+///
+/// One pass, not one `replace` a placeholder: a value filled in is the
+/// person's words as often as the app's -- a project's name among them -- and
+/// a later `replace` reached into it. A project called `__DICT__` had the
+/// whole dictionary poured into its name, and the page's script no longer
+/// parsed. Only what the page itself says is a placeholder; nothing a value
+/// brings is looked at again
+pub fn fill_page(page: &str, values: &[(&str, String)]) -> String {
+    let mut out = String::with_capacity(page.len() + values.iter().map(|(_, v)| v.len()).sum::<usize>());
+    let mut rest = page;
+    'next: while let Some(at) = rest.find("__") {
+        for (key, value) in values {
+            if rest[at..].starts_with(key) {
+                out.push_str(&rest[..at]);
+                out.push_str(value);
+                rest = &rest[at + key.len()..];
+                continue 'next;
+            }
+        }
+        out.push_str(&rest[..at + 2]);
+        rest = &rest[at + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The words a new tab's automation name is drawn from, as the page reads
 /// them. Drawn from `config::pet_nouns` so that a name minted in the page and
 /// one minted here come out of the same bag
@@ -1853,29 +1881,33 @@ fn handle(
             // stand there (`script_json`): some of it is the person's own
             // words, a project's name among them
             let js = |json: String| crate::script_json(&json);
-            let html = crate::i18n::render(&themed(PAGE.to_string()))
-                .replace("__TOKEN__", token)
-                .replace("__HOTKEYS__", &js(crate::hotkeys::catalog_json()))
-                .replace("__QUICK__", &js(quick_json()))
-                .replace("__REMOTE__", if remote_client { "true" } else { "false" })
-                .replace("__GRANTS__", &js(crate::grants::catalog_json()))
-                .replace(
-                    "__GITLUA__",
-                    &js(serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA).unwrap_or_else(|_| "\"\"".into())),
-                )
-                .replace(
-                    "__PROTECT__",
-                    &js(serde_json::to_string(&crate::git::DEFAULT_PROTECTED).unwrap_or_else(|_| "[]".into())),
-                )
-                .replace("__THISPC__", &js(serde_json::to_string(crate::config::THIS_PC).unwrap_or_default()))
-                .replace("__PETNOUNS__", &js(pet_nouns_json()))
-                .replace("__PETADJECTIVES__", &js(pet_adjectives_json()))
-                .replace(
-                    "__SHIPPEDINSIDE__",
-                    &js(serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into())),
-                )
-                .replace("__INSIDESHOWN__", &js(crate::inside::shown_json()))
-                .replace("__DICT__", &js(crate::i18n::dict_json()));
+            let html = fill_page(
+                &crate::i18n::render(&themed(PAGE.to_string())),
+                &[
+                    ("__TOKEN__", token.to_string()),
+                    ("__HOTKEYS__", js(crate::hotkeys::catalog_json())),
+                    ("__QUICK__", js(quick_json())),
+                    ("__REMOTE__", if remote_client { "true" } else { "false" }.to_string()),
+                    ("__GRANTS__", js(crate::grants::catalog_json())),
+                    (
+                        "__GITLUA__",
+                        js(serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA).unwrap_or_else(|_| "\"\"".into())),
+                    ),
+                    (
+                        "__PROTECT__",
+                        js(serde_json::to_string(&crate::git::DEFAULT_PROTECTED).unwrap_or_else(|_| "[]".into())),
+                    ),
+                    ("__THISPC__", js(serde_json::to_string(crate::config::THIS_PC).unwrap_or_default())),
+                    ("__PETNOUNS__", js(pet_nouns_json())),
+                    ("__PETADJECTIVES__", js(pet_adjectives_json())),
+                    (
+                        "__SHIPPEDINSIDE__",
+                        js(serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into())),
+                    ),
+                    ("__INSIDESHOWN__", js(crate::inside::shown_json())),
+                    ("__DICT__", js(crate::i18n::dict_json())),
+                ],
+            );
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -1935,9 +1967,10 @@ fn handle(
         // and the phone's way in are already here; where it sits on the
         // screen is the app's business, not this server's
         ("GET", "/guide") => {
-            let html = crate::i18n::render(&themed(crate::guide::page().to_string()))
-                .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()));
+            let html = fill_page(
+                &crate::i18n::render(&themed(crate::guide::page().to_string())),
+                &[("__TOKEN__", token.to_string()), ("__DICT__", crate::script_json(&crate::i18n::dict_json()))],
+            );
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -18935,6 +18968,19 @@ mod tests {
                 "{name}: `{n}` is declared twice at the top level (the whole script stops working)"
             );
         }
+    }
+
+    /// A page's placeholders are filled from what the page says, once: a
+    /// value that holds a placeholder's name -- a project called `__DICT__`
+    /// -- is put in as it is, and the page's script still parses
+    #[test]
+    fn a_value_is_never_filled_into_again() {
+        let page = "const A = __INSIDESHOWN__; const D = __DICT__; x__y __init__";
+        let filled = super::fill_page(
+            page,
+            &[("__INSIDESHOWN__", r#"{"__DICT__":1}"#.into()), ("__DICT__", r#"{"k":"v"}"#.into())],
+        );
+        assert_eq!(filled, r#"const A = {"__DICT__":1}; const D = {"k":"v"}; x__y __init__"#);
     }
 
     /// Every word a new tab's automation name can be drawn as is one automation

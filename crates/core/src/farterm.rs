@@ -245,9 +245,10 @@ pub fn left_running(at: &Place, cwd: &str, uid: &str, name: &str) -> Option<Save
 /// Whether a terminal written down for `tab` is the one of the tab `uid`,
 /// called `name`. By who the tab is; by its name only for what a version
 /// before uids opened, which knew a tab by nothing else -- never a uid taken
-/// for a name, since no tab is called something shaped like one
+/// for a name, since no tab is called something shaped like one, and never
+/// for a tab made since, which was not there when it was opened
 fn is_this_tab(tab: &str, uid: &str, name: &str) -> bool {
-    tab == uid || (!crate::config::is_tab_uid(tab) && tab == name)
+    tab == uid || (!crate::config::is_tab_uid(tab) && tab == name && crate::config::uid_is_worked_out(uid))
 }
 
 /// The terminal written down on `machine` for that tab in `cwd`: the one
@@ -1114,11 +1115,14 @@ mod tests {
         let book = vec![saved("pi", "/w", other, "g", 1), saved("pi", "/w", me, "g", 2), saved("pi", "/old", "tiger", "g", 3)];
         assert_eq!(written_for(&book, "pi", "/w", me, "tiger").map(|s| s.term), Some(2));
         assert_eq!(written_for(&book, "pi", "/w", "33333333-3333-4333-8333-333333333333", "tiger"), None, "a new tab was handed another's");
-        // Written by an older version, under the name
-        assert_eq!(written_for(&book, "pi", "/old", me, "tiger").map(|s| s.term), Some(3));
+        // Written by an older version, under the name: the tab that was there
+        // then, and not one made since under the same name
+        let then = crate::config::derived_tab_uid("work", "tiger");
+        assert_eq!(written_for(&book, "pi", "/old", &then, "tiger").map(|s| s.term), Some(3));
+        assert_eq!(written_for(&book, "pi", "/old", me, "tiger"), None, "a tab made since was handed an old terminal");
         // A uid is never matched as a name
-        assert!(!is_this_tab(other, me, other));
-        assert!(is_this_tab("tiger", me, "tiger") && is_this_tab(me, me, "tiger"));
+        assert!(!is_this_tab(other, &then, other));
+        assert!(is_this_tab("tiger", &then, "tiger") && is_this_tab(me, me, "tiger"));
     }
 
     /// A tab has one terminal written down, the last it opened; one is struck
