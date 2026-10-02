@@ -43,6 +43,12 @@ once it reaches its first tagged release.
   Chat panel. The first start of this version writes the `uid`s and moves
   what was kept under names to them; what a tab of today's name kept before it
   cannot be told apart from the tab itself, and stays with it.
+- **Saving the settings keeps what the settings screen does not show.** A
+  split's arrangement, a tab's "start clean" and its git account, a
+  conversation to resume were dropped from a tab's line on every save.
+- **A tab on a desk that is not in front can still use `shikisha`.** Its
+  key was retired while another desk was in front, so its calls and its
+  CLI's hooks were refused until its program was started again.
 
 ## [0.23.1] - 2026-10-02
 

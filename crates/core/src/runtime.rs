@@ -4146,10 +4146,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
             // Retire the API keys of tabs that are gone. Told the live set
             // rather than each closure: tabs leave in several ways, and a key
-            // that outlives its tab is a working key nobody is watching
+            // that outlives its tab is a working key nobody is watching.
+            // Every desk's tabs, not only the one in front: a desk behind keeps
+            // its tabs running, and a key is minted only when a tab's program
+            // starts -- retired here, a tab behind had its `shikisha` and its
+            // CLI's hooks refused for as long as its program ran
             if let Some(a) = api_server.as_ref() {
                 a.retain_tabs(
-                    &tabs.iter().map(|t| t.uid().to_string()).collect::<Vec<_>>(),
+                    &tabs.iter().chain(desk_tabs.iter().flatten()).map(|t| t.uid().to_string()).collect::<Vec<_>>(),
                 );
             }
 
