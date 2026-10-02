@@ -89,6 +89,10 @@ once it reaches its first tagged release.
   whatever it has been renamed to since, and no longer makes the project again
   under its old name. Changing a desk's or a tab's id on the settings page
   moves the secrets filed under it.
+- **What is typed into a tab just after a start reaches its program.** A tab
+  whose terminal this PC's background process keeps takes keys before it is
+  back on that terminal; they went nowhere. They are now held and sent the
+  moment it is, in order.
 - **A folder is found however its path is written.** A change meant for a
   folder on this PC whose path was spelled with the other slash, another case
   or a separator at the end no longer goes nowhere.
