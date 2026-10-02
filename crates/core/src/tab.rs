@@ -3787,7 +3787,9 @@ impl Tab {
         let api_on = !api_env.is_empty();
         // A tab over there cannot be handed its key through an environment:
         // the bridge on its machine is given it instead (`farlink`)
-        let far_key = (!local)
+        // Nor can one this PC's resident process holds, after the app that
+        // started it is gone: its key goes through the resident process too
+        let far_key = (!local || keep_here)
             .then(|| api_env.iter().find(|(k, _)| k == crate::api::ENV_TOKEN).map(|(_, v)| v.clone()))
             .flatten();
         // ...and the program started there is told where `shikisha` will be.
@@ -3809,6 +3811,11 @@ impl Tab {
         };
         for (k, v) in api_env {
             cmd.env(k, v);
+        }
+        if keep_here && api_on {
+            for (k, v) in crate::localkeep::tab_env(opts.called(&title)) {
+                cmd.env(k, v);
+            }
         }
         // ...and `shikisha`, the command that hands work to another tab, in
         // front of whatever PATH the tab would have had. Only with the API on:

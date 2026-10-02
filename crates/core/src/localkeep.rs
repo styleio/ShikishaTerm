@@ -58,6 +58,55 @@ pub fn link() -> Option<Arc<Link>> {
     crate::farlink::link_by_key(KEY)
 }
 
+/// What a tab held here is told in its environment so that its `shikisha`
+/// command (and the AI CLIs' hooks) reach whichever app is running, through
+/// the resident process -- not the app that started the tab, which may be
+/// long gone: the resident process's tabs door, and the file its key is in.
+/// The key is written there by the app each time it is running
+/// (`give_keys`), so a command after a restart is let in with the key of the
+/// app that is there now (local-keeper plan §6)
+pub fn tab_env(tab: &str) -> Vec<(String, String)> {
+    let Ok(home) = home() else { return Vec::new() };
+    let door = home.join("run").join(crate::farlink::TABS_SOCK);
+    #[cfg(windows)]
+    let door = crate::keepipe::pipe_name(&door);
+    #[cfg(not(windows))]
+    let door = door.to_string_lossy().into_owned();
+    let key = home.join("keys").join(crate::farlink::key_name(tab));
+    vec![
+        (crate::farlink::ENV_SOCK.into(), door),
+        (crate::farlink::ENV_KEY.into(), key.to_string_lossy().into_owned()),
+    ]
+}
+
+/// Hand the resident process the key of each tab held here, by the tab's
+/// name: given once per key for as long as the line stays up, and all again
+/// on a new line (the resident process may be a new one)
+pub fn give_keys(keys: Vec<(String, String)>) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static GIVEN: Mutex<Option<(usize, HashSet<String>)>> = Mutex::new(None);
+    let Some(l) = link() else { return };
+    let line = Arc::as_ptr(&l) as usize;
+    let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+    if given.as_ref().is_none_or(|(on, _)| *on != line) {
+        *given = Some((line, HashSet::new()));
+    }
+    let Some((_, done)) = given.as_mut() else { return };
+    for (tab, key) in keys {
+        let mark = format!("{tab}|{key}");
+        if done.contains(&mark) {
+            continue;
+        }
+        match l.call("put_key", json!({ "tab": crate::farlink::key_name(&tab), "key": key }), Duration::from_secs(5)) {
+            Ok(_) => {
+                done.insert(mark);
+            }
+            Err(e) => crate::append_hook_log(&format!("this PC's resident process: the key of {tab} was not handed over ({e})")),
+        }
+    }
+}
+
 /// Whether this PC's terminals are to be held by it: the person said so
 /// (`keep_terminals`), and this is a system it runs on
 pub fn wanted() -> bool {
@@ -126,9 +175,12 @@ pub fn connect() -> Result<Arc<Link>> {
 
 /// Start the resident process
 fn start(home: &std::path::Path) -> Result<()> {
+    // Through a go-between that starts it and leaves at once: the resident
+    // process is then nobody's child, so ending the app's whole process tree
+    // (as Task Manager's "End process tree" does) does not reach it
     #[cfg(windows)]
     {
-        crate::fardaemon::start_resident(home, &["--keeper".into(), home.to_string_lossy().into_owned()])
+        crate::fardaemon::start_resident(home, &["--keeper-launch".into(), home.to_string_lossy().into_owned()])
     }
     #[cfg(not(windows))]
     {

@@ -122,6 +122,25 @@ pub const TABS_SOCK: &str = "tabs.sock";
 /// (`shikisha.sock`), which nothing of the resident process touches
 pub const KEEP_SOCK: &str = "keep.sock";
 
+/// A program started in a terminal a resident process holds (on another
+/// machine, or this PC's own) is told where that resident process's tabs door
+/// is and which file its key is in, rather than an app's pipe and a key: the
+/// app it would have been told of may be gone, and the one there now has
+/// another key. Point this program's API at them, before anything reads it.
+/// Nothing changes for a program that was not told
+///
+/// # Safety
+/// Sets environment variables: call first thing, on the only thread
+pub unsafe fn adopt_resident_door() {
+    let (Ok(door), Ok(key_file)) = (std::env::var(ENV_SOCK), std::env::var(ENV_KEY)) else { return };
+    let key = std::fs::read_to_string(&key_file).unwrap_or_default();
+    // SAFETY: the caller promises nothing else runs yet
+    unsafe {
+        std::env::set_var(crate::api::ENV_PIPE, door);
+        std::env::set_var(crate::api::ENV_TOKEN, key.trim());
+    }
+}
+
 /// The `shikisha` command over there: this crate's own command, pointed at the
 /// bridge's socket, with the tab's key read from the file the bridge was given
 /// (`farops::put_key`). The tab says which file through its environment

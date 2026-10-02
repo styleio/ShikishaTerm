@@ -7525,6 +7525,8 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.confirm_worktree_delete.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
+    row(T["settings.keep_terminals"], check(current, "keep_terminals", T["settings.keep_terminals.label"]),
+        el("span", {class:"hint"}, T["settings.keep_terminals.hint"])),
     // Directly under the ✕, because the ✕ is what it changes the meaning of:
     // one asks what closing the window costs, the other asks whether the
     // window is the program at all

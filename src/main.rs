@@ -165,7 +165,7 @@ fn main() -> Result<()> {
         // failing it.
         let quiet = matches!(
             std::env::args().nth(1).as_deref(),
-            Some("--bridge") | Some("--hook") | Some("--mcp") | Some("--cli") | Some("--keeper")
+            Some("--bridge") | Some("--hook") | Some("--mcp") | Some("--cli") | Some("--keeper") | Some("--keeper-launch")
         );
         if !quiet {
             say_fatally(&format!("{e}"));
@@ -175,6 +175,11 @@ fn main() -> Result<()> {
 }
 
 fn boot() -> Result<()> {
+    // A tab whose terminal this PC's resident process holds reaches the app
+    // through it (local-keeper plan §6): its `shikisha`, its hooks and its MCP
+    // are pointed there before anything reads the environment
+    // SAFETY: nothing else runs yet
+    unsafe { shikisha_core::farlink::adopt_resident_door() };
     install_crash_log();
     // Child-process mode for the model bridge. It receives its connection info via env,
     // relays stdin -> response, then exits. It never spins up the main window/WebView etc.
@@ -186,6 +191,10 @@ fn boot() -> Result<()> {
     // closed, updated or gone (local-keeper plan): the same program, started
     // by the app in a role with no window. It ends by itself once it holds
     // nothing and no app is connected
+    if std::env::args().nth(1).as_deref() == Some("--keeper-launch") {
+        let home = std::env::args().nth(2).map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("--keeper-launch needs its folder"))?;
+        return shikisha_core::fardaemon::start_resident(&home, &["--keeper".into(), home.to_string_lossy().into_owned()]);
+    }
     if std::env::args().nth(1).as_deref() == Some("--keeper") {
         let home = std::env::args().nth(2).map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("--keeper needs its folder"))?;
         return shikisha_core::fardaemon::daemon(home);

@@ -8,6 +8,17 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **This PC's terminals can outlive the app.** With Settings › Basic ›
+  "Terminals on this PC" on, the terminals of this PC run in a background
+  process of their own (the same program, started in another role), so
+  quitting the app, updating it, or the app closing unexpectedly leaves them
+  running; when the app starts again each tab is back on the same terminal,
+  screen and all, and a `shikisha` command in it reaches the app running now.
+  Quitting and answering "No" stops every AI and the background process. Off
+  unless turned on. The Store copy keeps its terminals across quitting and
+  crashes, but not across a Store update.
+
 ## [0.23.1] - 2026-10-02
 
 ### Changed

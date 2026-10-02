@@ -5230,6 +5230,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .push((t.called().to_string(), key.clone()));
                 }
                 bridges.tend(wanted.into_values().collect());
+                // The tabs this PC's resident process holds, their keys handed
+                // to it, so their `shikisha` reaches this app (local-keeper §6)
+                let here: Vec<(String, String)> = tabs
+                    .iter()
+                    .chain(desk_tabs.iter().flatten())
+                    .filter(|t| t.far_term.as_ref().is_some_and(|f| f.here()))
+                    .filter_map(|t| t.far_key.clone().map(|k| (t.called().to_string(), k)))
+                    .collect();
+                if !here.is_empty() {
+                    std::thread::spawn(move || crate::localkeep::give_keys(here));
+                }
                 bridges.agreed_now(&agreed, &hosts, &awake);
                 bridges.sweep(stray);
                 // What the bridges have to tell the person: calls their tabs made
@@ -13488,6 +13499,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if let Err(e) = crate::e2b::keep_up_while_away(&id, minutes) {
             crate::append_hook_log(&format!("e2b: {id} could not be kept up again on the way out: {e:#}"));
         }
+    }
+    // This PC's resident process, when everything is to stop: told to end
+    // what it holds and go, rather than keep the ended terminals' codes for a
+    // start that is not coming (local-keeper plan §4)
+    if stop_all.get() {
+        crate::localkeep::end();
     }
     // Every bridge is told this app is going: what the tabs there ask from
     // now on is answered at once that the PC is away (far-keep plan §4.6)

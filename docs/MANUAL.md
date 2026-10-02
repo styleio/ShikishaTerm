@@ -423,3 +423,15 @@ Store copy hands the same button to the Store, which installs and restarts.
 
 Skipped a few versions? The newest one carries your settings forward one version
 at a time, so nothing has to be installed in between.
+
+**Keeping this PC's terminals running.** With Settings › Basic › **Terminals on
+this PC** turned on, the terminals of this PC (and the AIs in them) run in a
+separate background process of their own rather than inside the app. Quitting the
+app, updating it, or the app closing unexpectedly does not stop them: when the app
+starts again, each tab comes back to the same terminal, with its screen, and what
+the AI there asks of the app through `shikisha` reaches the app that is running
+now. To stop them, answer **No** (stop every AI and quit) when quitting asks. The
+setting applies to tabs opened after it is turned on; restart a tab to move it.
+The Store copy is the exception for updates: installing an update from the Store
+closes the background process too, and the tabs then come back on their
+conversations as they do without this setting.
