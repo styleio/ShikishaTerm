@@ -338,6 +338,11 @@ impl Detector {
         self.profile.ignore_bottom_rows
     }
 
+    /// What this CLI draws only as decoration, left out of the screen-change check
+    pub fn decoration(&self) -> Option<&regex::Regex> {
+        self.profile.decoration.as_ref()
+    }
+
     /// Whether the window title carried the profile's busy mark at the last tick
     pub fn title_busy(&self) -> bool {
         self.title_busy
@@ -579,6 +584,7 @@ mod tests {
             question_patterns: vec!["Do you want".into(), "❯\\s*1\\.".into()],
             silence_ms: 2000,
             ignore_bottom_rows: 2,
+            screen_decoration: None,
             done_confirm_ms: None,
             title_busy: vec![],
             limit_patterns: vec!["hit your limit".into(), "Usage limit (reached|approaching)".into()],

@@ -1367,14 +1367,21 @@ pub fn visible_text(screen: &vt100::Screen) -> String {
 /// Hash of the screen content. The bottom `ignore_bottom` rows are excluded
 /// from the judgment
 /// (status bars like byobu/tmux update their clock every second, and if we
-///  looked at raw output activity the tab would look BUSY forever)
-pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16) -> u64 {
+///  looked at raw output activity the tab would look BUSY forever).
+/// What `decoration` matches is taken out of every row first, for the same
+/// reason: a CLI's own animation at rest (see `ProfileFile::screen_decoration`)
+pub fn screen_hash(screen: &vt100::Screen, ignore_bottom: u16, decoration: Option<&regex::Regex>) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let (rows, cols) = screen.size();
     let keep = rows.saturating_sub(ignore_bottom) as usize;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for line in screen.rows(0, cols).take(keep) {
-        line.hash(&mut h);
+        match decoration {
+            // A blank where the dot was, as the cell is once it goes out:
+            // the dots twinkle in cells that are otherwise empty
+            Some(d) => d.replace_all(&line, " ").trim_end().hash(&mut h),
+            None => line.hash(&mut h),
+        }
     }
     h.finish()
 }
@@ -2519,13 +2526,33 @@ mod tests {
     fn bottom_status_rows_are_ignored() {
         let mut p = vt100::Parser::new(5, 20, 0);
         p.process(b"main content\r\n");
-        let before = screen_hash(p.screen(), 2);
+        let before = screen_hash(p.screen(), 2, None);
         // Rewrite only the bottom row (the equivalent of byobu's clock)
         p.process(b"\x1b[5;1H12:34:56");
-        assert_eq!(before, screen_hash(p.screen(), 2), "a change in the bottom rows is ignored");
+        assert_eq!(before, screen_hash(p.screen(), 2, None), "a change in the bottom rows is ignored");
         // The hash changes if the body content changes
         p.process(b"\x1b[1;1Hchanged!");
-        assert_ne!(before, screen_hash(p.screen(), 2));
+        assert_ne!(before, screen_hash(p.screen(), 2, None));
+    }
+
+    /// Codex at rest with its model Astra: braille dots twinkle around the
+    /// input box, a few cells at a time, and nothing else moves. Left in the
+    /// check, the tab read as at work forever and an ask to it was never sent
+    #[test]
+    fn a_twinkle_around_the_input_box_is_not_activity() {
+        let file = std::fs::read_to_string(crate::repo_root().join("profiles").join("codex.json")).unwrap();
+        let codex = crate::profile::Profile::compile(serde_json::from_str(&file).unwrap()).unwrap();
+        let dots = codex.decoration.as_ref().expect("the Codex profile names its decoration");
+        let mut p = vt100::Parser::new(6, 60, 0);
+        p.process("   \u{2808}        \u{2840}\u{2810}   \r\n\u{203a} Ask Codex to do anything   \u{2802}\r\n".as_bytes());
+        let before = screen_hash(p.screen(), 2, Some(dots));
+        // The dots move to other cells and change their shape
+        p.process("\x1b[1;1H        \u{2810}  \u{2804}      \x1b[2;30H\u{2801}".as_bytes());
+        assert_ne!(before, screen_hash(p.screen(), 2, None), "the twinkle does change the raw screen");
+        assert_eq!(before, screen_hash(p.screen(), 2, Some(dots)), "the twinkle alone is not a change");
+        // What the CLI writes is still a change
+        p.process(b"\x1b[3;1H\xe2\x80\xa2 Working (3s");
+        assert_ne!(before, screen_hash(p.screen(), 2, Some(dots)), "real output is still a change");
     }
 }
 
@@ -4228,7 +4255,7 @@ impl Tab {
     /// Current screen content (excluding the bottom decoration)
     fn screen_fingerprint(&self) -> u64 {
         let p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
-        screen_hash(p.screen(), self.detector.ignore_bottom_rows())
+        screen_hash(p.screen(), self.detector.ignore_bottom_rows(), self.detector.decoration())
     }
 
     /// Raw value of "was the started-working indicator seen" (for logging)
@@ -4869,7 +4896,7 @@ impl Tab {
             let screen = p.screen();
             (
                 screen.contents(),
-                screen_hash(screen, self.detector.ignore_bottom_rows()),
+                screen_hash(screen, self.detector.ignore_bottom_rows(), self.detector.decoration()),
             )
         };
         let now = start.elapsed().as_millis() as u64;

@@ -22,6 +22,7 @@
   ],
   "title_busy": ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
   "silence_ms": 2000,
+  "screen_decoration": "[⠀-⣿]",
   "interrupt": ["esc"],
   "helpers": ["codex-code-mode-host.exe"],
   "skills": "{home}/.agents/skills",

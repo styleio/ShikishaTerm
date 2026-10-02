@@ -8,10 +8,26 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-10-02
+
 ### Changed
 - **The faces have more ways to look.** Eyes can be four-pointed sparkles,
   two arches shut in a smile, or a dark visor with a glint, and a head can
   wear pointed ears instead of feelers.
+
+### Fixed
+- **A Codex tab at rest reads as at rest while its model is Astra.** Codex
+  draws a field of twinkling dots around its input box for that model, so
+  its screen never stopped moving: the tab read as working forever, and work
+  handed to it with @ was never sent -- the asking AI waited, was told it was
+  still working, and gave up. The dots no longer count as the screen moving.
+- **A Claude Code tab whose turn has ended is not held "running in the
+  background" by a log watcher it left behind.** A watcher such as `tail -F`
+  goes on after the shell that started it has gone, since on Windows nothing
+  ends it, and the tab stayed in the background state for hours (6 h 40 min,
+  measured). When the AI says what it left running as its turn ends, that is
+  believed over the count of the tab's processes; an AI that says nothing,
+  and a plain shell tab, are counted as before.
 
 ## [0.23.0] - 2026-10-01
 
@@ -4204,7 +4220,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...HEAD
+[0.23.1]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...v0.22.1
 [0.22.0]: https://github.com/styleio/ShikishaTerm/compare/v0.21.0...v0.22.0
