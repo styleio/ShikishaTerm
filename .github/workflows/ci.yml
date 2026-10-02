@@ -32,7 +32,9 @@ jobs:
       # have caught it, because the page is only a string until a browser runs
       # it. Chrome and node are on this runner already.
       - name: The board comes up when it is handed a state
-        run: node tools/check-board.mjs
+        run: |
+          node --test tools/debug/chrome.test.mjs
+          node tools/check-board.mjs
 
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line

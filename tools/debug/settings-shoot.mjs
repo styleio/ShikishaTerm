@@ -29,36 +29,22 @@
  * Needs Chrome and cargo. The light scheme's colours are laid over the page
  * the way page_dump lays them, so the machine's own scheme does not decide it.
  */
+import {findCargo, startChrome} from './chrome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const OUT = path.join(ROOT, 'target', 'shots');
-const PORT = 9334;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(1); };
-
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  const guesses = process.platform === 'win32'
-    ? [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-      .filter(Boolean).map((b) => path.join(b, 'Google/Chrome/Application/chrome.exe'))
-    : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  return guesses.find((p) => fs.existsSync(p)) || die('Chrome was not found; say where with CHROME=<path>');
-}
-function findCargo() {
-  const beside = path.join(os.homedir(), '.cargo', 'bin', process.platform === 'win32' ? 'cargo.exe' : 'cargo');
-  return fs.existsSync(beside) ? beside : 'cargo';
-}
 
 /** The settings page for one language, served until `stop` */
 async function serve(lang, config) {
   fs.mkdirSync(OUT, { recursive: true });
-  const file = path.join(OUT, 'settings-start.json');
+  const file = path.join(OUT, `settings-start-${process.pid}-${lang}.json`);
   fs.writeFileSync(file, JSON.stringify(config, null, 2));
   // Built first and run as itself: stopping `cargo run` leaves the program it
   // started still serving on Windows
@@ -71,6 +57,7 @@ async function serve(lang, config) {
   for (let i = 0; i < 200 && !said.includes('\n'); i++) await sleep(100);
   const url = said.split('\n')[0].trim();
   if (!url.startsWith('http')) die('the settings page did not start');
+  fs.unlinkSync(file);
   if (!remoteHttp) return { url, stop: () => proc.kill() };
   // The settings server deliberately rejects non-loopback Host headers.
   // Forward only to this isolated server, as the remote board's proxy does;
@@ -103,39 +90,7 @@ function lightColours() {
   return html.slice(at + '<style>'.length, html.indexOf('</style>', at));
 }
 
-async function connect() {
-  const proc = spawn(findChrome(), [
-    '--headless=new', '--remote-debugging-port=' + PORT,
-    '--user-data-dir=' + path.join(OUT, 'chrome-settings-profile'),
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    ...(remoteHttp ? ['--host-resolver-rules=MAP settings.test 127.0.0.1', '--no-proxy-server'] : []),
-    'about:blank',
-  ], { stdio: 'ignore' });
-  let list;
-  for (let i = 0; i < 80 && !list; i++) {
-    try { list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json(); } catch { await sleep(250); }
-  }
-  if (!list) die('Chrome never answered on its debugging port');
-  const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
-  return { send, run, stop: () => { ws.close(); proc.kill(); } };
-}
+const connect = () => startChrome({args:remoteHttp ? ['--host-resolver-rules=MAP settings.test 127.0.0.1', '--no-proxy-server'] : []});
 
 const file = process.argv[2] || die('say which scenes: node tools/debug/settings-shoot.mjs <scenes.mjs>');
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;

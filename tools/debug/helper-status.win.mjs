@@ -25,6 +25,7 @@
  * Needs Windows, Node, and `claude` signed in. Spends two or three turns of
  * that account. Nothing of a copy somebody is using is read, written or stopped.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -99,13 +100,10 @@ const photograph = async () => {
   const port = Number(fs.readFileSync(f, 'utf8').split(/\r?\n/)[0]);
   const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
   if (!page) return false;
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  const got = await new Promise((r) => {
-    ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id === 1) r(m.result && m.result.data); });
-    ws.send(JSON.stringify({ id: 1, method: 'Page.captureScreenshot', params: { format: 'png' } }));
-  });
-  ws.close();
+  const connection = await connectCdp(page);
+  let got;
+  try { got = (await connection.send('Page.captureScreenshot', {format:'png'})).data; }
+  finally { connection.stop(); }
   if (!got) return false;
   fs.mkdirSync(path.dirname(SHOT), { recursive: true });
   fs.writeFileSync(SHOT, Buffer.from(got, 'base64'));

@@ -2094,6 +2094,12 @@ const SHARED_SUFFIX: &[&str] = &[
     "co.uk", "com.au", "com.br", "co.kr", "com.cn",
 ];
 
+const URL_SCHEMES: &[&str] = &["http", "https"];
+
+pub(crate) fn secret_url_policy_json() -> String {
+    serde_json::json!({"schemes": URL_SCHEMES, "suffixes": SHARED_SUFFIX, "maxPort": u16::MAX}).to_string()
+}
+
 fn default_port(scheme: &str) -> u16 {
     if scheme == "http" {
         80
@@ -2109,7 +2115,7 @@ impl Place {
         let t = text.trim();
         let (scheme, rest) = t.split_once("://")?;
         let scheme = scheme.to_ascii_lowercase();
-        if !matches!(scheme.as_str(), "http" | "https") {
+        if !URL_SCHEMES.contains(&scheme.as_str()) {
             return None;
         }
         // Anything after ? or # is not part of where the page is
@@ -2262,7 +2268,7 @@ pub fn url_fault(text: &str) -> Option<&'static str> {
     let Some((scheme, rest)) = t.split_once("://") else {
         return Some("err.secret_url.scheme");
     };
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+    if !URL_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str()) {
         return Some("err.secret_url.scheme");
     }
     let host = rest
@@ -3873,6 +3879,49 @@ pub(crate) fn project_is(p: &serde_json::Value, scope: &str, key: &str) -> bool 
     name == Some(key)
 }
 
+/// Edit one project without reserializing the typed config (unknown fields
+/// belong to the person too). `create_at` permits creating a named project;
+/// a uid that disappeared is never resurrected. None edits existing entries only.
+fn with_project(
+    path: &Path, desk: &str, project: &str, create_at: Option<&str>,
+    edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<()>,
+) -> Result<()> {
+    let invalid = || anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]));
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text)).map_err(|_| invalid())?;
+    let Some(entry) = desk_entry_mut(&mut doc, desk) else {
+        if create_at.is_none() { return Ok(()); }
+        anyhow::bail!(crate::i18n::tp("err.desk.missing", &[("name", desk)]));
+    };
+    let scope = entry_scope(entry);
+    if create_at.is_some() {
+        entry.entry("projects").or_insert_with(|| serde_json::json!([]));
+    }
+    let Some(projects) = entry.get_mut("projects").and_then(|p| p.as_array_mut()) else {
+        if create_at.is_none() { return Ok(()); }
+        return Err(invalid());
+    };
+    let at = match projects.iter().position(|p| project_is(p, &scope, project)) {
+        Some(at) => at,
+        None => {
+            let Some(here) = create_at else { return Ok(()); };
+            if is_tab_uid(project) { anyhow::bail!(crate::i18n::t("err.project.gone")); }
+            let mut fresh = serde_json::json!({"name": project, "uid": new_tab_uid()});
+            if !here.trim().is_empty() { fresh["at"] = serde_json::json!(here.trim()); }
+            projects.push(fresh);
+            projects.len() - 1
+        }
+    };
+    let p = projects[at].as_object_mut().ok_or_else(invalid)?;
+    edit(p)?;
+    crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
+    Ok(())
+}
+
 /// Writes where a project is checked out on another machine, as that
 /// project's own: the checkout its worktrees there are cut from. A project not
 /// written down yet is written down with it, and one that already has a
@@ -3885,77 +3934,29 @@ pub fn set_project_home(desk_id: &str, project: &str, home: &ProjectHome, here: 
 /// checkout on this PC, written with a project written down now for the first
 /// time -- a project worked out from its checkout would otherwise lose it
 pub fn set_project_home_at(path: &Path, desk_id: &str, project: &str, home: &ProjectHome, here: Option<&str>) -> Result<()> {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
-        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
-    let entry = desk_entry_mut(&mut doc, desk_id)
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.desk.missing", &[("name", desk_id)])))?;
-    let scope = entry_scope(entry);
-    let projects = entry
-        .entry("projects")
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
-        .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?;
-    let at = match projects.iter().position(|p| project_is(p, &scope, project)) {
-        Some(i) => i,
-        // A project held by who it is and not there any more was renamed
-        // into nothing or taken away while this was under way: it is not
-        // made again under a name nobody gave it
-        None if is_tab_uid(project) => {
-            anyhow::bail!(crate::i18n::t("err.project.gone"));
+    with_project(path, desk_id, project, Some(here.unwrap_or_default()), |p| {
+        let homes = p.entry("homes").or_insert_with(|| serde_json::json!([]))
+            .as_array_mut().ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?;
+        let written = serde_json::to_value(home)?;
+        match homes.iter().position(|h| h.get("host").and_then(|n| n.as_str()) == Some(home.host.as_str())) {
+            Some(i) => homes[i] = written,
+            None => homes.push(written),
         }
-        None => {
-            let mut fresh = serde_json::json!({ "name": project, "uid": new_tab_uid() });
-            if let Some(h) = here.map(str::trim).filter(|h| !h.is_empty()) {
-                fresh["at"] = serde_json::json!(h);
-            }
-            projects.push(fresh);
-            projects.len() - 1
-        }
-    };
-    let homes = projects[at]
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?
-        .entry("homes")
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let Some(homes) = homes.as_array_mut() else {
-        anyhow::bail!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]));
-    };
-    let written = serde_json::to_value(home)?;
-    match homes.iter().position(|h| h.get("host").and_then(|n| n.as_str()) == Some(home.host.as_str())) {
-        Some(i) => homes[i] = written,
-        None => homes.push(written),
-    }
-    crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Takes a project's checkout on a machine off the project: the checkout is
 /// gone, and the next worktree there makes a new one (on a MicroVM) or asks
 /// where one is (on a server)
 pub fn drop_project_home(desk_id: &str, project: &str, host: &str) -> Result<()> {
-    let path = config_file_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
-        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
-    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
-    let scope = entry_scope(entry);
-    let Some(p) = entry
-        .get_mut("projects")
-        .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
-        .and_then(|p| p.as_object_mut())
-    else {
-        return Ok(());
-    };
-    if let Some(homes) = p.get_mut("homes").and_then(|h| h.as_array_mut()) {
-        homes.retain(|h| h.get("host").and_then(|n| n.as_str()) != Some(host));
-        if homes.is_empty() {
-            p.shift_remove("homes");
+    with_project(&config_file_path(), desk_id, project, None, |p| {
+        if let Some(homes) = p.get_mut("homes").and_then(|h| h.as_array_mut()) {
+            homes.retain(|h| h.get("host").and_then(|n| n.as_str()) != Some(host));
+            if homes.is_empty() { p.shift_remove("homes"); }
         }
-    }
-    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Writes the git account a project signs in with, as the project's own: a
@@ -3967,59 +3968,23 @@ pub fn set_project_git_account(desk_id: &str, project: &str, account: &str) -> R
 /// Writes a yes-or-no setting of a project's, by name: no takes it off, as
 /// a setting that is absent says no
 pub fn set_project_flag(desk_id: &str, project: &str, key: &str, on: bool) -> Result<()> {
-    let path = config_file_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
-        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
-    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
-    let scope = entry_scope(entry);
-    let Some(p) = entry
-        .get_mut("projects")
-        .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
-        .and_then(|p| p.as_object_mut())
-    else {
-        return Ok(());
-    };
-    match on {
-        true => {
-            p.insert(key.into(), serde_json::Value::Bool(true));
-        }
-        false => {
-            p.shift_remove(key);
-        }
-    }
-    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
-    Ok(())
+    set_project_property(desk_id, project, key, on.then_some(serde_json::Value::Bool(true)))
 }
 
 /// Writes one of a project's own settings, by name, onto a project written
 /// down by name: `None` takes it off
 pub fn set_project_value(desk_id: &str, project: &str, key: &str, value: Option<&str>) -> Result<()> {
-    let path = config_file_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| "{}".into());
-    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
-        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
-    let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
-    let scope = entry_scope(entry);
-    let Some(p) = entry
-        .get_mut("projects")
-        .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
-        .and_then(|p| p.as_object_mut())
-    else {
-        return Ok(());
-    };
-    match value {
-        Some(v) => {
-            p.insert(key.into(), serde_json::Value::String(v.to_string()));
+    set_project_property(desk_id, project, key, value.map(|v| serde_json::Value::String(v.into())))
+}
+
+fn set_project_property(desk: &str, project: &str, key: &str, value: Option<serde_json::Value>) -> Result<()> {
+    with_project(&config_file_path(), desk, project, None, |p| {
+        match value {
+            Some(v) => { p.insert(key.into(), v); }
+            None => { p.shift_remove(key); }
         }
-        None => {
-            p.shift_remove(key);
-        }
-    }
-    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&doc)?)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// What a folder on another machine says about itself beyond where it is:
@@ -7948,6 +7913,35 @@ mod pair_desks_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_edits_preserve_unknown_fields_and_refuse_broken_files() {
+        let dir = crate::test_temp("project-edit-contract");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let original = "\u{feff}{\"future\":42,\"desks\":[{\"id\":\"work\",\"name\":\"Work\",\"projects\":[{\"name\":\"App\",\"future\":{\"keep\":true}}]}]}";
+        std::fs::write(&path, original).unwrap();
+        super::with_project(&path, "work", "App", None, |p| {
+            p.insert("archived".into(), serde_json::json!(true));
+            Ok(())
+        }).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(doc["future"], 42);
+        assert_eq!(doc["desks"][0]["projects"][0]["future"]["keep"], true);
+        assert_eq!(doc["desks"][0]["projects"][0]["archived"], true);
+        // Removing a project that has gone away must not recreate it or write.
+        super::with_project(&path, "work", "gone", None, |_| panic!("missing project edited")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // A failed mutation never writes a partial change either.
+        assert!(super::with_project(&path, "work", "App", None, |p| {
+            p.clear(); anyhow::bail!("refused")
+        }).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        std::fs::write(&path, "{unfinished").unwrap();
+        assert!(super::with_project(&path, "work", "App", None, |_| Ok(())).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{unfinished");
+    }
+
     /// A line limit written too large to hold, or below nothing, is read as
     /// the nearest one there is -- and the rest of the settings with it
     #[test]

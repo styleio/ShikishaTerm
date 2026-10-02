@@ -34,6 +34,7 @@
  * account is used and nothing leaves the machine. Nothing of a copy somebody
  * is using is read, written or stopped. The app is stopped on the way out.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -170,24 +171,7 @@ const connect = async () => {
     }
   }
   if (!targets) { stopApp(); die('the app\'s page never opened its DevTools port'); }
-  const ws = new WebSocket(targets[0].webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const call = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  return async (expression) => {
-    const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
+  return (await connectCdp(targets[0], {timeout:30000})).run;
 };
 let run = await connect();
 const until = async (test, what, ms = 40000) => {

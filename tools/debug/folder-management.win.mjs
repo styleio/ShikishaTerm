@@ -4,6 +4,7 @@
  * Needs Windows, Node, PowerShell and git. Creates disposable repositories under
  * target, uses instance.win.ps1, and stops only that copy. No account is contacted.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -49,21 +50,9 @@ try {
   const cdp = output.match(/^cdp=(.+)$/m)?.[1].trim();
   if (!cdp) throw Error('The isolated instance did not return its DevTools address');
   const target = await until(async () => (await (await fetch(cdp + '/json/list')).json()).find(p => p.type === 'page'), 'board target');
-  ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve,reject) => { ws.onopen = resolve; ws.onerror = reject; });
-  let next = 0;
-  const pending = new Map();
-  ws.onmessage = event => { const message = JSON.parse(event.data); if (message.id) pending.get(message.id)?.(message); };
-  const js = expression => new Promise((resolve,reject) => {
-    const id = ++next;
-    const timer = setTimeout(() => { pending.delete(id); reject(Error('No DevTools reply')); }, 15000);
-    pending.set(id, message => {
-      clearTimeout(timer); pending.delete(id);
-      if (message.error || message.result?.exceptionDetails) reject(Error(JSON.stringify(message)));
-      else resolve(message.result?.result?.value);
-    });
-    ws.send(JSON.stringify({id,method:'Runtime.evaluate',params:{expression,returnByValue:true,awaitPromise:true}}));
-  });
+  const connection = await connectCdp(target, {timeout:15000});
+  ws = connection.ws;
+  const js = connection.run;
   let state = await until(async () => {
     const s = await js('S'); return s?.folder_catalog?.length === 5 && s;
   }, 'saved folder catalog');

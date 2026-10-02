@@ -27,6 +27,15 @@ pub fn accept_key(client_key: &str) -> String {
     B64.encode(sha1(&input))
 }
 
+/// Complete a handshake after the route has checked its key and admission.
+pub(crate) fn upgrade(req: tiny_http::Request, key: &str) -> Box<dyn tiny_http::ReadWrite + Send> {
+    let accept = accept_key(key);
+    let response = tiny_http::Response::empty(101).with_header(
+        tiny_http::Header::from_bytes(b"Sec-WebSocket-Accept", accept.as_bytes()).unwrap(),
+    );
+    req.upgrade("websocket", response)
+}
+
 /// Frame type. How the payload is interpreted depends on this opcode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {

@@ -291,6 +291,7 @@ not on its page. A name changed is a name changed here too.
 <!-- code-entries -->
 | Part | Function to call | Page |
 |---|---|---|
+| Form validation and held saves | `formValidation(save, why)`: `.field()` shows a field error, `.set()` records the first fault, `.show()` explains it and focuses the field | Settings (`webui.rs`) |
 | Dialog (settings, `.framed`) | `openModal(...kids)` (give the returned frame `.framed`) | settings (`webui.rs`) |
 | Confirming something that cannot be undone | `confirmAction(message, action, other)` (`other` names a second way through, only when there are two; pressed, it answers "other") | settings (`webui.rs`) |
 | A question stood over the board (`#floatbox`) | `frameOpen(spec)`. Drawn again with `frameDraw()`, closed with `frameLeave()`, "More settings" is `frameMore()`, Esc and ✕ are `frameCancel()` | settings (`webui.rs`) |

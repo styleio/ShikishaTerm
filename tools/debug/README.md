@@ -14,6 +14,11 @@ somewhere is not.
 
 Say at the top of the file what it is for, how to run it, and what it needs.
 
+Use `chrome.mjs` for `findChrome`, `findCargo`, `connectCdp` and `startChrome`.
+The transport reports protocol errors, disconnections and timeouts. Headless
+checks get a temporary profile and an assigned port of their own; `stop()` closes
+only that browser. Keep scenario setup and application-specific waits in the caller.
+
 ## Where things live
 
 | Kind | Where | Why there |
@@ -41,6 +46,9 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
+| `tools/debug/scenes/settings-shared.mjs` | anywhere, with Chrome | Every settings form's validation, focus and error recovery; both languages, schemes and widths | `node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-shared.mjs --remote-http` |
+| `tools/debug/scenes/snip-toast.mjs` | anywhere, with Chrome | Shared notifications on the picture tools page, including warning timing and dismissal | `node tools/debug/shoot.mjs tools/debug/scenes/snip-toast.mjs` |
+| `tools/debug/chrome.test.mjs` | anywhere, with Node | CDP responses, protocol errors, timeouts and disconnect cleanup | `node --test tools/debug/chrome.test.mjs` |
 | `tools/debug/folder-management.win.mjs` | Windows | Saved pin/archive/restore, stale desk rejection, capacity and actual bulk deletion in an isolated app; verifies primary, pinned and dirty worktrees survive | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/folder-management.win.mjs` |
 | `tools/debug/scenes/folder-management.mjs` | anywhere, with Chrome | Folder management, selection across filters, cancellation and confirmation, restore, explicit capacity requests and desk isolation; photographs both board pages in both languages and schemes | `node tools/debug/shoot.mjs tools/debug/scenes/folder-management.mjs` |
 | `src/bin/pty_probe.rs` | anywhere | A command in a pseudo terminal, with everything it says captured for about ten seconds. `--watch` never types into it — some of what is worth watching is an AI, and typing into one is a turn on somebody's account | `cargo run --bin pty_probe -- [--watch] <command> [args...]` |

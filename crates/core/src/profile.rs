@@ -596,33 +596,25 @@ fn candidate_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-fn find_profile<F>(pred: F) -> Option<Profile>
-where
-    F: Fn(&std::path::Path, &ProfileFile) -> bool,
-{
-    for dir in candidate_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+/// Read lazily in search order, so a single lookup stops at its first match.
+fn profile_files(dirs: Vec<std::path::PathBuf>) -> impl Iterator<Item = (std::path::PathBuf, ProfileFile)> {
+    dirs.into_iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(pf) = parse_file(&text) else {
-                continue;
-            };
-            if pred(&path, &pf)
-                && let Ok(p) = Profile::compile(pf)
-            {
-                return Some(p);
-            }
-        }
-    }
-    None
+            if path.extension().and_then(|s| s.to_str()) != Some("json") { return None; }
+            let text = std::fs::read_to_string(&path).ok()?;
+            Some((path, parse_file(&text)?))
+        })
+}
+
+fn find_profile<F>(pred: F) -> Option<Profile>
+where F: Fn(&std::path::Path, &ProfileFile) -> bool,
+{
+    profile_files(candidate_dirs()).find_map(|(path, pf)| {
+        pred(&path, &pf).then(|| Profile::compile(pf).ok()).flatten()
+    })
 }
 
 /// One profile file's text, read the way a person may have saved it.
@@ -645,57 +637,20 @@ fn parse_file(text: &str) -> Option<ProfileFile> {
 /// the raw glob where it keeps its records -- so it reads the files directly.
 /// Deduplicated by name, nearest source winning, the same as `all()`
 pub fn files() -> Vec<ProfileFile> {
-    let mut out: Vec<ProfileFile> = Vec::new();
-    for dir in candidate_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(pf) = parse_file(&text) else {
-                continue;
-            };
-            if out.iter().any(|p| p.name == pf.name) {
-                continue;
-            }
-            out.push(pf);
-        }
-    }
-    out
+    let mut seen = std::collections::HashSet::new();
+    profile_files(candidate_dirs()).filter_map(|(_, pf)| {
+        seen.insert(pf.name.clone()).then_some(pf)
+    }).collect()
 }
 
 pub fn all() -> Vec<Profile> {
-    let mut out: Vec<Profile> = Vec::new();
-    for dir in candidate_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(pf) = parse_file(&text) else {
-                continue;
-            };
-            if out.iter().any(|p| p.name == pf.name) {
-                continue;
-            }
-            if let Ok(p) = Profile::compile(pf) {
-                out.push(p);
-            }
-        }
-    }
-    out
+    let mut seen = std::collections::HashSet::new();
+    profile_files(candidate_dirs()).filter_map(|(_, pf)| {
+        if seen.contains(&pf.name) { return None; }
+        let p = Profile::compile(pf).ok()?;
+        seen.insert(p.name.clone());
+        Some(p)
+    }).collect()
 }
 
 /// Return the profile matching the command name; falls back to generic if
@@ -731,6 +686,21 @@ pub fn load_by_name(name: &str) -> Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_keeps_directory_priority_and_skips_unreadable_profiles() {
+        let dir = crate::test_temp("profile-discovery");
+        let near = dir.join("near");
+        let far = dir.join("far");
+        std::fs::create_dir_all(&near).unwrap();
+        std::fs::create_dir_all(&far).unwrap();
+        std::fs::write(near.join("one.json"), "\u{feff}{\"name\":\"near\"}").unwrap();
+        std::fs::write(near.join("broken.json"), "{unfinished").unwrap();
+        std::fs::write(near.join("ignored.txt"), "{\"name\":\"ignored\"}").unwrap();
+        std::fs::write(far.join("two.json"), "{\"name\":\"far\"}").unwrap();
+        let found: Vec<_> = profile_files(vec![dir.join("absent"), near, far]).map(|(_, p)| p.name).collect();
+        assert_eq!(found, ["near", "far"]);
+    }
 
     /// A profile saved by a Windows editor is still a profile.
     #[test]

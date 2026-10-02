@@ -6,6 +6,36 @@ anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 
+aes-gcm = "0.11.0"
+arboard = "3.6.1"
+argon2 = "0.5.3"
+base64 = "0.23.1"
+crossterm = "0.29"
+ed25519-dalek = "2"
+encoding_rs = "0.8.35"
+hkdf = "0.13.0"
+mlua = "0.12.0"
+p256 = "0.14.0"
+png = "0.18.1"
+portable-pty = "0.9.0"
+qrcode = { version = "0.14.1", default-features = false }
+rand = "0.10.2"
+regex = "1.13.1"
+sha2 = "0.11.0"
+tiny_http = "0.12.0"
+unicode-width = "0.2.2"
+ureq = { version = "3.3.0", default-features = false }
+rustls = { version = "0.23.45", default-features = false }
+webpki-roots = "1.0.9"
+vt100 = "0.16"
+windows-sys = "0.61.2"
+windows = "0.61.3"
+zeroize = "1.9.0"
+zip = { version = "5", default-features = false }
+russh = { version = "0.63.2", default-features = false }
+russh-sftp = "3.0.0"
+tokio = { version = "1.53.1", default-features = false }
+
 [package]
 name = "shikisha-term"
 version = "0.23.1"
@@ -43,47 +73,47 @@ opt-level = 3
 [dependencies]
 shikisha-shared = { path = "crates/shared" }
 shikisha-core = { path = "crates/core" }
-aes-gcm = "0.11.0"
-anyhow = "1.0.104"
-arboard = "3.6.1"
-argon2 = "0.5.3"
-base64 = "0.23.1"
-crossterm = "0.29"
+aes-gcm = { workspace = true }
+anyhow = { workspace = true }
+arboard = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+crossterm = { workspace = true }
 # Checking a downloaded update is the one this build was published for
 # (src/update.rs); src/bin/sign.rs makes that signature in CI
-ed25519-dalek = "2"
-encoding_rs = "0.8.35"
-hkdf = "0.13.0"
-mlua = { version = "0.12.0", features = ["lua54", "vendored"] }
+ed25519-dalek = { workspace = true }
+encoding_rs = { workspace = true }
+hkdf = { workspace = true }
+mlua = { workspace = true, features = ["lua54", "vendored"] }
 # Web Push (src/push.rs): P-256 for the VAPID signature and for the key
 # agreement RFC 8291 encrypts each message with
-p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
+p256 = { workspace = true, features = ["ecdh", "ecdsa"] }
 # Reading the edited picture the tool page hands over, to put it on the
 # clipboard as pixels (src/snip.rs)
-png = "0.18.1"
-portable-pty = "0.9.0"
-qrcode = { version = "0.14.1", default-features = false }
-rand = "0.10.2"
-regex = "1.13.1"
+png = { workspace = true }
+portable-pty = { workspace = true }
+qrcode = { workspace = true, default-features = false }
+rand = { workspace = true }
+regex = { workspace = true }
 rfd = { version = "0.17.2", default-features = false }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
-sha2 = "0.11.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 tao = "0.36.0"
-tiny_http = "0.12.0"
-unicode-width = "0.2.2"
-ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"] }
+tiny_http = { workspace = true }
+unicode-width = { workspace = true }
+ureq = { workspace = true, default-features = false, features = ["rustls", "json"] }
 # A board reached over HTTPS -- which is what `tailscale serve` puts in front
 # of one. The same rustls the http client above already carries, used directly
 # because what goes over this line is a WebSocket and a raw byte stream, not a
 # request and a response
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-webpki-roots = "1.0.9"
-vt100 = "0.16"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
+rustls = { workspace = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = { workspace = true }
+vt100 = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 # Kept at the same version as wry (CDP cannot be called unless the ICoreWebView2 types match)
 webview2-com = "0.38.2"
-windows = { version = "0.61.3", features = [
+windows = { workspace = true, features = [
   "Win32_Foundation",
   # A real Windows notification, and what an unpackaged program needs before it
   # is allowed to show one: an AppUserModelID, which means a Start Menu
@@ -105,13 +135,13 @@ windows = { version = "0.61.3", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 wry = "0.56.0"
-zeroize = "1.9.0"
+zeroize = { workspace = true }
 # Unpacking a downloaded update beside the program's data (src/update.rs).
 # Deflate only: that is what the release workflow's Compress-Archive writes
-zip = { version = "5", default-features = false, features = ["deflate"] }
-russh = { version = "0.63.2", default-features = false, features = ["ring"] }
-russh-sftp = "3.0.0"
-tokio = { version = "1.53.1", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+zip = { workspace = true, default-features = false, features = ["deflate"] }
+russh = { workspace = true, default-features = false, features = ["ring"] }
+russh-sftp = { workspace = true }
+tokio = { workspace = true, default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 
 [build-dependencies]
 winresource = "0.1.31"

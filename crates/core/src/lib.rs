@@ -24,6 +24,8 @@ pub mod browserstate;
 pub mod caps;
 #[cfg(test)]
 mod http_security_tests;
+#[cfg(test)]
+mod browser_contract_tests;
 pub mod charset;
 pub mod cdp;
 pub mod chrome;
@@ -65,6 +67,8 @@ pub mod hooks;
 pub mod ideas;
 pub mod host;
 pub mod i18n;
+mod http;
+pub mod urlcodec;
 pub mod inherit;
 pub mod inside;
 pub mod instance;

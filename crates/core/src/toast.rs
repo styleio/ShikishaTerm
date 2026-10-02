@@ -1,7 +1,7 @@
 //! The one toast every surface speaks through.
 //!
-//! Short messages appear on three screens — the window/phone shell, the
-//! settings screen and the transcript view — and each of them used to carry its
+//! Short messages appear in the window/phone shell, settings, transcript view
+//! and picture tools. Each of them used to carry its
 //! own message bar with its own timing. That drifted: the settings toast faded
 //! after a couple of seconds, the shell's attach toast after three, and the
 //! shell's message line (fed by the app's `flash`) faded never — it waited for
@@ -142,7 +142,7 @@ document.addEventListener("click", e => {
 }, true);
 "#;
 
-/// Shared text copying, also used by pages with no toast (the picture tools).
+/// Shared text copying, usable even without a toast on the page.
 /// Keep browser capability checks and the HTTP fallback in this one place.
 pub const COPY_JS: &str = r#"
 // navigator.clipboard only exists in a secure context, and a phone reaching

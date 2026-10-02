@@ -19,6 +19,7 @@
  * (the shell clears the line again). Both are read off the terminal the board
  * draws, on the window's own page and on a browser over the relay.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,15 +38,7 @@ const token = fs.readFileSync(path.join(ROOT, 'data', 'remote-token'), 'utf8').t
 const winCdp = Number(process.env.WIN_CDP || port + 1);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'composer-keys-'));
 const chrome = spawn(findChrome(), [

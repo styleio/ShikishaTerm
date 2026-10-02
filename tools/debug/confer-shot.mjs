@@ -8,6 +8,7 @@
  * in a headless Chrome, the conversation panel is turned to AIConfer, and the
  * screen is photographed once the conference has been read.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,22 +32,16 @@ try {
     await sleep(250);
     target = await fetch(`http://127.0.0.1:${port}/json`).then((r) => r.json()).then((l) => l.find((t) => t.type === 'page')).catch(() => null);
   }
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let n = 0;
-  const waits = new Map();
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (m.id && waits.has(m.id)) { waits.get(m.id)(m); waits.delete(m.id); } });
-  const cdp = (method, params = {}) => new Promise((r) => { const id = ++n; waits.set(id, r); ws.send(JSON.stringify({ id, method, params })); });
+  const {ws, send:cdp, run} = await connectCdp(target);
   await cdp('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 2, mobile: phone });
   await cdp('Page.navigate', { url });
   await sleep(6000);
-  const run = (expr) => cdp('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
   await run('if (!phoneWidth()) setSideWidth(420); sideReveal("convo"); convoModeTo("confer"); "ok"');
   await sleep(4000);
   const said = await run('JSON.stringify({n: CF.said.length, bad: CF.bad})');
-  console.log('conference on the page:', said.result && said.result.result && said.result.result.value);
+  console.log('conference on the page:', said);
   const shot = await cdp('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(out, Buffer.from(shot.result.data, 'base64'));
+  fs.writeFileSync(out, Buffer.from(shot.data, 'base64'));
   console.log(out);
   ws.close();
 } finally {

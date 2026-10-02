@@ -34,6 +34,7 @@
  * DevToolsActivePort file (see quick-actions.win.mjs). Photographs land in
  * target/shots; the app is stopped on the way out.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -127,24 +128,7 @@ const until = async (test, what, ms = 20000) => {
 
 /** One DevTools page, spoken to over its socket */
 async function connect(target, name) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(name + ': ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
-    return r.result.value;
-  };
+  const {ws, send, run} = await connectCdp(target);
   const shot = async (label) => {
     const r = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(SHOTS, `worktree-rules-${label}.png`), Buffer.from(r.data, 'base64'));

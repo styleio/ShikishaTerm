@@ -19,6 +19,7 @@
  * what the frame measures and whether the board is still drawn behind it, so
  * that a wrong answer is a line of text rather than something to spot by eye.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -47,15 +48,7 @@ const SIZES = [
   { name: 'tiny', w: 320, h: 380, mobile: true },
 ];
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 fs.mkdirSync(OUT, { recursive: true });
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'board-dialog-'));

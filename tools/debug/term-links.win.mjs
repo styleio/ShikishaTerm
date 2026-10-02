@@ -35,6 +35,7 @@
  * (the default app, Explorer, this PC's browser) is not pressed. Photographs
  * land in target/shots; the app is stopped on the way out.
  */
+import {findChrome, connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -158,24 +159,7 @@ const portOf = (envName) => {
 const targetsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json());
 
 async function connect(target, name) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(name + ': ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
-    return r.result.value;
-  };
+  const {ws, send, run} = await connectCdp(target);
   const shot = async (label) => {
     const r = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(SHOTS, `term-links-${LANG}${SPLIT ? '-split' : ''}-${label}.png`), Buffer.from(r.data, 'base64'));
@@ -213,15 +197,7 @@ async function connect(target, name) {
 
 let chrome = null;
 const PHONE_DIR = path.join(RUN, 'phone');
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 let boardTarget;
 try {

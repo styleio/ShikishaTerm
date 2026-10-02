@@ -22,6 +22,7 @@
  * And the way in from a phone, which is the same page in a sheet the board
  * lays over itself -- there is no window there to place anything.
  */
+import {findChrome, connectCdp} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,15 +39,7 @@ const port = (settings.remote && settings.remote.port) || 8787;
 const token = fs.readFileSync(path.join(ROOT, 'data', 'remote-token'), 'utf8').trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'guide-fill-'));
 const chrome = spawn(findChrome(), [
@@ -60,23 +53,7 @@ await sleep(1500);
 
 const targets = await (await fetch('http://127.0.0.1:9336/json/list')).json();
 const tab = targets.find((t) => t.type === 'page');
-const ws = new WebSocket(tab.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-const call = (method, params) =>
-  new Promise((res) => {
-    const id = Math.floor(Math.random() * 1e6);
-    const on = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.id === id) { ws.removeEventListener('message', on); res(m.result); }
-    };
-    ws.addEventListener('message', on);
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-const js = async (expression) => {
-  const r = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
-  return r.result && r.result.value;
-};
+const {ws, send:call, run:js} = await connectCdp(tab.webSocketDebuggerUrl);
 async function until(expr, what, tries = 80) {
   for (let i = 0; i < tries; i++) {
     if (await js(expr)) return;

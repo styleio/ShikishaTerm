@@ -17,6 +17,7 @@
  * out. If another copy of the app is running with these keys, Windows gives
  * them to that copy, and this says so and stops.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -106,8 +107,7 @@ spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detach
 // The board's page, found again whenever it is made again: a window put away
 // drops its page, and the one it comes back with is a new DevTools target
 let ws = null;
-let id = 0;
-const waiting = new Map();
+let connection;
 const connect = async () => {
   if (ws) { try { ws.close(); } catch {} }
   ws = null;
@@ -116,29 +116,16 @@ const connect = async () => {
       const pages = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json())
         .filter((t) => t.type === 'page' && /^http:\/\/127\.0\.0\.1:\d+\/(\?|$)/.test(t.url));
       if (pages.length) {
-        const s = new WebSocket(pages[0].webSocketDebuggerUrl);
-        await new Promise((r, j) => { s.addEventListener('open', r, { once: true }); s.addEventListener('error', j, { once: true }); });
-        s.addEventListener('message', (e) => {
-          const m = JSON.parse(e.data);
-          if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-        });
-        ws = s;
+        connection = await connectCdp(pages[0]);
+        ws = connection.ws;
       }
     } catch {}
     if (!ws) await sleep(250);
   }
   if (!ws) throw new Error('the board\'s page never came up');
 };
-const send = (method, params = {}) => new Promise((res, rej) => {
-  const n = ++id;
-  waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-  ws.send(JSON.stringify({ id: n, method, params }));
-});
-const run = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-  return r.result.value;
-};
+const send = (method, params) => connection.send(method, params);
+const run = expression => connection.run(expression);
 const until = async (test, what, ms = 15000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await test().catch(() => false)) return true; await sleep(150); }

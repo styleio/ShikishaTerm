@@ -22,6 +22,7 @@
  * for a few minutes and deletes it on the way out. Isolated the way
  * microvm-flow.win.mjs is.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -133,24 +134,7 @@ try {
     target = (await targetsOf(p)).find((t) => t.type === 'page');
     return !!target;
   }, 'the window\'s page', 40000);
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const cdp = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await cdp('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
+  const {ws, send, run} = await connectCdp(target);
   const shot = async (label) => {
     const r = await cdp('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(SHOTS, `microvm-editor-${label}.png`), Buffer.from(r.data, 'base64'));

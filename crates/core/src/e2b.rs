@@ -2640,18 +2640,7 @@ fn headed_get(
 /// Only what has to be: a path full of `%2F` is unreadable in a log and in an
 /// error message, and the far end takes a plain slash. What cannot be left
 /// alone is what would end the value or start another one
-fn escaped(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for b in path.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
+use crate::urlcodec::encode_path as escaped;
 
 /// One thing in a folder over there, in the shape the rest of the app knows.
 fn entry_of(v: &serde_json::Value) -> Option<crate::ssh::Entry> {

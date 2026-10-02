@@ -31,6 +31,7 @@
  * Claude Code. Everything put on the other machine is removed on the way out,
  * and a MicroVM made for this is deleted.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
@@ -197,18 +198,7 @@ const boardOf = async () => {
     target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
     return !!target;
   }, 'the window\'s page', 40000);
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let n = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } });
-  return (expression) => new Promise((res, rej) => {
-    const id = ++n;
-    waiting.set(id, (m) => (m.result && m.result.exceptionDetails ? rej(new Error(m.result.exceptionDetails.text))
-      : res(m.result && m.result.result ? m.result.result.value : undefined)));
-    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-    setTimeout(() => res(undefined), 8000);
-  });
+  return (await connectCdp(target, {timeout:8000})).run;
 };
 const screen = (id) => door('tab_screen', id).then((s) => String(s || '')).catch(() => '');
 const logLen = () => (fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8').split(/\r?\n/).length : 0);

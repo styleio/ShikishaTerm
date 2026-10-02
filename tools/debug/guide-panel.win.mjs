@@ -18,6 +18,7 @@
  * Its own ✕ and the drag are the panel's, inside a page this cannot reach;
  * check those by hand in the picture and with the mouse.
  */
+import {connectCdp} from './chrome.mjs';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,26 +37,7 @@ const pages = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
 const board = pages.find((p) => p.type === 'page');
 if (!board) throw new Error('nothing is listening on ' + CDP);
 
-const ws = new WebSocket(board.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-const call = (method, params) =>
-  new Promise((res) => {
-    const id = Math.floor(Math.random() * 1e6);
-    const on = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.id === id) {
-        ws.removeEventListener('message', on);
-        res(m.result);
-      }
-    };
-    ws.addEventListener('message', on);
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-const js = async (expression) => {
-  const r = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
-  return r.result && r.result.value;
-};
+const {ws, send:call, run:js} = await connectCdp(board.webSocketDebuggerUrl);
 
 fs.mkdirSync(OUT, { recursive: true });
 const shoot = (name) => {

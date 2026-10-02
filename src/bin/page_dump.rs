@@ -31,9 +31,10 @@ fn main() {
     let light = flag("light");
     let remote = flag("remote");
     let state = flag("state");
+    let snip = flag("snip");
     let lang = args
         .iter()
-        .find(|a| !matches!(a.as_str(), "light" | "remote" | "state"))
+        .find(|a| !matches!(a.as_str(), "light" | "remote" | "state" | "snip"))
         .cloned()
         .unwrap_or_else(|| "en".into());
     shikisha_core::i18n::init(
@@ -50,14 +51,14 @@ fn main() {
         );
         return;
     }
-    let mut html = shikisha_core::shell::served_page(
+    let mut html = if snip { shikisha_core::snip::page() } else { shikisha_core::shell::served_page(
         false,
         if remote {
             shikisha_core::shell::Served::Remote
         } else {
             shikisha_core::shell::Served::Window
         },
-    );
+    ) };
     // The scheme is the one in the settings, and a person's own settings are
     // not a test fixture. Asked for by name instead, so both halves of "check
     // it in the light scheme too" can be photographed on any machine

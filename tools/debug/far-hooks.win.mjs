@@ -30,6 +30,7 @@
  * SSH_FAR_USER and SSH_FAR_KEY. That server is shared with other sessions:
  * say so to them before running this.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -125,19 +126,7 @@ const boardOf = async () => {
     target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
     return !!target;
   }, 'the window\'s page', 40000);
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let n = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } });
-  const call = (method, params) => new Promise((res) => { const id = ++n; waiting.set(id, (m) => res(m.result)); ws.send(JSON.stringify({ id, method, params })); });
-  const run = (expression) => new Promise((res, rej) => {
-    const id = ++n;
-    waiting.set(id, (m) => (m.result && m.result.exceptionDetails ? rej(new Error(m.result.exceptionDetails.text))
-      : res(m.result && m.result.result ? m.result.result.value : undefined)));
-    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-    setTimeout(() => res(undefined), 8000);
-  });
+  const {send:call, run} = await connectCdp(target, {timeout:8000});
   // A picture of the window, into target/shots, for the screen rules' marking
   run.shot = async (name) => {
     const r = await call('Page.captureScreenshot', { format: 'png' });

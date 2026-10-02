@@ -138,12 +138,7 @@ const SAVE_MAX_BODY: usize = 64 * MAX_BODY;
 
 /// Read a request body, capped at `max` bytes. Returns None if it would exceed
 /// the cap (the caller answers 413), so an oversized body is never buffered.
-fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
-    use std::io::Read as _;
-    let mut body = String::new();
-    req.as_reader().take(max as u64 + 1).read_to_string(&mut body)?;
-    Ok((body.len() <= max).then_some(body))
-}
+use crate::http::read_body;
 
 fn query_token(url: &str) -> String {
     url.split_once('?')
@@ -165,18 +160,7 @@ fn query_param(url: &str, key: &str) -> Option<String> {
 }
 
 /// Minimal percent-encoding for a query-string value.
-pub(crate) fn pct(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+pub(crate) use crate::urlcodec::encode as pct;
 
 /// Where to read how to install a program: git's and GitHub CLI's own pages,
 /// or the page the program's profile names
@@ -1463,37 +1447,7 @@ fn has_replay_code(text: &str) -> bool {
         .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))
 }
 
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(b) => {
-                        out.push(b);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+use crate::urlcodec::decode_query as percent_decode;
 
 /// Responds with JSON
 /// Add privacy headers: keep the URL token out of the Referer header on any
@@ -5132,10 +5086,18 @@ fn server_of_page(v: &serde_json::Value) -> crate::config::ServerSpec {
 /// same app: the settings screen, the transcript view and the manual are not
 /// three products with three looks, and a message means the same thing and
 /// behaves the same way on each of them (src/toast.rs).
+pub(crate) fn page_parts(html: String) -> String {
+    crate::quick::render(crate::push::inject(crate::toast::render(html)))
+        .replace("{{I18N_JS}}", crate::i18n::FILL_JS)
+        .replace("{{SETTINGS_API_JS}}", include_str!("settings-api.js"))
+        .replace("{{SECRET_URL_JS}}", include_str!("secret-url.js"))
+        .replace("{{SECRET_URL_POLICY}}", &crate::config::secret_url_policy_json())
+}
+
 pub(crate) fn themed(html: String) -> String {
     let look = crate::config::load().map(|c| c.appearance).unwrap_or_default();
     let scheme = look.scheme();
-    crate::quick::render(crate::push::inject(crate::toast::render(html)))
+    page_parts(html)
         .replace("{{THEME}}", &scheme.css_vars())
         // The colours a project or a server is offered, from the list the app
         // colours an unchosen one from -- so a picked colour and a worked-out
@@ -6242,15 +6204,11 @@ const protectOf = (desk, gi) => {
   return Array.isArray(g.protect) ? g.protect : PROTECT_DEFAULT;
 };
 // {name} substitution (same rule as tp on the Rust side)
-const fill = (s, args) => Object.entries(args)
-  .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
+{{I18N_JS}}
+{{SETTINGS_API_JS}}
 // A moment as a date and a time of day, in the person's own way of writing
 // them: "9/24 03:40". Seconds since the epoch in
 const clock = secs => new Date(secs * 1000).toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
-const api = (m, b) => fetch("/api/config", {
-   method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
-const deskApi = (m, file, b) => fetch("/api/desk?file=" + encodeURIComponent(file), {
-   method: m, headers: {"X-Token": TOKEN, "Content-Type":"application/json"}, body: b });
 
 // A plain object: what a desk's maps are written as. A list or null in their
 // place is somebody else's shape, read as nothing
@@ -6401,11 +6359,63 @@ setInterval(refreshSave, 600);
 // One thing to fill in: its name above, the control, and under it the line
 // that says what it does (style guide 5.1). Every screen builds these the same
 // way, so a form on one page cannot come out a different shape from the next
+let nextFieldId = 0;
 function sfield(label, control, hint) {
-  return el("div", {class:"field"},
-    el("label", {}, label),
+  const caption = label instanceof Node ? label : el("label", {}, label);
+  if (caption.tagName === "LABEL" && /^(INPUT|SELECT|TEXTAREA)$/.test(control.tagName)) {
+    if (!control.id) control.id = "settings-field-" + (++nextFieldId);
+    caption.htmlFor = control.id;
+  }
+  return el("div", {class:"field"}, caption,
     el("div", {class:"fieldctl"}, control),
-    hint ? el("div", {class:"hint"}, hint) : null);
+    !hint ? null : hint instanceof Node ? hint : el("div", {class:"hint"}, hint));
+}
+
+// Every settings form answers a held save the same way. Keep each field's
+// warning node while typing, so a check does not rebuild unchanged messages.
+function formValidation(save, why) {
+  let first = null, asked = false;
+  const notes = new WeakMap();
+  why.hidden = true;
+  const message = () => fill(T["settings.secrets.cannot_save"], {why:first.why});
+  return {
+    get first() { return first; },
+    field(input, reason, {wrap = input.parentElement, mono = false} = {}) {
+      const show = !!reason && (asked || !!input.value.trim());
+      input.classList.toggle("bad", show);
+      input.setAttribute("aria-invalid", String(show));
+      let note = notes.get(input);
+      if (show && wrap) {
+        if (!note) {
+          note = el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span"));
+          notes.set(input, note);
+        }
+        note.lastChild.classList.toggle("mono", mono);
+        if (note.lastChild.textContent !== reason) note.lastChild.textContent = reason;
+        if (note.parentElement !== wrap) wrap.append(note);
+      } else if (note) note.remove();
+    },
+    set(fault) {
+      first = fault;
+      save.classList.toggle("held", !!first);
+      if (!first) why.hidden = true;
+      else if (!why.hidden) why.textContent = message();
+    },
+    show(recheck, also = []) {
+      asked = true;
+      recheck();
+      if (!first) return;
+      why.textContent = message();
+      why.hidden = false;
+      for (const input of [first.at, ...also]) {
+        input.classList.remove("lookhere");
+        void input.offsetWidth;
+        input.classList.add("lookhere");
+      }
+      first.at.scrollIntoView({block:"nearest"});
+      first.at.focus({preventScroll:true});
+    },
+  };
 }
 
 // A credential this tab needs, filed under the desk and the tab.
@@ -6485,7 +6495,7 @@ function field(obj, key, ph, opts = {}) {
 let SUGGEST = null;
 function suggestions() {
   if (!SUGGEST) {
-    SUGGEST = fetch("/api/discover", {headers:{"X-Token":TOKEN}})
+    SUGGEST = settingsFetch("/api/discover", {})
       .then(r => r.json()).catch(() => ({}));
   }
   return SUGGEST;
@@ -6580,10 +6590,9 @@ function launchLine(t) {
     const mine = ++seq;
     let r = null;
     try {
-      r = await fetch("/api/launch-line", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({command: t.command || "", resume: t.resume || "",
-                              profile: t.profile || "", far: farPlaceOf(t)})}).then(x => x.json());
+      r = await settingsFetch("/api/launch-line", {method:"POST",
+        json:{command: t.command || "", resume: t.resume || "",
+                              profile: t.profile || "", far: farPlaceOf(t)}}).then(x => x.json());
     } catch (e) { r = null; }
     // A later keystroke has already asked; its answer is the current one
     if (mine !== seq) return;
@@ -6598,7 +6607,7 @@ function launchLine(t) {
         r.install_url
           ? el("a", {href: REMOTE ? r.install_url : "#", target: REMOTE ? "_blank" : null, rel: "noopener",
               onclick: REMOTE ? null : e => { e.preventDefault();
-                fetch("/api/open?dest=install&prog=" + encodeURIComponent(prog), {headers:{"X-Token":TOKEN}}); }},
+                settingsFetch("/api/open?dest=install&prog=" + encodeURIComponent(prog), {}); }},
               T["settings.tab.missing.install"])
           : null].filter(Boolean));
     }
@@ -6738,9 +6747,8 @@ function idSelect(desk, val, emptyLabel, onChange, exclude) {
 
 async function pickPath(kind, title, start) {
   try {
-    const r = await fetch("/api/pick", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({kind, title, start: start || ""})});
+    const r = await settingsFetch("/api/pick", {method:"POST",
+        json:{kind, title, start: start || ""}});
     const j = await r.json();
     return j.ok ? j.path : null;
   } catch (e) { return null; }
@@ -6774,9 +6782,8 @@ function walkPath(kind, title, start) {
     async function go(path) {
       let j = null;
       try {
-        const r = await fetch("/api/walk", {method:"POST",
-            headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-            body: JSON.stringify({path: path || "", files: kind !== "dir"})});
+        const r = await settingsFetch("/api/walk", {method:"POST",
+            json:{path: path || "", files: kind !== "dir"}});
         j = await r.json();
       } catch (e) { j = null; }
       if (!j || !j.ok) { err.textContent = T["settings.pick.failed"]; return; }
@@ -7004,7 +7011,7 @@ function serverAisAsk() {
     const name = h.name.trim();
     // The app asks the server on a thread; the first answer can take a
     // moment, so it is asked again until it comes
-    const ask = (left) => fetch("/api/server-ais?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})
+    const ask = (left) => settingsFetch("/api/server-ais?host=" + encodeURIComponent(name), {})
       .then(r => r.json())
       .then(j => { if (Array.isArray(j.ais)) SERVER_AIS[name] = j.ais; else if (left > 0) setTimeout(() => ask(left - 1), 2000); })
       .catch(() => {});
@@ -7357,7 +7364,7 @@ let FAMILIES = {};
 let PC_ACCOUNTS = [];
 // ...and the accounts GitHub CLI (gh) is signed in as, each a choice too
 let GH_ACCOUNTS = [];
-const GH_ACCOUNTS_READ = fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})
+const GH_ACCOUNTS_READ = settingsFetch("/api/gh-accounts", {})
   .then(r => r.json())
   .then(j => {
     GH_ACCOUNTS = (j && j.accounts) || [];
@@ -7365,7 +7372,7 @@ const GH_ACCOUNTS_READ = fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})
     if (GH_ACCOUNTS.length && !typing && desks.length) render();
   })
   .catch(() => {});
-const PC_ACCOUNTS_READ = fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})
+const PC_ACCOUNTS_READ = settingsFetch("/api/pc-accounts", {})
   .then(r => r.json())
   .then(j => {
     PC_ACCOUNTS = (j && j.accounts) || [];
@@ -7964,7 +7971,7 @@ function keepTerminalsRow(packaged = PACKAGED) {
         if (!go) return;
         failed = "";
         try {
-          const j = await (await fetch("/api/keeper/stop", {method:"POST", headers:{"X-Token":TOKEN}})).json();
+          const j = await (await settingsFetch("/api/keeper/stop", {method:"POST"})).json();
           if (!j.ok) failed = j.error || "?";
         } catch (e) {
           failed = String(e && e.message || e);
@@ -7982,7 +7989,7 @@ function keepTerminalsRow(packaged = PACKAGED) {
       el("span", {class:"hint warn"}, T["settings.keep_terminals.count_failed"]),
       el("button", {type:"button", class:"quiet", onclick: () => ask()}, T["settings.keep_terminals.recheck"]));
   };
-  const ask = () => fetch("/api/keeper", {headers:{"X-Token":TOKEN}})
+  const ask = () => settingsFetch("/api/keeper", {})
     .then(r => r.json()).then(j => {
       if (!j.ok) throw new Error(j.error || "?");
       count = j.held || 0;
@@ -8106,7 +8113,7 @@ function conptyState() {
   const out = el("span", {class:"hint"}, "…");
   (async () => {
     let j;
-    try { j = await (await fetch("/api/conpty", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/conpty", {})).json(); }
     catch (e) { return; }
     if (j.bundled) {
       out.textContent = T["settings.conpty.on"] + (j.version ? " (" + j.version + ")" : "");
@@ -8154,7 +8161,7 @@ function themePicker() {
   });
   (async () => {
     let j;
-    try { j = await (await fetch("/api/themes", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/themes", {})).json(); }
     catch (e) { return; }
     known = j.list || [];
     mine = j.current || null;
@@ -8268,7 +8275,7 @@ function hotkeysCard() {
   // registers the keys a moment after, and a key pressed elsewhere should show
   const load = async () => {
     if (!box.isConnected && status) return;
-    try { status = await (await fetch("/api/hotkeys", {headers:{"X-Token":TOKEN}})).json(); }
+    try { status = await (await settingsFetch("/api/hotkeys", {})).json(); }
     catch (e) { status = null; }
     draw();
     setTimeout(load, 3000);
@@ -8314,7 +8321,7 @@ function keysCard() {
   load();
   async function load() {
     let j;
-    try { j = await (await fetch("/api/keys", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/keys", {})).json(); }
     catch (e) { return; }
     problems.textContent = "";
     for (const p of (j.problems || [])) {
@@ -8408,9 +8415,8 @@ function quickHolder(q) {
 }
 async function quickArrange(q) {
   try {
-    const r = await fetch("/api/quick/arrange", {method:"POST",
-      headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-      body: JSON.stringify(q)}).then(x => x.json());
+    const r = await settingsFetch("/api/quick/arrange", {method:"POST",
+      json:q}).then(x => x.json());
     if (r && r.ok) { Object.assign(quickSvgs, r.svgs || {}); return r.spec; }
   } catch (e) {}
   return null;
@@ -8934,7 +8940,7 @@ async function quickIconPicker(now, done) {
   back.addEventListener("keydown", e => { if (e.key === "Escape") { e.preventDefault(); close(); } });
   if (!quickSet) {
     try {
-      const txt = await fetch(QUICK.icons, {headers:{"X-Token":TOKEN}}).then(r => r.text());
+      const txt = await settingsFetch(QUICK.icons, {}).then(r => r.text());
       quickSet = txt.split("\n").filter(l => l && l[0] !== "#").map(l => {
         const [name, words, svg] = l.replace(/\r$/, "").split("\t");
         return {name, words: (words || "").toLowerCase(), svg: svg || ""};
@@ -8996,7 +9002,7 @@ function loginsCard() {
   load();
   async function load() {
     let rows = [];
-    try { rows = await (await fetch("/api/logins", {headers:{"X-Token":TOKEN}})).json(); }
+    try { rows = await (await settingsFetch("/api/logins", {})).json(); }
     catch (e) { return; }
     list.textContent = "";
     if (!rows.length) { list.append(el("div", {class:"hint"}, T["settings.logins.none"])); return; }
@@ -9005,9 +9011,8 @@ function loginsCard() {
       del.addEventListener("click", async () => {
         del.disabled = true;
         try {
-          await fetch("/api/logins/delete", {method:"POST",
-            headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-            body: JSON.stringify({label: r.label})});
+          await settingsFetch("/api/logins/delete", {method:"POST",
+            json:{label: r.label}});
         } catch (e) {}
         load();
       });
@@ -9033,7 +9038,7 @@ function snapshotsCard() {
   load();
   async function load() {
     let rows = [];
-    try { rows = await (await fetch("/api/snapshots", {headers:{"X-Token":TOKEN}})).json(); }
+    try { rows = await (await settingsFetch("/api/snapshots", {})).json(); }
     catch (e) { return; }
     grid.textContent = "";
     if (!rows.length) { grid.append(el("div", {class:"hint"}, T["settings.snapshots.none"])); return; }
@@ -9045,9 +9050,8 @@ function snapshotsCard() {
       const del = el("button", {class:"btn"}, T["settings.logins.forget"]);
       del.addEventListener("click", async () => {
         del.disabled = true;
-        try { await fetch("/api/snapshots/delete", {method:"POST",
-          headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-          body: JSON.stringify({label:r.label})}); } catch (e) {}
+        try { await settingsFetch("/api/snapshots/delete", {method:"POST",
+          json:{label:r.label}}); } catch (e) {}
         load();
       });
       row.append(el("span", {class:"hint", style:"flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"}, r.label), del);
@@ -9064,7 +9068,7 @@ function filesCard() {
   const tidy = el("div", {class:"row"});
   tidy.hidden = true;
   const lookForOrphans = async () => {
-    const j = await fetch("/api/secrets/orphans", {headers:{"X-Token":TOKEN}})
+    const j = await settingsFetch("/api/secrets/orphans", {})
       .then(r => r.json()).catch(() => null);
     const list = (j && j.orphans) || [];
     tidy.textContent = "";
@@ -9155,10 +9159,7 @@ function updateCard() {
   setTimeout(refreshUpdate, 0);
   return card(T["settings.update.title"], box, auto);
 }
-async function updateApi(path, post) {
-  const r = await fetch("/api/update" + path, {method: post ? "POST" : "GET", headers:{"X-Token":TOKEN}});
-  return r.json();
-}
+const updateApi = (path, post) => settingsApi("/api/update" + path, undefined, post ? "POST" : "GET");
 async function refreshUpdate() {
   const box = document.getElementById("updatebox");
   if (!box) { if (updateTimer) { clearInterval(updateTimer); updateTimer = null; } return; }
@@ -9202,7 +9203,7 @@ function drawUpdate(box, u) {
   const main = el("div", {class:"row", style:"gap:var(--s2)"});
   const text = (k, args) => el("span", {}, fill(T[k] || k, args || {}));
   const notes = () => u.notes ? el("a", {href: REMOTE ? u.notes : "#", target: REMOTE ? "_blank" : null, rel:"noopener",
-      onclick: REMOTE ? null : (e) => { e.preventDefault(); fetch("/api/open?dest=update-notes", {headers:{"X-Token":TOKEN}}); }},
+      onclick: REMOTE ? null : (e) => { e.preventDefault(); settingsFetch("/api/open?dest=update-notes", {}); }},
       T["settings.update.notes"]) : "";
   const primary = (label, path) => el("button", {class:"primary", onclick: () => act(path)}, label);
   const quiet = (label, path) => el("button", {class:"quiet", onclick: () => act(path)}, label);
@@ -9296,7 +9297,7 @@ async function loadRallyList() {
   const box = document.getElementById("rallylist");
   if (!box) return;
   let runs = [];
-  try { runs = await (await fetch("/api/rally/list", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+  try { runs = await (await settingsFetch("/api/rally/list", {})).json(); } catch (e) {}
   box.textContent = "";
   if (!runs.length) { box.append(el("div", {class:"hint"}, T["settings.rally.empty"])); return; }
   runs.forEach((r, i) => {
@@ -9311,7 +9312,7 @@ async function loadRallyList() {
 async function downloadRally(runId) {
   try {
     const url = "/api/rally/download" + (runId ? ("?run=" + encodeURIComponent(runId)) : "");
-    const r = await fetch(url, {headers:{"X-Token":TOKEN}});
+    const r = await settingsFetch(url, {});
     if (!r.ok) { result(T["settings.rally.no_record"], true); return; }
     const blob = await r.blob();
     const u = URL.createObjectURL(blob);
@@ -9335,7 +9336,7 @@ function secretShortName(desk, key) {
 // Everything the store holds, asked for once and handed to whoever is drawing.
 // The value is never part of it
 async function fetchSecrets() {
-  try { return await fetch("/api/secrets", {headers:{"X-Token":TOKEN}}).then(r=>r.json()); }
+  try { return await settingsFetch("/api/secrets", {}).then(r=>r.json()); }
   catch (e) { return null; }
 }
 // A secret belongs to the thing that uses it, so it goes when that thing
@@ -9349,16 +9350,8 @@ async function dropSecretRef(ref) {
 async function dropSecrets(keys) {
   for (const k of keys) await deleteSecret(k);
 }
-async function saveSecret(body) {
-  return await fetch("/api/secrets/set", {method:"POST",
-    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-    body: JSON.stringify(body)}).then(r=>r.json()).catch(() => ({ok:false}));
-}
-async function deleteSecret(key) {
-  return await fetch("/api/secrets/delete", {method:"POST",
-    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-    body: JSON.stringify({key})}).then(r=>r.json()).catch(() => ({ok:false}));
-}
+const saveSecret = body => postJson("/api/secrets/set", body);
+const deleteSecret = key => postJson("/api/secrets/delete", {key});
 // One address, read the same way here as in config.rs. Everything below is the
 // screen's half of that agreement: it refuses while somebody types what the
 // store would refuse on arrival, so nothing is turned away by surprise
@@ -9372,30 +9365,7 @@ const withScheme = v => {
 };
 // The suffixes everybody shares: "*." in front of one of them is not a site,
 // it is the whole internet with a shape
-const SHARED_SUFFIX = new Set(["com","net","org","jp","io","dev","app","co","ne","or",
-  "co.jp","ne.jp","or.jp","co.uk","com.au","com.br","co.kr","com.cn"]);
-// Why this line cannot be used, as the name of the sentence to show, or null.
-// The same answers, in the same order, as config.rs's url_fault
-function urlFault(text) {
-  const t = (text || "").trim();
-  if (!t) return "err.secret_url.empty";
-  if (/\s/.test(t)) return "err.secret_url.unreadable";
-  const at = t.indexOf("://");
-  if (at < 0) return "err.secret_url.scheme";
-  const scheme = t.slice(0, at).toLowerCase();
-  if (scheme !== "http" && scheme !== "https") return "err.secret_url.scheme";
-  const host = t.slice(at + 3).split(/[/?#]/)[0].toLowerCase();
-  if (!host || host.includes("@") || host.includes("[")) return "err.secret_url.unreadable";
-  const stars = (host.match(/\*/g) || []).length;
-  if (stars) {
-    if (stars > 1 || !host.startsWith("*.")) return "err.secret_url.star_place";
-    const under = host.slice(2).split(":")[0];
-    if (under.split(".").length < 2 || SHARED_SUFFIX.has(under)) return "err.secret_url.star_wide";
-  }
-  const port = host.split(":")[1];
-  if (port !== undefined && !/^\d{1,5}$/.test(port)) return "err.secret_url.unreadable";
-  return null;
-}
+{{SECRET_URL_JS}}
 
 // Secrets (equivalent to GitHub Secrets). Referenced by key; once saved, the value is never shown again.
 // Model connections (Providers). An OpenAI-compatible API registered by name,
@@ -9464,7 +9434,7 @@ function skillCard() {
   load();
   async function load() {
     let rows = [];
-    try { rows = await (await fetch("/api/skill", {headers:{"X-Token":TOKEN}})).json(); }
+    try { rows = await (await settingsFetch("/api/skill", {})).json(); }
     catch (e) { return; }
     list.textContent = "";
     for (const r of rows) list.append(rowFor(r));
@@ -9478,9 +9448,9 @@ function skillCard() {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
-        const j = await (await fetch("/api/skill", {
-          method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-          body: JSON.stringify({ai: r.ai, on: !on}),
+        const j = await (await settingsFetch("/api/skill", {
+          method:"POST",
+          json:{ai: r.ai, on: !on},
         })).json();
         if (!j.ok) result(j.error || "", true);
       } catch (e) {}
@@ -9674,9 +9644,8 @@ function modelCandidates(getProv, onPick) {
     chips.append(el("span", {class:"hint"}, T["settings.model.candidates_loading"]));
     let r;
     try {
-      r = await fetch("/api/provider/models", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({base_url: prov.base_url || "", api_key: prov.api_key || "", headers: prov.headers || {}})})
+      r = await settingsFetch("/api/provider/models", {method:"POST",
+        json:{base_url: prov.base_url || "", api_key: prov.api_key || "", headers: prov.headers || {}}})
         .then(x => x.json());
     } catch (e) { r = {ok:false, error:String(e)}; }
     chips.textContent = "";
@@ -9843,21 +9812,11 @@ function providerDialog(name, redraw, saved) {
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
+  const validation = formValidation(save, why);
 
   // What is wrong, said on the field that is wrong, with the save held rather
   // than dead: it still takes the press, and answers it
-  let asked = false;   // has the save been pressed, or the box been typed in
-  function fieldFault(input, reason) {
-    const wrap = input.parentElement;
-    const had = wrap.querySelector(".site-warn");
-    const show = reason && (asked || input.value.trim() !== "");
-    if (had) had.remove();
-    input.classList.toggle("bad", !!show);
-    if (show) wrap.append(el("div", {class:"site-warn"},
-      el("span", {}, "⚠"), el("span", {}, reason)));
-  }
+  const fieldFault = validation.field;
   function recheck() {
     const n = nameIn.value.trim();
     let first = null;
@@ -9884,28 +9843,14 @@ function providerDialog(name, redraw, saved) {
     fieldFault(choicesIn, choicesWhy);
     if (choicesWhy && !first) first = {at: choicesIn, why: choicesWhy};
 
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(first);
   }
-  function sayWhy() {
-    asked = true;
-    recheck();
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    held.at.classList.remove("lookhere");
-    void held.at.offsetWidth;
-    held.at.classList.add("lookhere");
-    held.at.focus();
-  }
+  const sayWhy = () => validation.show(recheck);
   for (const i of [nameIn, urlIn, waitIn, choicesIn]) i.addEventListener("input", recheck);
   speaksIn.addEventListener("change", recheck);
 
   // The hint is words, or a line of its own that changes with the choices
-  const field = (label, control, hint) => el("div", {class:"field"},
-    el("label", {}, label), el("div", {class:"fieldctl"}, control),
-    !hint ? null : (hint instanceof Node ? hint : el("div", {class:"hint"}, hint)));
+  const field = sfield;
 
   const shut = () => back.remove();
   const back = openModal(
@@ -9957,7 +9902,7 @@ function providerDialog(name, redraw, saved) {
   });
 
   save.addEventListener("click", async () => {
-    if (held) { sayWhy(); return; }
+    if (validation.first) { sayWhy(); return; }
     const n = editing ? name : nameIn.value.trim();
     const it = (provs[n] = provs[n] || {});
     it.base_url = urlIn.value.trim();
@@ -10267,7 +10212,7 @@ function aiUsageCard() {
     if (said) part.append(el("div", {class:"hint"}, said));
     return part;
   };
-  fetch("/api/usage", {headers:{"X-Token":TOKEN}}).then(r => r.json()).then(list => {
+  settingsFetch("/api/usage", {}).then(r => r.json()).then(list => {
     box.textContent = "";
     for (const a of list) box.append(one(a.key, a));
   }).catch(() => { box.textContent = ""; box.append(el("div", {class:"hint"}, T["settings.ai_usage.unknown"])); });
@@ -10289,9 +10234,8 @@ function aiUsageCard() {
 const actionErrors = new Map();
 async function lintLuaCode(code) {
   try {
-    const r = await fetch("/api/lint", {method:"POST",
-      headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-      body: JSON.stringify({code})});
+    const r = await settingsFetch("/api/lint", {method:"POST",
+      json:{code}});
     const j = await r.json();
     return j.ok ? null : (j.error || "Lua error");
   } catch (e) { return null; }  // a network hiccup shouldn't block saving
@@ -10628,22 +10572,12 @@ function actionDialog(at, draw, kind) {
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
-  let asked = false;
+  const validation = formValidation(save, why);
   // The Lua's verdict, kept from the last check so the save can be held on
   // it without asking again; cleared when the text changes
   let luaFault = null;
 
-  function fieldFault(input, reason) {
-    const wrap = input.parentElement;
-    const had = wrap.querySelector(".site-warn");
-    const show = reason && (asked || input.value.trim() !== "");
-    if (had) had.remove();
-    input.classList.toggle("bad", !!show);
-    if (show) wrap.append(el("div", {class:"site-warn"},
-      el("span", {}, "⚠"), el("span", {class:"mono"}, reason)));
-  }
+  const fieldFault = validation.field;
   function recheck() {
     let first = null;
     const nameWhy = labelIn.value.trim() ? null : T["settings.actions.name_required"];
@@ -10652,23 +10586,11 @@ function actionDialog(at, draw, kind) {
     const bodyWhy = !bodyIn.value.trim()
       ? (luaIn.checked ? T["settings.actions.body.lua_required"] : T["settings.actions.body_required"])
       : (luaIn.checked && luaFault ? luaFault : null);
-    fieldFault(bodyIn, bodyWhy);
+    fieldFault(bodyIn, bodyWhy, {mono:luaIn.checked});
     if (bodyWhy && !first) first = {at: bodyIn, why: bodyWhy};
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(first);
   }
-  function sayWhy() {
-    asked = true;
-    recheck();
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    held.at.classList.remove("lookhere");
-    void held.at.offsetWidth;
-    held.at.classList.add("lookhere");
-    held.at.focus();
-  }
+  const sayWhy = () => validation.show(recheck);
   // The Lua is checked by the app when the box is left, so a break is said
   // where it is before the save is reached for
   const checkLua = async () => {
@@ -10684,8 +10606,7 @@ function actionDialog(at, draw, kind) {
   bodyIn.addEventListener("blur", checkLua);
   luaIn.addEventListener("change", () => { dress(); luaFault = null; recheck(); checkLua(); });
 
-  const field = (label, control, hint) => el("div", {class:"field"},
-    label, el("div", {class:"fieldctl"}, control), hint);
+  const field = sfield;
 
   const shut = () => back.remove();
   const back = openModal(
@@ -10724,7 +10645,7 @@ function actionDialog(at, draw, kind) {
       luaFault = await lintLuaCode(bodyIn.value);
       recheck();
     }
-    if (held) { sayWhy(); return; }
+    if (validation.first) { sayWhy(); return; }
     const it = editing ? list[at] : {};
     it.label = labelIn.value.trim();
     it.body = bodyIn.value;
@@ -10748,25 +10669,14 @@ function actionFolderDialog(at, draw, have, list) {
   labelIn.value = have.label || "";
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
-  let asked = false;
+  const validation = formValidation(save, why);
   function recheck() {
-    const wrap = labelIn.parentElement;
-    const had = wrap && wrap.querySelector(".site-warn");
-    if (had) had.remove();
     const nameWhy = labelIn.value.trim() ? null : T["settings.actions.name_required"];
-    const show = nameWhy && (asked || labelIn.value.trim() !== "");
-    labelIn.classList.toggle("bad", !!show);
-    if (show && wrap) wrap.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, nameWhy)));
-    held = nameWhy ? {at: labelIn, why: nameWhy} : null;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.field(labelIn, nameWhy);
+    validation.set(nameWhy ? {at: labelIn, why: nameWhy} : null);
   }
   labelIn.addEventListener("input", recheck);
-  const field = (label, control, hint) => el("div", {class:"field"},
-    label, el("div", {class:"fieldctl"}, control), hint);
+  const field = sfield;
   const shut = () => back.remove();
   // The way inside, first: it is what a press on a folder's row is for most
   // often. A name typed before it is pressed goes along, as the save would
@@ -10811,14 +10721,7 @@ function actionFolderDialog(at, draw, have, list) {
     save.click();
   });
   save.addEventListener("click", () => {
-    if (held) {
-      asked = true;
-      recheck();
-      why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-      why.hidden = false;
-      labelIn.focus();
-      return;
-    }
+    if (validation.first) { validation.show(recheck); return; }
     const it = editing ? list[at] : {kind: "folder", items: []};
     it.label = labelIn.value.trim();
     if (!editing) list.push(it);
@@ -11122,7 +11025,7 @@ function machinesCard() {
     : fill(T["settings.machines.use.folder"], {folder: u.folder, desk: u.desk});
   const load = async () => {
     let j = {};
-    try { j = await (await fetch("/api/microvm/machines", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/microvm/machines", {})).json(); }
     catch (e) { j = {ok:false, error:String(e)}; }
     box.textContent = "";
     if (!j.ok) {
@@ -11159,8 +11062,7 @@ function machinesCard() {
         row.append(el("button", {onclick: async () => {
           let r = {};
           try {
-            r = await (await fetch("/api/microvm/restore", {method:"POST",
-              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id, desk: (d => d.uid || d.name || "")((desks[sel.desk] || desks[0]) || {})})})).json();
+            r = await (await settingsFetch("/api/microvm/restore", {method:"POST", json:{id: m.id, desk: (d => d.uid || d.name || "")((desks[sel.desk] || desks[0]) || {})}})).json();
           } catch (e) { r = {ok:false, error:String(e)}; }
           if (!r.ok) msg(r.error || T["settings.machines.failed"], true);
           else msg(fill(T["settings.machines.restored"], {folder: m.off_list}));
@@ -11179,8 +11081,7 @@ function machinesCard() {
           if (m.off_list) msg(fill(T["settings.machines.checking"], {id: m.id}));
           let r = {};
           try {
-            r = await (await fetch("/api/microvm/drop", {method:"POST",
-              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id})})).json();
+            r = await (await settingsFetch("/api/microvm/drop", {method:"POST", json:{id: m.id}})).json();
           } catch (e) { r = {ok:false, error:String(e)}; }
           if (!r.ok) msg(r.error || T["settings.machines.failed"], true);
           else msg(fill(T["settings.machines.dropped"], {id: m.id}));
@@ -11267,19 +11168,9 @@ function hostDialog(at, redraw, kind, done) {
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
-  let asked = false;
+  const validation = formValidation(save, why);
 
-  function fieldFault(input, reason) {
-    const wrap = input.parentElement;
-    const had = wrap.querySelector(".site-warn");
-    const show = reason && (asked || input.value.trim() !== "");
-    if (had) had.remove();
-    input.classList.toggle("bad", !!show);
-    if (show) wrap.append(el("div", {class:"site-warn"},
-      el("span", {}, "\u26a0"), el("span", {}, reason)));
-  }
+  const fieldFault = validation.field;
   function recheck() {
     const n = nameIn.value.trim();
     let first = null;
@@ -11299,26 +11190,12 @@ function hostDialog(at, redraw, kind, done) {
     if (!first && bridgeIn.checked && awayFor.checked && !awayHoursGiven()) {
       first = {at: awayHours, why: T["settings.away.hours_required"]};
     }
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(first);
   }
-  function sayWhy() {
-    asked = true;
-    recheck();
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    held.at.classList.remove("lookhere");
-    void held.at.offsetWidth;
-    held.at.classList.add("lookhere");
-    held.at.focus();
-  }
+  const sayWhy = () => validation.show(recheck);
   for (const i of [nameIn, atIn, templateIn, minutesIn, keepaliveIn]) i.addEventListener("input", recheck);
 
-  const field = (label, control, hint) => el("div", {class:"field"},
-    el("label", {}, label), el("div", {class:"fieldctl"}, control),
-    hint ? el("div", {class:"hint"}, hint) : null);
+  const field = sfield;
 
   // The credential each kind signs in with. Kept in the secrets file under a
   // name worked out from this machine's, as a tab's is, and never in the
@@ -11423,8 +11300,8 @@ function hostDialog(at, redraw, kind, done) {
     : fill(T["settings.away.list.hours"], {n: String(Math.round(secs / 3600))});
   const post = async (url, body) => {
     try {
-      return await (await fetch(url, {method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-        body: JSON.stringify(body)})).json();
+      return await (await settingsFetch(url, {method:"POST",
+        json:body})).json();
     } catch (e) { return {ok:false, error: String(e)}; }
   };
   let heldNow = [];
@@ -11433,7 +11310,7 @@ function hostDialog(at, redraw, kind, done) {
   async function drawHeld() {
     const name = (h.name || "").trim();
     let j = null;
-    try { j = await (await fetch("/api/far/held?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/far/held?host=" + encodeURIComponent(name), {})).json(); }
     catch (e) { j = null; }
     heldBox.textContent = "";
     heldNow = [];
@@ -11466,7 +11343,7 @@ function hostDialog(at, redraw, kind, done) {
   async function drawMissed() {
     const name = (h.name || "").trim();
     let j = null;
-    try { j = await (await fetch("/api/far/missed?host=" + encodeURIComponent(name), {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/far/missed?host=" + encodeURIComponent(name), {})).json(); }
     catch (e) { j = null; }
     missedBox.textContent = "";
     const machines = (j && j.machines) || [];
@@ -11575,8 +11452,7 @@ function hostDialog(at, redraw, kind, done) {
               if (pick === true) {
                 let j = null;
                 try {
-                  j = await (await fetch("/api/farhooks/takeout", {method:"POST",
-                    headers:{"X-Token":TOKEN, "Content-Type":"application/json"}, body: JSON.stringify({host: hostKey})})).json();
+                  j = await (await settingsFetch("/api/farhooks/takeout", {method:"POST", json:{host: hostKey}})).json();
                 } catch (e) { j = {ok:false, error: String(e)}; }
                 if (!j || !j.ok) { msg(fill(T["settings.hosts.drop.hooks.failed"], {why: (j && j.error) || ""}), true); return; }
               }
@@ -11601,7 +11477,7 @@ function hostDialog(at, redraw, kind, done) {
   });
 
   save.addEventListener("click", async () => {
-    if (held) { sayWhy(); return; }
+    if (validation.first) { sayWhy(); return; }
     // Taking the bridge off a machine where AIs run stops them (far-keep
     // plan §7.7): said, with how many, before it is done
     if (listed && !bridgeIn.checked) {
@@ -11981,9 +11857,7 @@ function chatDialog(desk, name, redraw) {
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
-  let asked = false;
+  const validation = formValidation(save, why);
 
   const forTelegram = () => typeSel.value === "telegram";
   const shape = () => {
@@ -11997,15 +11871,7 @@ function chatDialog(desk, name, redraw) {
       ? T["settings.notify.token_hint"] : T["settings.notify.webhook_hint"];
     recheck();
   };
-  function fieldFault(input, reason) {
-    const wrap = input.parentElement;
-    const had = wrap.querySelector(".site-warn");
-    const show = reason && (asked || input.value.trim() !== "");
-    if (had) had.remove();
-    input.classList.toggle("bad", !!show);
-    if (show) wrap.append(el("div", {class:"site-warn"},
-      el("span", {}, "⚠"), el("span", {}, reason)));
-  }
+  const fieldFault = validation.field;
   function recheck() {
     const n = nameIn.value.trim();
     let first = null;
@@ -12022,21 +11888,9 @@ function chatDialog(desk, name, redraw) {
     const chatWhy = forTelegram() && !chatIn.value.trim() ? T["settings.notify.chat_required"] : null;
     fieldFault(chatIn, chatWhy);
     if (chatWhy && !first) first = {at: chatIn, why: chatWhy};
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(first);
   }
-  function sayWhy() {
-    asked = true;
-    recheck();
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    held.at.classList.remove("lookhere");
-    void held.at.offsetWidth;
-    held.at.classList.add("lookhere");
-    held.at.focus();
-  }
+  const sayWhy = () => validation.show(recheck);
   typeSel.addEventListener("change", shape);
   for (const i of [nameIn, secretIn, chatIn]) i.addEventListener("input", recheck);
 
@@ -12051,9 +11905,7 @@ function chatDialog(desk, name, redraw) {
                       : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
   }}, T["settings.notify.test"]);
 
-  const field = (label, control, hint) => el("div", {class:"field"},
-    el("label", {}, label), el("div", {class:"fieldctl"}, control),
-    hint ? el("div", {class:"hint"}, hint) : null);
+  const field = sfield;
 
   const shut = () => back.remove();
   const back = openModal(
@@ -12095,7 +11947,7 @@ function chatDialog(desk, name, redraw) {
   });
 
   save.addEventListener("click", async () => {
-    if (held) { sayWhy(); return; }
+    if (validation.first) { sayWhy(); return; }
     const n = nameIn.value.trim();
     // Renaming moves the record; the secret keeps the name it was filed under
     // unless a new one is being typed in, in which case it is filed afresh
@@ -12138,10 +11990,7 @@ function phoneNotifyCard() {
     el("div", {class:"hint"}, T["settings.notify.phone.sub"]),
     phoneBox());
 }
-const settingsApi = (path, body) => fetch(path, body === undefined
-  ? {headers:{"X-Token":TOKEN}}
-  : {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-     body: JSON.stringify(body)}).then(r => r.json());
+
 
 // Whether the browser drawing this page can register itself. The app's own
 // window (the one with the ipc bridge) is the PC, and a subscription made
@@ -12321,7 +12170,7 @@ function resumeCard() {
   load();
   async function load() {
     let rows = [];
-    try { rows = await (await fetch("/api/resume", {headers:{"X-Token":TOKEN}})).json(); }
+    try { rows = await (await settingsFetch("/api/resume", {})).json(); }
     catch (e) { return; }
     list.textContent = "";
     if (!rows.length) { list.append(el("div", {class:"hint"}, "—")); return; }
@@ -12339,9 +12188,9 @@ function resumeCard() {
       btn.addEventListener("click", async () => {
         btn.disabled = true;
         try {
-          const j = await (await fetch("/api/resume/hook", {
-            method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-            body: JSON.stringify({name: r.name, on: !on}),
+          const j = await (await settingsFetch("/api/resume/hook", {
+            method:"POST",
+            json:{name: r.name, on: !on},
           })).json();
           if (!j.ok) result(j.error || "", true);
         } catch (e) {}
@@ -12409,7 +12258,7 @@ function apiCard() {
   refreshApi();
   async function refreshApi() {
     let j = {};
-    try { j = await (await fetch("/api/external", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/external", {})).json(); }
     catch (e) { return; }
     status.textContent = j.running ? T["settings.api.listening"] : T["settings.api.stopped"];
     status.style.color = j.running ? "var(--accent)" : "var(--muted)";
@@ -12530,7 +12379,7 @@ function remoteCard() {
 
   async function refreshDevices() {
     let j = {};
-    try { j = await (await fetch("/api/remote/clients", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/remote/clients", {})).json(); }
     catch (e) { return; }
     const rows = (j.clients || []);
     devices.textContent = "";
@@ -12545,8 +12394,7 @@ function remoteCard() {
       const name = el("input", {type:"text", class:"devname",
         placeholder: T["settings.phone.device.unnamed"], value: c.name || ""});
       name.addEventListener("change", async () => {
-        await fetch("/api/remote/clients/name", {method:"POST",
-          headers:{"X-Token":TOKEN}, body:JSON.stringify({id:c.id, name:name.value})});
+        await settingsFetch("/api/remote/clients/name", {method:"POST", json:{id:c.id, name:name.value}});
         refreshDevices();
       });
       // Says what goes before it goes. A row of six-character ids with a ✕
@@ -12556,8 +12404,7 @@ function remoteCard() {
         if (!await confirmAction(fill(T["settings.phone.device.confirm"], {name: called}), T["settings.phone.device.revoke"])) return;
         let ok = false;
         try {
-          const r = await fetch("/api/remote/clients/revoke", {method:"POST",
-            headers:{"X-Token":TOKEN}, body:JSON.stringify({id:c.id})});
+          const r = await settingsFetch("/api/remote/clients/revoke", {method:"POST", json:{id:c.id}});
           ok = ((await r.json()) || {}).ok === true;
         } catch (e) {}
         // Saying nothing after a press that did nothing is the worst of the
@@ -12573,7 +12420,7 @@ function remoteCard() {
   }
   async function refreshRemote() {
     let j = {};
-    try { j = await (await fetch("/api/remote", {headers:{"X-Token":TOKEN}})).json(); }
+    try { j = await (await settingsFetch("/api/remote", {})).json(); }
     catch (e) { return; }
     const net = j.tailscale ? fill(T["settings.phone.tailscale"], {ip: j.tailscale})
               : j.lan ? fill(T["settings.phone.lan"], {ip: j.lan})
@@ -12659,7 +12506,7 @@ function remoteCard() {
   // navigator.clipboard does not exist at all.
   async function copyUrl(btn) {
     let url = "";
-    try { url = ((await (await fetch("/api/remote/url", {headers:{"X-Token":TOKEN}})).json()) || {}).url || ""; }
+    try { url = ((await (await settingsFetch("/api/remote/url", {})).json()) || {}).url || ""; }
     catch (e) {}
     if (!url) { toast(T["settings.phone.copy_failed"], true); return; }
     copyText(url).then(() => {
@@ -12875,16 +12722,8 @@ function gitAccountDialog(name, redraw, method = "token") {
 
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null, asked = false;
-  function fieldFault(inputEl, reason) {
-    const wrap = inputEl.parentElement;
-    const had = wrap.querySelector(".site-warn");
-    const show = reason && (asked || inputEl.value.trim() !== "");
-    if (had) had.remove();
-    inputEl.classList.toggle("bad", !!show);
-    if (show) wrap.append(el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, reason)));
-  }
+  const validation = formValidation(save, why);
+  const fieldFault = validation.field;
   const field = sfield;
   const loginField = field(T["settings.gitacct.login"], loginIn, T["settings.gitacct.login_hint"]);
   const tokenHint = el("div", {class:"hint"});
@@ -12923,10 +12762,7 @@ function gitAccountDialog(name, redraw, method = "token") {
     const keyWhy = ssh && !keyIn.value.trim() ? T["settings.gitacct.key_required"] : null;
     fieldFault(keyIn, keyWhy);
     if (keyWhy) faults.push({at: keyIn, why: keyWhy});
-    held = faults[0] || null;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(faults[0] || null);
   }
   for (const i of [nameIn, tokenIn, keyIn]) i.addEventListener("input", recheck);
 
@@ -12975,14 +12811,7 @@ function gitAccountDialog(name, redraw, method = "token") {
   recheck();
 
   save.addEventListener("click", async () => {
-    if (held) {
-      asked = true; recheck();
-      why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-      why.hidden = false;
-      held.at.classList.remove("lookhere"); void held.at.offsetWidth; held.at.classList.add("lookhere");
-      held.at.focus();
-      return;
-    }
+    if (validation.first) { validation.show(recheck); return; }
     if (save.disabled) return;
     save.disabled = true;
     const n = id;
@@ -13014,11 +12843,7 @@ function gitAccountDialog(name, redraw, method = "token") {
   setTimeout(() => nameIn.focus(), 0);
 }
 
-async function postJson(url, body) {
-  return await fetch(url, {method:"POST",
-    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-    body: JSON.stringify(body)}).then(r=>r.json()).catch(() => ({ok:false}));
-}
+
 
 // The GitHub sign-ins git on this PC holds, listed beside the desk's accounts
 // so everything a project can sign in as is in one place, each with whether
@@ -13029,7 +12854,7 @@ function pcSignInsCard() {
   const draw = async () => {
     listBox.textContent = "";
     let j = null;
-    try { j = await (await fetch("/api/pc-accounts", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+    try { j = await (await settingsFetch("/api/pc-accounts", {})).json(); } catch (e) {}
     PC_ACCOUNTS = (j && j.accounts) || [];
     if (!PC_ACCOUNTS.length) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.pc_empty"])); return; }
     const rows = el("div", {class:"rows"});
@@ -13073,7 +12898,7 @@ function ghSignInsCard() {
   const draw = async () => {
     listBox.textContent = "";
     let j = null;
-    try { j = await (await fetch("/api/gh-accounts", {headers:{"X-Token":TOKEN}})).json(); } catch (e) {}
+    try { j = await (await settingsFetch("/api/gh-accounts", {})).json(); } catch (e) {}
     if (!j || j.installed === false) { listBox.append(el("div", {class:"hint"}, T["settings.gitacct.gh_missing"])); return; }
     const accounts = j.accounts || [];
     GH_ACCOUNTS = accounts;
@@ -13271,7 +13096,7 @@ async function gitAccountState(a, out, kind) {
 async function signInState(query, out, none, noneWarn, showLogin = true) {
   let j;
   try {
-    j = await (await fetch("/api/github?" + query, {headers:{"X-Token":TOKEN}})).json();
+    j = await (await settingsFetch("/api/github?" + query, {})).json();
   } catch (e) { return; }
   if (!j.source) {
     out.textContent = none;
@@ -13494,7 +13319,7 @@ function folderPane(desk, g, gi) {
   // Why the last try to write them failed, when it did. Only while it is on:
   // a folder that no longer asks has nothing to fix
   if (g.auto_label && (g.cwd || "").trim()) {
-    fetch("/api/folder-label?path=" + encodeURIComponent(placeKey(g)), {headers:{"X-Token":TOKEN}})
+    settingsFetch("/api/folder-label?path=" + encodeURIComponent(placeKey(g)), {})
       .then(r => r.json())
       .then(j => {
         if (!j || !j.failed || !g.auto_label) return;
@@ -13619,8 +13444,8 @@ function folderPane(desk, g, gi) {
       // On another machine: the board deletes it, as its own menu does
       if (where.host) { farFolderDiscard(placeKey(g)); return; }
       toast(T["tui.making.stage.removing"]);
-      const r = await fetch("/api/folder/discard",
-        {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
+      const r = await settingsFetch("/api/folder/discard",
+        {method:"POST", json:{path: g.cwd}})
         .then(r => r.json()).catch(() => ({ok:false, error:""}));
       // The folder would not go. Asked whether to take it off the list anyway,
       // since the files stay on disk either way
@@ -13664,8 +13489,8 @@ function envCard(desk, p) {
   // Read from the project's own checkout; the folder the page stands for here
   // is that checkout, named the way the rest of this card expects
   const g = {cwd: p.at || ""};
-  fetch("/api/devcontainer?path=" + encodeURIComponent(g.cwd) + "&desk=" + encodeURIComponent(desk.id || ""),
-        {headers:{"X-Token":TOKEN}})
+  settingsFetch("/api/devcontainer?path=" + encodeURIComponent(g.cwd) + "&desk=" + encodeURIComponent(desk.id || ""),
+        {})
     .then(r => r.json())
     .then(said => {
       box.hidden = false;
@@ -13692,8 +13517,8 @@ function envCard(desk, p) {
       }
       const keep = el("button", {}, T["settings.group.env.keep"]);
       keep.addEventListener("click", async () => {
-        const r = await fetch("/api/devcontainer",
-          {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: g.cwd})})
+        const r = await settingsFetch("/api/devcontainer",
+          {method:"POST", json:{path: g.cwd}})
           .then(r => r.json()).catch(() => ({ok:false, error:""}));
         if (!r.ok) { toast(r.error || "", true); return; }
         toast(fill(T["msg.devcontainer.kept"], {path: r.at}));
@@ -15122,8 +14947,8 @@ function renameCard(desk, g, branch) {
     // Nothing typed over the name it already has: nothing to show and nothing
     // to press, and an empty box would be a box with nothing in it
     if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
-    const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, from: branch})})
+    const r = await settingsFetch("/api/folder/rename",
+      {method:"POST", json:{desk: desk.uid || desk.id, path: placeKey(g), name: want, from: branch}})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     // An answer about a name that has since been typed over says nothing
     // about the one in the box now
@@ -15140,8 +14965,8 @@ function renameCard(desk, g, branch) {
   go.disabled = true;
   go.addEventListener("click", async () => {
     const want = box.value.trim();
-    const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, go: true})})
+    const r = await settingsFetch("/api/folder/rename",
+      {method:"POST", json:{desk: desk.uid || desk.id, path: placeKey(g), name: want, go: true}})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     if (!r.ok) { toast(r.error || T["settings.group.rename.failed"], true); return; }
     toast(fill(T["msg.branch.renamed"], {from: r.from, to: r.to}));
@@ -15176,9 +15001,9 @@ const samePlace = (g, key) => {
 async function familyOf(cwd, desk) {
   if (!(cwd || "").trim()) return null;
   try {
-    return await fetch("/api/family?path=" + encodeURIComponent(cwd)
+    return await settingsFetch("/api/family?path=" + encodeURIComponent(cwd)
                        + "&desk=" + encodeURIComponent((desk && (desk.uid || desk.id)) || ""),
-                       {headers:{"X-Token":TOKEN}}).then(r => r.json());
+                       {}).then(r => r.json());
   } catch (e) { return null; }
 }
 
@@ -15381,8 +15206,7 @@ function secretDialog(desk, have, called) {
   const urlBox = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2)"});
   const save = el("button", {class:"primary"}, T["common.save"]);
   const why = el("span", {class:"why"});
-  why.hidden = true;
-  let held = null;
+  const validation = formValidation(save, why);
 
   const urlsNow = () =>
     [...urlBox.querySelectorAll("input")].map(i => withScheme(i.value)).filter(Boolean);
@@ -15397,31 +15221,14 @@ function secretDialog(desk, have, called) {
       const fault = wrote ? urlFault(wrote) : null;
       const reason = fault ? T[fault]
         : (isPlain(wrote) && !riskBox.checked ? T["settings.secrets.plain_warn"] : null);
-      const wrap = i.parentElement.parentElement;
-      const had = wrap.querySelector(".site-warn");
-      i.classList.toggle("bad", !!reason);
-      if (had) had.remove();
-      if (reason) wrap.append(el("div", {class:"site-warn"},
-        el("span", {}, "⚠"), el("span", {}, reason)));
+      validation.field(i, reason, {wrap:i.parentElement.parentElement});
       if (reason && !first) first = {at: i, why: fault ? T[fault] : T["settings.secrets.plain_held"]};
     }
-    held = first;
-    save.classList.toggle("held", !!held);
-    if (!held) why.hidden = true;
-    else if (!why.hidden) why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
+    validation.set(first);
   }
   // Pressing a held button is a question. Answer it where the answer stays,
   // and take the eye to the thing that has to change
-  function sayWhy() {
-    why.textContent = fill(T["settings.secrets.cannot_save"], {why: held.why});
-    why.hidden = false;
-    for (const n of [held.at, riskLabel]) {
-      n.classList.remove("lookhere");
-      void n.offsetWidth;
-      n.classList.add("lookhere");
-    }
-    held.at.scrollIntoView({block:"center", behavior:"smooth"});
-  }
+  const sayWhy = () => validation.show(recheck, [riskLabel]);
   const addUrl = (v) => {
     const i = el("input", {type:"text", class:"mono grow", placeholder:"https://example.com/api",
       value: v || ""});
@@ -15439,9 +15246,7 @@ function secretDialog(desk, have, called) {
   for (const h of (editing ? (have.urls || []) : [])) addUrl(h);
   if (!urlBox.children.length) addUrl("");
 
-  const field = (label, control, hint) => el("div", {class:"field"},
-    el("label", {}, label), control,
-    hint ? el("div", {class:"hint"}, hint) : null);
+  const field = sfield;
 
   const shut = () => back.remove();
   const back = openModal(
@@ -15490,7 +15295,7 @@ function secretDialog(desk, have, called) {
   });
 
   save.addEventListener("click", async () => {
-    if (held) { sayWhy(); return; }
+    if (validation.first) { sayWhy(); return; }
     const short = name.value.trim();
     if (!short) { toast(T["settings.secrets.key_required"], true); return; }
     if (!editing && !value.value) { toast(T["settings.secrets.value_required"], true); return; }
@@ -15511,13 +15316,12 @@ function savedAlready() {
   return false;
 }
 
-const deskShare = (path, body) => fetch(path, {method:"POST",
-  headers:{"Content-Type":"application/json", "X-Token":TOKEN}, body})
-  .then(r => r.json()).catch(e => ({ok:false, error:e.message || e}));
+const deskShare = (path, body) => settingsApi(path, body, "POST")
+  .catch(e => ({ok:false, error:e.message || e}));
 
 async function exportWs(i) {
   if (!savedAlready()) return;
-  const j = await deskShare("/api/desk/export", JSON.stringify({index:i}));
+  const j = await deskShare("/api/desk/export", {index:i});
   if (j.cancelled) return;
   if (!j.ok) return result(fill(T["settings.desk.export_failed"], {error:j.error || ""}), true);
   result(fill(T["settings.desk.exported"], {path:j.path}));
@@ -15848,8 +15652,8 @@ async function showCliHelp(head) {
   back = openModal(el("h2", {}, head + " --help"), pre,
     el("div", {class:"row", style:"justify-content:flex-end;margin-top:var(--s3)"}, close));
   try {
-    const r = await fetch("/api/cli-help?cmd=" + encodeURIComponent(head),
-      {headers:{"X-Token":TOKEN}}).then(r => r.json());
+    const r = await settingsFetch("/api/cli-help?cmd=" + encodeURIComponent(head),
+      {}).then(r => r.json());
     pre.textContent = (r && r.ok && (r.help || "").trim())
       ? r.help : ((r && r.error) || T["settings.tab.ai.flags_failed"]);
   } catch (e) { pre.textContent = T["settings.tab.ai.flags_failed"]; }
@@ -16425,8 +16229,8 @@ function boardsCard() {
   const listBox = el("div");
   const post = async (url, body) => {
     try {
-      return await (await fetch(url, {method:"POST", headers:{"X-Token":TOKEN, "Content-Type":"application/json"},
-        body: JSON.stringify(body)})).json();
+      return await (await settingsFetch(url, {method:"POST",
+        json:body})).json();
     } catch (e) { return {ok:false, error: String(e)}; }
   };
   const said = el("div", {class:"hint"});
@@ -16474,7 +16278,7 @@ function boardsCard() {
     }
     listBox.append(rows);
     let j = null;
-    try { j = await (await fetch("/api/boards/status", {headers:{"X-Token":TOKEN}})).json(); } catch (e) { j = null; }
+    try { j = await (await settingsFetch("/api/boards/status", {})).json(); } catch (e) { j = null; }
     for (const row of ((j && j.boards) || [])) {
       const s = states[row.name];
       if (!s) continue;
@@ -16815,8 +16619,8 @@ function autoDirOf(desk, t) {
 
 async function fetchAuto(dir) {
   try {
-    return await (await fetch("/api/automation?dir=" + encodeURIComponent(dir),
-        {headers:{"X-Token":TOKEN}})).json();
+    return await (await settingsFetch("/api/automation?dir=" + encodeURIComponent(dir),
+        {})).json();
   } catch (e) { return {}; }
 }
 async function loadAutoStates(desk, t) {
@@ -16886,9 +16690,9 @@ function closeAuto() { document.getElementById("autobox").style.display = "none"
 
 async function saveAuto() {
   if (autoTarget.file) {
-    const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
-        {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-         body: JSON.stringify({file: document.getElementById("autocode").value})});
+    const r = await settingsFetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+        {method:"POST",
+         json:{file: document.getElementById("autocode").value}});
     if (!r.ok) return automsg(T["automation.editor.save_failed"], true);
     closeAuto();
     loadAutoStates(autoTarget.desk, autoTarget.t);
@@ -16896,9 +16700,9 @@ async function saveAuto() {
     return;
   }
   autoData[autoEvent] = document.getElementById("autocode").value;
-  const r = await fetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
-      {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-       body: JSON.stringify(autoData)});
+  const r = await settingsFetch("/api/automation?dir=" + encodeURIComponent(autoTarget.dir),
+      {method:"POST",
+       json:autoData});
   if (!r.ok) return automsg(T["automation.editor.save_failed"], true);
   const created = autoTarget.t.automation !== autoTarget.dir;
   autoTarget.t.automation = autoTarget.dir;
@@ -16934,12 +16738,11 @@ async function askAi() {
   automsg("");
   aiBusy(true);
   try {
-    const r = await fetch("/api/generate", {method:"POST",
-        headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-        body: JSON.stringify({event: autoEvent, prompt: want,
+    const r = await settingsFetch("/api/generate", {method:"POST",
+        json:{event: autoEvent, prompt: want,
           engine: current.ai_engine || null,
           tabs: (desk.tabs || []).map((x, i) => ({index:i+1, name:x.name || fill(T["settings.tab.default_name"], {n: i+1}), id:x.id || ""})),
-          self: (desk.tabs || []).indexOf(autoTarget.t) + 1})});
+          self: (desk.tabs || []).indexOf(autoTarget.t) + 1}});
     const j = await r.json();
     if (!j.ok) return automsg(fill(T["automation.editor.failed"], {error: j.error}), true);
     document.getElementById("aicode").textContent = j.code;
@@ -17095,7 +16898,7 @@ function nest(flat) {
 }
 
 async function loadAi() {
-  try { aiEngines = (await (await fetch("/api/ai", {headers:{"X-Token":TOKEN}})).json()).engines || []; }
+  try { aiEngines = (await (await settingsFetch("/api/ai", {})).json()).engines || []; }
   catch (e) { aiEngines = []; }
   const dl = document.getElementById("cmdlist");
   dl.textContent = "";
@@ -17109,7 +16912,7 @@ async function loadAi() {
 async function load() {
   clearLoadFailure();
   await loadAi();
-  const cfg = await readUserJson(await api("GET"));
+  const cfg = await readUserJson(await settingsFetch("/api/config"));
   if (cfg.failure) return showLoadFailure(cfg.failure);
   current = cfg.value;
   serverAisAsk();
@@ -17156,7 +16959,7 @@ async function load() {
                  rename_branch: w.rename_branch !== false,
                  stops: Array.isArray(w.stops) ? w.stops : [] };
     if (desk.file) {
-      const got = await readUserJson(await deskApi("GET", desk.file));
+      const got = await readUserJson(await settingsFetch("/api/desk?file=" + encodeURIComponent(desk.file)));
       // A desk file is loaded to be written back. If it can't be read, the
       // tabs would come out empty and saving would erase them, so stop here too.
       if (got.failure) return showLoadFailure(got.failure);
@@ -17708,7 +17511,7 @@ document.addEventListener("keydown", e => {
 // Opens a help/report page in the real browser. The server whitelists `dest`
 // and pre-fills the bug template with this build and the OS version.
 function openExt(dest) {
-  fetch("/api/open?dest=" + dest, {headers:{"X-Token":TOKEN}}).catch(()=>{});
+  settingsFetch("/api/open?dest=" + dest, {}).catch(()=>{});
 }
 
 // Said once, before the first paint: this page is inside a frame the board
@@ -17758,9 +17561,8 @@ function unpick() {
   pickedBox = null;
 }
 function guidePost(path, body) {
-  return fetch("/api/guide" + path, {method:"POST",
-    headers:{"X-Token":TOKEN,"Content-Type":"application/json"},
-    body: JSON.stringify(body || {})}).then(r => r.json()).catch(() => ({}));
+  return settingsFetch("/api/guide" + path, {method:"POST",
+    json:body || {}}).then(r => r.json()).catch(() => ({}));
 }
 document.addEventListener("click", e => {
   if (!guideUp) return;
@@ -17779,7 +17581,7 @@ document.addEventListener("click", e => {
 // showing one thing and holding another
 async function readGuide() {
   let now = null;
-  try { now = await (await fetch("/api/guide/up", {headers:{"X-Token":TOKEN}})).json(); }
+  try { now = await (await settingsFetch("/api/guide/up", {})).json(); }
   catch (e) { return; }
   const was = guideUp;
   guideUp = !!(now && now.up);
@@ -18163,8 +17965,8 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const c of kids) if (c !== null && c !== undefined) n.append(c);
   return n;
 };
-const fill = (s, args) => Object.entries(args)
-  .reduce((acc, [k, v]) => acc.replaceAll("{" + k + "}", v), s || "");
+{{I18N_JS}}
+{{SETTINGS_API_JS}}
 const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 {{TOAST_JS}}
 
@@ -18399,7 +18201,7 @@ function toggleAll() {
 
 async function saveFrom(url, filename) {
   try {
-    const r = await fetch(url, { headers: { "X-Token": TOKEN } });
+    const r = await settingsFetch(url, { headers:{} });
     if (!r.ok) { toast(T["result.empty"], true); return; }
     const blob = await r.blob();
     const u = URL.createObjectURL(blob);
@@ -18429,7 +18231,7 @@ async function load() {
   document.getElementById("toggleall").addEventListener("click", toggleAll);
   document.getElementById("chat").append(el("div", { class: "empty" }, T["result.loading"]));
   try {
-    const r = await fetch("/api/rally/transcript?run=" + encodeURIComponent(RUN), { headers: { "X-Token": TOKEN } });
+    const r = await settingsFetch("/api/rally/transcript?run=" + encodeURIComponent(RUN), { headers:{} });
     const data = await r.json();
     if (data.replay) document.getElementById("dlr").style.display = "";
     render(data);
@@ -18789,7 +18591,7 @@ mod tests {
     #[test]
     fn every_page_has_what_it_calls() {
         let served = |page: &str| {
-            crate::shell::with_faces(crate::quick::render(crate::push::inject(crate::toast::render(page.to_string()))))
+            crate::shell::with_faces(super::page_parts(page.to_string()))
         };
         for (which, page) in [
             ("the settings page", super::PAGE),

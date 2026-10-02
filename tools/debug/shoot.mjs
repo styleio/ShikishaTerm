@@ -18,43 +18,17 @@
  *
  * Pictures land in target/shots. A scene file is described in the one there is.
  */
+import {findChrome, findCargo, startChrome} from './chrome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const OUT = path.join(ROOT, 'target', 'shots');
-const PORT = 9333;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(1); };
-
-/** Chrome, wherever this machine keeps it. CHROME says so outright. */
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  const guesses = process.platform === 'win32'
-    ? [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-      .filter(Boolean)
-      .map((base) => path.join(base, 'Google/Chrome/Application/chrome.exe'))
-    : process.platform === 'darwin'
-      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
-      : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  const found = guesses.find((p) => fs.existsSync(p));
-  if (!found) die('Chrome was not found. Say where it is with CHROME=<path>.');
-  return found;
-}
-
-/** cargo is installed per-user, and a shell started without it stays without it. */
-function findCargo() {
-  const named = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
-  const beside = path.join(os.homedir(), '.cargo', 'bin', named);
-  if (fs.existsSync(beside)) return beside;
-  const where = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['cargo']);
-  if (where.status === 0) return 'cargo';
-  return die('cargo was not found; install rustup first');
-}
 
 /**
  * The page as the app serves it, one file per language, scheme and side.
@@ -63,7 +37,7 @@ function findCargo() {
  * same page at different widths -- the phone's carries controls the window has
  * no use for -- so a scene about a phone's screen asks for `served: 'remote'`.
  */
-function writePages(langs, looks, sides) {
+function writePages(langs, looks, sides, page) {
   const cargo = findCargo();
   fs.mkdirSync(OUT, { recursive: true });
   const pages = {};
@@ -73,9 +47,10 @@ function writePages(langs, looks, sides) {
         const args = ['run', '--quiet', '--bin', 'page_dump', '--', lang];
         if (look === 'light') args.push('light');
         if (side === 'remote') args.push('remote');
+        if (page) args.push(page);
         const made = spawnSync(cargo, args, { cwd: ROOT, maxBuffer: 1 << 28 });
         if (made.status !== 0) die('page_dump failed: ' + made.stderr);
-        const file = path.join(OUT, 'page.' + lang + '.' + look + '.' + side + '.html');
+        const file = path.join(OUT, [page || 'page', process.pid, lang, look, side, 'html'].join('.'));
         fs.writeFileSync(file, made.stdout);
         pages[lang + '.' + look + '.' + side] = file;
       }
@@ -85,47 +60,7 @@ function writePages(langs, looks, sides) {
 }
 
 /** A talking connection to one tab of a headless Chrome. */
-async function connect(chrome) {
-  const proc = spawn(chrome, [
-    '--headless=new', '--remote-debugging-port=' + PORT,
-    '--user-data-dir=' + path.join(OUT, 'chrome-profile'),
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    'about:blank',
-  ], { stdio: 'ignore' });
-  let list;
-  for (let i = 0; i < 80 && !list; i++) {
-    try {
-      list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json();
-    } catch {
-      await sleep(250);
-    }
-  }
-  if (!list) die('Chrome never answered on its debugging port');
-  const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error
-      ? rej(new Error(method + ': ' + JSON.stringify(m.error)))
-      : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate',
-      { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) {
-      throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    }
-    return r.result.value;
-  };
-  return { send, run, stop: () => { ws.close(); proc.kill(); } };
-}
+const connect = chrome => startChrome({chrome});
 
 const file = process.argv[2];
 if (!file) die('say which scenes to photograph: node tools/debug/shoot.mjs <scenes.mjs>');
@@ -141,7 +76,7 @@ const served = spec.served || 'window';
 // Only the sides some scene actually asks for: each one is another build
 const sides = [...new Set(Object.values(spec.scenes || {})
   .map((s) => (typeof s === 'string' ? served : s.served || served)))];
-const pages = writePages(langs, looks, sides);
+const pages = writePages(langs, looks, sides, spec.page);
 const chrome = await connect(findChrome());
 
 // The page talks to the app through a bridge that is not here. A place that
@@ -153,6 +88,7 @@ await chrome.send('Page.addScriptToEvaluateOnNewDocument',
   { source: 'window.ipc = { postMessage(){} };' });
 
 let taken = 0;
+try {
 for (const [name, scene] of Object.entries(spec.scenes)) {
   if (only && name !== only) continue;
   const at = typeof scene === 'string' ? { run: scene } : scene;
@@ -181,5 +117,5 @@ for (const [name, scene] of Object.entries(spec.scenes)) {
     }
   }
 }
-chrome.stop();
+} finally { chrome.stop(); }
 if (!taken) die(only ? 'no scene called ' + only : 'the scene file has no scenes');

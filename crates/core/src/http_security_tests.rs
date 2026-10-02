@@ -17,6 +17,21 @@ fn connect(server: &Server, headers: &str) -> TcpStream {
 }
 
 #[test]
+fn body_limits_cover_known_lengths_and_chunked_requests() {
+    for (headers, expected) in [
+        ("Content-Length: 4\r\n\r\ndata", Some("data")),
+        ("Content-Length: 5\r\n\r\nlarge", None),
+        ("Transfer-Encoding: chunked\r\n\r\n4\r\ndata\r\n0\r\n\r\n", Some("data")),
+        ("Transfer-Encoding: chunked\r\n\r\n5\r\nlarge\r\n0\r\n\r\n", None),
+    ] {
+        let server = server(2);
+        let _socket = connect(&server, &format!("POST / HTTP/1.1\r\nHost: localhost\r\n{headers}"));
+        let mut req = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(crate::http::read_body(&mut req, 4).unwrap().as_deref(), expected);
+    }
+}
+
+#[test]
 fn unfinished_http_headers_and_bodies_expire() {
     let server = server(4);
     let mut header = connect(&server, "GET / HTTP/1.1\r\nHost:");
@@ -84,9 +99,16 @@ fn complete_requests_can_wait_for_work_and_websockets_can_stay_open() {
     let mut answer = String::new();
     socket.read_to_string(&mut answer).unwrap();
     assert!(answer.ends_with("done"));
-    let mut socket = connect(&server, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+    let mut socket = connect(&server, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
     let req = server.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
-    let mut stream = req.upgrade("websocket", Response::empty(101));
+    let mut stream = crate::ws::upgrade(req, "dGhlIHNhbXBsZSBub25jZQ==");
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") && head.len() < 4096 {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+    }
+    assert!(String::from_utf8(head).unwrap().contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
     std::thread::sleep(Duration::from_millis(500));
     socket.write_all(b"ok").unwrap();
     let mut buf = [0; 2];

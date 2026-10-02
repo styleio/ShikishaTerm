@@ -279,21 +279,7 @@ pub fn file_url(uri: &str) -> Option<FileUrl> {
 
 /// `%XX` back into bytes, read as UTF-8
 fn unescape(s: &str) -> Option<String> {
-    let bytes = s.as_bytes();
-    let mut raw = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(v) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            raw.push(v);
-            i += 3;
-            continue;
-        }
-        raw.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8(raw).ok()
+    String::from_utf8(crate::urlcodec::decode_bytes(s, false)).ok()
 }
 
 /// Where a pressed `file://` place is, as seen from the tab it was pressed on

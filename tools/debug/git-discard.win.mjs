@@ -24,6 +24,7 @@
  * nothing of a copy somebody is using is read, written or stopped. The copy is
  * stopped on the way out.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -94,29 +95,9 @@ try {
     } catch { await sleep(250); }
   }
   if (!targets.length) throw new Error('the window never answered on its DevTools port');
-  ws = new WebSocket(targets[0].webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error
-      ? rej(new Error(method + ': ' + JSON.stringify(m.error)))
-      : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate',
-      { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) {
-      throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    }
-    return r.result.value;
-  };
+  const connection = await connectCdp(targets[0]);
+  ws = connection.ws;
+  const {send, run} = connection;
 
   // The column, open on the changes and asked to read the folder again
   const open = `(async () => {

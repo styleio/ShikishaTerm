@@ -25,44 +25,18 @@
  * Nothing here ships; it runs in CI and on the machine of whoever is editing
  * the page.
  */
+import {findChrome, findCargo, startChrome} from './debug/chrome.mjs';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const OUT = path.join(ROOT, 'target', 'board-check');
-const PORT = 9336;
 const KEEP = process.argv.includes('--keep');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(1); };
-
-/** Chrome, wherever this machine keeps it. CHROME says so outright. */
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  const guesses = process.platform === 'win32'
-    ? [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-      .filter(Boolean)
-      .map((base) => path.join(base, 'Google/Chrome/Application/chrome.exe'))
-    : process.platform === 'darwin'
-      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome']
-      : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-  const found = guesses.find((p) => fs.existsSync(p));
-  if (!found) die('Chrome was not found. Say where it is with CHROME=<path>.');
-  return found;
-}
-
-/** cargo is installed per-user, and a shell started without it stays without it. */
-function findCargo() {
-  const named = process.platform === 'win32' ? 'cargo.exe' : 'cargo';
-  const beside = path.join(os.homedir(), '.cargo', 'bin', named);
-  if (fs.existsSync(beside)) return beside;
-  const where = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['cargo']);
-  if (where.status === 0) return 'cargo';
-  return die('cargo was not found; install rustup first');
-}
 
 const cargo = findCargo();
 /** Ask the app itself for something: the page as it serves it, or a state. */
@@ -74,55 +48,7 @@ function fromApp(args) {
 }
 
 /** A talking connection to one tab of a headless Chrome. */
-async function connect(chrome) {
-  const proc = spawn(chrome, [
-    '--headless=new', '--remote-debugging-port=' + PORT,
-    '--user-data-dir=' + path.join(OUT, 'chrome-profile'),
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    'about:blank',
-  ], { stdio: 'ignore' });
-  let list;
-  for (let i = 0; i < 80 && !list; i++) {
-    try {
-      list = await (await fetch('http://127.0.0.1:' + PORT + '/json/list')).json();
-    } catch {
-      await sleep(250);
-    }
-  }
-  if (!list) die('Chrome never answered on its debugging port');
-  const ws = new WebSocket(list.find((t) => t.type === 'page').webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  // Everything the page throws where nobody catches it. The page reports its
-  // own failures to the app, which cannot be listened to from here, so they are
-  // taken from the browser instead
-  const thrown = [];
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); return; }
-    if (m.method === 'Runtime.exceptionThrown') {
-      const d = m.params.exceptionDetails;
-      thrown.push((d.exception && (d.exception.description || d.exception.value)) || d.text);
-    }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error
-      ? rej(new Error(method + ': ' + JSON.stringify(m.error)))
-      : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate',
-      { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) {
-      throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    }
-    return r.result.value;
-  };
-  return { send, run, thrown, stop: () => { ws.close(); proc.kill(); } };
-}
+const connect = chrome => startChrome({chrome});
 
 fs.mkdirSync(OUT, { recursive: true });
 // The state first: it is the same for every page, and asking the app for it

@@ -2402,18 +2402,5 @@ pub fn openable(raw: &str) -> Option<String> {
 /// A Google search for the given words, with every byte outside the URL-safe
 /// set percent-encoded (UTF-8), so Japanese and symbols survive the trip
 fn search_url(words: &str) -> String {
-    use std::fmt::Write as _;
-    let mut u = String::from("https://www.google.com/search?q=");
-    for b in words.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                u.push(*b as char)
-            }
-            b' ' => u.push('+'),
-            _ => {
-                let _ = write!(u, "%{b:02X}");
-            }
-        }
-    }
-    u
+    format!("https://www.google.com/search?q={}", crate::urlcodec::encode_form(words))
 }

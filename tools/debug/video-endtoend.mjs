@@ -24,6 +24,7 @@
  *
  * Needs Chrome and a built workspace. Nothing here ships.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -35,14 +36,7 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const say = (s) => console.log(s);
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  const guesses = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-    .filter(Boolean)
-    .map((base) => path.join(base, 'Google/Chrome/Application/chrome.exe'));
-  for (const g of guesses) if (fs.existsSync(g)) return g;
-  throw new Error('no Chrome found; set CHROME');
-}
+
 const CHROME = findChrome();
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>moving</title>

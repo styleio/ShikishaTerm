@@ -284,39 +284,10 @@ fn kind_of(file: &Path) -> &'static str {
 }
 
 /// One part of an address, every byte outside the plain set as `%XX`
-fn percent_encode(part: &str) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::new();
-    for b in part.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(*b as char),
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
+use crate::urlcodec::encode as percent_encode;
 
 /// `%XX` read back into bytes, and those as UTF-8
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        let hex = |c: u8| (c as char).to_digit(16);
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+use crate::urlcodec::decode_path as percent_decode;
 
 #[cfg(test)]
 mod tests {

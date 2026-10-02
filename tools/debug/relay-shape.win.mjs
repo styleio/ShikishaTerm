@@ -20,6 +20,7 @@
  * What it prints is the picture's size at each step. They should be the same,
  * and neither should be small.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -57,15 +58,7 @@ const show = (how, tag) => execFileSync('powershell', ['-NoProfile', '-Command',
   ` $u::ShowWindow((Get-Process -Id ${pid}).MainWindowHandle, ${how}) | Out-Null`,
 ], { encoding: 'utf8' });
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'standin-phone-'));
 const chrome = spawn(findChrome(), [

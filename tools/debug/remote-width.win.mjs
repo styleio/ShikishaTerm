@@ -6,6 +6,7 @@
  * never touches a running user's app. No AI account is used: ruler-tui reports
  * the dimensions the real pseudo terminal gives a full-screen program.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,30 +47,8 @@ async function until(f, what, ms = 15000) {
 async function attach(port) {
   const target = await until(async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json())
     .find(t => t.type === 'page'), 'DevTools page');
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-  let seq = 0;
-  const pending = new Map();
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    const item = pending.get(m.id);
-    if (!item) return;
-    pending.delete(m.id);
-    clearTimeout(item.timer);
-    if (m.error) item.reject(new Error(JSON.stringify(m.error))); else item.resolve(m.result);
-  };
-  const call = (method, params = {}) => new Promise((resolve, reject) => {
-    const id = ++seq;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Timeout: ${method}`)); }, 15000);
-    pending.set(id, {resolve, reject, timer});
-    ws.send(JSON.stringify({id, method, params}));
-  });
-  const run = async expression => {
-    const r = await call('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true});
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
-  return {call, run, close: () => ws.close()};
+  const {send:call, run, stop:close} = await connectCdp(target, {timeout:15000});
+  return {call, run, close};
 }
 const look = `(() => {
   const screen = document.getElementById('screen');

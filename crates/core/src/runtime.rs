@@ -13928,21 +13928,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 /// Only what would otherwise end the value or start another one. A Windows
 /// path is mostly letters, a colon and backslashes, and leaving those legible
 /// means the address bar still says where it is going
-pub fn urlish(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' | '/' | ':' => out.push(c),
-            other => {
-                let mut buf = [0u8; 4];
-                for b in other.encode_utf8(&mut buf).as_bytes() {
-                    out.push_str(&format!("%{b:02X}"));
-                }
-            }
-        }
-    }
-    out
-}
+pub use crate::urlcodec::encode_readable_path as urlish;
 /// Work out the model connections again, and hand them to the tabs that are
 /// using them.
 ///
@@ -16025,18 +16011,7 @@ fn brought_note(branch: &str, b: &crate::worktree::Brought) -> String {
 /// Only what a Windows path can hold has to survive: separators, spaces, and
 /// whatever a person named a folder. Anything outside the unreserved set is
 /// written as its bytes, which is what the other side decodes
-pub fn percent_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+pub use crate::urlcodec::encode as percent_encode;
 /// The tab's working folder as an absolute path string, for attachments. Falls
 /// back to what the shell in it says about itself when the tab was given none,
 /// and to nothing at all when it says nothing.

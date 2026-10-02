@@ -142,7 +142,7 @@ export default {
       const secrets=await fetchSecrets();
       check(secrets.secrets.some(s=>s.key===gitTokenKey(a.name)) && secrets.secrets.some(s=>s.key===gitTokenKey(b.name)), 'Replacing one PAT lost another');
       await save();
-      const persisted=await (await api('GET')).json();
+      const persisted=await settingsApi('/api/config');
       check(persisted.git_accounts.some(x=>x.name===before && x.label==='VM renamed 日本語'), 'Rename not persisted');
       check(persisted.desks[0].projects[0].git_account===before,'Project selection not persisted');
       check(!JSON.stringify(persisted).includes('github_pat_'),'Token leaked into settings');

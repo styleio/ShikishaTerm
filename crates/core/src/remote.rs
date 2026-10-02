@@ -1961,13 +1961,7 @@ fn browser_request_allowed(req: &tiny_http::Request, published: &str) -> bool {
 }
 
 /// Read a request body, capped at `max` bytes; None if it would exceed the cap.
-fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
-    use std::io::Read as _;
-    if req.body_length().is_some_and(|n| n > max) { return Ok(None); }
-    let mut body = String::new();
-    req.as_reader().take(max as u64 + 1).read_to_string(&mut body)?;
-    Ok((body.len() <= max).then_some(body))
-}
+use crate::http::read_body;
 
 #[allow(clippy::too_many_arguments)]
 /// A paired PC's window, let in by the ticket its PC was handed for it
@@ -2819,26 +2813,17 @@ fn handle(
         // moment it changes (the main loop calls push_state) instead of the
         // phone polling. Download-only; the write thread owns the socket.
         ("GET", "/ws-state") => {
-            let key = req
-                .headers()
-                .iter()
-                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
-                .map(|h| h.value.as_str().to_string())
-                .unwrap_or_default();
+            let key = websocket_key(&req);
             if key.is_empty() {
                 return req
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
             let wants_panes = req
                 .url()
                 .split_once('?')
                 .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "panes=1"));
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let stream = req.upgrade("websocket", resp);
+            let stream = crate::ws::upgrade(req, &key);
             let (stx, srx) = channel::<String>();
             let pending = Arc::new(AtomicUsize::new(0));
             // Give the new viewer the current screen and UI right away, so it
@@ -2895,22 +2880,13 @@ fn handle(
         // and from then on JPEG frames flow over this line (download-only;
         // the write thread owns the socket)
         ("GET", "/ws") => {
-            let key = req
-                .headers()
-                .iter()
-                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
-                .map(|h| h.value.as_str().to_string())
-                .unwrap_or_default();
+            let key = websocket_key(&req);
             if key.is_empty() {
                 return req
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let stream = req.upgrade("websocket", resp);
+            let stream = crate::ws::upgrade(req, &key);
             let (ftx, frx) = channel::<Vec<u8>>();
             frame_clients.lock().unwrap().push(FrameClient { tx: ftx, session: session.clone() });
             // New viewer. Tell the main loop "emit one frame of the current screen"
@@ -2953,11 +2929,7 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let stream = req.upgrade("websocket", resp);
+            let stream = crate::ws::upgrade(req, &key);
             let (atx, arx) = channel::<String>();
             let who = match &by {
                 Opener::Paired(client) => client.name.clone(),
@@ -3002,11 +2974,7 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let mut stream = req.upgrade("websocket", resp);
+            let mut stream = crate::ws::upgrade(req, &key);
             let gate = Arc::clone(gate);
             let session = session.clone();
             std::thread::spawn(move || {
@@ -3058,11 +3026,7 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let stream = req.upgrade("websocket", resp);
+            let stream = crate::ws::upgrade(req, &key);
             let (ftx, frx) = channel::<Vec<u8>>();
             let pipe = crate::tunnel::Pipe::new(move |f| {
                 let _ = ftx.send(f);
@@ -3103,11 +3067,7 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let mut stream = req.upgrade("websocket", resp);
+            let mut stream = crate::ws::upgrade(req, &key);
             let gate = Arc::clone(gate);
             let session = session.clone();
             std::thread::spawn(move || {
@@ -3130,22 +3090,13 @@ fn handle(
         // so it's a separate one-way WS from the download path (avoids
         // splitting one socket for read/write; each line stays single-threaded)
         ("GET", "/ws-in") => {
-            let key = req
-                .headers()
-                .iter()
-                .find(|h| h.field.equiv("Sec-WebSocket-Key"))
-                .map(|h| h.value.as_str().to_string())
-                .unwrap_or_default();
+            let key = websocket_key(&req);
             if key.is_empty() {
                 return req
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let accept = crate::ws::accept_key(&key);
-            let resp = Response::empty(101).with_header(
-                Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept.as_bytes()).unwrap(),
-            );
-            let mut stream = req.upgrade("websocket", resp);
+            let mut stream = crate::ws::upgrade(req, &key);
             let tx = tx.clone();
             let gate = Arc::clone(gate);
             let session = session.clone();

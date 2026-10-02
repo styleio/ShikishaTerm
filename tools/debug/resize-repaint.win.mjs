@@ -26,6 +26,7 @@
  *
  * Exit code 0 when every check passed.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -102,15 +103,7 @@ const say = async (body) => {
   await sleep(2500);
 };
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 // What the board is showing, pane by pane: the rows the program drew, how
 // long each is, and what size the program itself says it has. The pane in

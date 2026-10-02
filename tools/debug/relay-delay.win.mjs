@@ -32,6 +32,7 @@
  * The middle number is the one to compare. The worst is the one a person
  * notices, so it is printed too.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import http from 'node:http';
@@ -153,28 +154,8 @@ async function pageAt(port) {
 }
 
 async function talk(target) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  return {
-    send,
-    run: async (expression) => {
-      const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-      return r.result.value;
-    },
-    close: () => ws.close(),
-  };
+  const connection = await connectCdp(target);
+  return {...connection, close:connection.stop};
 }
 
 // `stills` is measured by taking WebRTC away from the viewer, which is what a

@@ -47,6 +47,7 @@
  * quit question's button. Pictures land in target/shots. Nothing of any other
  * copy is touched.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -192,24 +193,7 @@ const portOf = (envName) => {
 };
 const targetsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json());
 async function connect(target, label) {
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r, j) => { ws.addEventListener('open', r, { once: true }); ws.addEventListener('error', j, { once: true }); });
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const send = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
+  const {ws, send, run} = await connectCdp(target);
   const shot = async (name) => {
     const r = await send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(SHOTS, `local-keeper-${label}-${name}.png`), Buffer.from(r.data, 'base64'));

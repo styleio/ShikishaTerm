@@ -22,6 +22,7 @@
  *   a touch on the terminal brings them back, and the count starts again
  *   a tap on ▲ keeps them up while that move is on its way, then they go again
  */
+import {findChrome, connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,15 +47,7 @@ const stopApp = () => ps('-Command',
   `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
   `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  die('no Chrome found; set CHROME');
-}
+
 
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
@@ -104,24 +97,7 @@ async function attach(port = CHROME_CDP) {
     if (list && !list.length) list = null;
   }
   if (!list) die('nothing answered the DevTools port ' + port);
-  const ws = new WebSocket(list[0].webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let id = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-  });
-  const call = (method, params = {}) => new Promise((res, rej) => {
-    const n = ++id;
-    waiting.set(n, (m) => (m.error ? rej(new Error(method + ': ' + JSON.stringify(m.error))) : res(m.result)));
-    ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const run = async (expression) => {
-    const r = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
-    return r.result.value;
-  };
+  const {ws, send:call, run} = await connectCdp(list[0].webSocketDebuggerUrl);
   return { call, run, close: () => ws.close() };
 }
 

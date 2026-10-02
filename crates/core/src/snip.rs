@@ -446,15 +446,13 @@ const PAGE: &str = r##"<!doctype html>
    .now .codes { flex-direction:row; flex-wrap:wrap; gap:0 var(--s2); }
    .say2.t-howto { padding-top:var(--s1); padding-bottom:0; }
    /* Above the buttons at the foot, not over them */
-   body #toast { bottom:72px; }
+   body { --toast-bottom:72px; }
  }
 
  /* The way out on a touch screen, where there is no Esc to press. In a corner
     of its own, above the picture and the frame alike */
  #x { position:fixed; top:var(--s3); right:var(--s3); z-index:20; }
- #toast { position:fixed; left:50%; bottom:var(--s5); transform:translateX(-50%); padding:var(--s2) var(--s4);
-   border-radius:var(--r-card); background:var(--panel); border:1px solid var(--line); box-shadow:0 8px 24px #0007;
-   font-size:13px; pointer-events:none; }
+{{TOAST_CSS}}
 /*__EDIT_CSS__*/
 </style></head>
 <body>
@@ -504,7 +502,7 @@ const PAGE: &str = r##"<!doctype html>
 </div>
 <!--__EDIT_HTML__-->
 <button id="x" class="quiet" hidden></button>
-<div id="toast" hidden></div>
+{{TOAST_HTML}}
 <script>
 const T = __DICT__;
 const TOOLS = __TOOLS__;
@@ -527,18 +525,10 @@ let fit = null;          // where the picture sits on screen: {x, y, s} in CSS p
 let rect = null;         // the framed part, in the picture's own pixels
 
 // ── Saying something ───────────────────────────────
-let toastTimer = 0;
-function toast(text) {
-  const t = $("toast");
-  t.textContent = text;
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 1600);
-}
+{{TOAST_JS}}
 
 // ── Where the answer goes ──────────────────────────
 // One place, so the clipboard and the file mean the same thing from every tool
-{{CLIPBOARD_JS}}
 function copyOut(text) {
   if (HOST) {
     tell({act: "copy", text});
@@ -587,7 +577,7 @@ window.__snipFrame = function (n) {
   $("wait").hidden = true;
   const i = new Image();
   i.onload = () => begin(i);
-  i.onerror = () => { toast(T["snip.failed"] || ""); setTimeout(shut, 1600); };
+  i.onerror = () => { toast(T["snip.failed"] || "", true); };
   i.src = "/snip/frame.bmp?n=" + encodeURIComponent(n);
 };
 
@@ -1008,7 +998,7 @@ window.addEventListener("message", e => {
 
 let framedPng = "";      // the framed part, as the AI will be handed it
 let answer = null;       // what came back: {text} or {lines}
-const fill = (s, v) => String(s || "").replace(/\{(\w+)\}/g, (m, k) => (k in v ? v[k] : m));
+{{I18N_JS}}
 
 function framedPicture() {
   // Past this many pixels on its long side the AI shrinks it anyway, and the
@@ -1190,7 +1180,7 @@ mod tests {
     /// and leave a blank screen over the person's own
     #[test]
     fn the_page_is_filled_in() {
-        let page = assembled()
+        let page = crate::webui::page_parts(assembled())
             .replace("{{THEME}}", "")
             .replace("{{SCHEME}}", "dark")
             .replace("{{__lang__}}", "en");

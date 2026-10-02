@@ -277,6 +277,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 <!-- code-entries -->
 | 部品 | 呼ぶ関数 | どのページ |
 |---|---|---|
+| フォームの入力エラー・保存前の案内 | `formValidation(save, why)`。欄の表示は `.field()`、最初のエラーは `.set()`、保存時の案内とフォーカスは `.show()` | 設定（`webui.rs`） |
 | ダイアログ（設定・`.framed`） | `openModal(...kids)`（返ってきた枠に `.framed` を付ける） | 設定（`webui.rs`） |
 | 取り消せない操作の確認 | `confirmAction(message, action, other)`（取り消せない道が2つあるときだけ `other` に2つ目の名前。押されると "other" を返す） | 設定（`webui.rs`） |
 | 盤面に立てる1問（`#floatbox`） | `frameOpen(spec)`。描き直しは `frameDraw()`、閉じるのは `frameLeave()`、「詳しく設定する」は `frameMore()`、Esc と ✕ は `frameCancel()` | 設定（`webui.rs`） |

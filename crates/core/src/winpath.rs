@@ -122,39 +122,9 @@ fn hostname() -> String {
 /// Anything that is not a complete escape is left as the characters it is: a
 /// path with a bare `%` in its name is a real path, and refusing it would be
 /// worse than passing it through.
-fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match (b[i], b.get(i + 1), b.get(i + 2)) {
-            (b'%', Some(h), Some(l)) => match (hex(*h), hex(*l)) {
-                (Some(h), Some(l)) => {
-                    out.push(h << 4 | l);
-                    i += 3;
-                }
-                _ => {
-                    out.push(b[i]);
-                    i += 1;
-                }
-            },
-            _ => {
-                out.push(b[i]);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+use crate::urlcodec::decode_path as percent_decode;
 
-fn hex(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
+
 
 #[cfg(test)]
 mod tests {

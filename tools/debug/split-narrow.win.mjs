@@ -27,6 +27,7 @@
  *
  * Exit code 0 when every check passed.
  */
+import {findChrome} from './chrome.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -114,15 +115,7 @@ const state = async () => {
 
 // ---- the phone ------------------------------------------------------------
 
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const base of [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]) {
-    if (!base) continue;
-    const p = path.join(base, 'Google', 'Chrome', 'Application', 'chrome.exe');
-    if (fs.existsSync(p)) return p;
-  }
-  throw new Error('no Chrome found; set CHROME');
-}
+
 
 const LOOK = `(() => {
   const bar = document.getElementById('narrowsplit');

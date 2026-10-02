@@ -29,6 +29,7 @@
  * Needs Windows, Node, and E2B_API_TOKEN in .private/.env. Makes one machine
  * for about ten minutes and deletes it on the way out.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -126,18 +127,7 @@ const boardOf = async () => {
     target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
     return !!target;
   }, 'the window\'s page', 30000);
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let n = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } });
-  return (expression) => new Promise((res) => {
-    const id = ++n;
-    waiting.set(id, (m) => res(m.result && m.result.result ? m.result.result.value : undefined));
-    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
-    // A page that does not answer is an answer of nothing, not a run that hangs
-    setTimeout(() => res(undefined), 5000);
-  });
+  return (await connectCdp(target, {timeout:5000})).run;
 };
 // One of the app's own primitives, called the way an outside client calls
 // them: the app's --mcp door, pointed at the copy that is running

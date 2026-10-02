@@ -140,12 +140,28 @@ pub fn tp(key: &str, args: &[(&str, &str)]) -> String {
 /// `crate::asking` rather than among the translations, and are filled the
 /// same way (see that module)
 pub fn fill(text: &str, args: &[(&str, &str)]) -> String {
-    let mut s = text.to_string();
-    for (k, v) in args {
-        s = s.replace(&format!("{{{k}}}"), v);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let Some(close) = rest.find('}') else { break; };
+        // The innermost opening brace is the start, just as in the JS regex.
+        let start = rest[..close].rfind('{').unwrap();
+        out.push_str(&rest[..start]);
+        let key = &rest[start + 1..close];
+        match args.iter().find(|(k, _)| !key.is_empty() && *k == key) {
+            Some((_, value)) => out.push_str(value),
+            None => out.push_str(&rest[start..=close]),
+        }
+        rest = &rest[close + 1..];
     }
-    s
+    out.push_str(rest);
+    out
 }
+
+/// The browser half of `fill`, embedded in every page that formats messages.
+pub const FILL_JS: &str = include_str!("fill.js");
 
 /// Replaces every `{{key}}` in a template at once (for HTML pages)
 pub fn render(template: &str) -> String {

@@ -53,26 +53,26 @@ vp8 = []
 
 [dependencies]
 shikisha-shared = { path = "../shared" }
-aes-gcm = "0.11.0"
-anyhow = "1.0.104"
-argon2 = "0.5.3"
-base64 = "0.23.1"
-crossterm = "0.29"
-ed25519-dalek = "2"
-encoding_rs = "0.8.35"
+aes-gcm = { workspace = true }
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+crossterm = { workspace = true }
+ed25519-dalek = { workspace = true }
+encoding_rs = { workspace = true }
 # Which encoding a changed file is written in when it is not UTF-8: a CSV saved
 # by a spreadsheet is Shift_JIS as often as not, and git hands its diff over as
 # bytes. The detector made for the library above, so whatever it names is
 # something that library can decode
 chardetng = "1.0.0"
-hkdf = "0.13.0"
-mlua = { version = "0.12.0", features = ["lua54", "vendored"] }
-p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
+hkdf = { workspace = true }
+mlua = { workspace = true, features = ["lua54", "vendored"] }
+p256 = { workspace = true, features = ["ecdh", "ecdsa"] }
 # Two-word names for branches nobody has named yet (crates/core/src/worktree.rs).
 # Only the word lists and a source of randomness are wanted; the rest of this
 # crate is a command-line tool of its own
 petname = { version = "3.2.0", default-features = false, features = ["default-words", "default-rng"] }
-portable-pty = "0.9.0"
+portable-pty = { workspace = true }
 # Undoing the JPEGs the screen relay produces, so they can be compressed as
 # video instead (crates/core/src/vframe.rs). Pure Rust, already in the tree
 # through the clipboard library, and small: the alternative was a C decoder,
@@ -84,38 +84,38 @@ zune-core = "0.5.1"
 # the same reason the crypto here is not OpenSSL
 rusty-opus = "0.9"
 zune-jpeg = "0.5.15"
-qrcode = { version = "0.14.1", default-features = false }
-rand = "0.10.2"
+qrcode = { workspace = true, default-features = false }
+rand = { workspace = true }
 # The record of work handed between AI tabs (`orch`). Bundled, so the program
 # carries its own SQLite and needs nothing installed on any machine
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-regex = "1.13.1"
-serde = { version = "1.0.229", features = ["derive", "rc"] }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
+regex = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
 # Telling two texts apart, for `shikisha.diff`. Chosen over running `git diff
 # --no-index` because a diff of two strings should not need git on the machine,
 # and over writing the algorithm here because "which lines changed" is a solved
 # problem with well-known edge cases. Pure Rust with no dependencies of its own,
 # so it costs the build nothing
 similar = "2.7.0"
-sha2 = "0.11.0"
-tiny_http = "0.12.0"
-unicode-width = "0.2.2"
-ureq = { version = "3.3.0", default-features = false, features = ["rustls", "json"] }
+sha2 = { workspace = true }
+tiny_http = { workspace = true }
+unicode-width = { workspace = true }
+ureq = { workspace = true, default-features = false, features = ["rustls", "json"] }
 # A board reached over HTTPS -- which is what `tailscale serve` puts in front
 # of one. The same rustls the http client above already carries, used directly
 # because what goes over this line is a WebSocket and a raw byte stream, not a
 # request and a response
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-webpki-roots = "1.0.9"
-vt100 = "0.16"
+rustls = { workspace = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = { workspace = true }
+vt100 = { workspace = true }
 
 
-zeroize = "1.9.0"
-zip = { version = "5", default-features = false, features = ["deflate"] }
-russh = { version = "0.63.2", default-features = false, features = ["ring"] }
-russh-sftp = "3.0.0"
-tokio = { version = "1.53.1", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+zeroize = { workspace = true }
+zip = { workspace = true, default-features = false, features = ["deflate"] }
+russh = { workspace = true, default-features = false, features = ["ring"] }
+russh-sftp = { workspace = true }
+tokio = { workspace = true, default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 
 # What only exists away from Windows: the C library every unix has, for the
 # handful of questions std does not answer (the local clock, process groups).
@@ -144,7 +144,7 @@ junction = "2.1.0"
 # the terminal library uses -- so "is this program installed" is asked of the
 # same list the launch will search. Already in the tree through portable-pty
 winreg = "0.10.1"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Power", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_Power", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_Time", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 # The macro that makes a Rust type into a COM callback writes `windows_core`
 # paths, so the crate has to be here under that name as well (vaudio.rs: the
 # only way Windows reports that a process's sound is ready to be taken)
@@ -152,9 +152,9 @@ windows-core = "0.61.2"
 # Pasting this PC's clipboard into a tab (paste.rs). The same versions the
 # window's crate already uses, so nothing new is built: the runtime of a
 # program split in two has no window to do it for it
-arboard = "3.6.1"
-png = "0.18.1"
-windows = { version = "0.61.3", features = [
+arboard = { workspace = true }
+png = { workspace = true }
+windows = { workspace = true, features = [
   "Win32_Foundation",
   # Compressing the screen into H.264 with the encoder Windows already has
   # (crates/core/src/vencode.rs). The operating system carries the licence for

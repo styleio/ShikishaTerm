@@ -32,6 +32,7 @@
  * Needs Windows, Node, and in .private/.env the test server (SSH_TEST_*) or
  * E2B_API_TOKEN. No AI account is used. Everything put there is removed.
  */
+import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -190,17 +191,7 @@ const boardOf = async () => {
     target = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
     return !!target;
   }, 'the window\'s page', 60000);
-  const ws = new WebSocket(target.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let n = 0;
-  const waiting = new Map();
-  ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); } });
-  return (expression) => new Promise((res) => {
-    const id = ++n;
-    waiting.set(id, (m) => res(m.result && m.result.result ? m.result.result.value : undefined));
-    ws.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, returnByValue: true, awaitPromise: true } }));
-    setTimeout(() => res(undefined), 15000);
-  });
+  return (await connectCdp(target, {timeout:15000})).run;
 };
 
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
