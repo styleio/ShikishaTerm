@@ -184,6 +184,9 @@ pub fn install_page(prog: &str) -> Option<String> {
     match prog.trim() {
         p if p.eq_ignore_ascii_case("git") => Some("https://git-scm.com/downloads".to_string()),
         p if p.eq_ignore_ascii_case("gh") => Some("https://cli.github.com/".to_string()),
+        // The phone page in the person's language: it begins with putting
+        // Tailscale on the PC and the phone, which is the install that matters here
+        p if p.eq_ignore_ascii_case("tailscale") => Some(crate::i18n::t("settings.phone.guide.url")),
         p => crate::profile::install_url_for(p),
     }
 }
@@ -5791,7 +5794,7 @@ const PAGE: &str = r##"<!doctype html>
  /* Which network the phone's connection link leads to. The tone names are its
     own (not the page-wide .warn, which is a paragraph of danger text) so that
     a badge stays a badge whatever else those words come to mean. */
- .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600;
+ .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600; text-decoration:none; cursor:pointer;
    line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
  .netbadge.ok   { color:var(--live);   border-color:var(--live);
    background:color-mix(in srgb, var(--live) 14%, transparent); }
@@ -12425,6 +12428,14 @@ function remoteCard() {
   l.append(onoff, document.createTextNode(T["settings.phone.enable.label"]));
 
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.enable"]), l));
+  // Where the whole thing is written out: putting Tailscale on the PC and the
+  // phone, step by step, and what the same Wi-Fi alone gives. Shown before the
+  // box is ticked, since that is when it is wanted. The address is the link's
+  // own text, so it is readable and typable even where a window will not follow it.
+  box.append(el("div", {style:"margin:var(--s1) 0 var(--s3)"},
+    el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
+    el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
+       T["settings.phone.guide.url"])));
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.port"]),
     (() => {
       const i = el("input", {type:"number", style:"width:110px"});
@@ -12589,14 +12600,6 @@ function remoteCard() {
                                 style:"margin-top:var(--s2)"},
           r.sticky_token ? T["settings.phone.install.on"] : T["settings.phone.install.need"]));
       }
-      // Where the whole thing is written out: what works on the same Wi-Fi
-      // with nothing installed, what reaching it from a cafe costs, and what
-      // the line above is for. The address is the link's own text, so it is
-      // readable and typable even where a window will not follow it.
-      qrbox.append(el("div", {style:"margin-top:var(--s3)"},
-        el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
-        el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
-           T["settings.phone.guide.url"])));
     }
   }
 
@@ -12626,7 +12629,10 @@ function remoteCard() {
     };
     const skin = nets[kind];
     if (!skin) return el("span");
-    return el("span", {class:"netbadge " + skin[0], title: skin[3]},
+    // Pressed, the same walkthrough as the line under the switch: the badge is
+    // where "why amber?" is asked, and a tooltip answers nobody on a touch screen
+    return el("a", {class:"netbadge " + skin[0], title: skin[3],
+      href:T["settings.phone.guide.url"], target:"_blank"},
       (skin[1] ? skin[1] + " " : "") + skin[2]);
   }
 
@@ -20040,6 +20046,18 @@ mod tests {
         );
         // Errors out (and isn't saved) for conversational text alone
         assert!(extract_lua("どのような自動化を作りますか？").is_err());
+    }
+
+    /// The network badge under a phone's QR opens the phone page, which begins
+    /// with putting Tailscale on both ends: the board's window asks for it by
+    /// this name, and the address is the app's own words, never the page's.
+    #[test]
+    fn tailscale_opens_the_phone_page() {
+        let url = super::install_page("tailscale").unwrap_or_default();
+        assert!(url.starts_with("https://shikisha-term.com/") && url.ends_with("phone/"),
+                "the badge opens {url:?}");
+        assert!(PAGE.contains(r#"href:T["settings.phone.guide.url"], target:"_blank"},"#),
+                "the settings' badge opens nothing");
     }
 
     /// The setup splits the assistant AIs by whether this PC has them, in the

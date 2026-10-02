@@ -3791,7 +3791,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     background:var(--raise); color:var(--text); border:1px solid var(--line);
     border-radius:var(--r-ctl); padding:7px 11px; cursor:pointer; }
   #veil .qrcopy:hover { border-color:var(--brand); }
-  .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600;
+  .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600; text-decoration:none; cursor:pointer;
     line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
   .netbadge.ok   { color:var(--live); border-color:var(--live);
     background:color-mix(in srgb, var(--live) 14%, transparent); }
@@ -11652,7 +11652,19 @@ function netBadge(kind) {
   };
   const skin = nets[kind];
   if (!skin) return el("span");
-  return el("span", {class:"netbadge " + skin[0], title:skin[3]},
+  // Pressed, it opens the walkthrough of the phone page, which begins with
+  // putting Tailscale on both ends. The badge is where the question "why
+  // amber?" is asked, and a tooltip answers nobody on a touch screen. The
+  // phone follows the link itself; this PC's window has no browser of its
+  // own, so it asks the app, which takes the address from its own words
+  return el("a", {class:"netbadge " + skin[0], title:skin[3],
+    href:T["settings.phone.guide.url"], target:"_blank", rel:"noopener",
+    onclick:(e) => {
+      e.stopPropagation();
+      if (!AT_PC) return;
+      e.preventDefault();
+      send({kind:"installhelp", prog:"tailscale"});
+    }},
     (skin[1] ? skin[1] + " " : "") + skin[2]);
 }
 
@@ -25482,6 +25494,7 @@ mod tests {
         // GitHub: a fact when it is here, the way to its page when it is not
         assert!(PAGE.contains(r#"if (st.gh) {"#) && PAGE.contains(r#"T["tui.setup.gh.ready"]"#), "gh being here is never said");
         assert!(PAGE.contains(r#"send({kind:"installhelp", prog:"gh"})"#), "GitHub CLI does not open its page");
+        assert!(PAGE.contains(r#"send({kind:"installhelp", prog:"tailscale"});"#), "the QR's network badge does not open the phone page");
         assert!(PAGE.contains("let setupYolo = true;"), "Yolo mode does not start ticked");
         // Each AI with the mark its tab wears, on the cards and on the links alike
         assert!(PAGE.contains(r#"el("span", {class:"nm"}, aiMark(a.id), a.name)"#)
