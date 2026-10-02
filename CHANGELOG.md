@@ -19,6 +19,21 @@ once it reaches its first tagged release.
   unless turned on. The Store copy keeps its terminals across quitting and
   crashes, but not across a Store update.
 
+### Changed
+- **A new tab is named with two words** (`calm-otter`), so the name of a
+  closed tab is rarely given out again.
+
+### Fixed
+- **A new tab no longer inherits a closed tab's record because it was given
+  the same name.** A tab's conversations, the jobs it leads and the work it was
+  handed, its mail, its place in a split, the key its programs call the app
+  with and the terminal it left running elsewhere are now kept under a `uid`
+  of its own, written on its line in the settings and never given to another
+  tab. Before, a new tab could open with a closed tab's conversations in its
+  Chat panel. The first start of this version writes the `uid`s and moves
+  what was kept under names to them; what a tab of today's name kept before it
+  cannot be told apart from the tab itself, and stays with it.
+
 ## [0.23.1] - 2026-10-02
 
 ### Changed
