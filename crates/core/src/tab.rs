@@ -4800,12 +4800,24 @@ impl Tab {
     /// helpers). Only worked out when it is going to be read -- a working
     /// tab's count is not
     fn job_population(&mut self, busy: bool) -> Option<u32> {
-        let job = self.job.as_ref()?;
-        let all = job.active()?;
+        // A terminal this PC's resident process holds is in that process's
+        // job, not this tab's: its processes are as the resident process says
+        let held = self.far_term.as_ref().filter(|t| t.here()).map(|t| t.procs());
+        let (all, pids) = match held {
+            Some(None) => return None,
+            Some(Some(pids)) => (pids.len() as u32, pids),
+            None => {
+                let job = self.job.as_ref()?;
+                let all = job.active()?;
+                if busy || all == 0 {
+                    return Some(all);
+                }
+                (all, job.pids())
+            }
+        };
         if busy || all == 0 {
             return Some(all);
         }
-        let pids = job.pids();
         let helpers = self.detector.helpers();
         self.job_ours.retain(|pid, _| pids.contains(pid));
         let ours = pids
@@ -4813,6 +4825,24 @@ impl Tab {
             .filter(|&&pid| *self.job_ours.entry(pid).or_insert_with(|| crate::job::is_machinery(pid, helpers)))
             .count() as u32;
         Some(all.saturating_sub(ours))
+    }
+
+    /// The first process of what this tab runs on this PC: its own, or the
+    /// one this PC's resident process started for it (local-keeper plan)
+    pub fn root_pid(&self) -> Option<u32> {
+        self.pid.or_else(|| self.far_term.as_ref().filter(|t| t.here()).and_then(|t| t.root()))
+    }
+
+    /// The processes of this tab's job: its own, or as this PC's resident
+    /// process says for one it holds
+    fn job_pids(&self) -> (Option<u32>, Vec<u32>) {
+        match self.far_term.as_ref().filter(|t| t.here()).map(|t| t.procs()) {
+            Some(held) => (held.as_ref().map(|p| p.len() as u32), held.unwrap_or_default()),
+            None => (
+                self.job.as_ref().and_then(crate::job::Job::active),
+                self.job.as_ref().map(crate::job::Job::pids).unwrap_or_default(),
+            ),
+        }
     }
 
     /// Who this tab is: never another tab's, whatever either is called. Its
@@ -5209,7 +5239,7 @@ impl Tab {
         if self.is_model() || self.own != crate::profile::GENERIC {
             return;
         }
-        let active = self.job.as_ref().and_then(crate::job::Job::active);
+        let (active, pids) = self.job_pids();
         let title = match self.window_title.lock() {
             Ok(t) => t.clone(),
             Err(_) => return,
@@ -5217,7 +5247,6 @@ impl Tab {
         if !self.guest.due(active, &title) {
             return;
         }
-        let pids = self.job.as_ref().map(crate::job::Job::pids).unwrap_or_default();
         if !self.guest.settle(active, &title, &pids) {
             return;
         }

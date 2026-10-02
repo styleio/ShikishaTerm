@@ -233,6 +233,9 @@ struct Term {
     /// process does, crash or not
     #[cfg(windows)]
     _job: Option<crate::job::Job>,
+    /// The processes of its job last told to its owner
+    #[cfg(windows)]
+    pids_said: Mutex<Vec<u32>>,
     /// The terminal's one queue out: what goes to the app, in the order put
     queue: Sender<(u64, Frame)>,
     /// How many bytes of output are in the queue, not yet sent
@@ -485,6 +488,8 @@ impl Terms {
             killer: Mutex::new(child.clone_killer()),
             #[cfg(windows)]
             _job: job,
+            #[cfg(windows)]
+            pids_said: Mutex::new(Vec::new()),
             queue,
             queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
@@ -816,6 +821,28 @@ impl Job for Terms {
         let ended = terms.iter().filter(|(_, t)| t.ended.lock().is_ok_and(|e| e.is_some())).count() as u64;
         if self.ended_written.swap(ended, Ordering::SeqCst) != ended {
             self.write_held();
+        }
+        // Which processes each terminal's job holds, told to its owner when
+        // that changes: the app tells a tab's own work from the CLI's
+        // machinery by looking at them, as it does for a terminal of its own
+        // (its "working in the background"). Only on this PC, where the app
+        // can look at the processes it is told of
+        #[cfg(windows)]
+        for (id, term) in &terms {
+            let Some(job) = term._job.as_ref() else { continue };
+            let mut pids = job.pids();
+            pids.sort_unstable();
+            let changed = term.pids_said.lock().is_ok_and(|mut said| {
+                let changed = *said != pids;
+                if changed {
+                    *said = pids.clone();
+                }
+                changed
+            });
+            if changed && let Some((line, _)) = term.seen.lock().ok().and_then(|s| s.owner) {
+                let m = json!({ "did": "procs", "term": id, "pids": pids, "root": term.session });
+                let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
+            }
         }
         for (id, term) in terms {
             if let Some(at) = term.ended_at.lock().ok().and_then(|e| *e) {

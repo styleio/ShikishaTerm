@@ -3984,7 +3984,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let mut roots: Vec<(usize, u32)> = tabs
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, t)| t.pid.map(|p| (i, p)))
+                    .filter_map(|(i, t)| t.root_pid().map(|p| (i, p)))
                     .collect();
                 // Our own process is a root too, under a key no tab can have,
                 // so the same one look measures what this app costs all in --

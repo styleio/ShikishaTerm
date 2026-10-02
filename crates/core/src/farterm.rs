@@ -436,6 +436,10 @@ pub struct FarTerm {
     then: Option<String>,
     /// On this PC, what is run, said in full (see `ask_open`)
     run: Option<Value>,
+    /// On this PC, the processes its job holds, as last told
+    procs: Mutex<Option<Vec<u32>>>,
+    /// On this PC, the program's first process (0 until told)
+    root: AtomicU64,
     /// What it does while this app is away (far-keep plan §4.3): changed
     /// when the person changes the machine's setting
     away: Mutex<crate::config::Away>,
@@ -483,6 +487,8 @@ impl FarTerm {
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
             run: None,
+            procs: Mutex::new(None),
+            root: AtomicU64::new(0),
             away: Mutex::new(away),
             owner: AtomicU64::new(0),
             at: at.clone(),
@@ -501,6 +507,18 @@ impl FarTerm {
     fn with_run(mut self, run: Option<Value>) -> Self {
         self.run = run;
         self
+    }
+
+    /// The processes its job holds, as the resident process last said: on
+    /// this PC only, and `None` until it has said
+    pub fn procs(&self) -> Option<Vec<u32>> {
+        self.procs.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// The program's first process, on this PC, once the resident process
+    /// has said it: what its ports and its use of the machine are read below
+    pub fn root(&self) -> Option<u32> {
+        u32::try_from(self.root.load(Ordering::SeqCst)).ok().filter(|p| *p != 0)
     }
 
     /// Whether it is held on this PC, by this PC's own resident process
@@ -957,6 +975,17 @@ impl std::io::Read for FarReader {
                     }
                     let text = crate::i18n::tp("msg.farterm.unknown", &[("host", &self.term.at.name())]);
                     self.say_last(&text);
+                }
+                // The processes the terminal's job holds (this PC's resident
+                // process says so when it changes): what the tab counts as
+                // its work in the background, as it would for its own job
+                "procs" => {
+                    if let (Ok(mut p), Some(list)) = (self.term.procs.lock(), m["pids"].as_array()) {
+                        *p = Some(list.iter().filter_map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok())).collect());
+                    }
+                    if let Some(root) = m["root"].as_u64().and_then(|n| u32::try_from(n).ok()) {
+                        self.term.root.store(u64::from(root), Ordering::SeqCst);
+                    }
                 }
                 "refused" => {
                     crate::append_hook_log(&format!(

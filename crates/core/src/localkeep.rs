@@ -170,7 +170,16 @@ pub fn connect() -> Result<Arc<Link>> {
     let closer: Box<dyn Fn() + Send + Sync> = Box::new(move || {
         let _ = shut.shutdown(std::net::Shutdown::Both);
     });
-    crate::farlink::link_over(KEY, "this PC", Box::new(conn), input, None, Some(closer), home.to_string_lossy().into_owned())
+    let link = crate::farlink::link_over(KEY, "this PC", Box::new(conn), input, None, Some(closer), home.to_string_lossy().into_owned())?;
+    // A resident process started by an older version of the app keeps
+    // running across an update -- that is what it is for -- and holds what it
+    // holds the way that version did. Said, with what makes it new
+    // (local-keeper plan §8)
+    let theirs = link.version.lock().ok().and_then(|v| v.clone()).unwrap_or_default();
+    if !theirs.is_empty() && theirs != env!("CARGO_PKG_VERSION") {
+        crate::caps::tell(crate::i18n::tp("msg.localkeep.older", &[("theirs", &theirs), ("ours", env!("CARGO_PKG_VERSION"))]));
+    }
+    Ok(link)
 }
 
 /// Start the resident process
@@ -322,6 +331,14 @@ mod tests {
         // And its end is told, with the code
         let ended = hear(&mut reader, "ended");
         assert_eq!(ended["code"], 0);
+
+        // Which processes a held terminal's job has is told to its owner:
+        // what the app counts as the tab's work in the background
+        let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
+        say(&conn, json!({ "do": "open", "ref": 5, "tab": "p", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let procs = hear(&mut reader, "procs");
+        let root = procs["root"].as_u64().expect("its first process");
+        assert!(procs["pids"].as_array().is_some_and(|p| p.iter().any(|v| v.as_u64() == Some(root))), "its own process among them: {procs}");
 
         // Asked to open again for a tab whose terminal runs -- the app lost
         // its note of it -- the one running is handed back, not a second
