@@ -16383,6 +16383,8 @@ fn convo_target(
             glob,
             machine,
             past: Some(id.to_string()),
+            cwd: None,
+            cwd_field: None,
         });
     }
     let t = tabs
@@ -16404,6 +16406,8 @@ fn convo_target(
         glob,
         machine: t.machine(),
         past: None,
+        cwd: t.cwd().map(std::path::Path::to_path_buf),
+        cwd_field: t.resume.as_ref().and_then(|r| r.record.as_ref()).map(|r| r.cwd.clone()),
     })
 }
 

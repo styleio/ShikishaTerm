@@ -547,13 +547,16 @@ pub fn belongs(program: &str, cwd: &Path, id: &str) -> bool {
 
 /// The same question asked of one CLI's records, so a test can supply its own.
 fn belongs_in(src: &Source, cwd: &Path, id: &str) -> bool {
-    let Some(path) = crate::sessionfind::locate(&src.verify, id) else {
-        return false;
-    };
-    let Some(head) = read_some(&path, FOLDER_CAP) else {
-        return false;
-    };
-    cwd_of(&head, src).is_some_and(|at| crate::uistate::same_folder(Path::new(&at), cwd))
+    record_folder(&src.verify, id, src.cwd_path.as_deref())
+        .is_some_and(|at| crate::uistate::same_folder(Path::new(&at), cwd))
+}
+
+/// The local record's own folder, independent of the app's tab associations.
+/// An unreadable or not-yet-written record establishes no folder.
+pub(crate) fn record_folder(glob: &str, id: &str, field: Option<&str>) -> Option<String> {
+    let path = crate::sessionfind::locate(glob, id)?;
+    let head = read_some(&path, FOLDER_CAP)?;
+    recorded_folder(&head, field)
 }
 
 /// The same question asked of one CLI's records, so a test can supply its own.
@@ -748,7 +751,11 @@ fn id_of(path: &Path, text: &str, src: &Source) -> Option<String> {
 /// The folder a record belongs to: where the CLI records it, or the first
 /// `"cwd"` the file mentions.
 fn cwd_of(text: &str, src: &Source) -> Option<String> {
-    if let Some(p) = &src.cwd_path
+    recorded_folder(text, src.cwd_path.as_deref())
+}
+
+fn recorded_folder(text: &str, field: Option<&str>) -> Option<String> {
+    if let Some(p) = field
         && let Some(c) = first_line_field(text, p) {
             return Some(c);
         }

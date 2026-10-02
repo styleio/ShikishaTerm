@@ -41,6 +41,7 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
+| `crates/core/src/bin/conversation_probe.rs` | anywhere | Reads the conversation panel without a window or database writes, to check history attribution and injected context. Prints conversation JSON: redirect into a private file when inspecting real records | `cargo run -p shikisha-core --bin conversation_probe -- <db> <tab uid> <live record id> <cwd> <record glob> [cwd field]` |
 | `tools/debug/folder-management.win.mjs` | Windows | Saved pin/archive/restore, stale desk rejection, capacity and actual bulk deletion in an isolated app; verifies primary, pinned and dirty worktrees survive | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/folder-management.win.mjs` |
 | `tools/debug/scenes/folder-management.mjs` | anywhere, with Chrome | Folder management, selection across filters, cancellation and confirmation, restore, explicit capacity requests and desk isolation; photographs both board pages in both languages and schemes | `node tools/debug/shoot.mjs tools/debug/scenes/folder-management.mjs` |
 | `src/bin/pty_probe.rs` | anywhere | A command in a pseudo terminal, with everything it says captured for about ten seconds. `--watch` never types into it — some of what is worth watching is an AI, and typing into one is a turn on somebody's account | `cargo run --bin pty_probe -- [--watch] <command> [args...]` |

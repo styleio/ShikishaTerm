@@ -36,7 +36,7 @@ const state = JSON.stringify({
 
 const setup = `
   window.__state(${JSON.stringify(state)});
-  sidePanel = "convo";
+  sideChoose("convo");
   CV.show = {you: true, aiin: true, ai: true, work: true, events: true};
   setSideWidth(380);
   "ok"`;

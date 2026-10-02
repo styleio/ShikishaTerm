@@ -1113,6 +1113,15 @@ fn words_of(content: &Value) -> String {
 /// message on the strength of one opening tag would swallow the very words
 /// this is trying to rescue.
 pub fn human_part(text: &str) -> String {
+    // Codex puts project instructions in a user message with a Markdown
+    // heading and an uppercase envelope. Match that complete wrapper, not
+    // an arbitrary mention of AGENTS.md or an unclosed tag someone pasted.
+    let text = text.trim_start();
+    let text = text.strip_prefix("# AGENTS.md instructions for ")
+        .and_then(|rest| rest.split_once('\n'))
+        .and_then(|(_, rest)| rest.trim_start().strip_prefix("<INSTRUCTIONS>"))
+        .and_then(|rest| rest.split_once("</INSTRUCTIONS>"))
+        .map_or(text, |(_, rest)| rest);
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('<') {
@@ -1730,6 +1739,26 @@ mod tests {
         assert_eq!(human_part("<div>hello</div>"), "<div>hello</div>");
         // ...and an envelope that never closes is not an excuse to cut
         assert_eq!(human_part("<system-reminder>ここから先"), "<system-reminder>ここから先");
+    }
+
+    #[test]
+    fn project_instructions_are_not_something_the_person_said() {
+        let instructions = "# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nFollow the project rules.\n</INSTRUCTIONS>";
+        let context = format!("{instructions}\n<environment_context><cwd>/work/project</cwd></environment_context>");
+        let line = |text: &str| serde_json::json!({
+            "type": "response_item", "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": text}]}
+        }).to_string();
+        assert!(matches!(look_at(line(&context).as_bytes()), Seen::Nothing));
+        assert!(mention(line(&context).as_bytes(), "project rules").is_none());
+        let mixed = format!("{context}\nPlease fix the history.");
+        let Seen::Said(turn) = look_at(line(&mixed).as_bytes()) else { panic!("the typed request was lost") };
+        assert_eq!(turn.text, "Please fix the history.");
+        let quoted = format!("Explain this:\n{instructions}");
+        assert_eq!(human_part(&quoted), quoted);
+        let unfinished = "# AGENTS.md instructions for /work/project\n<INSTRUCTIONS>not closed";
+        assert_eq!(human_part(unfinished), unfinished);
+        assert_eq!(human_part("Please edit AGENTS.md"), "Please edit AGENTS.md");
     }
 
     fn record(who: &str, text: &str) -> String {

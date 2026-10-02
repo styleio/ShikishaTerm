@@ -131,6 +131,9 @@ fn ask_of(line: &[u8], spec: &AskSpec) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n"),
     };
+    // Use the conversation reader's boundary between typed words and the
+    // CLI's injected context, including its project-instruction wrapper.
+    let text = crate::reader::human_part(&text);
     let text = text.trim();
     // Everything either CLI injects arrives wrapped in a tag -- the folder it
     // is standing in, the plugins it could install, a background job that
@@ -228,6 +231,16 @@ mod tests {
             one(r#"{"type":"response_item","payload":{"role":"user","content":[{"type":"input_image","image_url":"data:..."}]}}"#, &spec),
             None
         );
+    }
+
+    #[test]
+    fn project_instructions_do_not_name_the_folder() {
+        let text = "# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nFollow the project rules.\n</INSTRUCTIONS>\n<environment_context><cwd>/work/project</cwd></environment_context>";
+        let line = |text: &str| serde_json::json!({"type": "response_item", "payload": {
+            "role": "user", "content": [{"type": "input_text", "text": text}]
+        }}).to_string();
+        assert_eq!(one(&line(text), &codex()), None);
+        assert_eq!(one(&line(&format!("{text}\nFix the history")), &codex()).as_deref(), Some("Fix the history"));
     }
 
     /// The CLIs that ship with this app describe their own records, and what

@@ -57,6 +57,12 @@ pub struct Target {
     pub machine: Option<crate::elsewhere::Elsewhere>,
     /// One conversation, opened by its id rather than followed in a tab
     pub past: Option<String>,
+    /// The followed tab's local folder. Historical associations can have
+    /// been written by another tab through an older shared CLI process.
+    /// Explicitly opened records and the live record are still read as asked.
+    pub cwd: Option<std::path::PathBuf>,
+    /// Where the CLI records that folder, when its profile names the field.
+    pub cwd_field: Option<String>,
 }
 
 /// What reading found: an answer for the panel, and records that are gone
@@ -126,6 +132,15 @@ impl Ctx<'_> {
         }
         for c in &known {
             if records.iter().any(|(r, _)| r.id() == c.record_id) {
+                continue;
+            }
+            if t.machine.is_none()
+                && let Some(cwd) = &t.cwd
+                && let Some(at) = crate::vault::record_folder(&t.glob, &c.record_id, t.cwd_field.as_deref())
+                && !crate::uistate::same_folder(std::path::Path::new(&at), cwd)
+            {
+                // Keep the underlying record: it remains available through
+                // all conversations and the tab whose folder it belongs to.
                 continue;
             }
             records.extend(named(&c.record_id).map(|r| (r, c.is_yolo)));
@@ -663,6 +678,8 @@ mod tests {
                 glob: self.glob(),
                 machine: None,
                 past: None,
+                cwd: None,
+                cwd_field: None,
             }
         }
     }
@@ -719,6 +736,39 @@ mod tests {
         assert_eq!(kinds(&third), vec!["say:done one", "say:first job", "begin:"]);
         assert_eq!(third["rows"][1]["from"]["device"].as_str(), Some("phone"));
         assert!(third["older"].is_null(), "the start of everything the tab said");
+    }
+
+    #[test]
+    fn a_crossed_history_does_not_import_another_folders_words() {
+        let p = Place::new("crossed-history");
+        let mine = crate::local_path("D:/my-project");
+        let other = crate::local_path("D:/other-project");
+        for (id, cwd, text) in [("old", &mine, "my earlier request"), ("foreign", &other, "someone else's request"), ("live", &mine, "my current request")] {
+            let meta = format!("{}\n", json!({"type": "session_meta", "payload": {"cwd": cwd}}));
+            p.record(id, &[meta, line("2026-09-28T02:00:00Z", "user", text)]);
+        }
+        {
+            let s = Store::open(&p.db()).unwrap();
+            for (i, id) in ["old", "foreign", "live"].iter().enumerate() {
+                s.seen("t", "codex", id, false, i as i64).unwrap();
+            }
+        }
+        let mut target = p.target("live");
+        target.cwd = Some(mine.into());
+        target.cwd_field = Some("payload.cwd".into());
+        let found = answer(&target, "page", &json!({}), &p.db(), &p.marks());
+        let rows = found.answer["rows"].as_array().unwrap();
+        assert!(rows.iter().any(|r| r["text"] == "my current request"));
+        assert!(rows.iter().any(|r| r["text"] == "my earlier request"));
+        assert!(!rows.iter().any(|r| r["record"] == "foreign"), "{}", found.answer);
+        assert!(found.forget.is_empty(), "the other conversation must not be deleted");
+        let search = answer(&target, "find", &json!({"q": "someone"}), &p.db(), &p.marks());
+        assert_eq!(search.answer["rows"], json!([]));
+        target.past = Some("foreign".into());
+        assert!(got_all(&target, &p)["rows"].as_array().unwrap().iter().any(|r| r["text"] == "someone else's request"), "opening that record explicitly still works");
+        target.past = None;
+        target.live = Record::named(&p.glob(), "foreign", None);
+        assert!(got_all(&target, &p)["rows"].as_array().unwrap().iter().any(|r| r["text"] == "someone else's request"), "an explicitly resumed live conversation is preserved");
     }
 
     /// A tab started again and again with nothing said is a conversation a
