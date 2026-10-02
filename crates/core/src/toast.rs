@@ -129,6 +129,22 @@ function copyToast() {
     toastTimer = setTimeout(hideToast, 550);
   });
 }
+// A message you have already read shouldn't have to be waited out. Taken in the
+// capture phase and stopped there: the toast is an overlay, so a tap aimed at
+// it must not also land on the pane, button or link underneath it
+document.addEventListener("click", e => {
+  const t = document.getElementById("toast");
+  if (!t || !t.classList.contains("show") || !t.contains(e.target)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const b = document.getElementById("toastcopy");
+  if (b && b.contains(e.target)) copyToast(); else hideToast();
+}, true);
+"#;
+
+/// Shared text copying, also used by pages with no toast (the picture tools).
+/// Keep browser capability checks and the HTTP fallback in this one place.
+pub const COPY_JS: &str = r#"
 // navigator.clipboard only exists in a secure context, and a phone reaching
 // this over a plain address on the home network is not one — so the old way is
 // a real fallback here, not an afterthought
@@ -152,17 +168,6 @@ function legacyCopy(text) {
   a.remove();
   if (was && was.focus) { try { was.focus(); } catch (e) {} }
 }
-// A message you have already read shouldn't have to be waited out. Taken in the
-// capture phase and stopped there: the toast is an overlay, so a tap aimed at
-// it must not also land on the pane, button or link underneath it
-document.addEventListener("click", e => {
-  const t = document.getElementById("toast");
-  if (!t || !t.classList.contains("show") || !t.contains(e.target)) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const b = document.getElementById("toastcopy");
-  if (b && b.contains(e.target)) copyToast(); else hideToast();
-}, true);
 "#;
 
 /// Drops the shared toast into a page. Every screen that shows messages calls
@@ -171,7 +176,8 @@ document.addEventListener("click", e => {
 pub fn render(html: String) -> String {
     html.replace("{{TOAST_CSS}}", CSS)
         .replace("{{TOAST_HTML}}", HTML)
-        .replace("{{TOAST_JS}}", JS)
+        .replace("{{TOAST_JS}}", &format!("{COPY_JS}\n{JS}"))
+        .replace("{{CLIPBOARD_JS}}", COPY_JS)
 }
 
 #[cfg(test)]
@@ -184,7 +190,7 @@ mod tests {
     /// pointing back here — so it is stated here instead.
     #[test]
     fn the_shared_block_looks_like_nobodys_placeholder() {
-        for (name, part) in [("CSS", CSS), ("HTML", HTML), ("JS", JS)] {
+        for (name, part) in [("CSS", CSS), ("HTML", HTML), ("JS", JS), ("COPY_JS", COPY_JS)] {
             assert!(!part.contains("{{"), "{name} has template syntax mixed in");
             assert!(!part.contains("__"), "{name} has placeholder syntax mixed in");
         }
@@ -205,7 +211,7 @@ mod tests {
             "function copyText(",
             "function legacyCopy(",
         ] {
-            assert_eq!(JS.matches(name).count(), 1, "{name} is duplicated or missing");
+            assert_eq!(JS.matches(name).count() + COPY_JS.matches(name).count(), 1, "{name} is duplicated or missing");
         }
     }
 
@@ -237,9 +243,7 @@ mod tests {
             handler.contains("if (b && b.contains(e.target)) copyToast(); else hideToast();"),
             "clicking and copying are not kept apart"
         );
-        // Twice and no more: the one call inside copyToast(), and its own
-        // definition. A third would be some other path reaching the clipboard
-        assert_eq!(JS.matches("copyText(").count(), 2, "there are more places that call copy");
+        assert_eq!(JS.matches("copyText(").count(), 1, "only copyToast should reach the clipboard");
     }
 
     /// Wording comes from the dictionary each page already carries, so a key
@@ -262,5 +266,43 @@ mod tests {
             render("<style>{{TOAST_CSS}}</style>{{TOAST_HTML}}<script>{{TOAST_JS}}</script>".into());
         assert!(!out.contains("{{"), "something was not replaced: {out}");
         assert!(out.contains("#toast.show"));
+        let alone = render("<script>{{CLIPBOARD_JS}}</script>".into());
+        assert!(!alone.contains("{{"));
+        assert_eq!(alone.matches("function copyText(").count(), 1);
+        assert!(!alone.contains("function toast("));
+    }
+
+    #[test]
+    fn copying_uses_the_same_fallback_without_https_or_permission() {
+        let source = serde_json::to_string(COPY_JS).unwrap();
+        let script = format!(r#"
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+(async () => {{
+  for (const mode of ['http', 'allowed', 'refused']) {{
+    const copied = [], removed = [], focused = [];
+    let field;
+    const navigator = mode === 'http' ? {{}} : {{clipboard: {{writeText: async text => {{
+      if (mode === 'refused') throw new Error('Permission denied');
+      copied.push(text);
+    }}}}}};
+    const document = {{
+      activeElement: {{focus: () => focused.push(true)}},
+      createElement: () => field = {{style: {{}}, setAttribute() {{}}, select() {{}}, remove: () => removed.push(true)}},
+      body: {{append() {{}}}},
+      execCommand: name => {{ assert.equal(name, 'copy'); copied.push(field.value); return true; }},
+    }};
+    const copy = vm.runInNewContext({source} + '\ncopyText', {{navigator, document}});
+    await copy('Text 日本語');
+    assert.deepEqual(copied, ['Text 日本語']);
+    assert.equal(removed.length, mode === 'allowed' ? 0 : 1);
+    assert.equal(focused.length, mode === 'allowed' ? 0 : 1);
+  }}
+}})().catch(e => {{ console.error(e); process.exitCode = 1; }});
+"#);
+        match std::process::Command::new("node").arg("-e").arg(script).output() {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the clipboard check did not run ({e}). It runs in CI"),
+        }
     }
 }

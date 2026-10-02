@@ -392,6 +392,7 @@
   "tui.gitsignin.next": "Clone again",
   "tui.gitsignin.as": "This repository is cloned as {account}. In gh auth login, sign in as {account} in the browser. An account already signed in stays signed in -- this one is added -- and its projects go on as they are.",
   "tui.login.help": "A help for a sign-in done in a browser: copy the address the terminal printed and open it in a browser, then paste the code that comes back into the field below and send it -- it is typed into the terminal with Enter. If the AI shows something else and this does not fit, use the terminal above as it is.",
+  "tui.login.paste_here": "Paste into the focused field, then press Enter.",
   "tui.login.url.none": "When the terminal prints the sign-in address, it appears here too.",
   "tui.login.url.copy": "Copy the address",
   "tui.login.copied": "Copied",
