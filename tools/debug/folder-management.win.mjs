@@ -36,9 +36,10 @@ const names = ['clean','pinned','dirty','stored'];
 for (const name of names) git(['worktree','add','-qb',name,path.join(area,name)]);
 fs.writeFileSync(path.join(area,'dirty','unsaved.txt'),'keep me');
 const folders = ['main',...names].map(name => ({name,cwd:path.join(area,name),tabs:[],keep_first:name === 'pinned'}));
+folders.find(f => f.name === 'stored').tabs = [{name:'Stored shell', id:'stored-shell', command:'cmd.exe'}];
 fs.writeFileSync(config, JSON.stringify({language:'en', agent_hooks:{'Claude Code':'off','Codex CLI':'off','Gemini CLI':'off'}, desks:[{name:'Folder check',id:'folder-check',folders}]}));
 
-let ws;
+let ws, readState;
 try {
   // The instance helper may replace -At recursively. Its resolved destination
   // is a new child of this fixture, and the repository fixtures are its siblings.
@@ -66,17 +67,29 @@ try {
   let state = await until(async () => {
     const s = await js('S'); return s?.folder_catalog?.length === 5 && s;
   }, 'saved folder catalog');
+  readState = () => js('({folders:S.folder_catalog, results:S.folder_manage.results, tabs:S.tabs.map(t => ({id:t.id,state:t.state,name:t.name}))})');
   const desk = state.desk_uid;
   const keys = Object.fromEntries(state.folder_catalog.map(g => [g.name,g.key]));
   const action = (act, list, workspace = desk) => js(`send(${JSON.stringify({kind:'foldermanage',desk:workspace,act,folders:list.map(n => keys[n])})})`);
   const saved = () => JSON.parse(fs.readFileSync(path.join(instance,'app/config/config.json'),'utf8')).desks[0].folders;
+  let quietSince = 0;
+  await until(async () => {
+    const quiet = (await js('S')).tabs.some(t => t.id === 'stored-shell' && ['WAIT','DONE'].includes(t.state));
+    if (!quiet) quietSince = 0;
+    else if (!quietSince) quietSince = Date.now();
+    // Observe a full quiet second so the shell's startup banner has finished.
+    return quietSince && Date.now() - quietSince >= 1000;
+  }, 'idle saved shell');
   await action('pin',['stored']);
   await until(async () => saved().find(f => f.name === 'stored')?.keep_first, 'pin persistence');
   await action('archive',['stored']);
   await until(async () => (await js('S')).folder_catalog.find(g => g.name === 'stored')?.parked, 'archive reload');
+  await until(async () => !(await js('S')).tabs.some(t => t.id === 'stored-shell'), 'archive closes the saved shell');
   assert(fs.existsSync(path.join(area,'stored','readme.txt')), 'archive preserves files');
+  assert(saved().find(f => f.name === 'stored').tabs[0].id === 'stored-shell', 'archive preserves the shell definition');
   await action('restore',['stored']);
   await until(async () => !(await js('S')).folder_catalog.find(g => g.name === 'stored')?.parked, 'restore reload');
+  await until(async () => (await js('S')).tabs.some(t => t.id === 'stored-shell'), 'restore launches the saved shell');
   assert(saved().find(f => f.name === 'stored').keep_first, 'restore keeps pin state');
   await action('unpin',['stored']);
   await until(async () => !saved().find(f => f.name === 'stored').keep_first, 'unpin persistence');
@@ -99,6 +112,9 @@ try {
   }
   assert(fs.readFileSync(path.join(area,'dirty','unsaved.txt'),'utf8') === 'keep me', 'uncommitted content survives bulk deletion');
   console.log('All folder management checks passed. Fixture: ' + area);
+} catch (error) {
+  if (readState) console.error(JSON.stringify(await readState(), null, 2));
+  throw error;
 } finally {
   ws?.close();
   ps(['-Stop']);

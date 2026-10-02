@@ -3149,8 +3149,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-radius:var(--r-ctl); background:var(--bg); color:var(--text); font:13px var(--mono); }
   .fmtools button { min-height:32px; padding:0 var(--s3); border:1px solid var(--edge); border-radius:var(--r-ctl);
     background:var(--raise); color:var(--text); font:12.5px var(--mono); cursor:pointer; }
-  .fmtools button:hover { border-color:var(--edge-hi); }
-  .fmtools input:focus, .fmtools select:focus, .fmtools button:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .fmtools button:not(.held):hover { border-color:var(--edge-hi); }
+  .fmtools button.held { background:var(--panel2); border-color:var(--line); color:var(--faint); cursor:not-allowed; }
+  .fmtools input:focus-visible, .fmtools select:focus-visible, .fmtools button:focus-visible { outline:none; border-color:var(--brand);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  .fmwhy { color:var(--warn); font-size:11.5px; }
   .fmtools .fmcount { flex:1; align-self:center; white-space:nowrap; color:var(--dim); font-size:11.5px; }
   .fmtools .fmselect { display:flex; align-items:center; gap:var(--s2); font-size:14px; cursor:pointer; }
   .fmselect input { width:15px; height:15px; margin:0; accent-color:var(--brand); }
@@ -8310,13 +8313,13 @@ function openFolderManager(saved) {
   sort.value = m.sort;
   const button = (text, go) => el("button", {type:"button", onclick:go}, text);
   m.measure = button(T["tui.folders.measure"], () => {
-    if (S.folder_manage?.measuring) { toast(T["err.folders.measuring"]); return; }
+    if (S.folder_manage?.measuring) { m.warn = "measuring"; refresh(); return; }
     folderAction("measure", m.visible);
   });
   m.count = el("span", {class:"fmcount", "aria-live":"polite"});
   m.action = button(T["tui.folders.actions"], e => {
     const chosen = managedFolders().filter(g => m.selected.has(gkey(g)));
-    if (!chosen.length) { toast(T["tui.folders.select"]); return; }
+    if (!chosen.length) { m.warn = "select"; refresh(); m.all.focus(); return; }
     openList(e.currentTarget, ["pin", "unpin", "archive", "restore", "delete"].map(action =>
       el("div", {class:action === "delete" ? "warn" : "", onclick:() => {
         closeFolderMenu();
@@ -8331,11 +8334,13 @@ function openFolderManager(saved) {
   const selection = el("div", {class:"fmtools", onkeydown:e => { if (typingIME(e)) return; if (e.key === "Enter") e.stopPropagation(); }},
     el("label", {class:"fmselect"}, m.all, el("span", {}, T["tui.folders.select_all"])), m.count, m.action);
   m.list = el("div", {class:"fmrows"});
+  m.why = el("div", {class:"fmwhy", role:"status", hidden:true});
   m.empty = el("div", {class:"fmempty"}, T["tui.folders.empty"]);
-  askQuestion({title:T["tui.folders.manage"], say:T["tui.folders.say"], rows:[controls, selection, m.list],
+  askQuestion({title:T["tui.folders.manage"], say:T["tui.folders.say"], rows:[controls, selection, m.why, m.list],
     label:T["common.close"], go:closeFolderManager, back:closeFolderManager});
   document.getElementById("sask").classList.add("managing");
   drawFolderManager();
+  setTimeout(() => { if (folderManager === m && !m.question) search.focus(); }, 0);
 }
 function drawFolderManager() {
   const m = folderManager;
@@ -8353,7 +8358,12 @@ function drawFolderManager() {
   for (const key of m.selected) if (!shown.has(key)) m.selected.delete(key);
   m.all.checked = !!shown.size && m.selected.size === shown.size;
   m.all.indeterminate = !!m.selected.size && m.selected.size !== shown.size;
+  m.action.classList.toggle("held", !m.selected.size);
+  m.measure.classList.toggle("held", !!facts.measuring);
+  if ((m.warn === "select" && m.selected.size) || (m.warn === "measuring" && !facts.measuring)) m.warn = "";
   const put = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  m.why.hidden = !m.warn;
+  put(m.why, m.warn ? T[m.warn === "select" ? "tui.folders.select" : "err.folders.measuring"] : "");
   put(m.count, T["tui.folders.selected"].replaceAll("{n}", m.selected.size).replaceAll("{total}", shown.size));
   put(m.measure, T[facts.measuring ? "tui.folders.measuring" : "tui.folders.measure"]);
   const entries = m.visible.map(g => [gkey(g), g]);

@@ -32,6 +32,8 @@ const run = `
   openFolderManager();
   const box = document.getElementById("sask");
   const m = folderManager;
+  m.action.click();
+  check(!m.why.hidden && m.action.classList.contains("held"), "Empty selection has no persistent explanation");
   check(m.all.getBoundingClientRect().width > 0, "Select-visible checkbox is hidden");
   m.all.click();
   check(m.selected.size === 3, "Select-visible did not select the active list");
@@ -73,6 +75,7 @@ const run = `
   folderManager.selected.add(groups[1].key); folderManager.selected.add(groups[2].key);
   drawFolderManager();
   await new Promise(resolve => setTimeout(resolve, 0));
+  check(document.activeElement === box.querySelector("input[type=search]"), "Manager does not focus its first field");
   const rect = box.querySelector(".vbox").getBoundingClientRect();
   check(rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight, "Manager does not fit the viewport");
   return "Selection, cancellation, confirmation, restore, measurement and desk isolation passed";

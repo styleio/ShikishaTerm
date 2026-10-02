@@ -185,7 +185,7 @@ pub fn blocking_work(
             && t.cwd().is_some_and(inside)
             && matches!(
                 t.state,
-                crate::detect::TabState::Busy | crate::detect::TabState::Question
+                crate::detect::TabState::Busy | crate::detect::TabState::Question | crate::detect::TabState::Background
             )
     }) {
         return Some(crate::i18n::tp(
