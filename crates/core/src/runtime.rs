@@ -5234,7 +5234,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 }
                                 Ok((target, line, text, wait)) => {
                                     let max_rounds = config::operate().max_rounds;
-                                    let round = ask_rounds.entry(call.caller.clone().unwrap_or_default()).or_insert(0);
+                                    let caller_uid = call.caller.as_deref()
+                                        .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                                        .map(|t| t.uid().to_string());
+                                    let round = ask_rounds.entry(caller_uid.clone().unwrap_or_default()).or_insert(0);
                                     *round += 1;
                                     if max_rounds > 0 && *round > max_rounds {
                                         let _ = call.reply.send(Err(format!(
@@ -5252,11 +5255,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         let asked = tabs.iter().find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target);
                                         let hook_expected =
                                             !run && asked.is_some_and(|t| line_hooked.contains(t.uid()));
-                                        let caller_uid = call
-                                            .caller
-                                            .as_deref()
-                                            .and_then(|c| tabs.iter().find(|t| t.called() == c))
-                                            .map(|t| t.uid().to_string());
                                         tab_asks.push(crate::asktab::Ask {
                                             reply: Some(call.reply),
                                             caller: call.caller,
@@ -5552,12 +5550,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if !ask_rounds.is_empty() {
             // A caller's count is for one turn of its own: once it is quiet
             // with nothing out, the next request from the person starts again
-            let keys: Vec<hooks::TabKey> = tab_states(&tabs).into_iter().map(|(k, _)| k).collect();
             ask_rounds.retain(|caller, _| {
-                tab_asks.iter().any(|a| a.caller.as_deref() == Some(caller.as_str()))
-                    || hooks::TabRef::Name(caller.clone())
-                        .resolve(&keys)
-                        .and_then(|i| tabs.get(i - 1))
+                tab_asks.iter().any(|a| a.caller_uid.as_deref() == Some(caller.as_str()))
+                    || tabs.iter().chain(desk_tabs.iter().flatten())
+                        .find(|t| t.uid() == caller)
                         .is_some_and(|t| !crate::asktab::turn_over(t.state) && t.state != TabState::Exited)
             });
         }
