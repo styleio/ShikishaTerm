@@ -175,7 +175,14 @@ pub fn new_to(project: &str) -> Vec<String> {
     newer_than(SHIPPED, shown(project))
 }
 
+/// What came after the edition `seen`. Nothing for a project that has never
+/// been shown the list: every rule it holds is simply the app's, and saying
+/// "added" of rules that were there before the person ever looked reads as
+/// this update having changed what a worktree is given
 fn newer_than(list: &[Shipped], seen: u32) -> Vec<String> {
+    if seen == 0 {
+        return Vec::new();
+    }
     list.iter().filter(|s| s.since > seen).map(|s| s.path.to_string()).collect()
 }
 
@@ -658,7 +665,7 @@ mod tests {
     /// What is new to a project is what came after the edition it was shown
     #[test]
     fn only_rules_after_what_was_shown_are_new() {
-        assert_eq!(newer_than(V2, 0), ["**/.tool/helpers/", "**/.other/cache/"]);
+        assert!(newer_than(V2, 0).is_empty(), "a project that never looked was told of rules as added");
         assert_eq!(newer_than(V2, 1), ["**/.other/cache/"]);
         assert!(newer_than(V2, 2).is_empty());
     }
@@ -708,7 +715,7 @@ mod tests {
                 "**/.claude/scheduled_tasks.json",
             ]
         );
-        assert_eq!(newer_than(SHIPPED, 0).len(), SHIPPED.len());
+        assert!(newer_than(SHIPPED, 0).is_empty());
         assert!(newer_than(SHIPPED, shipped_edition()).is_empty());
         assert_eq!(shipped_edition(), 2);
     }

@@ -231,6 +231,32 @@ pub fn random_bytes(n: usize) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// JSON made safe to stand inside a page's `<script>`: the same value, with
+/// every character that could end the script element or start markup written
+/// as a JSON escape.
+///
+/// A page pours values into its script as JSON (`const X = __X__;`), and JSON
+/// does not escape `<`: a string holding `</script>` -- a project's name, a
+/// word in a language file, a line of the manual -- closed the element and
+/// whatever came after it ran as the page's own code, with the page's key to
+/// the app. `<`, `>` and `&` are only ever inside strings in JSON, where
+/// `<` reads back as the same character; U+2028 and U+2029 are escaped
+/// for the engines that once took them for line ends
+pub fn script_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        match c {
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// A random hex string (for the remote UI's token)
 /// A random UUID (version 4), in the spelling CLIs expect.
 ///
@@ -485,6 +511,20 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// A value poured into a page's script cannot end the script element or
+    /// start markup, and reads back as exactly what it was
+    #[test]
+    fn json_in_a_script_cannot_close_it() {
+        let name = "x</script><script>alert(1)</script>&\u{2028}";
+        let raw = serde_json::to_string(&serde_json::json!({ name: 1, "list": [name] })).unwrap();
+        let safe = super::script_json(&raw);
+        for bad in ["<", ">", "&", "\u{2028}"] {
+            assert!(!safe.contains(bad), "{bad:?} is left in {safe}");
+        }
+        let back: serde_json::Value = serde_json::from_str(&safe).unwrap();
+        assert_eq!(back, serde_json::from_str::<serde_json::Value>(&raw).unwrap());
+    }
+
     /// A path a test writes the way this app's own machine writes one is an
     /// absolute path wherever the test runs.
     ///
