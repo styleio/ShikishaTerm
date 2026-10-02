@@ -273,6 +273,14 @@ pub fn key_bytes(names: &[String]) -> Result<Vec<u8>> {
 /// makes it safe to run one unattended, with no approval to click.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ResumeSpec {
+    /// A boolean CLI option that gives this tab its own process. Added only
+    /// when the installed program advertises it in --help, so older CLIs
+    /// still start. The launch preview uses the same check as the launch.
+    #[serde(default)]
+    pub process_flag: Option<String>,
+    /// Explicit connection options that must not be overridden by the above.
+    #[serde(default)]
+    pub process_unless: Vec<String>,
     /// Arguments that hand OUR id over at launch, for CLIs that accept one.
     /// The strongest form: nothing has to be attributed afterwards
     #[serde(default)]

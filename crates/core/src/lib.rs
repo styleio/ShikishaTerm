@@ -15,6 +15,7 @@ pub mod askpass;
 pub mod asks;
 pub mod asktab;
 pub mod cli;
+mod cli_launch;
 pub mod attach;
 pub mod awake;
 pub mod ball;
