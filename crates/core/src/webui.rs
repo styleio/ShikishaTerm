@@ -16538,10 +16538,20 @@ function readFolders(desk, w) {
   fs.forEach((f, i) => flatten(f.tabs, 0, i, desk.tabs));
 }
 
+// The keys of a tab's line this screen reads into its own fields and writes
+// back from them (nest). Every other key the line has -- what the app writes
+// there itself: the arrangement of a split, a conversation to resume, the
+// answers the app keeps per tab -- is the line's own and goes back as it came
+const TAB_KEYS_SHOWN = new Set(["name", "id", "uid", "command", "profile", "automation", "lua",
+  "git_account", "browser_profile", "private", "user_agent", ...WORDS_KEYS, "locked", "auto_restart",
+  "encoding", "scrollback", "log", "notify_on_done", "notify_reply", "nav", "server", "ask",
+  "restore_conversation", "children"]);
+
 function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
     out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
+               git_account: t.git_account || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
                choose_model: t.choose_model || "", words_model: t.words_model || "",
@@ -16549,10 +16559,15 @@ function flatten(tabs, depth, group, out) {
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply,
                nav: t.nav || null, ask: t.ask || null,
+               // Absent means yes; only a no is carried
+               ...(t.restore_conversation === false ? {restore_conversation: false} : {}),
                // Everything about a server connection that will not fit in its
                // address. Carried whole: a field this screen has never heard of
                // still has to survive being saved from it
-               server: t.server || null, depth, group });
+               server: t.server || null,
+               // The rest of the line, as it was read (TAB_KEYS_SHOWN)
+               rest: Object.fromEntries(Object.entries(t).filter(([k]) => !TAB_KEYS_SHOWN.has(k))),
+               depth, group });
     flatten(t.children, depth + 1, group, out);
   }
   return out;
@@ -16612,6 +16627,11 @@ function nest(flat) {
       if (f.ask.text) node.ask.text = f.ask.text;
       if (f.ask.label) node.ask.label = f.ask.label;
     }
+    if (f.restore_conversation === false) node.restore_conversation = false;
+    // What this screen does not show goes back as it came: saving the
+    // settings took a split's arrangement, a conversation to resume and a
+    // tab's "start clean" with it
+    for (const [k, v] of Object.entries(f.rest || {})) if (!(k in node)) node[k] = v;
     const d = Math.min(f.depth, stack.length);
     if (d === 0) roots.push(node);
     else (stack[d - 1].children = stack[d - 1].children || []).push(node);
