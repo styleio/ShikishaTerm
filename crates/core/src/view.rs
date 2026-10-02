@@ -1523,7 +1523,7 @@ pub fn surfaces_written(
                 // Written in the settings and not open because it could not
                 // be: it keeps its place, saying why, as a program does
                 if open.is_none()
-                    && let Some(failed) = crate::desk::launch_failure(&desk.name, &key)
+                    && let Some(failed) = crate::desk::launch_failure(&desk.uid, &key)
                 {
                     out.push((
                         Surface::Failed {
@@ -1552,7 +1552,7 @@ pub fn surfaces_written(
             if let Some(i) = found {
                 used_tabs[i] = true;
                 out.push((Surface::Session(i), Some(written)));
-            } else if let Some(failed) = crate::desk::launch_failure(&desk.name, &title) {
+            } else if let Some(failed) = crate::desk::launch_failure(&desk.uid, &title) {
                 // Written in the settings and not running because it could not
                 // start. It keeps its place, saying why, rather than not being
                 // there at all

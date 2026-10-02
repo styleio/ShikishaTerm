@@ -42,6 +42,13 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **Two desks of one name are no longer mixed up.** Adding, renaming or
+  removing a tab or a folder, starting a folder, and the note that a tab's
+  program could not start went to the first desk of the name when the second
+  was the one in use; they now go to the desk itself. Words a quick command
+  waits to give a tab it opened go to that tab, and not to another given its
+  id meanwhile, and a person's first words from the input bar are kept with
+  the rest of the desk's conversations rather than under an older key.
 - **An AI that takes a while to answer another now says its own line in
   AIConfer.** An answer that came after the asking AI stopped waiting (100
   seconds) lost the line the AI was saying for it, and the chat showed its

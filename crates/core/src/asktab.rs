@@ -181,7 +181,7 @@ pub struct Ask {
     /// with the same opening words, and that one's answer handed back. The
     /// screen answers instead
     pub record_unsure: bool,
-    /// The desk it was asked on, by id: its tabs are the ones named, whichever
+    /// The desk it was asked on, by uid: its tabs are the ones named, whichever
     /// desk is in front now. `None` is the desk in front
     pub desk: Option<String>,
     /// The asker's line for the chat (`crate::convo::confer`). Empty for a

@@ -1591,7 +1591,7 @@ pub fn retry_failed(
     // A page that could not open is opened the way the settings open one
     open_declared_browsers(desk, caps, &mut errors);
     // A program is remembered by its title, a page by its key
-    Some(match crate::desk::launch_failure(&desk.name, name).or_else(|| crate::desk::launch_failure(&desk.name, key)) {
+    Some(match crate::desk::launch_failure(&desk.uid, name).or_else(|| crate::desk::launch_failure(&desk.uid, key)) {
         Some(still) => still.why,
         None => i18n::tp("msg.failed.started", &[("name", name)]),
     })
@@ -7148,9 +7148,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     && let Some(desk) = desks.get(desk_index)
                     && let Some(Surface::Session(i)) = surfaces.get(to.wrapping_sub(1))
                     && let Some(t) = tabs.get(*i)
-                    && let Some((thread, _)) = convo_log.thread_for(&desk.id, &origin_of(t))
+                    && let Some((thread, _)) = convo_log.thread_for(&desk.uid, &origin_of(t))
                 {
-                    convo_log.line(&desk.id, thread, None, said.trim(), None, "person");
+                    convo_log.line(&desk.uid, thread, None, said.trim(), None, "person");
                 }
             } else {
                 append_hook_log(&format!("say went nowhere: tab{to} is not a session"));
@@ -7236,7 +7236,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let at = (1..=surfaces.len()).find(|&s| {
                     session_at(&surfaces, s)
                         .and_then(|i| tabs.get(i))
-                        .is_some_and(|t| t.id.as_deref() == Some(p.id.as_str()))
+                        .is_some_and(|t| t.uid() == p.uid)
                 });
                 let ready = at
                     .and_then(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
@@ -7667,7 +7667,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             None => {
                                 let (title, id) = quick_tab_names("Git", "Git", &tabs);
                                 let line = serde_json::json!({"name": title, "id": id, "command": "git"});
-                                if config::append_tab_on(&desk.name, line, Some(&place.dir), place.host.as_deref()) {
+                                if config::append_tab_on(&desk.uid, line, Some(&place.dir), place.host.as_deref()) {
                                     reveal = Some((id, Instant::now() + Duration::from_secs(20)));
                                     watcher.poke();
                                     Ok(serde_json::json!({"already": false}))
@@ -9649,7 +9649,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 };
                 let mark = config::TabMark::of(desk, ft);
-                if let Err(e) = config::rename_tab_written(&desk.name, written, &mark, wanted) {
+                if let Err(e) = config::rename_tab_written(&desk.uid, written, &mark, wanted) {
                     flash = Some(format!("{e:#}"));
                 }
                 continue;
@@ -9689,7 +9689,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(ft) = desk.tabs.get(written) else { continue };
             let mark = config::TabMark::of(desk, ft);
             match config::move_tab_to_folder(
-                &desk.name,
+                &desk.uid,
                 written,
                 &mark,
                 std::path::Path::new(at),
@@ -9793,7 +9793,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // The folder first: taking it can be refused (the desk's last
                 // folder), and a project that let go of its checkout while the
                 // folder stayed would make a second one for its next worktree
-                match config::take_folder(&d.name, &key) {
+                match config::take_folder(&d.uid, &key) {
                     Ok(taken) => {
                         let mut dropped = None;
                         if let (Some(home), Some(p)) = (checkout, project.as_deref()) {
@@ -9810,7 +9810,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     // The folder goes back where it was, and
                                     // nothing is deleted
                                     if let Some(t) = &taken {
-                                        let _ = config::put_folder_back(&d.name, t);
+                                        let _ = config::put_folder_back(&d.uid, t);
                                     }
                                     flash = Some(format!("{e:#}"));
                                     continue;
@@ -9869,7 +9869,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .and_then(|p| p.home_on(&h.name))
                     .map(|home| crate::uistate::far_family(&h.name, &home.at))
                     .unwrap_or_default();
-                match config::take_folder(&d.name, &key) {
+                match config::take_folder(&d.uid, &key) {
                     Ok(taken) => {
                         let removal = crate::worktree::Removal::start_on_server(at.clone(), h);
                         editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
@@ -10308,7 +10308,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if here.iter().any(|h| crate::uistate::same_folder(h, &folder)) {
                             continue;
                         }
-                        match config::append_folder_starting(&desk.name, None, &folder, branch.as_deref(), &config::Start::Nothing, None) {
+                        match config::append_folder_starting(&desk.uid, None, &folder, branch.as_deref(), &config::Start::Nothing, None) {
                             Ok(()) => added += 1,
                             Err(e) => flash = Some(format!("{e:#}")),
                         }
@@ -14275,7 +14275,7 @@ fn page_in_folder(desk: &config::Desk, key: &std::path::Path, url: &str, name: &
     // A tab in no folder puts its page in none either, rather than in
     // whichever folder this program happens to be started from
     let at = (!cwd.as_os_str().is_empty()).then_some(cwd.as_path());
-    config::add_tab_at(&config::config_file_path(), &desk.name, line, at, on.as_deref(), config::NewFolder::Refused)
+    config::add_tab_at(&config::config_file_path(), &desk.uid, line, at, on.as_deref(), config::NewFolder::Refused)
         .map(|id| (id, true))
 }
 
@@ -16592,7 +16592,10 @@ fn open_and_say(
     reveal: &mut Option<(String, Instant)>,
 ) -> Option<String> {
     let (title, tab_id) = quick_tab_names(label, program, tabs);
-    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
+    // Who the new tab is, written with it: the words wait for that tab, not
+    // for whichever tab is given its id in the meantime
+    let uid = config::new_tab_uid();
+    let line = serde_json::json!({"name": title, "id": tab_id, "uid": uid, "command": command});
     let (host, cwd) = crate::uistate::place_of(at);
     if !config::append_tab_on(desk, line, Some(&cwd), host.as_deref()) {
         return None;
@@ -16600,6 +16603,7 @@ fn open_and_say(
     *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
     pending.push(PendingQuick {
         id: tab_id,
+        uid,
         title: title.clone(),
         label: label.to_string(),
         at: at.to_path_buf(),
@@ -16874,7 +16878,7 @@ fn hand_to_ai_tab(
     // A button the person pressed (resolve the conflicts, review this); the
     // words are the app's, written for them
     let from = crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "button", sender: None, job: None };
-    match open_and_say(&desk.name, at, &choice.key, &choice.name, label, prompt(), true, from, tabs, pending, reveal) {
+    match open_and_say(&desk.uid, at, &choice.key, &choice.name, label, prompt(), true, from, tabs, pending, reveal) {
         Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
         None => Err(i18n::tp("msg.quick.open_failed", &[("label", label)])),
     }
@@ -16950,6 +16954,9 @@ pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {
 pub struct PendingQuick {
     /// The new tab's automation name
     pub id: String,
+    /// Who the new tab is: the one tab the words are for, though the tab
+    /// that opens might be closed and another given its id before it settles
+    pub uid: String,
     /// What its tab strip will say
     pub title: String,
     pub label: String,
@@ -18676,6 +18683,7 @@ mod survey_tests {
         let there = std::env::temp_dir().join("shikisha-opened-for-there");
         let pending = vec![PendingQuick {
             id: "resolve-conflicts".into(),
+            uid: config::new_tab_uid(),
             title: "Resolve conflicts".into(),
             label: "Resolve conflicts".into(),
             at: here.clone(),
