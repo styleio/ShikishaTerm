@@ -79,6 +79,9 @@ pub struct Snapshot {
 /// Operations arriving from remote. Executed on the main loop
 #[derive(Debug)]
 pub enum RemoteCmd {
+    /// A remote viewer opened the board. Its screen takes over from keys
+    /// pressed at the PC before it connected; later keys can take it back.
+    Viewing,
     /// Send an instruction to a tab (treated as human input)
     Send { uid: String, text: String },
     /// Raw keys, e.g. an answer to a confirmation
@@ -2753,7 +2756,13 @@ fn handle(
             }
             // Asking for the state IS watching, and this is the only trace a
             // viewer without a socket leaves (see `watched`).
-            *last_poll.lock().unwrap() = Some(Instant::now());
+            if !gate.is_here(&session) {
+                let mut last = last_poll.lock().unwrap();
+                if last.is_none_or(|t| t.elapsed() >= RemoteUi::POLL_LIFE) {
+                    let _ = tx.send(RemoteCmd::Viewing);
+                }
+                *last = Some(Instant::now());
+            }
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
@@ -2864,6 +2873,9 @@ fn handle(
                 session: session.clone(),
                 panes: wants_panes,
             });
+            if !gate.is_here(&session) {
+                let _ = tx.send(RemoteCmd::Viewing);
+            }
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
                 while let Ok(msg) = srx.recv() {
@@ -3937,6 +3949,10 @@ mod tests {
         let page = window.text("/");
         assert!(page.contains("const AT_PC = true;"), "the window is not told it is at this PC");
         assert_eq!(crate::clients::load().clients.len(), devices, "this PC's window was written into the book of devices");
+
+        assert_eq!(window.state("tok123456789012"), 200);
+        assert!(ui.last_poll.lock().unwrap().is_none(), "this PC's own window counts as a polling phone");
+        assert!(ui.rx.try_recv().is_err(), "this PC's own window took remote ownership of the width");
 
         let mut phone = Phone::new(&base);
         phone.pair("tok123456789012");
@@ -5171,8 +5187,16 @@ mod tests {
         let stranger = Phone::new(&base);
         assert_eq!(stranger.status("/api/state?t=tok123456789012"), 403);
         assert!(!ui.watched(), "someone who was refused counts as watching");
+        assert!(ui.rx.try_recv().is_err(), "a refused viewer took the terminal's width");
         phone.get("/api/state?t=tok123456789012");
         assert!(ui.watched(), "someone who came for the state does not count as watching");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
+        phone.get("/api/state?t=tok123456789012");
+        assert!(ui.rx.try_recv().is_err(), "a routine poll took the width from someone typing at the PC");
+        *ui.last_poll.lock().unwrap() = Some(Instant::now() - RemoteUi::POLL_LIFE);
+        phone.get("/api/state?t=tok123456789012");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)),
+            "a returning poller did not take the terminal's width");
         ui.shutdown();
     }
 
@@ -5199,6 +5223,7 @@ mod tests {
         }];
         let body = phone.text("/api/state?t=tok123456789012");
         assert!(body.contains("実装") && body.contains("QUESTION"), "{body}");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
 
         // A position from an old page is not enough to send anything.
         phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"stale"}"#);
@@ -5567,6 +5592,12 @@ mod tests {
         laptop.pair("tok-panes-00001");
         let mut phone_line = open(&phone.cookie, "");
         let mut laptop_line = open(&laptop.cookie, "&panes=1");
+
+        // Every new view takes over, even if another socket is still present
+        // (as happens briefly while a browser reloads the board).
+        for _ in 0..2 {
+            assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
+        }
 
         // Both are seeded with the ui and the screen; only the laptop with the panes
         for line in [&mut phone_line, &mut laptop_line] {
