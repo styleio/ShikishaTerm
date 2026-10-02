@@ -336,7 +336,13 @@ mod tests {
         // what the app counts as the tab's work in the background
         let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
         say(&conn, json!({ "do": "open", "ref": 5, "tab": "p", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
-        let procs = hear(&mut reader, "procs");
+        let id = hear(&mut reader, "opened")["term"].clone();
+        let procs = loop {
+            let p = hear(&mut reader, "procs");
+            if p["term"] == id && p["pids"].as_array().is_some_and(|a| !a.is_empty()) {
+                break p;
+            }
+        };
         let root = procs["root"].as_u64().expect("its first process");
         assert!(procs["pids"].as_array().is_some_and(|p| p.iter().any(|v| v.as_u64() == Some(root))), "its own process among them: {procs}");
 
