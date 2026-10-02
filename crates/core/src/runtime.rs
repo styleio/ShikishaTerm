@@ -5618,6 +5618,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         ));
                         notifier.send_opt(to, &format!("{told}\n{text}"));
                     }
+                    // Opening the board is a handoff too. A key pressed at
+                    // the PC before the connection must not keep the phone
+                    // at the PC's width until the person types into an AI.
+                    // Resize reports alone do not take ownership: both
+                    // screens report again whenever their layout is redrawn.
+                    remote::RemoteCmd::Viewing => {
+                        operator = Some(crate::view::Operator::Afar);
+                    }
                     remote::RemoteCmd::Keys { tab, keys } => {
                         operator = Some(crate::view::Operator::Afar);
                         if let Some(t) = session_at(&surfaces, tab).and_then(|i| tabs.get_mut(i)) {
@@ -6661,8 +6669,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // screen at five frames a second however generous the rate limit was --
         // and five frames is what scrolling from a phone looked like. Detection
         // is cheap to do slowly; a screen is not.
+        // Polling viewers need this picture too: the HTTP snapshot below
+        // reads last_remote_rows. Updating it only with a live socket left
+        // the fallback displaying an empty or stale terminal after resizing.
         if let Some(r) = remote_ui.as_ref()
-            && r.has_state_clients() && last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
+            && r.watched() && last_remote_push.elapsed() >= remote_floor(r.max_pending()) {
                 let now: Vec<String> = tabs
                     .get(session_at(&surfaces, active).unwrap_or(usize::MAX))
                     .map(|t| {

@@ -2283,8 +2283,9 @@ pub enum Operator {
 /// pressed at this machine: somebody back at the PC types into terminals cut
 /// for the PC's window, and the phone they put down is shown that wider
 /// screen fitted to its own (it picks a font size from the columns sent with
-/// the screen). Before anybody has typed, the one that opened last -- the far
-/// viewer, which opened onto a window already there -- decides, as before.
+/// the screen). Opening a remote view counts as taking over too: the runtime
+/// records that arrival before choosing, so keys pressed before a phone
+/// connected cannot leave it wearing the PC's width.
 /// When the far viewer goes, the window has its own shape back
 pub fn far_decides(watched: bool, operator: Option<Operator>) -> bool {
     watched && operator != Some(Operator::Here)
