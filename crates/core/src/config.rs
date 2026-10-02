@@ -187,6 +187,17 @@ pub struct BringRule {
     /// For `replace`: what is written differently in the copy, in order
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replace: Vec<Replace>,
+    /// The id of one of the app's own rules for places inside
+    /// (`crate::inside::SHIPPED`) that this entry answers for the project:
+    /// a different `how` for it, or, with `dropped`, that the project does
+    /// without it. The app's rules themselves are never written here -- only
+    /// what the person changed about one -- so a later version's list reaches
+    /// everybody (see `crate::inside::effective`)
+    #[serde(default, rename = "default", skip_serializing_if = "Option::is_none")]
+    pub shipped: Option<String>,
+    /// With `shipped`: the project does without that rule of the app's
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropped: bool,
 }
 
 /// Every occurrence of `find` in a copied file becomes `with`.

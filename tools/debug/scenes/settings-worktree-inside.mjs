@@ -5,8 +5,9 @@
  *     node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-worktree-inside.mjs
  *
  * The project is this checkout itself, so the lines above the rules are the
- * real ones. One rule leaves the other agents' worktrees out of `.claude`;
- * the other is written the way a rule here cannot be, so the page says why.
+ * real ones. The app's own rules come first, one of them changed by the
+ * project (so it says so, with the way back); then a rule of the project's,
+ * and one written the way a rule here cannot be, so the page says why.
  */
 import path from 'node:path';
 
@@ -19,7 +20,8 @@ export default {
       name: 'Check', id: 'check',
       folders: [{ name: 'ShikishaTerm', cwd: ROOT, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] }],
       projects: [{ name: 'ShikishaTerm', at: ROOT, bring: [
-        { path: '.claude/worktrees/', how: 'skip' },
+        { default: 'claude-checkpoints', path: '**/.claude/checkpoints/', how: 'copy' },
+        { path: 'node_modules/.cache/', how: 'skip' },
         { path: '!target/keep/', how: 'copy' },
       ] }],
     }],

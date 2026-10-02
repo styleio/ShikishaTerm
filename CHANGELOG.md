@@ -18,6 +18,16 @@ once it reaches its first tagged release.
   Quitting and answering "No" stops every AI and the background process. Off
   unless turned on. The Store copy keeps its terminals across quitting and
   crashes, but not across a Store update.
+- **A new worktree no longer takes an AI tool's own working places with it.**
+  Claude Code's `.claude/worktrees/` (its helpers' whole checkouts),
+  `.claude/checkpoints/` and `.claude/mailbox/` are left out even when
+  `.claude` is copied, by Default rules the app provides under the project's
+  Worktree Creation Rules › Rules for places inside folders. A row can be
+  changed to come along, put back to the default, or not used; only that
+  change is kept in the settings, so rules a later version adds or removes
+  reach every project. A rule new to a project says so until its rules have
+  been seen once, and the worktree dialog says what is left out and how big
+  it is.
 
 ### Changed
 - **A new tab is named with two words** (`calm-otter`), so the name of a
