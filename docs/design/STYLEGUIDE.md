@@ -314,7 +314,14 @@ not on its page. A name changed is a name changed here too.
 | Toast | `toast(text, warn)` (`toast.rs` puts it into both pages) | both (`toast.rs`) |
 | Chat (the right-hand column) | `drawConvo()`. Rows are `convoSay(r)`, `convoWork(r)` and `convoEvent(r)`; a tool run's contents are `workPieces(inside, work, query)` (shared with the past-conversation reader) | the board (`shell.rs`) |
 | Calling a panel up in the right-hand column | `sideReveal(name)` (its ✕ is `sideDismiss(name)`, choosing on the strip `sideChoose(name)`; `show_panel` from Lua) | board (`shell.rs`) |
+| Work folder management | `openFolderManager()` · `drawFolderManager()` (updates the list in the shared question frame) | Board (`shell.rs`) |
 <!-- /code-entries -->
+Work folder management opens with `openFolderManager()` and updates existing rows with
+`drawFolderManager()`. The shared `askQuestion` frame holds search, visibility and size
+ordering, selection actions and a list in the existing 720px dialog width. Rows show a
+checkbox, name and right-aligned capacity, with location and result below. Filtering
+clears hidden selections. Archive and bulk deletion list their targets for confirmation.
+Capacity includes an estimate mark and measurement time; failures never appear as zero.
 
 ### 5.1 A field
 

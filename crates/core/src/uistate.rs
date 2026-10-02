@@ -483,6 +483,8 @@ fn palette_of(name: &str) -> String {
 /// them (see [`GroupState::describe`])
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct FolderLabel {
+    pub keep_first: bool,
+    pub parked: bool,
     pub folder: std::path::PathBuf,
     pub summary: Option<String>,
     pub auto: bool,
@@ -499,6 +501,10 @@ pub struct FolderLabel {
 /// second folder should not have to learn that the first one has a name.
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct GroupState {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_first: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
     /// The heading: what someone named it; else, for a worktree, the branch it
     /// was cut for; else the folder's own name
     pub name: String,
@@ -618,6 +624,8 @@ impl GroupState {
                 cwd.to_path_buf(),
                 GroupState {
                     name,
+                    keep_first: false,
+                    parked: false,
                     key: cwd.display().to_string(),
                     project: None,
                     folder: path.display().to_string(),
@@ -666,6 +674,8 @@ impl GroupState {
                         .map(str::to_string)
                         .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
                         .unwrap_or_default(),
+                    keep_first: false,
+                    parked: false,
                     key: cwd.display().to_string(),
                     project: None,
                     folder: path.display().to_string(),
@@ -714,6 +724,8 @@ impl GroupState {
             let Some(l) = labels.iter().find(|l| same_folder(&l.folder, at)) else { continue };
             g.summary = l.summary.clone();
             g.auto = l.auto;
+            g.keep_first = l.keep_first;
+            g.parked = l.parked;
         }
     }
 
@@ -2201,6 +2213,10 @@ pub struct ConferState {
 /// The moment one goes in, every receiving side is locked into the same look
 #[derive(Clone, Serialize, PartialEq, Debug, Default)]
 pub struct UiState {
+    #[serde(default)]
+    pub folder_catalog: Vec<GroupState>,
+    #[serde(default)]
+    pub folder_manage: crate::foldercare::View,
     pub desk: String,
     /// The desk on screen, by the id its settings and secrets are filed under.
     /// What a tool asks with when an answer belongs to the desk -- a name on

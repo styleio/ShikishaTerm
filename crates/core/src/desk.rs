@@ -1173,6 +1173,8 @@ mod remote_folder_tests {
             ..Default::default()
         };
         let there = config::Folder {
+            keep_first: false,
+            parked: false,
             name: Some("api".into()),
             id: None,
             host: Some(host),

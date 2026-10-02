@@ -41,6 +41,8 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
+| `tools/debug/folder-management.win.mjs` | Windows | Saved pin/archive/restore, stale desk rejection, capacity and actual bulk deletion in an isolated app; verifies primary, pinned and dirty worktrees survive | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/folder-management.win.mjs` |
+| `tools/debug/scenes/folder-management.mjs` | anywhere, with Chrome | Folder management, selection across filters, cancellation and confirmation, restore, explicit capacity requests and desk isolation; photographs both board pages in both languages and schemes | `node tools/debug/shoot.mjs tools/debug/scenes/folder-management.mjs` |
 | `src/bin/pty_probe.rs` | anywhere | A command in a pseudo terminal, with everything it says captured for about ten seconds. `--watch` never types into it — some of what is worth watching is an AI, and typing into one is a turn on somebody's account | `cargo run --bin pty_probe -- [--watch] <command> [args...]` |
 | `src/bin/vt_writer.rs` | Windows | A stand-in for a program that draws on a terminal, writing the same bytes every run, so that two runs differ only in the pseudo console that carried them | `cargo run --bin vt_writer -- <poured \| redrawn \| sequences>` — the `frame_bench` measurement runs it |
 | `src/bin/sshd_probe.rs` | anywhere | A small SSH server on the loopback: one user and password, a terminal that echoes, and files over one folder. For pointing the running app at. It opens files the way OpenSSH does, so what passes here passes there | `cargo run --bin sshd_probe -- 2222 tester hunter2 [folder]` |

@@ -308,6 +308,7 @@ pub struct Mailbox {
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
+    pub folder_manage: Vec<(String, String, Vec<String>)>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
 }
@@ -717,6 +718,9 @@ impl Mailbox {
     }
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)
+    }
+    pub fn take_folder_manage(&mut self) -> Vec<(String, String, Vec<String>)> {
+        std::mem::take(&mut self.folder_manage)
     }
     pub fn take_folder_moves(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.folder_moves)

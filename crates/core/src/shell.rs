@@ -3139,6 +3139,30 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcmd { white-space:pre-wrap; }
   #branch .bcmd:empty { display:none; }
   #sask .vbox, #branch .vbox { width:min(560px,92vw); }
+  #sask.managing .vbox { width:min(720px,92vw); }
+  #sask.managing .brow > .quiet { display:none; }
+  .tab.fmopen { width:100%; border:0; background:none; color:var(--dim); font:inherit; text-align:left; }
+  #sask.managing .blist { display:flex; flex-direction:column; gap:var(--s3); border:0; max-height:none; overflow:hidden; min-height:0; }
+  .fmtools { display:flex; flex-wrap:wrap; gap:var(--s2); }
+  .fmtools input[type=search] { flex:1 1 100%; min-width:0; }
+  .fmtools input[type=search], .fmtools select { height:36px; padding:0 var(--s3); border:1px solid var(--edge);
+    border-radius:var(--r-ctl); background:var(--bg); color:var(--text); font:13px var(--mono); }
+  .fmtools button { min-height:32px; padding:0 var(--s3); border:1px solid var(--edge); border-radius:var(--r-ctl);
+    background:var(--raise); color:var(--text); font:12.5px var(--mono); cursor:pointer; }
+  .fmtools button:hover { border-color:var(--edge-hi); }
+  .fmtools input:focus, .fmtools select:focus, .fmtools button:focus-visible { outline:2px solid var(--brand); outline-offset:2px; }
+  .fmtools .fmcount { flex:1; align-self:center; white-space:nowrap; color:var(--dim); font-size:11.5px; }
+  .fmtools .fmselect { display:flex; align-items:center; gap:var(--s2); font-size:14px; cursor:pointer; }
+  .fmselect input { width:15px; height:15px; margin:0; accent-color:var(--brand); }
+  .fmrows { overflow:auto; max-height:40vh; border:1px solid var(--line); border-radius:var(--r-ctl); }
+  .fmrow { display:grid; grid-template-columns:15px minmax(0,1fr) auto; gap:var(--s2); padding:var(--s3); border-top:1px solid var(--line); }
+  .fmrow:first-child { border-top:0; }
+  .fmrow input { width:15px; height:15px; margin:0; accent-color:var(--brand); }
+  .fmrow label { font-size:13px; font-weight:600; overflow-wrap:anywhere; cursor:pointer; }
+  .fmrow .fmmeta, .fmrow .fmnote { grid-column:2 / -1; color:var(--dim); font-size:11px; overflow-wrap:anywhere; line-height:1.5; }
+  .fmrow .fmnote.bad { color:var(--text); border-left:2px solid var(--stop); padding-left:var(--s2); font-size:11.5px; }
+  .fmrow .fmsize { font-size:11.5px; text-align:right; font-variant-numeric:tabular-nums; }
+  .fmempty { padding:var(--s3); font-size:12px; color:var(--dim); }
   /* Wider than a question, because what is in it is somebody's file and a
      line broken in three is not the line they wrote */
   #sdiff .vbox { width:min(900px,96vw); }
@@ -4812,7 +4836,9 @@ function drawTabs() {
   // folder at all (a page opened while the program runs) leaves the heading
   // alone rather than ending it, so it does not split a folder in two
   const folders = S.groups || [];
-  troubleRow(nav, folders);
+  nav.append(el("button", {class:"tab fmopen", type:"button", onclick:() => openFolderManager()},
+    pickIcon("folder"), el("span", {class:"nm"}, T["tui.folders.manage"])));
+  troubleRow(nav, folders.filter(g => !g.parked));
   hiddenRow(nav);
   // Tabs by the folder they are in, each list in its own order. A tab in no
   // folder at all -- a page opened by automation or the result view, which is
@@ -4829,7 +4855,7 @@ function drawTabs() {
   }
   // The folders of one project: the repository's own checkout and the
   // worktrees cut from it. A folder in no repository is a project of its own
-  const kinOf = g => g.family ? folders.filter(o => o.family === g.family) : [g];
+  const kinOf = g => g.family ? folders.filter(o => !o.parked && o.family === g.family) : [g];
   // The order the folders are read in, and the headings that break it up.
   //
   // By project unless another axis is chosen. Two groupings at once would put
@@ -4840,9 +4866,9 @@ function drawTabs() {
   // has no heading here -- or with the list drawn another way -- goes first,
   // where it is seen
   const making = S.making || [];
-  const headed = m => axis === "none" && folders.some(g => g.family && sameFolder(g.family, m.family));
+  const headed = m => axis === "none" && folders.some(g => !g.parked && g.family && sameFolder(g.family, m.family));
   for (const m of making) if (!headed(m)) nav.append(makingRow(m));
-  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) }));
+  const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) })).filter(r => !r.g.parked);
   // Drawn by project, every folder of one repository under its heading: the
   // folders of a project brought together where the first of them stands,
   // the checkout the others were cut from first among them. Stable otherwise
@@ -4850,7 +4876,10 @@ function drawTabs() {
   if (axis === "none") {
     const firsts = [];
     for (const r of keyed) if (!firsts.includes(projectKey(r.g))) firsts.push(projectKey(r.g));
+    const pinned = new Set(keyed.filter(r => r.g.keep_first).map(r => projectKey(r.g)));
+    firsts.sort((a, b) => Number(pinned.has(b)) - Number(pinned.has(a)));
     keyed.sort((a, b) => (firsts.indexOf(projectKey(a.g)) - firsts.indexOf(projectKey(b.g)))
+      || (Number(!!b.g.keep_first) - Number(!!a.g.keep_first))
       || ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));
   }
   if (axis !== "none") {
@@ -4860,7 +4889,7 @@ function drawTabs() {
     const seen = [];
     for (const r of keyed) if (!seen.includes(r.key)) seen.push(r.key);
     seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
-    keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key));
+    keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key) || Number(!!b.g.keep_first) - Number(!!a.g.keep_first));
   }
   let groupKey = null, headKey = null;
   for (const row of keyed) {
@@ -7536,6 +7565,7 @@ function folderRow(g, mine, card) {
         + (card ? " wcard" : "") + (inFront(g) ? " front" : ""),
       title:folderAbout(g), onclick:() => send({kind:"folderview", folder:gkey(g)})},
     chip,
+    g.keep_first ? el("span", {title:T["tui.folders.pinned"]}, pickIcon("pin")) : null,
     // A card has no fold of its own: its tabs put away from the "N tabs" row
     // under it, and the whole project from its heading. A caret here stood in
     // front of the name on some cards and not others, so the names no longer
@@ -7710,6 +7740,7 @@ function emptyRow(g, card) {
       onclick:() => { if (own) send({kind:"folderview", folder:gkey(g)}); else addTabHere(g); }},
     card ? el("span", {class:"dot"}) : g.linked ? cutMark() : el("span", {class:"chip"}),
     ailMark(g),
+    g.keep_first ? el("span", {title:T["tui.folders.pinned"]}, pickIcon("pin")) : null,
     nameSlot("tabs", "f:" + gkey(g), g.name || "", v => send({kind:"foldername", folder:gkey(g), name:v}), folderNameClass(g)),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
@@ -8232,6 +8263,133 @@ function devRows(t, hard) {
     item(T["tui.dev.dom"] || "", () => send({kind:"pageview", page, what:"dom"})),
   ];
 }
+let folderManager = null;
+const managedFolders = () => S.folder_catalog || S.groups || [];
+function folderAction(action, groups, back) {
+  const desk = S.desk_uid;
+  const keys = [...new Set(groups.map(gkey))];
+  if (!keys.length) { toast(T["tui.folders.select"]); return; }
+  const perform = () => {
+    if (S.desk_uid !== desk) { toast(T["err.folders.changed"], true); return; }
+    send({kind:"foldermanage", desk, act:action, folders:keys});
+    if (back) back();
+  };
+  if (action !== "archive" && action !== "delete") { perform(); return; }
+  // Bulk removal always asks, even when individual removal was set not to.
+  closeAsk(true);
+  document.getElementById("sask").classList.remove("managing");
+  if (folderManager) folderManager.question = true;
+  const marks = groups.filter(g => g.mark && g.mark.careful).map(g => g.mark.name);
+  const mark = marks.length ? {careful:true, name:[...new Set(marks)].join(", ")} : null;
+  askQuestion({title:T["tui.folders." + action + ".title"], say:T["tui.folders." + action + ".say"],
+    rows:groups.map(g => el("div", {class:"brow2 stacked"}, el("span", {class:"nm"}, g.name || leafOf(g.folder)),
+      el("span", {class:"nm"}, (g.host ? g.host + ": " : "") + g.folder))),
+    what:mark ? mark.name : null, mark, sure:action === "delete",
+    label:T["tui.folders." + action], danger:action === "delete", go:perform,
+    back:() => { if (back) back(); }});
+}
+function closeFolderManager() {
+  folderManager = null;
+  document.getElementById("sask").classList.remove("managing");
+}
+function openFolderManager(saved) {
+  closeAsk(true);
+  const m = saved || {desk:S.desk_uid, selected:new Set(), query:"", filter:"active", sort:"name", rows:new Map()};
+  if (m.desk !== S.desk_uid) { closeFolderManager(); return; }
+  folderManager = m;
+  m.question = false;
+  const refresh = () => drawFolderManager();
+  const search = el("input", {type:"search", placeholder:T["tui.folders.search"], "aria-label":T["tui.folders.search"],
+    oninput:e => { m.query = e.target.value; refresh(); }});
+  search.value = m.query;
+  const filter = el("select", {"aria-label":T["tui.folders.filter"], onchange:e => { m.filter = e.target.value; refresh(); }},
+    ...["active", "archived", "all"].map(k => el("option", {value:k}, T["tui.folders." + k])));
+  filter.value = m.filter;
+  const sort = el("select", {"aria-label":T["tui.folders.sort"], onchange:e => { m.sort = e.target.value; refresh(); }},
+    ...["name", "size"].map(k => el("option", {value:k}, T["tui.folders.sort." + k])));
+  sort.value = m.sort;
+  const button = (text, go) => el("button", {type:"button", onclick:go}, text);
+  m.measure = button(T["tui.folders.measure"], () => {
+    if (S.folder_manage?.measuring) { toast(T["err.folders.measuring"]); return; }
+    folderAction("measure", m.visible);
+  });
+  m.count = el("span", {class:"fmcount", "aria-live":"polite"});
+  m.action = button(T["tui.folders.actions"], e => {
+    const chosen = managedFolders().filter(g => m.selected.has(gkey(g)));
+    if (!chosen.length) { toast(T["tui.folders.select"]); return; }
+    openList(e.currentTarget, ["pin", "unpin", "archive", "restore", "delete"].map(action =>
+      el("div", {class:action === "delete" ? "warn" : "", onclick:() => {
+        closeFolderMenu();
+        folderAction(action, chosen, () => openFolderManager(m));
+      }}, T["tui.folders." + action])));
+  });
+  m.all = el("input", {type:"checkbox", onchange:e => {
+    for (const g of m.visible) { if (e.target.checked) m.selected.add(gkey(g)); else m.selected.delete(gkey(g)); }
+    refresh();
+  }});
+  const controls = el("div", {class:"fmtools", onkeydown:e => { if (typingIME(e)) return; if (e.key === "Enter") e.stopPropagation(); }}, search, filter, sort, m.measure);
+  const selection = el("div", {class:"fmtools", onkeydown:e => { if (typingIME(e)) return; if (e.key === "Enter") e.stopPropagation(); }},
+    el("label", {class:"fmselect"}, m.all, el("span", {}, T["tui.folders.select_all"])), m.count, m.action);
+  m.list = el("div", {class:"fmrows"});
+  m.empty = el("div", {class:"fmempty"}, T["tui.folders.empty"]);
+  askQuestion({title:T["tui.folders.manage"], say:T["tui.folders.say"], rows:[controls, selection, m.list],
+    label:T["common.close"], go:closeFolderManager, back:closeFolderManager});
+  document.getElementById("sask").classList.add("managing");
+  drawFolderManager();
+}
+function drawFolderManager() {
+  const m = folderManager;
+  if (!m) return;
+  if (m.desk !== S.desk_uid) { closeAsk(true); closeFolderManager(); return; }
+  if (m.question) return;
+  const facts = S.folder_manage || {}, usage = facts.usage || {}, results = facts.results || {};
+  const query = m.query.trim().toLocaleLowerCase();
+  m.visible = managedFolders().filter(g => (m.filter === "all" || !!g.parked === (m.filter === "archived"))
+    && [g.name, g.folder, g.project, g.host].filter(Boolean).join(" ").toLocaleLowerCase().includes(query));
+  m.visible.sort((a,b) => (m.sort === "size" ? (usage[gkey(b)]?.bytes ?? -1) - (usage[gkey(a)]?.bytes ?? -1) : 0)
+    || Number(!!b.keep_first) - Number(!!a.keep_first) || (a.name || a.folder).localeCompare(b.name || b.folder));
+  const shown = new Set(m.visible.map(gkey));
+  // Filtering cannot leave an invisible folder selected for a destructive action.
+  for (const key of m.selected) if (!shown.has(key)) m.selected.delete(key);
+  m.all.checked = !!shown.size && m.selected.size === shown.size;
+  m.all.indeterminate = !!m.selected.size && m.selected.size !== shown.size;
+  const put = (node, value) => { if (node.textContent !== value) node.textContent = value; };
+  put(m.count, T["tui.folders.selected"].replaceAll("{n}", m.selected.size).replaceAll("{total}", shown.size));
+  put(m.measure, T[facts.measuring ? "tui.folders.measuring" : "tui.folders.measure"]);
+  const entries = m.visible.map(g => [gkey(g), g]);
+  const live = new Set(managedFolders().map(gkey));
+  for (const key of Object.keys(results)) if (!live.has(key) && key.toLocaleLowerCase().includes(query)) entries.push([key, null]);
+  const wanted = [];
+  for (const [key,g] of entries) {
+    let r = m.rows.get(key);
+    if (!r) {
+      const id = "fm-" + m.rows.size;
+      const check = el("input", {type:"checkbox", id, onchange:e => {
+        if (e.target.checked) m.selected.add(key); else m.selected.delete(key); drawFolderManager();
+      }});
+      const name = el("label", {for:id}), size = el("span", {class:"fmsize"}), meta = el("div", {class:"fmmeta"}), note = el("div", {class:"fmnote"}), time = el("div", {class:"fmmeta"});
+      const row = el("div", {class:"fmrow", "data-folder":key}, check, name, size, meta, note, time);
+      r = {row, check, name, size, meta, note, time}; m.rows.set(key,r);
+    }
+    r.check.hidden = !g; r.check.checked = m.selected.has(key);
+    put(r.name, g ? (g.name || leafOf(g.folder)) : leafOf(key));
+    const flags = g ? [g.keep_first && T["tui.folders.pinned"], g.parked && T["tui.folders.archived"], g.host].filter(Boolean) : [];
+    put(r.meta, [...flags, g ? g.folder : key].join(" · "));
+    const u = usage[key], outcome = results[key];
+    put(r.size, !g ? "" : u ? (u.partial && !u.bytes ? T["tui.folders.unavailable"] : (u.partial ? "≥ " : "≈ ") + bytesSay(u.bytes)) : T["tui.folders.unmeasured"]);
+    r.size.title = u ? T["tui.folders.measured"].replaceAll("{time}", new Date(u.measured * 1000).toLocaleString()) : T["tui.folders.measure"];
+    const status = outcome ? outcome.busy ? T["tui.folders.deleting"] : outcome.error || T[g ? "tui.folders.done" : "tui.folders.deleted"] : "";
+    put(r.note, [status, u && u.error].filter(Boolean).join(" · "));
+    put(r.time, u && g ? T["tui.folders.measured"].replaceAll("{time}", new Date(u.measured * 1000).toLocaleString()) : "");
+    r.time.hidden = !r.time.textContent;
+    r.note.hidden = !r.note.textContent;
+    r.note.classList.toggle("bad", !!(outcome?.error || u?.error));
+    wanted.push(r.row);
+  }
+  if (!wanted.length) wanted.push(m.empty);
+  for (const node of [...m.list.children]) if (!wanted.includes(node)) node.remove();
+  wanted.forEach((node,i) => { if (m.list.children[i] !== node) m.list.insertBefore(node, m.list.children[i] || null); });
+}
 function folderMenu(e, g) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   // The row pressed, kept now: by the time an entry is chosen the event is
@@ -8245,6 +8403,9 @@ function folderMenu(e, g) {
     // First when the folder is not here at all: nothing else in this menu can
     // be done in a folder that does not exist
     ailing(g) ? item(T["tui.repair.go"] || "", () => openRepair(g)) : null,
+    item(T[g.keep_first ? "tui.folders.unpin" : "tui.folders.pin"], () => folderAction(g.keep_first ? "unpin" : "pin", [g])),
+    item(T[g.parked ? "tui.folders.restore" : "tui.folders.archive"], () => folderAction(g.parked ? "restore" : "archive", [g])),
+    item(T["tui.folders.manage"], () => openFolderManager()),
     item(T["tui.menu.rename"] || "", () => startRename("tabs", "f:" + g.folder)),
     // Everything else about it -- the colour, where it is, taking it off the
     // list -- is on its own page in the settings
@@ -11911,6 +12072,7 @@ window.__state = function (json) {
   if (_sp && !_sp.hidden) _sp.hidden = true;
   const before = S;
   S = JSON.parse(json);
+  drawFolderManager();
   gitAfterWork(before);
   projectFlow();
   microvmArrived();

@@ -3341,6 +3341,12 @@ pub struct JumpSpec {
 /// person who has never heard the word still has one.
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct FolderConfig {
+    /// Keep this folder ahead of its siblings in the board.
+    #[serde(default)]
+    pub keep_first: bool,
+    /// Keep its definition and files, but do not launch its tabs.
+    #[serde(default)]
+    pub parked: bool,
     /// Shown as the heading, when there is more than one group. Absent means
     /// the folder speaks for itself (its branch, or its last path component)
     #[serde(default)]
@@ -3530,6 +3536,8 @@ impl CommandSpec {
 /// A working folder resolved at launch time: its path is a real one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folder {
+    pub keep_first: bool,
+    pub parked: bool,
     pub name: Option<String>,
     pub id: Option<String>,
     /// The machine it is on, already looked up. None is this one
@@ -5023,6 +5031,8 @@ fn resolve_folders(
                 .unwrap_or_else(|| GitSpec::default().protected()),
         };
         folders.push(Folder {
+            keep_first: def.keep_first,
+            parked: def.parked,
             name: def.name.clone().filter(|n| !n.trim().is_empty()),
             id: def.id.clone().filter(|i| !i.trim().is_empty()),
             // Looked up once, here, so that nothing downstream has to know
@@ -5071,6 +5081,9 @@ fn resolve_folders(
     // so two folders holding a "reviewer" each is the same collision as two in one
     let moved = settle_tab_ids(&mut tabs);
     settle_tab_uids(&mut tabs, scope);
+    // Reserve identities before hiding tabs, so restoring a folder cannot
+    // rename another folder's tabs or change their durable identity.
+    tabs.retain(|t| !folders[t.folder].parked);
     (folders, tabs, moved)
 }
 
@@ -5454,8 +5467,32 @@ pub fn rename_tab_at(path: &Path, desk_name: &str, title: &str, name: &str) -> R
     Ok(after)
 }
 
-/// A person naming a folder. Whatever was writing its name for them stops:
-/// the name they chose is not to be written over by the next summary
+/// Change one saved organization flag for the whole selection atomically.
+pub fn arrange_folders(desk: &str, paths: &[std::path::PathBuf], action: &str) -> Result<()> {
+    arrange_folders_at(&config_file_path(), desk, paths, action)
+}
+
+pub fn arrange_folders_at(path: &Path, desk: &str, paths: &[std::path::PathBuf], action: &str) -> Result<()> {
+    let (field, value) = match action {
+        "pin" => ("keep_first", true),
+        "unpin" => ("keep_first", false),
+        "archive" => ("parked", true),
+        "restore" => ("parked", false),
+        _ => anyhow::bail!("{}", crate::i18n::t("err.folders.action")),
+    };
+    with_folders(path, desk, |folders| {
+        let indices: Vec<usize> = paths.iter().map(|p| {
+            folders.iter().position(|g| folder_is(g, p))
+                .ok_or_else(|| anyhow::anyhow!("{}", crate::i18n::t("err.folders.changed")))
+        }).collect::<Result<_>>()?;
+        for index in indices {
+            folders[index][field] = serde_json::json!(value);
+        }
+        Ok(())
+    })
+}
+
+/// A person naming a folder stops its automatic naming.
 pub fn rename_folder(desk_name: &str, cwd: &Path, name: &str) -> Result<()> {
     rename_folder_at(&config_file_path(), desk_name, cwd, name)
 }
@@ -9480,6 +9517,50 @@ mod tests {
     fn read_desk(file: &Path) -> Desk {
         let cfg: Config = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
         cfg.resolve_desks().0.remove(0)
+    }
+
+    #[test]
+    fn organized_folders_keep_their_tabs_and_identity_through_restore() {
+        let a = std::path::PathBuf::from(crate::local_path("D:/arrange/first"));
+        let b = std::path::PathBuf::from(crate::local_path("D:/arrange/second"));
+        let body = serde_json::json!({"desks":[{"name":"work", "folders":[
+            {"cwd":a, "custom":{"keep":"me"}, "tabs":[{"id":"same", "command":"echo a", "children":[{"command":"echo child"}]}]},
+            {"cwd":b, "tabs":[{"id":"same", "command":"echo b"}]}
+        ]}]}).to_string();
+        let (_dir, file) = tabs_file("arrange", &body);
+        let before = read_desk(&file);
+        let identities = |d: &Desk| d.tabs.iter().map(|t| (t.cfg.id.clone(), t.cfg.uid.clone())).collect::<Vec<_>>();
+        arrange_folders_at(&file, &before.uid, &[a.clone()], "pin").unwrap();
+        arrange_folders_at(&file, &before.uid, &[a.clone()], "archive").unwrap();
+        let parked = read_desk(&file);
+        assert!(parked.folders[0].keep_first && parked.folders[0].parked);
+        assert_eq!(parked.tabs.len(), 1);
+        assert_eq!(identities(&parked), identities(&before)[2..]);
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["desks"][0]["folders"][0]["custom"]["keep"], "me");
+        assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["children"].as_array().unwrap().len(), 1);
+        arrange_folders_at(&file, &before.uid, &[b.clone()], "archive").unwrap();
+        assert!(read_desk(&file).tabs.is_empty(), "archiving the last active folder launched a fallback tab");
+        arrange_folders_at(&file, &before.uid, &[a.clone(), b], "restore").unwrap();
+        assert_eq!(identities(&read_desk(&file)), identities(&before));
+        arrange_folders_at(&file, &before.uid, &[a], "unpin").unwrap();
+        assert!(!read_desk(&file).folders[0].keep_first);
+    }
+
+    #[test]
+    fn folder_organization_is_atomic_and_host_scoped() {
+        let body = serde_json::json!({"desks":[{"name":"work", "folders":[
+            {"cwd":"/srv/app", "host":"one", "tabs":[]},
+            {"cwd":"/srv/app", "host":"two", "tabs":[]}
+        ]}]}).to_string();
+        let (_dir, file) = tabs_file("arrange-host", &body);
+        let key = |host| std::path::PathBuf::from(crate::uistate::place_key(Some(host), Path::new("/srv/app")));
+        assert!(arrange_folders_at(&file, "work", &[key("one"), key("missing")], "pin").is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), body, "a rejected selection was partly saved");
+        arrange_folders_at(&file, "work", &[key("two")], "archive").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(doc["desks"][0]["folders"][0].get("parked").is_none());
+        assert_eq!(doc["desks"][0]["folders"][1]["parked"], true);
     }
 
     /// A folder names itself from what its AIs are asked only while it asks

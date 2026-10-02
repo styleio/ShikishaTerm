@@ -163,6 +163,7 @@ pub mod vencode;
 pub mod vframe;
 pub mod webrtc;
 pub mod worktree;
+pub mod foldercare;
 pub mod ws;
 
 pub fn append_hook_log(msg: &str) {

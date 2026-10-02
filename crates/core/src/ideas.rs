@@ -571,6 +571,8 @@ mod tests {
         std::fs::write(wt.join(".git"), format!("gitdir: {}", own.display())).unwrap();
         std::fs::write(own.join("commondir"), "../..").unwrap();
         let folder = |p: &Path| crate::config::Folder {
+            keep_first: false,
+            parked: false,
             name: None,
             id: None,
             host: None,

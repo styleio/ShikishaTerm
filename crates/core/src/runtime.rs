@@ -2640,6 +2640,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // shows every one of them, which is what "hide while it runs" means
     let mut folders_hidden: std::collections::BTreeSet<std::path::PathBuf> =
         std::collections::BTreeSet::new();
+    let mut folder_manager = crate::foldercare::Manager::default();
     // Whether the view is looking at something else than it was because it was
     // moved, rather than because somebody asked it to move. Set by the places
     // that shuffle the rows on their own -- rows following the settings, a desk
@@ -5986,6 +5987,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderHide { folder, hide }) => {
                         shell.mail().folder_hides.push((folder, hide));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderManage { desk, act, folders }) => {
+                        shell.mail().folder_manage.push((desk, act, folders));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderMove { folder, to }) => {
                         shell.mail().folder_moves.push((folder, to));
                     }
@@ -6271,6 +6275,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             Some(std::path::PathBuf::from(crate::uistate::place_key(f.host.as_ref().map(|h| h.name.as_str()), c)))
         };
         let ui = Ui {
+            folder_manage: folder_manager.view(desks.get(desk_index).map(|d| d.uid.as_str()).unwrap_or_default()),
             ais: ai_choices.clone(),
             skills: skill_view.clone(),
             jobs: orch_board.clone(),
@@ -6450,6 +6455,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .iter()
                         .filter_map(|f| {
                             place(f).map(|folder| crate::uistate::FolderLabel {
+                                keep_first: f.keep_first,
+                                parked: f.parked,
                                 folder,
                                 summary: f.summary.clone(),
                                 auto: f.auto_label,
@@ -9838,6 +9845,61 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(format!("{e:#}"));
             }
         }
+        for (desk, action, keys) in shell.mail().take_folder_manage() {
+            let Some(d) = desks.get(desk_index).filter(|d| d.uid == desk) else {
+                flash = Some(i18n::t("err.folders.changed").to_string());
+                continue;
+            };
+            let mut chosen = Vec::new();
+            for key in keys.into_iter().collect::<std::collections::BTreeSet<_>>() {
+                let Some(f) = d.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, std::path::Path::new(&key)))) else {
+                    folder_manager.note(&desk, &key, false, i18n::t("err.folders.changed").to_string());
+                    continue;
+                };
+                if action == "archive" {
+                    let removing = folder_manager.pending.contains_key(&key)
+                        || leavings.iter().any(|l| crate::uistate::same_folder(&l.removal.place(), std::path::Path::new(&key)));
+                    let why = crate::foldercare::blocking_work(f, &tabs, &editors)
+                        .or_else(|| removing.then(|| i18n::t("err.folders.removing").to_string()));
+                    if let Some(why) = why { folder_manager.note(&desk, &key, false, why); continue; }
+                }
+                chosen.push(f.clone());
+            }
+            if chosen.is_empty() { continue; }
+            if action == "measure" {
+                if !folder_manager.measure(&desk, chosen) { flash = Some(i18n::t("err.folders.measuring").to_string()); }
+                continue;
+            }
+            if action == "delete" {
+                for f in chosen {
+                    let key = f.place().unwrap().to_string_lossy().into_owned();
+                    folder_manager.enqueue(&desk, key);
+                }
+                continue;
+            }
+            let paths: Vec<_> = chosen.iter().filter_map(|f| f.place()).collect();
+            match config::arrange_folders(&desk, &paths, &action) {
+                Ok(()) => {
+                    for path in &paths { folder_manager.note(&desk, &path.to_string_lossy(), false, String::new()); }
+                    if action == "restore" {
+                        folders_hidden.retain(|p| !paths.iter().any(|a| crate::uistate::same_folder(a, p)));
+                    }
+                    // A second request in this same frame must see the saved flags.
+                    for f in &mut desks[desk_index].folders {
+                        if f.place().is_some_and(|p| paths.iter().any(|a| crate::uistate::same_folder(a, &p))) {
+                            match action.as_str() { "pin" => f.keep_first = true, "unpin" => f.keep_first = false, "archive" => f.parked = true, "restore" => f.parked = false, _ => {} }
+                        }
+                    }
+                    if action == "archive" {
+                        editors.retain(|e| !e.scratch || !e.dir.as_deref().is_some_and(|p| paths.iter().any(|key| crate::uistate::is_place(p, e.on.as_deref(), key))));
+                    }
+                }
+                Err(e) => for path in paths { folder_manager.note(&desk, &path.to_string_lossy(), false, format!("{e:#}")); },
+            }
+        }
+        if let Some(key) = folder_manager.next_removal(desks.get(desk_index).map(|d| d.uid.as_str()).unwrap_or_default()) {
+            shell.mail().folder_discards.push((key, false));
+        }
         // Thrown away for good. Refused first, while nothing has happened yet,
         // so a folder with work in it is never closed on the way to a no.
         // Then the tabs are ended by taking the folder out of the settings --
@@ -9855,10 +9917,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Not reached: nothing is known about its work, and the
                 // answer is to try again, not to go and push something
                 Err((why, false)) => {
+                    folder_manager.finish(&folder, why.clone());
                     let path = crate::uistate::place_of(std::path::Path::new(&folder)).1.display().to_string();
                     flash = Some(i18n::tp("msg.folder.not_checked", &[("path", &path), ("why", &why)]));
                 }
                 Err((why, true)) => {
+                    folder_manager.finish(&folder, why.clone());
                     // A MicroVM's folder loses what is not pushed too; a
                     // server's keeps its branch, and says only why
                     let key = std::path::PathBuf::from(&folder);
@@ -9884,6 +9948,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // the path itself, which is what is asked about and deleted there
             let key = std::path::PathBuf::from(&folder);
             let at = crate::uistate::place_of(&key).1;
+            if let Some(desk) = folder_manager.pending.get(&folder) {
+                let d = desks.get(desk_index).filter(|d| &d.uid == desk);
+                let f = d.and_then(|d| d.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, &key))));
+                let why = match (d, f) {
+                    (Some(d), Some(f)) => {
+                        crate::foldercare::deletion_guard(f, d, &desks).map(|key| i18n::t(key).to_string())
+                            .or_else(|| crate::foldercare::blocking_work(f, &tabs, &editors))
+                            .or_else(|| leavings.iter().any(|l| crate::uistate::same_folder(&l.removal.place(), &key))
+                                .then(|| i18n::t("err.folders.removing").to_string()))
+                    }
+                    _ => Some(i18n::t("err.folders.changed").to_string()),
+                };
+                if let Some(why) = why {
+                    far_discard_checked.remove(&folder);
+                    folder_manager.finish(&folder, why);
+                    continue;
+                }
+            }
             // A folder on a MicroVM is its machine: the machine goes, and with
             // it everything in the folder. The project's checkout there going
             // is the project's checkout there going -- the next worktree makes
@@ -9946,6 +10028,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     if let Some(t) = &taken {
                                         let _ = config::put_folder_back(&d.uid, t);
                                     }
+                                    folder_manager.finish(&folder, format!("{e:#}"));
                                     flash = Some(format!("{e:#}"));
                                     continue;
                                 }
@@ -9970,7 +10053,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             gone: false,
                         });
                     }
-                    Err(e) => flash = Some(format!("{e:#}")),
+                    Err(e) => { folder_manager.finish(&folder, format!("{e:#}")); flash = Some(format!("{e:#}")); },
                 }
                 continue;
             }
@@ -10022,11 +10105,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             gone: false,
                         });
                     }
-                    Err(e) => flash = Some(format!("{e:#}")),
+                    Err(e) => { folder_manager.finish(&folder, format!("{e:#}")); flash = Some(format!("{e:#}")); },
                 }
                 continue;
             }
             if let Err(e) = crate::worktree::ready_to_discard(&at) {
+                folder_manager.finish(&folder, format!("{e:#}"));
                 flash = Some(format!("{e:#}"));
                 continue;
             }
@@ -10059,7 +10143,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         gone: false,
                     });
                 }
-                Err(e) => flash = Some(format!("{e:#}")),
+                Err(e) => { folder_manager.finish(&folder, format!("{e:#}")); flash = Some(format!("{e:#}")); },
             }
         }
         // A server's changed key, answered from the window or a phone
@@ -10735,6 +10819,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None => {}
                 Some(Ok(())) => {
                     flash = Some(i18n::tp("msg.folder.discarded", &[("path", &l.removal.folder.display().to_string())]));
+                    folder_manager.finish(&l.removal.place().to_string_lossy(), String::new());
                     // The project it was cut from has one worktree fewer. Said
                     // now rather than waited out, so the line offering the
                     // found ones stops offering a folder that is gone
@@ -10743,7 +10828,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     l.gone = true;
                 }
-                Some(Err(why)) => l.error = Some(why),
+                Some(Err(why)) => {
+                    folder_manager.finish(&l.removal.place().to_string_lossy(), why.clone());
+                    l.error = Some(why);
+                }
             }
         }
         leavings.retain(|l| {

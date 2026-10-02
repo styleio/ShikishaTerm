@@ -2409,6 +2409,9 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
         .arg(folder)
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
     let dirty = crate::detach_console(&mut asking).output()?;
+    if !dirty.status.success() {
+        bail!("{}: {}", crate::i18n::t("err.folders.check"), String::from_utf8_lossy(&dirty.stderr).trim());
+    }
     let count = unsaved_work(&String::from_utf8_lossy(&dirty.stdout), &|p| {
         std::fs::symlink_metadata(folder.join(p)).is_ok_and(|m| m.file_type().is_symlink())
     });
@@ -5774,6 +5777,16 @@ tools/conpty.ps1"));
         let listed = crate::detach_console(&mut ask).output().unwrap();
         let name = folder.file_name().unwrap().to_string_lossy().into_owned();
         String::from_utf8_lossy(&listed.stdout).contains(&name)
+    }
+
+    #[test]
+    fn folder_deletion_refuses_when_git_cannot_check_the_work() {
+        let (_main, cut) = cut_for_removal(&format!("status-check-{}", crate::random_hex(6)));
+        let pointer = std::fs::read_to_string(cut.folder.join(".git")).unwrap();
+        let git_dir = cut.folder.join(pointer.strip_prefix("gitdir:").unwrap().trim());
+        std::fs::write(git_dir.join("index"), b"not a git index").unwrap();
+        assert!(ready_to_discard(&cut.folder).is_err(), "a failed status check was treated as clean");
+        assert!(cut.folder.join("readme.md").exists());
     }
 
     /// A build leaves paths longer than Windows' 260 characters under an

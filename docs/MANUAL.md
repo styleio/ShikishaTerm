@@ -201,6 +201,17 @@ and drag it shut to give the whole window to the terminal.
 
 ## 3. Working folders and branches
 
+Open **Manage work folders** in the left list to search by folder, project or machine and act on a selection.
+
+- **Pin** brings a project and its pinned folders forward. The choice survives restarts.
+- **Archive** asks before closing tabs and hiding folders from the usual list. Files and tab settings stay.
+  Choose **Archived**, select the folders and press **Restore** to use them again.
+- **Delete folders** always confirms the selected targets, then processes them in order. Primary checkouts,
+  pinned or busy folders, and uncommitted work stay. Open file editors and use by another workspace also prevent
+  deletion; each folder keeps its result in the list.
+- **Measure capacity** scans the visible folders in the background. **Largest first** orders the estimates.
+  Linked contents are excluded. Each estimate has a measurement time or an error; it may differ from space freed by deletion.
+
 Press the folder-plus at the end of the **PROJECT** heading to add a project: open a
 folder on this PC, clone one from a URL, or make a new one. A project added opens with
 whatever Settings > Basic > Default command says (PowerShell, Command Prompt or Git Bash;

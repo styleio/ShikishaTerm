@@ -435,7 +435,6 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .filter(|k| ui.folders_hidden.iter().any(|h| crate::uistate::same_folder(h, k)))
             .collect(),
     };
-    groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
     // A row is put away with the folder it stands in: that path on that
     // machine (see [`surface_place`])
     let hidden_here = |place: Option<&std::path::Path>| {
@@ -545,6 +544,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             g.empty = false;
         }
     }
+    // Management includes saved folders temporarily hidden from the board.
+    // Ad-hoc folders still belong only to their live tabs.
+    let folder_catalog = groups.iter().filter(|(k, _)| ui.folders.iter().any(|(p, _)| crate::uistate::same_folder(k, p)))
+        .map(|(_, g)| g.clone()).collect();
+    groups.retain(|(k, _)| !put_away.iter().any(|h| crate::uistate::same_folder(h, k)));
     // The pairing link as it should be shown, with the network it leads to
     let shown = ui.qr.as_deref().map(crate::netaddr::shown_link);
     // The folder a row stands under: its folder on the machine that folder
@@ -554,6 +558,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         groups.iter().position(|(k, _)| crate::uistate::same_folder(k, &key))
     };
     crate::uistate::UiState {
+        folder_catalog,
         groups: groups.iter().map(|(_, g)| g.clone()).collect(),
         branch: ui.branch.clone(),
         repair: ui.repair.clone(),
@@ -610,6 +615,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         ssh_aliases: ui.ssh_aliases.clone(),
         remote_list: ui.remote_list.clone(),
         far_ports: ui.far_ports.clone(),
+        folder_manage: ui.folder_manage.clone(),
         key_changes: ui.key_changes.clone(),
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
@@ -1757,6 +1763,7 @@ pub struct Ui {
     /// Of those, what each says is being done in it, and whether that is
     /// written for it from what its AIs are asked
     pub folder_labels: Vec<crate::uistate::FolderLabel>,
+    pub folder_manage: crate::foldercare::View,
     /// Words waiting for the input bar of the AI tabs in a folder: (the folder
     /// as a place key, the words). The address of the issue a worktree was just made for
     pub drafts: Vec<(std::path::PathBuf, String)>,
