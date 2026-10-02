@@ -465,6 +465,15 @@ pub struct FarTerm {
     /// when the person changes the machine's setting
     away: Mutex<crate::config::Away>,
     owner: AtomicU64,
+    /// What was typed into the tab before its terminal there was attached
+    /// to: sent, in order, the moment it is ([`FarTerm::owned_by`]).
+    ///
+    /// A tab is on screen, and taking keys, before the terminal it goes back
+    /// to or opens in place of one that ended has answered -- a second or two
+    /// at a start, longer on a line that is slow to come up. What was typed
+    /// then went with no owner, which the resident process refuses: the
+    /// person's first words to a tab after a start vanished without a trace
+    held_in: Mutex<Vec<u8>>,
     /// Where it is, and the line to it now: a line that went and came back
     /// is another line
     at: Place,
@@ -513,6 +522,7 @@ impl FarTerm {
             rest: AtomicU64::new(0),
             away: Mutex::new(away),
             owner: AtomicU64::new(0),
+            held_in: Mutex::new(Vec::new()),
             at: at.clone(),
             link: Mutex::new(None),
             size: Mutex::new(size),
@@ -523,6 +533,20 @@ impl FarTerm {
             stopping: AtomicBool::new(false),
             open_there: Mutex::new(at.cloud().and_then(|h| h.instance.as_deref()).map(crate::e2b::Opened::new)),
         }
+    }
+
+    /// Attached to, as `owner`: what was typed while it was not goes in now,
+    /// ahead of anything typed after. The owner is set under the same lock
+    /// the writer reads it under, and what was held is sent before that lock
+    /// is let go of -- so no key typed from here on can overtake it
+    fn owned_by(&self, owner: u64) {
+        let mut held = self.held_in.lock().unwrap_or_else(|e| e.into_inner());
+        self.owner.store(owner, Ordering::SeqCst);
+        if owner == 0 || held.is_empty() {
+            return;
+        }
+        let keys = std::mem::take(&mut *held);
+        self.say(json!({ "do": "in", "term": self.term(), "owner": owner, "b": b64(&keys) }));
     }
 
     /// What is run on this PC, said in full (`ask_open`)
@@ -958,7 +982,7 @@ impl std::io::Read for FarReader {
                     }
                     self.attached = true;
                     self.again = false;
-                    self.term.owner.store(m["owner"].as_u64().unwrap_or(0), Ordering::SeqCst);
+                    self.term.owned_by(m["owner"].as_u64().unwrap_or(0));
                     let taken = self.term.take_state(&m);
                     self.seen = m["seq"].as_u64().unwrap_or(0);
                     // The tail of a sequence the state was taken in the middle
@@ -1117,10 +1141,28 @@ struct FarWriter {
     term: Arc<FarTerm>,
 }
 
+/// The most typed before a terminal is attached to that is kept for it: a
+/// paste or two, not a stream nobody is reading
+const HELD_IN_MOST: usize = 1 << 20;
+
 impl std::io::Write for FarWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let said = self.term.say(json!({ "do": "in", "term": self.term.term(),
-            "owner": self.term.owner.load(Ordering::SeqCst), "b": b64(buf) }));
+        // Not attached to yet: kept for the moment it is (`FarTerm::owned_by`).
+        // Checked under the lock the flush takes, so nothing typed between
+        // the owner arriving and the flush is left behind it
+        let owner = {
+            let mut held = self.term.held_in.lock().unwrap_or_else(|e| e.into_inner());
+            let owner = self.term.owner.load(Ordering::SeqCst);
+            if owner == 0 && !self.term.ended.load(Ordering::SeqCst) {
+                if held.len() + buf.len() > HELD_IN_MOST {
+                    return Err(std::io::Error::other("the terminal there has not been reached yet"));
+                }
+                held.extend_from_slice(buf);
+                return Ok(buf.len());
+            }
+            owner
+        };
+        let said = self.term.say(json!({ "do": "in", "term": self.term.term(), "owner": owner, "b": b64(buf) }));
         if said { Ok(buf.len()) } else { Err(std::io::Error::other("the bridge's line is down")) }
     }
 
