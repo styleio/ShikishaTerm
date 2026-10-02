@@ -51,6 +51,18 @@ once it reaches its first tagged release.
 - **A tab on a desk that is not in front can still use `shikisha`.** Its
   key was retired while another desk was in front, so its calls and its
   CLI's hooks were refused until its program was started again.
+- **A name with `</script>` in it cannot run code in the settings page.**
+  Values the settings, the ? and the manual pages put into their scripts --
+  a project's name among them -- are written so that nothing in them can
+  end the script.
+- **The worktree dialog no longer waits on counting what is left out.** The
+  places the rules leave out are counted to one limit for the whole dialog,
+  not one each.
+- **"Added since you last looked" is said only when it is so.** A rule of the
+  app's was marked "New in this version" for a project that had simply never
+  looked at the list.
+- **A program whose tab was closed is told what to do** when it calls the app,
+  in the app's language.
 
 ## [0.23.1] - 2026-10-02
 

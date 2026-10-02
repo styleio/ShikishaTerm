@@ -3003,10 +3003,13 @@ pub struct LeftOut {
     pub more: bool,
 }
 
-/// How many files one place left out is counted to. What is said is "this
-/// much or more", and a place left out is left out whatever it holds: the
-/// count is there so the person sees why the rule is worth having, which a
-/// first few hundred thousand files already show
+/// How many files the places left out are counted to, all of them together
+/// in one answer. What is said is "this much or more", and a place left out
+/// is left out whatever it holds: the count is there so the person sees why
+/// the rule is worth having, which a first few hundred thousand files already
+/// show. Shared rather than one each, because leaving out a great deal is
+/// what the rules are for -- one each, a project with ten such places was
+/// counted to two million files before the screen could say anything
 const LEFT_COUNT_MOST: u64 = 200_000;
 
 /// How much each of these holds, counted on disk.
@@ -3015,12 +3018,18 @@ const LEFT_COUNT_MOST: u64 = 200_000;
 /// what a copy would copy. Stopped after `most` files in all, because a build
 /// folder can hold a million and "at least this much" is already the answer
 pub fn sizes(main: &Path, paths: &[String], most: u64, inside: &crate::inside::Inside) -> Vec<Size> {
-    let mut left = most;
+    sizes_counting_left(main, paths, most, LEFT_COUNT_MOST, inside)
+}
+
+/// [`sizes`], told how many files the places left out may be counted to in
+/// all (tests)
+fn sizes_counting_left(main: &Path, paths: &[String], most: u64, left_most: u64, inside: &crate::inside::Inside) -> Vec<Size> {
+    let (mut left, mut budget) = (most, left_most);
     paths
         .iter()
         .map(|p| {
             let name = p.trim_end_matches('/');
-            size_of(p, &main.join(name), name, inside, &mut left)
+            size_of(p, &main.join(name), name, inside, &mut left, &mut budget)
         })
         .collect()
 }
@@ -3028,19 +3037,19 @@ pub fn sizes(main: &Path, paths: &[String], most: u64, inside: &crate::inside::I
 /// How much a copy of one thing -- known in the worktree as `at` -- would
 /// copy, walked the way the copy walks it: what the rules leave out or link
 /// inside it is not counted. Counts at most `left` files, taking what it
-/// counted off `left`
-fn size_of(path: &str, from: &Path, at: &str, inside: &crate::inside::Inside, left: &mut u64) -> Size {
+/// counted off `left`; and what is left out, at most `budget` files, taken
+/// off it the same way
+fn size_of(path: &str, from: &Path, at: &str, inside: &crate::inside::Inside, left: &mut u64, budget: &mut u64) -> Size {
     let mut size = Size { path: path.to_string(), bytes: 0, files: 0, more: false, left: Vec::new() };
     let walked = crate::inside::walk(from, at, "copy", &[], inside, &mut |place, src, step| {
         if let crate::inside::Step::Left { by } = step {
             let mut out = LeftOut { path: place.to_string(), by: by.to_string(), bytes: 0, files: 0, more: false };
-            let mut budget = LEFT_COUNT_MOST;
             let counted = crate::inside::walk(src, place, "copy", &[], &crate::inside::Inside::default(), &mut |_, s, st| {
                 if matches!(st, crate::inside::Step::File { .. }) {
-                    if budget == 0 {
+                    if *budget == 0 {
                         return Err(std::io::ErrorKind::Interrupted.into());
                     }
-                    budget -= 1;
+                    *budget -= 1;
                     out.files += 1;
                     out.bytes += std::fs::symlink_metadata(s).map(|m| m.len()).unwrap_or(0);
                 }
@@ -3085,6 +3094,9 @@ fn size_of(path: &str, from: &Path, at: &str, inside: &crate::inside::Inside, le
 /// count the way [`sizes`] lets it -- the dialog has to say which of them is
 /// the slow one. A thing from elsewhere is counted where it comes from
 fn carry_sizes_now(main: &Path, items: &[Carry], most: u64) -> Vec<Size> {
+    // What is left out is counted for the whole dialog together
+    // (`LEFT_COUNT_MOST`): the dialog waits for all of it
+    let mut budget = LEFT_COUNT_MOST;
     items
         .iter()
         .map(|c| {
@@ -3093,7 +3105,7 @@ fn carry_sizes_now(main: &Path, items: &[Carry], most: u64) -> Vec<Size> {
                 None => main.join(&c.name),
             };
             let mut left = most;
-            size_of(&c.name, &from, &c.name, &c.inside, &mut left)
+            size_of(&c.name, &from, &c.name, &c.inside, &mut left, &mut budget)
         })
         .collect()
 }
@@ -3250,6 +3262,7 @@ fn carry_look_now(main: &Path, items: &[Carry], at: &str) -> Vec<LookItem> {
 /// counted as a copy of it would copy, largest first
 fn look_now(from: &Path, at: &str, inside: &crate::inside::Inside) -> Vec<(Size, bool)> {
     let Ok(entries) = std::fs::read_dir(from) else { return Vec::new() };
+    let mut budget = LEFT_COUNT_MOST;
     let mut found: Vec<(Size, bool)> = entries
         .flatten()
         .filter_map(|e| {
@@ -3259,7 +3272,7 @@ fn look_now(from: &Path, at: &str, inside: &crate::inside::Inside) -> Vec<(Size,
             }
             let name = format!("{at}/{}", e.file_name().to_string_lossy());
             let mut left = crate::inherit::LARGE_FILES;
-            Some((size_of(&name, &e.path(), &name, inside, &mut left), meta.is_dir()))
+            Some((size_of(&name, &e.path(), &name, inside, &mut left, &mut budget), meta.is_dir()))
         })
         .collect();
     found.sort_by(|a, b| b.0.bytes.cmp(&a.0.bytes).then(b.0.files.cmp(&a.0.files)).then(a.0.path.cmp(&b.0.path)));
@@ -5312,6 +5325,32 @@ tools/conpty.ps1"));
         assert!(said.missed.is_empty(), "{said:?}");
         assert!(cut.folder.join(".claude/worktrees/agent-1/target/big.bin").is_file(), "a rule changed to come along did not");
         assert!(!cut.folder.join(".claude/checkpoints").exists(), "changing one rule changed another");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    /// What the rules leave out is counted to one limit for the whole answer,
+    /// not one a place: past it, every place still to be counted says "or
+    /// more" at once instead of being walked
+    #[test]
+    fn what_is_left_out_is_counted_to_one_limit_in_all() {
+        let main = repo("left-limit");
+        for d in ["a/out", "b/out"] {
+            std::fs::create_dir_all(main.join(d)).unwrap();
+            for n in 0..3 {
+                std::fs::write(main.join(format!("{d}/{n}")), "x").unwrap();
+            }
+        }
+        let skip = |p: &str| crate::config::BringRule { path: Some(p.into()), how: "skip".into(), ..Default::default() };
+        let inside = crate::inside::Inside::of(&[skip("a/out/"), skip("b/out/")]);
+        let said = sizes_counting_left(&main, &["a/".into(), "b/".into()], 1000, 4, &inside);
+        let left: Vec<&LeftOut> = said.iter().flat_map(|s| &s.left).collect();
+        assert_eq!(left.iter().map(|l| l.files).sum::<u64>(), 4, "{left:?}");
+        assert!(left.iter().any(|l| l.more), "the limit was not said: {left:?}");
+        // With room for all of it, all of it, and nothing said to be more
+        let said = sizes_counting_left(&main, &["a/".into(), "b/".into()], 1000, 100, &inside);
+        let left: Vec<&LeftOut> = said.iter().flat_map(|s| &s.left).collect();
+        assert_eq!((left.len(), left.iter().map(|l| l.files).sum::<u64>()), (2, 6), "{left:?}");
+        assert!(left.iter().all(|l| !l.more));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

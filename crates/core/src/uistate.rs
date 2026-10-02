@@ -802,8 +802,8 @@ pub struct BranchPlan {
     /// say a place was left out by one of the app's and not the project's
     #[serde(default)]
     pub shipped_rules: Vec<String>,
-    /// Those of them this project had not been shown when the dialog opened:
-    /// said as added in this version, this once
+    /// Those of them added since this project was last shown the list, when
+    /// it had been shown it before: said as added since then, this once
     #[serde(default)]
     pub shipped_new: Vec<String>,
     /// What is in each place inside them the dialog has open, to find what

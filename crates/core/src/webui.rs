@@ -1849,34 +1849,33 @@ fn handle(
     }
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
+            // Every value goes into the page's script as JSON, made safe to
+            // stand there (`script_json`): some of it is the person's own
+            // words, a project's name among them
+            let js = |json: String| crate::script_json(&json);
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
-                .replace("__QUICK__", &quick_json())
+                .replace("__HOTKEYS__", &js(crate::hotkeys::catalog_json()))
+                .replace("__QUICK__", &js(quick_json()))
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
-                .replace("__GRANTS__", &crate::grants::catalog_json())
+                .replace("__GRANTS__", &js(crate::grants::catalog_json()))
                 .replace(
                     "__GITLUA__",
-                    &serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA)
-                        .unwrap_or_else(|_| "\"\"".into()),
+                    &js(serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA).unwrap_or_else(|_| "\"\"".into())),
                 )
                 .replace(
                     "__PROTECT__",
-                    &serde_json::to_string(&crate::git::DEFAULT_PROTECTED)
-                        .unwrap_or_else(|_| "[]".into()),
+                    &js(serde_json::to_string(&crate::git::DEFAULT_PROTECTED).unwrap_or_else(|_| "[]".into())),
                 )
-                .replace(
-                    "__THISPC__",
-                    &serde_json::to_string(crate::config::THIS_PC).unwrap_or_default(),
-                )
-                .replace("__PETNOUNS__", &pet_nouns_json())
-                .replace("__PETADJECTIVES__", &pet_adjectives_json())
+                .replace("__THISPC__", &js(serde_json::to_string(crate::config::THIS_PC).unwrap_or_default()))
+                .replace("__PETNOUNS__", &js(pet_nouns_json()))
+                .replace("__PETADJECTIVES__", &js(pet_adjectives_json()))
                 .replace(
                     "__SHIPPEDINSIDE__",
-                    &serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into()),
+                    &js(serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into())),
                 )
-                .replace("__INSIDESHOWN__", &crate::inside::shown_json())
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__INSIDESHOWN__", &js(crate::inside::shown_json()))
+                .replace("__DICT__", &js(crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -1938,7 +1937,7 @@ fn handle(
         ("GET", "/guide") => {
             let html = crate::i18n::render(&themed(crate::guide::page().to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -2075,7 +2074,7 @@ fn handle(
         ("GET", "/result") => {
             let html = crate::i18n::render(&themed(RESULT_PAGE.to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -2085,7 +2084,7 @@ fn handle(
         ("GET", "/help") => {
             let md = load_manual(config_path);
             let html = crate::i18n::render(&themed(HELP_PAGE.to_string()))
-                .replace("__MD__", &serde_json::to_string(&md)?);
+                .replace("__MD__", &crate::script_json(&serde_json::to_string(&md)?));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -13818,7 +13817,9 @@ function insideShipped(desk, p, root, change) {
     if (c && c.dropped) { away.push(s); continue; }
     const how = c && BRING_HOWS.includes(c.how) ? c.how : s.how;
     const marks = [el("span", {class:"chip"}, T[c ? "settings.bring.inside.changed" : "settings.bring.inside.app"])];
-    if (s.since > seen) marks.push(el("span", {class:"chip"}, T["settings.bring.inside.new"]));
+    // Only after this project has looked once: to a project that never did,
+    // every rule is simply the app's, not something this version added
+    if (seen > 0 && s.since > seen) marks.push(el("span", {class:"chip"}, T["settings.bring.inside.new"]));
     // Native append writes an absent part as the word "null"
     rows.push(el("div", {class:"listrow shiprow"}, ...[
       el("span", {class:"mono shippath", title: s.path}, s.path),

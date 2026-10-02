@@ -4600,7 +4600,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     match tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.uid() == uid) {
                         Some(t) => call.caller = Some(t.called().to_string()),
                         None => {
-                            let _ = call.reply.send(Err("the tab this key was given to has been closed; it no longer reaches the app".to_string()));
+                            let _ = call.reply.send(Err(i18n::t("err.api.tab_closed")));
                             continue;
                         }
                     }

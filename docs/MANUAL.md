@@ -232,9 +232,9 @@ it records its state on this PC, such as `agent-registry.json` and
 `scheduled_tasks.json`) are not brought,
 even when `.claude` is copied. These are the app's Default rules, listed under the
 project's settings, Worktree Creation Rules › Rules for places inside folders. To bring one,
-change its row to Copy. When a new version adds a Default rule, its row says "New in
-this version". The dialog says, under a row that is copied, what is not brought and
-how big it is.
+change its row to Copy. When a new version adds a Default rule after you have looked at a
+project's rules, its row says "Added since you last looked", once. The dialog says, under a
+row that is copied, what is not brought and how big it is.
 
 Press **Create worktree** (`Ctrl+Enter`). A "Creating the worktree…" row appears under
 the project's heading and turns into the folder's card once it is made. Its ✕ stops it
