@@ -3696,6 +3696,14 @@ impl Tab {
         {
             anyhow::bail!(why);
         }
+        // Who it is, settled before anything is started under it: the key its
+        // program is handed is minted to it, and a restart -- which comes back
+        // through here with these same options -- is the same tab
+        let mut opts = opts;
+        if opts.uid.as_deref().is_none_or(|u| u.trim().is_empty()) {
+            opts.uid = Some(crate::config::new_tab_uid());
+        }
+        let uid = opts.uid.clone().unwrap_or_default();
         let profile = Self::resolve_profile(argv, &profile_spec);
         // Remembered before the profile is handed to the detector, because the
         // detector's may change hands later and this one may not: it is the
@@ -3791,7 +3799,7 @@ impl Tab {
         // Where the external API is, the key to it, and which tab this is.
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home
-        let api_env = crate::api::child_env(opts.called(&title));
+        let api_env = crate::api::child_env(opts.called(&title), &uid);
         let api_on = !api_env.is_empty();
         // A tab over there cannot be handed its key through an environment:
         // the bridge on its machine is given it instead (`farlink`)
@@ -3809,7 +3817,7 @@ impl Tab {
         let far_typed = match (far_typed, opts.host.as_deref()) {
             (Some(line), Some(_)) if api_on => {
                 let home = format!("$HOME/{}", crate::farlink::HOME_DIR);
-                let env: Vec<String> = crate::farlink::tab_env(&home, opts.called(&title))
+                let env: Vec<String> = crate::farlink::tab_env(&home, &uid)
                     .into_iter()
                     .map(|(k, v)| format!("{k}=\"{v}\""))
                     .collect();
@@ -3821,7 +3829,7 @@ impl Tab {
             cmd.env(k, v);
         }
         if keep_here && api_on {
-            for (k, v) in crate::localkeep::tab_env(opts.called(&title)) {
+            for (k, v) in crate::localkeep::tab_env(&uid) {
                 cmd.env(k, v);
             }
         }
@@ -3896,10 +3904,10 @@ impl Tab {
             let started = (Some(folder.as_str()), None);
             crate::localkeep::connect_soon();
             let away = crate::config::Away::Always;
-            Some(match crate::farterm::left_running(&at, &folder, called) {
+            Some(match crate::farterm::left_running(&at, &folder, &uid, called) {
                 Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, Some(run), away),
-                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, called, (rows, cols), started, Some(run), away)?,
-                None => crate::farterm::open_later(&at, called, (rows, cols), started, Some(run), away),
+                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, &uid, (rows, cols), started, Some(run), away)?,
+                None => crate::farterm::open_later(&at, &uid, (rows, cols), started, Some(run), away),
             })
         } else {
             None
@@ -3927,7 +3935,7 @@ impl Tab {
         }
         .zip(away)
         .map(|(at, away)| {
-            let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), opts.called(&title));
+            let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), &uid, opts.called(&title));
             (at, left, away)
         });
         let (master, killer, pid, child): (
@@ -3949,8 +3957,8 @@ impl Tab {
                 let started = (opts.remote_cwd.as_deref(), far_typed.as_deref());
                 let (m, k, t) = match left {
                     Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, None, away),
-                    None if far_holds(&at) => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, None, away)?,
-                    None => crate::farterm::open_later(&at, opts.called(&title), (rows, cols), started, None, away),
+                    None if far_holds(&at) => crate::farterm::open(&at, &uid, (rows, cols), started, None, away)?,
+                    None => crate::farterm::open_later(&at, &uid, (rows, cols), started, None, away),
                 };
                 far_term = Some(t);
                 (m, k, None, None)
@@ -4196,7 +4204,7 @@ impl Tab {
             resume: resume_spec,
             title,
             id: opts.id.clone(),
-            uid: opts.uid.clone().filter(|u| !u.trim().is_empty()).unwrap_or_else(crate::config::new_tab_uid),
+            uid,
             serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
             model: opts.model.clone(),
             parser,

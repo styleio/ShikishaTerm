@@ -3257,9 +3257,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if remade {
                 continue;
             }
-            pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| {
-                keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
-            });
+            pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| pane_at(&surfaces, &tabs, k));
             open_split = Some(key);
             active = pane_layout.focused_surface();
         }
@@ -3291,10 +3289,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // dragged divider is -- this runs every pass, and a file per frame is
         // not a saved setting, it is a disk being worn out
         if let Some(key) = open_split.clone() {
-            let keyed = surface_keys(&surfaces, &tabs);
-            let now = crate::splits::Splits::written(&pane_layout, |s| {
-                keyed.get(s - 1).and_then(|k| k.id.clone())
-            });
+            let keyed = pane_keys(&surfaces, &tabs);
+            let now = crate::splits::Splits::written(&pane_layout, |s| keyed.get(s - 1).cloned().flatten());
             // Only ever an arrangement, never the absence of one. A split
             // is two panes or more, so "nothing to write" here means the tree
             // in hand is not this row's -- somebody replaced it -- and writing
@@ -4153,7 +4149,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // that outlives its tab is a working key nobody is watching
             if let Some(a) = api_server.as_ref() {
                 a.retain_tabs(
-                    &tabs.iter().map(|t| t.called().to_string()).collect::<Vec<_>>(),
+                    &tabs.iter().map(|t| t.uid().to_string()).collect::<Vec<_>>(),
                 );
             }
 
@@ -4362,7 +4358,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let reply = match (tabs[idx - 1].notify_reply, remote_ui.as_ref())
                             {
                                 (true, Some(r)) => Some(r.reply_link(reply::Ticket::new(
-                                    tabs[idx - 1].id.clone(),
+                                    Some(tabs[idx - 1].uid().to_string()),
                                     idx,
                                     tabs[idx - 1].title.clone(),
                                     ctx.output.clone(),
@@ -4590,7 +4586,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // its line open for the answer, so this is drained every turn (16ms)
         // rather than on the 200ms detection tick
         if let Some(a) = api_server.as_ref() {
-            while let Ok(call) = a.rx.try_recv() {
+            while let Ok(mut call) = a.rx.try_recv() {
+                // A tab's key names it by who it is (`api::child_env`); every
+                // command takes a caller by the name it is called now. A key
+                // whose tab has closed -- a process left running somewhere --
+                // is told so, and never taken for a person's call or for the
+                // next tab to draw the name
+                if let Some(uid) = call.caller.take() {
+                    match tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.uid() == uid) {
+                        Some(t) => call.caller = Some(t.called().to_string()),
+                        None => {
+                            let _ = call.reply.send(Err("the tab this key was given to has been closed; it no longer reaches the app".to_string()));
+                            continue;
+                        }
+                    }
+                }
                 // A desk with no Lua of its own still has an engine's
                 // worth of commands to offer; make one rather than answer
                 // "not available" (the same gap-filler as ▶)
@@ -5272,7 +5282,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .entry(at.machine_key())
                         .or_insert_with(|| crate::farlink::Want { at: at.clone(), host: host.to_string(), keys: Vec::new() })
                         .keys
-                        .push((t.called().to_string(), key.clone()));
+                        .push((t.uid().to_string(), key.clone()));
                 }
                 bridges.tend(wanted.into_values().collect());
                 // The tabs this PC's resident process holds, their keys handed
@@ -5281,7 +5291,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .chain(desk_tabs.iter().flatten())
                     .filter(|t| t.far_term.as_ref().is_some_and(|f| f.here()))
-                    .filter_map(|t| t.far_key.clone().map(|k| (t.called().to_string(), k)))
+                    .filter_map(|t| t.far_key.clone().map(|k| (t.uid().to_string(), k)))
                     .collect();
                 if !here.is_empty() {
                     std::thread::spawn(move || crate::localkeep::give_keys(here));
@@ -5352,10 +5362,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // way to learn whether it landed
                     remote::RemoteCmd::Reply { tab_id, tab, name, dest, text } => {
                         let by_number = |n: usize| session_at(&surfaces, n).and_then(|i| tabs.get(i));
+                        // The tab the ticket was written for: by who it is,
+                        // or by its id when a script wrote it -- never a uid
+                        // taken for a name
                         let target = (1..=tabs.len())
                             .find(|n| {
                                 tab_id.as_deref().is_some_and(|want| {
-                                    by_number(*n).and_then(|t| t.id.as_deref()) == Some(want)
+                                    by_number(*n).is_some_and(|t| {
+                                        t.uid() == want || (!config::is_tab_uid(want) && t.id.as_deref() == Some(want))
+                                    })
                                 })
                             })
                             .or_else(|| {
@@ -6722,7 +6737,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // where the calls its AI made while the app was away are listed
         // (far-keep plan §4.6): put in front, with its conversation beside it
         for key in crate::farlink::take_convo_wanted() {
-            let named = tabs.iter().find(|t| crate::farlink::key_name(t.called()) == key).map(|t| t.called().to_string());
+            let named = tabs.iter().find(|t| crate::farlink::key_name(t.uid()) == key).map(|t| t.called().to_string());
             match named.and_then(|n| hooks::TabRef::Name(n).resolve(&surface_keys(&surfaces, &tabs))) {
                 Some(at) => {
                     active = at;
@@ -6758,8 +6773,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // nobody had asked for either of them
                     let mut made = crate::layout::Layout::single(active);
                     made.split(dir, 0);
-                    let keyed = surface_keys(&surfaces, &tabs);
-                    let panes = made.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone()));
+                    let keyed = pane_keys(&surfaces, &tabs);
+                    let panes = made.keep(|s| keyed.get(s - 1).cloned().flatten());
                     // The folder in front, on the machine it is on
                     let here = surface_place_at(&surfaces, &tabs, active).map(|k| crate::uistate::place_of(&k));
                     let desk_name = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
@@ -17108,6 +17123,34 @@ pub fn surface_place_at(surfaces: &[Surface], tabs: &[Tab], surface: usize) -> O
     }
 }
 
+/// What each surface is written down as in a split's panes (`layout::Kept`):
+/// a terminal by who it is (`Tab::uid`), so a pane whose tab has closed is
+/// never filled by another tab that drew its name; a page or a panel by its
+/// key, which is all it has
+pub fn pane_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<Option<String>> {
+    surfaces
+        .iter()
+        .zip(surface_keys(surfaces, tabs))
+        .map(|(p, k)| match p {
+            Surface::Session(i) => tabs.get(*i).map(|t| t.uid().to_string()),
+            _ => k.id,
+        })
+        .collect()
+}
+
+/// The surface (1..) a pane written down as `key` shows now: the terminal
+/// that is that uid, a page or panel of that key -- or, in a split written
+/// before terminals were kept by uid, the tab called that
+pub fn pane_at(surfaces: &[Surface], tabs: &[Tab], key: &str) -> Option<usize> {
+    if let Some(i) = pane_keys(surfaces, tabs).iter().position(|k| k.as_deref() == Some(key)) {
+        return Some(i + 1);
+    }
+    if crate::config::is_tab_uid(key) {
+        return None;
+    }
+    surface_keys(surfaces, tabs).iter().position(|t| t.matches(key)).map(|i| i + 1)
+}
+
 pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
     surfaces
         .iter()
@@ -19260,6 +19303,7 @@ mod tests {
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     host: None,
+                    uid: None,
                     title: "AGENT".into(),
                     id: None,
                     cwd: Some("D:\\Work".into()),

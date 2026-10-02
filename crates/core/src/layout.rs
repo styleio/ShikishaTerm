@@ -657,9 +657,10 @@ impl Layout {
 /// An arrangement of panes written down by name (see `Layout::keep`).
 ///
 /// This is the form that is kept in a settings file, so it says only what a
-/// person arranged: the shape, and which tab is in each pane by the name
-/// automation calls it. Row numbers are not in it -- they mean whatever is in
-/// that row this minute.
+/// person arranged: the shape, and which tab is in each pane -- a terminal by
+/// who it is (its uid), a page or a panel by the name automation calls it
+/// (`runtime::pane_keys`). Row numbers are not in it -- they mean whatever is
+/// in that row this minute.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Kept {
     layout: Layout,
@@ -667,7 +668,7 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// The names of the tabs its panes were showing
+    /// What its panes were showing: terminals by uid, everything else by name
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.keys.iter().filter_map(|(_, k)| k.as_deref())
     }

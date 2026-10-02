@@ -4286,10 +4286,17 @@ fn handle(
         // app has a line to. A machine with no line now is not asked
         ("GET", "/api/far/held") => {
             let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            // A terminal is kept by who its tab is; the list says its name
+            let names = crate::config::tab_names_by_uid();
             let machines: Vec<serde_json::Value> = crate::farlink::up_for(&host)
                 .iter()
                 .filter_map(|at| {
-                    let listed = crate::farterm::list_held(&crate::farterm::Place::Far(at.clone()))?;
+                    let mut listed = crate::farterm::list_held(&crate::farterm::Place::Far(at.clone()))?;
+                    for t in listed["terms"].as_array_mut().into_iter().flatten() {
+                        if let Some(name) = t["tab"].as_str().and_then(|u| names.get(u)) {
+                            t["name"] = serde_json::json!(name);
+                        }
+                    }
                     Some(serde_json::json!({
                         "machine": at.machine_key(),
                         "address": at.address(),
@@ -4324,10 +4331,24 @@ fn handle(
         // (far-keep plan §4.6), as its bridges last said
         ("GET", "/api/far/missed") => {
             let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            // A call is written down under its tab's key file, which is named
+            // for who the tab is; the list says the tab's name
+            let names: std::collections::HashMap<String, String> = crate::config::tab_names_by_uid()
+                .into_iter()
+                .map(|(uid, name)| (crate::farlink::key_name(&uid), name))
+                .collect();
             let machines: Vec<serde_json::Value> = crate::farlink::missed()
                 .into_iter()
                 .filter(|(machine, _, _)| crate::farlink::host_of(machine).as_deref() == Some(host.as_str()))
-                .map(|(machine, address, book)| serde_json::json!({ "machine": machine, "address": address, "book": book }))
+                .map(|(machine, address, book)| {
+                    let mut book = serde_json::json!(book);
+                    for c in book["calls"].as_array_mut().into_iter().flatten() {
+                        if let Some(name) = c["tab"].as_str().and_then(|k| names.get(k)) {
+                            c["name"] = serde_json::json!(name);
+                        }
+                    }
+                    serde_json::json!({ "machine": machine, "address": address, "book": book })
+                })
                 .collect();
             req.respond(json_resp(serde_json::json!({ "ok": true, "machines": machines })))?;
         }
@@ -10978,12 +10999,12 @@ function hostDialog(at, redraw, kind, done) {
     for (const {m, t} of heldNow) {
       const state = t.owned ? T["settings.away.list.in_use"] : fill(T["settings.away.list.left"], {ago: ago(t.left)});
       heldBox.append(el("div", {class:"listrow"},
-        el("span", {class:"mono"}, t.tab || ""),
+        el("span", {class:"mono"}, t.name || t.tab || ""),
         el("span", {class:"hint mono"}, t.cwd || ""),
         el("span", {class:"hint"}, fill(T["settings.away.list.since"], {ago: ago(t.for)}) + " · " + state),
         el("span", {class:"grow"}),
         el("button", {class:"danger", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.away.list.stop_sure"], {tab: t.tab || ""}), T["settings.away.list.stop"])) return;
+          if (!await confirmAction(fill(T["settings.away.list.stop_sure"], {tab: t.name || t.tab || ""}), T["settings.away.list.stop"])) return;
           const r = await post("/api/far/end", {machine: m.machine, term: t.term, gen: m.gen});
           if (!r || !r.ok) msg((r && r.error) || "", true);
           setTimeout(drawHeld, 800);
@@ -11010,10 +11031,10 @@ function hostDialog(at, redraw, kind, done) {
         any = true;
         const when = new Date(c.at * 1000).toLocaleString();
         const what = c.to ? c.method + " → " + c.to : c.method;
-        const line = when + "  " + (c.tab || "?") + "  " + what + (c.cut ? "  (" + T["settings.away.missed.cut"] + ")" : "");
+        const line = when + "  " + (c.name || c.tab || "?") + "  " + what + (c.cut ? "  (" + T["settings.away.missed.cut"] + ")" : "");
         missedBox.append(el("div", {class:"listrow"},
           el("span", {class:"hint mono"}, when),
-          el("span", {class:"mono"}, c.tab || "?"),
+          el("span", {class:"mono"}, c.name || c.tab || "?"),
           el("span", {class:"mono"}, what),
           c.cut ? el("span", {class:"hint"}, T["settings.away.missed.cut"]) : null,
           el("span", {class:"grow"}),

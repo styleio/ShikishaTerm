@@ -80,9 +80,11 @@ pub struct ApiSpec {
 /// engine, so nothing here touches it — this crosses the channel and the loop
 /// answers it on its next turn (16ms away)
 pub struct ApiCall {
-    /// The tab whose token was used, when it was a tab's. `None` means the call
-    /// came from outside every tab, which counts as a person: what it sends
-    /// starts a fresh chain instead of inheriting one
+    /// The tab whose token was used, when it was a tab's: by uid as it
+    /// arrives, and by the name it is called now once the main loop has
+    /// looked it up (`runtime`), which is what every command takes it by.
+    /// `None` means the call came from outside every tab, which counts as a
+    /// person: what it sends starts a fresh chain instead of inheriting one
     pub caller: Option<String>,
     /// Which run of that tab's program the key was minted for. A restarted tab
     /// is the same tab with a new process and a new key, and this tells the
@@ -119,18 +121,23 @@ fn tokens() -> &'static Tokens {
 /// Each tab gets a token of its own: what arrives on the pipe is then an
 /// authenticated "I am this tab", not a claim anyone could make, and a chain of
 /// AIs handing work to each other through the API is counted the same way as
-/// one doing it through the screen
-pub fn child_env(tab: &str) -> Vec<(String, String)> {
+/// one doing it through the screen.
+///
+/// The key is the tab's by who it is (`uid`), not by its name: a key that
+/// outlived its tab -- a process on another machine that did not stop -- must
+/// not become the key of the next tab to draw the name. The program is told
+/// the name, which is what it calls itself by (`SHIKISHA_TAB`)
+pub fn child_env(name: &str, uid: &str) -> Vec<(String, String)> {
     let Some(path) = PIPE.lock().ok().and_then(|p| p.clone()) else {
         return Vec::new();
     };
     // A restart is the same tab with a new process. Its old key belonged to
     // the process that is gone, and nothing should still be able to use it
-    forget_in(tokens(), tab);
+    forget_in(tokens(), uid);
     vec![
         (ENV_PIPE.to_string(), path),
-        (ENV_TOKEN.to_string(), mint_into(tokens(), tab)),
-        (ENV_TAB.to_string(), tab.to_string()),
+        (ENV_TOKEN.to_string(), mint_into(tokens(), uid)),
+        (ENV_TAB.to_string(), name.to_string()),
     ]
 }
 
@@ -169,8 +176,9 @@ fn incarnation_of_token(token: &str) -> Option<u64> {
     })
 }
 
-/// Which run of `tab`'s program holds a key now. `None`: it holds none (the
-/// API is off, or the tab's program was not started under it)
+/// Which run of the program of the tab `tab` (by uid) holds a key now.
+/// `None`: it holds none (the API is off, or the tab's program was not
+/// started under it)
 pub fn incarnation_of(tab: &str) -> Option<u64> {
     INCARNATIONS
         .lock()
@@ -283,10 +291,10 @@ impl ApiServer {
     /// with the desk), and a key that outlived its tab is a working key
     /// nobody is watching.
     ///
-    /// `live` must be the names the keys were minted under -- `Tab::called`,
-    /// not the titles on screen. Given the wrong ones this throws away every
-    /// key of every tab that is still open, and nothing says so: the tab goes
-    /// on running and its hooks are refused at the door for the rest of the
+    /// `live` must be who the tabs are, as the keys were minted -- `Tab::uid`,
+    /// not their names. Given the wrong ones this throws away every key of
+    /// every tab that is still open, and nothing says so: the tab goes on
+    /// running and its hooks are refused at the door for the rest of the
     /// session
     pub fn retain_tabs(&self, live: &[String]) {
         if let Ok(mut t) = self.tokens.lock() {
@@ -477,9 +485,9 @@ pub fn serve_elsewhere<R: Read + Send + 'static, W: Write>(conn: R, out: W) -> b
     true
 }
 
-/// A key for a tab whose program runs on another machine: minted the way a
-/// local tab's is (a new run of it, a new key), and handed over by the bridge
-/// instead of through the environment. `None` while the API is off
+/// A key for a tab (by uid) whose program runs on another machine: minted the
+/// way a local tab's is (a new run of it, a new key), and handed over by the
+/// bridge instead of through the environment. `None` while the API is off
 pub fn mint_far(tab: &str) -> Option<String> {
     PIPE.lock().ok()?.as_ref()?;
     forget_in(tokens(), tab);

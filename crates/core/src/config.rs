@@ -4297,6 +4297,19 @@ pub fn pet_id(used: &std::collections::HashSet<String>) -> String {
     unique_id(&first, used)
 }
 
+/// What each tab of the settings is called, by its uid: for a page that is
+/// handed uids from somewhere that keeps tabs by them (a machine's terminals,
+/// the calls they made while the app was away) and has to say a name
+pub fn tab_names_by_uid() -> std::collections::HashMap<String, String> {
+    load()
+        .map(|c| c.resolve_desks().0)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|d| d.tabs)
+        .filter_map(|t| Some((t.cfg.uid?, t.cfg.id?)))
+        .collect()
+}
+
 /// Who a new tab is: a random UUID, never handed to another tab
 pub fn new_tab_uid() -> String {
     crate::random_uuid()

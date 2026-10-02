@@ -72,7 +72,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
             far,
             reachable: !far || reachable(t),
             bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
-            incarnation: crate::api::incarnation_of(t.called()),
+            incarnation: crate::api::incarnation_of(t.uid()),
             typed_request,
         });
     }
