@@ -313,12 +313,13 @@ pub const WAITS: &[u8] = &[0, 3, 5, 10];
 
 /// The page, in the colours and the language the app is in.
 pub fn page() -> String {
-    crate::i18n::render(&crate::webui::themed(assembled()))
-        .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()))
-        .replace(
-            "__TOOLS__",
-            &crate::script_json(&serde_json::to_string(TOOLS).unwrap_or_else(|_| "[]".into())),
-        )
+    crate::webui::fill_page(
+        &crate::i18n::render(&crate::webui::themed(assembled())),
+        &[
+            ("__DICT__", crate::script_json(&crate::i18n::dict_json())),
+            ("__TOOLS__", crate::script_json(&serde_json::to_string(TOOLS).unwrap_or_else(|_| "[]".into()))),
+        ],
+    )
 }
 
 /// The page with the editor laid into it (see `edit.rs`)

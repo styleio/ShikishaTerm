@@ -54,7 +54,8 @@ once it reaches its first tagged release.
 - **A name with `</script>` in it cannot run code in the settings page.**
   Values the settings, the ? and the manual pages put into their scripts --
   a project's name among them -- are written so that nothing in them can
-  end the script.
+  end the script, and are put in once: a project called `__DICT__` no longer
+  breaks the settings page.
 - **The worktree dialog no longer waits on counting what is left out.** The
   places the rules leave out are counted to one limit for the whole dialog,
   not one each.
