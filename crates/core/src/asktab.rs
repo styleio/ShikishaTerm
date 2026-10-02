@@ -95,15 +95,15 @@ const RECORD_AGAIN: Duration = Duration::from_secs(5);
 const RECORD_TRUSTED_AFTER: Duration = Duration::from_secs(30);
 
 /// How long a tab held back at the end of its turn may take to say its line
-/// before the answer goes without one. Saying a line is one short message;
-/// this is for a tab that never does
+/// before its answer is given its first sentence instead. Saying a line is
+/// one short message; this is for a tab that never does
 pub const LINE_WAIT: Duration = Duration::from_secs(90);
 
 /// How long a tab held back for its line may sit idle before it is taken to
 /// be saying nothing more. A tab told to go on starts working within seconds;
 /// one that does not has let the end of its turn stand (a CLI can drop the
 /// "go on", measured 2026-10-01 with Codex 0.155: 2 of the first 13 asks), and
-/// the answer, already given, should not wait out the whole [`LINE_WAIT`]
+/// a line it is not going to say is not waited for to the end of [`LINE_WAIT`]
 const HELD_IDLE: Duration = Duration::from_secs(20);
 
 /// How long a finished-looking tab expected to call the stop hook is given
@@ -209,8 +209,11 @@ pub struct Ask {
     /// last: its line is looked for in its record instead
     pub line_unheard: bool,
     /// The answer's line, found in the record rather than heard from the
-    /// hook, for the loop to write down with the answer
+    /// hook, for the loop to write down once the line is settled
     pub late_line: Option<String>,
+    /// The caller has the answer kept in [`Self::held`]; the ask stays only
+    /// for the answer's line (see [`Step::Lined`])
+    pub answered: bool,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -460,6 +463,7 @@ pub fn handing(caller: String, target: String, text: String) -> Ask {
         held_idle: None,
         line_unheard: false,
         late_line: None,
+        answered: false,
     }
 }
 
@@ -472,6 +476,10 @@ pub enum Step {
     Answer(Value),
     /// Type the finished reply into the caller's tab now
     Hand(String),
+    /// The answer went to the caller earlier, and its line is now said or
+    /// given up on: write it down (the one found in the record, or the
+    /// answer's first sentence) and forget the ask
+    Lined,
     /// Forget it
     Drop,
 }
@@ -563,6 +571,12 @@ pub enum Hear {
 }
 
 impl Ask {
+    /// The tab gave its answer and has not yet said its line (nor been given
+    /// up on): nothing more is sent to it, and the ask is kept for the line
+    pub fn owes_line(&self) -> bool {
+        self.held.is_some() && !self.lined
+    }
+
     /// The tab asked ended its turn, saying `said` last
     pub fn hear_stop(&mut self, said: &str, line_max: u32) -> Hear {
         self.hook_seen = true;
@@ -740,6 +754,9 @@ pub fn step(
             Step::Nothing
         };
     }
+    if a.answered {
+        return line_step(a, target);
+    }
     let Some(t) = target else {
         return Step::Answer(answer(
             a,
@@ -786,35 +803,13 @@ pub fn step(
         }
         return Step::Nothing;
     }
-    // The tab gave its answer and is saying its line: the answer is the reply
-    // kept then, whatever happens next. It waits only for the line, and not
-    // past the caller's own wait, nor past the tab stopping in another way (a
-    // question, a limit, an error, the end of its program): the answer was
-    // already given, and the line goes without its own words
-    if let Some(reply) = a.held.clone() {
-        let stopped = matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed);
-        if quiet(t.state) {
-            a.held_idle.get_or_insert(now);
-        } else {
-            a.held_idle = None;
-        }
-        let idle = a.held_idle.is_some_and(|at| at.elapsed() >= HELD_IDLE);
-        // Its line, from its record, when the hook did not bring it: the last
-        // thing it said, if that is not the answer itself and can be a line
-        if !a.lined
-            && (a.line_unheard || idle)
-            && let Some(last) = a.recorded(t)
-            && last.trim() != reply.trim()
-            && let Ok(line) = crate::convo::confer::check_line(bare_line(&last), crate::config::confer().line_max, "the line")
-        {
-            a.late_line = Some(line);
-            a.lined = true;
-        }
-        if a.lined || stopped || idle || now >= a.deadline || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
-            a.lined = true;
-            return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
-        }
-        return Step::Nothing;
+    // The tab gave its answer and is saying its line. The answer is the reply
+    // kept as its turn first ended, whatever it says next, and it goes to the
+    // caller at once: the line is for the chat, and nobody waits on it. The
+    // ask stays for the line (`line_step`)
+    if a.held.is_some() && !a.answered {
+        a.answered = true;
+        return Step::Answer(answer(a, "DONE", a.held.as_deref(), "record", same_folder, None));
     }
     // Sent: watch it work
     if t.state != TabState::Busy {
@@ -991,6 +986,44 @@ pub fn step(
             same_folder,
             Some("still working; when it finishes you will be told in your tab, and shikisha inbox has its reply"),
         ));
+    }
+    Step::Nothing
+}
+
+/// One tick of an ask whose answer went to the caller and whose line is still
+/// to come. It waits for the line only so long: not past the tab stopping in
+/// another way (a question, a limit, an error, the end of its program, the
+/// tab closed), nor past it sitting idle, nor past [`LINE_WAIT`]. The caller's
+/// own wait has no say in it -- the caller has its answer, and a caller that
+/// let go of the line long ago (the `shikisha` command hands its wait over
+/// after 100 s) would end every longer answer's line before it was said
+fn line_step(a: &mut Ask, target: Option<&Tab>) -> Step {
+    let (Some(t), Some(reply)) = (target, a.held.clone()) else {
+        a.lined = true;
+        return Step::Lined;
+    };
+    let now = Instant::now();
+    let stopped = matches!(t.state, TabState::Question | TabState::Exited | TabState::Limit | TabState::Failed);
+    if quiet(t.state) {
+        a.held_idle.get_or_insert(now);
+    } else {
+        a.held_idle = None;
+    }
+    let idle = a.held_idle.is_some_and(|at| at.elapsed() >= HELD_IDLE);
+    // Its line, from its record, when the hook did not bring it: the last
+    // thing it said, if that is not the answer itself and can be a line
+    if !a.lined
+        && (a.line_unheard || idle)
+        && let Some(last) = a.recorded(t)
+        && last.trim() != reply.trim()
+        && let Ok(line) = crate::convo::confer::check_line(bare_line(&last), crate::config::confer().line_max, "the line")
+    {
+        a.late_line = Some(line);
+        a.lined = true;
+    }
+    if a.lined || stopped || idle || a.held_at.is_some_and(|at| at.elapsed() >= LINE_WAIT) {
+        a.lined = true;
+        return Step::Lined;
     }
     Step::Nothing
 }
@@ -1195,28 +1228,58 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_kept_is_the_answer_whatever_the_tab_does_next() {
+    fn a_reply_kept_is_the_answer_and_goes_to_the_caller_at_once() {
         let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
-        for state in [TabState::Question, TabState::Limit, TabState::Failed, TabState::Exited] {
+        // Busy saying its line: the caller is not kept waiting for it
+        t.state = TabState::Busy;
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the caller was kept waiting for a line") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The memo says ABC.")));
+        assert!(a.answered && a.owes_line(), "the ask is kept for the line");
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "answered once, then the line is waited for");
+        // Its line said: written down, and the ask forgotten
+        assert_eq!(a.hear_stop("Read it: ABC.", 80), Hear::Line("Read it: ABC.".into()));
+        assert!(!a.owes_line());
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
+    }
+
+    #[test]
+    fn a_line_is_waited_for_past_the_callers_wait_but_not_past_the_tab_stopping() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        let answered = |t: &Tab| {
             let mut a = sent_ask();
             assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+            assert!(matches!(step(&mut a, Some(t), false, None, true), Step::Answer(_)));
+            a
+        };
+        // The caller let go long ago (the `shikisha` command hands its wait
+        // over after 100 s, and every longer answer ended here): the line is
+        // still waited for. Measured 2026-10-02: 3 of 3 such answers lost it
+        t.state = TabState::Busy;
+        let mut a = answered(&t);
+        a.phase = Phase::Deliver;
+        a.deadline = Instant::now() - Duration::from_secs(600);
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "the caller's wait ended the line");
+        // ...but not past the line's own wait
+        a.held_at = Some(Instant::now() - LINE_WAIT);
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
+        // Nor past the tab stopping in another way, or closing
+        for state in [TabState::Question, TabState::Limit, TabState::Failed, TabState::Exited] {
+            t.state = TabState::Busy;
+            let mut a = answered(&t);
             t.state = state;
-            let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("{state:?} kept the caller waiting") };
-            assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The memo says ABC.")), "{state:?}");
+            assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined), "{state:?}");
         }
+        t.state = TabState::Busy;
+        let mut a = answered(&t);
+        assert!(matches!(step(&mut a, None, false, None, true), Step::Lined), "the tab closed");
         // Nor while it sits idle, told to go on and not going
-        let mut a = sent_ask();
-        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
         t.state = TabState::Done;
+        let mut a = answered(&t);
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "idle a moment: still waiting");
         a.held_idle = Some(Instant::now() - HELD_IDLE);
-        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "idle too long");
-        // Nor past the caller's own wait
-        let mut a = sent_ask();
-        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
-        a.deadline = Instant::now();
-        t.state = TabState::Busy;
-        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "past the caller's wait");
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined), "idle too long");
     }
 
     #[test]
