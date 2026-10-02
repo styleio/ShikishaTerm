@@ -23,9 +23,26 @@ pub struct QuitAsk {
     pub busy: usize,
     /// Each machine, by its entry's name, and how many of its AIs go on
     pub kept: Vec<(String, usize)>,
-    /// What else is to be said before the answer: until when each MicroVM
-    /// goes on, or that it could not be kept up (far-keep plan §5)
+    /// What else is to be said before the answer. Asked first, these are only
+    /// what is planned -- how long each MicroVM is to go on. Asked again after
+    /// a quit was chosen, they are what the service made of it: cut short by
+    /// the account, or not done (far-keep plan §5)
     pub notes: Vec<String>,
+    /// The MicroVMs to keep running once the quit is chosen, and for how long.
+    /// Nothing is asked of the service while the question is open: a quit that
+    /// is called off must leave every machine as it was
+    pub machines: Vec<KeepUp>,
+}
+
+/// One MicroVM to keep running while the app is away
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeepUp {
+    /// The machine's id at the service
+    pub id: String,
+    /// Its entry's name, as the question says it
+    pub host: String,
+    /// The longest any of its AIs is set to go on for
+    pub minutes: u32,
 }
 
 /// What the person answered
@@ -507,10 +524,10 @@ mod tests {
     #[test]
     fn quitting_asks_about_what_goes_on_and_what_is_lost() {
         assert!(!QuitAsk::default().worth_asking(), "nothing at work, nothing kept: nothing to ask");
-        let busy = QuitAsk { busy: 2, kept: Vec::new(), notes: Vec::new() };
+        let busy = QuitAsk { busy: 2, ..Default::default() };
         assert!(busy.worth_asking());
         assert!(busy.words().contains('2'), "{}", busy.words());
-        let kept = QuitAsk { busy: 1, kept: vec![("VPS1".into(), 2), ("vm".into(), 1)], notes: Vec::new() };
+        let kept = QuitAsk { busy: 1, kept: vec![("VPS1".into(), 2), ("vm".into(), 1)], ..Default::default() };
         let words = kept.words();
         assert!(words.contains("VPS1") && words.contains("vm"), "{words}");
         assert_eq!(words.matches('\n').count(), 6, "the machines, the work in progress, and one line per answer: {words}");

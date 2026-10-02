@@ -36,6 +36,14 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **Calling off a quit no longer keeps a MicroVM running.** The quit question
+  used to ask E2B to keep each MicroVM up before it was even shown, so
+  "Cancel" left the machine extended and a slow line held the question back.
+  It now only says how long each will go on; the machines are kept up once
+  the quit is chosen, all at once and for at most 15 seconds, and when each
+  pauses is left on a banner. Cut short by the account, not done, or not
+  answered in time, the question comes back once with what happened, before
+  anything stops.
 - **A file on this PC opened in a browser tab can no longer reach outside its
   folder through a link.** A link named `index.html` in a shared folder, or a
   name swapped for a link between the check and the opening, served whatever
