@@ -154,6 +154,19 @@ await until(async () => (await screenSays()).includes(`PID=${first}`), 'the same
 check(true, 'the tab\'s screen is back, with the id printed before');
 check(programs().length === 1 && programs()[0] === first, `one program, the same one (${programs().join(', ')})`);
 
+console.log('3b. the app lost its note of the terminal (killed again, the note deleted), and is started again');
+{
+  const app = appPid();
+  ps('-Command', `& taskkill.exe /PID ${app} /T /F 2>&1 | Out-Null`);
+  await until(() => !alive(app), 'the app to be gone', 15000);
+  for (const f of [path.join(APP, 'data', 'far-terminals'), path.join(LOCAL, 'ShikishaTerm', 'data', 'far-terminals')]) fs.rmSync(f, { force: true });
+  start();
+  await until(() => appPid() !== null, 'the app again');
+  await until(async () => (await screenSays()).includes(`PID=${first}`), 'the same program, found without the note');
+  await sleep(3000);
+  check(programs().length === 1 && programs()[0] === first, `still one program, the same one (${programs().join(', ')})`);
+}
+
 console.log('4. the app is replaced the way an update replaces it, and started again');
 const app2 = appPid();
 ps('-Command', `& taskkill.exe /PID ${app2} /F 2>&1 | Out-Null`);

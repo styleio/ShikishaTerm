@@ -240,6 +240,9 @@ struct Term {
     next_owner: AtomicU64,
     /// The program's exit code, once it ended, and when
     ended: Mutex<Option<i32>>,
+    /// Told to stop: on its way out, and not handed to a tab that asks to
+    /// open again (a restart stops the old one and opens at once)
+    stopped: std::sync::atomic::AtomicBool,
     ended_at: Mutex<Option<Instant>>,
     /// When it was opened
     since: Instant,
@@ -378,9 +381,44 @@ impl Terms {
         core.say(line, &Frame::Job { job: NAME.into(), m });
     }
 
+    /// The terminal running here for a tab (its name and folder), if one is:
+    /// the newest, when there is more than one
+    fn running_for(&self, tab: &str, cwd: &str) -> Option<(u64, Arc<Term>)> {
+        if tab.is_empty() {
+            return None;
+        }
+        let terms = self.terms.lock().ok()?;
+        terms
+            .iter()
+            .filter(|(_, t)| t.tab == tab && t.cwd == cwd && !t.stopped.load(Ordering::SeqCst) && t.ended.lock().is_ok_and(|e| e.is_none()))
+            .max_by_key(|(id, _)| **id)
+            .map(|(id, t)| (*id, Arc::clone(t)))
+    }
+
     /// Open a terminal and attach to it. "opened" goes through the
     /// terminal's queue before its state does, so the app knows the id first
     fn open(&self, core: &Arc<Core>, line: u64, m: &Value) -> Option<Value> {
+        // One open at a time: two asked at once for one tab must not both
+        // find nothing and both start
+        static OPENING: Mutex<()> = Mutex::new(());
+        let _one = OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        // A tab that already has a terminal running here gets that one, not
+        // a second: the app may have lost its note of it (a write that failed,
+        // a crash between opening and writing it down) and asks again as if
+        // for the first time. Asked for with "reuse", which an app sends to
+        // a resident process that knows it (an older one starts a new one,
+        // as before). The tab is its name and its folder, as the app keeps it
+        if m["reuse"] == json!(true)
+            && let Some((id, _)) = self.running_for(m["tab"].as_str().unwrap_or_default(), m["cwd"].as_str().unwrap_or_default())
+        {
+            crate::fardaemon::log(&format!("terminal {id}: asked to open for its tab again; the one running is attached instead"));
+            let term = self.terms.lock().ok().and_then(|t| t.get(&id).cloned())?;
+            let opened = json!({ "did": "opened", "ref": m["ref"], "gen": self.generation, "term": id, "again": true });
+            let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m: opened }));
+            let refused = self.attach(core, line, &json!({ "term": id, "gen": self.generation, "tab": m["tab"],
+                "rows": m["rows"], "cols": m["cols"], "away": m["away"] }));
+            return (refused["did"] != "attaching").then_some(refused);
+        }
         match self.start(core, m) {
             Ok(id) => {
                 self.write_held();
@@ -451,6 +489,7 @@ impl Terms {
             queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
             ended: Mutex::new(None),
+            stopped: std::sync::atomic::AtomicBool::new(false),
             ended_at: Mutex::new(None),
             since: Instant::now(),
             session,
@@ -688,6 +727,7 @@ impl Job for Terms {
             },
             "stop" => match self.owned(line, m) {
                 Ok(term) => {
+                    term.stopped.store(true, Ordering::SeqCst);
                     if let Ok(mut k) = term.killer.lock() {
                         let _ = k.kill();
                     }
@@ -709,6 +749,7 @@ impl Job for Terms {
                 Some(match term {
                     Some(term) => {
                         crate::fardaemon::log(&format!("terminal {id}: stopped by the person"));
+                        term.stopped.store(true, Ordering::SeqCst);
                         if let Ok(mut k) = term.killer.lock() {
                             let _ = k.kill();
                         }
@@ -794,6 +835,7 @@ impl Job for Terms {
                 && seen.left.zip(seen.away.ends_after()).is_some_and(|(left, after)| left.elapsed() >= after);
             if due {
                 crate::fardaemon::log(&format!("terminal {id}: left alone past what it was to be kept for ({:?}); ending it", seen.away));
+                term.stopped.store(true, Ordering::SeqCst);
                 if let Ok(mut k) = term.killer.lock() {
                     let _ = k.kill();
                 }
@@ -819,6 +861,7 @@ impl Job for Terms {
     fn end(&self) {
         let terms: Vec<Arc<Term>> = self.terms.lock().map(|t| t.values().cloned().collect()).unwrap_or_default();
         for term in terms {
+            term.stopped.store(true, Ordering::SeqCst);
             if let Ok(mut k) = term.killer.lock() {
                 let _ = k.kill();
             }

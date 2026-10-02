@@ -322,6 +322,22 @@ mod tests {
         // And its end is told, with the code
         let ended = hear(&mut reader, "ended");
         assert_eq!(ended["code"], 0);
+
+        // Asked to open again for a tab whose terminal runs -- the app lost
+        // its note of it -- the one running is handed back, not a second
+        let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
+        say(&conn, json!({ "do": "open", "ref": 2, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let one = hear(&mut reader, "opened");
+        say(&conn, json!({ "do": "open", "ref": 3, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let again = hear(&mut reader, "opened");
+        assert_eq!(again["term"], one["term"], "the running one, not a second");
+        assert_eq!(again["again"], true);
+        // Told to stop (a restart), it is not handed out again: a new one opens
+        let owner = hear(&mut reader, "attached")["owner"].clone();
+        say(&conn, json!({ "do": "stop", "term": again["term"], "owner": owner }));
+        say(&conn, json!({ "do": "open", "ref": 4, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let fresh = hear(&mut reader, "opened");
+        assert_ne!(fresh["term"], one["term"], "a stopped one is not handed back");
         say(&conn, json!({ "do": "end_all", "ref": 9 }));
         let _ = conn.shutdown(std::net::Shutdown::Both);
     }

@@ -175,7 +175,10 @@ fn change_saved(change: impl FnOnce(&mut Vec<Saved>)) {
     }
     let text = serde_json::to_string_pretty(&SavedFile { version: SAVED_VERSION, terms: all }).unwrap_or_default();
     if let Err(e) = crate::crypto::write_atomic(&crate::config::state_path(SAVED_FILE), &text) {
-        crate::append_hook_log(&format!("far terminals: could not be written down: {e:#}"));
+        // Said on the screen, not only in the log: what is not written down
+        // is not gone back to by name after a restart (the resident process
+        // still hands the tab its running terminal when asked to open again)
+        crate::caps::tell(crate::i18n::tp("msg.farterm.unwritten", &[("e", &format!("{e:#}"))]));
     }
 }
 
@@ -351,8 +354,10 @@ fn ask_open(
     let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
+    // "reuse": the tab's terminal, if one is already running there, rather
+    // than a second AI beside it -- whatever this app wrote down or failed to
     let mut asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
-        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away) });
+        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away), "reuse": true });
     // On this PC the command is said in full: the program, its arguments and
     // the environment the tab put together for it (`crate::localkeep`)
     if let Some(run) = run {
