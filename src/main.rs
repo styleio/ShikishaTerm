@@ -945,7 +945,7 @@ impl WinSurface {
                 // showing", so the loop decides (only one bar is ever displayed).
                 Ev::Go { go } => self.mail.gos.push(go),
                 Ev::Scroll { by, row, col } => self.mail.scrolls.push((by, row, col)),
-                Ev::Say { tab, text } => self.mail.says.push((tab, text, shikisha_core::convo::Device::Window)),
+                Ev::Say { uid, text, .. } => self.mail.says.push((uid, text, shikisha_core::convo::Device::Window)),
                 Ev::Quick { id, tab } => self.mail.quicks.push((id, tab, shikisha_core::convo::Device::Window)),
                 Ev::Covered { on } => self.mail.covered = Some(on),
                 Ev::Ideas { act, args } => self.mail.ideas.push((act, args)),

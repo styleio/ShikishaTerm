@@ -1735,16 +1735,8 @@ fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
 
 /// Where the project a folder on another machine belongs to is checked out
 /// there
-fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec) -> Option<String> {
-    let c = crate::config::load()?;
-    let (desks, _) = c.resolve_desks();
-    let project = desks
-        .iter()
-        .flat_map(|d| d.folders.iter())
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), at)))?
-        .project
-        .clone()?;
-    desks.into_iter().flat_map(|d| d.projects).find(|p| p.name == project)?.home_on(&host.name).map(|h| h.at.clone())
+fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec, desk: Option<&str>) -> Option<String> {
+    crate::config::load()?.project_of(desk, at)?.home_on(&host.name).map(|h| h.at.clone())
 }
 
 /// Whether a folder on another machine is a branch's folder: one that is not
@@ -2360,7 +2352,7 @@ fn handle(
             // offer to write one -- and the project's own page must offer it,
             // which is the half that was missing
             let named = crate::config::load()
-                .and_then(|c| c.project_of(desk.as_deref(), at).map(|p| (p.name.clone(), p.at.clone())));
+                .and_then(|c| c.project_of(desk.as_deref(), at));
             // A folder on another machine: nothing of it is on this disk. Its
             // project is the settings' answer, its branch what git there last
             // said (asked on a thread, see `git::far_place`), and it is a
@@ -2374,22 +2366,13 @@ fn handle(
                 let branch = crate::elsewhere::Elsewhere::of(&host)
                     .ok()
                     .and_then(|m| crate::git::far_place(&m, &path, true).0);
-                let home_at = named.as_ref().and_then(|(n, _)| {
-                    crate::config::load()?
-                        .resolve_desks()
-                        .0
-                        .into_iter()
-                        .flat_map(|d| d.projects)
-                        .find(|p| &p.name == n)?
-                        .home_on(&host.name)
-                        .map(|h| h.at.clone())
-                });
+                let home_at = named.as_ref().and_then(|p| p.home_on(&host.name)).map(|h| h.at.clone());
                 let checkout = home_at.clone().unwrap_or_else(|| path.to_string_lossy().to_string());
                 req.respond(json_resp(serde_json::json!({
                     "family": crate::uistate::far_family(&host.name, &checkout),
                     "cut": far_cut(at, home_at.as_deref()),
                     "branch": branch,
-                    "project": named.as_ref().map(|(n, _)| n.clone()),
+                    "project": named.as_ref().map(|p| p.name.clone()),
                     "project_at": home_at,
                     "host": host.name,
                 })))?;
@@ -2404,8 +2387,8 @@ fn handle(
                     "family": crate::repo::family_of(at).map(|f| f.display().to_string()),
                     "cut": crate::repo::is_linked(at),
                     "branch": crate::repo::branch_of(at),
-                    "project": named.as_ref().map(|(n, _)| n.clone()),
-                    "project_at": named.and_then(|(_, a)| a),
+                    "project": named.as_ref().map(|p| p.name.clone()),
+                    "project_at": named.and_then(|p| p.at),
                 }),
             };
             req.respond(json_resp(resp))?;
@@ -2934,7 +2917,7 @@ fn handle(
             let far = far_host_of(&at);
             let planned = match &far {
                 Some(host) => {
-                    let cut = far_cut(&at, far_home_of(&at, host).as_deref());
+                    let cut = far_cut(&at, far_home_of(&at, host, p.get("desk").and_then(|d| d.as_str())).as_deref());
                     let path = crate::uistate::place_of(&at).1.to_string_lossy().to_string();
                     // While a name is typed, the branch the page shows: the
                     // machine is asked only on the press (see rename_plan_far)
@@ -13590,7 +13573,7 @@ function folderPane(desk, g, gi) {
     // Throwing a folder away is only for a branch: the project's own is never
     // on the table
     if (!where.cut) return;
-    if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
+    if (where.branch) box.insertBefore(renameCard(desk, g, where.branch), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -15085,7 +15068,7 @@ function inheritConfirm(desk, p, res) {
 // having is the one nobody could think of on the first day: work gets its name
 // once it is under way. The line that will run is under the box and follows
 // what is typed, so nothing happens that was not read first
-function renameCard(g, branch) {
+function renameCard(desk, g, branch) {
   const box = el("input", {type:"text", class:"grow", value: branch});
   // The same box a tab's real command line gets: one look for "this is what
   // will run", wherever in these settings it is being said
@@ -15101,7 +15084,7 @@ function renameCard(g, branch) {
     // to press, and an empty box would be a box with nothing in it
     if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, from: branch})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, from: branch})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     // An answer about a name that has since been typed over says nothing
     // about the one in the box now
@@ -15119,7 +15102,7 @@ function renameCard(g, branch) {
   go.addEventListener("click", async () => {
     const want = box.value.trim();
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, go: true})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, go: true})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     if (!r.ok) { toast(r.error || T["settings.group.rename.failed"], true); return; }
     toast(fill(T["msg.branch.renamed"], {from: r.from, to: r.to}));
@@ -15155,7 +15138,7 @@ async function familyOf(cwd, desk) {
   if (!(cwd || "").trim()) return null;
   try {
     return await fetch("/api/family?path=" + encodeURIComponent(cwd)
-                       + "&desk=" + encodeURIComponent((desk && desk.id) || ""),
+                       + "&desk=" + encodeURIComponent((desk && (desk.uid || desk.id)) || ""),
                        {headers:{"X-Token":TOKEN}}).then(r => r.json());
   } catch (e) { return null; }
 }

@@ -154,11 +154,11 @@ pub fn named_for(
         return from_bar();
     };
     match last_asked(&file, spec, |a| !typed_here(t.uid(), a)) {
-        // Each name as it was settled when the person was heard writing it;
-        // one never heard (a request from before this run) as it is now
+        // A record contains names, not the identities the person permitted.
+        // Only the binding captured with their input may grant access.
         Some(last) => crate::asktab::named_in(&last)
             .into_iter()
-            .map(|name| heard.and_then(|n| n.get(&name).cloned()).unwrap_or_else(|| named_key(&name, tabs)))
+            .filter_map(|name| heard.and_then(|n| n.get(&name).cloned()))
             .collect(),
         None => from_bar(),
     }
@@ -169,23 +169,41 @@ pub fn named_for(
 pub type Named = HashMap<String, String>;
 
 /// The names in `text`, each settled to what it names now
-pub fn named_now(text: &str, tabs: &[Tab]) -> Named {
+pub fn named_now(text: &str, tabs: &[Tab], pages: &Named) -> Named {
     crate::asktab::named_in(text).into_iter()
-        .map(|name| {
-            let key = named_key(&name, tabs);
-            (name, key)
+        .filter_map(|name| {
+            let key = named_key(&name, tabs, pages)?;
+            Some((name, key))
         })
         .collect()
 }
 
 /// What `name` names among `tabs`: the tab's uid -- so a tab closed since,
-/// and another given its id, is not the one named -- or, for what is not a
-/// tab (a page, by its key), the name itself
-pub fn named_key(name: &str, tabs: &[Tab]) -> String {
+/// and another given its id, is not the one named. Pages have identities too.
+/// An unknown name grants nothing, including to a page created later.
+pub fn named_key(name: &str, tabs: &[Tab], pages: &Named) -> Option<String> {
     tabs.iter()
         .find(|t| t.id.as_deref() == Some(name) || t.called() == name)
         .map(|t| t.uid().to_string())
-        .unwrap_or_else(|| name.to_string())
+        .or_else(|| pages.get(name).cloned())
+}
+
+/// Captured grants survive a restart with the same identities. A CLI record
+/// on its own must never assign an old name's authority to its new owner.
+pub fn load_named() -> HashMap<String, Named> {
+    std::fs::read_to_string(crate::config::state_path("named-tabs.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .filter(|v| v["version"] == 1)
+        .and_then(|v| serde_json::from_value(v["tabs"].clone()).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_named(named: &HashMap<String, Named>) {
+    let text = serde_json::json!({"version": 1, "tabs": named}).to_string();
+    if let Err(e) = crate::crypto::write_atomic(&crate::config::state_path("named-tabs.json"), &text) {
+        crate::append_hook_log(&format!("named tabs could not be saved: {e}"));
+    }
 }
 
 /// The last request in a record that `is_persons` accepts, read from the end
@@ -302,6 +320,20 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recreated_page_does_not_inherit_permission_and_an_unknown_name_grants_nothing() {
+        let old = crate::config::new_tab_uid();
+        let new = crate::config::new_tab_uid();
+        let pages = HashMap::from([("page".into(), old.clone())]);
+        let permitted = named_now("Inspect <@page> and <@missing>", &[], &pages);
+        assert_eq!(permitted.len(), 1);
+        assert_eq!(permitted["page"], old);
+        let pages = HashMap::from([("page".into(), new), ("missing".into(), crate::config::new_tab_uid())]);
+        assert!(!permitted.values().any(|uid| Some(uid) == named_key("page", &[], &pages).as_ref()));
+        assert!(!permitted.contains_key("missing"));
+        assert_eq!(named_now("Inspect <@page>", &[], &pages)["page"], pages["page"]);
+    }
 
     #[test]
     fn the_persons_request_is_found_behind_megabytes_of_tool_output() {

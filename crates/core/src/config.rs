@@ -726,16 +726,16 @@ pub fn project_among<'a>(
 }
 
 impl Config {
-    /// The project a folder belongs to, on the desk named by `desk_id`. With no
-    /// desk named, the first desk that holds a folder at that place -- which is
-    /// only right for a caller that has no desk to name, so the ones that do
-    /// name it
+    /// The project a folder belongs to, on the desk identified by `desk_id`.
+    /// Without a desk, only an unambiguous owner can answer.
     pub fn project_of(&self, desk_id: Option<&str>, cwd: &std::path::Path) -> Option<ProjectSpec> {
         let (desks, _) = self.resolve_desks();
-        let here = desks.iter().find(|d| match desk_id {
-            Some(id) => d.id == id,
+        let mut matching = desks.iter().filter(|d| match desk_id {
+            Some(id) => d.uid == id || (!is_tab_uid(id) && d.id == id),
             None => d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), cwd))),
-        })?;
+        });
+        let here = matching.next()?;
+        if matching.next().is_some() { return None; }
         here.project_of(cwd).cloned()
     }
 }
@@ -10586,6 +10586,32 @@ mod tests {
         );
         // Anything else is only ever itself
         assert_eq!(data_path_candidates("scripts/x.lua"), ["scripts/x.lua"]);
+    }
+
+    #[test]
+    fn a_remote_checkout_keeps_its_project_when_another_desk_uses_the_same_name() {
+        let a = new_tab_uid();
+        let b = new_tab_uid();
+        let cfg: Config = serde_json::from_value(serde_json::json!({
+            "hosts": [{"name": "server", "at": "ssh://test@127.0.0.1:1"}],
+            "desks": [
+                {"id": "a", "uid": a, "name": "A", "projects": [{"name": "app", "homes": [{"host": "server", "at": "/repo/a"}]}],
+                 "folders": [{"cwd": "/repo/a", "host": "server", "project": "app", "tabs": []}]},
+                {"id": "b", "uid": b, "name": "B", "projects": [{"name": "app", "homes": [{"host": "server", "at": "/repo/b"}]}],
+                 "folders": [{"cwd": "/repo/b", "host": "server", "project": "app", "tabs": []}]}
+            ]
+        })).unwrap();
+        let at = std::path::PathBuf::from(crate::uistate::place_key(Some("server"), Path::new("/repo/b")));
+        let by_place = cfg.project_of(None, &at).unwrap();
+        let by_uid = cfg.project_of(Some(&b), &at).unwrap();
+        assert_eq!(by_place.home_on("server").unwrap().at, "/repo/b");
+        assert_eq!(by_uid.uid, by_place.uid);
+        assert_eq!(by_uid.home_on("server").unwrap().at, "/repo/b");
+        assert!(cfg.project_of(Some(&new_tab_uid()), &at).is_none());
+        let mut shared_place = cfg;
+        shared_place.desks[0].folders[0].cwd = Some("/repo/b".into());
+        assert!(shared_place.project_of(None, &at).is_none(), "an ambiguous place silently picked the first desk");
+        assert_eq!(shared_place.project_of(Some(&b), &at).unwrap().uid, by_uid.uid);
     }
 
     /// A relative path in the settings is found under the layout root, and a

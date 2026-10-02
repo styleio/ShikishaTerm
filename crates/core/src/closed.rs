@@ -28,7 +28,7 @@ use crate::view::{surface_key, Surface};
 
 /// The file's shape, versioned so a later one can refuse to read this rather
 /// than half-understand it
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const FILE: &str = "closed-tabs";
 /// How many are kept. Enough for "the one closed a minute ago" and the few
 /// before it; further back than that, the Vault is where past work is found
@@ -88,8 +88,32 @@ pub struct Closed {
 }
 
 impl Closed {
-    pub fn load() -> Closed {
-        Self::load_from(config::state_path(FILE))
+    pub fn load(desks: &[config::Desk]) -> Closed {
+        let mut closed = Self::load_from(config::state_path(FILE));
+        closed.adopt_desks(&desks.iter().map(|d| (d.name.clone(), d.uid.clone())).collect::<Vec<_>>());
+        closed
+    }
+
+    /// Version one held desk names, then uids without changing its version.
+    /// Adopt an old name only when it identifies one desk. Keep unmatched or
+    /// ambiguous rows for recovery, but never give them to a later namesake.
+    fn adopt_desks(&mut self, desks: &[(String, String)]) {
+        if self.version >= VERSION {
+            return;
+        }
+        for item in &mut self.items {
+            if config::is_tab_uid(&item.desk) {
+                continue;
+            }
+            let mut matches = desks.iter().filter(|(name, _)| name == &item.desk);
+            if let Some((_, uid)) = matches.next()
+                && matches.next().is_none()
+            {
+                item.desk = uid.clone();
+            }
+        }
+        self.version = VERSION;
+        self.write();
     }
 
     fn load_from(file: std::path::PathBuf) -> Closed {
@@ -456,6 +480,43 @@ mod tests {
 
     fn store() -> Closed {
         Closed { version: VERSION, items: Vec::new(), next: 1, file: None }
+    }
+
+    #[test]
+    fn old_history_is_adopted_once_and_survives_a_desk_rename() {
+        let dir = std::env::temp_dir().join(format!("shikisha-closed-adopt-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("closed-tabs");
+        let uid = config::new_tab_uid();
+        let mut old = store();
+        old.remember("Work", "old tab", Some("conversation".into()), line("old tab"));
+        old.remember(&uid, "already migrated", None, line("already migrated"));
+        old.version = 1;
+        std::fs::write(&file, serde_json::to_string(&old).unwrap()).unwrap();
+        let mut loaded = Closed::load_from(file.clone());
+        loaded.adopt_desks(&[("Work".into(), uid.clone())]);
+        assert_eq!(loaded.shown(&uid).len(), 2);
+        let mut again = Closed::load_from(file);
+        let replacement = config::new_tab_uid();
+        again.adopt_desks(&[("Renamed".into(), uid.clone()), ("Work".into(), replacement.clone())]);
+        assert_eq!(again.shown(&uid).len(), 2);
+        assert!(again.shown(&replacement).is_empty());
+        assert_eq!(again.take(&uid, Some(1)).unwrap().conversation.as_deref(), Some("conversation"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_ambiguous_old_name_is_preserved_without_giving_either_desk_its_tabs() {
+        let a = config::new_tab_uid();
+        let b = config::new_tab_uid();
+        let mut old = store();
+        old.remember("Work", "old tab", None, line("old tab"));
+        old.version = 1;
+        old.adopt_desks(&[("Work".into(), a.clone()), ("Work".into(), b.clone())]);
+        assert!(old.shown(&a).is_empty() && old.shown(&b).is_empty());
+        old.adopt_desks(&[("Work".into(), a.clone())]);
+        assert!(old.shown(&a).is_empty(), "a later namesake was handed ambiguous history");
+        assert_eq!(old.items.len(), 1, "the recoverable history was discarded");
     }
 
     fn line(name: &str) -> Place {

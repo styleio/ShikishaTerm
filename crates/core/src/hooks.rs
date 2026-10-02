@@ -660,7 +660,7 @@ fn open_line(
         crate::config::NewFolder::Refused,
     )
     .map_err(mlua::Error::runtime)?;
-    c.borrow_mut().push(Command::OpenedTab { id: id.clone() });
+    c.borrow_mut().push(Command::OpenedTab { id: id.clone(), uid: uid.clone() });
     let out = lua.create_table()?;
     out.set("id", id)?;
     // Who it is, for the app's own bookkeeping (a job that opened it). Taken
@@ -1352,7 +1352,7 @@ pub enum Command {
     /// name it went in under. The line is already written; this asks the loop
     /// to read the settings again, which is what starts the tab, and to hold
     /// work sent to that name until the tab is there to take it
-    OpenedTab { id: String },
+    OpenedTab { id: String, uid: String },
     /// Close a tab through the same door as its ✕: a tab whose AI is working
     /// or asking is not closed without the person being asked
     CloseTab { target: TabRef },

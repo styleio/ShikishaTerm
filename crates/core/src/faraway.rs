@@ -805,7 +805,7 @@ mod tests {
             url: "https://example.com/".into(),
             complete: true,
         });
-        say(&Ev::Say { tab: 0, text: "rm -rf /".into() });
+        say(&Ev::Say { tab: 0, uid: "test".into(), text: "rm -rf /".into() });
         say(&Ev::Where {
             from: Some("ws/page".into()),
             url: "https://example.com/".into(),

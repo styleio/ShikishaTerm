@@ -4511,9 +4511,16 @@ const typingIME = e => e.isComposing || e.keyCode === 229;
 const overTheWire = o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
   {method:"POST", body:JSON.stringify(o)}).catch(() => {});
 const toThisWindow = o => window.ipc.postMessage(JSON.stringify(o));
-const send = o => (OURS && o && o.kind === "window")
-  ? toThisWindow(o)
-  : (REMOTE ? overTheWire(o) : toThisWindow(o));
+const send = o => {
+  if (o && o.kind === "say" && !o.uid) {
+    const tab = S && (S.tabs || []).find(t => t.index === (o.tab || S.active));
+    if (!tab || !tab.uid) return;
+    o = {...o, uid: tab.uid};
+  }
+  return (OURS && o && o.kind === "window")
+    ? toThisWindow(o)
+    : (REMOTE ? overTheWire(o) : toThisWindow(o));
+};
 const el = (t, a, ...kids) => {
   const n = document.createElement(t);
   for (const k in (a||{})) {

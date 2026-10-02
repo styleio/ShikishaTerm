@@ -245,7 +245,8 @@ try {
   check(true, 'the answer is under it');
 
   console.log('3. sent from a remote page');
-  check(await fromAfar({ kind: 'say', tab: front, text: 'and the docs too' }) === 200, 'the remote page is heard');
+  const frontUid = await run(`S.tabs.find(t => t.index === ${front}).uid`);
+  check(await fromAfar({ kind: 'say', tab: front, uid: frontUid, text: 'and the docs too' }) === 200, 'the remote page is heard');
   await until(async () => !!(await row((r) => r.text === 'and the docs too')), 'the remote line');
   check((await row((r) => r.text === 'and the docs too')).who.startsWith('You · another device'), 'it reads "You · another device"');
 

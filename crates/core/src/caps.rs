@@ -232,6 +232,7 @@ pub struct Capabilities {
     /// to be reconstructed — and only whoever opened it knows what that was. Kept
     /// past the close so an open can be undone and redone (see `browser_spec`)
     opened: std::cell::RefCell<HashMap<String, (String, shikisha_shared::BrowserProfile)>>,
+    page_uids: std::cell::RefCell<HashMap<String, String>>,
     /// The desk currently being viewed. Names are only meaningful within it
     desk: std::cell::Cell<usize>,
     /// Which pages are currently shown, and where. Skipped if unchanged.
@@ -326,7 +327,40 @@ pub fn view_fit(child: &str) -> crate::cdp::ViewFit {
 /// they get a longer leash than a read
 const ACT_MS: u64 = 10_000;
 
+/// A call may belong to a desk behind the one on screen. Restore the visible
+/// desk even when that call returns early or fails.
+pub struct DeskScope<'a> {
+    caps: &'a Capabilities,
+    desk: usize,
+    id: String,
+    spec: CapabilitySpec,
+    grants: crate::grants::Grants,
+}
+
+impl Drop for DeskScope<'_> {
+    fn drop(&mut self) {
+        self.caps.desk.set(self.desk);
+        *self.caps.desk_id.borrow_mut() = std::mem::take(&mut self.id);
+        *self.caps.spec.borrow_mut() = std::mem::take(&mut self.spec);
+        *self.caps.grants.borrow_mut() = std::mem::take(&mut self.grants);
+    }
+}
+
 impl Capabilities {
+    pub fn on_desk(&self, index: usize, desk: &crate::config::Desk) -> DeskScope<'_> {
+        let saved = DeskScope {
+            caps: self,
+            desk: self.desk.get(),
+            id: self.desk_id.borrow().clone(),
+            spec: self.spec.borrow().clone(),
+            grants: self.grants.borrow().clone(),
+        };
+        self.set_desk(index);
+        self.set_desk_id(&desk.id);
+        self.set_capabilities(desk.capabilities.clone());
+        self.set_grants(desk.automation_permissions.clone());
+        saved
+    }
     /// The nothing-allowed state (default)
     pub fn disabled() -> Self {
         Self {
@@ -342,6 +376,7 @@ impl Capabilities {
             area: std::cell::Cell::new((0, 0, 0, 0)),
             hosted: std::cell::RefCell::new(Vec::new()),
             opened: std::cell::RefCell::new(HashMap::new()),
+            page_uids: std::cell::RefCell::new(HashMap::new()),
             desk: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new(None),
             nav: std::cell::RefCell::new(HashMap::new()),
@@ -736,6 +771,7 @@ impl Capabilities {
         let mut hosted = self.hosted.borrow_mut();
         if !hosted.iter().any(|(w, x)| *w == desk && x == name) {
             hosted.push((desk, name.to_string()));
+            self.page_uids.borrow_mut().insert(Self::key(desk, name), crate::config::new_tab_uid());
         }
         // Newly placed items get their position decided on the next redraw
         *self.shown.borrow_mut() = None;
@@ -769,7 +805,10 @@ impl Capabilities {
     /// Names of pages placed inside the window (in placement order).
     /// Becomes the tab ordering as-is
     pub fn hosted_names(&self) -> Vec<String> {
-        let desk = self.desk.get();
+        self.hosted_names_on(self.desk.get())
+    }
+
+    pub fn hosted_names_on(&self, desk: usize) -> Vec<String> {
         self.hosted
             .borrow()
             .iter()
@@ -781,6 +820,11 @@ impl Capabilities {
     /// Tell it which desk is currently being viewed. Called on every switch
     pub fn set_desk(&self, desk: usize) {
         self.desk.set(desk);
+    }
+
+    /// A page opened again under the same name is another permission target.
+    pub fn page_uid(&self, desk: usize, name: &str) -> Option<String> {
+        self.page_uids.borrow().get(&Self::key(desk, name)).cloned()
     }
 
     /// The actual name used when placing something in the window.
@@ -1591,6 +1635,7 @@ impl Capabilities {
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);
         self.opened.borrow_mut().remove(&key);
+        self.page_uids.borrow_mut().remove(&key);
         *self.shown.borrow_mut() = None;
         // Its DevTools goes with it: a DevTools is about one page, and left
         // behind it inspects nothing -- and the next "Open DevTools" on a page
@@ -1754,6 +1799,28 @@ fn placement_changed(sent: Option<&[PageAt]>, want: &[PageAt]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_background_call_uses_its_own_permissions_and_restores_the_viewed_desk() {
+        let cfg: crate::config::Config = serde_json::from_value(serde_json::json!({"desks": [
+            {"id": "a", "name": "A", "automation_permissions": {"send_to_tab": {"human": false, "ai": false}}},
+            {"id": "b", "name": "B"}
+        ]})).unwrap();
+        let (desks, _) = cfg.resolve_desks();
+        let caps = super::Capabilities::disabled();
+        caps.set_desk(1);
+        caps.set_desk_id("b");
+        assert!(caps.allows("send_to_tab", crate::grants::Subject::Human));
+        {
+            let _call = caps.on_desk(0, &desks[0]);
+            assert_eq!(caps.desk.get(), 0);
+            assert_eq!(*caps.desk_id.borrow(), "a");
+            assert!(!caps.allows("send_to_tab", crate::grants::Subject::Human));
+        }
+        assert_eq!(caps.desk.get(), 1);
+        assert_eq!(*caps.desk_id.borrow(), "b");
+        assert!(caps.allows("send_to_tab", crate::grants::Subject::Human));
+    }
+
     use super::*;
 
     /// A page opened while no pane holds a browser is still put away.

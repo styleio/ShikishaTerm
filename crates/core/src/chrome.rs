@@ -1826,7 +1826,7 @@ mod tests {
             "the report is made to carry a different name: {told:?}"
         );
         // Asking for something is not a report
-        assert!(from_page(Ev::Say { tab: 0, text: "cat /etc/shadow".into() }, "p").is_none());
+        assert!(from_page(Ev::Say { tab: 0, uid: "test".into(), text: "cat /etc/shadow".into() }, "p").is_none());
         // Nothing is asked through the binding, so nothing answers through it
         assert!(
             from_page(Ev::Result { id: 1, ok: true, value: "\"y\"".into() }, "p").is_none(),

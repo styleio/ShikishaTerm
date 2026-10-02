@@ -24,6 +24,9 @@ use tiny_http::{Header, Response, Server};
 #[derive(Clone, Serialize, Default)]
 pub struct RemoteTab {
     pub index: usize,
+    /// Identity to include when sending from this snapshot, even after its
+    /// screen position is occupied by another tab.
+    pub uid: String,
     pub name: String,
     pub state: String,
     pub locked: bool,
@@ -77,7 +80,7 @@ pub struct Snapshot {
 #[derive(Debug)]
 pub enum RemoteCmd {
     /// Send an instruction to a tab (treated as human input)
-    Send { tab: usize, text: String },
+    Send { uid: String, text: String },
     /// Raw keys, e.g. an answer to a confirmation
     Keys { tab: usize, keys: String },
     /// An answer typed on a reply page, which a notification linked to.
@@ -3172,8 +3175,12 @@ fn handle(
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let tab = v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
             if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                let Some(uid) = v.get("uid").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) else {
+                    req.respond(json_response(serde_json::json!({"ok": false, "error": crate::i18n::t("err.send.refresh")})).with_status_code(409))?;
+                    return Ok(());
+                };
                 let _ = tx.send(RemoteCmd::Send {
-                    tab,
+                    uid: uid.to_string(),
                     text: text.to_string(),
                 });
             } else if let Some(keys) = v.get("keys").and_then(|x| x.as_str()) {
@@ -3570,7 +3577,7 @@ mod tests {
         let base = format!("http://127.0.0.1:{}", ui.port());
         let mut phone = Phone::new(&base);
         phone.pair("csrf-regression-token");
-        let body = r#"{"tab":0,"text":"dummy"}"#;
+        let body = r#"{"tab":0,"uid":"tab-uid","text":"dummy"}"#;
         for origin in ["http://127.0.0.1:1", "https://127.0.0.1", "https://stranger.example", "null"] {
             let answer = phone.agent.post(&format!("{base}/api/send"))
                 .header("Cookie", &phone.cookie).header("Origin", origin)
@@ -5193,11 +5200,14 @@ mod tests {
         let body = phone.text("/api/state?t=tok123456789012");
         assert!(body.contains("実装") && body.contains("QUESTION"), "{body}");
 
+        // A position from an old page is not enough to send anything.
+        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"stale"}"#);
+        assert!(ui.rx.try_recv().is_err(), "a request without a tab identity was accepted");
         // The instruction reaches the main loop
-        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"続けて"}"#);
+        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"uid":"tab-uid","text":"続けて"}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Send { tab, text } => {
-                assert_eq!((tab, text.as_str()), (1, "続けて"));
+            RemoteCmd::Send { uid, text } => {
+                assert_eq!((uid.as_str(), text.as_str()), ("tab-uid", "続けて"));
             }
             other => panic!("unexpected: {other:?}"),
         }
