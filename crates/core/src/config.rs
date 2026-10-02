@@ -4367,6 +4367,16 @@ pub fn desk_scope(id: Option<&str>, name: Option<&str>) -> String {
     }
 }
 
+/// Whether `uid` is one worked out from a desk and a name
+/// ([`derived_tab_uid`]) rather than drawn for a new tab ([`new_tab_uid`]):
+/// a tab that was in the settings when they were carried forward to uids,
+/// or a line written without one since. Only such a tab can be the one a
+/// record written before uids meant -- a tab made since was not there when
+/// it was written, whatever it is called and wherever it works
+pub fn uid_is_worked_out(uid: &str) -> bool {
+    is_tab_uid(uid) && uid.as_bytes()[14] == b'5'
+}
+
 /// Whether `s` is shaped like a uid: what tells one from a name in a record
 /// written before tabs had uids
 pub fn is_tab_uid(s: &str) -> bool {

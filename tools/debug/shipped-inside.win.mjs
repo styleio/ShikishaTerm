@@ -8,7 +8,8 @@
  * checkout, in a folder of its own, with such a repository, and checks:
  *
  *   1. the dialog says, under the `.claude` row, what is not brought and how
- *      big, marked as new to this project, and the app's rules are listed;
+ *      big, with nothing called added (the project never looked before),
+ *      and the app's rules are listed;
  *   2. the worktree made gets `.claude` without its helper worktrees;
  *   3. opened again, nothing is marked new any more (the project was shown);
  *   4. a version that adds a rule -- the record of what was shown taken back
@@ -175,7 +176,7 @@ try {
   const listed = JSON.parse(await run(`JSON.stringify(S.branch.shipped_rules)`));
   check(listed.length === 8 && listed[0] === '**/.claude/worktrees/' && listed.includes('**/.claude/scheduled_tasks.json'),
     'the app\'s rules are listed: ' + JSON.stringify(listed));
-  check((await run(`S.branch.shipped_new.length`)) === 8, 'all of them are new to a project never shown them');
+  check((await run(`S.branch.shipped_new.length`)) === 0, 'none of them is said to be added to a project that never looked');
   await until(async () => /\.claude\/worktrees/.test((await leftSaid()) || ''), 'the line under .claude', 15000).catch(async (e) => {
     console.log('--- said: ' + JSON.stringify(await leftSaid()) + '\n--- sizes: ' +
       await run(`JSON.stringify((S.branch.carry_sizes || []).map(s => ({path: s.path, left: s.left})))`));
@@ -187,7 +188,7 @@ try {
   check(leftNow.length === 5 && leftNow.includes('.claude/checkpoints') && leftNow.includes('.claude/scheduled_tasks.json'),
     'every place left out is counted: ' + JSON.stringify(leftNow));
   check(/MB/.test(first), 'it says how big: ' + first);
-  check(/この版で追加/.test(first), 'it says the rules are new here: ' + first);
+  check(!/前回の確認より後に追加/.test(first), 'it does not call the rules added the first time: ' + first);
   await run(`document.querySelector('#branch .bcarry select[data-name=".claude"]').parentElement.scrollIntoView({block:'center'}); true`);
   await sleep(300);
   await shot('1-dialog');
@@ -209,7 +210,7 @@ try {
   await sleep(500);
   await open();
   await until(async () => /\.claude\/worktrees/.test((await leftSaid()) || ''), 'the line under .claude', 15000);
-  check(!/この版で追加/.test(await leftSaid()), 'not marked new once shown: ' + await leftSaid());
+  check(!/前回の確認より後に追加/.test(await leftSaid()), 'not marked new once shown: ' + await leftSaid());
 
   console.log('4. a version that adds a rule marks it new again');
   await run(`closeBranch(); true`);
@@ -220,7 +221,7 @@ try {
   const fresh = JSON.parse(await run(`JSON.stringify(S.branch.shipped_new)`));
   check(fresh.length === 5 && !fresh.includes('**/.claude/worktrees/') && fresh.includes('**/.claude/agent-registry.json'),
     'only the second batch is new to a project shown the first: ' + JSON.stringify(fresh));
-  await until(async () => /この版で追加/.test((await leftSaid()) || ''), 'the mark on a rule newer than what was shown', 15000);
+  await until(async () => /前回の確認より後に追加/.test((await leftSaid()) || ''), 'the mark on a rule newer than what was shown', 15000);
   check(true, 'marked new against an older edition: ' + await leftSaid());
   await run(`closeBranch(); true`);
 

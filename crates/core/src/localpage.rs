@@ -128,21 +128,16 @@ fn server() -> Result<&'static Shared, String> {
 }
 
 fn answer(req: tiny_http::Request) {
-    let found = server().ok().and_then(|s| {
-        let folders = s.folders.lock().unwrap_or_else(|e| e.into_inner());
-        found_at(&folders, req.url())
-    });
-    let not_found = || tiny_http::Response::from_string("not found").with_status_code(404);
     if *req.method() != tiny_http::Method::Get && *req.method() != tiny_http::Method::Head {
         let _ = req.respond(tiny_http::Response::from_string("").with_status_code(405));
         return;
     }
-    let Some(file) = found else {
-        let _ = req.respond(not_found());
-        return;
-    };
-    let Ok(open) = std::fs::File::open(&file) else {
-        let _ = req.respond(not_found());
+    let found = server().ok().and_then(|s| {
+        let folders = s.folders.lock().unwrap_or_else(|e| e.into_inner());
+        found_at(&folders, req.url())
+    });
+    let Some((open, file)) = found else {
+        let _ = req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
         return;
     };
     let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok();
@@ -153,28 +148,81 @@ fn answer(req: tiny_http::Request) {
     let _ = req.respond(resp);
 }
 
-/// The file a request names: under a shared folder by its key, by a path that
-/// stays inside it once every link in it is followed. A folder is its
-/// `index.html`. None for anything else
-fn found_at(folders: &HashMap<String, PathBuf>, url: &str) -> Option<PathBuf> {
+/// The file a request names, opened: under a shared folder by its key, by a
+/// path that stays inside it once every link in it is followed. A folder is
+/// its `index.html`. None for anything else.
+///
+/// The test that it is inside is made on the file as opened, not on its name
+/// beforehand. A name checked and then opened can be swapped for a link in
+/// between, and the one added for a folder (`index.html`) was never checked
+/// at all -- a link by that name in a shared folder served whatever it led to.
+/// Asking the open file where it really is answers both: whatever the path
+/// went through on the way, this is the file that will be sent
+fn found_at(folders: &HashMap<String, PathBuf>, url: &str) -> Option<(std::fs::File, PathBuf)> {
     let path = url.split(['?', '#']).next().unwrap_or("");
     let mut parts = path.trim_start_matches('/').splitn(2, '/');
     let root = folders.get(parts.next()?)?;
     let mut at = root.clone();
     for part in parts.next().unwrap_or("").split('/').filter(|p| !p.is_empty()) {
         let part = percent_decode(part);
-        // Each part is one name: no climbing, no drive, no second separator
-        if part == "." || part == ".." || part.contains(['/', '\\', ':']) {
+        // Each part is one name: no climbing, no drive, no second separator,
+        // no stream of a file (`a.html:x` names an alternate data stream on
+        // NTFS), and no control character -- a NUL ends a name early wherever
+        // the path reaches C
+        if part == "." || part == ".." || part.contains(['/', '\\', ':']) || part.chars().any(char::is_control) {
             return None;
         }
         at.push(part);
     }
-    let real = std::fs::canonicalize(&at).ok()?;
-    if !real.starts_with(root) {
-        return None;
+    if std::fs::metadata(&at).ok()?.is_dir() {
+        at.push("index.html");
     }
-    let real = if real.is_dir() { real.join("index.html") } else { real };
-    real.is_file().then_some(real)
+    let open = std::fs::File::open(&at).ok()?;
+    let real = opened_at(&open)?;
+    (real.starts_with(root) && open.metadata().ok()?.is_file()).then_some((open, real))
+}
+
+/// Where an open file really is: the path the system gives for the handle,
+/// with every link and junction on the way already followed, in the same
+/// spelling `std::fs::canonicalize` gives a shared folder (`\\?\D:\...` on
+/// Windows) so the two compare part by part
+#[cfg(windows)]
+fn opened_at(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+    let handle = file.as_raw_handle();
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: the handle is the open file's and lives as long as `file`;
+        // the buffer is as long as said
+        let n = unsafe {
+            GetFinalPathNameByHandleW(handle, buf.as_mut_ptr(), buf.len() as u32, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)
+        } as usize;
+        if n == 0 {
+            return None;
+        }
+        // Too small: the answer is the size needed, the end NUL included
+        if n >= buf.len() {
+            buf.resize(n + 1, 0);
+            continue;
+        }
+        return Some(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
+    }
+}
+
+/// On Linux the open descriptor names its file under /proc. A system without
+/// that has no answer here, and a file whose place cannot be told is not
+/// served: refusing is the safe side of not knowing
+#[cfg(unix)]
+fn opened_at(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+}
+
+#[cfg(not(any(windows, unix)))]
+fn opened_at(_file: &std::fs::File) -> Option<PathBuf> {
+    None
 }
 
 /// What a file is, by its ending, as a browser wants to be told. Text is not
@@ -317,6 +365,64 @@ mod tests {
         // A file that is not there, and a folder, are said as such
         assert!(address(&site.join("gone.html").display().to_string()).unwrap().is_err());
         assert!(address(&site.display().to_string()).unwrap().is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A shared folder with links in it that lead out: none of them serves
+    /// what is outside. The one by the name a folder is opened at
+    /// (`index.html`) was the hole -- it was added after the check
+    #[test]
+    fn a_link_inside_the_folder_never_serves_what_is_outside_it() {
+        let root = crate::test_temp("localpage-links");
+        let _ = std::fs::remove_dir_all(&root);
+        let site = root.join("site");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(site.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(site.join("page.html"), "in").unwrap();
+        std::fs::write(outside.join("index.html"), "OUTSIDE").unwrap();
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE").unwrap();
+        let real_site = std::fs::canonicalize(&site).unwrap();
+        let folders: HashMap<String, PathBuf> = [("k".to_string(), real_site)].into_iter().collect();
+        let got = |url: &str| found_at(&folders, url).map(|(_, p)| p);
+
+        assert!(got("/k/page.html").is_some(), "the page itself is not served");
+        // Names that are not one plain name
+        for bad in ["/k/page.html%3Ax", "/k/page.html:x", "/k/page%00.html", "/k/sub/%2e%2e/%2e%2e/outside/secret.txt"] {
+            assert!(got(bad).is_none(), "{bad} was served");
+        }
+
+        let made = |made: std::io::Result<()>, what: &str| -> bool {
+            if made.is_err() {
+                eprintln!("skipped: this machine does not let a test make {what}");
+            }
+            made.is_ok()
+        };
+        // A link to a file outside, under the name a folder opens at
+        #[cfg(windows)]
+        let file_link = std::os::windows::fs::symlink_file(outside.join("index.html"), site.join("sub").join("index.html"));
+        #[cfg(unix)]
+        let file_link = std::os::unix::fs::symlink(outside.join("index.html"), site.join("sub").join("index.html"));
+        if made(file_link, "a file link") {
+            assert!(got("/k/sub/").is_none(), "a folder's index.html led outside and was served");
+            assert!(got("/k/sub/index.html").is_none(), "a link to a file outside was served");
+        }
+        // A folder inside that leads outside: a junction on Windows, which
+        // needs no privilege, so this half runs on every Windows machine
+        #[cfg(windows)]
+        let dir_link = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(site.join("away"))
+            .arg(&outside)
+            .output()
+            .map_err(std::io::Error::other)
+            .and_then(|o| if o.status.success() { Ok(()) } else { Err(std::io::Error::other("mklink")) });
+        #[cfg(unix)]
+        let dir_link = std::os::unix::fs::symlink(&outside, site.join("away"));
+        if made(dir_link, "a folder link") {
+            assert!(got("/k/away/").is_none(), "a folder link's index.html outside was served");
+            assert!(got("/k/away/secret.txt").is_none(), "a file through a folder link was served");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -294,7 +294,8 @@ impl Saved {
     /// a tab that came since -- in the same folder, of the same CLI, maybe
     /// under the same name -- is not handed a conversation it never had. Only
     /// entries written before tabs had uids are left to the folder and the
-    /// name
+    /// name, and only for a tab that was there when they were written (its
+    /// uid worked out from its name, `config::uid_is_worked_out`)
     fn remembered_of(
         &self,
         desk: &crate::config::Desk,
@@ -315,6 +316,11 @@ impl Saved {
                 return Some(me);
             }
             here.retain(|s| s.uid.is_none());
+            // What is left was written before tabs had uids, about the tabs
+            // there were then. A tab made since is none of them
+            if !crate::config::uid_is_worked_out(uid) {
+                return None;
+            }
         }
         if let [only] = here.as_slice() {
             return Some(only);
@@ -620,6 +626,17 @@ mod tests {
             saved.conversation_of(&named("work"), "claude", Some("D:\\Work"), Some("tiger"), "claude").map(|s| s.id),
             Some("mine".into())
         );
+        // ...for a tab that was there when it was written, and never for one
+        // made since, whatever it is called
+        let mut old = saved.clone();
+        old.desks[0].tabs[0].uid = None;
+        let then = crate::config::derived_tab_uid("work", "tiger");
+        let found_old = |uid: &str, id| {
+            old.conversation_of_tab(&named("work"), "claude", Some("D:\\Work"), Some(id), Some(uid), "claude").map(|s| s.id)
+        };
+        assert_eq!(found_old(&then, "tiger"), Some("mine".into()));
+        assert_eq!(found_old(other, "calm-otter"), None, "a tab made since was handed a conversation from before uids");
+        assert_eq!(found_old(other, "tiger"), None, "a tab made since under the old name was handed it");
     }
 
     /// Two tabs of one CLI in one folder: the name is all there is, and when it

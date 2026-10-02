@@ -44,6 +44,11 @@ once it reaches its first tagged release.
   pauses is left on a banner. Cut short by the account, not done, or not
   answered in time, the question comes back once with what happened, before
   anything stops.
+- **A file on this PC opened in a browser tab can no longer reach outside its
+  folder through a link.** A link named `index.html` in a shared folder, or a
+  name swapped for a link between the check and the opening, served whatever
+  it led to. The file is now checked where it really is once opened, and a
+  name holding a stream (`a.html:x`) or a control character is refused.
 - **A new tab no longer inherits a closed tab's record because it was given
   the same name.** A tab's conversations, the jobs it leads and the work it was
   handed, its mail, its place in a split, the key its programs call the app
@@ -59,6 +64,19 @@ once it reaches its first tagged release.
 - **A tab on a desk that is not in front can still use `shikisha`.** Its
   key was retired while another desk was in front, so its calls and its
   CLI's hooks were refused until its program was started again.
+- **A name with `</script>` in it cannot run code in the settings page.**
+  Values the settings, the ? and the manual pages put into their scripts --
+  a project's name among them -- are written so that nothing in them can
+  end the script, and are put in once: a project called `__DICT__` no longer
+  breaks the settings page.
+- **The worktree dialog no longer waits on counting what is left out.** The
+  places the rules leave out are counted to one limit for the whole dialog,
+  not one each.
+- **"Added since you last looked" is said only when it is so.** A rule of the
+  app's was marked "New in this version" for a project that had simply never
+  looked at the list.
+- **A program whose tab was closed is told what to do** when it calls the app,
+  in the app's language.
 
 ## [0.23.1] - 2026-10-02
 
