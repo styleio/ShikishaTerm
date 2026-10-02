@@ -276,6 +276,18 @@ pub fn ended_on_purpose() -> bool {
     ENDING.load(SeqCst) == ENDED
 }
 
+/// Stop this PC's resident process as the app quits with everything to stop:
+/// told to end what it holds and go, rather than keep the ended terminals'
+/// codes for a start that is not coming. Nothing to do when none is there;
+/// an error, with why, when one is there and did not say it ended
+pub fn end_on_quit() -> Result<()> {
+    if link().is_none() && !is_there() {
+        return Ok(());
+    }
+    connect_existing()?;
+    end()
+}
+
 /// Let go of the line as the app goes, leaving what it holds running
 pub fn let_go() {
     crate::farlink::let_go_key(KEY);

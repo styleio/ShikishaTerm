@@ -2,18 +2,21 @@
   Quit a running copy of the app the way a person does: its window's close
   button, then the answer to the question it asks on the way out.
 
-    quit-app.ps1 -Root <folder the copy runs from> -Answer Yes|No|Cancel [-Seconds 20]
+    quit-app.ps1 -Root <folder the copy runs from> -Answer Yes|No|Cancel [-Seconds 20] [-Asked]
 
   The window is told to close (WM_CLOSE, what its ✕ sends). The question is the
   system's own message box, titled SHIKISHA-TERM, shown by a process of that
   copy; its button is pressed by its id (Yes 6, No 7, Cancel 2). Prints what
   the question said, then "answered <Answer>", or "no question" when the copy
-  quit without asking. Nothing of any other copy is touched.
+  quit without asking. -Asked answers a question that is up or coming
+  without closing the window again: one the copy asks a second time. Nothing
+  of any other copy is touched.
 #>
 param(
     [Parameter(Mandatory)][string]$Root,
     [Parameter(Mandatory)][ValidateSet('Yes', 'No', 'Cancel')][string]$Answer,
-    [int]$Seconds = 20
+    [int]$Seconds = 20,
+    [switch]$Asked
 )
 $ErrorActionPreference = 'Stop'
 
@@ -68,7 +71,9 @@ if ($wins.Count -eq 0) {
     Write-Output ('no window (the copy has: ' + ($all -join ', ') + ')')
     exit 2
 }
-foreach ($w in $wins) { [void][QuitApp]::PostMessage($w, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) }
+if (-not $Asked) {
+    foreach ($w in $wins) { [void][QuitApp]::PostMessage($w, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero) }
+}
 
 # The question, from whichever process of the copy asks it
 $ids = @{ Yes = 6; No = 7; Cancel = 2 }

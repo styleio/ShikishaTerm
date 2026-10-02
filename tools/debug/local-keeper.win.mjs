@@ -29,6 +29,10 @@
  *      and started again comes back to the kept programs, starting no second
  *      one; the settings say how many are still running, and their "Stop
  *      them" ends the programs and the resident process
+ *   8. (run before 7) the resident process frozen so it cannot answer:
+ *      quitting and answering "No" does not quit -- the question comes back
+ *      saying the terminals could not be stopped; "Cancel" keeps the app,
+ *      and quitting again and answering "Yes" leaves the program running
  *   7. the setting back to unset, a fresh start holds the tab again; quitting
  *      and answering "No" (stop everything): the program and the resident
  *      process end
@@ -75,8 +79,9 @@ const stopAll = () => ps('-Command',
   `Get-CimInstance Win32_Process | Where-Object { ($_.CommandLine + '') -like '*sk-local-keeper*' -or ($_.CommandLine + '') -like '*${MARK}*' } | ` +
   `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`);
 const alive = (pid) => psOut(`if (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }`) === 'yes';
+// Not a tab's `shikisha` call (--cli), which is the same program
 const appPid = () => {
-  const line = ours().find((l) => / SHIKISHA-TERM\.exe /.test(l) && !/--keeper/.test(l) && !/--type=/.test(l));
+  const line = ours().find((l) => / SHIKISHA-TERM\.exe /.test(l) && !/--keeper/.test(l) && !/--type=/.test(l) && !/ --cli /.test(l));
   return line ? Number(line.split(' ')[0]) : null;
 };
 const keeperPid = () => {
@@ -401,13 +406,48 @@ await sleep(2500);
   b.close();
 }
 
-console.log('7. the setting unset again: held again, and "No" stops everything');
+/** Freeze or thaw every thread of `pid`: a process that cannot answer */
+const freeze = (pid, on) => ps('-Command',
+  `Add-Type -Name Nt -Namespace Freeze -MemberDefinition '[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h);'; ` +
+  `$p = Get-Process -Id ${pid}; [void][Freeze.Nt]::${on ? 'NtSuspendProcess' : 'NtResumeProcess'}($p.Handle)`);
+/** Quit through the window, answering `answer`; what the question said */
+const quitApp = (answer, ...more) => {
+  const quit = ps('-File', path.join(ROOT, 'tools', 'debug', 'lib', 'quit-app.ps1'), '-Root', APP, '-Answer', answer, ...more);
+  console.log('   ' + quit.stdout.trim().split(/\r?\n/).join('\n   '));
+  return quit.stdout;
+};
+
+console.log('8. the resident process cannot answer: "No" does not quit, and says so');
 {
   const app = appPid();
   ps('-Command', `& taskkill.exe /PID ${app} /T /F 2>&1 | Out-Null`);
   await until(() => !alive(app), 'the app to be gone', 15000);
   for (const pid of programsOf('fresh-word')) ps('-Command', `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`);
   editConfig((c) => { delete c.keep_terminals; });
+  start();
+  await until(() => programs().length === 1 && keeperPid() !== null, 'the tab held again');
+  const held = programs()[0];
+  const keeper = keeperPid();
+  const running = appPid();
+  await sleep(3000);
+  freeze(keeper, true);
+  quitApp('No');
+  const failed = L['msg.quit.stop_failed'].split('{why}')[0];
+  const again = quitApp('Cancel', '-Asked', '-Seconds', '30');
+  check(again.includes(failed), 'the question comes back saying the terminals could not be stopped');
+  await sleep(1500);
+  check(appPid() === running, 'the app is still there after "Cancel"');
+  check(alive(held), 'the program still runs');
+  quitApp('Yes');
+  await until(() => appPid() === null, 'the app to quit', 20000);
+  check(alive(held), 'quit leaving them: the program still runs');
+  freeze(keeper, false);
+  stopAll();
+  await sleep(1500);
+}
+
+console.log('7. the setting unset again: held again, and "No" stops everything');
+{
   start();
   await until(() => programs().length === 1 && keeperPid() !== null, 'the tab held again');
   const again = programs()[0];

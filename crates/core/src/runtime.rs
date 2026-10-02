@@ -13691,14 +13691,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             crate::append_hook_log(&format!("e2b: {id} could not be kept up again on the way out: {e:#}"));
         }
     }
-    // This PC's resident process, when everything is to stop: told to end
-    // what it holds and go, rather than keep the ended terminals' codes for a
-    // start that is not coming (local-keeper plan §4)
-    if stop_all.get()
-        && let Err(e) = crate::localkeep::end()
-    {
-        append_hook_log(&format!("this PC's resident process: could not be told to stop on the way out: {e:#}"));
-    }
     // Every bridge is told this app is going: what the tabs there ask from
     // now on is answered at once that the PC is away (far-keep plan §4.6)
     crate::farlink::disconnect_all();
@@ -18369,12 +18361,43 @@ fn ask_to_quit(
     stop_all: &std::cell::Cell<bool>,
 ) -> bool {
     let ask = quit_ask(tabs, parked);
-    quit_and_keep_up(&ask, |a| shell.confirm_quit(a), keep_one_up, KEEP_UP_WAIT, stop_all, |said| {
-        let text = format!("{}\n{said}", i18n::t("msg.quit.kept_banner"));
-        if let Err(e) = crate::notify::send_blocking(&crate::notify::Destination::Windows {}, &text) {
-            append_hook_log(&format!("quit: the kept-up times could not be left on a banner: {e}"));
+    let ask_once = |a: &crate::host::QuitAsk| {
+        quit_and_keep_up(a, |a| shell.confirm_quit(a), keep_one_up, KEEP_UP_WAIT, stop_all, |said| {
+            let text = format!("{}\n{said}", i18n::t("msg.quit.kept_banner"));
+            if let Err(e) = crate::notify::send_blocking(&crate::notify::Destination::Windows {}, &text) {
+                append_hook_log(&format!("quit: the kept-up times could not be left on a banner: {e}"));
+            }
+        })
+    };
+    quit_stopping_here(&ask, stop_all, ask_once, crate::localkeep::end_on_quit)
+}
+
+/// The quit question, and -- when the answer is to stop everything -- this
+/// PC's resident process stopped before the answer stands (local-keeper plan
+/// §4). Stopping that did not go through is no quit with everything stopped:
+/// its terminals, and the AIs in them, may still run. The question is asked
+/// again, saying so, and the person chooses to quit leaving them, try
+/// stopping them again, or stay
+pub fn quit_stopping_here(
+    ask: &crate::host::QuitAsk,
+    stop_all: &std::cell::Cell<bool>,
+    mut ask_once: impl FnMut(&crate::host::QuitAsk) -> bool,
+    mut stop_here: impl FnMut() -> anyhow::Result<()>,
+) -> bool {
+    let mut again = ask.clone();
+    loop {
+        stop_all.set(false);
+        if !ask_once(&again) {
+            return false;
         }
-    })
+        if !stop_all.get() {
+            return true;
+        }
+        let Err(e) = stop_here() else { return true };
+        append_hook_log(&format!("quit: this PC's resident process could not be stopped: {e:#}"));
+        again.notes = ask.notes.clone();
+        again.notes.push(i18n::tp("msg.quit.stop_failed", &[("why", &format!("{e:#}"))]));
+    }
 }
 
 /// Whether the answer is to quit, keeping what it said about the AIs set to
@@ -18509,6 +18532,42 @@ mod quit_keep_up_tests {
         assert_eq!(asked.load(Ordering::SeqCst), 2, "one asking per machine");
         assert_eq!(questions, 1, "kept up as asked: nothing more to ask");
         assert!(said.contains("vm-a") && said.contains("vm-b"), "{said}");
+    }
+
+    /// Everything to stop: the app goes only once this PC's resident process
+    /// has stopped. Stopping that did not go through asks again, saying why;
+    /// the person may then quit leaving it, try again, or stay
+    #[test]
+    fn a_quit_stopping_everything_goes_only_once_it_stopped() {
+        let ask = two_machines();
+        let stop_all = Cell::new(false);
+        let mut seen: Vec<crate::host::QuitAsk> = Vec::new();
+        let mut answers = vec![Quit::StopAll, Quit::StopAll].into_iter();
+        let mut tries = 0;
+        let quit = quit_stopping_here(
+            &ask,
+            &stop_all,
+            |a| { seen.push(a.clone()); quitting(answers.next().unwrap(), &stop_all) },
+            || { tries += 1; if tries == 1 { anyhow::bail!("no answer") } else { Ok(()) } },
+        );
+        assert!(quit && stop_all.get());
+        assert_eq!(tries, 2, "stopped again when asked again");
+        assert_eq!(seen[0].notes, ask.notes);
+        assert_eq!(seen[1].notes.len(), ask.notes.len() + 1, "why it did not stop is said once: {:?}", seen[1].notes);
+        assert!(seen[1].notes.last().unwrap().contains("no answer"));
+
+        // Left running, as chosen after the stop failed
+        let mut answers = vec![Quit::StopAll, Quit::Yes].into_iter();
+        let quit = quit_stopping_here(&ask, &stop_all, |_| quitting(answers.next().unwrap(), &stop_all), || anyhow::bail!("no answer"));
+        assert!(quit && !stop_all.get(), "a quit that leaves them is not one that stopped them");
+
+        // Stayed
+        let mut answers = vec![Quit::StopAll, Quit::No].into_iter();
+        assert!(!quit_stopping_here(&ask, &stop_all, |_| quitting(answers.next().unwrap(), &stop_all), || anyhow::bail!("no answer")));
+
+        // Leaving them running never asks anything of the resident process
+        let quit = quit_stopping_here(&ask, &stop_all, |_| quitting(Quit::Yes, &stop_all), || panic!("stopped on a plain quit"));
+        assert!(quit);
     }
 
     /// Every AI stopped: nothing goes on, so nothing is kept up

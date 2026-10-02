@@ -3757,8 +3757,10 @@ fn project_name_in(path: &Path, desk: &str, key: &str) -> Result<String> {
         return Ok(key.to_string());
     }
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
-    let doc: serde_json::Value = serde_json::from_str(without_bom(&text))
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    // A desk or project copied by hand is told from the one it copies, as reading tells it
+    settle_doc_copies(&mut doc);
     let entry = doc
         .get("desks")
         .and_then(|d| d.as_array())
@@ -4673,23 +4675,22 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
     moved
 }
 
-/// Give every tab read without a uid, or with the uid of a tab before it on
-/// the desk, the one its desk and its name work out to ([`derived_tab_uid`]).
-/// Run after [`settle_tab_ids`], whose names are unique on the desk, so what
-/// this gives is too -- and the same every time the file is read, which is
-/// what lets the line go unwritten until something writes it anyway
+/// Give every tab read without a uid the one its desk and its name work out
+/// to ([`derived_tab_uid`]), and one that holds the uid of a tab before it on
+/// the desk -- a line copied by hand -- the one its copy works out to
+/// ([`settle_copies`]). Run after [`settle_tab_ids`], whose names are unique
+/// on the desk, so what this gives is too -- and the same every time the file
+/// is read, which is what lets the line go unwritten until something writes
+/// it anyway
 fn settle_tab_uids(tabs: &mut [FlatTab], scope: &str) {
-    let mut seen: std::collections::HashSet<String> = Default::default();
     for t in tabs.iter_mut() {
         let written = t.cfg.uid.as_deref().map(str::trim).unwrap_or("").to_string();
-        if !written.is_empty() && seen.insert(written.clone()) {
-            t.cfg.uid = Some(written);
-            continue;
-        }
-        let uid = derived_tab_uid(scope, t.cfg.id.as_deref().unwrap_or(""));
-        seen.insert(uid.clone());
-        t.cfg.uid = Some(uid);
+        t.cfg.uid = Some(match written.is_empty() {
+            true => derived_tab_uid(scope, t.cfg.id.as_deref().unwrap_or("")),
+            false => written,
+        });
     }
+    settle_copies(tabs.iter_mut().filter_map(|t| t.cfg.uid.as_mut()), &mut Default::default());
 }
 
 /// Write down on every tab line in a settings file -- `config.json`, or a
@@ -4701,8 +4702,17 @@ fn settle_tab_uids(tabs: &mut [FlatTab], scope: &str) {
 /// than worked out again here, so the file as written and the file as read
 /// can never disagree about who a tab is. A desk whose lines cannot be read
 /// is left as it is: reading it fails the same way, and this has nothing to
-/// add to that
+/// add to that.
+///
+/// A uid two lines hold -- one copied by hand -- is settled here too, as
+/// reading settles it ([`settle_copies`]): written down, the copy keeps the
+/// uid it was given whatever is moved around it later
 pub fn fill_tab_uids(doc: &mut serde_json::Value) {
+    fill_missing_uids(doc);
+    settle_doc_copies(doc);
+}
+
+fn fill_missing_uids(doc: &mut serde_json::Value) {
     let hosts: Vec<HostSpec> = doc.get("hosts").and_then(|h| serde_json::from_value(h.clone()).ok()).unwrap_or_default();
     match doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
         Some(desks) => {
@@ -4750,37 +4760,117 @@ fn fill_holder_uids(holder: &mut serde_json::Value, hosts: &[HostSpec], scope: &
     };
     let (_, tabs, _) = resolve_folders(&foldered_with(&folders, &legacy), &[], hosts, scope);
     let mut uids = tabs.into_iter().map(|t| t.cfg.uid.unwrap_or_default());
-    // The lines in the order they were read: the first folder's, then the
-    // ones written beside the folders (which reading puts in the first
-    // folder), then every other folder's -- each tab before its children
-    fn walk(list: &mut serde_json::Value, uids: &mut dyn Iterator<Item = String>) {
+    visit_tab_lines(holder, &mut |line| {
+        let Some(uid) = uids.next() else { return };
+        if let Some(o) = line.as_object_mut() {
+            let unsaid = o.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
+            if unsaid {
+                o.insert("uid".into(), serde_json::json!(uid));
+            }
+        }
+    });
+}
+
+/// Every tab line `holder` keeps, in the order reading puts the tabs: the
+/// first folder's, then the ones written beside the folders (which reading
+/// puts in the first folder), then every other folder's -- each tab before
+/// its children
+fn visit_tab_lines(holder: &mut serde_json::Value, each: &mut dyn FnMut(&mut serde_json::Value)) {
+    fn walk(list: &mut serde_json::Value, each: &mut dyn FnMut(&mut serde_json::Value)) {
         let Some(list) = list.as_array_mut() else { return };
         for line in list {
-            let Some(uid) = uids.next() else { return };
-            if let Some(o) = line.as_object_mut() {
-                let unsaid = o.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
-                if unsaid {
-                    o.insert("uid".into(), serde_json::json!(uid));
-                }
-            }
+            each(line);
             if let Some(kids) = line.get_mut("children") {
-                walk(kids, uids);
+                walk(kids, each);
             }
         }
     }
     let empty_folders = holder.get("folders").and_then(|f| f.as_array()).is_none_or(|f| f.is_empty());
     if !empty_folders && let Some(first) = holder.get_mut("folders").and_then(|f| f.get_mut(0)).and_then(|g| g.get_mut("tabs")) {
-        walk(first, &mut uids);
+        walk(first, each);
     }
     if let Some(legacy) = holder.get_mut("tabs") {
-        walk(legacy, &mut uids);
+        walk(legacy, each);
     }
     if let Some(rest) = holder.get_mut("folders").and_then(|f| f.as_array_mut()) {
         for g in rest.iter_mut().skip(1) {
             if let Some(list) = g.get_mut("tabs") {
-                walk(list, &mut uids);
+                walk(list, each);
             }
         }
+    }
+}
+
+/// The lines of one kind a settings file holds, in the order reading meets
+/// them
+type VisitLines = dyn Fn(&mut serde_json::Value, &mut dyn FnMut(&mut serde_json::Value));
+
+/// [`settle_copies`] on the uids written in a settings file, in the order
+/// reading meets them: the desks', every desk's projects', and the tabs of
+/// every desk whose tabs are in it
+fn settle_doc_copies(doc: &mut serde_json::Value) {
+    // Read in one pass, settled, and written back in a second over the same lines
+    fn settle(doc: &mut serde_json::Value, visit: &VisitLines) {
+        let mut uids: Vec<String> = Vec::new();
+        visit(doc, &mut |o| uids.push(o.get("uid").and_then(|v| v.as_str()).unwrap_or("").trim().to_string()));
+        settle_copies(uids.iter_mut(), &mut Default::default());
+        let mut next = uids.into_iter();
+        visit(doc, &mut |o| {
+            if let (Some(uid), Some(o)) = (next.next(), o.as_object_mut())
+                && !uid.is_empty()
+                && o.get("uid").and_then(|v| v.as_str()).map(str::trim) != Some(uid.as_str())
+            {
+                o.insert("uid".into(), serde_json::json!(uid));
+            }
+        });
+    }
+    fn desks(doc: &mut serde_json::Value) -> &mut [serde_json::Value] {
+        doc.get_mut("desks").and_then(|d| d.as_array_mut()).map(|d| d.as_mut_slice()).unwrap_or_default()
+    }
+    if doc.get("desks").is_none_or(|d| !d.is_array()) {
+        settle(doc, &|doc, each| visit_tab_lines(doc, each));
+        return;
+    }
+    settle(doc, &|doc, each| {
+        for d in desks(doc) {
+            each(d);
+        }
+    });
+    settle(doc, &|doc, each| {
+        for d in desks(doc) {
+            for p in d.get_mut("projects").and_then(|p| p.as_array_mut()).into_iter().flatten() {
+                each(p);
+            }
+        }
+    });
+    settle(doc, &|doc, each| {
+        for d in desks(doc).iter_mut().filter(|d| d.get("file").is_none()) {
+            visit_tab_lines(d, each);
+        }
+    });
+}
+
+/// Who the `k`th copy of `uid` is. A line copied by hand is somebody new, so
+/// the uid is shaped as a new one's (never taken for one that was there when
+/// uids were carried forward, `uid_is_worked_out`); it is worked out from the
+/// uid it copies, so every reading of the settings and every writing of them
+/// gives the copy the same one, wherever it stands in the list
+fn copy_uid(uid: &str, k: usize) -> String {
+    let mut u = derived_tab_uid(&format!("\0copy\0{uid}"), &k.to_string()).into_bytes();
+    u[14] = b'4';
+    String::from_utf8(u).unwrap_or_default()
+}
+
+/// No uid twice. In order, one that repeats an earlier one is a copy, and is
+/// given the uid its copy works out to ([`copy_uid`]); the first keeps its own
+fn settle_copies<'a>(uids: impl Iterator<Item = &'a mut String>, seen: &mut std::collections::HashSet<String>) {
+    for uid in uids.filter(|u| !u.is_empty()) {
+        if seen.insert(uid.clone()) {
+            continue;
+        }
+        let copy = (1..).map(|k| copy_uid(uid, k)).find(|c| !seen.contains(c)).unwrap_or_default();
+        seen.insert(copy.clone());
+        *uid = copy;
     }
 }
 
@@ -6058,6 +6148,9 @@ fn with_listed_desk<T>(
     let mut root: serde_json::Value = serde_json::from_str(without_bom(&text)).with_context(|| {
         crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])
     })?;
+    // A desk copied by hand is told from the one it copies, as reading
+    // tells it, and written down so with the change
+    settle_doc_copies(&mut root);
     let w = root
         .get_mut("desks")
         .and_then(|w| w.as_array_mut())
@@ -6104,6 +6197,9 @@ fn with_folders(
         crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])
     })?;
 
+    // A desk copied by hand is told from the one it copies, as reading
+    // tells it, and written down so with the change
+    settle_doc_copies(&mut root);
     // A desk kept in a file of its own is edited there; the entry in the
     // settings only names it
     let mut file_at: Option<std::path::PathBuf> = None;
@@ -6486,72 +6582,52 @@ impl Config {
 
 /// No two desks are the same desk, and no two projects anywhere the same
 /// project. A uid two of them hold is a line copied by hand; the copy, the
-/// later one, is given one worked out from where it stands
+/// later one, is given the uid the copy works out to ([`settle_copies`]), the
+/// one saving the settings writes down
 fn unique_desk_uids(desks: &mut [Desk]) {
-    let mut seen: std::collections::HashSet<String> = Default::default();
-    let mut projects: std::collections::HashSet<String> = Default::default();
-    for (n, d) in desks.iter_mut().enumerate() {
-        if !seen.insert(d.uid.clone()) {
-            d.uid = derived_desk_uid(&format!("{}#copy{n}", d.id));
-            seen.insert(d.uid.clone());
-        }
-        for (m, p) in d.projects.iter_mut().enumerate() {
-            let uid = p.uid.clone().unwrap_or_default();
-            if !projects.insert(uid) {
-                let mine = derived_project_uid(&format!("{}#copy{n}.{m}", d.id), &p.name);
-                projects.insert(mine.clone());
-                p.uid = Some(mine);
-            }
-        }
-    }
+    settle_copies(desks.iter_mut().map(|d| &mut d.uid), &mut Default::default());
+    let projects = desks.iter_mut().flat_map(|d| d.projects.iter_mut().filter_map(|p| p.uid.as_mut()));
+    settle_copies(projects, &mut Default::default());
 }
 
-/// No two tabs on any desk are the same tab. Two desks holding one uid is a
-/// line copied by hand from one into the other; the copy, the later one,
-/// is given the uid its own desk and name work out to, which no other tab has
+/// No two tabs on any desk are the same tab. Two holding one uid is a line
+/// copied by hand, within a desk or from one into another; the copy, the
+/// later one, is given the uid the copy works out to ([`settle_copies`])
 fn unique_tab_uids(desks: &mut [Desk]) {
-    let mut seen: std::collections::HashSet<String> = Default::default();
-    for d in desks.iter_mut() {
-        let scope = format!("{}#copy", d.id);
-        for t in d.tabs.iter_mut() {
-            let uid = t.cfg.uid.clone().unwrap_or_default();
-            if !seen.insert(uid) {
-                let mine = derived_tab_uid(&scope, t.cfg.id.as_deref().unwrap_or(""));
-                seen.insert(mine.clone());
-                t.cfg.uid = Some(mine);
-            }
-        }
-    }
+    let tabs = desks.iter_mut().flat_map(|d| d.tabs.iter_mut().filter_map(|t| t.cfg.uid.as_mut()));
+    settle_copies(tabs, &mut Default::default());
 }
 
 /// Where each desk that was open stands in the settings as read again.
 ///
 /// One entry per desk in `before`: its place in `after`, or `None` when it is
-/// gone. A desk is its id first -- that is what renaming leaves alone -- and
-/// its name only for a desk the id cannot answer for (settings from before
-/// ids, or an id changed by hand), and only against a desk no id claimed.
-/// Pairing by name alone treated a renamed desk as a deleted one and stopped
-/// every tab running in it; and a new desk given the old one's name would have
-/// been handed tabs it never had
+/// gone. A desk is who it is (its uid): neither its name nor its id, which
+/// can both be changed and given to another desk. Paired by name, a renamed
+/// desk was taken for a deleted one and every tab running in it stopped; paired
+/// by id, a desk given another's old id was handed that desk's running tabs.
+/// Only a desk with no uid written, whose uid is worked out from its id, works
+/// out another when its id is changed by hand: that one is found by its name,
+/// and only against a desk whose uid is worked out too and that no desk before
+/// answers to
 pub fn pair_desks(before: &[Desk], after: &[Desk]) -> Vec<Option<usize>> {
     let mut claimed = vec![false; after.len()];
     let mut pairs: Vec<Option<usize>> = before
         .iter()
         .map(|b| {
-            let j = after.iter().position(|a| !b.id.is_empty() && a.id == b.id)?;
+            let j = after.iter().position(|a| !b.uid.is_empty() && a.uid == b.uid)?;
             claimed[j] = true;
             Some(j)
         })
         .collect();
     for (i, b) in before.iter().enumerate() {
-        if pairs[i].is_some() {
+        if pairs[i].is_some() || !uid_is_worked_out(&b.uid) {
             continue;
         }
-        let known = |a: &Desk| before.iter().any(|x| !x.id.is_empty() && x.id == a.id);
+        let known = |a: &Desk| before.iter().any(|x| x.uid == a.uid);
         if let Some(j) = after
             .iter()
             .enumerate()
-            .position(|(j, a)| !claimed[j] && !known(a) && a.name == b.name)
+            .position(|(j, a)| !claimed[j] && uid_is_worked_out(&a.uid) && !known(a) && a.name == b.name)
         {
             claimed[j] = true;
             pairs[i] = Some(j);
@@ -6913,6 +6989,9 @@ pub fn add_tab_with_uid_at(
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let mut doc = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
         .map_err(|_| t("err.tab_add.unreadable"))?;
+    // A desk copied by hand is told from the one it copies, as reading
+    // tells it, and written down so with the new tab
+    settle_doc_copies(&mut doc);
     let holder = doc
         .get_mut("desks")
         .and_then(|w| w.as_array_mut())
@@ -7567,10 +7646,13 @@ fn desk_entry_mut<'a>(
     desk_id: &str,
 ) -> Option<&'a mut serde_json::Map<String, serde_json::Value>> {
     let want = desk_id.trim();
-    let list = doc.get_mut("desks").and_then(|d| d.as_array_mut())?;
     if want.is_empty() {
         return None;
     }
+    // A desk or project copied by hand is told from the one it copies, as
+    // reading tells it, and written down so with the change
+    settle_doc_copies(doc);
+    let list = doc.get_mut("desks").and_then(|d| d.as_array_mut())?;
     // By who it is, when that is what was given
     if is_tab_uid(want) {
         return list.iter_mut().find(|w| desk_is(w, want))?.as_object_mut();
@@ -7702,13 +7784,42 @@ pub fn load() -> Option<Config> {
 
 #[cfg(test)]
 mod pair_desks_tests {
-    use super::{Desk, pair_desks};
+    use super::{Desk, derived_desk_uid, pair_desks};
 
+    /// A desk as settings with no uid written are read: who it is worked out
+    /// from its id
     fn desk(id: &str, name: &str) -> Desk {
-        Desk { id: id.into(), name: name.into(), ..Default::default() }
+        Desk { id: id.into(), name: name.into(), uid: derived_desk_uid(id), ..Default::default() }
     }
 
-    /// A desk is found again by its id, not by what it is called
+    fn written(uid: &str, id: &str, name: &str) -> Desk {
+        Desk { uid: uid.into(), ..desk(id, name) }
+    }
+
+    /// A desk is found again by who it is: a desk given another's old id, or
+    /// its old name, is not handed that desk's running tabs
+    #[test]
+    fn a_desk_is_found_again_by_who_it_is() {
+        let (a, b) = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222");
+        let before = [written(a, "work", "Work")];
+        // Its id and name changed, and a new desk given both
+        let after = [written(b, "work", "Work"), written(a, "office", "Office")];
+        assert_eq!(pair_desks(&before, &after), vec![Some(1)], "a desk given another's old id took its tabs");
+        // Deleted, and a new desk given its id and name
+        let after = [written(b, "work", "Work")];
+        assert_eq!(pair_desks(&before, &after), vec![None]);
+        // Its uid written as the settings are saved: the same desk
+        let before = [desk("work", "Work")];
+        let after = [written(&derived_desk_uid("work"), "work", "Work")];
+        assert_eq!(pair_desks(&before, &after), vec![Some(0)]);
+        // A desk with a uid of its own is never found by name
+        let before = [written(a, "work", "Work")];
+        let after = [desk("work-2", "Work")];
+        assert_eq!(pair_desks(&before, &after), vec![None]);
+    }
+
+    /// Settings with no uid written: a desk is found again by its id, not by
+    /// what it is called
     #[test]
     fn a_desk_is_found_again_by_its_id() {
         let before = [desk("default", "DEFAULT"), desk("space", "ワークスペース")];
@@ -9125,6 +9236,51 @@ mod tests {
         assert_eq!(doc["desks"][1]["uid"], derived_desk_uid("Work"));
         assert_eq!(doc["desks"][0]["projects"][0]["uid"], derived_project_uid("work", "shop"));
         assert_eq!(doc["desks"][0]["projects"][1]["uid"], u, "a written uid was replaced");
+    }
+
+    /// A line copied by hand -- a desk, a project, a tab -- is given the same
+    /// uid by every reading and by the saving that writes it down, and the
+    /// same one wherever it stands: a desk added before it changes nothing
+    #[test]
+    fn a_copy_is_given_one_uid_and_it_is_written_down() {
+        let (u, p, t) = (
+            "11111111-2222-4333-8444-555555555555",
+            "22222222-2222-4222-8222-222222222222",
+            "33333333-3333-4333-8333-333333333333",
+        );
+        let copied = |before: &str| {
+            format!(
+                r#"{{"desks":[{before}
+                {{"name":"Work","id":"work","uid":"{u}","projects":[{{"name":"shop","uid":"{p}"}}],"tabs":[{{"id":"a","command":"x","uid":"{t}"}},{{"id":"b","command":"x","uid":"{t}"}}]}},
+                {{"name":"Work copy","id":"work-copy","uid":"{u}","projects":[{{"name":"shop","uid":"{p}"}}],"tabs":[{{"id":"a","command":"x","uid":"{t}"}}]}}]}}"#
+            )
+        };
+        let read = |text: &str| -> Vec<(String, Vec<String>, Vec<String>)> {
+            let (desks, _) = serde_json::from_str::<Config>(text).unwrap().resolve_desks();
+            desks
+                .into_iter()
+                .filter(|d| d.id.starts_with("work"))
+                .map(|d| (d.uid, d.projects.iter().map(|p| p.uid.clone().unwrap()).collect(), d.tabs.iter().map(|t| t.cfg.uid.clone().unwrap()).collect()))
+                .collect()
+        };
+        let plain = read(&copied(""));
+        assert_eq!(plain[0].0, u);
+        assert_ne!(plain[1].0, u, "a desk copied by hand is the same desk");
+        assert!(!uid_is_worked_out(&plain[1].0), "a copy is taken for a desk that was there before uids");
+        assert_ne!(plain[1].1[0], p);
+        assert_eq!(plain[0].2[0], t);
+        let tabs: std::collections::HashSet<&String> = plain.iter().flat_map(|d| d.2.iter()).collect();
+        assert_eq!(tabs.len(), 3, "two tabs are one: {plain:?}");
+        // Wherever it stands
+        assert_eq!(read(&copied(r#"{"name":"Before","id":"before"},"#)), plain, "a desk added before the copy changed who it is");
+        // Saved, the file says what reading gave
+        let mut doc: serde_json::Value = serde_json::from_str(&copied("")).unwrap();
+        fill_tab_uids(&mut doc);
+        assert_eq!(doc["desks"][1]["uid"], plain[1].0);
+        assert_eq!(doc["desks"][1]["projects"][0]["uid"], plain[1].1[0]);
+        assert_eq!(doc["desks"][0]["tabs"][1]["uid"], plain[0].2[1]);
+        assert_eq!(doc["desks"][1]["tabs"][0]["uid"], plain[1].2[0]);
+        assert_eq!(read(&doc.to_string()), plain, "read again, the file written gave other uids");
     }
 
     /// Two desks of one name: a change asked of the second, by who it is, is

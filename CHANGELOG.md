@@ -95,6 +95,20 @@ once it reaches its first tagged release.
   whatever it has been renamed to since, and no longer makes the project again
   under its old name. Changing a desk's or a tab's id on the settings page
   moves the secrets filed under it.
+- **A desk is found again by who it is when the settings are read again.**
+  A desk renamed, given another id, and a new desk given its old id: the
+  tabs running in the first one went to the new one. Each desk's running
+  tabs now stay with the desk itself, whatever it is called or its id.
+- **A line copied by hand in the settings is a new desk, project or tab, and
+  stays one.** Its uid was worked out from where it stood in the list, so a
+  desk added before it made it somebody else, and nothing was written down.
+  The copy's uid is now worked out from the one it copied, the same every
+  time the settings are read, and saving them writes it down.
+- **"Stop everything and quit" quits only once this PC's terminals have
+  stopped.** When the background process that keeps them did not answer, the
+  app quit anyway with the terminals and their AIs still running. It now
+  asks again, saying why: quit and leave them, try stopping them again, or
+  stay.
 - **What is typed into a tab just after a start reaches its program.** A tab
   whose terminal this PC's background process keeps takes keys before it is
   back on that terminal; they went nowhere. They are now held and sent the

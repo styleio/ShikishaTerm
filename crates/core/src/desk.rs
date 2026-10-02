@@ -642,8 +642,9 @@ pub fn switch_desk(
 /// `tabs` are the tabs of the desk on screen (`viewing` in `before`), and
 /// `parked` the others', by position in `before`; afterwards `parked` is by
 /// position in `after`. Each desk is found again by `config::pair_desks` --
-/// its id, which renaming leaves alone -- and its tabs go with it, whatever it
-/// is called now and wherever it stands. A desk deleted in the settings takes
+/// who it is (its uid), which no rename and no change of id touches -- and its
+/// tabs go with it, whatever it is called now and wherever it stands. A desk
+/// deleted in the settings takes
 /// its tabs with it.
 ///
 /// Returns where the desk on screen stands now. `None` means it was deleted:
