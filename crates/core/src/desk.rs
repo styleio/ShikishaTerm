@@ -191,7 +191,7 @@ pub fn apply_ws_config(
         .chain(desk.tabs.iter().filter(|f| config::browser_url_of(&f.cfg.command.argv()).is_some()).map(|f| f.page_key()))
         .collect();
     // A tab taken out of the settings takes its failure with it
-    failures().retain(|f| f.desk != desk.name || wanted.contains(&f.title));
+    failures().retain(|f| f.desk != desk.uid || wanted.contains(&f.title));
 
     // Every line of the settings that launches a process, worked out once:
     // matching needs where each one stands before anything is started
@@ -223,7 +223,7 @@ pub fn apply_ws_config(
         let said = opts.clone();
         match claim.and_then(|i| running[i].take()) {
             Some(mut t) => {
-                forget_failure(&desk.name, &title);
+                forget_failure(&desk.uid, &title);
                 t.apply_live_config(
                     ft.cfg.profile.clone(),
                     ft.cfg.locked,
@@ -261,7 +261,7 @@ pub fn apply_ws_config(
                     carried.plan,
                 ) {
                     Ok(mut t) => {
-                        forget_failure(&desk.name, &title);
+                        forget_failure(&desk.uid, &title);
                         t.locked = ft.cfg.locked;
                         t.auto_restart = ft.cfg.auto_restart;
                         t.depth = ft.depth;
@@ -279,7 +279,7 @@ pub fn apply_ws_config(
                     Err(e) => {
                         let prog = argv.first().map(String::as_str).unwrap_or("");
                         let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
-                        remember_failure(&desk.name, &title, prog, &why);
+                        remember_failure(&desk.uid, &title, prog, &why);
                         errors.push(why);
                     }
                 }
@@ -478,7 +478,7 @@ pub fn spawn_desk(
             carried.plan,
         ) {
             Ok(mut tab) => {
-                forget_failure(&desk.name, &title);
+                forget_failure(&desk.uid, &title);
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;
@@ -489,7 +489,7 @@ pub fn spawn_desk(
             Err(e) => {
                 let prog = argv.first().map(String::as_str).unwrap_or("");
                 let why = tab::launch_problem_for(&title, prog, &said, &e.to_string());
-                remember_failure(&desk.name, &title, prog, &why);
+                remember_failure(&desk.uid, &title, prog, &why);
                 errors.push(why);
             }
         }
@@ -504,6 +504,7 @@ pub fn spawn_desk(
 /// saw nothing happen, with nothing to say why
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchFailure {
+    /// The desk, by uid: two desks of one name are two desks
     pub desk: String,
     /// The tab's title, which is how a running tab is matched to its settings
     pub title: String,
@@ -1364,9 +1365,9 @@ pub fn open_declared_browsers(desk: &config::Desk, caps: &hooks::Caps, errors: &
             let opened = page_address(desk, ft, &url)
                 .and_then(|u| caps.browser_open(&name, &u, profile).map_err(|e| format!("{e:#}")));
             match opened {
-                Ok(()) => forget_failure(&desk.name, &name),
+                Ok(()) => forget_failure(&desk.uid, &name),
                 Err(e) => {
-                    remember_failure(&desk.name, &name, "browser", &e);
+                    remember_failure(&desk.uid, &name, "browser", &e);
                     errors.push(crate::i18n::tp("err.desk.browser_open", &[("id", &name), ("e", &e)]));
                     continue;
                 }

@@ -310,11 +310,20 @@ pub enum Found {
     Silent,
     /// Nobody: no socket, or one nothing listens on any more
     Nobody,
+    /// The socket is there and could not be reached (every instance stayed
+    /// busy, or it was refused): somebody may well be there, and is not to
+    /// be taken for nobody -- that would start a second resident process, or
+    /// count the terminals the first one holds as none
+    Unreachable(String),
 }
 
 /// Who is on `sock`
 pub fn find(sock: &Path) -> Found {
-    let Ok(conn) = crate::keepipe::connect(sock) else { return Found::Nobody };
+    let conn = match crate::keepipe::connect(sock) {
+        Ok(conn) => conn,
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => return Found::Nobody,
+        Err(e) => return Found::Unreachable(e.to_string()),
+    };
     if conn.set_read_timeout(Some(Duration::from_secs(3))).is_err() {
         return Found::Silent;
     }

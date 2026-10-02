@@ -9353,23 +9353,26 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("config.json");
         let second = "22222222-2222-4222-8222-222222222222";
+        // A drive letter is this PC's on Windows only: elsewhere "D:/a" reads
+        // as the folder /a on a machine called D
+        let a = crate::local_path("D:/a");
         std::fs::write(&file, format!(r#"{{"desks": [
-            {{"name": "Work", "id": "work", "folders": [{{"cwd": "D:/a", "tabs": []}}]}},
-            {{"name": "Work", "id": "work-2", "uid": "{second}", "folders": [{{"cwd": "D:/a", "tabs": []}}]}}]}}"#)).unwrap();
-        rename_folder_at(&file, second, Path::new("D:/a"), "mine").unwrap();
+            {{"name": "Work", "id": "work", "folders": [{{"cwd": "{a}", "tabs": []}}]}},
+            {{"name": "Work", "id": "work-2", "uid": "{second}", "folders": [{{"cwd": "{a}", "tabs": []}}]}}]}}"#)).unwrap();
+        rename_folder_at(&file, second, Path::new(&a), "mine").unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert!(doc["desks"][0]["folders"][0].get("name").is_none(), "the first desk of the name was written");
         assert_eq!(doc["desks"][1]["folders"][0]["name"], "mine");
         // Worked out, for a desk with none written
-        rename_folder_at(&file, &derived_desk_uid("work"), Path::new("D:/a"), "theirs").unwrap();
+        rename_folder_at(&file, &derived_desk_uid("work"), Path::new(&a), "theirs").unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(doc["desks"][0]["folders"][0]["name"], "theirs");
         // By name, as a script names it
-        rename_folder_at(&file, "Work", Path::new("D:/a"), "named").unwrap();
+        rename_folder_at(&file, "Work", Path::new(&a), "named").unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(doc["desks"][0]["folders"][0]["name"], "named");
         // A folder on this PC is found however its path is spelled
-        rename_folder_at(&file, second, Path::new("d:\\a\\"), "spelled").unwrap();
+        rename_folder_at(&file, second, Path::new(&crate::local_path("d:\\a\\")), "spelled").unwrap();
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(doc["desks"][1]["folders"][0]["name"], "spelled", "a folder spelled another way was not found");
         let _ = std::fs::remove_dir_all(&dir);

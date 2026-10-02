@@ -75,8 +75,11 @@ pub fn gone_uid(desk: &str, name: &str) -> String {
 const ADOPTED: &str = "tab_uids";
 
 /// What `meta` says once the desk columns were rewritten from desks' ids to
-/// their uids ([`Store::adopt_desk_uids`])
-const DESKS_ADOPTED: &str = "desk_uids";
+/// their uids ([`Store::adopt_desk_uids`]). The second mark: one way in kept
+/// writing under the desk's id after the first rewrite had run (a person's
+/// first words from the input bar, until 2026-10-02), so the rewrite runs once
+/// more. Running it again is harmless -- it only rewrites what still says an id
+const DESKS_ADOPTED: &str = "desk_uids_2";
 
 /// The version the steps bring a record to
 pub fn latest() -> i64 {

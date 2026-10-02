@@ -131,6 +131,11 @@ fn header_value(req: &tiny_http::Request, name: &'static str) -> String {
 const SERVER_TEST_MS: u64 = 25_000;
 const MAX_BODY: usize = 1 << 20; // 1 MiB
 
+/// The most one settings save may carry: it holds the settings and every desk
+/// file the page writes, each of which may be [`MAX_BODY`] on its own, as it
+/// could when each went in a request of its own
+const SAVE_MAX_BODY: usize = 64 * MAX_BODY;
+
 /// Read a request body, capped at `max` bytes. Returns None if it would exceed
 /// the cap (the caller answers 413), so an oversized body is never buffered.
 fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
@@ -4805,8 +4810,10 @@ fn handle(
         // save (`save_settings`)
         ("POST", "/api/settings/save") => {
             let mut req = req;
-            let Some(body) = read_body(&mut req, MAX_BODY)? else {
-                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+            // Said the way every answer here is said, so the page can show it
+            let Some(body) = read_body(&mut req, SAVE_MAX_BODY)? else {
+                let too = crate::i18n::tp("webui.err.save_too_large", &[("mib", &(SAVE_MAX_BODY >> 20).to_string())]);
+                req.respond(json_resp(serde_json::json!({ "ok": false, "error": too })))?;
                 return Ok(());
             };
             let pw = password.lock().unwrap().clone();
@@ -4907,49 +4914,172 @@ fn save_settings(
     for (path, mut doc) in docs {
         crate::config::fill_tab_uids(&mut doc);
         refile_secret_names(&mut doc, &renamed);
-        texts.push((path, serde_json::to_string_pretty(&doc)?));
-    }
-    // Written in order, each with what it held before
-    let mut before: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
-    let put_back = |before: &[(std::path::PathBuf, Option<String>)]| {
-        for (path, was) in before.iter().rev() {
-            let back = match was {
-                Some(text) => crate::crypto::write_atomic(path, text),
-                None => std::fs::remove_file(path).map_err(Into::into),
-            };
-            if let Err(e) = back {
-                crate::append_hook_log(&format!("settings: {} could not be put back as it was: {e:#}", path.display()));
-            }
+        let text = serde_json::to_string_pretty(&doc)?;
+        // Each file kept to what it could be when it was sent on its own
+        if text.len() > MAX_BODY {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            anyhow::bail!(crate::i18n::tp("webui.err.save_file_too_large", &[("file", &name), ("mib", &(MAX_BODY >> 20).to_string())]));
         }
-    };
+        texts.push((path, text));
+    }
+    // Written under a record of the save (`SaveRecord`): a save cut short --
+    // a write that failed, or this program ending in the middle of one -- is
+    // put back to what was there before, now or at the next start. One cut
+    // short before is finished first, so its copies are not taken for this one's
+    finish_settings_save(config_path);
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
     if !plan.is_empty() {
-        before.push((secrets.to_path_buf(), Some(std::fs::read_to_string(secrets)?)));
-        if let Err(e) = crate::config::rename_secrets(secrets, password, &plan) {
-            put_back(&before);
+        files.push(secrets.to_path_buf());
+    }
+    files.extend(texts.iter().map(|(path, _)| path.clone()));
+    let record = SaveRecord::begin(config_path, &files)?;
+    let written = (|| -> anyhow::Result<()> {
+        if !plan.is_empty() {
+            crate::config::rename_secrets(secrets, password, &plan)?;
+        }
+        for (path, text) in &texts {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            crate::crypto::write_atomic(path, text).with_context(|| format!("{} could not be written", path.display()))?;
+        }
+        Ok(())
+    })();
+    match written {
+        Ok(()) => {
+            record.settle();
+            Ok(())
+        }
+        Err(e) => {
+            record.put_back();
+            Err(e)
+        }
+    }
+}
+
+/// What a settings save keeps while it writes, so that it ends with every
+/// file written or every file as it was, whatever happens in between: a copy
+/// of each file it is about to write, beside it (`<file>.before-save` -- the
+/// secrets' copy stays where the secrets are, and as locked as they are), and
+/// this record, beside the settings file (`<settings>.saving`), of which files
+/// and how far the save got. A record still there at a start is a save cut
+/// short, finished by [`finish_settings_save`]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SaveRecord {
+    #[serde(skip)]
+    at: std::path::PathBuf,
+    /// `copying`: the copies are being made, and nothing is written yet.
+    /// `writing`: files are being written, and every copy is made.
+    /// `settled`: nothing is left to put back, and the copies are being cleared
+    stage: String,
+    files: Vec<SavedFile>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedFile {
+    path: std::path::PathBuf,
+    /// Whether it was there before the save: one that was not is taken away
+    /// again, rather than put back
+    existed: bool,
+}
+
+/// `path` with `tail` after its name
+fn beside(path: &std::path::Path, tail: &str) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(tail);
+    name.into()
+}
+
+impl SaveRecord {
+    /// The record written and every copy made, before anything is written.
+    /// Nothing is left behind when that fails
+    fn begin(config_path: &std::path::Path, files: &[std::path::PathBuf]) -> anyhow::Result<Self> {
+        let mut record = SaveRecord {
+            at: beside(config_path, ".saving"),
+            stage: "copying".into(),
+            files: files.iter().map(|path| SavedFile { path: path.clone(), existed: path.exists() }).collect(),
+        };
+        record.write()?;
+        let copied = record
+            .files
+            .iter()
+            .filter(|f| f.existed)
+            .try_for_each(|f| crate::crypto::write_atomic(&beside(&f.path, ".before-save"), &std::fs::read_to_string(&f.path)?));
+        if let Err(e) = copied.and_then(|()| {
+            record.stage = "writing".into();
+            record.write()
+        }) {
+            record.clear();
             return Err(e);
         }
+        Ok(record)
     }
-    for (path, text) in &texts {
-        let was = match std::fs::read_to_string(path) {
-            Ok(t) => Some(t),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => {
-                put_back(&before);
-                return Err(anyhow::Error::from(e).context(format!("{} could not be read", path.display())));
+
+    fn write(&self) -> anyhow::Result<()> {
+        crate::crypto::write_atomic(&self.at, &serde_json::to_string_pretty(self)?)
+    }
+
+    /// Every file as it was before the save. When one cannot be, the record
+    /// and the copies stay, and the next start tries again
+    fn put_back(self) -> bool {
+        for f in &self.files {
+            let back = match f.existed {
+                true => std::fs::read_to_string(beside(&f.path, ".before-save"))
+                    .map_err(anyhow::Error::from)
+                    .and_then(|was| crate::crypto::write_atomic(&f.path, &was)),
+                false => match std::fs::remove_file(&f.path) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+                    _ => Ok(()),
+                },
+            };
+            if let Err(e) = back {
+                crate::append_hook_log(&format!("settings: {} could not be put back as it was before the save: {e:#}", f.path.display()));
+                return false;
             }
-        };
-        before.push((path.clone(), was));
-        let written = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .map_err(anyhow::Error::from)
-            .and_then(|_| crate::crypto::write_atomic(path, text));
-        if let Err(e) = written {
-            put_back(&before);
-            return Err(e.context(format!("{} could not be written", path.display())));
+        }
+        self.settle();
+        true
+    }
+
+    /// Nothing left to put back: said so first, so that a copy cleared is
+    /// never one a start would need, then cleared
+    fn settle(mut self) {
+        self.stage = "settled".into();
+        match self.write() {
+            Ok(()) => self.clear(),
+            Err(e) => crate::append_hook_log(&format!("settings: the save could not be marked finished ({e:#}); the next start finishes it")),
         }
     }
-    Ok(())
+
+    /// The copies, then the record
+    fn clear(&self) {
+        for f in &self.files {
+            let _ = std::fs::remove_file(beside(&f.path, ".before-save"));
+        }
+        let _ = std::fs::remove_file(&self.at);
+    }
+}
+
+/// A settings save this program did not live to finish, finished: one cut
+/// short while writing is put back to what was there before it (the settings
+/// page said nothing of it saving), and one cut short before writing or after
+/// it has its copies cleared. Run at the start, before the settings are read
+pub fn finish_settings_save(config_path: &std::path::Path) {
+    let at = beside(config_path, ".saving");
+    let Ok(text) = std::fs::read_to_string(&at) else { return };
+    let Ok(mut record) = serde_json::from_str::<SaveRecord>(&text) else {
+        crate::append_hook_log("settings: the record of a save cut short could not be read; it is set aside as it is");
+        let _ = std::fs::rename(&at, beside(&at, ".unreadable"));
+        return;
+    };
+    record.at = at;
+    if record.stage == "writing" {
+        if record.put_back() {
+            crate::append_hook_log("settings: a save cut short was put back to what was there before it");
+        }
+    } else {
+        record.clear();
+    }
 }
 
 /// Every text in `doc` that names a secret by `@key`, named by where that
@@ -18448,6 +18578,62 @@ mod tests {
         assert!(e.contains("b.github"), "the key in the way is named: {e}");
         assert_eq!(std::fs::read_to_string(&config).unwrap(), config_was);
         assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_cut_short_while_writing_is_put_back_at_the_next_start() {
+        let (dir, config, secrets) = save_place("save-cut");
+        let (config_was, secrets_was) = (std::fs::read_to_string(&config).unwrap(), std::fs::read_to_string(&secrets).unwrap());
+        let made = dir.join("desks").join("new.json");
+        // The program ends after the secrets and one new desk file were
+        // written, and before the settings were: the record is all that is left
+        let record = super::SaveRecord::begin(&config, &[secrets.clone(), made.clone(), config.clone()]).unwrap();
+        crate::config::rename_secrets(&secrets, None, &[("a.github".into(), "c.github".into())]).unwrap();
+        std::fs::create_dir_all(made.parent().unwrap()).unwrap();
+        std::fs::write(&made, "{}").unwrap();
+        std::mem::forget(record);
+        super::finish_settings_save(&config);
+        assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was, "the secrets were left moved");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), config_was);
+        assert!(!made.exists(), "a file the save made was left behind");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".before-save") || n.ends_with(".saving")).collect();
+        assert!(left.is_empty(), "copies or the record were left: {left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_cut_short_before_writing_leaves_every_file_as_it_is() {
+        let (dir, config, secrets) = save_place("save-copying");
+        let record = super::SaveRecord::begin(&config, &[secrets.clone(), config.clone()]).unwrap();
+        // As though the program ended while the copies were being made
+        let mut copying = serde_json::to_value(&record).unwrap();
+        copying["stage"] = "copying".into();
+        std::fs::write(super::beside(&config, ".saving"), copying.to_string()).unwrap();
+        std::mem::forget(record);
+        // What was written since is not taken back: nothing of the save was
+        std::fs::write(&config, r#"{"desks": []}"#).unwrap();
+        super::finish_settings_save(&config);
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), r#"{"desks": []}"#);
+        assert!(!super::beside(&secrets, ".before-save").exists() && !super::beside(&config, ".saving").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_desk_file_too_large_to_have_been_sent_alone_is_refused_before_anything_is_written() {
+        let (dir, config, secrets) = save_place("save-large");
+        let (config_was, secrets_was) = (std::fs::read_to_string(&config).unwrap(), std::fs::read_to_string(&secrets).unwrap());
+        let big = "x".repeat(super::MAX_BODY);
+        let saved = super::save_settings(&config, &secrets, None, &serde_json::json!({
+            "config": {"desks": [{"name": "A", "id": "c"}]},
+            "files": [{"file": "desks/big.json", "body": {"note": big}}],
+            "moves": [["a.", "c."]],
+        }));
+        assert!(format!("{:#}", saved.unwrap_err()).contains("big.json"));
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), config_was);
+        assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was);
+        assert!(!dir.join("desks").join("big.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
