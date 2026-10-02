@@ -192,6 +192,25 @@ fn worth_keeping(
     }
 }
 
+/// A shared CLI daemon can report another tab's conversation using this
+/// tab's key. The other tab independently found its own record (`Store`).
+/// Reject that contradictory hook when the CLI's record confirms the other
+/// folder. Two intentionally resumed hooks, unknown records and remote
+/// records do not establish this contradiction and are left alone.
+fn crossed_hook(saved: &SavedTab, tabs: &[SavedTab], belongs: impl Fn(&str, &str) -> bool) -> bool {
+    if saved.source != "Hook" || saved.host.is_some() {
+        return false;
+    }
+    let Some(here) = saved.cwd.as_deref() else { return false };
+    tabs.iter().any(|other| {
+        other.source == "Store" && other.host.is_none() && other.program == saved.program
+            && other.session == saved.session
+            && other.cwd.as_deref().is_some_and(|at| {
+                !same_folder(Some(here), Some(at)) && belongs(at, &saved.session)
+            })
+    })
+}
+
 impl Saved {
     pub fn load() -> Saved {
         let fallback = Saved { version: VERSION, desks: Vec::new() };
@@ -262,6 +281,15 @@ impl Saved {
         title: &str,
     ) -> Option<Session> {
         let saved = self.remembered_of(desk, program, cwd, id, uid, title)?;
+        if crossed_hook(saved, &self.desk(desk)?.tabs, |at, session| {
+            crate::vault::belongs(program, std::path::Path::new(at), session)
+        }) {
+            crate::append_hook_log(&format!(
+                "last session: {}'s hook named another folder's independently found conversation; not resuming it here",
+                saved.id.as_deref().unwrap_or(&saved.title)
+            ));
+            return None;
+        }
         Some(Session {
             id: saved.session.clone(),
             source: match saved.source.as_str() {
@@ -504,6 +532,27 @@ mod tests {
     /// remembered under
     fn named(name: &str) -> crate::config::Desk {
         crate::config::Desk { name: name.into(), id: format!("{name}-id"), uid: crate::config::derived_desk_uid(&format!("{name}-id")), ..Default::default() }
+    }
+
+    #[test]
+    fn a_crossed_hook_does_not_resume_the_other_tabs_conversation() {
+        let a = crate::local_path("D:/idle");
+        let b = crate::local_path("D:/working");
+        let row = |folder: &str, source: &str| SavedTab {
+            title: "Codex CLI".into(), id: None, uid: Some(folder.into()), cwd: Some(folder.into()),
+            host: None, program: "codex".into(), session: "working-conversation".into(), source: source.into(),
+        };
+        let idle = row(&a, "Hook");
+        let working = row(&b, "Store");
+        let record = |folder: &str, id: &str| folder == b && id == "working-conversation";
+        assert!(crossed_hook(&idle, &[idle.clone(), working.clone()], record));
+        assert!(!crossed_hook(&working, &[idle.clone(), working.clone()], record), "the independently found owner keeps it");
+        assert!(!crossed_hook(&idle, &[working.clone()], |_, _| false), "an unreadable record proves nothing");
+        assert!(!crossed_hook(&idle, &[row(&b, "Hook")], record), "two explicit resumes are not this defect");
+        assert!(!crossed_hook(&idle, &[row(&a, "Store")], |_, _| true), "two tabs in one folder are not contradictory");
+        let mut remote = working;
+        remote.host = Some("another-machine".into());
+        assert!(!crossed_hook(&idle, &[remote], record), "a local file cannot settle a remote conversation");
     }
 
     #[test]

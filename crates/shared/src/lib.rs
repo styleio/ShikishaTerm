@@ -369,6 +369,7 @@ pub enum Ev {
     /// it, and the next launch shows it again. `hide` false with an empty
     /// `folder` brings back every folder put away this way
     FolderHide { folder: String, hide: bool },
+    FolderManage { desk: String, act: String, folders: Vec<String> },
     /// A folder told to work somewhere else. The folder keeps everything it
     /// said about itself -- its name, its colour, its tabs -- and only the
     /// place it works in changes
@@ -1216,6 +1217,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("folderhide") => Ev::FolderHide {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             hide: v.get("hide").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("foldermanage") => Ev::FolderManage {
+            desk: v.get("desk").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            folders: v.get("folders").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(),
         },
         Some("foldermove") => Ev::FolderMove {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

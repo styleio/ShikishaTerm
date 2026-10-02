@@ -300,7 +300,13 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | トースト | `toast(text, warn)`（`toast.rs` が両方のページに入れる） | 両方（`toast.rs`） |
 | 会話（右の列） | `drawConvo()`。行は `convoSay(r)`・`convoWork(r)`・`convoEvent(r)`、ツール実行の中身は `workPieces(inside, work, query)`（過去の会話を読むと共通） | 盤面（`shell.rs`） |
 | 右の列にパネルを呼び出す | `sideReveal(name)`（✕ は `sideDismiss(name)`、帯で選ぶのは `sideChoose(name)`。Lua からは `show_panel`） | 盤面（`shell.rs`） |
+| 作業フォルダ管理 | `openFolderManager()`・`drawFolderManager()`（共通の質問の枠で一覧を更新する） | 盤面（`shell.rs`） |
 <!-- /code-entries -->
+作業フォルダ管理は `openFolderManager()` で開き、`drawFolderManager()` で同じ行を更新します。
+共通の `askQuestion` の枠に検索・表示条件・容量順・選択操作と一覧を入れます。
+一覧は 720px のダイアログ幅、行はチェック・名前・右ぞろえの容量、その下に場所と結果。
+絞り込みで隠れた行の選択は解除します。アーカイブと一括削除は対象を列挙して確認します。
+容量には概算の印と計測時刻を添え、計測の失敗を 0 バイトと表示しません。
 
 ### 5.1 欄
 

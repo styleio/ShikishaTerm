@@ -15,6 +15,7 @@ pub mod askpass;
 pub mod asks;
 pub mod asktab;
 pub mod cli;
+mod cli_launch;
 pub mod attach;
 pub mod awake;
 pub mod ball;
@@ -163,6 +164,7 @@ pub mod vencode;
 pub mod vframe;
 pub mod webrtc;
 pub mod worktree;
+pub mod foldercare;
 pub mod ws;
 
 pub fn append_hook_log(msg: &str) {

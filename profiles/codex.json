@@ -27,6 +27,8 @@
   "helpers": ["codex-code-mode-host.exe"],
   "skills": "{home}/.agents/skills",
   "resume": {
+    "process_flag": "--no-daemon",
+    "process_unless": ["--remote"],
     "with_id": [
       "resume",
       "{id}"

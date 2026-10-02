@@ -833,6 +833,7 @@ impl WinSurface {
                 Ev::AgentHooks { answer, seq } => self.mail.agent_hooks.push((answer, seq)),
                 Ev::Orch { act, job, decision, choice } => self.mail.orch.push((act, job, decision, choice)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
+                Ev::FolderManage { desk, act, folders } => self.mail.folder_manage.push((desk, act, folders)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,
                 Ev::Coach { step } => self.mail.coach_done = Some(step),
