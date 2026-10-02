@@ -151,11 +151,22 @@ impl Log {
         }
     }
 
-    /// Rewrite what an older version wrote under tabs' names, once, under
-    /// their uids: `tabs` is every tab of the settings -- its desk, its name,
-    /// its uid ([`db::Store::adopt_uids`]). Called before anything else is
-    /// written, so nothing new is mistaken for something old
-    pub fn adopt(&mut self, tabs: &[(String, String, String)]) {
+    /// Rewrite what an older version wrote under desks' ids and tabs' names,
+    /// once, under their uids: `desks` is every desk of the settings -- its id
+    /// and its uid ([`db::Store::adopt_desk_uids`]) -- and `tabs` every tab --
+    /// its desk's uid, its name, its uid ([`db::Store::adopt_uids`]). Called
+    /// before anything else is written, so nothing new is mistaken for
+    /// something old
+    pub fn adopt(&mut self, desks: &[(String, String)], tabs: &[(String, String, String)]) {
+        // The desks first: what the tabs are matched by is the desk they are on
+        let mut desks_done = false;
+        self.write("the desks' uids", |s| {
+            desks_done = s.adopt_desk_uids(desks)?;
+            Ok(())
+        });
+        if desks_done {
+            crate::append_hook_log(&format!("conversations: the record now knows desks by their uids ({} desks)", desks.len()));
+        }
         let mut did = false;
         self.write("the tabs' uids", |s| {
             did = s.adopt_uids(tabs)?;

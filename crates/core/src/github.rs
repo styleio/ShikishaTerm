@@ -939,6 +939,9 @@ pub fn target_of(
 pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
     let mut out: Vec<Source> = Vec::new();
     let mut seen: Vec<std::path::PathBuf> = Vec::new();
+    // Which of them are named for their checkout's folder rather than by a
+    // project written down: the names that can be another's (see the end)
+    let mut guessed: Vec<usize> = Vec::new();
     for f in desk.folders.iter().filter(|f| f.host.is_none()) {
         let Some(cwd) = f.cwd.as_deref() else {
             continue;
@@ -954,6 +957,9 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
         }
         seen.push(family);
         let (git, project) = desk.git_use_of_folder(cwd);
+        if project.is_none() {
+            guessed.push(out.len());
+        }
         out.push(Source {
             name: project.unwrap_or_else(|| {
                 main.file_name()
@@ -1000,6 +1006,26 @@ pub fn desk_sources(desk: &crate::config::Desk) -> Vec<Source> {
             git: desk.git_use(spec.and_then(|p| p.git_account.as_deref())),
             far: vec![(cwd.to_path_buf(), at, host.name.clone())],
         });
+    }
+    // A name is what the Issue page asks for a repository by, so no two may
+    // share one. A checkout no project is written down for is named for its
+    // folder, and that can be a project's name, or another such checkout's:
+    // the page then asked for one and was handed the other. The written
+    // names stand; a folder's name that is taken gets a number
+    let mut taken: std::collections::HashSet<String> = desk.projects.iter().map(|p| p.name.clone()).collect();
+    for (i, s) in out.iter().enumerate() {
+        if !guessed.contains(&i) {
+            taken.insert(s.name.clone());
+        }
+    }
+    for i in guessed {
+        let base = out[i].name.clone();
+        let name = match taken.contains(&base) {
+            false => base,
+            true => (2..).map(|n| format!("{base} {n}")).find(|n| !taken.contains(n)).expect("endless"),
+        };
+        taken.insert(name.clone());
+        out[i].name = name;
     }
     out
 }

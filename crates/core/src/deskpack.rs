@@ -546,6 +546,11 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     // new tabs here, and none of them is one already on a desk
     crate::config::without_uids(&mut desk);
     crate::config::name_new_tabs(&mut desk, &mut used);
+    // The desk and its projects are new here too
+    desk["uid"] = Value::String(crate::config::new_tab_uid());
+    for p in desk.get_mut("projects").and_then(Value::as_array_mut).into_iter().flatten() {
+        p["uid"] = Value::String(crate::config::new_tab_uid());
+    }
     list.push(desk);
     cfg["desks"] = Value::Array(list);
     // Now that it's moved into desks, the folders and tabs written

@@ -74,6 +74,10 @@ pub fn gone_uid(desk: &str, name: &str) -> String {
 /// uids ([`Store::adopt_uids`])
 const ADOPTED: &str = "tab_uids";
 
+/// What `meta` says once the desk columns were rewritten from desks' ids to
+/// their uids ([`Store::adopt_desk_uids`])
+const DESKS_ADOPTED: &str = "desk_uids";
+
 /// The version the steps bring a record to
 pub fn latest() -> i64 {
     STEPS.last().map(|s| s.0).unwrap_or(0)
@@ -453,6 +457,31 @@ impl Store {
             params![uid, desk, name],
         )?;
         Ok(uid)
+    }
+
+    /// Rewrite once the desk columns, written with each desk's id before
+    /// desks had uids, with their uids: `desks` is every desk of the settings,
+    /// its id and its uid. A desk's id can be changed and given to another
+    /// desk; the conference of one is not the other's. A row of a desk that
+    /// is no longer in the settings keeps what it says, and is nobody's.
+    /// `true` when it did the rewriting
+    pub fn adopt_desk_uids(&mut self, desks: &[(String, String)]) -> Result<bool> {
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![DESKS_ADOPTED], |r| r.get(0))
+            .optional()?;
+        if done.is_some() {
+            return Ok(false);
+        }
+        let tx = self.conn.transaction()?;
+        for (id, uid) in desks.iter().filter(|(id, uid)| !id.is_empty() && !uid.is_empty()) {
+            for table in ["asks", "lines", "shares", "threads", "tab_names"] {
+                tx.execute(&format!("UPDATE {table} SET desk = ?2 WHERE desk = ?1"), params![id, uid])?;
+            }
+        }
+        tx.execute("INSERT INTO meta (key, value) VALUES (?1, '1')", params![DESKS_ADOPTED])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Rewrite once what was written under names before tabs had uids.
@@ -1549,6 +1578,20 @@ mod tests {
         assert_eq!(s.uid_named("work", "heron").unwrap(), gone_uid("work", "heron"));
         assert!(crate::config::is_tab_uid(&gone_uid("work", "heron")));
         assert_ne!(gone_uid("work", "heron"), crate::config::derived_tab_uid("work", "heron"));
+    }
+
+    /// The conference of a desk written under its id goes to who the desk
+    /// is, once: a desk given that id afterwards is somebody else
+    #[test]
+    fn a_desks_conference_goes_to_who_the_desk_is() {
+        let mut s = Store::in_memory().unwrap();
+        let (t, _) = s.thread_for("work", "x/", 1).unwrap();
+        s.line("work", t, None, "hello", None, "person", 1).unwrap();
+        let desk = "55555555-5555-4555-8555-555555555555".to_string();
+        assert!(s.adopt_desk_uids(&[("work".into(), desk.clone())]).unwrap());
+        assert!(!s.adopt_desk_uids(&[("work".into(), "66666666-6666-4666-8666-666666666666".into())]).unwrap(), "rewritten twice");
+        assert_eq!(s.threads(&desk, None, 10).unwrap().len(), 1);
+        assert!(s.threads("work", None, 10).unwrap().is_empty(), "a desk given the old id is handed its conversations");
     }
 
     #[test]

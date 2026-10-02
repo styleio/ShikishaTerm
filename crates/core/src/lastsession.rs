@@ -46,6 +46,10 @@ pub struct SavedWs {
     /// before it was kept, and those are found by name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// Who the desk is (`config::Desk::uid`): what it is found by. An id
+    /// can be changed and given to another desk; this never is
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// How the content area was divided. Absent when it was not
     #[serde(default)]
     pub panes: Option<crate::layout::Layout>,
@@ -387,12 +391,20 @@ impl Saved {
     /// one is another desk, whatever it was called -- a new desk given a
     /// deleted one's name does not inherit its conversations. Only a file
     /// written before ids were kept is read by name
+    /// What was remembered about `desk`: under who it is. A desk remembered
+    /// before desks had uids is found by its id, else its name -- but only
+    /// for a desk that was there then (its uid worked out from them), never
+    /// one made since that was given its id or its name
     fn desk(&self, desk: &crate::config::Desk) -> Option<&SavedWs> {
-        let by_id = self
-            .desks
-            .iter()
-            .find(|w| !desk.id.is_empty() && w.id.as_deref() == Some(desk.id.as_str()));
-        by_id.or_else(|| self.desks.iter().find(|w| w.id.is_none() && w.name == desk.name))
+        if let Some(w) = self.desks.iter().find(|w| w.uid.as_deref() == Some(desk.uid.as_str())) {
+            return Some(w);
+        }
+        if !crate::config::uid_is_worked_out(&desk.uid) {
+            return None;
+        }
+        let old = || self.desks.iter().filter(|w| w.uid.is_none());
+        let by_id = old().find(|w| !desk.id.is_empty() && w.id.as_deref() == Some(desk.id.as_str()));
+        by_id.or_else(|| old().find(|w| w.id.is_none() && w.name == desk.name))
     }
 
     /// Replace what is remembered about one desk, leaving the others.
@@ -434,18 +446,24 @@ impl Saved {
         let entry = SavedWs {
             name: desk.name.clone(),
             id: id.clone(),
+            uid: (!desk.uid.is_empty()).then(|| desk.uid.clone()),
             panes: panes.cloned(),
             tabs: saved,
             places: true,
         };
-        // Filed under the id. What this desk left under its name before ids
-        // were kept goes: it is the same desk, and left behind it would be
-        // found again by a new desk that takes the name
-        self.desks.retain(|w| match (&w.id, &id) {
-            (Some(saved), Some(now)) => saved != now,
-            (Some(_), None) => true,
-            (None, _) => w.name != desk.name,
-        });
+        // Filed under who it is. What this desk left before desks had uids
+        // -- under its id, or its name before that -- goes: it is the same
+        // desk, and left behind it would be found again by a desk that is
+        // given the id or the name
+        let mine = |w: &SavedWs| match &w.uid {
+            Some(u) => *u == desk.uid,
+            None => match (&w.id, &id) {
+                (Some(saved), Some(now)) => saved == now,
+                (Some(_), None) => false,
+                (None, _) => w.name == desk.name,
+            },
+        };
+        self.desks.retain(|w| !mine(w));
         self.desks.push(entry);
     }
 
@@ -485,7 +503,7 @@ mod tests {
     /// A desk as the settings would give it: its name, and an id it was never
     /// remembered under
     fn named(name: &str) -> crate::config::Desk {
-        crate::config::Desk { name: name.into(), id: format!("{name}-id"), ..Default::default() }
+        crate::config::Desk { name: name.into(), id: format!("{name}-id"), uid: crate::config::derived_desk_uid(&format!("{name}-id")), ..Default::default() }
     }
 
     #[test]
@@ -496,6 +514,7 @@ mod tests {
                 places: false,
                 name: "work".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![SavedTab {
                     uid: None,
@@ -563,6 +582,7 @@ mod tests {
                 places: false,
                 name: "work".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![
                     tab("claude", "D:\\Gone", "one"),
@@ -601,6 +621,7 @@ mod tests {
                 places: false,
                 name: "work".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![SavedTab {
                     host: None,
@@ -660,6 +681,7 @@ mod tests {
                 places: false,
                 name: "work".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![tab("coder", "build", "one"), tab("reviewer", "review", "two")],
             }],
@@ -696,7 +718,7 @@ mod tests {
         };
         let desk = |places: bool, tabs: Vec<SavedTab>| Saved {
             version: VERSION,
-            desks: vec![SavedWs { places, name: "work".into(), id: None, panes: None, tabs }],
+            desks: vec![SavedWs { places, name: "work".into(), id: None, uid: None, panes: None, tabs }],
         };
         let key = |host: Option<&str>| crate::uistate::place_key(host, std::path::Path::new("/home/ubuntu/app"));
         let saved = desk(true, vec![tab(Some("srv"), "on-srv"), tab(Some("srv2"), "on-srv2"), tab(None, "here")]);
@@ -734,10 +756,18 @@ mod tests {
             places: false,
             name: name.into(),
             id: id.map(str::to_string),
+            uid: None,
             panes: None,
             tabs: vec![tab(session)],
         };
-        let desk = |id: &str, name: &str| crate::config::Desk { id: id.into(), name: name.into(), ..Default::default() };
+        // Desks that were there when the file was written: their uids are the
+        // ones their ids work out to
+        let desk = |id: &str, name: &str| crate::config::Desk {
+            id: id.into(),
+            name: name.into(),
+            uid: crate::config::derived_desk_uid(id),
+            ..Default::default()
+        };
         let said = |saved: &Saved, d: &crate::config::Desk| {
             saved.conversation_of(d, "claude", Some("D:/Work"), Some("claude"), "claude").map(|s| s.id)
         };
@@ -753,6 +783,19 @@ mod tests {
         saved.remember(&desk("default", "DEFAULT"), &[], None);
         assert_eq!(saved.desks.len(), 1, "the desk is remembered twice");
         assert_eq!(saved.desks[0].id.as_deref(), Some("default"));
+        assert_eq!(saved.desks[0].uid.as_deref(), Some(crate::config::derived_desk_uid("default").as_str()));
+
+        // Remembered by who it is: a desk given this one's id, made since,
+        // is not handed what it said; this one renamed and re-id'd still is
+        let mine = desk("default", "DEFAULT");
+        let saved = Saved {
+            version: VERSION,
+            desks: vec![SavedWs { uid: Some(mine.uid.clone()), ..entry(Some("default"), "DEFAULT", "abc") }],
+        };
+        let moved = crate::config::Desk { id: "work".into(), name: "Work".into(), uid: mine.uid.clone(), ..Default::default() };
+        assert_eq!(said(&saved, &moved), Some("abc".into()), "a new id lost the conversation");
+        let newcomer = crate::config::Desk { id: "default".into(), name: "DEFAULT".into(), uid: crate::config::new_tab_uid(), ..Default::default() };
+        assert_eq!(said(&saved, &newcomer), None, "a desk made since under the old id took it");
     }
 
     /// Frozen on purpose: this is the file as the released 0.5.1 wrote it, and
@@ -807,6 +850,7 @@ mod tests {
                 places: false,
                 name: "work".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![SavedTab {
                     uid: None,

@@ -14470,7 +14470,7 @@ function conferArrived(before) {
   if (before && c.open && c.open !== CF.open) {
     const fresh = CF.open !== 0 || (before.confer || {}).open !== c.open;
     CF.open = c.open;
-    if (fresh && c.auto_open && c.open_desk === S.desk_id) cfOpenItself(c.open_thread);
+    if (fresh && c.auto_open && c.open_desk === S.desk_uid) cfOpenItself(c.open_thread);
   } else if (!before) {
     CF.open = c.open || 0;
   }

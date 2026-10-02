@@ -564,6 +564,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             .cloned()
             .unwrap_or_default(),
         desk_id: ui.desk_ids.get(ui.desk_index).cloned().unwrap_or_default(),
+        desk_uid: ui.desk_uids.get(ui.desk_index).cloned().unwrap_or_default(),
         hotkeys: crate::hotkeys::working(),
         direct_keys: crate::keys::direct_now(),
         quick: ui.quick.clone(),
@@ -1684,6 +1685,8 @@ pub struct Ui {
     /// What each of those desks is called by everything that is not a
     /// person, in the same order
     pub desk_ids: Vec<String>,
+    /// Who each of them is (`config::Desk::uid`), in the same order
+    pub desk_uids: Vec<String>,
     pub desk_index: usize,
     pub desk_open: bool,
     pub help_open: bool,

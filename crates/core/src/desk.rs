@@ -606,7 +606,7 @@ pub fn switch_desk(
     // before its tabs are launched below: a tab opening for the first time is
     // held to the same answers as one that was already running
     hand_over(&desks[to], caps, notifier, prs);
-    config::save_last_desk(&desks[to].id);
+    config::save_last_desk(&desks[to].uid);
     *tabs = std::mem::take(&mut desk_tabs[to]);
     if tabs.is_empty() {
         // First visit this run, so these tabs are being launched for the first
@@ -1044,6 +1044,7 @@ mod calling_home_tests {
                 places: false,
                 name: "w".into(),
                 id: Some("w".into()),
+                uid: None,
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     host: None,

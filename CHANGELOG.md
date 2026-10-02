@@ -73,6 +73,23 @@ once it reaches its first tagged release.
   Chat panel. The first start of this version writes the `uid`s and moves
   what was kept under names to them; what a tab of today's name kept before it
   cannot be told apart from the tab itself, and stays with it.
+- **Desks and projects are kept by who they are, not by their names.** Each
+  desk and each project now has a `uid` of its own, like a tab. Two desks
+  with one name no longer have a change meant for one written into the other;
+  a desk or a project renamed keeps its AIs' conference, its last session, its
+  closed tabs, its MicroVM folders taken off the list and what was shown of
+  the app's rules; and a desk or a project made later under a deleted one's
+  name or id is handed none of that. Work that takes a while -- a worktree or
+  a MicroVM being made -- writes what it finds into the project it began for,
+  whatever it has been renamed to since, and no longer makes the project again
+  under its old name. Changing a desk's or a tab's id on the settings page
+  moves the secrets filed under it.
+- **A folder is found however its path is written.** A change meant for a
+  folder on this PC whose path was spelled with the other slash, another case
+  or a separator at the end no longer goes nowhere.
+- **The Issue page cannot mix up two repositories of one name.** A checkout
+  with no project written down, named for its folder, is given a number when
+  that name is already a project's.
 - **Saving the settings keeps what the settings screen does not show.** A
   split's arrangement, a tab's "start clean" and its git account, a
   conversation to resume were dropped from a tab's line on every save.

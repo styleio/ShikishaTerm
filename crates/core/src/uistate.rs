@@ -2207,6 +2207,11 @@ pub struct UiState {
     /// screen can be shared by two
     #[serde(default)]
     pub desk_id: String,
+    /// Who the desk on screen is (`config::Desk::uid`): what the record of
+    /// the AIs' conference keeps a desk's conversations under, so a desk
+    /// whose id was changed, or given to another, keeps its own
+    #[serde(default)]
+    pub desk_uid: String,
     /// The keys that open the tools from anywhere, by what they open, for the
     /// ones that are registered and work. Shown beside what they open
     #[serde(default)]

@@ -33,6 +33,11 @@ pub struct ProjectSpec {
     /// What it is called. The name folders refer to it by, so two projects
     /// whose folders happen to share a name are still two projects
     pub name: String,
+    /// Who it is, whatever it is called ([`project_uid_of`]): what anything
+    /// kept about it outside this entry, or held while work for it runs, is
+    /// kept under. Written by the app when the project is made, never shown
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// Where its own checkout is on this machine
     #[serde(default)]
     pub at: Option<String>,
@@ -2557,6 +2562,47 @@ pub fn list_secrets(
 /// can be changed without typing the password again -- the screen has no way
 /// to show it, so asking for it to toggle a checkbox would mean going to find
 /// it a second time
+/// Every secret filed under `from` refiled under `to`, the rest of each key
+/// kept: what a desk's or a tab's secrets are filed under when its id is
+/// changed (the key holds the id, `desk_secret_key`, `ssh/<desk>/<tab>/`).
+/// Left where they were, they belonged to nobody, and to whichever desk or
+/// tab was given the old id next. How many were moved
+pub fn move_secrets(path: &std::path::Path, password: Option<&str>, from: &str, to: &str) -> anyhow::Result<usize> {
+    let mut moved = 0;
+    for (key, meta) in list_secrets(path, password)? {
+        let Some(rest) = key.strip_prefix(from) else { continue };
+        let value = secret_value(path, password, &key).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.secret.unreadable")))?;
+        upsert_secret(path, password, &format!("{to}{rest}"), &meta, &value)?;
+        delete_secret(path, password, &key)?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
+/// Whether `from` and `to` are the same kind of place secrets are filed
+/// under by an id, and nothing else: a desk's (`<desk>.`), a desk's
+/// destinations (`notify/<desk>/`), a desk's connections (`ssh/<desk>/`) or a
+/// tab's (`ssh/<desk>/<tab>/`). What [`move_secrets`] may be asked to move
+pub fn secrets_movable(from: &str, to: &str) -> bool {
+    let kind = |p: &str| -> Option<(&'static str, usize)> {
+        let part = |s: &str| !s.is_empty() && !s.contains(['/', '.']);
+        if let Some(id) = p.strip_suffix('.').filter(|id| part(id)) {
+            return Some(("desk", id.len()));
+        }
+        let parts: Vec<&str> = p.strip_suffix('/')?.split('/').collect();
+        match parts.as_slice() {
+            ["notify", d] if part(d) => Some(("notify", 1)),
+            ["ssh", d] if part(d) => Some(("ssh", 1)),
+            ["ssh", d, t] if part(d) && part(t) => Some(("ssh", 2)),
+            _ => None,
+        }
+    };
+    match (kind(from), kind(to)) {
+        (Some((a, n)), Some((b, m))) if a == b && from != to => a == "desk" || n == m,
+        _ => false,
+    }
+}
+
 pub fn upsert_secret(
     path: &std::path::Path,
     password: Option<&str>,
@@ -2760,6 +2806,12 @@ pub struct DeskSpec {
     /// the same way a tab's is (see [`settle_desk_ids`])
     #[serde(default)]
     pub id: Option<String>,
+    /// Who this desk is, whatever it is called and whatever its id says:
+    /// what everything kept about it outside its entry is kept under, and what
+    /// work that takes a while holds on to (see [`TabConfig::uid`] for why a
+    /// name will not do). Written by the app when the desk is made
+    #[serde(default)]
+    pub uid: Option<String>,
     /// Reference to a desk definition file (e.g. "desks/projectx.json")
     #[serde(default)]
     pub file: Option<String>,
@@ -3449,6 +3501,9 @@ pub struct Desk {
     /// What automation and the secret store call this desk. Unique across
     /// the settings, and unchanged by renaming what is on screen
     pub id: String,
+    /// Who this desk is ([`DeskSpec::uid`]): never another desk's, whatever
+    /// either is called or given as its id
+    pub uid: String,
     /// The folders this desk works in. Always at least one, so that
     /// nothing downstream has to answer "what if a tab is in none"
     pub folders: Vec<Folder>,
@@ -3694,6 +3749,55 @@ pub fn add_host_at(path: &Path, spec: &HostSpec) -> Result<()> {
     Ok(())
 }
 
+/// What the project `key` -- its uid, or the name it is to have -- is called
+/// now on the desk `desk` (its uid, or its name). A uid no project of the desk
+/// answers to is a project renamed into nothing or taken away
+fn project_name_in(path: &Path, desk: &str, key: &str) -> Result<String> {
+    if !is_tab_uid(key) {
+        return Ok(key.to_string());
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let doc: serde_json::Value = serde_json::from_str(without_bom(&text))
+        .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
+    let entry = doc
+        .get("desks")
+        .and_then(|d| d.as_array())
+        .and_then(|list| list.iter().find(|w| desk_is(w, desk)))
+        .and_then(|w| w.as_object());
+    let scope = entry.map(entry_scope).unwrap_or_default();
+    entry
+        .and_then(|w| w.get("projects"))
+        .and_then(|p| p.as_array())
+        .and_then(|list| list.iter().find(|p| project_is(p, &scope, key)))
+        .and_then(|p| p.get("name").and_then(|n| n.as_str()))
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.project.gone")))
+}
+
+/// What a desk entry's projects work out their uids under, when one has none
+/// written: the desk as written ([`desk_scope`])
+fn entry_scope(entry: &serde_json::Map<String, serde_json::Value>) -> String {
+    let text = |k: &str| entry.get(k).and_then(|v| v.as_str());
+    desk_scope(text("id"), text("name"))
+}
+
+/// Whether the project entry `p`, on a desk written as `scope`, is the
+/// project `key` names: by who it is when `key` is a uid -- what work that
+/// runs a while holds, since a project can be renamed under it -- and by its
+/// name otherwise (a project being written down now, by the name it is to
+/// have)
+pub(crate) fn project_is(p: &serde_json::Value, scope: &str, key: &str) -> bool {
+    let name = p.get("name").and_then(|n| n.as_str());
+    if is_tab_uid(key) {
+        let written = p.get("uid").and_then(|u| u.as_str()).map(str::trim).filter(|u| !u.is_empty());
+        return match written {
+            Some(u) => u == key,
+            None => derived_project_uid(scope, name.unwrap_or_default()) == key,
+        };
+    }
+    name == Some(key)
+}
+
 /// Writes where a project is checked out on another machine, as that
 /// project's own: the checkout its worktrees there are cut from. A project not
 /// written down yet is written down with it, and one that already has a
@@ -3711,15 +3815,22 @@ pub fn set_project_home_at(path: &Path, desk_id: &str, project: &str, home: &Pro
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
     let entry = desk_entry_mut(&mut doc, desk_id)
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.desk.missing", &[("name", desk_id)])))?;
+    let scope = entry_scope(entry);
     let projects = entry
         .entry("projects")
         .or_insert_with(|| serde_json::Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())])))?;
-    let at = match projects.iter().position(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)) {
+    let at = match projects.iter().position(|p| project_is(p, &scope, project)) {
         Some(i) => i,
+        // A project held by who it is and not there any more was renamed
+        // into nothing or taken away while this was under way: it is not
+        // made again under a name nobody gave it
+        None if is_tab_uid(project) => {
+            anyhow::bail!(crate::i18n::t("err.project.gone"));
+        }
         None => {
-            let mut fresh = serde_json::json!({ "name": project });
+            let mut fresh = serde_json::json!({ "name": project, "uid": new_tab_uid() });
             if let Some(h) = here.map(str::trim).filter(|h| !h.is_empty()) {
                 fresh["at"] = serde_json::json!(h);
             }
@@ -3753,10 +3864,11 @@ pub fn drop_project_home(desk_id: &str, project: &str, host: &str) -> Result<()>
     let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
     let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let scope = entry_scope(entry);
     let Some(p) = entry
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
         .and_then(|p| p.as_object_mut())
     else {
         return Ok(());
@@ -3785,10 +3897,11 @@ pub fn set_project_flag(desk_id: &str, project: &str, key: &str, on: bool) -> Re
     let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
     let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let scope = entry_scope(entry);
     let Some(p) = entry
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
         .and_then(|p| p.as_object_mut())
     else {
         return Ok(());
@@ -3813,10 +3926,11 @@ pub fn set_project_value(desk_id: &str, project: &str, key: &str, value: Option<
     let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))
         .with_context(|| crate::i18n::tp("err.config.json_invalid", &[("path", &path.display().to_string())]))?;
     let Some(entry) = desk_entry_mut(&mut doc, desk_id) else { return Ok(()) };
+    let scope = entry_scope(entry);
     let Some(p) = entry
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|p| p.get("name").and_then(|n| n.as_str()) == Some(project)))
+        .and_then(|list| list.iter_mut().find(|p| project_is(p, &scope, project)))
         .and_then(|p| p.as_object_mut())
     else {
         return Ok(());
@@ -3853,6 +3967,13 @@ pub fn set_folder_far_at(
 ) -> Result<()> {
     let want = cwd.to_string_lossy().trim_end_matches('/').to_string();
     let on = |g: &serde_json::Value| g.get("host").and_then(|h| h.as_str()) == Some(host);
+    // A folder names its project by the name it has now: what was handed in
+    // may be who it is, held by work that started before it was renamed
+    let named = match project.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(key) => Some(project_name_in(path, desk_name, key)?),
+        None => None,
+    };
+    let project = named.as_deref();
     with_folders(path, desk_name, |folders| {
         let Some(at) = folders.iter().position(|g| {
             on(g) && g.get("cwd").and_then(|c| c.as_str()).is_some_and(|c| c.trim_end_matches('/') == want)
@@ -4323,6 +4444,24 @@ pub fn tab_names_by_uid() -> std::collections::HashMap<String, String> {
         .collect()
 }
 
+/// Who a desk written without a uid is: worked out from the id or name it
+/// was written with, for the reasons a tab's is ([`derived_tab_uid`])
+pub fn derived_desk_uid(scope: &str) -> String {
+    derived_tab_uid("\0desk", scope)
+}
+
+/// Who a project written without a uid is, on the desk written as `scope`
+pub fn derived_project_uid(scope: &str, name: &str) -> String {
+    derived_tab_uid(&format!("\0project\0{scope}"), name)
+}
+
+/// The uid of a project as read: the one written, else the one its desk and
+/// name work out to. The same answer [`Config::resolve_desks`] gives, for a
+/// caller holding the entry as written
+pub fn project_uid_of(scope: &str, p: &ProjectSpec) -> String {
+    p.uid.as_deref().map(str::trim).filter(|u| !u.is_empty()).map(str::to_string).unwrap_or_else(|| derived_project_uid(scope, &p.name))
+}
+
 /// Who a new tab is: a random UUID, never handed to another tab
 pub fn new_tab_uid() -> String {
     crate::random_uuid()
@@ -4568,13 +4707,23 @@ pub fn fill_tab_uids(doc: &mut serde_json::Value) {
     match doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
         Some(desks) => {
             for desk in desks.iter_mut() {
+                let text = |k: &str| desk.get(k).and_then(|v| v.as_str()).map(str::to_string);
+                let scope = desk_scope(text("id").as_deref(), text("name").as_deref());
+                // The desk itself and its projects, wherever its tabs are kept
+                if desk.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty) {
+                    desk["uid"] = serde_json::json!(derived_desk_uid(&scope));
+                }
+                for p in desk.get_mut("projects").and_then(|p| p.as_array_mut()).into_iter().flatten() {
+                    let unsaid = p.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
+                    if let (true, Some(name)) = (unsaid, p.get("name").and_then(|v| v.as_str()).map(str::to_string)) {
+                        p["uid"] = serde_json::json!(derived_project_uid(&scope, &name));
+                    }
+                }
                 // A desk kept in its own file has its tabs there, and that
                 // file is carried forward on its own
                 if desk.get("file").is_some() {
                     continue;
                 }
-                let text = |k: &str| desk.get(k).and_then(|v| v.as_str()).map(str::to_string);
-                let scope = desk_scope(text("id").as_deref(), text("name").as_deref());
                 fill_holder_uids(desk, &hosts, &scope);
             }
         }
@@ -5364,7 +5513,7 @@ fn write_off_list(all: &serde_json::Map<String, serde_json::Value>) -> Result<()
     Ok(())
 }
 
-/// Remembers a MicroVM folder taken off `desk`'s list, by its machine, so it
+/// Remembers a MicroVM folder taken off `desk`'s list (the desk's uid), by its machine, so it
 /// can be put back ([`put_back_on_list`]). A folder that names no machine is
 /// not a MicroVM's, and is not kept
 pub fn keep_off_list(desk: &str, (_, entry): &TakenFolder) -> Result<()> {
@@ -5387,7 +5536,9 @@ pub fn put_back_on_list(id: &str, fallback: &str) -> Result<()> {
     let entry = kept.get("entry").cloned().unwrap_or_default();
     let desk = kept.get("desk").and_then(|d| d.as_str()).unwrap_or_default().to_string();
     let desks = load().map(|c| c.resolve_desks().0).unwrap_or_default();
-    let desk = match desks.iter().any(|d| d.name == desk) {
+    // The desk by who it is (`keep_off_list` is handed its uid): renamed
+    // since, it is still where the folder goes back
+    let desk = match desks.iter().any(|d| d.uid == desk) {
         true => desk,
         false => fallback.to_string(),
     };
@@ -5474,11 +5625,21 @@ fn put_folder_back_at(path: &Path, desk_name: &str, (at, entry): &TakenFolder) -
 fn folder_is(g: &serde_json::Value, cwd: &Path) -> bool {
     let (on, at) = crate::uistate::place_of(cwd);
     let host = g.get("host").and_then(|h| h.as_str()).map(str::trim).filter(|h| !h.is_empty());
-    g.get("cwd")
-        .and_then(|c| c.as_str())
-        .map(resolve_folder_cwd)
-        .is_some_and(|c| c == at)
-        && on.is_none_or(|h| host == Some(h.trim()))
+    let Some(written) = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd) else { return false };
+    match (on.as_deref().map(str::trim), host) {
+        // On this PC: the same folder however it is spelled -- a slash the
+        // other way, a different case, a separator at the end. Compared as
+        // the strings, the write that was meant for it found nothing and was
+        // dropped without a word
+        (None, None) => crate::uistate::same_folder(&written, &at),
+        // On another machine: that machine's, and a path there is its own
+        // to read, so only the separator at the end is let go of. A bare
+        // path naming one -- from a page older than place keys -- is still
+        // the first folder of that path anywhere
+        (Some(h), Some(there)) if h != there => false,
+        (Some(_), None) => false,
+        _ => written.to_string_lossy().trim_end_matches('/') == at.to_string_lossy().trim_end_matches('/'),
+    }
 }
 
 /// The group working in this folder, if it is in the list. `cwd` as
@@ -5900,11 +6061,28 @@ fn with_listed_desk<T>(
     let w = root
         .get_mut("desks")
         .and_then(|w| w.as_array_mut())
-        .and_then(|a| a.iter_mut().find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk_name)))
+        .and_then(|a| a.iter_mut().find(|w| desk_is(w, desk_name)))
         .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_desk")))?;
     let out = edit(w)?;
     crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&root)?)?;
     Ok(out)
+}
+
+/// Whether the desk entry `w` is the desk `key` names.
+///
+/// `key` is the desk's uid -- what every caller that has the desk in hand
+/// passes, and the only answer that is never another desk's: two desks can be
+/// given one name, and a desk can be renamed while work for it is still
+/// running. The uid is the written one, else the one reading works out
+/// ([`derived_desk_uid`]). A key that is not a uid is a name, from a caller
+/// that knows the desk only by what it is called (a script naming it)
+pub(crate) fn desk_is(w: &serde_json::Value, key: &str) -> bool {
+    let text = |k: &str| w.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+    if is_tab_uid(key) {
+        let uid = text("uid").map(str::to_string).unwrap_or_else(|| derived_desk_uid(&desk_scope(text("id"), text("name"))));
+        return uid == key;
+    }
+    w.get("name").and_then(|n| n.as_str()) == Some(key)
 }
 
 /// Opens a desk's groups, hands them over to be changed, and writes the
@@ -5936,7 +6114,7 @@ fn with_folders(
             .map(|a| a.to_vec())
             .unwrap_or_default();
         for w in list {
-            if w.get("name").and_then(|n| n.as_str()) == Some(desk_name) {
+            if desk_is(&w, desk_name) {
                 if let Some(f) = w.get("file").and_then(|f| f.as_str()) {
                     file_at = Some(resolve_data_path(f));
                 }
@@ -5968,7 +6146,7 @@ fn with_folders(
             .and_then(|w| w.as_array_mut())
             .and_then(|a| {
                 a.iter_mut()
-                    .find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk_name))
+                    .find(|w| desk_is(w, desk_name))
             })
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.no_desk")))?,
     };
@@ -6184,6 +6362,7 @@ impl Config {
                 out.push(Desk {
                     name: "DEFAULT".into(),
                     id: String::new(),
+                    uid: derived_desk_uid(""),
                     folders,
                     tabs,
                     automation: None,
@@ -6257,6 +6436,15 @@ impl Config {
             out.push(Desk {
                 name,
                 id: desk.id.clone().unwrap_or_default(),
+                // Who it is: written, else worked out from the desk as written
+                // -- the same scope its tabs' worked-out uids come from
+                uid: desk
+                    .uid
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|u| !u.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| derived_desk_uid(&desk_scope(desk.id.as_deref(), Some(&desk.name)))),
                 folders,
                 tabs,
                 // Prefer config's setting; fall back to the definition file's if absent
@@ -6276,14 +6464,45 @@ impl Config {
                 capabilities: desk.capabilities.clone(),
                 automation_permissions: desk.automation_permissions.clone(),
                 git_accounts: self.git_accounts.clone(),
-                projects: desk.projects.clone(),
+                // Each with who it is: written, else worked out from the desk
+                // as written and its name, as `fill_tab_uids` writes it
+                projects: {
+                    let scope = desk_scope(desk.id.as_deref(), Some(&desk.name));
+                    desk.projects
+                        .iter()
+                        .map(|p| ProjectSpec { uid: Some(project_uid_of(&scope, p)), ..p.clone() })
+                        .collect()
+                },
                 summary_ai: desk.summary_ai.as_deref().and_then(one_name),
                 rename_branch: desk.rename_branch,
             });
         }
         errors.extend(settle_desk_ids(&mut out));
         unique_tab_uids(&mut out);
+        unique_desk_uids(&mut out);
         (out, errors)
+    }
+}
+
+/// No two desks are the same desk, and no two projects anywhere the same
+/// project. A uid two of them hold is a line copied by hand; the copy, the
+/// later one, is given one worked out from where it stands
+fn unique_desk_uids(desks: &mut [Desk]) {
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut projects: std::collections::HashSet<String> = Default::default();
+    for (n, d) in desks.iter_mut().enumerate() {
+        if !seen.insert(d.uid.clone()) {
+            d.uid = derived_desk_uid(&format!("{}#copy{n}", d.id));
+            seen.insert(d.uid.clone());
+        }
+        for (m, p) in d.projects.iter_mut().enumerate() {
+            let uid = p.uid.clone().unwrap_or_default();
+            if !projects.insert(uid) {
+                let mine = derived_project_uid(&format!("{}#copy{n}.{m}", d.id), &p.name);
+                projects.insert(mine.clone());
+                p.uid = Some(mine);
+            }
+        }
     }
 }
 
@@ -6587,8 +6806,8 @@ pub fn load_last_desk() -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Remember the id of the currently open desk. Fails silently if it can't
-/// (being unable to remember it is no reason for things to stop working)
+/// Remember who the currently open desk is (its uid). Fails silently if it
+/// can't (being unable to remember it is no reason for things to stop working)
 pub fn save_last_desk(id: &str) {
     let _ = crate::crypto::write_atomic(&last_desk_path(), id);
 }
@@ -6697,7 +6916,7 @@ pub fn add_tab_with_uid_at(
     let holder = doc
         .get_mut("desks")
         .and_then(|w| w.as_array_mut())
-        .and_then(|list| list.iter_mut().find(|w| w.get("name").and_then(|n| n.as_str()) == Some(desk)))
+        .and_then(|list| list.iter_mut().find(|w| desk_is(w, desk)))
         .ok_or_else(|| tp("err.tab_add.no_desk", &[("desk", desk)]))?;
     // The folder as the desk already spells it -- on the machine asked for,
     // when one was -- so the line lands in that folder's list and not in a
@@ -7279,7 +7498,7 @@ fn make_first_desk_at(path: &Path, name: &str, accounts: &[GitAccountSpec]) -> b
     if has("desks") || has("folders") || has("tabs") {
         return false;
     }
-    let desk = serde_json::json!({ "name": name, "id": slug_id(name), "folders": [] });
+    let desk = serde_json::json!({ "name": name, "id": slug_id(name), "uid": new_tab_uid(), "folders": [] });
     if !accounts.is_empty() {
         doc["git_accounts"] = serde_json::to_value(accounts).unwrap_or_default();
     }
@@ -7351,6 +7570,10 @@ fn desk_entry_mut<'a>(
     let list = doc.get_mut("desks").and_then(|d| d.as_array_mut())?;
     if want.is_empty() {
         return None;
+    }
+    // By who it is, when that is what was given
+    if is_tab_uid(want) {
+        return list.iter_mut().find(|w| desk_is(w, want))?.as_object_mut();
     }
     let mut named: Vec<Desk> = list
         .iter()
@@ -8851,11 +9074,12 @@ mod tests {
         for line in [&w["folders"][0]["tabs"][0], &w["folders"][0]["tabs"][0]["children"][0], &w["folders"][1]["tabs"][0], &w["tabs"][0]] {
             assert!(line["uid"].as_str().is_some_and(is_tab_uid), "{line}");
         }
-        // A desk kept in a file of its own is that file's to carry forward
+        // A desk kept in a file of its own: the desk is given its uid here,
+        // and its tabs are that file's to carry forward
         let mut side = serde_json::json!({"desks": [{"name": "Side", "file": "desks/side.json"}]});
-        let untouched = side.clone();
         fill_tab_uids(&mut side);
-        assert_eq!(side, untouched);
+        assert_eq!(side["desks"][0]["uid"], derived_desk_uid("Side"));
+        assert!(side["desks"][0].get("folders").is_none(), "a desk kept in its own file was written into");
         let once = doc.clone();
         fill_tab_uids(&mut doc);
         assert_eq!(doc, once, "it changed the second time");
@@ -8874,6 +9098,112 @@ mod tests {
         let got: Vec<String> = desks.iter().flat_map(|d| d.tabs.iter().map(|t| t.cfg.uid.clone().unwrap())).collect();
         assert_eq!(got[0], u);
         assert!(got[1] != u && got[2] != u && got[1] != got[2], "{got:?}");
+    }
+
+    /// Every desk and every project is somebody: written ones keep theirs,
+    /// the rest work theirs out from how they are written -- the same answer
+    /// the carrying-forward writes -- and no two are one
+    #[test]
+    fn desks_and_projects_are_who_they_are() {
+        let u = "11111111-2222-4333-8444-555555555555";
+        let text = format!(
+            r#"{{"desks":[
+                {{"name":"Work","id":"work","uid":"{u}","projects":[{{"name":"shop"}},{{"name":"cafe","uid":"{u}"}}]}},
+                {{"name":"Work","projects":[{{"name":"shop"}}]}},
+                {{"name":"Copy","uid":"{u}"}}]}}"#
+        );
+        let (desks, _) = serde_json::from_str::<Config>(&text).unwrap().resolve_desks();
+        assert_eq!(desks[0].uid, u);
+        assert_eq!(desks[1].uid, derived_desk_uid("Work"), "a desk with no uid works it out from what it is written as");
+        assert_ne!(desks[2].uid, u, "a desk copied by hand is the same desk");
+        let projects: Vec<String> = desks.iter().flat_map(|d| d.projects.iter().map(|p| p.uid.clone().unwrap())).collect();
+        assert_eq!(projects[0], derived_project_uid("work", "shop"));
+        assert_eq!(projects[1], u, "a written project uid was replaced");
+        assert_eq!(projects[2], derived_project_uid("Work", "shop"), "two desks' projects of one name are one");
+        let mut doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        fill_tab_uids(&mut doc);
+        assert_eq!(doc["desks"][1]["uid"], derived_desk_uid("Work"));
+        assert_eq!(doc["desks"][0]["projects"][0]["uid"], derived_project_uid("work", "shop"));
+        assert_eq!(doc["desks"][0]["projects"][1]["uid"], u, "a written uid was replaced");
+    }
+
+    /// Two desks of one name: a change asked of the second, by who it is, is
+    /// the second's -- by name it was the first's. A name still finds a desk
+    /// for a caller that has only that
+    #[test]
+    fn a_desk_is_found_by_who_it_is_not_by_its_name() {
+        let dir = crate::test_temp("desk-by-uid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let second = "22222222-2222-4222-8222-222222222222";
+        std::fs::write(&file, format!(r#"{{"desks": [
+            {{"name": "Work", "id": "work", "folders": [{{"cwd": "D:/a", "tabs": []}}]}},
+            {{"name": "Work", "id": "work-2", "uid": "{second}", "folders": [{{"cwd": "D:/a", "tabs": []}}]}}]}}"#)).unwrap();
+        rename_folder_at(&file, second, Path::new("D:/a"), "mine").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(doc["desks"][0]["folders"][0].get("name").is_none(), "the first desk of the name was written");
+        assert_eq!(doc["desks"][1]["folders"][0]["name"], "mine");
+        // Worked out, for a desk with none written
+        rename_folder_at(&file, &derived_desk_uid("work"), Path::new("D:/a"), "theirs").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["desks"][0]["folders"][0]["name"], "theirs");
+        // By name, as a script names it
+        rename_folder_at(&file, "Work", Path::new("D:/a"), "named").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["desks"][0]["folders"][0]["name"], "named");
+        // A folder on this PC is found however its path is spelled
+        rename_folder_at(&file, second, Path::new("d:\\a\\"), "spelled").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["desks"][1]["folders"][0]["name"], "spelled", "a folder spelled another way was not found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Work that holds a project by who it is reaches it after a rename, and
+    /// a project renamed into nothing is not made again under a name nobody
+    /// gave it
+    #[test]
+    fn a_project_held_by_who_it_is_survives_a_rename() {
+        let dir = crate::test_temp("project-by-uid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        let shop = "33333333-3333-4333-8333-333333333333";
+        std::fs::write(&file, format!(r#"{{"desks": [{{"name": "Demo", "id": "demo",
+            "projects": [{{"name": "renamed", "uid": "{shop}"}}],
+            "folders": [{{"cwd": "/srv/site", "host": "vm", "tabs": []}}]}}]}}"#)).unwrap();
+        let home = ProjectHome { host: "vm".into(), at: "/srv/site".into(), ..Default::default() };
+        set_project_home_at(&file, "demo", shop, &home, None).unwrap();
+        set_folder_far_at(&file, "Demo", Path::new("/srv/site"), "vm", Some(shop), None).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let projects = doc["desks"][0]["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 1, "a project was made again under its old name: {projects:?}");
+        assert_eq!(projects[0]["homes"][0]["at"], "/srv/site");
+        assert_eq!(doc["desks"][0]["folders"][0]["project"], "renamed", "the folder names the project by a uid or an old name");
+        let gone = "44444444-4444-4444-8444-444444444444";
+        assert!(set_project_home_at(&file, "demo", gone, &home, None).is_err(), "a project nobody has was made");
+        assert!(set_folder_far_at(&file, "Demo", Path::new("/srv/site"), "vm", Some(gone), None).is_err());
+        // A name is a project to be written down
+        set_project_home_at(&file, "demo", "fresh", &home, None).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(doc["desks"][0]["projects"][1]["uid"].as_str().is_some_and(is_tab_uid), "a project written down now has no uid");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only the places secrets are filed under by an id can be moved, each
+    /// to its own kind
+    #[test]
+    fn only_a_desks_or_a_tabs_secrets_are_moved() {
+        assert!(secrets_movable("work.", "home."));
+        assert!(secrets_movable("ssh/work/", "ssh/home/"));
+        assert!(secrets_movable("ssh/work/tiger/", "ssh/work/calm-otter/"));
+        assert!(secrets_movable("notify/work/", "notify/home/"));
+        assert!(!secrets_movable("work.", "work."));
+        assert!(!secrets_movable("ssh/work/", "ssh/work/tiger/"), "a desk's connections into one tab's");
+        assert!(!secrets_movable("provider/x/", "provider/y/"));
+        assert!(!secrets_movable("", "x."));
+        assert!(!secrets_movable("a.b.", "c."));
+        assert!(!secrets_movable("work.", "ssh/work/"));
     }
 
     /// A tab added is a new tab: given a uid of its own, whatever it was

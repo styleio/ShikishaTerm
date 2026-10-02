@@ -126,7 +126,10 @@ fn merged(list: &[Shipped], bring: &[crate::config::BringRule]) -> Vec<crate::co
     out
 }
 
-/// Which edition of [`SHIPPED`] each project has been shown, by project name.
+/// Which edition of [`SHIPPED`] each project has been shown, by the project's
+/// uid (`config::ProjectSpec::uid`): a name is a project's only on its desk
+/// and only until it is renamed, and neither is a reason to have been shown
+/// the rules or not.
 ///
 /// Kept with the app's state, not in the settings: having looked at a page is
 /// not something the person chose, and writing the settings because a page was
@@ -143,24 +146,10 @@ fn shown_all() -> std::collections::BTreeMap<String, u32> {
         .unwrap_or_default()
 }
 
-/// What a project is kept under in that file: its desk and its name. A name
-/// is a project's only on its desk -- another desk can have a project of the
-/// same name, and its having been shown the rules says nothing of this one
-pub fn shown_key(desk: &str, project: &str) -> String {
-    format!("{desk}/{project}")
-}
-
-/// The edition of the app's rules the project `project` of `desk` has been
-/// shown; 0 for one never shown any. A file written before projects were
-/// kept by desk has the name alone, which is read when the desk's own is not
-/// there yet
-pub fn shown(desk: &str, project: &str) -> u32 {
-    shown_in(&shown_all(), desk, project)
-}
-
-/// [`shown`], read from what the file holds
-fn shown_in(all: &std::collections::BTreeMap<String, u32>, desk: &str, project: &str) -> u32 {
-    all.get(&shown_key(desk, project)).or_else(|| all.get(project)).copied().unwrap_or(0)
+/// The edition of the app's rules the project `project` (its uid) has been
+/// shown; 0 for one never shown any
+pub fn shown(project: &str) -> u32 {
+    shown_all().get(project).copied().unwrap_or(0)
 }
 
 /// Every project's, for a page that lists several
@@ -168,28 +157,28 @@ pub fn shown_json() -> String {
     serde_json::to_string(&shown_all()).unwrap_or_else(|_| "{}".into())
 }
 
-/// The project `project` of `desk` has now been shown the app's rules as
-/// they stand
-pub fn mark_shown(desk: &str, project: &str) {
-    if project.is_empty() {
+/// The project `project` (its uid) has now been shown the app's rules as
+/// they stand. A project that has none -- worked out from a checkout and not
+/// written down yet -- has nothing to keep it under, and is shown them again
+pub fn mark_shown(project: &str) {
+    if !crate::config::is_tab_uid(project) {
         return;
     }
     let mut all = shown_all();
     let now = shipped_edition();
-    let key = shown_key(desk, project);
-    if all.get(&key) == Some(&now) {
+    if all.get(project) == Some(&now) {
         return;
     }
-    all.insert(key, now);
+    all.insert(project.to_string(), now);
     if let Ok(text) = serde_json::to_string_pretty(&all) {
         let _ = crate::crypto::write_atomic(&shown_file(), &text);
     }
 }
 
-/// The app's rules newer than what the project `project` of `desk` has been
+/// The app's rules newer than what the project `project` (its uid) has been
 /// shown, as written
-pub fn new_to(desk: &str, project: &str) -> Vec<String> {
-    newer_than(SHIPPED, shown(desk, project))
+pub fn new_to(project: &str) -> Vec<String> {
+    newer_than(SHIPPED, shown(project))
 }
 
 /// What came after the edition `seen`. Nothing for a project that has never
@@ -716,18 +705,6 @@ mod tests {
         assert!(inside.at(".claude/agent-memory-local", true).is_none());
     }
 
-    /// What a project has been shown is kept by its desk and its name: a
-    /// name is a project's only on its desk
-    #[test]
-    fn a_project_is_shown_the_rules_as_its_desks() {
-        let all: std::collections::BTreeMap<String, u32> =
-            [(shown_key("work", "shop"), 2), ("shop".to_string(), 1)].into_iter().collect();
-        assert_eq!(shown_in(&all, "work", "shop"), 2);
-        // Another desk's project of the same name has a history of its own;
-        // until it has one, what a file from before desks says is read
-        assert_eq!(shown_in(&all, "home", "shop"), 1);
-        assert_eq!(shown_in(&all, "home", "cafe"), 0);
-    }
 
     /// The editions as shipped: the second batch is new to a project shown
     /// only the first three, and nothing is new to one shown both

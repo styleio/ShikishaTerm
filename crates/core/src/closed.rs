@@ -42,6 +42,9 @@ pub struct ClosedTab {
     /// What the screen asks for it by. Never reused, so a press on a list
     /// that has since changed cannot open a different one
     pub id: u64,
+    /// The desk it was closed on, by who the desk is (`config::Desk::uid`):
+    /// a desk renamed keeps its list, and a desk given a deleted desk's name
+    /// is not handed it
     pub desk: String,
     /// The name it had on screen
     pub name: String,
@@ -245,7 +248,7 @@ pub fn close(
     if !key.is_empty() && here != key {
         return Closing::Nothing;
     }
-    let desk_name = desk.map(|d| d.name.as_str()).unwrap_or_default();
+    let desk_name = desk.map(|d| d.uid.as_str()).unwrap_or_default();
     let said = |name: &str| i18n::tp("msg.tab.closed", &[("name", name)]);
     // Taking a written line out, for anything that has one
     let take = |closed: &mut Closed, name: &str, conversation: Option<String>, ends: Ends| {
@@ -386,7 +389,7 @@ pub fn reopen(
     caps: &crate::hooks::Caps,
     closed: &mut Closed,
 ) -> Reopening {
-    let Some(item) = closed.take(&desk.name, which) else {
+    let Some(item) = closed.take(&desk.uid, which) else {
         return Reopening::Nothing(i18n::t("msg.tab.none_closed"));
     };
     let said = |talk: bool| {
@@ -396,7 +399,7 @@ pub fn reopen(
         )
     };
     let back = match &item.place {
-        Place::Folder { taken } => config::put_tab_back(&desk.name, taken).map(|id| Reopening::Reopened {
+        Place::Folder { taken } => config::put_tab_back(&desk.uid, taken).map(|id| Reopening::Reopened {
             note: said(item.conversation.is_some()),
             settings: true,
             resume: item
@@ -405,7 +408,7 @@ pub fn reopen(
                 .map(|c| (id.clone(), Session { id: c, source: SessionSource::Store })),
             reveal: id,
         }),
-        Place::Listed { at, line } => config::put_browser_back(&desk.name, *at, line).map(|()| Reopening::Reopened {
+        Place::Listed { at, line } => config::put_browser_back(&desk.uid, *at, line).map(|()| Reopening::Reopened {
             note: said(false),
             settings: true,
             reveal: line.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),

@@ -199,7 +199,9 @@ try {
   check(!fs.existsSync(path.join(one, '.claude', 'worktrees')), 'the helpers\' worktrees did not');
   check(!fs.existsSync(path.join(one, '.claude', 'checkpoints')), 'nor the record of edits');
   const shown = JSON.parse(fs.readFileSync(SHOWN, 'utf8'));
-  check(shown['check/shop'] === 2 && !('shop' in shown), 'the project counts as shown the app\'s rules, as its desk\'s: ' + JSON.stringify(shown));
+  const shopUid = JSON.parse(fs.readFileSync(path.join(APP, 'config', 'config.json'), 'utf8')).desks[0].projects[0].uid;
+  check(/^[0-9a-f-]{36}$/.test(shopUid) && shown[shopUid] === 2 && Object.keys(shown).length === 1,
+    'the project counts as shown the app\'s rules, by who it is: ' + JSON.stringify(shown));
   for (const f of ['agent-registry.json', 'scheduled_tasks.json', 'routines/.state']) {
     check(!fs.existsSync(path.join(one, '.claude', f)), 'nor ' + f);
   }
@@ -215,8 +217,7 @@ try {
   console.log('4. a version that adds a rule marks it new again');
   await run(`closeBranch(); true`);
   // Shown the first edition only: the second batch is what is new
-  // Written the way a version before desks kept them did, by the name alone
-  fs.writeFileSync(SHOWN, JSON.stringify({ shop: 1 }));
+  fs.writeFileSync(SHOWN, JSON.stringify({ [shopUid]: 1 }));
   await sleep(300);
   await open();
   const fresh = JSON.parse(await run(`JSON.stringify(S.branch.shipped_new)`));

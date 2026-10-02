@@ -2664,8 +2664,7 @@ fn handle(
                 return Ok(());
             };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let text = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
-            crate::inside::mark_shown(&text("desk"), &text("project"));
+            crate::inside::mark_shown(p.get("project").and_then(|v| v.as_str()).unwrap_or_default().trim());
             req.respond(json_resp(serde_json::json!({ "ok": true })))?;
         }
         // The assistant AI's proposal for how each ignored thing reaches a new
@@ -3618,6 +3617,33 @@ fn handle(
                     }
                 }
                 _ => serde_json::json!({ "ok": false, "error": "not a copyable key" }),
+            };
+            req.respond(json_resp(resp))?;
+        }
+        // A desk's or a tab's secrets refiled under the id it was given
+        // (config::move_secrets), from the settings page as it saves
+        ("POST", "/api/secrets/move") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+            let (from, to) = (s("from"), s("to"));
+            let resp = match crate::config::secrets_movable(&from, &to) {
+                false => serde_json::json!({ "ok": false, "error": "not a place secrets are filed under" }),
+                true => {
+                    let path = secrets_file(config_path);
+                    let pw = password.lock().unwrap().clone();
+                    match path.exists() {
+                        false => serde_json::json!({ "ok": true, "moved": 0 }),
+                        true => match crate::config::move_secrets(&path, pw.as_deref(), &from, &to) {
+                            Ok(n) => serde_json::json!({ "ok": true, "moved": n }),
+                            Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                        },
+                    }
+                }
             };
             req.respond(json_resp(resp))?;
         }
@@ -7167,7 +7193,7 @@ function uniqueProjectName(desk, base) {
 function ensureProject(desk, p) {
   desk.projects = desk.projects || [];
   if (!p.entry) {
-    p.entry = {name: uniqueProjectName(desk, p.name)};
+    p.entry = {name: uniqueProjectName(desk, p.name), uid: newUid()};
     if ((p.at || "").trim()) p.entry.at = p.at.trim();
     desk.projects.push(p.entry);
   }
@@ -7343,10 +7369,22 @@ async function copyDeskOwn(from, to) {
   }
 }
 
+// The keys of a desk's entry this screen reads into its own fields (load) and
+// writes back from them (payload). The rest of the entry goes back as it came
+const DESK_KEYS_SHOWN = new Set(["name", "id", "uid", "file", "automation", "lua", "folders", "tabs",
+  "browsers", "secrets_allow", "secrets_allow_all", "notify", "primary_notify", "capabilities",
+  "automation_permissions", "git", "projects", "summary_ai", "rename_branch", "stops"]);
+
 async function landOnWs(desk) {
   // Made by a wizard, a template or from nothing -- all of them arrive here, so
   // this is the one place that has to make sure a desk has its folder
   if (!(desk.folders || []).length) desk.folders = [{name:"", id:"", cwd:""}];
+  // A new desk, and new projects in it, whatever they were made from: a desk
+  // brought in from elsewhere -- maybe from this very PC -- is not the one it
+  // was copied from, and must not be handed that one's records
+  desk.uid = newUid();
+  for (const p of desk.projects || []) if (p) p.uid = newUid();
+  delete desk.rest;
   (desk.tabs || []).forEach(t => { if (t.group === undefined) t.group = 0; });
   if (!(desk.id || "").trim()) desk.id = uniqueWsId(slugId(desk.name) || "desk", desk);
   for (const k of ["notify", "capabilities", "automation_permissions", "git"]) {
@@ -10843,7 +10881,7 @@ function machinesCard() {
           let r = {};
           try {
             r = await (await fetch("/api/microvm/restore", {method:"POST",
-              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id, desk: ((desks[sel.desk] || desks[0]) || {}).name || ""})})).json();
+              headers:{"X-Token":TOKEN}, body: JSON.stringify({id: m.id, desk: (d => d.uid || d.name || "")((desks[sel.desk] || desks[0]) || {})})})).json();
           } catch (e) { r = {ok:false, error:String(e)}; }
           if (!r.ok) msg(r.error || T["settings.machines.failed"], true);
           else msg(fill(T["settings.machines.restored"], {folder: m.off_list}));
@@ -13900,15 +13938,14 @@ function insideLeft(root, p, path) {
 }
 function insideShipped(desk, p, root, change) {
   const name = (p.entry && p.entry.name) || p.name || "";
-  // A project is its desk's: another desk's project of the same name has a
-  // history of its own (inside::shown_key). The name alone is what a file
-  // from before that says, read while this desk's is not there yet
-  const deskId = (desk.id || "").trim();
-  const key = deskId + "/" + name;
-  const seen = insideShownAtLoad[key] || insideShownAtLoad[name] || 0;
-  if (name && !insideShownSent.has(key)) {
+  // Kept by who the project is (config.rs ProjectSpec::uid): another desk's
+  // project of the same name, or this one renamed, is not another history.
+  // A project only worked out from its checkout has none yet
+  const key = (p.entry && p.entry.uid) || "";
+  const seen = (key && insideShownAtLoad[key]) || 0;
+  if (key && !insideShownSent.has(key)) {
     insideShownSent.add(key);
-    settingsApi("/api/project/inside-shown", {desk: deskId, project: name}).catch(() => null);
+    settingsApi("/api/project/inside-shown", {project: key}).catch(() => null);
   }
   const bring = (p.entry || {}).bring || [];
   const changeOf = id => bring.filter(r => r.default === id).pop() || null;
@@ -16461,11 +16498,20 @@ const isOneFile = data => typeof (data && data.file) === "string";
 const definedIn = source =>
   [...(source || "").matchAll(/^\s*function\s+([A-Za-z_]\w*)\s*\(/gm)].map(m => m[1]);
 
+// Where a tab's scripts go when it has not said: named for the desk and the
+// tab, with the start of who each is after the name. By the names alone, a
+// desk made later under a deleted desk's name -- or a name with no Latin
+// letters, which came out as its place in the list -- found another's scripts
+// waiting in its folder
 function autoDirOf(desk, t) {
   if (t.automation) return t.automation;
   const slug = s => (s || "").replace(/[^A-Za-z0-9_-]/g, "").toLowerCase();
+  const who = (name, uid, none) => {
+    const n = slug(name), u = (uid || "").slice(0, 8);
+    return n && u ? n + "-" + u : (n || u || none);
+  };
   const wi = desks.indexOf(desk) + 1, ti = (desk.tabs || []).indexOf(t) + 1;
-  return "scripts/" + (slug(desk.name) || ("desk" + wi)) + "/" + (slug(t.id) || slug(t.name) || ("tab" + ti));
+  return "scripts/" + who(desk.name, desk.uid, "desk" + wi) + "/" + who(t.id || t.name, t.uid, "tab" + ti);
 }
 
 async function fetchAuto(dir) {
@@ -16783,7 +16829,10 @@ async function load() {
   delete current.tabs;
   desks = [];
   for (const w of list) {
-    const desk = { name:w.name || "", id:w.id || "", file:w.file || null,
+    const desk = { name:w.name || "", id:w.id || "", uid:w.uid || "", file:w.file || null,
+                 // Whatever else the entry says that this screen does not
+                 // show, carried through a save as it came (DESK_KEYS_SHOWN)
+                 rest: Object.fromEntries(Object.entries(w).filter(([k]) => !DESK_KEYS_SHOWN.has(k))),
                  automation:w.automation || w.lua || "", tabs:[], folders:[],
                  // Not touched from the screen, but kept so saving doesn't drop it
                  browsers:w.browsers || null,
@@ -16821,6 +16870,7 @@ async function load() {
     } else readFolders(desk, w);
     desks.push(desk);
   }
+  idsAtLoad = idsNow();
   // The two models that drive a page from plain words were once the whole
   // app's. They are each desk's now: a desk with none of its own takes them,
   // and they are not written up there again
@@ -17032,6 +17082,8 @@ function payload() {
   }
   out.desks = desks.map(w => {
     const o = { name:w.name, id:w.id };
+    // Who it is: never shown, never changed here (config.rs DeskSpec::uid)
+    if (w.uid) o.uid = w.uid;
     if (w.file) o.file = w.file;
     else { if (w.automation) o.automation = w.automation; o.folders = foldersOut(w); }
     // Don't lose a setting that isn't on screen just because it was saved from the screen
@@ -17077,9 +17129,57 @@ function payload() {
     if (w.rename_branch === false) o.rename_branch = false;
     // Stop conditions (judge). Already written into the file for a file-referenced desk, so don't duplicate it here
     if (!w.file) { const st = cleanStops(w); if (st.length) o.stops = st; }
+    for (const [k, v] of Object.entries(w.rest || {})) if (!(k in o)) o[k] = v;
     return o;
   });
   return { out, files };
+}
+
+// The id each desk and each tab had when the page loaded, by who it is: an
+// id changed on this page takes the secrets filed under it along
+// (/api/secrets/move) as it is saved
+let idsAtLoad = new Map();
+function idsNow() {
+  const m = new Map();
+  for (const d of desks) {
+    if (d.uid) m.set(d.uid, {id: (d.id || "").trim()});
+    for (const t of d.tabs || []) if (t.uid) m.set(t.uid, {id: (t.id || "").trim(), desk: d.uid});
+  }
+  return m;
+}
+// Moves the secrets of every desk and tab whose id changed since the page
+// loaded, and points the desk's destinations at where theirs went. False,
+// with what went wrong said, when they could not be moved: saving then would
+// leave them under an id nothing answers to
+async function moveSecretsOfNewIds() {
+  const now = idsNow();
+  const moves = [];
+  const deskId = uid => ((now.get(uid) || {}).id || "");
+  for (const d of desks) {
+    const was = (idsAtLoad.get(d.uid) || {}).id, is = deskId(d.uid);
+    if (!was || !is || was === is) continue;
+    moves.push([was + ".", is + "."], ["ssh/" + was + "/", "ssh/" + is + "/"], ["notify/" + was + "/", "notify/" + is + "/"]);
+    const refile = v => (v || "").startsWith("@notify/" + was + "/") ? "@notify/" + is + "/" + v.slice(("@notify/" + was + "/").length) : v;
+    for (const dest of Object.values(d.notify || {})) {
+      if (!dest) continue;
+      dest.webhook = refile(dest.webhook);
+      dest.token = refile(dest.token);
+    }
+  }
+  for (const [uid, t] of now) {
+    const was = (idsAtLoad.get(uid) || {}).id;
+    if (!t.desk || !was || !t.id || was === t.id) continue;
+    const desk = deskId(t.desk);
+    if (desk) moves.push(["ssh/" + desk + "/" + was + "/", "ssh/" + desk + "/" + t.id + "/"]);
+  }
+  for (const [from, to] of moves) {
+    const r = await settingsApi("/api/secrets/move", {from, to}).catch(e => ({ok:false, error:String(e)}));
+    if (!r || !r.ok) {
+      result(fill(T["settings.save_failed"], {error: fill(T["settings.secrets.move_failed"], {from, error: (r && r.error) || ""})}), true);
+      return false;
+    }
+  }
+  return true;
 }
 
 async function doSave() {
@@ -17087,6 +17187,8 @@ async function doSave() {
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
   for (const w of desks) ensureIds(w);
   ensureWsIds();
+  if (!(await moveSecretsOfNewIds())) return false;
+  idsAtLoad = idsNow();
   const { out, files } = payload();
   for (const f of files) {
     const rf = await deskApi("POST", f.file, JSON.stringify(f.body, null, 2));

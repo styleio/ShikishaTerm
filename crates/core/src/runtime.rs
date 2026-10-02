@@ -102,7 +102,7 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project
     if here {
         return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
     }
-    let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
+    let desk_name = desk.map(|w| w.uid.clone()).unwrap_or_default();
     config::append_folder_starting(&desk_name, None, std::path::Path::new(at), None, &config::Start::Same, Some(host))
         .map_err(|e| format!("{e:#}"))?;
     // The folder is the project's checkout on that machine, which its
@@ -116,7 +116,7 @@ fn add_remote_to_desk(desk: Option<&config::Desk>, host: &str, at: &str, project
         }
     });
     let home = config::ProjectHome { host: host.to_string(), at: at.to_string(), ..Default::default() };
-    let desk_id = desk.map(|w| w.id.clone()).unwrap_or_default();
+    let desk_id = desk.map(|w| w.uid.clone()).unwrap_or_default();
     // A project worked out from its checkout here, and not written down yet,
     // is written down with that checkout -- or its folders here would stop
     // being its folders
@@ -177,6 +177,11 @@ struct Pending {
     id: u64,
     making: crate::worktree::Making,
     desk: String,
+    /// The project it is made for, by uid when the desk had it written down
+    /// as it started -- what is written about it afterwards then reaches it
+    /// whatever it has been renamed to -- else by the name it is to be
+    /// written down under
+    project_key: String,
     /// The same desk by its id, which is how its projects are written
     desk_id: String,
     /// On a MicroVM: the project's checkout machine this making made has been
@@ -307,7 +312,7 @@ impl Pending {
         // A project nobody had written down is written down with its checkout
         // here, so the folders here stay in it
         let here = crate::repo::main_checkout(&self.from).map(|m| m.display().to_string().replace('\\', "/"));
-        config::set_project_home(&self.desk_id, &plan.project, &home, here.as_deref())?;
+        config::set_project_home(&self.desk_id, &self.project_key, &home, here.as_deref())?;
         // Written down: what follows is the folder for it, which is tried
         // once -- a second try would add the folder twice
         self.checkout_noted = true;
@@ -315,13 +320,13 @@ impl Pending {
         // settings rather than left to be asked again
         config::set_project_value(
             &self.desk_id,
-            &plan.project,
+            &self.project_key,
             "machine_ai",
             Some(plan.preparing.ai.as_deref().unwrap_or(crate::microvm::NO_AI)),
         )?;
         // And where it was cloned from, so it can be made again once deleted
         if !plan.origin.trim().is_empty() {
-            config::set_project_value(&self.desk_id, &plan.project, "origin", Some(plan.origin.trim()))?;
+            config::set_project_value(&self.desk_id, &self.project_key, "origin", Some(plan.origin.trim()))?;
         }
 
         // A checkout made again in place of one gone from the service stands
@@ -329,7 +334,7 @@ impl Pending {
         let key = crate::uistate::place_key(Some(&host.name), &plan.main);
         let listed = config::load()
             .map(|c| c.resolve_desks().0)
-            .and_then(|ds| ds.into_iter().find(|d| d.name == self.desk))
+            .and_then(|ds| ds.into_iter().find(|d| d.uid == self.desk))
             .is_some_and(|d| d.folder_at(std::path::Path::new(&key)).is_some());
         if !listed {
             config::append_folder_starting(
@@ -341,7 +346,7 @@ impl Pending {
                 Some(&host.name),
             )?;
         }
-        config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&plan.project), Some(&id))?;
+        config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&self.project_key), Some(&id))?;
         // The settings' from now on: no longer one being made
         crate::e2b::made_settled(&id);
         Ok(())
@@ -379,7 +384,7 @@ impl Pending {
                 &self.desk,
                 &plan.folder,
                 &h.name,
-                Some(&plan.project).filter(|p| !p.is_empty()).map(String::as_str),
+                Some(&self.project_key).filter(|p| !p.is_empty()).map(String::as_str),
                 self.making.machines().worktree.as_deref(),
             )?;
             if let Some(id) = self.making.machines().worktree {
@@ -572,6 +577,16 @@ fn let_go_if_nobodys(id: String) {
     });
 }
 
+/// How work that runs a while holds the project it is for: by uid when the
+/// desk has it written down, so what it writes at the end reaches it whatever
+/// it has been renamed to meanwhile; by the name it is to be written down
+/// under when it is not written down yet
+fn project_key_of(desk: Option<&config::Desk>, name: &str) -> String {
+    desk.and_then(|d| d.projects.iter().find(|p| p.name == name))
+        .and_then(|p| p.uid.clone())
+        .unwrap_or_else(|| name.to_string())
+}
+
 /// The phase of a row cloning onto a server over SSH
 const PHASE_SSH_CLONING: &str = "ssh_cloning";
 
@@ -580,6 +595,9 @@ struct VmJob {
     desk: String,
     desk_id: String,
     project: String,
+    /// The project again, by uid when the desk has it written down (see
+    /// `Pending::project_key`); its name when the job writes it down
+    project_key: String,
     /// The entry, naming the machine once there is one
     host: config::HostSpec,
     /// The checkout on it
@@ -734,7 +752,7 @@ fn add_to_desk(desk: Option<&config::Desk>, at: &std::path::Path, start: &config
     if here {
         return Ok(Added::Already(i18n::tp("msg.project.already", &[("name", &name)])));
     }
-    let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
+    let desk_name = desk.map(|w| w.uid.clone()).unwrap_or_default();
     // Open, running the default command: a project added is somewhere to work
     // at once, not a card with nothing in it
     config::append_folder_starting(&desk_name, None, at, None, start, None).map_err(|e| format!("{e:#}"))?;
@@ -1035,7 +1053,7 @@ fn tend_asks(
     let line_max = config::confer().line_max;
     let answering = answering_in(asks);
     let desk = desks.get(desk_index);
-    let here = desk.map(|d| d.id.as_str());
+    let here = desk.map(|d| d.uid.as_str());
     let keys_here: Vec<hooks::TabKey> = tab_states(tabs).into_iter().map(|(k, _)| k).collect();
     let named = |among: &[Tab], keys: &[hooks::TabKey], name: &str| -> Option<usize> {
         hooks::TabRef::Name(name.to_string())
@@ -1065,7 +1083,7 @@ fn tend_asks(
         // has no tabs
         let away: Option<&[Tab]> = match a.desk.as_deref() {
             Some(id) if Some(id) != here => {
-                Some(desks.iter().position(|d| d.id == id).and_then(|i| desk_tabs.get(i)).map_or(&[][..], |v| v.as_slice()))
+                Some(desks.iter().position(|d| d.uid == id).and_then(|i| desk_tabs.get(i)).map_or(&[][..], |v| v.as_slice()))
             }
             _ => None,
         };
@@ -1331,13 +1349,13 @@ struct CardChecked {
 fn desk_of_tab(id: &str, desks: &[config::Desk], desk_index: usize, tabs: &[Tab], desk_tabs: &[Vec<Tab>]) -> Option<String> {
     let is = |t: &Tab| crate::orch::glue::tab_id(t) == id;
     if tabs.iter().any(is) {
-        return desks.get(desk_index).map(|d| d.id.clone());
+        return desks.get(desk_index).map(|d| d.uid.clone());
     }
     desk_tabs
         .iter()
         .position(|list| list.iter().any(is))
         .and_then(|i| desks.get(i))
-        .map(|d| d.id.clone())
+        .map(|d| d.uid.clone())
 }
 
 pub fn tab_states(tabs: &[Tab]) -> Vec<(hooks::TabKey, String)> {
@@ -1404,7 +1422,7 @@ fn panel_place_dir(surfaces: &[Surface], tabs: &[Tab], panel: &str) -> Option<st
 fn brief_engine(eng: &HookEngine, desk: Option<&config::Desk>, surfaces: &[Surface], tabs: &[Tab]) {
     eng.set_states(tab_states(tabs));
     eng.set_places(places_by_surface(surfaces, tabs));
-    eng.set_desk_name(desk.map(|d| d.name.clone()));
+    eng.set_desk_name(desk.map(|d| d.uid.clone()));
 }
 
 pub fn places_by_surface(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabPlace> {
@@ -2162,9 +2180,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // What an older version wrote under the tabs' names goes under their
     // uids, before anything new is written beside it
     convo_log.adopt(
+        &desks.iter().map(|d| (d.id.clone(), d.uid.clone())).collect::<Vec<_>>(),
         &desks
             .iter()
-            .flat_map(|d| d.tabs.iter().map(move |t| (d.id.clone(), t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
+            .flat_map(|d| d.tabs.iter().map(move |t| (d.uid.clone(), t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
             .collect::<Vec<_>>(),
     );
     // A page of a conversation for the column's panel, read on a thread
@@ -2933,7 +2952,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // showing. Only on one desk -- switching is another set of rows
         // altogether, with an arrangement of its own
         {
-            let desk_now = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
+            let desk_now = desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default();
             let keys: Vec<String> = surfaces.iter().map(|s| surface_key(s, &tabs)).collect();
             if rows_were.0 == desk_now && !rows_were.1.is_empty() && rows_were.1 != keys {
                 let moves = surface_moves(&rows_were.1, &keys);
@@ -3161,7 +3180,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 config::default_shell_start(cfg.as_ref().and_then(|c| c.default_shell.as_deref()))
                             {
                                 let tab = serde_json::json!({"name": name, "command": config::command_value(&command)});
-                                let desk_name = desk.map(|d| d.name.clone()).unwrap_or_default();
+                                let desk_name = desk.map(|d| d.uid.clone()).unwrap_or_default();
                                 if config::append_tab(&desk_name, tab, Some(&want)) {
                                     said_before_reload = Some((Instant::now(), i18n::tp("msg.shell.opened", &[("name", &name)])));
                                     // It arrives with the settings this write
@@ -3392,7 +3411,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             }
                         }
                         caps.set_desk(target);
-                        config::save_last_desk(&w.id);
+                        config::save_last_desk(&w.uid);
                     }
                     active = if tabs.is_empty() { 0 } else { 1 };
                     pane_layout = crate::layout::Layout::single(active);
@@ -3674,11 +3693,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             convo_log.roster(
                 desks
                     .get(desk_index)
-                    .map(|d| tabs.iter().map(move |t| (d.id.as_str(), t)))
+                    .map(|d| tabs.iter().map(move |t| (d.uid.as_str(), t)))
                     .into_iter()
                     .flatten()
                     .chain(desk_tabs.iter().enumerate().filter(|(i, _)| *i != desk_index).flat_map(|(i, list)| {
-                        let desk = desks.get(i).map_or("", |d| d.id.as_str());
+                        let desk = desks.get(i).map_or("", |d| d.uid.as_str());
                         list.iter().map(move |t| (desk, t))
                     }))
                     .map(|(desk, t)| (desk, t.called(), t.uid())),
@@ -3699,7 +3718,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // What a person typed at a tab's own prompt (heard from its CLI):
             // naming a tab there is a conversation begun, as from the composer.
             // What this app typed into the tab itself is not taken for it
-            if let Some(desk) = desks.get(desk_index).map(|d| d.id.clone()) {
+            if let Some(desk) = desks.get(desk_index).map(|d| d.uid.clone()) {
                 for t in tabs.iter_mut() {
                     for text in t.take_typed() {
                         if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(t.uid(), &text, TYPED_BY_APP_MS) {
@@ -4770,7 +4789,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 }
                                 crate::asktab::Hear::Line(line) => {
                                     append_hook_log(&format!("confer: {id} said its line ({} chars)", line.chars().count()));
-                                    let desk = a.desk.clone().or_else(|| desks.get(desk_index).map(|d| d.id.clone())).unwrap_or_default();
+                                    let desk = a.desk.clone().or_else(|| desks.get(desk_index).map(|d| d.uid.clone())).unwrap_or_default();
                                     if let Some(thread) = a.ask_id.and_then(|ask| convo_log.thread_of_ask(ask)) {
                                         convo_log.line(&desk, thread, Some(&id), &line, a.ask_id, "said");
                                     }
@@ -5104,7 +5123,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         busy_since: None,
                                         far_len: None,
                                         record_unsure: false,
-                                        desk: desks.get(desk_index).map(|d| d.id.clone()),
+                                        desk: desks.get(desk_index).map(|d| d.uid.clone()),
                                         line,
                                         ask_id: None,
                                         hook_expected,
@@ -6209,7 +6228,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             update: update::ask(),
             close_ask: close_ask.clone(),
             hook_ask: hook_ask.clone(),
-            closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.name)).unwrap_or_default(),
+            closed: desks.get(desk_index).map(|d| closed_tabs.shown(&d.uid)).unwrap_or_default(),
             quick: quick_view.clone(),
             // Where each kind of button would go right now, for the launcher
             // to say so before anything is pressed. Only the kinds the buttons
@@ -6254,6 +6273,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             auto: Some(auto_enabled),
             desk_names: desks.iter().map(|w| w.name.clone()).collect(),
             desk_ids: desks.iter().map(|w| w.id.clone()).collect(),
+            desk_uids: desks.iter().map(|w| w.uid.clone()).collect(),
             desk_index,
             desk_open,
             help_open,
@@ -6832,7 +6852,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let panes = made.keep(|s| keyed.get(s - 1).cloned().flatten());
                     // The folder in front, on the machine it is on
                     let here = surface_place_at(&surfaces, &tabs, active).map(|k| crate::uistate::place_of(&k));
-                    let desk_name = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
+                    let desk_name = desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default();
                     // Named here rather than left to the write, because this
                     // row is gone to the moment it arrives and the way to go
                     // to a row is by the name automation calls it
@@ -7169,7 +7189,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             // The log says the button and what it was written as. The text
             // that goes out may hold a secret's value, so that is never logged
-            let Some(desk) = desks.get(desk_index).map(|d| d.name.clone()) else { continue };
+            let Some(desk) = desks.get(desk_index).map(|d| d.uid.clone()) else { continue };
             let from = crate::convo::Origin::person(device, "quick");
             match open_and_say(&desk, &at, &command, &program, &label, text, item.enter, from, &tabs, &mut pending_quicks, &mut reveal) {
                 Some(title) => {
@@ -8129,7 +8149,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let project = desk.project_of(&at);
                         label_jobs.push(LabelJob {
                             tag: tag.clone(),
-                            desk: desk.name.clone(),
+                            desk: desk.uid.clone(),
                             folder: at.clone(),
                             asks,
                             started: now,
@@ -9542,7 +9562,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The conference of the desk on screen: read on a thread like the
             // rest, a mark put on by the person written here
             if act == "confer" || act == "confer_threads" || act == "confer_mark" {
-                let desk = desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default();
+                let desk = desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default();
                 if act == "confer_mark" {
                     let line = args.get("line").and_then(serde_json::Value::as_i64);
                     let mark = args.get("mark").and_then(serde_json::Value::as_str).unwrap_or_default();
@@ -9617,7 +9637,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
                 continue;
             }
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
             match config::rename_tab(&desk, &old, wanted) {
                 Ok(Some(title)) => {
                     if let Some(t) = tabs.get_mut(i) {
@@ -9657,7 +9677,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         for (folder, name) in shell.mail().take_folder_names() {
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
             if let Err(e) = config::rename_folder(&desk, std::path::Path::new(&folder), &name) {
                 flash = Some(format!("{e:#}"));
             }
@@ -9760,7 +9780,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     if let Some(id) = home.sandbox.as_deref() {
                                         crate::worktree::forget_checkout(id);
                                     }
-                                    dropped = Some((d.id.clone(), p.to_string(), home));
+                                    // The project by who it is: put back later,
+                                    // it reaches it whatever it is called then
+                                    dropped = Some((d.uid.clone(), project_key_of(Some(d), p), home));
                                 }
                                 Err(e) => {
                                     // The folder goes back where it was, and
@@ -9783,7 +9805,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             family: String::new(),
                             name: at.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string(),
                             removal,
-                            desk: d.name.clone(),
+                            desk: d.uid.clone(),
                             main: None,
                             taken,
                             checkout: dropped,
@@ -9835,7 +9857,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             family,
                             name: at.to_string_lossy().rsplit('/').next().unwrap_or_default().to_string(),
                             removal,
-                            desk: d.name.clone(),
+                            desk: d.uid.clone(),
                             main: None,
                             taken,
                             checkout: None,
@@ -9852,7 +9874,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(format!("{e:#}"));
                 continue;
             }
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
             // Read while the folder is still a worktree: once it is going, git
             // can no longer say whose it is or what branch it was on
             let family = crate::repo::family_of(&at).map(|f| f.display().to_string()).unwrap_or_default();
@@ -10147,7 +10169,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // silently -- a folder that was asked to go and did not is a surprise
         // waiting in the settings
         for folder in shell.mail().take_folder_closes() {
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
             let at = std::path::Path::new(&folder);
             let (on, path) = crate::uistate::place_of(at);
             // The tabs standing in it go with it, and that is the point: a
@@ -10533,7 +10555,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         makings.retain(|p| {
             let listed = || {
-                desks.iter().filter(|d| d.name == p.desk).any(|d| {
+                desks.iter().filter(|d| d.uid == p.desk).any(|d| {
                     d.folders
                         .iter()
                         .any(|f| f.place().is_some_and(|c| crate::uistate::same_folder(&c, &p.making.plan.place())))
@@ -10570,7 +10592,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         leavings.retain(|l| {
             let listed = || {
-                desks.iter().filter(|d| d.name == l.desk).any(|d| {
+                desks.iter().filter(|d| d.uid == l.desk).any(|d| {
                     d.folders
                         .iter()
                         .any(|f| f.place().is_some_and(|c| crate::uistate::same_folder(&c, &l.removal.place())))
@@ -10655,7 +10677,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let going = |j: &VmJob| {
                         !j.gone
                             && (j.error.is_none() || j.finished().is_some())
-                            && j.desk_id == desk.map(|d| d.id.clone()).unwrap_or_default()
+                            && j.desk_id == desk.map(|d| d.uid.clone()).unwrap_or_default()
                     };
                     if vm_jobs.iter().any(|j| going(j) && matches!(&j.work, VmWork::Clone { url, .. } if crate::worktree::fetchable(url) == fetched)) {
                         add_view = failed(i18n::t("err.microvm.cloning_already"));
@@ -10688,9 +10710,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     making_seq += 1;
                     vm_jobs.push(VmJob {
                         id: making_seq,
-                        desk: desk.map(|d| d.name.clone()).unwrap_or_default(),
-                        desk_id: desk.map(|d| d.id.clone()).unwrap_or_default(),
+                        desk: desk.map(|d| d.uid.clone()).unwrap_or_default(),
+                        desk_id: desk.map(|d| d.uid.clone()).unwrap_or_default(),
                         project: project.clone(),
+                        project_key: project.clone(),
                         host: h.clone(),
                         at: crate::microvm::checkout_path(&project),
                         work: VmWork::Clone { job, add: MicrovmAdd { host: h.name.clone(), project, account, ai: preparing.ai.clone(), private }, url: text.clone(), sign_in, who, preparing },
@@ -10730,9 +10753,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             making_seq += 1;
                             vm_jobs.push(VmJob {
                                 id: making_seq,
-                                desk: desk.map(|d| d.name.clone()).unwrap_or_default(),
-                                desk_id: desk.map(|d| d.id.clone()).unwrap_or_default(),
+                                desk: desk.map(|d| d.uid.clone()).unwrap_or_default(),
+                                desk_id: desk.map(|d| d.uid.clone()).unwrap_or_default(),
                                 at: crate::addproject::remote_join(&parent, &project),
+                                project_key: project.clone(),
                                 project,
                                 host: h.clone(),
                                 work: VmWork::SshClone { job, spec, url: text.clone(), parent: parent.clone() },
@@ -10900,7 +10924,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 }
             };
-            let desk_name = desks.iter().find(|d| d.id == ask.desk_id).map(|d| d.name.clone()).unwrap_or_default();
+            let desk_name = desks.iter().find(|d| d.id == ask.desk_id).map(|d| d.uid.clone()).unwrap_or_default();
             // Each worktree's machine after the checkouts', as a checkout of
             // its own folder: nothing of the project's is written for it
             let worktrees = targets.worktrees.into_iter().map(|(host, at)| {
@@ -10927,8 +10951,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 vm_jobs.push(VmJob {
                     id: making_seq,
                     desk: desk_name.clone(),
-                    desk_id: ask.desk_id.clone(),
+                    // The desk by who it is, as every job holds it
+                    desk_id: desk_name.clone(),
                     project: ask.project.clone(),
+                    project_key: project_key_of(desks.iter().find(|d| d.uid == desk_name), &ask.project),
                     at: home.at.clone(),
                     work: VmWork::Prepare {
                         job: crate::microvm::Prepare::start(host.clone(), &home.at, targets.preparing.clone()),
@@ -10994,7 +11020,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     crate::addproject::Outcome::Done(at) => {
                         let at = at.to_string_lossy().to_string();
-                        match add_remote_to_desk(desks.iter().find(|d| d.name == j.desk), &j.host.name, &at, None) {
+                        match add_remote_to_desk(desks.iter().find(|d| d.uid == j.desk), &j.host.name, &at, None) {
                             Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                                 said_before_reload = Some((Instant::now(), said.clone()));
                                 flash = Some(said);
@@ -11032,6 +11058,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     desk: j.desk.clone(),
                     desk_id: j.desk_id.clone(),
                     project: j.project.clone(),
+                    project_key: j.project_key.clone(),
                     at: j.at.clone(),
                     work: VmWork::Prepare {
                         job: crate::microvm::Prepare::start(j.host.clone(), &home.at, next.clone()),
@@ -11137,7 +11164,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let was = home.prepared.as_deref().and_then(crate::microvm::prepared_ai);
                             let now = crate::microvm::prepared_ai(&prepared);
                             let new_ai = now.filter(|n| was.as_ref() != Some(n)).and_then(|n| crate::profile::machine_ai(&n));
-                            config::set_project_home(&j.desk_id, &j.project, &done, None).map(|()| {
+                            config::set_project_home(&j.desk_id, &j.project_key, &done, None).map(|()| {
                                 match new_ai {
                                     Some(known) => {
                                         // Its tab in the checkout, for the step
@@ -11205,7 +11232,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for (folder, choose, branch, take) in shell.mail().take_repairs() {
             let at = std::path::PathBuf::from(&folder);
             let desk = desks.get(desk_index);
-            let desk_name = desk.map(|w| w.name.clone()).unwrap_or_default();
+            let desk_name = desk.map(|w| w.uid.clone()).unwrap_or_default();
             // The answer to the one question that has to be asked, written into
             // the settings the moment it is given. Every machine after this one
             // reads it instead of asking
@@ -11390,7 +11417,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if to.as_os_str().is_empty() {
                 continue;
             }
-            let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
             match config::move_folder(&desk, &at, &to) {
                 Ok(()) => {
                     folders_hidden.retain(|h| !crate::uistate::same_folder(h, &at));
@@ -11522,10 +11549,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let shipped_new = match branch_view.as_ref().filter(|_| !opening) {
                 Some(v) => v.shipped_new.clone(),
                 None => {
-                    let name = project.map(|p| p.name.clone()).unwrap_or_default();
-                    let desk = desks.get(desk_index).map(|d| d.id.as_str()).unwrap_or_default();
-                    let new = crate::inside::new_to(desk, &name);
-                    crate::inside::mark_shown(desk, &name);
+                    let uid = project.and_then(|p| p.uid.clone()).unwrap_or_default();
+                    let new = crate::inside::new_to(&uid);
+                    crate::inside::mark_shown(&uid);
                     new
                 }
             };
@@ -11633,7 +11659,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             };
             let desk = desks
                 .get(desk_index)
-                .map(|w| w.name.clone())
+                .map(|w| w.uid.clone())
                 .unwrap_or_default();
             // What the new folder runs, chosen from what the machine it goes
             // on has: a server's own AIs (see crate::serverai), this PC's
@@ -11869,6 +11895,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         view.folder = plan.folder.display().to_string();
                         view.line = plan.line();
                         view.base = plan.base.clone();
+                        let project_key = project_key_of(desks.get(desk_index), &plan.project);
                         if ask.make {
                             // Made on a thread, a row under the project saying how
                             // far it has got; written down once it is there, since
@@ -11888,7 +11915,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 family: making_family(&plan, &from),
                                 making: crate::worktree::Making::start(plan, carryable.clone()),
                                 desk: desk.clone(),
-                                desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
+                                desk_id: desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default(),
+                                project_key: project_key.clone(),
                                 checkout_noted: false,
                                 checkout_tried: None,
                                 from: from.clone(),
@@ -11964,6 +11992,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // while the others become cards
                     for (ai, plan) in fanned {
                         let Ok(plan) = plan else { continue };
+                        let project_key = project_key_of(desks.get(desk_index), &plan.project);
                         // Each folder's own branch is the drawn name with its
                         // AI on the end, so each is drawn in its own right
                         let branch = plan.branch.clone();
@@ -11976,7 +12005,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             family: making_family(&plan, &from),
                             making: crate::worktree::Making::start(plan, carryable.clone()),
                             desk: desk.clone(),
-                            desk_id: desks.get(desk_index).map(|d| d.id.clone()).unwrap_or_default(),
+                            desk_id: desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default(),
+                            project_key: project_key.clone(),
                             checkout_noted: false,
                             checkout_tried: None,
                             from: from.clone(),
@@ -12168,7 +12198,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(Ok(look)) => {
                         // A terminal there, standing in the clone's folder:
                         // put on the desk for the step unless it is there
-                        let here = desks.iter().find(|d| d.name == g.desk).is_some_and(|d| {
+                        let here = desks.iter().find(|d| d.uid == g.desk).is_some_and(|d| {
                             d.folders.iter().any(|f| {
                                 f.host.as_ref().is_some_and(|h| h.name == g.host.name)
                                     && f.cwd.as_ref().is_some_and(|c| c.to_string_lossy().trim_end_matches('/') == look.parent)
@@ -12448,7 +12478,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // The folder the conversation was had in decides which group it
                 // comes back into -- one already working there, or a new one
                 let folder = cwd.as_deref().map(std::path::Path::new);
-                let desk = desks.get(desk_index).map(|w| w.name.clone()).unwrap_or_default();
+                let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
                 // A conversation had on another machine opens in its folder
                 // there, which has to be on this desk: written down as a
                 // folder here, a path of that machine would be a folder that
@@ -16937,8 +16967,10 @@ pub fn starting_desk(enabled: bool, last: Option<&str>, desks: &[config::Desk]) 
     last.and_then(|want| {
         desks
             .iter()
-            .position(|d| !d.id.is_empty() && d.id == want)
-            .or_else(|| desks.iter().position(|d| d.name == want))
+            .position(|d| d.uid == want)
+            // Written before desks had uids: the id, then the name
+            .or_else(|| desks.iter().position(|d| !crate::config::is_tab_uid(want) && !d.id.is_empty() && d.id == want))
+            .or_else(|| desks.iter().position(|d| !crate::config::is_tab_uid(want) && d.name == want))
     })
     .unwrap_or(0)
 }
@@ -19638,6 +19670,7 @@ mod tests {
                 places: false,
                 name: "W".into(),
                 id: None,
+                uid: None,
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     host: None,
