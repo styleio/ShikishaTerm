@@ -359,7 +359,7 @@ settings screen, so it cannot fall behind.
 - **Update** — Newer versions, and going back
 - **Basic** — Tab width, chaining, language
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
-- **GitHub / Git** — Tokens, and the sign-ins of this PC's git and gh
+- **GitHub / Git** — Personal access tokens, SSH keys and sign-ins
 - **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR
 - **Server version** — Open a SHIKISHA server's board in a window of its own

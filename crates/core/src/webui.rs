@@ -12927,7 +12927,9 @@ function gitAccountDialog(name, redraw, method = "token") {
   const shut = () => back.remove();
   const back = openModal(
     el("div", {class:"mhead"},
-      el("h2", {}, editing ? gitAccountShown(a) : T["settings.gitacct.add_" + method + "_title"]),
+      el("h2", {}, editing ? gitAccountShown(a)
+        : method === "ssh" ? T["settings.gitacct.add_ssh_title"]
+        : method === "gh" ? T["settings.gitacct.add_gh_title"] : T["settings.gitacct.add_token_title"]),
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     // What nearly everybody fills in, then what few do -- another server,
     // repository owners, a commit identity -- folded under one line, open when any
