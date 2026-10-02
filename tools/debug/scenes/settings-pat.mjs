@@ -64,6 +64,20 @@ export default {
     }],
   },
   scenes: {
+    'settings-identities': scene(async () => {
+      const desk = desks[0];
+      sel = {desk:0, tab:null, global:false};
+      const tab = desk.tabs[addTabTo(desk, 0)];
+      const project = ensureProject(desk, {name:'New project', folders:[]});
+      const before = desk.tabs.length;
+      addTemplate('review');
+      const made = {name:'New desk', projects:[{name:'Copied project', uid:'old-project'}], tabs:[]};
+      await landOnWs(made);
+      const ids = [tab.uid, project.uid, made.uid, made.projects[0].uid,
+        ...desk.tabs.slice(before).map(t=>t.uid)];
+      check(ids.length === 6 && new Set(ids).size === ids.length, 'New entries do not have separate identities');
+      check(ids.every(id=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)), 'Identity format changed');
+    }),
     'pat-accounts': scene(async () => {
       await openAccounts();
       check(document.querySelectorAll('#app-gitaccounts .secretrow').length === 3, 'PATs of one user collapsed');
@@ -97,7 +111,7 @@ export default {
     'pat-flow': scene(async () => {
       await openAccounts();
       const make = async (name, token) => {
-        gitAccountDialog(null, ()=>{});
+        document.querySelector('#app-gitaccounts .card button').click();
         await until(()=>lastModal()?.querySelector('.warn')?.textContent, 'Secret storage mode missing');
         const box=lastModal();
         typeIn(box.querySelector('input[type=text]'), name);

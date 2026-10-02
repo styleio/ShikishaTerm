@@ -11,6 +11,11 @@
  *
  *     node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-servers.mjs
  *     node tools/debug/settings-shoot.mjs <scenes.mjs> --only <scene>
+ *     node tools/debug/settings-shoot.mjs <scenes.mjs> --remote-http
+ *
+ * `--remote-http` opens through a test hostname mapped to loopback in this
+ * Chrome only. The page has the same browser API limits as a phone on HTTP;
+ * localhost alone is trusted by browsers and would miss those failures.
  *
  * A scene file default-exports { config, scenes, langs, looks, sizes, init }:
  * `config` is the settings to start from, and each scene is the JavaScript
@@ -27,6 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -65,7 +71,26 @@ async function serve(lang, config) {
   for (let i = 0; i < 200 && !said.includes('\n'); i++) await sleep(100);
   const url = said.split('\n')[0].trim();
   if (!url.startsWith('http')) die('the settings page did not start');
-  return { url, stop: () => proc.kill() };
+  if (!remoteHttp) return { url, stop: () => proc.kill() };
+  // The settings server deliberately rejects non-loopback Host headers.
+  // Forward only to this isolated server, as the remote board's proxy does;
+  // do not weaken that protection to make a test hostname work.
+  const local = new URL(url);
+  const proxy = http.createServer((req, res) => {
+    const upstream = http.request({ hostname: '127.0.0.1', port: local.port,
+      path: req.url, method: req.method,
+      headers: {...req.headers, host: local.host, 'X-Remote-Client': '1'} }, reply => {
+      res.writeHead(reply.statusCode, reply.headers); reply.pipe(res);
+    });
+    upstream.on('error', () => { res.writeHead(502); res.end('Settings server unavailable'); });
+    req.pipe(upstream);
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject); proxy.listen(0, '127.0.0.1', resolve);
+  });
+  const shown = new URL(url);
+  shown.port = String(proxy.address().port);
+  return { url: shown.href, stop: () => { proxy.closeAllConnections(); proxy.close(); proc.kill(); } };
 }
 
 /** The light scheme's colours, as the board page's dump carries them */
@@ -82,7 +107,9 @@ async function connect() {
   const proc = spawn(findChrome(), [
     '--headless=new', '--remote-debugging-port=' + PORT,
     '--user-data-dir=' + path.join(OUT, 'chrome-settings-profile'),
-    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', 'about:blank',
+    '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
+    ...(remoteHttp ? ['--host-resolver-rules=MAP settings.test 127.0.0.1', '--no-proxy-server'] : []),
+    'about:blank',
   ], { stdio: 'ignore' });
   let list;
   for (let i = 0; i < 80 && !list; i++) {
@@ -112,6 +139,7 @@ async function connect() {
 
 const file = process.argv[2] || die('say which scenes: node tools/debug/settings-shoot.mjs <scenes.mjs>');
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
+const remoteHttp = process.argv.includes('--remote-http');
 const spec = (await import(pathToFileURL(path.resolve(file)).href)).default;
 const langs = spec.langs || ['en', 'ja'];
 const looks = spec.looks || ['dark', 'light'];
@@ -122,6 +150,7 @@ const chrome = await connect();
 await chrome.send('Page.enable');
 if (spec.init) await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: spec.init });
 let taken = 0;
+try {
 for (const lang of langs) {
   const server = await serve(lang, spec.config || {});
   try {
@@ -133,13 +162,20 @@ for (const lang of langs) {
             { width: w, height: h, deviceScaleFactor: 2, mobile: size === 'phone' });
           const query = typeof scene === 'object' ? scene.query || '' : '';
           const run = typeof scene === 'object' ? scene.run || '"ok"' : scene;
-          await chrome.send('Page.navigate',
-            { url: server.url + (query ? (server.url.includes('?') ? '&' : '?') + query : '') });
+          const pageUrl = new URL(server.url + (query ? (server.url.includes('?') ? '&' : '?') + query : ''));
+          if (remoteHttp) pageUrl.hostname = 'settings.test';
+          await chrome.send('Page.navigate', { url: pageUrl.href });
           // Loaded once the settings have been read and drawn
+          const ready = () => chrome.run('typeof desks !== "undefined" && document.querySelector("#detail")?.childElementCount > 0').catch(() => false);
           for (let i = 0; i < 80; i++) {
-            const ready = await chrome.run('typeof desks !== "undefined" && document.querySelector("#detail") && document.querySelector("#detail").childElementCount > 0').catch(() => false);
-            if (ready) break;
+            if (await ready()) break;
             await sleep(150);
+          }
+          if (!await ready()) {
+            throw new Error('Settings did not load: ' + await chrome.run('document.body.innerText.slice(0, 200)'));
+          }
+          if (remoteHttp && !await chrome.run('REMOTE && !isSecureContext && typeof crypto.randomUUID === "undefined"')) {
+            throw new Error('Remote HTTP test did not reach an insecure browser context');
           }
           if (look === 'light') {
             await chrome.run('(() => { const s = document.createElement("style"); s.textContent = '
@@ -159,5 +195,5 @@ for (const lang of langs) {
     server.stop();
   }
 }
-chrome.stop();
+} finally { chrome.stop(); }
 if (!taken) die(only ? 'no scene called ' + only : 'the scene file has no scenes');

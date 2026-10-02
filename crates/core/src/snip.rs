@@ -538,27 +538,14 @@ function toast(text) {
 
 // ── Where the answer goes ──────────────────────────
 // One place, so the clipboard and the file mean the same thing from every tool
+{{CLIPBOARD_JS}}
 function copyOut(text) {
   if (HOST) {
     tell({act: "copy", text});
-  } else if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).catch(() => copyByHand(text));
   } else {
-    copyByHand(text);
+    copyText(text);
   }
   toast(T["snip.copied"] || "Copied");
-}
-// A phone's page is served over plain http, where the browser keeps the
-// clipboard API to itself. Selecting text and copying it still works
-function copyByHand(text) {
-  const box = document.createElement("textarea");
-  box.value = text;
-  box.style.position = "fixed";
-  box.style.opacity = "0";
-  document.body.append(box);
-  box.select();
-  try { document.execCommand("copy"); } catch (e) {}
-  box.remove();
 }
 function saveOut(text, name) {
   if (HOST) {

@@ -192,6 +192,43 @@ for (const side of ['window', 'remote']) {
       })()`);
       if (sent.length !== 2 || sent.some(s => s.uid !== 'original-tab')) fail(what, 'a message lost its recipient identity');
     } catch (e) { fail(what, 'sending threw: ' + String(e.message).split('\n')[0]); }
+    // No access to this machine's real clipboard: simulate HTTP and a denied
+    // permission, and check that copying falls back and pasting offers a field.
+    if (side === 'remote') {
+      try {
+        const worked = await chrome.run(`(async () => {
+          const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+          const command = document.execCommand, copied = [];
+          const body = el('div', {class:'sbody'}), field = el('input');
+          const terminal = loginTerminal();
+          body.append(terminal, el('div', {class:'lcoderow'}, field));
+          document.body.append(body);
+          try {
+            document.execCommand = name => { if (name === 'copy') copied.push(document.activeElement.value); return true; };
+            for (const clipboard of [undefined, {
+              writeText: async () => { throw new Error('Permission denied'); },
+              readText: async () => { throw new Error('Permission denied'); },
+            }]) {
+              Object.defineProperty(navigator, 'clipboard', {configurable:true, value:clipboard});
+              field.focus();
+              await copyToClipboard('Remote copy');
+              if (document.activeElement !== field) return false;
+              field.blur();
+              terminal.dispatchEvent(new MouseEvent('contextmenu', {bubbles:true, cancelable:true}));
+              await new Promise(r => setTimeout(r, 0));
+              if (document.activeElement !== field) return false;
+              if (document.getElementById('toastmsg').textContent !== T['tui.login.paste_here']) return false;
+            }
+            return copied.length === 2 && copied.every(text => text === 'Remote copy');
+          } finally {
+            if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
+            else delete navigator.clipboard;
+            document.execCommand = command; body.remove(); hideToast();
+          }
+        })()`);
+        if (!worked) fail(what, 'clipboard fallback lost the copy or the paste field');
+      } catch (e) { fail(what, 'clipboard fallback threw: ' + String(e.message).split('\n')[0]); }
+    }
     // And the terminal's own contents, which arrive by their own call
     chrome.thrown.length = 0;
     try {

@@ -7126,10 +7126,16 @@ function petId(desk, self) {
   return freeId((PET_ADJECTIVES[0] || "new") + "-" + (PET_NOUNS[0] || "tab"), used);
 }
 
-// Who a new tab is (config.rs TabConfig::uid): never shown, never another
-// tab's. A tab made on this page is a new tab, so it gets one of its own here;
-// one read from the settings carries its own through to the save
-const newUid = () => crypto.randomUUID();
+// The stable identity of a new tab, project, desk or credential. Keep UUID v4
+// everywhere, using random bytes available on remote HTTP too: randomUUID()
+// is absent there, even though browsers expose it on localhost.
+function newUid() {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
+}
 
 // ── Sidebar ───────────────────────────────────────
 // Whether this is the folder the app itself is in. Written "." rather than
@@ -11479,7 +11485,7 @@ function hostDialog(at, redraw, kind, done) {
           c.cut ? el("span", {class:"hint"}, T["settings.away.missed.cut"]) : null,
           el("span", {class:"grow"}),
           c.tab ? el("button", {class:"quiet", onclick: () => post("/api/far/convo", {tab: c.tab})}, T["settings.away.missed.open"]) : null,
-          el("button", {class:"quiet", onclick: () => { navigator.clipboard && navigator.clipboard.writeText(line); }}, T["settings.away.missed.copy"]),
+          el("button", {class:"quiet", onclick: () => copyText(line)}, T["settings.away.missed.copy"]),
           el("button", {class:"quiet", onclick: async () => {
             await post("/api/far/missed/seen", {machine: m.machine, calls: [c]});
             setTimeout(drawMissed, 800);
@@ -19740,6 +19746,28 @@ mod tests {
                 String::from_utf8_lossy(&done.stderr)
             ),
             Err(e) => eprintln!("node is missing, so the syntax check did not run ({e}). It runs in CI"),
+        }
+    }
+
+    #[test]
+    fn settings_identities_work_without_secure_context_apis() {
+        let from = PAGE.find("function newUid() {").expect("the shared identity generator");
+        let to = PAGE[from..].find("\n}").unwrap() + from + 2;
+        let source = serde_json::to_string(&PAGE[from..to]).unwrap();
+        let script = format!(r#"
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const {{webcrypto}} = require('node:crypto');
+for (const crypto of [webcrypto, {{getRandomValues: b => webcrypto.getRandomValues(b)}}]) {{
+  const next = vm.runInNewContext({source} + '\nnewUid', {{crypto}});
+  const ids = Array.from({{length:128}}, () => next());
+  for (const id of ids) assert.match(id, /^[0-9a-f]{{8}}-[0-9a-f]{{4}}-4[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$/);
+  assert.equal(new Set(ids).size, ids.length);
+}}
+"#);
+        match std::process::Command::new("node").arg("-e").arg(script).output() {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the identity check did not run ({e}). It runs in CI"),
         }
     }
 

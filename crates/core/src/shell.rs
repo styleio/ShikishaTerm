@@ -9990,9 +9990,14 @@ function loginTerminal() {
     if (!REMOTE) return;
     e.preventDefault();
     e.stopPropagation();
+    const byHand = () => {
+      const field = m.closest(".sbody").querySelector(".lcoderow input");
+      if (field) field.focus();
+      toast(T["tui.login.paste_here"]);
+    };
     if (navigator.clipboard && navigator.clipboard.readText) {
-      navigator.clipboard.readText().then(t => { if (t) send({kind:"key", text:t}); }).catch(() => {});
-    }
+      navigator.clipboard.readText().then(t => { if (t) send({kind:"key", text:t}); }).catch(byHand);
+    } else byHand();
   });
   return m;
 }
@@ -10050,18 +10055,7 @@ function loginHelpDraw(box, st) {
 // and there the newer API does not exist
 function copyToClipboard(text) {
   if (!REMOTE) { send({kind:"copy", text}); return; }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch(() => {});
-    return;
-  }
-  const t = document.createElement("textarea");
-  t.value = text;
-  t.setAttribute("readonly", "");
-  t.style.position = "fixed"; t.style.left = "-9999px";
-  document.body.append(t);
-  t.select();
-  try { document.execCommand("copy"); } catch (err) {}
-  t.remove();
+  return copyText(text);
 }
 // The checkout's AI terminal, drawn in the step from what the app sends
 // of that tab itself -- not copied from the pane behind, which is whatever
