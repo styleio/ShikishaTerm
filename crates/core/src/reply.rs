@@ -44,8 +44,10 @@ const MAX_TICKETS: usize = 500;
 
 #[derive(Clone)]
 pub struct Ticket {
-    /// Which tab this answers. The tab's own id when it has one, so a restart
-    /// still lands in the same conversation; its number otherwise
+    /// Which tab this answers: who it is (its uid) when the app wrote the
+    /// ticket, so a restart still lands in the same conversation and a tab
+    /// that came since under the same name is not answered for it; its id
+    /// when a script wrote it; its number otherwise
     pub tab_id: Option<String>,
     pub tab_index: usize,
     /// The name shown on the page, so it reads like the notification did

@@ -1497,6 +1497,11 @@ fn pet_nouns_json() -> String {
     serde_json::to_string(&crate::config::pet_nouns()).unwrap_or_else(|_| "[]".into())
 }
 
+/// The words put in front of them (`config::pet_adjectives`), for the same reason
+fn pet_adjectives_json() -> String {
+    serde_json::to_string(&crate::config::pet_adjectives()).unwrap_or_else(|_| "[]".into())
+}
+
 /// What the quick-command editor has to know that `quick.rs` decides: the
 /// grid's bounds, how long a name and a body may be, where the icons are,
 /// and what a secret named in a body looks like. Handed over rather than
@@ -1844,28 +1849,33 @@ fn handle(
     }
     match (method.as_str(), path.as_str()) {
         ("GET", "/") => {
+            // Every value goes into the page's script as JSON, made safe to
+            // stand there (`script_json`): some of it is the person's own
+            // words, a project's name among them
+            let js = |json: String| crate::script_json(&json);
             let html = crate::i18n::render(&themed(PAGE.to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
-                .replace("__QUICK__", &quick_json())
+                .replace("__HOTKEYS__", &js(crate::hotkeys::catalog_json()))
+                .replace("__QUICK__", &js(quick_json()))
                 .replace("__REMOTE__", if remote_client { "true" } else { "false" })
-                .replace("__GRANTS__", &crate::grants::catalog_json())
+                .replace("__GRANTS__", &js(crate::grants::catalog_json()))
                 .replace(
                     "__GITLUA__",
-                    &serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA)
-                        .unwrap_or_else(|_| "\"\"".into()),
+                    &js(serde_json::to_string(crate::hooks::COMMIT_MESSAGE_LUA).unwrap_or_else(|_| "\"\"".into())),
                 )
                 .replace(
                     "__PROTECT__",
-                    &serde_json::to_string(&crate::git::DEFAULT_PROTECTED)
-                        .unwrap_or_else(|_| "[]".into()),
+                    &js(serde_json::to_string(&crate::git::DEFAULT_PROTECTED).unwrap_or_else(|_| "[]".into())),
                 )
+                .replace("__THISPC__", &js(serde_json::to_string(crate::config::THIS_PC).unwrap_or_default()))
+                .replace("__PETNOUNS__", &js(pet_nouns_json()))
+                .replace("__PETADJECTIVES__", &js(pet_adjectives_json()))
                 .replace(
-                    "__THISPC__",
-                    &serde_json::to_string(crate::config::THIS_PC).unwrap_or_default(),
+                    "__SHIPPEDINSIDE__",
+                    &js(serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into())),
                 )
-                .replace("__PETNOUNS__", &pet_nouns_json())
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__INSIDESHOWN__", &js(crate::inside::shown_json()))
+                .replace("__DICT__", &js(crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -1927,7 +1937,7 @@ fn handle(
         ("GET", "/guide") => {
             let html = crate::i18n::render(&themed(crate::guide::page().to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -2064,7 +2074,7 @@ fn handle(
         ("GET", "/result") => {
             let html = crate::i18n::render(&themed(RESULT_PAGE.to_string()))
                 .replace("__TOKEN__", token)
-                .replace("__DICT__", &crate::i18n::dict_json());
+                .replace("__DICT__", &crate::script_json(&crate::i18n::dict_json()));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -2074,7 +2084,7 @@ fn handle(
         ("GET", "/help") => {
             let md = load_manual(config_path);
             let html = crate::i18n::render(&themed(HELP_PAGE.to_string()))
-                .replace("__MD__", &serde_json::to_string(&md)?);
+                .replace("__MD__", &crate::script_json(&serde_json::to_string(&md)?));
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
             ));
@@ -2592,6 +2602,8 @@ fn handle(
             // not -- so what is said is what they would copy
             let rules: Vec<crate::config::BringRule> =
                 p.get("inside").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            // With the app's own rules put in, the way the page has changed them
+            let rules = crate::inside::effective(&rules);
             std::thread::spawn(move || {
                 let resp = match crate::repo::main_checkout(&at) {
                     None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
@@ -2608,6 +2620,18 @@ fn handle(
                 };
                 let _ = req.respond(json_resp(resp));
             });
+        }
+        // A project's rules for places inside have been put on screen: the
+        // app's own rules as they stand now are no longer new to it
+        ("POST", "/api/project/inside-shown") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            crate::inside::mark_shown(p.get("project").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            req.respond(json_resp(serde_json::json!({ "ok": true })))?;
         }
         // The assistant AI's proposal for how each ignored thing reaches a new
         // worktree. Only a proposal: the page shows it, and the person saves
@@ -3415,10 +3439,17 @@ fn handle(
                 return Ok(());
             };
             match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(_) => {
+                Ok(mut doc) => {
                     if let Some(dir) = p.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
+                    // The same as the settings file: every tab leaves with a uid
+                    let before = doc.clone();
+                    crate::config::fill_tab_uids(&mut doc);
+                    let body = match doc == before {
+                        true => body,
+                        false => serde_json::to_string_pretty(&doc).unwrap_or(body),
+                    };
                     crate::crypto::write_atomic(&p, &body)?;
                     req.respond(Response::from_string(r#"{"ok":true}"#))?;
                 }
@@ -4273,10 +4304,17 @@ fn handle(
         // app has a line to. A machine with no line now is not asked
         ("GET", "/api/far/held") => {
             let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            // A terminal is kept by who its tab is; the list says its name
+            let names = crate::config::tab_names_by_uid();
             let machines: Vec<serde_json::Value> = crate::farlink::up_for(&host)
                 .iter()
                 .filter_map(|at| {
-                    let listed = crate::farterm::list_held(&crate::farterm::Place::Far(at.clone()))?;
+                    let mut listed = crate::farterm::list_held(&crate::farterm::Place::Far(at.clone()))?;
+                    for t in listed["terms"].as_array_mut().into_iter().flatten() {
+                        if let Some(name) = t["tab"].as_str().and_then(|u| names.get(u)) {
+                            t["name"] = serde_json::json!(name);
+                        }
+                    }
                     Some(serde_json::json!({
                         "machine": at.machine_key(),
                         "address": at.address(),
@@ -4311,10 +4349,24 @@ fn handle(
         // (far-keep plan §4.6), as its bridges last said
         ("GET", "/api/far/missed") => {
             let host = query_param(req.url(), "host").map(|c| percent_decode(&c)).unwrap_or_default();
+            // A call is written down under its tab's key file, which is named
+            // for who the tab is; the list says the tab's name
+            let names: std::collections::HashMap<String, String> = crate::config::tab_names_by_uid()
+                .into_iter()
+                .map(|(uid, name)| (crate::farlink::key_name(&uid), name))
+                .collect();
             let machines: Vec<serde_json::Value> = crate::farlink::missed()
                 .into_iter()
                 .filter(|(machine, _, _)| crate::farlink::host_of(machine).as_deref() == Some(host.as_str()))
-                .map(|(machine, address, book)| serde_json::json!({ "machine": machine, "address": address, "book": book }))
+                .map(|(machine, address, book)| {
+                    let mut book = serde_json::json!(book);
+                    for c in book["calls"].as_array_mut().into_iter().flatten() {
+                        if let Some(name) = c["tab"].as_str().and_then(|k| names.get(k)) {
+                            c["name"] = serde_json::json!(name);
+                        }
+                    }
+                    serde_json::json!({ "machine": machine, "address": address, "book": book })
+                })
                 .collect();
             req.respond(json_resp(serde_json::json!({ "ok": true, "machines": machines })))?;
         }
@@ -4689,7 +4741,17 @@ fn handle(
             };
             // Always validate before saving, so broken JSON never wipes out the config
             match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(_) => {
+                Ok(mut doc) => {
+                    // A line this page never gave a uid -- typed into its
+                    // text editor, or read from a file that had none -- is
+                    // written with the one reading it gives, so renaming it
+                    // later does not make it another tab
+                    let before = doc.clone();
+                    crate::config::fill_tab_uids(&mut doc);
+                    let body = match doc == before {
+                        true => body,
+                        false => serde_json::to_string_pretty(&doc).unwrap_or(body),
+                    };
                     crate::crypto::write_atomic(config_path, &body)?;
                     req.respond(Response::from_string(r#"{"ok":true}"#))?;
                 }
@@ -5166,6 +5228,10 @@ const PAGE: &str = r##"<!doctype html>
     of the same inline style. */
  .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
    padding:7px 0; border-bottom:1px solid var(--line); }
+ /* One of the app's own rules for places inside: its place gives way first,
+    cut at its end, so its marks and buttons stay on the line */
+ .listrow.shiprow > .shippath { flex:1 1 0; min-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .listrow.shiprow > .chip { flex:none; }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -5827,6 +5893,11 @@ const THIS_PC = __THISPC__;
 // The short words a new tab's automation name is drawn from. Poured in from the
 // app's own word list, the one branch names come from, so there is one list
 const PET_NOUNS = __PETNOUNS__;
+const PET_ADJECTIVES = __PETADJECTIVES__;
+// The app's own rules for places inside (crate::inside::SHIPPED), and which
+// edition of them each project has been shown, by the project's name
+const SHIPPED_INSIDE = __SHIPPEDINSIDE__;
+const INSIDE_SHOWN = __INSIDESHOWN__;
 // A list of branch names as it is typed and as it is stored. Space or comma
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
@@ -6709,19 +6780,27 @@ function followKind(t, before) {
   return true;
 }
 
-// What automation calls a new tab when nobody has said: a short word drawn at
-// random, not taken in this desk. Not the command -- a tab that started as
-// Claude and was turned into SSH went on being "claude-2" -- and not a counter,
-// which says nothing about which tab is which
+// What automation calls a new tab when nobody has said: an adjective and a
+// noun drawn at random, "calm-otter", not taken in this desk. Not the command
+// -- a tab that started as Claude and was turned into SSH went on being
+// "claude-2" -- and not a counter, which says nothing about which tab is which.
+// Two words, as config::pet_id draws them, because a name goes back in the bag
+// when its tab closes and a message that named it still names it
 function petId(desk, self) {
   const used = new Set((desk.tabs || []).filter(t => t !== self)
     .map(t => (t.id || "").trim()).filter(Boolean));
-  for (let i = 0; i < 40 && PET_NOUNS.length; i++) {
-    const n = PET_NOUNS[Math.floor(Math.random() * PET_NOUNS.length)];
+  const pick = bag => bag[Math.floor(Math.random() * bag.length)];
+  for (let i = 0; i < 40 && PET_NOUNS.length && PET_ADJECTIVES.length; i++) {
+    const n = pick(PET_ADJECTIVES) + "-" + pick(PET_NOUNS);
     if (!used.has(n)) return n;
   }
-  return freeId(PET_NOUNS[0] || "tab", used);
+  return freeId((PET_ADJECTIVES[0] || "new") + "-" + (PET_NOUNS[0] || "tab"), used);
 }
+
+// Who a new tab is (config.rs TabConfig::uid): never shown, never another
+// tab's. A tab made on this page is a new tab, so it gets one of its own here;
+// one read from the settings carries its own through to the save
+const newUid = () => crypto.randomUUID();
 
 // ── Sidebar ───────────────────────────────────────
 // Whether this is the folder the app itself is in. Written "." rather than
@@ -7083,6 +7162,7 @@ function addTabTo(desk, group) {
     const far = machineStart(desk, group);
     const command = far !== null ? far : defaultAiCommand();
     const t = newTab({group, command});
+    t.uid = newUid();
     t.name = kindName(command);
     autoNames.set(t, t.name);
     t.id = petId(desk, t);
@@ -10945,12 +11025,12 @@ function hostDialog(at, redraw, kind, done) {
     for (const {m, t} of heldNow) {
       const state = t.owned ? T["settings.away.list.in_use"] : fill(T["settings.away.list.left"], {ago: ago(t.left)});
       heldBox.append(el("div", {class:"listrow"},
-        el("span", {class:"mono"}, t.tab || ""),
+        el("span", {class:"mono"}, t.name || t.tab || ""),
         el("span", {class:"hint mono"}, t.cwd || ""),
         el("span", {class:"hint"}, fill(T["settings.away.list.since"], {ago: ago(t.for)}) + " · " + state),
         el("span", {class:"grow"}),
         el("button", {class:"danger", onclick: async () => {
-          if (!await confirmAction(fill(T["settings.away.list.stop_sure"], {tab: t.tab || ""}), T["settings.away.list.stop"])) return;
+          if (!await confirmAction(fill(T["settings.away.list.stop_sure"], {tab: t.name || t.tab || ""}), T["settings.away.list.stop"])) return;
           const r = await post("/api/far/end", {machine: m.machine, term: t.term, gen: m.gen});
           if (!r || !r.ok) msg((r && r.error) || "", true);
           setTimeout(drawHeld, 800);
@@ -10977,10 +11057,10 @@ function hostDialog(at, redraw, kind, done) {
         any = true;
         const when = new Date(c.at * 1000).toLocaleString();
         const what = c.to ? c.method + " → " + c.to : c.method;
-        const line = when + "  " + (c.tab || "?") + "  " + what + (c.cut ? "  (" + T["settings.away.missed.cut"] + ")" : "");
+        const line = when + "  " + (c.name || c.tab || "?") + "  " + what + (c.cut ? "  (" + T["settings.away.missed.cut"] + ")" : "");
         missedBox.append(el("div", {class:"listrow"},
           el("span", {class:"hint mono"}, when),
-          el("span", {class:"mono"}, c.tab || "?"),
+          el("span", {class:"mono"}, c.name || c.tab || "?"),
           el("span", {class:"mono"}, what),
           c.cut ? el("span", {class:"hint"}, T["settings.away.missed.cut"]) : null,
           el("span", {class:"grow"}),
@@ -13664,7 +13744,7 @@ function inheritPart(desk, p) {
     el("div", {class:"hint"}, T["settings.bring.defaults"]),
     // A line can only speak for a folder as a whole; the places inside one
     // are decided here, in the same card, since they are the same decision
-    insidePart(desk, p),
+    insidePart(desk, p, root),
     // Files from anywhere else are inherited the same way, so they are part
     // of the same card rather than a card of their own
     extraFilesPart(desk, p)].filter(Boolean));
@@ -13697,10 +13777,72 @@ function insideRules(p) {
 // Places inside the folders that come along, each with how it comes: what a
 // line of an ignore file cannot say, since it speaks for a folder as a whole.
 // Written the way such a line is, at any depth; the deepest place decides
-function insidePart(desk, p) {
+// The app's own rules come first: each with its answer, said to be the app's
+// (or changed, with the way back), and newly arrived ones said so until this
+// project's rules have been on screen once. Only what the person changes
+// about one is written to the settings, so a later version's list reaches
+// this project whatever was changed here. What a rule leaves out of the
+// checkout is said under it, with how much that is
+const insideShownAtLoad = Object.assign({}, INSIDE_SHOWN);
+const insideShownSent = new Set();
+function insideLeft(root, p, path) {
+  const sizes = root ? sizesOf(root, p) : null;
+  if (!sizes) return null;
+  const hits = [];
+  for (const s of sizes.sizes || []) for (const l of s.left || []) if (l.by === path) hits.push(l);
+  if (!hits.length) return null;
+  const sum = hits.reduce((a, l) => ({bytes: a.bytes + l.bytes, files: a.files + l.files, more: a.more || l.more}), {bytes:0, files:0, more:false});
+  const names = hits.slice().sort((a, b) => b.bytes - a.bytes).slice(0, 3).map(l => l.path).join(", ") + (hits.length > 3 ? " " + fill(T["settings.bring.inside.left_more"], {n: hits.length - 3}) : "");
+  return el("div", {class:"hint"}, fill(T["settings.bring.inside.left"], {places: names, amount: sizeLabel(sum)}));
+}
+function insideShipped(desk, p, root, change) {
+  const name = (p.entry && p.entry.name) || p.name || "";
+  const seen = insideShownAtLoad[name] || 0;
+  if (name && !insideShownSent.has(name)) {
+    insideShownSent.add(name);
+    settingsApi("/api/project/inside-shown", {project: name}).catch(() => null);
+  }
+  const bring = (p.entry || {}).bring || [];
+  const changeOf = id => bring.filter(r => r.default === id).pop() || null;
+  // Writes what the person changed about one of the app's rules, or takes
+  // the change away when it says what the app says
+  const setShipped = (s, how, dropped) => change(en => {
+    en.bring = (en.bring || []).filter(r => r.default !== s.id);
+    if (dropped) en.bring.push({default: s.id, path: s.path, how: "", dropped: true});
+    else if (how !== s.how) en.bring.push({default: s.id, path: s.path, how});
+  });
+  const rows = [], away = [];
+  for (const s of SHIPPED_INSIDE) {
+    const c = changeOf(s.id);
+    if (c && c.dropped) { away.push(s); continue; }
+    const how = c && BRING_HOWS.includes(c.how) ? c.how : s.how;
+    const marks = [el("span", {class:"chip"}, T[c ? "settings.bring.inside.changed" : "settings.bring.inside.app"])];
+    // Only after this project has looked once: to a project that never did,
+    // every rule is simply the app's, not something this version added
+    if (seen > 0 && s.since > seen) marks.push(el("span", {class:"chip"}, T["settings.bring.inside.new"]));
+    // Native append writes an absent part as the word "null"
+    rows.push(el("div", {class:"listrow shiprow"}, ...[
+      el("span", {class:"mono shippath", title: s.path}, s.path),
+      ...marks,
+      howSelect(how, true, v => setShipped(s, v, false)),
+      c ? el("button", {class:"quiet", onclick: () => setShipped(s, s.how, false)}, T["settings.bring.inside.reset"]) : null,
+      el("button", {class:"quiet icon", title: T["settings.bring.inside.drop"], onclick: () => setShipped(s, "", true)}, "✕"),
+    ].filter(Boolean)));
+    const left = insideLeft(root, p, s.path);
+    if (left) rows.push(left);
+  }
+  for (const s of away) {
+    rows.push(el("div", {class:"listrow"},
+      el("span", {class:"hint grow"}, fill(T["settings.bring.inside.dropped"], {rule: s.path})),
+      el("button", {class:"quiet", onclick: () => setShipped(s, s.how, false)}, T["settings.bring.inside.undrop"])));
+  }
+  return rows.filter(Boolean);
+}
+function insidePart(desk, p, root) {
   const rows = el("div");
   const change = fn => { const en = ensureProject(desk, p); fn(en); sel.proj = "p:" + en.name; refreshSave(); render(); };
-  for (const r of insideRules(p)) {
+  rows.append(...insideShipped(desk, p, root, change));
+  for (const r of insideRules(p).filter(r => r.default == null)) {
     const at = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.inside.ph"]});
     at.value = r.path || "";
     at.addEventListener("change", () => change(() => { r.path = at.value.trim(); }));
@@ -13715,12 +13857,13 @@ function insidePart(desk, p) {
     // here says how a place comes along, so there is nothing to take back
     const bad = (r.path || "").trim().startsWith("!")
       ? el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.bring.inside.bang"])) : null;
-    rows.append(...[row, bad].filter(Boolean));
+    rows.append(...[row, bad, insideLeft(root, p, (r.path || "").trim())].filter(Boolean));
   }
-  if (!insideRules(p).length) rows.append(el("div", {class:"hint"}, T["settings.bring.inside.empty"]));
+  if (!insideRules(p).filter(r => r.default == null).length) rows.append(el("div", {class:"hint"}, T["settings.bring.inside.empty"]));
   const c = el("div", {class:"subsec"},
     el("h3", {}, T["settings.bring.inside.title"]),
     el("div", {class:"hint"}, T["settings.bring.inside.hint"]),
+    SHIPPED_INSIDE.length ? el("div", {class:"hint"}, T["settings.bring.inside.app_hint"]) : null,
     el("div", {class:"rows"}, rows),
     el("div", {class:"row"}, el("button", {onclick: () => change(en => {
       en.bring = en.bring || [];
@@ -14962,7 +15105,7 @@ function addTemplate(kind) {
   const desk = desks[sel.desk];
   const at = (desk.tabs || [])[sel.tab];
   const group = at ? (at.group || 0) : 0;
-  desk.tabs = (desk.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group}, x))));
+  desk.tabs = (desk.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group, uid: newUid()}, x))));
   sel.tab = desk.tabs.length - TEMPLATES[kind].length;
   render();
   msg(T["settings.template.added"]);
@@ -16396,10 +16539,20 @@ function readFolders(desk, w) {
   fs.forEach((f, i) => flatten(f.tabs, 0, i, desk.tabs));
 }
 
+// The keys of a tab's line this screen reads into its own fields and writes
+// back from them (nest). Every other key the line has -- what the app writes
+// there itself: the arrangement of a split, a conversation to resume, the
+// answers the app keeps per tab -- is the line's own and goes back as it came
+const TAB_KEYS_SHOWN = new Set(["name", "id", "uid", "command", "profile", "automation", "lua",
+  "git_account", "browser_profile", "private", "user_agent", ...WORDS_KEYS, "locked", "auto_restart",
+  "encoding", "scrollback", "log", "notify_on_done", "notify_reply", "nav", "server", "ask",
+  "restore_conversation", "children"]);
+
 function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
-    out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
+    out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
+               git_account: t.git_account || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
                choose_model: t.choose_model || "", words_model: t.words_model || "",
@@ -16407,10 +16560,15 @@ function flatten(tabs, depth, group, out) {
                encoding: t.encoding || "", scrollback: t.scrollback ?? "", log: !!t.log,
                notify_on_done: t.notify_on_done || "", notify_reply: !!t.notify_reply,
                nav: t.nav || null, ask: t.ask || null,
+               // Absent means yes; only a no is carried
+               ...(t.restore_conversation === false ? {restore_conversation: false} : {}),
                // Everything about a server connection that will not fit in its
                // address. Carried whole: a field this screen has never heard of
                // still has to survive being saved from it
-               server: t.server || null, depth, group });
+               server: t.server || null,
+               // The rest of the line, as it was read (TAB_KEYS_SHOWN)
+               rest: Object.fromEntries(Object.entries(t).filter(([k]) => !TAB_KEYS_SHOWN.has(k))),
+               depth, group });
     flatten(t.children, depth + 1, group, out);
   }
   return out;
@@ -16420,6 +16578,7 @@ function nest(flat) {
   for (const f of flat) {
     const node = { name: f.name, command: f.command };
     if (f.id) node.id = f.id;
+    if (f.uid) node.uid = f.uid;
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
     if ((f.git_account || "").trim()) node.git_account = f.git_account.trim();
@@ -16469,6 +16628,11 @@ function nest(flat) {
       if (f.ask.text) node.ask.text = f.ask.text;
       if (f.ask.label) node.ask.label = f.ask.label;
     }
+    if (f.restore_conversation === false) node.restore_conversation = false;
+    // What this screen does not show goes back as it came: saving the
+    // settings took a split's arrangement, a conversation to resume and a
+    // tab's "start clean" with it
+    for (const [k, v] of Object.entries(f.rest || {})) if (!(k in node)) node[k] = v;
     const d = Math.min(f.depth, stack.length);
     if (d === 0) roots.push(node);
     else (stack[d - 1].children = stack[d - 1].children || []).push(node);
@@ -18888,6 +19052,9 @@ mod tests {
             .replace("__PROTECT__", "[]")
             .replace("__THISPC__", "\"@pc\"")
             .replace("__PETNOUNS__", "[]")
+            .replace("__PETADJECTIVES__", "[]")
+            .replace("__SHIPPEDINSIDE__", "[]")
+            .replace("__INSIDESHOWN__", "{}")
             .replace("__MD__", "\"\"");
         let mut script = String::new();
         let mut rest = html.as_str();
@@ -18964,6 +19131,9 @@ mod tests {
                 .replace("__PROTECT__", "[]")
                 .replace("__THISPC__", "\"@pc\"")
                 .replace("__PETNOUNS__", "[]")
+                .replace("__PETADJECTIVES__", "[]")
+                .replace("__SHIPPEDINSIDE__", "[]")
+                .replace("__INSIDESHOWN__", "{}")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

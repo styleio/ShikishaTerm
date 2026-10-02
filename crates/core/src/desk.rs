@@ -818,6 +818,7 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // Known before the process starts, because the key it calls home
         // with is minted under this very name
         id: cfg.id.clone(),
+        uid: cfg.uid.clone(),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
@@ -1046,6 +1047,7 @@ mod calling_home_tests {
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     host: None,
+                    uid: None,
                     title: "sh".into(),
                     id: Some("agent".into()),
                     cwd: Some(here),
@@ -1422,7 +1424,7 @@ pub fn carried_conversation(
     let cwd = cwd.as_ref().map(|c| c.display().to_string());
     let program = argv.first().map(String::as_str).unwrap_or_default();
     let Some(session) =
-        saved.conversation_of(desk, program, cwd.as_deref(), cfg.id.as_deref(), title)
+        saved.conversation_of_tab(desk, program, cwd.as_deref(), cfg.id.as_deref(), cfg.uid.as_deref(), title)
     else {
         // Nothing was remembered for this tab. Ordinary when nothing was
         // remembered in this folder either -- but when something was, a

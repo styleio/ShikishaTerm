@@ -651,7 +651,7 @@ fn open_line(
             .ok_or_else(|| fail("err.tab_add.which_folder", &[]))?,
     };
     let desk = dk.borrow().clone().ok_or_else(|| fail("err.tab_add.no_desk_yet", &[]))?;
-    let id = crate::config::add_tab_at(
+    let (id, uid) = crate::config::add_tab_with_uid_at(
         &crate::config::config_file_path(),
         &desk,
         line,
@@ -663,6 +663,9 @@ fn open_line(
     c.borrow_mut().push(Command::OpenedTab { id: id.clone() });
     let out = lua.create_table()?;
     out.set("id", id)?;
+    // Who it is, for the app's own bookkeeping (a job that opened it). Taken
+    // off the answer before an AI sees it: what an AI calls a tab is its id
+    out.set("uid", uid)?;
     out.set("folder", folder.display().to_string())?;
     out.set("host", host)?;
     Ok(out)

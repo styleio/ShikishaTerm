@@ -62,6 +62,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
         let far = t.machine().is_some();
         out.push(TabFact {
             id: tab_id(t),
+            uid: t.uid().to_string(),
             called: t.called().to_string(),
             title: t.title.clone(),
             ai: t.is_ai() && !t.is_model(),
@@ -71,7 +72,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
             far,
             reachable: !far || reachable(t),
             bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
-            incarnation: crate::api::incarnation_of(t.called()),
+            incarnation: crate::api::incarnation_of(t.uid()),
             typed_request,
         });
     }
@@ -97,7 +98,7 @@ fn flat(s: &str) -> String {
 
 static TYPED: std::sync::Mutex<Option<Typed>> = std::sync::Mutex::new(None);
 
-/// Remember that this app typed `text` into `tab` (by id). Called wherever
+/// Remember that this app typed `text` into `tab` (by uid). Called wherever
 /// words go into a tab that are not a person's: a brief, a line about mail,
 /// what another tab sent with `send_to_tab`
 pub fn note_typed(tab: &str, text: &str) {
@@ -149,8 +150,7 @@ pub fn named_for(
     let (Some(file), Some(spec)) = (t.record(), t.resume.as_ref().and_then(|r| r.asks.as_ref())) else {
         return from_bar();
     };
-    let id = tab_id(t);
-    match last_asked(&file, spec, |a| !typed_here(&id, a)) {
+    match last_asked(&file, spec, |a| !typed_here(t.uid(), a)) {
         Some(last) => crate::asktab::named_in(&last),
         None => from_bar(),
     }
@@ -185,10 +185,11 @@ fn last_asked(file: &std::path::Path, spec: &crate::profile::AskSpec, is_persons
     None
 }
 
-/// The surface position a tab is shown at (what the send queue addresses)
-fn position(tabs: &[Tab], surfaces: &[Surface], id: &str) -> Option<(usize, usize)> {
+/// The surface position a tab (by uid) is shown at (what the send queue
+/// addresses)
+fn position(tabs: &[Tab], surfaces: &[Surface], uid: &str) -> Option<(usize, usize)> {
     surfaces.iter().enumerate().find_map(|(p, s)| match s {
-        Surface::Session(i) if tabs.get(*i).is_some_and(|t| tab_id(t) == id) => Some((p + 1, *i)),
+        Surface::Session(i) if tabs.get(*i).is_some_and(|t| t.uid() == uid) => Some((p + 1, *i)),
         _ => None,
     })
 }
@@ -196,7 +197,8 @@ fn position(tabs: &[Tab], surfaces: &[Surface], id: &str) -> Option<(usize, usiz
 /// Carry out what orchestration decided, with the machinery every other
 /// hand-off uses: the send queue for words, the tab's own keys for Esc, and
 /// the same commands a person's automation would call to close a tab or tell
-/// somebody
+/// somebody. Every effect names its tab by uid: a tab closed since, and
+/// another given its name, is not the one it meant
 pub fn apply(
     effects: Vec<Effect>,
     tabs: &mut [Tab],
@@ -209,7 +211,7 @@ pub fn apply(
         match e {
             Effect::Type { tab, lead, text } => {
                 let Some((pos, i)) = position(tabs, surfaces, &tab) else {
-                    crate::append_hook_log(&format!("orchestration: nothing typed; <@{tab}> is not on screen"));
+                    crate::append_hook_log(&format!("orchestration: nothing typed; tab {tab} is not on screen"));
                     continue;
                 };
                 let t = &tabs[i];
@@ -229,7 +231,7 @@ pub fn apply(
                     note_typed(&tab, &text);
                 }
                 pending.push(PendingSend::new(pos, t.serial(), chunks, true, t.output_count(), now_ms, said.chars().count()));
-                crate::append_hook_log(&format!("orchestration: typed into {tab} ({} chars)", said.chars().count()));
+                crate::append_hook_log(&format!("orchestration: typed into {} ({} chars)", tab_id(t), said.chars().count()));
             }
             Effect::Esc { tab } => {
                 if let Some((_, i)) = position(tabs, surfaces, &tab) {
@@ -237,10 +239,13 @@ pub fn apply(
                 }
             }
             Effect::Close { tab } => {
+                // Closed by the name it goes by now, which is what the command
+                // takes -- found from who it is, so it is that tab or none
+                let Some(name) = position(tabs, surfaces, &tab).map(|(_, i)| tab_id(&tabs[i])) else { continue };
                 if let Some(eng) = eng
-                    && let Err(e) = eng.call_primitive_as(None, crate::grants::Subject::Human, "close_tab", &[serde_json::json!(tab)])
+                    && let Err(e) = eng.call_primitive_as(None, crate::grants::Subject::Human, "close_tab", &[serde_json::json!(name)])
                 {
-                    crate::append_hook_log(&format!("orchestration: could not close {tab}: {e}"));
+                    crate::append_hook_log(&format!("orchestration: could not close {name}: {e}"));
                 }
             }
             Effect::Wake { tab } => {
@@ -248,7 +253,7 @@ pub fn apply(
                     && let Some(id) = tabs[i].cloud().and_then(|h| h.instance.as_deref())
                 {
                     crate::e2b::shown(id);
-                    crate::append_hook_log(&format!("orchestration: opened {tab}'s machine for its task"));
+                    crate::append_hook_log(&format!("orchestration: opened {}'s machine for its task", tab_id(&tabs[i])));
                 }
             }
             Effect::Person { text } => {

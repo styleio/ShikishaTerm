@@ -18,6 +18,51 @@ once it reaches its first tagged release.
   Quitting and answering "No" stops every AI and the background process. Off
   unless turned on. The Store copy keeps its terminals across quitting and
   crashes, but not across a Store update.
+- **A new worktree no longer takes an AI tool's own working places with it.**
+  Claude Code's `.claude/worktrees/` (its helpers' whole checkouts),
+  `.claude/checkpoints/`, `.claude/mailbox/`, and the files where it
+  records its state on this PC (`routines/.state/`, `agent-registry.json`,
+  `assistant-daemon-state.json`, `scheduled_tasks.lock`,
+  `scheduled_tasks.json`) are left out even when `.claude` is copied, by Default rules the app provides under the project's
+  Worktree Creation Rules › Rules for places inside folders. A row can be
+  changed to come along, put back to the default, or not used; only that
+  change is kept in the settings, so rules a later version adds or removes
+  reach every project. A rule new to a project says so until its rules have
+  been seen once, and the worktree dialog says what is left out and how big
+  it is.
+
+### Changed
+- **A new tab is named with two words** (`calm-otter`), so the name of a
+  closed tab is rarely given out again.
+
+### Fixed
+- **A new tab no longer inherits a closed tab's record because it was given
+  the same name.** A tab's conversations, the jobs it leads and the work it was
+  handed, its mail, its place in a split, the key its programs call the app
+  with and the terminal it left running elsewhere are now kept under a `uid`
+  of its own, written on its line in the settings and never given to another
+  tab. Before, a new tab could open with a closed tab's conversations in its
+  Chat panel. The first start of this version writes the `uid`s and moves
+  what was kept under names to them; what a tab of today's name kept before it
+  cannot be told apart from the tab itself, and stays with it.
+- **Saving the settings keeps what the settings screen does not show.** A
+  split's arrangement, a tab's "start clean" and its git account, a
+  conversation to resume were dropped from a tab's line on every save.
+- **A tab on a desk that is not in front can still use `shikisha`.** Its
+  key was retired while another desk was in front, so its calls and its
+  CLI's hooks were refused until its program was started again.
+- **A name with `</script>` in it cannot run code in the settings page.**
+  Values the settings, the ? and the manual pages put into their scripts --
+  a project's name among them -- are written so that nothing in them can
+  end the script.
+- **The worktree dialog no longer waits on counting what is left out.** The
+  places the rules leave out are counted to one limit for the whole dialog,
+  not one each.
+- **"Added since you last looked" is said only when it is so.** A rule of the
+  app's was marked "New in this version" for a project that had simply never
+  looked at the list.
+- **A program whose tab was closed is told what to do** when it calls the app,
+  in the app's language.
 
 ## [0.23.1] - 2026-10-02
 

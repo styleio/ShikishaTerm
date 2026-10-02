@@ -23,6 +23,10 @@ pub struct TabState {
     pub name: String,
     /// Name referenced from automation
     pub id: Option<String>,
+    /// Who the tab is (`Tab::uid`): what a job on the board names its lead
+    /// and its workers by. Absent for a row with no tab of its own (a page)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     /// WAIT / BUSY / DONE / QUESTION / EXIT, exactly as `TabState::label`
     /// spells them — the page uses this as a CSS class. Used to pick the display
     pub state: String,
@@ -794,6 +798,14 @@ pub struct BranchPlan {
     /// before the button is pressed. None while it is still being counted
     #[serde(default)]
     pub carry_sizes: Option<Vec<crate::worktree::Size>>,
+    /// The app's own rules for places inside, as written, so the dialog can
+    /// say a place was left out by one of the app's and not the project's
+    #[serde(default)]
+    pub shipped_rules: Vec<String>,
+    /// Those of them added since this project was last shown the list, when
+    /// it had been shown it before: said as added since then, this once
+    #[serde(default)]
+    pub shipped_new: Vec<String>,
     /// What is in each place inside them the dialog has open, to find what
     /// makes a copy slow and choose how that comes along
     #[serde(default)]
@@ -2471,6 +2483,7 @@ impl TabState {
             index,
             name: t.title.clone(),
             id: t.id.clone(),
+            uid: Some(t.uid().to_string()),
             state: t.state.label().to_string(),
             state_label: t.state.display(),
             since: t.state_since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()),
@@ -2613,6 +2626,7 @@ impl TabState {
             index,
             name: name.to_string(),
             id: Some(key.to_string()),
+            uid: None,
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
             since: None,
@@ -3098,6 +3112,7 @@ mod tests {
             index,
             name: name.into(),
             id: None,
+            uid: None,
             state: "WAIT".into(),
             state_label: "WAIT".into(),
             since: None,

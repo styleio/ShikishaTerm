@@ -86,10 +86,16 @@ write anything there, including the same thing on two tabs. Two tabs called
 address is the automation name only. It is unique within the desk and does
 not change when you rename the tab.
 
-Every tab has one even if you never chose it. A tab added from the screen is given a
-short word (`panda`, `finch`); one written into `config.json` without an `id` gets
-one made from its name, or from its command when it has no name. The tab's settings
-page shows it and lets you change it.
+Every tab has one even if you never chose it. A tab added from the screen is given
+two short words (`calm-otter`, `brave-finch`); one written into `config.json` without
+an `id` gets one made from its name, or from its command when it has no name. The
+tab's settings page shows it and lets you change it.
+
+The name is an address, and goes back to be drawn again when its tab closes. What
+the app keeps about a tab -- its conversations, the jobs it leads and the work it was
+handed, its mail, its place in a split -- is kept under who the tab is: a `uid` the
+app writes on the tab's line in the settings when the tab is made, and never hands
+to another tab. A new tab that is given a closed tab's name starts with none of it.
 
 | Command | Description |
 |---|---|
@@ -982,7 +988,7 @@ written at all.
 | `shikisha.tab_screen(tab)` | What is on that tab's screen right now. The reply is what a turn produced; this is the glass -- for a pager, a menu or any full-screen program it is the only output there is |
 | `shikisha.tab_read(tab, mark)` | That tab's recorded output from `mark` onward. Returns the text and the next mark, so a long run is followed in pieces without reading the same piece twice. Starts at `0`; a tab that is not being recorded reads as `""` and gives the mark back |
 | `shikisha.restart(tab)` | Restart that tab, carrying its conversation over. `shikisha.restart(tab, "fresh")` starts a new one |
-| `shikisha.open_tab({ command = "codex", name = "Research" })` | **Add a tab**, written the way the settings write one: `command` is what runs in it, and `name`, `id` and the rest are the settings' own keys. It goes into the caller's folder, or into `folder` when one is given (a folder the desk already has; `host`, the machine's name in the settings, says which one when two machines have a folder at that path). Returns `{ id = ..., folder = ..., host = ... }`: the automation name it went in under, drawn when `id` is left out, and where it went. An `id` another tab on the desk already has is refused. Anything addressed to the new id before the tab is up -- `send_to_tab`, `show`, `close_tab` -- waits for it |
+| `shikisha.open_tab({ command = "codex", name = "Research" })` | **Add a tab**, written the way the settings write one: `command` is what runs in it, and `name`, `id` and the rest are the settings' own keys. It goes into the caller's folder, or into `folder` when one is given (a folder the desk already has; `host`, the machine's name in the settings, says which one when two machines have a folder at that path). Returns `{ id = ..., uid = ..., folder = ..., host = ... }`: the automation name it went in under, drawn when `id` is left out (two words, `calm-otter`), who the tab is (`uid`: never handed to another tab, whatever either is called later), and where it went. An `id` another tab on the desk already has is refused. Anything addressed to the new id before the tab is up -- `send_to_tab`, `show`, `close_tab` -- waits for it |
 | `shikisha.close_tab(tab)` | Close a tab, the way its ✕ does. A tab whose AI is working or asking a question is not closed on the spot: the person is asked |
 
 **Hand a question to another AI** -- the commands in the order you would say them:

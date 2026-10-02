@@ -1,5 +1,5 @@
 -- The record of conversations (conversations.db), as the steps in
--- crates/core/src/convo/migrations/ leave it at version 3.
+-- crates/core/src/convo/migrations/ leave it at version 4.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- conversations-db.md), then write this again:
@@ -62,7 +62,7 @@ CREATE TABLE lines (
   text TEXT NOT NULL,
   ask_id INTEGER REFERENCES asks(id) ON DELETE SET NULL, -- the ask it opened or answered
   how TEXT NOT NULL                   -- ask (the asker's line) / said (the answer's line, in its own words) / auto (the answer's first sentence, taken for it) / aside (said on its own) / person (a person naming a tab) / agreed (a decision made)
-, thread_id INTEGER REFERENCES threads(id) ON DELETE CASCADE);
+, thread_id INTEGER REFERENCES threads(id) ON DELETE CASCADE, tab_uid TEXT);
 
 CREATE TABLE reactions (
   -- A mark put on a line: by a person pressing it, or by an AI
@@ -129,6 +129,17 @@ CREATE TABLE stops (
   why TEXT                            -- the reason as given: the limit line, the job's word
 );
 
+CREATE TABLE tab_names (
+  -- What a tab is called and on which desk, by its uid: what a uid is shown
+  -- as, and what a name said in a conversation (`<@calm-otter>`) is taken to
+  -- mean -- the tab last seen called that on that desk. Kept after the tab
+  -- closes, so what it took part in still reads with its name
+  uid TEXT PRIMARY KEY,
+  desk TEXT NOT NULL,                 -- the desk, by id ('' when not known)
+  name TEXT NOT NULL,                 -- the tab's id, what <@ID> names
+  seen_at INTEGER NOT NULL            -- when it was last seen called that
+);
+
 CREATE TABLE thread_tabs (
   -- Who takes part in a conversation: named in it by a person, asked or
   -- asking in it, saying, sharing or marking something in it. Written by the
@@ -158,6 +169,8 @@ CREATE INDEX conversations_by_tab ON conversations (tab, first_at);
 
 CREATE INDEX lines_by_desk ON lines (desk, said_at);
 
+CREATE INDEX lines_by_tab_uid ON lines (desk, tab_uid, said_at);
+
 CREATE INDEX lines_by_thread ON lines (thread_id, said_at);
 
 CREATE UNIQUE INDEX one_open_span ON spans (tab) WHERE ended_at IS NULL;
@@ -171,6 +184,8 @@ CREATE INDEX shares_by_thread ON shares (thread_id, shared_at);
 CREATE INDEX spans_by_tab ON spans (tab, started_at);
 
 CREATE INDEX stops_by_tab ON stops (tab, stopped_at);
+
+CREATE INDEX tab_names_by_name ON tab_names (desk, name, seen_at);
 
 CREATE INDEX thread_tabs_by_tab ON thread_tabs (tab, thread_id);
 

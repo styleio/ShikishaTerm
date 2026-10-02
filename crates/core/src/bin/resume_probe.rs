@@ -93,11 +93,12 @@ fn main() {
                 println!("    -> fresh: this tab is set to start clean");
                 continue;
             }
-            let found = saved.conversation_of(
+            let found = saved.conversation_of_tab(
                 d,
                 &program,
                 place.as_ref().map(|c| c.display().to_string()).as_deref(),
                 ft.cfg.id.as_deref(),
+                ft.cfg.uid.as_deref(),
                 &title,
             );
             match &found {

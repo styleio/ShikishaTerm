@@ -226,6 +226,16 @@ and the terminal run over there.
 - **More** — one folder per AI, where it goes, things git does not carry (`.env`,
   `node_modules`) to bring along, and the exact `git worktree add` line.
 
+The places AI tools keep for themselves inside a project (Claude Code's
+`.claude/worktrees/`, `.claude/checkpoints/`, `.claude/mailbox/`, and the files where
+it records its state on this PC, such as `agent-registry.json` and
+`scheduled_tasks.json`) are not brought,
+even when `.claude` is copied. These are the app's Default rules, listed under the
+project's settings, Worktree Creation Rules › Rules for places inside folders. To bring one,
+change its row to Copy. When a new version adds a Default rule after you have looked at a
+project's rules, its row says "Added since you last looked", once. The dialog says, under a
+row that is copied, what is not brought and how big it is.
+
 Press **Create worktree** (`Ctrl+Enter`). A "Creating the worktree…" row appears under
 the project's heading and turns into the folder's card once it is made. Its ✕ stops it
 and takes back the half-made folder and the new branch. If it fails, the row says why

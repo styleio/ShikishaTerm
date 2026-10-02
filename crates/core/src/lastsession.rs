@@ -86,6 +86,10 @@ pub struct SavedTab {
     pub title: String,
     #[serde(default)]
     pub id: Option<String>,
+    /// Who the tab was (`Tab::uid`). Absent in a file written before tabs
+    /// had uids
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
     /// The machine that folder is on, by the name the settings give it.
@@ -214,11 +218,12 @@ impl Saved {
     /// The conversation this tab was having last time, if this is recognisably
     /// the same tab.
     pub fn conversation_for(&self, desk: &crate::config::Desk, t: &Tab) -> Option<Session> {
-        self.conversation_of(
+        self.conversation_of_tab(
             desk,
             t.program(),
             t.place().map(|c| c.display().to_string()).as_deref(),
             t.id.as_deref(),
+            Some(t.uid()),
             &t.title,
         )
     }
@@ -239,7 +244,20 @@ impl Saved {
         id: Option<&str>,
         title: &str,
     ) -> Option<Session> {
-        let saved = self.remembered_of(desk, program, cwd, id, title)?;
+        self.conversation_of_tab(desk, program, cwd, id, None, title)
+    }
+
+    /// [`Saved::conversation_of`], told who the tab is as well (`uid`)
+    pub fn conversation_of_tab(
+        &self,
+        desk: &crate::config::Desk,
+        program: &str,
+        cwd: Option<&str>,
+        id: Option<&str>,
+        uid: Option<&str>,
+        title: &str,
+    ) -> Option<Session> {
+        let saved = self.remembered_of(desk, program, cwd, id, uid, title)?;
         Some(Session {
             id: saved.session.clone(),
             source: match saved.source.as_str() {
@@ -269,21 +287,35 @@ impl Saved {
     /// The name is kept for the one thing it can honestly settle: two tabs of
     /// one CLI in one folder, where nothing else tells them apart. When it
     /// cannot settle that either, nothing is handed over -- resuming the wrong
-    /// conversation is worse than starting a new one
+    /// conversation is worse than starting a new one.
+    ///
+    /// **Who the tab is settles it first.** A remembered tab that says who it
+    /// was is this one when it was this one, and never when it was another:
+    /// a tab that came since -- in the same folder, of the same CLI, maybe
+    /// under the same name -- is not handed a conversation it never had. Only
+    /// entries written before tabs had uids are left to the folder and the
+    /// name
     fn remembered_of(
         &self,
         desk: &crate::config::Desk,
         program: &str,
         cwd: Option<&str>,
         id: Option<&str>,
+        uid: Option<&str>,
         title: &str,
     ) -> Option<&SavedTab> {
         let desk = self.desk(desk)?;
-        let here: Vec<&SavedTab> = desk
+        let mut here: Vec<&SavedTab> = desk
             .tabs
             .iter()
             .filter(|s| s.program == program && desk.is_at(s, cwd))
             .collect();
+        if let Some(uid) = uid {
+            if let Some(me) = here.iter().copied().find(|s| s.uid.as_deref() == Some(uid)) {
+                return Some(me);
+            }
+            here.retain(|s| s.uid.is_none());
+        }
         if let [only] = here.as_slice() {
             return Some(only);
         }
@@ -383,6 +415,7 @@ impl Saved {
                 Some(SavedTab {
                     title: t.title.clone(),
                     id: t.id.clone(),
+                    uid: Some(t.uid().to_string()),
                     cwd: t.cwd().map(|c| c.display().to_string()),
                     host: t.host().map(str::to_string),
                     program: t.program().to_string(),
@@ -459,6 +492,7 @@ mod tests {
                 id: None,
                 panes: None,
                 tabs: vec![SavedTab {
+                    uid: None,
                     host: None,
                     title: "AGENT".into(),
                     id: Some("coder".into()),
@@ -508,6 +542,7 @@ mod tests {
     #[test]
     fn closing_one_tab_leaves_the_others_their_conversations() {
         let tab = |id: &str, cwd: &str, session: &str| SavedTab {
+            uid: None,
             host: None,
             title: "claude".into(),
             id: Some(id.into()),
@@ -547,12 +582,53 @@ mod tests {
         assert_eq!(saved.remembered_here(&named("work"), "claude", Some("D:\\New")), 0);
     }
 
+    /// A tab that says who it was is found by that first: its conversation
+    /// comes back to it whatever it is called now, and a tab that came since
+    /// -- same CLI, same folder, the same name even -- is handed nothing of
+    /// another's
+    #[test]
+    fn who_a_tab_was_settles_whose_conversation_it_is() {
+        let (me, other) = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222");
+        let saved = Saved {
+            version: VERSION,
+            desks: vec![SavedWs {
+                places: false,
+                name: "work".into(),
+                id: None,
+                panes: None,
+                tabs: vec![SavedTab {
+                    host: None,
+                    uid: Some(me.into()),
+                    title: "claude".into(),
+                    id: Some("tiger".into()),
+                    cwd: Some("D:\\Work".into()),
+                    program: "claude".into(),
+                    session: "mine".into(),
+                    source: "Minted".into(),
+                }],
+            }],
+        };
+        let found = |uid, id| {
+            saved
+                .conversation_of_tab(&named("work"), "claude", Some("D:\\Work"), Some(id), Some(uid), "claude")
+                .map(|s| s.id)
+        };
+        assert_eq!(found(me, "calm-otter"), Some("mine".into()), "renamed, and lost its conversation");
+        assert_eq!(found(other, "tiger"), None, "a tab that drew its name was handed its conversation");
+        // A file from before uids: the folder and the name, as ever
+        assert_eq!(
+            saved.conversation_of(&named("work"), "claude", Some("D:\\Work"), Some("tiger"), "claude").map(|s| s.id),
+            Some("mine".into())
+        );
+    }
+
     /// Two tabs of one CLI in one folder: the name is all there is, and when it
     /// does not answer either, nothing is handed over. Putting the wrong
     /// conversation back is worse than starting a new one
     #[test]
     fn two_tabs_in_one_folder_are_told_apart_by_name_or_not_at_all() {
         let tab = |id: &str, title: &str, session: &str| SavedTab {
+            uid: None,
             host: None,
             title: title.into(),
             id: Some(id.into()),
@@ -592,6 +668,7 @@ mod tests {
     #[test]
     fn the_same_path_on_two_machines_remembers_two_conversations() {
         let tab = |host: Option<&str>, session: &str| SavedTab {
+            uid: None,
             host: host.map(str::to_string),
             title: "claude".into(),
             id: Some("claude".into()),
@@ -627,6 +704,7 @@ mod tests {
     #[test]
     fn a_renamed_desk_is_still_remembered_and_a_new_one_of_the_same_name_is_not() {
         let tab = |session: &str| SavedTab {
+            uid: None,
             host: None,
             title: "claude".into(),
             id: Some("claude".into()),
@@ -714,6 +792,7 @@ mod tests {
                 id: None,
                 panes: None,
                 tabs: vec![SavedTab {
+                    uid: None,
                     host: None,
                     title: "claude".into(),
                     id: Some("claude".into()),

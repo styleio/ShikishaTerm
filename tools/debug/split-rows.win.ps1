@@ -182,7 +182,11 @@ function SplitRow($ui) { (@($ui.tabs) | Where-Object { $_.kind -eq 'split' } | S
 function NSplits($ui) { @(@($ui.tabs) | Where-Object { $_.kind -eq 'split' }).Count }
 function NRows($ui) { @($ui.tabs).Count }
 function Held { (@((Settings).desks[0].folders | ForEach-Object { $_.tabs } | Where-Object { $_.command -eq 'split' })[0]).panes.keys }
-function HoldsId($id) { @(Held | Where-Object { $_[1] -eq $id }).Count -eq 1 }
+# A pane keeps a terminal by who it is -- the uid on its line in the settings,
+# which the app writes there on its first start -- not by the id the scenarios
+# name it by: a pane that kept the id was filled by the next tab given it
+function UidOf($id) { (@((Settings).desks[0].folders | ForEach-Object { $_.tabs } | Where-Object { $_.id -eq $id })[0]).uid }
+function HoldsId($id) { $uid = UidOf $id; $uid -and @(Held | Where-Object { $_[1] -eq $uid }).Count -eq 1 }
 
 # Laid again for every scenario. Sharing one settings file between them left a
 # split from the scenario before standing in the next one, and the checks then
@@ -440,8 +444,7 @@ Scenario 'closing an unrelated tab' @(
     Say ('{{"kind":"select","tab":{0}}}' -f $s.index)
     $ui = Invariants 'into the split after the unrelated close'
     Ok ($ui.split_open -eq $s.id) 'the split cannot be entered after an unrelated close'
-    $held = (@((Settings).desks[0].folders | ForEach-Object { $_.tabs } | Where-Object { $_.command -eq 'split' })[0]).panes.keys
-    Ok (@($held | Where-Object { $_[1] -eq 'a-1' }).Count -eq 1) 'the split forgot the tab it was showing'
+    Ok (HoldsId 'a-1') 'the split forgot the tab it was showing'
 }
 
 # ---- fill the empty half from the list, same folder ----------------------

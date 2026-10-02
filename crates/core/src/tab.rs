@@ -73,6 +73,10 @@ pub struct TabOptions {
     /// own. The API key is minted under it, because that is the name every
     /// call is looked up by -- see [`TabOptions::called`]
     pub id: Option<String>,
+    /// Who this tab is ([`crate::config::TabConfig::uid`]), when its settings
+    /// say. A tab that has no line in the settings -- a model's, a test's --
+    /// is given one of its own when it is made
+    pub uid: Option<String>,
     /// Which git account a git typed in this terminal signs in as: this tab's
     /// own choice when it made one, else its folder's project's.
     ///
@@ -258,6 +262,7 @@ impl Default for TabOptions {
             cloud: None,
             host: None,
             id: None,
+            uid: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -3040,6 +3045,9 @@ pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
     pub id: Option<String>,
+    /// Who this tab is, for as long as it exists and after: what everything
+    /// kept about it beyond this run is kept under ([`Tab::uid`])
+    uid: String,
     /// This tab, as opposed to any other, for as long as the app runs.
     ///
     /// Neither the name nor the id will do: copies of a folder's tabs share
@@ -3688,6 +3696,14 @@ impl Tab {
         {
             anyhow::bail!(why);
         }
+        // Who it is, settled before anything is started under it: the key its
+        // program is handed is minted to it, and a restart -- which comes back
+        // through here with these same options -- is the same tab
+        let mut opts = opts;
+        if opts.uid.as_deref().is_none_or(|u| u.trim().is_empty()) {
+            opts.uid = Some(crate::config::new_tab_uid());
+        }
+        let uid = opts.uid.clone().unwrap_or_default();
         let profile = Self::resolve_profile(argv, &profile_spec);
         // Remembered before the profile is handed to the detector, because the
         // detector's may change hands later and this one may not: it is the
@@ -3783,7 +3799,7 @@ impl Tab {
         // Where the external API is, the key to it, and which tab this is.
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home
-        let api_env = crate::api::child_env(opts.called(&title));
+        let api_env = crate::api::child_env(opts.called(&title), &uid);
         let api_on = !api_env.is_empty();
         // A tab over there cannot be handed its key through an environment:
         // the bridge on its machine is given it instead (`farlink`)
@@ -3801,7 +3817,7 @@ impl Tab {
         let far_typed = match (far_typed, opts.host.as_deref()) {
             (Some(line), Some(_)) if api_on => {
                 let home = format!("$HOME/{}", crate::farlink::HOME_DIR);
-                let env: Vec<String> = crate::farlink::tab_env(&home, opts.called(&title))
+                let env: Vec<String> = crate::farlink::tab_env(&home, &uid)
                     .into_iter()
                     .map(|(k, v)| format!("{k}=\"{v}\""))
                     .collect();
@@ -3813,7 +3829,7 @@ impl Tab {
             cmd.env(k, v);
         }
         if keep_here && api_on {
-            for (k, v) in crate::localkeep::tab_env(opts.called(&title)) {
+            for (k, v) in crate::localkeep::tab_env(&uid) {
                 cmd.env(k, v);
             }
         }
@@ -3888,10 +3904,10 @@ impl Tab {
             let started = (Some(folder.as_str()), None);
             crate::localkeep::connect_soon();
             let away = crate::config::Away::Always;
-            Some(match crate::farterm::left_running(&at, &folder, called) {
+            Some(match crate::farterm::left_running(&at, &folder, &uid, called) {
                 Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, Some(run), away),
-                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, called, (rows, cols), started, Some(run), away)?,
-                None => crate::farterm::open_later(&at, called, (rows, cols), started, Some(run), away),
+                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, &uid, (rows, cols), started, Some(run), away)?,
+                None => crate::farterm::open_later(&at, &uid, (rows, cols), started, Some(run), away),
             })
         } else {
             None
@@ -3919,7 +3935,7 @@ impl Tab {
         }
         .zip(away)
         .map(|(at, away)| {
-            let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), opts.called(&title));
+            let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), &uid, opts.called(&title));
             (at, left, away)
         });
         let (master, killer, pid, child): (
@@ -3941,8 +3957,8 @@ impl Tab {
                 let started = (opts.remote_cwd.as_deref(), far_typed.as_deref());
                 let (m, k, t) = match left {
                     Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, None, away),
-                    None if far_holds(&at) => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, None, away)?,
-                    None => crate::farterm::open_later(&at, opts.called(&title), (rows, cols), started, None, away),
+                    None if far_holds(&at) => crate::farterm::open(&at, &uid, (rows, cols), started, None, away)?,
+                    None => crate::farterm::open_later(&at, &uid, (rows, cols), started, None, away),
                 };
                 far_term = Some(t);
                 (m, k, None, None)
@@ -4188,6 +4204,7 @@ impl Tab {
             resume: resume_spec,
             title,
             id: opts.id.clone(),
+            uid,
             serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
             model: opts.model.clone(),
             parser,
@@ -4796,6 +4813,13 @@ impl Tab {
             .filter(|&&pid| *self.job_ours.entry(pid).or_insert_with(|| crate::job::is_machinery(pid, helpers)))
             .count() as u32;
         Some(all.saturating_sub(ours))
+    }
+
+    /// Who this tab is: never another tab's, whatever either is called. Its
+    /// name ([`Tab::called`]) is what it is addressed by now; this is what
+    /// anything kept about it is kept under
+    pub fn uid(&self) -> &str {
+        &self.uid
     }
 
     /// How automation identifies this tab

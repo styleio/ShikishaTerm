@@ -59,7 +59,25 @@ const STEPS: &[Step] = &[
     Step { to: "0.18.0", apply: to_0_18_0 },
     Step { to: "0.19.0", apply: to_0_19_0 },
     Step { to: "0.20.0", apply: to_0_20_0 },
+    Step { to: "0.24.0", apply: to_0_24_0 },
 ];
+
+/// Every tab gets a uid of its own, written on its line.
+///
+/// A tab was its name, and a name goes back in the bag when its tab closes:
+/// the next tab to draw it was handed everything kept under it -- its
+/// conversations, its jobs, its mail. Who a tab is is now its uid, never
+/// handed on ([`crate::config::TabConfig::uid`]).
+///
+/// The uid written is the one its desk and its name work out to, not a
+/// random one: the settings are shared between PCs, and each carries the file
+/// forward on its own first start. Every PC writes the same value, so none of
+/// them cuts loose what another has already kept under it -- and a file that
+/// has them already comes out as it went in
+fn to_0_24_0(doc: &mut serde_json::Value) -> Result<()> {
+    crate::config::fill_tab_uids(doc);
+    Ok(())
+}
 
 /// Where a project is checked out on another machine is the project's, not
 /// the machine's.

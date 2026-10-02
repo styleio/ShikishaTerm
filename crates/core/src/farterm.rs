@@ -122,7 +122,8 @@ const SAVED_VERSION: u32 = 1;
 pub struct Saved {
     /// The machine (`Elsewhere::machine_key`)
     pub machine: String,
-    /// Which tab: the folder it stands in there, and its name
+    /// Which tab: the folder it stands in there, and who it is (its uid; its
+    /// name, in a file written before tabs had uids)
     pub cwd: String,
     pub tab: String,
     /// The resident process's generation, and the terminal's id in it
@@ -221,20 +222,42 @@ pub fn forget_machine(at: &Place) {
 /// the one written down for it; or, with nothing written down -- the note
 /// was lost -- one the bridge holds for the same tab and folder that no app
 /// owns (far-keep plan §7.4). Asked of the bridge only when its line is up
-pub fn left_running(at: &Place, cwd: &str, tab: &str) -> Option<Saved> {
+pub fn left_running(at: &Place, cwd: &str, uid: &str, name: &str) -> Option<Saved> {
     let machine = at.machine_key();
-    if let Some(s) = read_saved().into_iter().find(|s| s.is_tab(&machine, cwd, tab)) {
+    if let Some(s) = written_for(&read_saved(), &machine, cwd, uid, name) {
         return Some(s);
     }
     let said = list_held(at)?;
     let generation = said["gen"].as_str().unwrap_or_default().to_string();
     let found = said["terms"].as_array()?.iter().find(|t| {
-        t["tab"] == tab && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false
+        t["tab"].as_str().is_some_and(|tab| is_this_tab(tab, uid, name))
+            && t["cwd"] == cwd
+            && t["owned"] == false
+            && t["ended"] == false
     })?;
-    let s = Saved { machine, cwd: cwd.to_string(), tab: tab.to_string(), generation, term: found["term"].as_u64()?, since: now_secs(), left: None, stopping: false };
-    crate::append_hook_log(&format!("far terminal {}: found on {} for {tab}, with nothing written down about it", s.term, at.address()));
+    let tab = found["tab"].as_str().unwrap_or(uid).to_string();
+    let s = Saved { machine, cwd: cwd.to_string(), tab, generation, term: found["term"].as_u64()?, since: now_secs(), left: None, stopping: false };
+    crate::append_hook_log(&format!("far terminal {}: found on {} for {name}, with nothing written down about it", s.term, at.address()));
     change_saved(|all| put(all, s.clone()));
     Some(s)
+}
+
+/// Whether a terminal written down for `tab` is the one of the tab `uid`,
+/// called `name`. By who the tab is; by its name only for what a version
+/// before uids opened, which knew a tab by nothing else -- never a uid taken
+/// for a name, since no tab is called something shaped like one
+fn is_this_tab(tab: &str, uid: &str, name: &str) -> bool {
+    tab == uid || (!crate::config::is_tab_uid(tab) && tab == name)
+}
+
+/// The terminal written down on `machine` for that tab in `cwd`: the one
+/// written under who it is first, and only then one written under its name
+fn written_for(saved: &[Saved], machine: &str, cwd: &str, uid: &str, name: &str) -> Option<Saved> {
+    saved
+        .iter()
+        .find(|s| s.is_tab(machine, cwd, uid))
+        .or_else(|| saved.iter().find(|s| s.machine == machine && s.cwd == cwd && is_this_tab(&s.tab, uid, name)))
+        .cloned()
 }
 
 /// Ask the bridge on `at` something of its terminals job, and wait for the
@@ -1079,6 +1102,23 @@ mod tests {
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
         Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, left: None, stopping: false }
+    }
+
+    /// A tab goes back to the terminal it left running by who it is; one
+    /// written down by a version before uids, under its name, is found by
+    /// that -- and a tab that came since under another tab's name is never
+    /// handed the other's terminal
+    #[test]
+    fn a_tab_goes_back_to_its_own_terminal_and_nobody_elses() {
+        let (me, other) = ("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222");
+        let book = vec![saved("pi", "/w", other, "g", 1), saved("pi", "/w", me, "g", 2), saved("pi", "/old", "tiger", "g", 3)];
+        assert_eq!(written_for(&book, "pi", "/w", me, "tiger").map(|s| s.term), Some(2));
+        assert_eq!(written_for(&book, "pi", "/w", "33333333-3333-4333-8333-333333333333", "tiger"), None, "a new tab was handed another's");
+        // Written by an older version, under the name
+        assert_eq!(written_for(&book, "pi", "/old", me, "tiger").map(|s| s.term), Some(3));
+        // A uid is never matched as a name
+        assert!(!is_this_tab(other, me, other));
+        assert!(is_this_tab("tiger", me, "tiger") && is_this_tab(me, me, "tiger"));
     }
 
     /// A tab has one terminal written down, the last it opened; one is struck

@@ -105,11 +105,15 @@ pub struct Hit {
     /// said: what `annotate` finds who really sent them by
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub said: Option<Said>,
-    /// The tab whose conversation this is, when this app's own AI tab had it:
-    /// one tab's conversation can run across several records (a `/clear`, a
-    /// conversation picked back up), and the list shows it once
+    /// The tab whose conversation this is, by uid, when this app's own AI
+    /// tab had it: one tab's conversation can run across several records (a
+    /// `/clear`, a conversation picked back up), and the list shows it once
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
+    /// What that tab is called, or was when it was last seen: what the list
+    /// shows it as
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_name: Option<String>,
     /// Who really sent a person's line the words were found in: the person
     /// (and from where), another tab, a job, automation -- as the
     /// conversation panel says it (`convo::read::origins`)
@@ -963,6 +967,7 @@ pub fn annotate(hits: &mut [Hit]) {
         h.pinned = pinned.contains(&h.id);
         let Some(store) = store.as_ref() else { continue };
         h.thread = store.tab_of(&h.id).ok().flatten();
+        h.thread_name = h.thread.as_deref().and_then(|uid| store.name_of(uid).ok().flatten());
         if let Some(said) = h.said.as_ref().filter(|s| s.who == crate::reader::Who::You) {
             h.from = crate::convo::read::origins(&h.id, &[(said.when, said.head.as_str())]).into_iter().next().flatten();
         }

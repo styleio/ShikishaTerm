@@ -187,6 +187,17 @@ pub struct BringRule {
     /// For `replace`: what is written differently in the copy, in order
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub replace: Vec<Replace>,
+    /// The id of one of the app's own rules for places inside
+    /// (`crate::inside::SHIPPED`) that this entry answers for the project:
+    /// a different `how` for it, or, with `dropped`, that the project does
+    /// without it. The app's rules themselves are never written here -- only
+    /// what the person changed about one -- so a later version's list reaches
+    /// everybody (see `crate::inside::effective`)
+    #[serde(default, rename = "default", skip_serializing_if = "Option::is_none")]
+    pub shipped: Option<String>,
+    /// With `shipped`: the project does without that rule of the app's
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropped: bool,
 }
 
 /// Every occurrence of `find` in a copied file becomes `with`.
@@ -3031,6 +3042,13 @@ pub struct TabConfig {
     /// tab won't break scripts. If omitted, the tab can be referred to by its name
     #[serde(default)]
     pub id: Option<String>,
+    /// Who this tab is, for as long as it exists ([`tab_uid`]). The name above
+    /// is what it is called and can be handed to the next tab once this one
+    /// is closed; this never is, so everything kept about a tab beyond its
+    /// life is kept under this. Written by the app when the tab is made,
+    /// never shown and never typed
+    #[serde(default)]
+    pub uid: Option<String>,
     /// Launch command: "ssh user@host" or ["ssh", "user@host"]
     pub command: CommandSpec,
     /// Explicit detection profile (auto-selected from the command name if omitted)
@@ -4234,31 +4252,130 @@ pub(crate) const NOT_A_TAB_NAME: &[&str] = &[
     "drum", "sole", "shiner", "roughy", "jennet", "glider", "guinea", "bengal", "sponge",
 ];
 
-/// A name for a tab that has none: a word from that list nothing on this desk
-/// answers to yet.
+/// The words put in front of a noun to make a tab's name: the short adjectives
+/// of the same list, held to the same shape as the nouns so the two together
+/// still read as one name automation takes as it stands
+pub fn pet_adjectives() -> Vec<&'static str> {
+    petname::Petnames::small()
+        .adjectives
+        .iter()
+        .copied()
+        .filter(|w| (3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()))
+        .filter(|w| !NOT_A_TAB_ADJECTIVE.contains(w))
+        .collect()
+}
+
+/// Adjectives in that list that do not describe anything when put before an
+/// animal, or that read as a rank or a count rather than a name
+pub(crate) const NOT_A_TAB_ADJECTIVE: &[&str] = &[
+    "one", "pet", "set", "key", "pro", "top", "tops", "more", "many", "next", "main", "boss",
+    "live", "star", "holy", "sacred", "divine", "chief", "master", "summary", "game", "crack",
+];
+
+/// A name for a tab that has none: an adjective and a noun from those lists,
+/// `calm-otter`, that nothing in the settings answers to yet.
 ///
 /// Drawn rather than derived, because a name derived from what is on screen is
 /// a name that moves. `claude`, `claude-2`, `claude-3` are handed out in the
 /// order the tabs are read, so closing the first renames the two behind it --
-/// and everything that addresses a tab by name, from automation to the
-/// conversation it comes back to, is then addressing somebody else. A word
-/// picked out of a bag belongs to the tab it was picked for and to nothing
+/// and everything that addresses a tab by name is then addressing somebody
 /// else.
 ///
-/// Draws again while the word is taken, and falls back to the numbered walk
-/// when the whole bag is: a desk of two hundred tabs is not a thing, but a
-/// name that is somebody else's would be
+/// Two words rather than one because a name is handed back to the bag when
+/// its tab closes. Who a tab is does not depend on that ([`TabConfig::uid`]),
+/// but a name is also what a person wrote in a message and what an AI
+/// remembers being told: with a few hundred names, the next tab to draw a
+/// closed tab's name was a matter of weeks, and `<@tiger>` written last week
+/// reached whichever tab was `tiger` now. Tens of thousands of pairs make that
+/// a thing that does not happen.
+///
+/// Draws again while the pair is taken, and falls back to the numbered walk
+/// when nearly everything is
 pub fn pet_id(used: &std::collections::HashSet<String>) -> String {
-    let bag = pet_nouns();
+    let (adjectives, nouns) = (pet_adjectives(), pet_nouns());
+    let pick = |bag: &[&'static str]| -> Option<&'static str> {
+        let byte = crate::random_bytes(2)?;
+        bag.get((u16::from_le_bytes([byte[0], byte[1]]) as usize) % bag.len().max(1)).copied()
+    };
     for _ in 0..40 {
-        let Some(byte) = crate::random_bytes(2) else { break };
-        let at = (u16::from_le_bytes([byte[0], byte[1]]) as usize) % bag.len().max(1);
-        match bag.get(at) {
-            Some(w) if !used.contains(*w) => return w.to_string(),
-            _ => continue,
+        let (Some(a), Some(n)) = (pick(&adjectives), pick(&nouns)) else { break };
+        let name = format!("{a}-{n}");
+        if !used.contains(&name) {
+            return name;
         }
     }
-    unique_id(bag.first().copied().unwrap_or("tab"), used)
+    let first = format!("{}-{}", adjectives.first().copied().unwrap_or("new"), nouns.first().copied().unwrap_or("tab"));
+    unique_id(&first, used)
+}
+
+/// What each tab of the settings is called, by its uid: for a page that is
+/// handed uids from somewhere that keeps tabs by them (a machine's terminals,
+/// the calls they made while the app was away) and has to say a name
+pub fn tab_names_by_uid() -> std::collections::HashMap<String, String> {
+    load()
+        .map(|c| c.resolve_desks().0)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|d| d.tabs)
+        .filter_map(|t| Some((t.cfg.uid?, t.cfg.id?)))
+        .collect()
+}
+
+/// Who a new tab is: a random UUID, never handed to another tab
+pub fn new_tab_uid() -> String {
+    crate::random_uuid()
+}
+
+/// Who a tab written without a uid is, worked out from where it is written
+/// (`scope`: its desk, [`desk_scope`]) and what it is called there.
+///
+/// Worked out rather than drawn, for two reasons. The settings are shared
+/// between PCs by whatever syncs the folder, and every PC carries an old file
+/// forward on its own first start: a random value would be a different one on
+/// each, and the records each kept under its own would be cut loose by the
+/// other's write. And a line nobody gave a uid -- written by hand, or copied
+/// in by the settings screen's text editor -- is read many times before
+/// anything writes it, and has to be the same tab each time it is read.
+///
+/// Shaped as a UUID of the name-based kind (version 5's bits), so it reads as
+/// a uid and can never be one [`new_tab_uid`] drew
+pub fn derived_tab_uid(scope: &str, name: &str) -> String {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"shikisha-tab\0");
+    h.update(scope.as_bytes());
+    h.update(b"\0");
+    h.update(name.as_bytes());
+    let d = h.finalize();
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&d[..16]);
+    b[6] = (b[6] & 0x0f) | 0x50;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let x: String = b.iter().map(|v| format!("{v:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &x[0..8], &x[8..12], &x[12..16], &x[16..20], &x[20..32])
+}
+
+/// What a desk is called when working out the uids of its tabs: the id it
+/// was written with, else its name. Read from the desk as written, so the
+/// carrying-forward of a file (`migrate`) and the reading of it agree on
+/// it before either has settled anything
+pub fn desk_scope(id: Option<&str>, name: Option<&str>) -> String {
+    let id = id.map(str::trim).unwrap_or("");
+    match id.is_empty() {
+        false => id.to_string(),
+        true => name.map(str::trim).unwrap_or("").to_string(),
+    }
+}
+
+/// Whether `s` is shaped like a uid: what tells one from a name in a record
+/// written before tabs had uids
+pub fn is_tab_uid(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit() && !c.is_ascii_uppercase(),
+        })
 }
 
 /// Every automation name written down under this desk, folders, tabs and the
@@ -4288,6 +4405,23 @@ pub fn tab_ids_in(v: &serde_json::Value) -> std::collections::HashSet<String> {
     out
 }
 
+/// Take the uid off every tab line in `v`, children and folders included: what
+/// is being written is a copy, and [`name_new_tabs`] gives each its own
+pub fn without_uids(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::Array(list) => list.iter_mut().for_each(without_uids),
+        serde_json::Value::Object(obj) => {
+            obj.remove("uid");
+            for (k, child) in obj.iter_mut() {
+                if matches!(k.as_str(), "folders" | "tabs" | "children") {
+                    without_uids(child);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Give every tab written here that has no automation name one of its own,
 /// and write it down.
 ///
@@ -4314,6 +4448,13 @@ pub fn name_new_tabs(v: &mut serde_json::Value, used: &mut std::collections::Has
                 let id = pet_id(used);
                 used.insert(id.clone());
                 obj.insert("id".into(), serde_json::Value::String(id));
+            }
+            // Who it is, from the moment it is made. A line arriving without
+            // one is a new tab, whatever it is called: a copy has had its
+            // own taken off ([`without_uids`]), a tab put back has kept its
+            let no_uid = obj.get("uid").and_then(|u| u.as_str()).map(str::trim).is_none_or(str::is_empty);
+            if no_uid && obj.get("command").is_some() {
+                obj.insert("uid".into(), serde_json::Value::String(new_tab_uid()));
             }
             for (k, child) in obj.iter_mut() {
                 if matches!(k.as_str(), "folders" | "tabs" | "children") {
@@ -4381,6 +4522,107 @@ fn settle_tab_ids(tabs: &mut [FlatTab]) -> Vec<String> {
     moved
 }
 
+/// Give every tab read without a uid, or with the uid of a tab before it on
+/// the desk, the one its desk and its name work out to ([`derived_tab_uid`]).
+/// Run after [`settle_tab_ids`], whose names are unique on the desk, so what
+/// this gives is too -- and the same every time the file is read, which is
+/// what lets the line go unwritten until something writes it anyway
+fn settle_tab_uids(tabs: &mut [FlatTab], scope: &str) {
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for t in tabs.iter_mut() {
+        let written = t.cfg.uid.as_deref().map(str::trim).unwrap_or("").to_string();
+        if !written.is_empty() && seen.insert(written.clone()) {
+            t.cfg.uid = Some(written);
+            continue;
+        }
+        let uid = derived_tab_uid(scope, t.cfg.id.as_deref().unwrap_or(""));
+        seen.insert(uid.clone());
+        t.cfg.uid = Some(uid);
+    }
+}
+
+/// Write down on every tab line in a settings file -- `config.json`, or a
+/// desk kept in a file of its own -- the uid reading it would give the tab
+/// (`migrate::to_0_24_0`). After this, a tab is who it is whatever happens to
+/// its name.
+///
+/// The uids are the ones [`resolve_folders`] works out, taken from it rather
+/// than worked out again here, so the file as written and the file as read
+/// can never disagree about who a tab is. A desk whose lines cannot be read
+/// is left as it is: reading it fails the same way, and this has nothing to
+/// add to that
+pub fn fill_tab_uids(doc: &mut serde_json::Value) {
+    let hosts: Vec<HostSpec> = doc.get("hosts").and_then(|h| serde_json::from_value(h.clone()).ok()).unwrap_or_default();
+    match doc.get_mut("desks").and_then(|d| d.as_array_mut()) {
+        Some(desks) => {
+            for desk in desks.iter_mut() {
+                // A desk kept in its own file has its tabs there, and that
+                // file is carried forward on its own
+                if desk.get("file").is_some() {
+                    continue;
+                }
+                let text = |k: &str| desk.get(k).and_then(|v| v.as_str()).map(str::to_string);
+                let scope = desk_scope(text("id").as_deref(), text("name").as_deref());
+                fill_holder_uids(desk, &hosts, &scope);
+            }
+        }
+        // Settings from before desks, and a desk's own file: the tabs are
+        // written at the top. A desk's own file names itself; the settings
+        // never did, which is the "" they are read under
+        None => {
+            let name = doc.get("name").and_then(|v| v.as_str()).map(str::to_string);
+            let scope = desk_scope(None, name.as_deref());
+            fill_holder_uids(doc, &hosts, &scope);
+        }
+    }
+}
+
+/// [`fill_tab_uids`] for what holds one desk's folders and its tabs written
+/// the old way, beside them
+fn fill_holder_uids(holder: &mut serde_json::Value, hosts: &[HostSpec], scope: &str) {
+    let read = |k: &str| -> Option<serde_json::Value> { Some(holder.get(k).cloned().unwrap_or_else(|| serde_json::json!([]))) };
+    let (Some(f), Some(t)) = (read("folders"), read("tabs")) else { return };
+    let (Ok(folders), Ok(legacy)) =
+        (serde_json::from_value::<Vec<FolderConfig>>(f), serde_json::from_value::<Vec<TabConfig>>(t))
+    else {
+        return;
+    };
+    let (_, tabs, _) = resolve_folders(&foldered_with(&folders, &legacy), &[], hosts, scope);
+    let mut uids = tabs.into_iter().map(|t| t.cfg.uid.unwrap_or_default());
+    // The lines in the order they were read: the first folder's, then the
+    // ones written beside the folders (which reading puts in the first
+    // folder), then every other folder's -- each tab before its children
+    fn walk(list: &mut serde_json::Value, uids: &mut dyn Iterator<Item = String>) {
+        let Some(list) = list.as_array_mut() else { return };
+        for line in list {
+            let Some(uid) = uids.next() else { return };
+            if let Some(o) = line.as_object_mut() {
+                let unsaid = o.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
+                if unsaid {
+                    o.insert("uid".into(), serde_json::json!(uid));
+                }
+            }
+            if let Some(kids) = line.get_mut("children") {
+                walk(kids, uids);
+            }
+        }
+    }
+    let empty_folders = holder.get("folders").and_then(|f| f.as_array()).is_none_or(|f| f.is_empty());
+    if !empty_folders && let Some(first) = holder.get_mut("folders").and_then(|f| f.get_mut(0)).and_then(|g| g.get_mut("tabs")) {
+        walk(first, &mut uids);
+    }
+    if let Some(legacy) = holder.get_mut("tabs") {
+        walk(legacy, &mut uids);
+    }
+    if let Some(rest) = holder.get_mut("folders").and_then(|f| f.as_array_mut()) {
+        for g in rest.iter_mut().skip(1) {
+            if let Some(list) = g.get_mut("tabs") {
+                walk(list, &mut uids);
+            }
+        }
+    }
+}
+
 /// What a tab of a folder on another machine runs when nothing is written:
 /// the shell that opens there, which nothing is typed into
 /// ([`crate::desk::far_run`])
@@ -4431,6 +4673,7 @@ fn resolve_folders(
     defs: &[FolderConfig],
     projects: &[ProjectSpec],
     hosts: &[HostSpec],
+    scope: &str,
 ) -> (Vec<Folder>, Vec<FlatTab>, Vec<String>) {
     let mut folders = Vec::with_capacity(defs.len());
     let mut tabs = Vec::new();
@@ -4511,6 +4754,7 @@ fn resolve_folders(
     // Every tab in the desk at once: automation reaches across folders,
     // so two folders holding a "reviewer" each is the same collision as two in one
     let moved = settle_tab_ids(&mut tabs);
+    settle_tab_uids(&mut tabs, scope);
     (folders, tabs, moved)
 }
 
@@ -5244,6 +5488,10 @@ pub struct TabMark {
     /// The name automation calls it, as settled on reading (see
     /// `settle_tab_ids`) -- so it is known even when the file never wrote one
     pub id: Option<String>,
+    /// Who it is, as settled on reading -- so it is known even when the file
+    /// never wrote one, and written down beside the line when it goes
+    /// anywhere ([`TabMark::stamp`])
+    pub uid: Option<String>,
     pub name: Option<String>,
     pub argv: Vec<String>,
     /// The folder it works in. Copies of one folder's tabs carry the same name
@@ -5255,9 +5503,21 @@ impl TabMark {
     pub fn of(desk: &Desk, t: &FlatTab) -> Self {
         Self {
             id: t.cfg.id.clone(),
+            uid: t.cfg.uid.clone(),
             name: t.cfg.name.clone(),
             argv: t.cfg.command.argv(),
             folder: desk.cwd_of(t),
+        }
+    }
+
+    /// Write down who the tab is on its line, when the line never said. A
+    /// line that did not is read as the uid worked out from its desk and its
+    /// name; taken out, renamed or moved, it would be worked out again from
+    /// somewhere else, and be somebody else
+    fn stamp(&self, line: &mut serde_json::Map<String, serde_json::Value>) {
+        let unsaid = line.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
+        if unsaid && let Some(uid) = self.uid.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            line.insert("uid".into(), serde_json::json!(uid));
         }
     }
 
@@ -5275,6 +5535,11 @@ impl TabMark {
     /// Whether this line is that tab. A line that wrote its own id is that id
     /// and nothing else; one that did not is its name and its command
     fn fits(&self, line: &serde_json::Value) -> bool {
+        // Who it is, when both say: the surest answer there is
+        let uid = line.get("uid").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
+        if let (Some(written), Some(mine)) = (uid, self.uid.as_deref()) {
+            return written == mine;
+        }
         let written = line.get("id").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty());
         match written {
             Some(id) => self.id.as_deref() == Some(id),
@@ -5403,6 +5668,7 @@ pub fn rename_tab_written_at(path: &Path, desk_name: &str, written: usize, mark:
         if unnamed && let Some(id) = mark.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             o.insert("id".into(), serde_json::json!(id));
         }
+        mark.stamp(o);
         match name.trim() {
             "" => {
                 o.shift_remove("name");
@@ -5430,6 +5696,9 @@ pub fn take_tab_at(path: &Path, desk_name: &str, written: usize, mark: &TabMark)
         let (list, last) = tab_list_mut(folders, fi, &p).expect("walked just above");
         let last = &last;
         let mut line = list.remove(*last);
+        if let Some(o) = line.as_object_mut() {
+            mark.stamp(o);
+        }
         let kids = line
             .as_object_mut()
             .and_then(|o| o.shift_remove("children"))
@@ -5783,6 +6052,11 @@ fn retag(tabs: serde_json::Value, mark: &str) -> serde_json::Value {
             if let Some(id) = t.get("id").and_then(|i| i.as_str()).map(str::to_string) {
                 t["id"] = serde_json::json!(format!("{id}@{mark}"));
             }
+            // A copy is a tab of its own: it is given its own uid when it
+            // is written, and keeps nothing of the original's records
+            if let Some(o) = t.as_object_mut() {
+                o.remove("uid");
+            }
             if let Some(kids) = t.get_mut("children") {
                 walk(kids, mark);
             }
@@ -5893,7 +6167,7 @@ impl Config {
             // a screenful of work somebody arranged
             if !self.folders.is_empty() || !self.tabs.is_empty() {
                 let (folders, tabs, moved) =
-                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &[], &self.hosts);
+                    resolve_folders(&foldered_with(&self.folders, &self.tabs), &[], &self.hosts, "");
                 errors.extend(moved_note("DEFAULT", &moved));
                 out.push(Desk {
                     name: "DEFAULT".into(),
@@ -5920,7 +6194,6 @@ impl Config {
             return (out, errors);
         }
         for desk in &self.desks {
-            #[allow(clippy::type_complexity)]
             #[allow(clippy::type_complexity)]
             let (folder_defs, file_name, file_lua, file_secrets, file_stops): (
                 Vec<FolderConfig>,
@@ -5953,7 +6226,15 @@ impl Config {
             // Each project's protected branches go to its folders here, so a
             // folder still has the one answer it has always had -- its own,
             // or the one handed down to it by the project it is in
-            let (folders, tabs, moved) = resolve_folders(&folder_defs, &desk.projects, &self.hosts);
+            // What its tabs' uids are worked out under, when a line has none:
+            // the desk as written where the tabs are written -- its own file
+            // for a desk kept in one, which is all the carrying-forward of
+            // that file can see (`migrate::to_0_24_0`)
+            let scope = match &desk.file {
+                Some(_) => desk_scope(None, file_name.as_deref()),
+                None => desk_scope(desk.id.as_deref(), Some(&desk.name)),
+            };
+            let (folders, tabs, moved) = resolve_folders(&folder_defs, &desk.projects, &self.hosts, &scope);
             // Prefer the display name from config; fall back to the definition file's name if empty
             let name = if desk.name.is_empty() {
                 file_name.unwrap_or_else(|| "UNNAMED".into())
@@ -5989,7 +6270,26 @@ impl Config {
             });
         }
         errors.extend(settle_desk_ids(&mut out));
+        unique_tab_uids(&mut out);
         (out, errors)
+    }
+}
+
+/// No two tabs on any desk are the same tab. Two desks holding one uid is a
+/// line copied by hand from one into the other; the copy, the later one,
+/// is given the uid its own desk and name work out to, which no other tab has
+fn unique_tab_uids(desks: &mut [Desk]) {
+    let mut seen: std::collections::HashSet<String> = Default::default();
+    for d in desks.iter_mut() {
+        let scope = format!("{}#copy", d.id);
+        for t in d.tabs.iter_mut() {
+            let uid = t.cfg.uid.clone().unwrap_or_default();
+            if !seen.insert(uid) {
+                let mine = derived_tab_uid(&scope, t.cfg.id.as_deref().unwrap_or(""));
+                seen.insert(mine.clone());
+                t.cfg.uid = Some(mine);
+            }
+        }
     }
 }
 
@@ -6364,6 +6664,20 @@ pub fn add_tab_at(
     host: Option<&str>,
     new_folder: NewFolder,
 ) -> std::result::Result<String, String> {
+    add_tab_with_uid_at(path, desk, tab, cwd, host, new_folder).map(|(id, _)| id)
+}
+
+/// [`add_tab_at`], answering who the tab is as well as what it is called:
+/// for what keeps something about it from the moment it is made, before the
+/// settings are read again (a job that opened it)
+pub fn add_tab_with_uid_at(
+    path: &Path,
+    desk: &str,
+    tab: serde_json::Value,
+    cwd: Option<&Path>,
+    host: Option<&str>,
+    new_folder: NewFolder,
+) -> std::result::Result<(String, String), String> {
     use crate::i18n::{t, tp};
     let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
     let mut doc = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
@@ -6412,17 +6726,21 @@ pub fn add_tab_at(
         return Err(tp("err.tab_add.taken", &[("id", id)]));
     }
     let mut tab = tab;
+    // A tab added is a new tab, whoever asks for it: a uid in what was
+    // handed over would make it somebody else, with their records
+    without_uids(&mut tab);
     name_new_tabs(&mut tab, &mut used);
     let id = tab
         .get("id")
         .and_then(|i| i.as_str())
         .map(str::to_string)
         .ok_or_else(|| t("err.tab_add.no_command"))?;
+    let uid = tab.get("uid").and_then(|u| u.as_str()).unwrap_or_default().to_string();
     let at = spelled.or_else(|| cwd.map(Path::to_path_buf));
     folder_tabs_on(holder, at.as_deref(), host).push(tab);
     let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     crate::crypto::write_atomic(path, &out).map_err(|e| e.to_string())?;
-    Ok(id)
+    Ok((id, uid))
 }
 
 /// Put one key on the tab with this automation name, wherever in the settings
@@ -8261,7 +8579,7 @@ mod tests {
         for n in &names {
             assert!(!n.is_empty(), "a tab was written down with no name: {names:?}");
             assert!(
-                pet_nouns().contains(n) || n.contains('@'),
+                is_drawn_name(n) || n.contains('@'),
                 "{n} is not a name this app hands out"
             );
         }
@@ -8330,7 +8648,7 @@ mod tests {
         let (dir, file, proj) = one_desk();
         let drawn = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&proj)), None, NewFolder::Refused)
             .expect("added");
-        assert!(pet_nouns().contains(&drawn.as_str()), "{drawn} is not a name this app hands out");
+        assert!(is_drawn_name(&drawn), "{drawn} is not a name this app hands out");
         let kept = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex", "id": "research"}), Some(Path::new(&proj)), None, NewFolder::Refused)
             .expect("added");
         assert_eq!(kept, "research");
@@ -8434,15 +8752,133 @@ mod tests {
     /// when nearly every word is taken -- the draw gives up and walks instead
     #[test]
     fn a_drawn_name_is_one_nothing_else_answers_to() {
-        let bag = pet_nouns();
-        assert!(bag.len() > 100, "the bag is too small to draw from: {}", bag.len());
+        let (adjectives, nouns) = (pet_adjectives(), pet_nouns());
+        assert!(nouns.len() > 100, "the bag is too small to draw from: {}", nouns.len());
+        assert!(adjectives.len() > 100, "too few words to put before them: {}", adjectives.len());
+        // Every pair is taken: it has to come back with something all the same
         let mut used: std::collections::HashSet<String> =
-            bag.iter().map(|w| w.to_string()).collect();
-        // Every word is taken: it has to come back with something all the same
+            adjectives.iter().flat_map(|a| nouns.iter().map(move |n| format!("{a}-{n}"))).collect();
         let drawn = pet_id(&used);
         assert!(!used.contains(&drawn), "{drawn} is another tab's name");
         used.insert(drawn.clone());
         assert_ne!(pet_id(&used), drawn, "it handed out the same name twice");
+    }
+
+    /// Whether `n` is a name [`pet_id`] draws: an adjective, a hyphen, a noun
+    fn is_drawn_name(n: &str) -> bool {
+        n.split_once('-').is_some_and(|(a, b)| pet_adjectives().contains(&a) && pet_nouns().contains(&b))
+    }
+
+    /// A drawn name is two words, still one automation takes as it stands --
+    /// `<@calm-otter>` is read whole, and the settings screen settles on it
+    /// as it is
+    #[test]
+    fn a_drawn_name_is_two_words_automation_takes_whole() {
+        for _ in 0..50 {
+            let n = pet_id(&Default::default());
+            assert!(is_drawn_name(&n), "{n}");
+            assert_eq!(slug_id(&n), n, "{n} would be tidied into something else");
+            assert_eq!(crate::asktab::named_in(&format!("ask <@{n}> this")), std::collections::HashSet::from([n.clone()]), "{n} is not read whole");
+        }
+        for w in pet_adjectives() {
+            assert!((3..=6).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_lowercase()), "{w}");
+            assert!(!NOT_A_TAB_ADJECTIVE.contains(&w), "{w}");
+        }
+    }
+
+    /// A tab is who it is by its uid: a new one is drawn for every tab made,
+    /// one worked out from a desk and a name is the same each time and never
+    /// one that was drawn, and the shape tells a uid from a name
+    #[test]
+    fn a_uid_is_drawn_once_and_worked_out_the_same_every_time() {
+        let a = new_tab_uid();
+        assert!(is_tab_uid(&a), "{a}");
+        assert_ne!(a, new_tab_uid(), "two tabs were made the same tab");
+        assert_eq!(&a[14..15], "4", "a drawn uid is a random one");
+        let d = derived_tab_uid("work", "tiger");
+        assert!(is_tab_uid(&d), "{d}");
+        assert_eq!(&d[14..15], "5", "a worked-out uid could be taken for a drawn one");
+        assert_eq!(d, derived_tab_uid("work", "tiger"), "the same line read twice was two tabs");
+        assert_ne!(d, derived_tab_uid("home", "tiger"), "two desks' tigers are one tab");
+        assert_ne!(d, derived_tab_uid("work", "otter"));
+        assert!(!is_tab_uid("tiger") && !is_tab_uid("calm-otter") && !is_tab_uid(&a.to_uppercase()));
+        assert_eq!(desk_scope(Some(" work "), Some("Work")), "work");
+        assert_eq!(desk_scope(Some(""), Some("Work")), "Work");
+        assert_eq!(desk_scope(None, None), "");
+    }
+
+    /// Every tab line written with a uid by the carrying-forward is read as
+    /// that uid, so nothing kept under it before the write is cut loose by it;
+    /// a line that has one keeps it, and a second run changes nothing
+    #[test]
+    fn the_uids_written_are_the_ones_reading_gave() {
+        let text = r#"{"desks":[
+            {"name":"Work","id":"work","folders":[
+                {"cwd":"D:/a","tabs":[{"name":"Claude","command":"claude","children":[{"command":"codex"}]},
+                                      {"id":"kept","uid":"11111111-2222-4333-8444-555555555555","command":"claude"}]},
+                {"cwd":"D:/b","tabs":[{"id":"tiger","command":"claude"}]}],
+             "tabs":[{"id":"old","command":"bash"}]},
+            {"name":"Home","folders":[{"tabs":[{"id":"tiger","command":"claude"}]}]}]}"#;
+        let before: Config = serde_json::from_str(text).unwrap();
+        let (read, _) = before.resolve_desks();
+        let mut doc: serde_json::Value = serde_json::from_str(text).unwrap();
+        fill_tab_uids(&mut doc);
+        let after: Config = serde_json::from_value(doc.clone()).unwrap();
+        let (again, _) = after.resolve_desks();
+        let uids = |desks: &[Desk]| -> Vec<(String, String)> {
+            desks.iter().flat_map(|d| d.tabs.iter().map(|t| (t.cfg.id.clone().unwrap(), t.cfg.uid.clone().unwrap()))).collect()
+        };
+        assert_eq!(uids(&read), uids(&again), "reading the written file gave other tabs");
+        let all = uids(&again);
+        assert_eq!(all.len(), 6);
+        let set: std::collections::HashSet<_> = all.iter().map(|(_, u)| u.clone()).collect();
+        assert_eq!(set.len(), all.len(), "two tabs are one: {all:?}");
+        assert!(all.iter().any(|(_, u)| u == "11111111-2222-4333-8444-555555555555"), "a written uid was replaced");
+        // Every line, children and the old shape included, says so now
+        let w = &doc["desks"][0];
+        for line in [&w["folders"][0]["tabs"][0], &w["folders"][0]["tabs"][0]["children"][0], &w["folders"][1]["tabs"][0], &w["tabs"][0]] {
+            assert!(line["uid"].as_str().is_some_and(is_tab_uid), "{line}");
+        }
+        // A desk kept in a file of its own is that file's to carry forward
+        let mut side = serde_json::json!({"desks": [{"name": "Side", "file": "desks/side.json"}]});
+        let untouched = side.clone();
+        fill_tab_uids(&mut side);
+        assert_eq!(side, untouched);
+        let once = doc.clone();
+        fill_tab_uids(&mut doc);
+        assert_eq!(doc, once, "it changed the second time");
+    }
+
+    /// Two tabs holding one uid -- a line copied by hand -- are two tabs on
+    /// reading, the first keeping it, on one desk or across two
+    #[test]
+    fn a_copied_uid_is_not_two_tabs() {
+        let u = "11111111-2222-4333-8444-555555555555";
+        let text = format!(
+            r#"{{"desks":[{{"name":"A","folders":[{{"tabs":[{{"id":"one","uid":"{u}","command":"claude"}},{{"id":"two","uid":"{u}","command":"claude"}}]}}]}},
+                          {{"name":"B","folders":[{{"tabs":[{{"id":"one","uid":"{u}","command":"claude"}}]}}]}}]}}"#
+        );
+        let (desks, _) = serde_json::from_str::<Config>(&text).unwrap().resolve_desks();
+        let got: Vec<String> = desks.iter().flat_map(|d| d.tabs.iter().map(|t| t.cfg.uid.clone().unwrap())).collect();
+        assert_eq!(got[0], u);
+        assert!(got[1] != u && got[2] != u && got[1] != got[2], "{got:?}");
+    }
+
+    /// A tab added is a new tab: given a uid of its own, whatever it was
+    /// handed; a worktree's copies are new tabs too
+    #[test]
+    fn a_tab_added_or_copied_is_somebody_new() {
+        let (dir, file, proj) = one_desk();
+        let u = "11111111-2222-4333-8444-555555555555";
+        add_tab_at(&file, "Demo", serde_json::json!({"command": "codex", "uid": u}), Some(Path::new(&proj)), None, NewFolder::Refused)
+            .expect("added");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let line = doc["desks"][0]["folders"][0]["tabs"].as_array().unwrap().last().unwrap().clone();
+        let uid = line["uid"].as_str().unwrap_or_default();
+        assert!(is_tab_uid(uid) && uid != u, "it became the tab it was told it was: {line}");
+        let copied = retag(serde_json::json!([{"id": "a", "uid": u, "command": "claude", "children": [{"uid": u, "command": "x"}]}]), "b");
+        assert!(copied[0].get("uid").is_none() && copied[0]["children"][0].get("uid").is_none(), "{copied}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A settings file of its own, for the close-and-reopen tests
@@ -8760,7 +9196,7 @@ mod tests {
     fn a_settings_file_that_cannot_be_read_is_not_written_over() {
         let broken = r#"{"desks": [{"name": "Demo","#;
         let (dir, file) = tabs_file("close-broken", broken);
-        let mark = TabMark { id: Some("x".into()), name: None, argv: vec![], folder: None };
+        let mark = TabMark { id: Some("x".into()), uid: None, name: None, argv: vec![], folder: None };
         assert!(take_tab_at(&file, "Demo", 0, &mark).is_err());
         assert!(append_folder_at(&file, "Demo", None, Path::new("x"), None, &Start::Nothing, None).is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), broken, "the file was written over");
@@ -9787,7 +10223,7 @@ mod browser_kind_tests {
         let desk = read();
         assert_eq!((desk.tabs[page].cfg.name.as_deref(), desk.tabs[page].cfg.id.as_deref()), (None, Some("shop")));
         // A place that holds somebody else is refused rather than renamed
-        let stranger = crate::config::TabMark { id: Some("nobody".into()), name: None, argv: vec!["git".into()], folder: mark.folder.clone() };
+        let stranger = crate::config::TabMark { id: Some("nobody".into()), uid: None, name: None, argv: vec!["git".into()], folder: mark.folder.clone() };
         assert!(crate::config::rename_tab_written_at(&path, "W", page, &stranger, "x").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

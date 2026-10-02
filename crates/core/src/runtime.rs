@@ -1088,6 +1088,15 @@ fn tend_asks(
                 .map(crate::orch::glue::tab_id)
                 .unwrap_or_else(|| c.to_string())
         };
+        // ...and who it is, for its inbox: a caller closed since has none,
+        // and a tab given its name since is somebody else
+        let caller_uid = |c: &str| {
+            among
+                .iter()
+                .find(|t| t.called() == c)
+                .map(|t| t.uid().to_string())
+                .unwrap_or_else(|| crate::convo::db::gone_uid("", c))
+        };
         let target = find(&a.target);
         if let Some(t) = target
             && a.time_to_say_why(t.state)
@@ -1242,8 +1251,9 @@ fn tend_asks(
                         true
                     }
                     ("DONE", Some(r)) if a.caller.is_some() => {
-                        let to = caller_id(a.caller.as_deref().unwrap_or_default());
-                        orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &r);
+                        let caller = a.caller.as_deref().unwrap_or_default();
+                        let to = caller_id(caller);
+                        orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &r);
                         append_hook_log(&format!("ask_tab: {}'s reply is in {to}'s inbox", a.target));
                         false
                     }
@@ -1251,8 +1261,9 @@ fn tend_asks(
                 }
             }
             Step::Hand(text) => {
-                let to = caller_id(a.caller.as_deref().unwrap_or_default());
-                orchestra.mail_tab(&to, &a.target, &crate::asktab::handed_subject(&a.target), &text);
+                let caller = a.caller.as_deref().unwrap_or_default();
+                let to = caller_id(caller);
+                orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &text);
                 append_hook_log(&format!("ask_tab: {}'s answer is in {to}'s inbox", a.target));
                 false
             }
@@ -1277,7 +1288,9 @@ const TYPED_BY_APP_MS: i64 = 10 * 60 * 1000;
 /// Whose conversation a tab's CLI is having: the tab and its CLI's own id for
 /// the conversation. What a conversation of AIs grows from (`convo::db::Store::thread_for`)
 fn origin_of(t: &Tab) -> String {
-    format!("{}/{}", crate::orch::glue::tab_id(t), t.session.as_ref().map_or("", |s| s.id.as_str()))
+    // By uid: a tab with no conversation yet is "<uid>/", and by name that
+    // was every earlier tab of the name with none either
+    format!("{}/{}", t.uid(), t.session.as_ref().map_or("", |s| s.id.as_str()))
 }
 
 /// The asks being answered now, by the name of the tab answering
@@ -2133,11 +2146,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // record, what each profile says about pasting, and when the tabs were
     // last looked at for it
     let mut orchestra = crate::orch::Orchestra::default();
+    // What an older version wrote under the tabs' names goes under their
+    // uids, before anything new is written beside it
+    orchestra.adopt(
+        &desks
+            .iter()
+            .flat_map(|d| d.tabs.iter().map(|t| (t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
+            .collect::<Vec<_>>(),
+    );
     let mut orch_profiles = crate::orch::glue::Profiles::default();
     // What only this app saw of each AI tab's conversation (`convo`): which
     // conversation it is on, who sent what into it, who answered its
     // questions and who stopped it. Written from this loop only
     let mut convo_log = crate::convo::Log::default();
+    // What an older version wrote under the tabs' names goes under their
+    // uids, before anything new is written beside it
+    convo_log.adopt(
+        &desks
+            .iter()
+            .flat_map(|d| d.tabs.iter().map(move |t| (d.id.clone(), t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
+            .collect::<Vec<_>>(),
+    );
     // A page of a conversation for the column's panel, read on a thread
     let (convo_tx, convo_rx) = std::sync::mpsc::channel::<crate::convo::read::Found>();
     // AIs conferring (`convo::confer`): how many times, and on which desk, one
@@ -3228,9 +3257,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if remade {
                 continue;
             }
-            pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| {
-                keyed.iter().position(|t| t.matches(k)).map(|i| i + 1)
-            });
+            pane_layout = splits.take(&key, written.as_ref(), &pane_layout, |k| pane_at(&surfaces, &tabs, k));
             open_split = Some(key);
             active = pane_layout.focused_surface();
         }
@@ -3262,10 +3289,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // dragged divider is -- this runs every pass, and a file per frame is
         // not a saved setting, it is a disk being worn out
         if let Some(key) = open_split.clone() {
-            let keyed = surface_keys(&surfaces, &tabs);
-            let now = crate::splits::Splits::written(&pane_layout, |s| {
-                keyed.get(s - 1).and_then(|k| k.id.clone())
-            });
+            let keyed = pane_keys(&surfaces, &tabs);
+            let now = crate::splits::Splits::written(&pane_layout, |s| keyed.get(s - 1).cloned().flatten());
             // Only ever an arrangement, never the absence of one. A split
             // is two panes or more, so "nothing to write" here means the tree
             // in hand is not this row's -- somebody replaced it -- and writing
@@ -3635,16 +3660,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             // Which conversation each AI tab is on, and every change of state,
             // for the record of conversations. A model bridge keeps no record
-            // of its own to put this beside
+            // of its own to put this beside. Who every tab is first, so a name
+            // a note or a conversation says is read as the tab called that now
+            convo_log.roster(
+                desks
+                    .get(desk_index)
+                    .map(|d| tabs.iter().map(move |t| (d.id.as_str(), t)))
+                    .into_iter()
+                    .flatten()
+                    .chain(desk_tabs.iter().enumerate().filter(|(i, _)| *i != desk_index).flat_map(|(i, list)| {
+                        let desk = desks.get(i).map_or("", |d| d.id.as_str());
+                        list.iter().map(move |t| (desk, t))
+                    }))
+                    .map(|(desk, t)| (desk, t.called(), t.uid())),
+            );
             convo_log.take_notes();
             // A job's decision, put in the conference of the desk its lead is on
             let answering = answering_in(&tab_asks);
             for (lead, text, _) in crate::convo::take_agreed() {
-                let tab = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| crate::orch::glue::tab_id(t) == lead);
-                if let (Some(desk), Some(tab)) = (desk_of_tab(&lead, &desks, desk_index, &tabs, &desk_tabs), tab)
+                // The lead, by uid: a job's lead that has closed says nothing
+                let tab = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.uid() == lead);
+                let name = tab.map(crate::orch::glue::tab_id).unwrap_or_default();
+                if let (Some(desk), Some(tab)) = (desk_of_tab(&name, &desks, desk_index, &tabs, &desk_tabs), tab)
                     && let Some((thread, _)) = thread_of_tab(&mut convo_log, &answering, &desk, tab)
                 {
-                    convo_log.line(&desk, thread, Some(&lead), &text, None, "agreed");
+                    convo_log.line(&desk, thread, Some(&name), &text, None, "agreed");
                 }
             }
             // What a person typed at a tab's own prompt (heard from its CLI):
@@ -3653,8 +3693,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(desk) = desks.get(desk_index).map(|d| d.id.clone()) {
                 for t in tabs.iter_mut() {
                     for text in t.take_typed() {
-                        let id = crate::orch::glue::tab_id(t);
-                        if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(&id, &text, TYPED_BY_APP_MS) {
+                        if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(t.uid(), &text, TYPED_BY_APP_MS) {
                             continue;
                         }
                         mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&text));
@@ -3679,11 +3718,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if !t.is_ai() || t.is_model() {
                     continue;
                 }
-                let id = crate::orch::glue::tab_id(t);
                 let cli = t.ai_kind().unwrap_or_default();
-                convo_log.follow(&id, &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
+                convo_log.follow(t.uid(), &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
                 if old != new {
-                    convo_log.state(&id, new, t.limit_note());
+                    convo_log.state(t.uid(), new, t.limit_note());
                 }
             }
             // What people asked the AIs, gathered by folder, and which folders
@@ -4108,10 +4146,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
             // Retire the API keys of tabs that are gone. Told the live set
             // rather than each closure: tabs leave in several ways, and a key
-            // that outlives its tab is a working key nobody is watching
+            // that outlives its tab is a working key nobody is watching.
+            // Every desk's tabs, not only the one in front: a desk behind keeps
+            // its tabs running, and a key is minted only when a tab's program
+            // starts -- retired here, a tab behind had its `shikisha` and its
+            // CLI's hooks refused for as long as its program ran
             if let Some(a) = api_server.as_ref() {
                 a.retain_tabs(
-                    &tabs.iter().map(|t| t.called().to_string()).collect::<Vec<_>>(),
+                    &tabs.iter().chain(desk_tabs.iter().flatten()).map(|t| t.uid().to_string()).collect::<Vec<_>>(),
                 );
             }
 
@@ -4320,7 +4362,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let reply = match (tabs[idx - 1].notify_reply, remote_ui.as_ref())
                             {
                                 (true, Some(r)) => Some(r.reply_link(reply::Ticket::new(
-                                    tabs[idx - 1].id.clone(),
+                                    Some(tabs[idx - 1].uid().to_string()),
                                     idx,
                                     tabs[idx - 1].title.clone(),
                                     ctx.output.clone(),
@@ -4548,7 +4590,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // its line open for the answer, so this is drained every turn (16ms)
         // rather than on the 200ms detection tick
         if let Some(a) = api_server.as_ref() {
-            while let Ok(call) = a.rx.try_recv() {
+            while let Ok(mut call) = a.rx.try_recv() {
+                // A tab's key names it by who it is (`api::child_env`); every
+                // command takes a caller by the name it is called now. A key
+                // whose tab has closed -- a process left running somewhere --
+                // is told so, and never taken for a person's call or for the
+                // next tab to draw the name
+                if let Some(uid) = call.caller.take() {
+                    match tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.uid() == uid) {
+                        Some(t) => call.caller = Some(t.called().to_string()),
+                        None => {
+                            let _ = call.reply.send(Err(i18n::t("err.api.tab_closed")));
+                            continue;
+                        }
+                    }
+                }
                 // A desk with no Lua of its own still has an engine's
                 // worth of commands to offer; make one rather than answer
                 // "not available" (the same gap-filler as ▶)
@@ -5073,9 +5129,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // without the person naming it, and closes it when it is done
                 let answer = match answer {
                     Ok(mut v) if call.method == "open_ai_tab" || call.method == "open_tab" => {
-                        if let Some(id) = v.get("id").and_then(serde_json::Value::as_str).map(str::to_string) {
+                        // Who the new tab is goes to the job and no further:
+                        // what an AI calls a tab is its id
+                        let uid = v.as_object_mut().and_then(|o| o.remove("uid")).and_then(|u| u.as_str().map(str::to_string));
+                        if let (Some(id), Some(uid)) = (v.get("id").and_then(serde_json::Value::as_str).map(str::to_string), uid) {
                             let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
-                            if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id) {
+                            if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id, &uid) {
                                 v["next"] = next;
                             }
                         }
@@ -5145,10 +5204,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A person typing into a tab a job opened makes it theirs
             for t in tabs.iter() {
                 if let Some(ms) = t.last_manual_ms {
-                    let id = crate::orch::glue::tab_id(t);
-                    if orch_manual.get(&id).is_none_or(|seen| *seen < ms) {
-                        if orch_manual.insert(id.clone(), ms).is_some() {
-                            orchestra.person_typed(&id);
+                    let uid = t.uid().to_string();
+                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms) {
+                        if orch_manual.insert(uid.clone(), ms).is_some() {
+                            orchestra.person_typed(&uid);
                         }
                     }
                 }
@@ -5227,7 +5286,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .entry(at.machine_key())
                         .or_insert_with(|| crate::farlink::Want { at: at.clone(), host: host.to_string(), keys: Vec::new() })
                         .keys
-                        .push((t.called().to_string(), key.clone()));
+                        .push((t.uid().to_string(), key.clone()));
                 }
                 bridges.tend(wanted.into_values().collect());
                 // The tabs this PC's resident process holds, their keys handed
@@ -5236,7 +5295,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .iter()
                     .chain(desk_tabs.iter().flatten())
                     .filter(|t| t.far_term.as_ref().is_some_and(|f| f.here()))
-                    .filter_map(|t| t.far_key.clone().map(|k| (t.called().to_string(), k)))
+                    .filter_map(|t| t.far_key.clone().map(|k| (t.uid().to_string(), k)))
                     .collect();
                 if !here.is_empty() {
                     std::thread::spawn(move || crate::localkeep::give_keys(here));
@@ -5307,10 +5366,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // way to learn whether it landed
                     remote::RemoteCmd::Reply { tab_id, tab, name, dest, text } => {
                         let by_number = |n: usize| session_at(&surfaces, n).and_then(|i| tabs.get(i));
+                        // The tab the ticket was written for: by who it is,
+                        // or by its id when a script wrote it -- never a uid
+                        // taken for a name
                         let target = (1..=tabs.len())
                             .find(|n| {
                                 tab_id.as_deref().is_some_and(|want| {
-                                    by_number(*n).and_then(|t| t.id.as_deref()) == Some(want)
+                                    by_number(*n).is_some_and(|t| {
+                                        t.uid() == want || (!config::is_tab_uid(want) && t.id.as_deref() == Some(want))
+                                    })
                                 })
                             })
                             .or_else(|| {
@@ -6677,7 +6741,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // where the calls its AI made while the app was away are listed
         // (far-keep plan §4.6): put in front, with its conversation beside it
         for key in crate::farlink::take_convo_wanted() {
-            let named = tabs.iter().find(|t| crate::farlink::key_name(t.called()) == key).map(|t| t.called().to_string());
+            let named = tabs.iter().find(|t| crate::farlink::key_name(t.uid()) == key).map(|t| t.called().to_string());
             match named.and_then(|n| hooks::TabRef::Name(n).resolve(&surface_keys(&surfaces, &tabs))) {
                 Some(at) => {
                     active = at;
@@ -6713,8 +6777,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // nobody had asked for either of them
                     let mut made = crate::layout::Layout::single(active);
                     made.split(dir, 0);
-                    let keyed = surface_keys(&surfaces, &tabs);
-                    let panes = made.keep(|s| keyed.get(s - 1).and_then(|k| k.id.clone()));
+                    let keyed = pane_keys(&surfaces, &tabs);
+                    let panes = made.keep(|s| keyed.get(s - 1).cloned().flatten());
                     // The folder in front, on the machine it is on
                     let here = surface_place_at(&surfaces, &tabs, active).map(|k| crate::uistate::place_of(&k));
                     let desk_name = desks.get(desk_index).map(|d| d.name.clone()).unwrap_or_default();
@@ -11392,13 +11456,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // What comes along is the project's answer for each ignore line and
             // for each file it brings from elsewhere, with whatever the dialog
             // changed for this one folder laid over it
-            let rules = project.map(|p| p.bring.clone()).unwrap_or_default();
+            // The app's own rules for places inside come with them, the way
+            // the project has changed them (see `inside::effective`)
+            let rules = crate::inside::effective(&project.map(|p| p.bring.clone()).unwrap_or_default());
             // Whether this ask opens the dialog. What each offered thing holds
             // is counted afresh then -- a build folder grows between one
             // worktree and the next -- and a MicroVM's sign-in is asked of the
             // checkout's machine then, and again only while something of this
             // program keeps it awake
             let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
+            // Which of the app's rules this project has not been shown: read
+            // as the dialog opens and kept while it is open, then the project
+            // counts as shown -- the dialog says them this once
+            let shipped_new = match branch_view.as_ref().filter(|_| !opening) {
+                Some(v) => v.shipped_new.clone(),
+                None => {
+                    let name = project.map(|p| p.name.clone()).unwrap_or_default();
+                    let new = crate::inside::new_to(&name);
+                    crate::inside::mark_shown(&name);
+                    new
+                }
+            };
             sizes_watch = None;
             let offers = repo.as_deref().map(|main| {
                 let mut carry = crate::worktree::carryables(main, &rules);
@@ -11551,6 +11629,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 carry: carryable.clone(),
                 carry_lines,
                 carry_sizes,
+                shipped_rules: crate::inside::SHIPPED.iter().map(|s| s.path.to_string()).collect(),
+                shipped_new,
                 looks,
                 large_bytes: crate::inherit::LARGE_BYTES,
                 large_files: crate::inherit::LARGE_FILES,
@@ -13146,7 +13226,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     job: None,
                                     why: None,
                                 };
-                                crate::convo::note_stopped(&crate::orch::glue::tab_id(t), stop);
+                                crate::convo::note_stopped(t.uid(), stop);
                             }
                             let halted: Vec<&str> = halted.iter().map(|t| t.title.as_str()).collect();
                             append_hook_log(&format!(
@@ -15993,7 +16073,7 @@ fn convo_target(
         .ok_or_else(|| i18n::t("convo.no_record"))?;
     Ok(crate::convo::read::Target {
         panel: panel.to_string(),
-        tab: Some(crate::orch::glue::tab_id(t)),
+        tab: Some(t.uid().to_string()),
         live: t.record_at(),
         glob,
         machine: t.machine(),
@@ -16009,7 +16089,7 @@ fn record_sent(tabs: &[Tab], surfaces: &[Surface], at: usize, text: &str, from: 
         && t.is_ai()
         && !t.is_model()
     {
-        crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[text], from);
+        crate::convo::note_sent(t.uid(), &[text], from);
     }
 }
 
@@ -16020,13 +16100,13 @@ fn record_keys(t: &Tab, bytes: &[u8], device: crate::convo::Device) {
     if !t.is_ai() || t.is_model() {
         return;
     }
-    let id = crate::orch::glue::tab_id(t);
+    let id = t.uid();
     if bytes == b"\x1b" && t.state == TabState::Busy {
         let stop = crate::convo::Stop { by: crate::convo::By::Person, device: Some(device), how: "esc", job: None, why: None };
-        crate::convo::note_stopped(&id, stop);
+        crate::convo::note_stopped(id, stop);
         return;
     }
-    crate::convo::note_touched(&id, crate::convo::Origin::person(device, "keys"));
+    crate::convo::note_touched(id, crate::convo::Origin::person(device, "keys"));
 }
 
 pub fn hand_line(
@@ -17063,6 +17143,34 @@ pub fn surface_place_at(surfaces: &[Surface], tabs: &[Tab], surface: usize) -> O
     }
 }
 
+/// What each surface is written down as in a split's panes (`layout::Kept`):
+/// a terminal by who it is (`Tab::uid`), so a pane whose tab has closed is
+/// never filled by another tab that drew its name; a page or a panel by its
+/// key, which is all it has
+pub fn pane_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<Option<String>> {
+    surfaces
+        .iter()
+        .zip(surface_keys(surfaces, tabs))
+        .map(|(p, k)| match p {
+            Surface::Session(i) => tabs.get(*i).map(|t| t.uid().to_string()),
+            _ => k.id,
+        })
+        .collect()
+}
+
+/// The surface (1..) a pane written down as `key` shows now: the terminal
+/// that is that uid, a page or panel of that key -- or, in a split written
+/// before terminals were kept by uid, the tab called that
+pub fn pane_at(surfaces: &[Surface], tabs: &[Tab], key: &str) -> Option<usize> {
+    if let Some(i) = pane_keys(surfaces, tabs).iter().position(|k| k.as_deref() == Some(key)) {
+        return Some(i + 1);
+    }
+    if crate::config::is_tab_uid(key) {
+        return None;
+    }
+    surface_keys(surfaces, tabs).iter().position(|t| t.matches(key)).map(|i| i + 1)
+}
+
 pub fn surface_keys(surfaces: &[Surface], tabs: &[Tab]) -> Vec<hooks::TabKey> {
     surfaces
         .iter()
@@ -17457,7 +17565,7 @@ pub fn exec_commands(
                         continue;
                     }
                     if t.is_ai() && !t.is_model() {
-                        crate::convo::note_touched(&crate::orch::glue::tab_id(t), crate::convo::Origin::automation("script"));
+                        crate::convo::note_touched(t.uid(), crate::convo::Origin::automation("script"));
                     }
                     let _ = t.write_bytes(keys.as_bytes());
                 }
@@ -17570,7 +17678,7 @@ pub fn exec_commands(
                 // Words from another tab are not the person's: what they name
                 // does not let this tab drive anything (see orch::glue::named_for)
                 if origin != 0 && from.is_some() {
-                    crate::orch::glue::note_typed(&crate::orch::glue::tab_id(t), &text);
+                    crate::orch::glue::note_typed(t.uid(), &text);
                 }
                 if t.is_model() {
                     // model bridge: a turn of the tab's own conversation, shown
@@ -17588,7 +17696,7 @@ pub fn exec_commands(
                         (Some(f), o) if o != 0 => crate::convo::Origin::tab(f, "ask"),
                         _ => crate::convo::Origin::automation("script"),
                     };
-                    crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[&text], sender);
+                    crate::convo::note_sent(t.uid(), &[&text], sender);
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 // A self-send (the opening nudge, a model's self-kick) starts
@@ -19215,6 +19323,7 @@ mod tests {
                 panes: None,
                 tabs: vec![crate::lastsession::SavedTab {
                     host: None,
+                    uid: None,
                     title: "AGENT".into(),
                     id: None,
                     cwd: Some("D:\\Work".into()),
