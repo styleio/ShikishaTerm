@@ -538,15 +538,24 @@ impl FarTerm {
     /// Attached to, as `owner`: what was typed while it was not goes in now,
     /// ahead of anything typed after. The owner is set under the same lock
     /// the writer reads it under, and what was held is sent before that lock
-    /// is let go of -- so no key typed from here on can overtake it
+    /// is let go of -- so no key typed from here on can overtake it.
+    ///
+    /// When the line went in that moment, what was held is kept, and the
+    /// terminal is taken as not attached to: what is typed next is kept
+    /// behind it, and all of it goes in at the next attach -- the first words
+    /// after a start are what this is for, and a line that blinks would
+    /// otherwise lose them after all
     fn owned_by(&self, owner: u64) {
         let mut held = self.held_in.lock().unwrap_or_else(|e| e.into_inner());
         self.owner.store(owner, Ordering::SeqCst);
         if owner == 0 || held.is_empty() {
             return;
         }
-        let keys = std::mem::take(&mut *held);
-        self.say(json!({ "do": "in", "term": self.term(), "owner": owner, "b": b64(&keys) }));
+        if !self.say(json!({ "do": "in", "term": self.term(), "owner": owner, "b": b64(&held) })) {
+            self.owner.store(0, Ordering::SeqCst);
+            return;
+        }
+        held.clear();
     }
 
     /// What is run on this PC, said in full (`ask_open`)
@@ -1224,6 +1233,26 @@ impl portable_pty::ChildKiller for FarKiller {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_was_typed_before_an_attach_is_kept_when_the_line_goes_as_it_is_sent() {
+        use std::io::Write as _;
+        let term = std::sync::Arc::new(super::FarTerm::new(
+            &super::Place::Here,
+            super::Ident { term: 7, generation: "g".into() },
+            "otter",
+            (24, 80),
+            (None, None),
+            crate::config::Away::Stop,
+        ));
+        let mut w = super::FarWriter { term: std::sync::Arc::clone(&term) };
+        w.write_all(b"first words").unwrap();
+        // Attached to with no line to send them on: kept, not lost
+        term.owned_by(5);
+        assert_eq!(term.owner.load(std::sync::atomic::Ordering::SeqCst), 0, "taken as attached with nothing sent");
+        w.write_all(b" and more").unwrap();
+        assert_eq!(&*term.held_in.lock().unwrap(), b"first words and more", "what was typed went missing or out of order");
+    }
+
     use super::*;
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {

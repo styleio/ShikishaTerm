@@ -2562,27 +2562,87 @@ pub fn list_secrets(
 /// can be changed without typing the password again -- the screen has no way
 /// to show it, so asking for it to toggle a checkbox would mean going to find
 /// it a second time
-/// Every secret filed under `from` refiled under `to`, the rest of each key
-/// kept: what a desk's or a tab's secrets are filed under when its id is
-/// changed (the key holds the id, `desk_secret_key`, `ssh/<desk>/<tab>/`).
-/// Left where they were, they belonged to nobody, and to whichever desk or
-/// tab was given the old id next. How many were moved
-pub fn move_secrets(path: &std::path::Path, password: Option<&str>, from: &str, to: &str) -> anyhow::Result<usize> {
-    let mut moved = 0;
-    for (key, meta) in list_secrets(path, password)? {
-        let Some(rest) = key.strip_prefix(from) else { continue };
-        let value = secret_value(path, password, &key).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.secret.unreadable")))?;
-        upsert_secret(path, password, &format!("{to}{rest}"), &meta, &value)?;
-        delete_secret(path, password, &key)?;
-        moved += 1;
+/// Where each secret filed under a desk or a tab whose id changed goes: what
+/// a desk's or a tab's secrets are filed under holds its id
+/// (`desk_secret_key`, `ssh/<desk>/<tab>/`), and left where they were they
+/// would belong to nobody, and to whichever desk or tab was given the old id
+/// next.
+///
+/// `moves` are (from, to) places ([`secrets_movable`]) named by the ids as
+/// they were, and they apply all at once: two desks that swapped ids swap
+/// their secrets, where moving one place after the other would file the first
+/// desk's over the second's and then carry both back. A key under two places
+/// (a desk's connections, and one tab's among them) goes by the narrower.
+/// Worked out from the store as it is and written by nobody: an error, naming
+/// the key, when a secret would land on a name another one keeps -- refused
+/// before anything is written, since writing it would lose one of the two.
+/// The renames, as (old key, new key)
+pub fn plan_secret_moves(
+    path: &std::path::Path,
+    password: Option<&str>,
+    moves: &[(String, String)],
+) -> anyhow::Result<Vec<(String, String)>> {
+    // Locked (a master password is set and not given), the store cannot be
+    // read, and what is in it cannot be moved
+    let root = read_secrets_value(path, password)
+        .map_err(|e| anyhow::anyhow!(crate::i18n::tp("err.secret.move_locked", &[("error", &format!("{e:#}"))])))?;
+    let mut keys: Vec<String> = Vec::new();
+    for side in ["tokens", "meta", "descriptions"] {
+        for k in root.get(side).and_then(|v| v.as_object()).into_iter().flat_map(|o| o.keys()) {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
     }
-    Ok(moved)
+    let mut plan = Vec::new();
+    for key in &keys {
+        let Some((from, to)) = moves.iter().filter(|(from, _)| key.starts_with(from.as_str())).max_by_key(|(from, _)| from.len())
+        else {
+            continue;
+        };
+        let new = format!("{to}{}", &key[from.len()..]);
+        if new == *key {
+            continue;
+        }
+        if !valid_secret_key(&new) {
+            anyhow::bail!(crate::i18n::t("err.config.invalid_key_chars"));
+        }
+        plan.push((key.clone(), new));
+    }
+    let moved: std::collections::HashSet<&str> = plan.iter().map(|(old, _)| old.as_str()).collect();
+    let mut taken: std::collections::HashSet<&str> = keys.iter().map(String::as_str).filter(|k| !moved.contains(k)).collect();
+    for (_, new) in &plan {
+        if !taken.insert(new.as_str()) {
+            anyhow::bail!(crate::i18n::tp("err.secret.move_taken", &[("key", new)]));
+        }
+    }
+    Ok(plan)
+}
+
+/// The renames [`plan_secret_moves`] worked out, made in one write: every
+/// secret's value, what it is for and its line of description go to the new
+/// name together. Nothing is written when there is nothing to rename
+pub fn rename_secrets(path: &std::path::Path, password: Option<&str>, plan: &[(String, String)]) -> anyhow::Result<()> {
+    if plan.is_empty() {
+        return Ok(());
+    }
+    let to: std::collections::HashMap<&str, &str> = plan.iter().map(|(old, new)| (old.as_str(), new.as_str())).collect();
+    let mut root = read_secrets_value(path, password)?;
+    for side in ["tokens", "meta", "descriptions"] {
+        if let Some(o) = root.get_mut(side).and_then(|v| v.as_object_mut()) {
+            *o = std::mem::take(o)
+                .into_iter()
+                .map(|(k, v)| (to.get(k.as_str()).map_or(k, |n| n.to_string()), v))
+                .collect();
+        }
+    }
+    write_secrets_value(path, password, &root)
 }
 
 /// Whether `from` and `to` are the same kind of place secrets are filed
 /// under by an id, and nothing else: a desk's (`<desk>.`), a desk's
 /// destinations (`notify/<desk>/`), a desk's connections (`ssh/<desk>/`) or a
-/// tab's (`ssh/<desk>/<tab>/`). What [`move_secrets`] may be asked to move
+/// tab's (`ssh/<desk>/<tab>/`). What [`plan_secret_moves`] may be asked to move
 pub fn secrets_movable(from: &str, to: &str) -> bool {
     let kind = |p: &str| -> Option<(&'static str, usize)> {
         let part = |s: &str| !s.is_empty() && !s.contains(['/', '.']);

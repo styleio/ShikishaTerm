@@ -295,14 +295,18 @@ pub fn let_go() {
 
 /// How many terminals the resident process holds that are still running,
 /// asked of it when it is there. Never starts one: a count is not a reason
-/// to have a resident process. Blocks for an answer; call off the loop
-pub fn held_count() -> usize {
-    if connect_existing().is_err() {
-        return 0;
+/// to have a resident process. None there is none running; one there that
+/// could not be reached or did not answer is an error, not a 0 -- a 0 hides
+/// the terminals still running and the one press that stops them. Blocks
+/// for an answer; call off the loop
+pub fn held_count() -> Result<usize> {
+    if matches!(crate::fardaemon::find(&keep_door()?), crate::fardaemon::Found::Nobody) {
+        return Ok(0);
     }
+    connect_existing()?;
     crate::farterm::list_held(&crate::farterm::Place::Here)
         .and_then(|m| m["terms"].as_array().map(|t| t.iter().filter(|t| t["ended"] == false).count()))
-        .unwrap_or(0)
+        .ok_or_else(|| anyhow!("this PC's resident process did not say what it holds"))
 }
 
 /// Stop every terminal the resident process holds, and the resident process

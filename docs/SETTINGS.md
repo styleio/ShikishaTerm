@@ -18,7 +18,7 @@ Newer versions, and going back
 
 Tab width, chaining, language
 
-- **Terminals on this PC** — On (the default): the AIs keep running after the app closes, whether it quits, updates or closes unexpectedly. When you start the app again, each tab comes back to the same terminal, with its screen. To stop them, answer “No” (stop every terminal and AI, then quit) when quitting asks. Off: terminals opened from now on stop when the app quits. Tabs open now change over when they restart.
+- **Terminals on this PC** — On (the default): the AIs keep running after the app closes, even when it closes unexpectedly. When you start the app again, each tab comes back to the same terminal, with its screen. Off: terminals opened from now on stop when the app quits. Tabs open now change over when they restart.
 
 - **Tab bar width** — Pixels. Leave empty for the default width, or drag the bar's edge in the window — 0 puts it away
 - **Automatic chain limit** — How many times AIs may hand work to each other in a row

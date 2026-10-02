@@ -52,7 +52,23 @@ once it reaches its first tagged release.
   terminals, still running, were let go of; they are now taken as stopped
   only once the background process answers. Beside the setting, a stop that
   failed says why and asks for another press, and a count that could not be
-  checked says so, with a button to check again.
+  checked says so, with a button to check again, instead of reading as none
+  running.
+- **Changing desk or tab ids in the settings no longer loses secrets.** Two
+  desks that swapped ids swap their secrets (one was written over the
+  other's), and a secret that would land on a name already taken stops the
+  save, naming it. The settings, the desk files and the secrets are saved as
+  one: when any part cannot be written, the parts already written are put
+  back, where a failed save used to leave the secrets moved under ids the
+  settings did not have. A value that names a moved secret (`@name`) is
+  pointed at its new name, wherever it is in the settings.
+- **What was typed into a held terminal before it was reached is kept if the
+  line drops just then**, and goes in when the terminal is reached again.
+- **The settings say what they do.** "Keep the PC awake" no longer says
+  "while this program runs" (it goes on for terminals left running after the
+  app quits, as its hint says), and "Terminals on this PC" no longer promises
+  that an update leaves them running: a line under it says what an update
+  does for that copy of the app, and how to stop them has a line of its own.
 - **A terminal this PC's background process holds reads as "working in the
   background" after the app starts again.** The new app was told nothing of
   the terminal's processes until they changed, and then learned a server
