@@ -36,6 +36,14 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **Calling off a quit no longer keeps a MicroVM running.** The quit question
+  used to ask E2B to keep each MicroVM up before it was even shown, so
+  "Cancel" left the machine extended and a slow line held the question back.
+  It now only says how long each will go on; the machines are kept up once
+  the quit is chosen, all at once and for at most 15 seconds, and when each
+  pauses is left on a banner. Cut short by the account, not done, or not
+  answered in time, the question comes back once with what happened, before
+  anything stops.
 - **A new tab no longer inherits a closed tab's record because it was given
   the same name.** A tab's conversations, the jobs it leads and the work it was
   handed, its mail, its place in a split, the key its programs call the app

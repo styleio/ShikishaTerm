@@ -12942,7 +12942,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // that has been said. The Store copy hands the job to the Store
         // instead, which ends the program itself when it is done
         if let Some(what) = update::take_apply() {
-            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
+            if ask_to_quit(shell, &tabs, &desk_tabs, &stop_all) {
                 let store = what == update::Apply::Store;
                 update::begin_apply(what);
                 if store {
@@ -12960,7 +12960,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if close_pressed && resident {
             shell.hide();
             shell.say_where_it_went();
-        } else if (close_pressed || quit_chosen) && quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
+        } else if (close_pressed || quit_chosen) && ask_to_quit(shell, &tabs, &desk_tabs, &stop_all) {
             break;
         }
         let Some(ev) = polled else {
@@ -13037,7 +13037,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(code) = meant {
                     match code {
                         KeyCode::Char('q') => {
-                            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) {
+                            if ask_to_quit(shell, &tabs, &desk_tabs, &stop_all) {
                                 break;
                             }
                         }
@@ -13466,7 +13466,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         KeyCode::Char('f') => shell.open_vault(),
                         KeyCode::Char('p') => shell.open_palette(),
                         KeyCode::Char('q')
-                            if quitting(shell.confirm_quit(&quit_ask(&tabs, &desk_tabs)), &stop_all) => {
+                            if ask_to_quit(shell, &tabs, &desk_tabs, &stop_all) => {
                                 break;
                             }
                         _ => {}
@@ -18097,8 +18097,8 @@ pub fn quit_busy(tabs: &[Tab], parked: &[Vec<Tab>]) -> usize {
 pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
     let mut kept: std::collections::BTreeMap<String, usize> = Default::default();
     // Each MicroVM with AIs to go on, and the longest time any of them is to
-    // go on for: kept up for it now, since nothing keeps it up once the app
-    // is gone (far-keep plan §5)
+    // go on for. Only written down here: the service is asked once the quit
+    // is chosen (`keep_up_after_quit`), never while the question is open
     let mut machines: std::collections::BTreeMap<String, (String, u32)> = Default::default();
     for t in tabs.iter().chain(parked.iter().flatten()).filter(|t| t.kept_away() && !t.exited()) {
         let host = t.kept_where();
@@ -18110,27 +18110,151 @@ pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
             at.1 = at.1.max(minutes);
         }
     }
-    let notes = machines.into_iter().map(|(id, (host, minutes))| kept_up_note(&id, &host, minutes)).collect();
-    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect(), notes }
+    let machines: Vec<crate::host::KeepUp> =
+        machines.into_iter().map(|(id, (host, minutes))| crate::host::KeepUp { id, host, minutes }).collect();
+    let notes = machines
+        .iter()
+        .map(|m| i18n::tp("msg.quit.kept_plan", &[("host", &m.host), ("n", &m.minutes.to_string())]))
+        .collect();
+    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect(), notes, machines }
 }
 
-/// Keep a MicroVM up while the app is away, and say until when -- the time
-/// the service gave, read back, which past the longest run the account
-/// allows is shorter than the one chosen; or that it could not be done, and
-/// when it pauses then (far-keep plan §5)
-fn kept_up_note(id: &str, host: &str, minutes: u32) -> String {
+/// What came of keeping one MicroVM up as the app went
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeptUp {
+    /// The service took it; when the machine now pauses, as read back
+    Until(crate::e2b::KeptUntil),
+    /// It could not be done; why, and the minutes left on the machine's
+    /// present time if they could be read
+    Failed { why: String, left: Option<u64> },
+    /// No answer came back in time. The asking may still have landed
+    Unknown,
+}
+
+/// How long a quit waits for the service to say what it made of each
+/// machine. One keeping-up is two requests (set, read back) that answer in
+/// well under a second on an ordinary line; fifteen seconds leaves room for a
+/// slow tethered one while a person watching a closing window still sees it
+/// close. Every machine is asked at once, so this is the wait for all of them
+const KEEP_UP_WAIT: Duration = Duration::from_secs(15);
+
+/// Keep one MicroVM up for `minutes` from now, as the app goes (far-keep plan
+/// §5), and read back what that became
+fn keep_one_up(id: &str, minutes: u32) -> KeptUp {
     match crate::e2b::keep_up_while_away(id, minutes) {
-        Ok(k) if k.cut() => i18n::tp(
+        Ok(k) => KeptUp::Until(k),
+        Err(e) => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let left = crate::e2b::ends_at(id).map(|t| t.saturating_sub(now) / 60);
+            KeptUp::Failed { why: format!("{e:#}"), left }
+        }
+    }
+}
+
+/// Every machine kept up at once, each on a thread of its own, waited for no
+/// longer than `wait` altogether. A machine with no answer by then is
+/// `Unknown`: the app is going, and a slow line must not hold the quit
+pub fn keep_all_up(
+    machines: &[crate::host::KeepUp],
+    keep: impl Fn(&str, u32) -> KeptUp + Send + Sync + 'static,
+    wait: Duration,
+) -> Vec<(crate::host::KeepUp, KeptUp)> {
+    let keep = std::sync::Arc::new(keep);
+    let (tx, rx) = std::sync::mpsc::channel();
+    for (i, m) in machines.iter().enumerate() {
+        let (tx, keep, id, minutes) = (tx.clone(), keep.clone(), m.id.clone(), m.minutes);
+        std::thread::spawn(move || {
+            let _ = tx.send((i, keep(&id, minutes)));
+        });
+    }
+    drop(tx);
+    let mut got: Vec<Option<KeptUp>> = vec![None; machines.len()];
+    let until = Instant::now() + wait;
+    while got.iter().any(Option::is_none) {
+        let left = until.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((i, k)) => got[i] = Some(k),
+            Err(_) => break,
+        }
+    }
+    machines.iter().cloned().zip(got.into_iter().map(|k| k.unwrap_or(KeptUp::Unknown))).collect()
+}
+
+/// What a kept-up machine's outcome says to a person
+fn kept_up_words(m: &crate::host::KeepUp, k: &KeptUp) -> String {
+    let host = m.host.as_str();
+    match k {
+        KeptUp::Until(k) if k.cut() => i18n::tp(
             "msg.quit.kept_cut",
             &[("host", host), ("until", &hooks::local_clock_at(k.ends)), ("asked", &hooks::local_clock_at(k.asked))],
         ),
-        Ok(k) => i18n::tp("msg.quit.kept_until", &[("host", host), ("until", &hooks::local_clock_at(k.ends))]),
-        Err(e) => {
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            let left = crate::e2b::ends_at(id).map(|t| (t.saturating_sub(now) / 60).to_string()).unwrap_or_else(|| "?".into());
-            i18n::tp("msg.quit.kept_failed", &[("host", host), ("why", &format!("{e:#}")), ("n", &left)])
+        KeptUp::Until(k) => i18n::tp("msg.quit.kept_until", &[("host", host), ("until", &hooks::local_clock_at(k.ends))]),
+        KeptUp::Failed { why, left } => i18n::tp(
+            "msg.quit.kept_failed",
+            &[("host", host), ("why", why), ("n", &left.map(|n| n.to_string()).unwrap_or_else(|| "?".into()))],
+        ),
+        KeptUp::Unknown => {
+            i18n::tp("msg.quit.kept_unknown", &[("host", host), ("secs", &KEEP_UP_WAIT.as_secs().to_string())])
         }
     }
+}
+
+/// Ask whether to quit, and only once a quit is chosen keep the MicroVMs up
+/// while the app is away (far-keep plan §5). Called off, nothing at the
+/// service has changed. Chosen with every AI stopped, there is nothing to keep
+/// up. Kept up as asked, the app goes, and when each machine pauses is left on
+/// a banner, which outlives the window. Cut short by the account, not done,
+/// or not answered in time, the question is asked once more with what the
+/// service made of it, before anything is stopped -- "go anyway", "stop every
+/// AI and go", or "not now", which is also how to try again
+pub fn quit_and_keep_up(
+    ask: &crate::host::QuitAsk,
+    mut confirm: impl FnMut(&crate::host::QuitAsk) -> crate::host::Quit,
+    keep: impl Fn(&str, u32) -> KeptUp + Send + Sync + 'static,
+    wait: Duration,
+    stop_all: &std::cell::Cell<bool>,
+    mut told: impl FnMut(&str),
+) -> bool {
+    let answer = confirm(ask);
+    if !quitting(answer, stop_all) {
+        return false;
+    }
+    if answer == crate::host::Quit::StopAll || ask.machines.is_empty() {
+        return true;
+    }
+    let outcomes = keep_all_up(&ask.machines, keep, wait);
+    for (m, k) in &outcomes {
+        append_hook_log(&format!("quit: kept {} ({}) up for {} min: {k:?}", m.host, m.id, m.minutes));
+    }
+    let as_asked = |k: &KeptUp| matches!(k, KeptUp::Until(k) if !k.cut());
+    if outcomes.iter().all(|(_, k)| as_asked(k)) {
+        let said: Vec<String> = outcomes.iter().map(|(m, k)| kept_up_words(m, k)).collect();
+        told(&said.join(" "));
+        return true;
+    }
+    let again = crate::host::QuitAsk {
+        notes: outcomes.iter().map(|(m, k)| kept_up_words(m, k)).collect(),
+        machines: Vec::new(),
+        ..ask.clone()
+    };
+    quitting(confirm(&again), stop_all)
+}
+
+/// The quit question as every road in the loop asks it: this shell's own
+/// question, the service's real keeping-up, and the outcome left on a banner
+fn ask_to_quit(
+    shell: &mut dyn Shell,
+    tabs: &[Tab],
+    parked: &[Vec<Tab>],
+    stop_all: &std::cell::Cell<bool>,
+) -> bool {
+    let ask = quit_ask(tabs, parked);
+    quit_and_keep_up(&ask, |a| shell.confirm_quit(a), keep_one_up, KEEP_UP_WAIT, stop_all, |said| {
+        let text = format!("{}\n{said}", i18n::t("msg.quit.kept_banner"));
+        if let Err(e) = crate::notify::send_blocking(&crate::notify::Destination::Windows {}, &text) {
+            append_hook_log(&format!("quit: the kept-up times could not be left on a banner: {e}"));
+        }
+    })
 }
 
 /// Whether the answer is to quit, keeping what it said about the AIs set to
@@ -18203,6 +18327,124 @@ mod remote_token_tests {
         cfg.remote.sticky_token = false;
         cfg.remote.fixed_token = "my-own-token-0123456789".into();
         assert_ne!(remote_token(&cfg, None), "my-own-token-0123456789");
+    }
+}
+
+#[cfg(test)]
+mod quit_keep_up_tests {
+    use super::*;
+    use crate::host::{KeepUp, Quit, QuitAsk};
+    use std::cell::Cell;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn two_machines() -> QuitAsk {
+        QuitAsk {
+            busy: 0,
+            kept: vec![("vm-a".into(), 1), ("vm-b".into(), 2)],
+            notes: vec!["plan".into()],
+            machines: vec![
+                KeepUp { id: "ia".into(), host: "vm-a".into(), minutes: 30 },
+                KeepUp { id: "ib".into(), host: "vm-b".into(), minutes: 45 },
+            ],
+        }
+    }
+
+    fn until(minutes_given: u64, minutes_asked: u64) -> KeptUp {
+        KeptUp::Until(crate::e2b::KeptUntil { ends: 1_000_000 + minutes_given * 60, asked: 1_000_000 + minutes_asked * 60 })
+    }
+
+    /// A counter of the asks that reached the service
+    fn counting(answer: KeptUp) -> (Arc<AtomicUsize>, impl Fn(&str, u32) -> KeptUp + Send + Sync + 'static) {
+        let n = Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        (n, move |_: &str, _: u32| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            answer.clone()
+        })
+    }
+
+    /// A quit called off leaves every machine as it was: the service is not
+    /// asked anything, the question is asked once
+    #[test]
+    fn a_cancelled_quit_asks_the_service_nothing() {
+        let (asked, keep) = counting(until(30, 30));
+        let mut questions = 0;
+        let quit = quit_and_keep_up(&two_machines(), |_| { questions += 1; Quit::No }, keep, Duration::from_secs(5), &Cell::new(false), |_| {});
+        assert!(!quit);
+        assert_eq!(asked.load(Ordering::SeqCst), 0, "nothing extended for a quit that did not happen");
+        assert_eq!(questions, 1);
+    }
+
+    /// Chosen, each machine is kept up once, the app goes without a second
+    /// question, and when each pauses is told
+    #[test]
+    fn a_chosen_quit_keeps_each_machine_up_once() {
+        let (asked, keep) = counting(until(30, 30));
+        let mut questions = 0;
+        let mut said = String::new();
+        let quit = quit_and_keep_up(&two_machines(), |_| { questions += 1; Quit::Yes }, keep, Duration::from_secs(5), &Cell::new(false), |s| said = s.to_string());
+        assert!(quit);
+        assert_eq!(asked.load(Ordering::SeqCst), 2, "one asking per machine");
+        assert_eq!(questions, 1, "kept up as asked: nothing more to ask");
+        assert!(said.contains("vm-a") && said.contains("vm-b"), "{said}");
+    }
+
+    /// Every AI stopped: nothing goes on, so nothing is kept up
+    #[test]
+    fn stopping_every_ai_keeps_nothing_up() {
+        let (asked, keep) = counting(until(30, 30));
+        let stop_all = Cell::new(false);
+        assert!(quit_and_keep_up(&two_machines(), |_| Quit::StopAll, keep, Duration::from_secs(5), &stop_all, |_| {}));
+        assert!(stop_all.get());
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+    }
+
+    /// Not done: asked once more before anything stops, saying why and what
+    /// happens if the app goes anyway. "Not now" keeps the app
+    #[test]
+    fn a_failed_keeping_up_is_asked_about_again() {
+        let (_, keep) = counting(KeptUp::Failed { why: "403 nope".into(), left: Some(7) });
+        let mut seen: Vec<QuitAsk> = Vec::new();
+        let mut answers = vec![Quit::Yes, Quit::No].into_iter();
+        let quit = quit_and_keep_up(
+            &two_machines(),
+            |a| { seen.push(a.clone()); answers.next().unwrap() },
+            keep,
+            Duration::from_secs(5),
+            &Cell::new(false),
+            |_| panic!("a failure is not told as a success"),
+        );
+        assert!(!quit);
+        assert_eq!(seen.len(), 2);
+        let again = seen[1].words();
+        assert!(again.contains("403 nope") && again.contains('7') && again.contains("vm-b"), "{again}");
+        assert!(seen[1].machines.is_empty(), "the second question asks nothing more of the service");
+    }
+
+    /// Cut short by the account counts as not as asked, and is asked about
+    #[test]
+    fn a_cut_short_keeping_up_is_asked_about_again() {
+        let (_, keep) = counting(until(10, 30));
+        let mut questions = 0;
+        assert!(quit_and_keep_up(&two_machines(), |_| { questions += 1; Quit::Yes }, keep, Duration::from_secs(5), &Cell::new(false), |_| {}));
+        assert_eq!(questions, 2);
+    }
+
+    /// A service that does not answer does not hold the quit: once the wait
+    /// is over the machine is "not known" and the question says so
+    #[test]
+    fn a_slow_service_does_not_hold_the_quit() {
+        let keep = |_: &str, _: u32| {
+            std::thread::sleep(Duration::from_secs(3));
+            KeptUp::Failed { why: "late".into(), left: None }
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let began = Instant::now();
+        assert!(quit_and_keep_up(&two_machines(), |a| { seen.push(a.words()); Quit::Yes }, keep, Duration::from_millis(100), &Cell::new(false), |_| {}));
+        assert!(began.elapsed() < Duration::from_secs(2), "waited {:?}", began.elapsed());
+        assert_eq!(seen.len(), 2);
+        assert!(!seen[1].contains("late"), "an answer after the wait is not used");
     }
 }
 
