@@ -306,8 +306,13 @@ fn safe_desk_path(
         .1
         .split('&')
         .find_map(|kv| kv.strip_prefix("file="))?;
-    let decoded = percent_decode(raw);
-    let rel = std::path::Path::new(&decoded);
+    safe_desk_file(&percent_decode(raw), config_path)
+}
+
+/// A desk definition file named as the settings page names it: a `.json`
+/// beside the settings file or under it, never above it nor anywhere else
+fn safe_desk_file(rel: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let rel = std::path::Path::new(rel);
     if rel.is_absolute() {
         return None;
     }
@@ -3620,33 +3625,6 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
-        // A desk's or a tab's secrets refiled under the id it was given
-        // (config::move_secrets), from the settings page as it saves
-        ("POST", "/api/secrets/move") => {
-            let mut req = req;
-            let Some(body) = read_body(&mut req, MAX_BODY)? else {
-                req.respond(Response::from_string("payload too large").with_status_code(413))?;
-                return Ok(());
-            };
-            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let s = |k| p.get(k).and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-            let (from, to) = (s("from"), s("to"));
-            let resp = match crate::config::secrets_movable(&from, &to) {
-                false => serde_json::json!({ "ok": false, "error": "not a place secrets are filed under" }),
-                true => {
-                    let path = secrets_file(config_path);
-                    let pw = password.lock().unwrap().clone();
-                    match path.exists() {
-                        false => serde_json::json!({ "ok": true, "moved": 0 }),
-                        true => match crate::config::move_secrets(&path, pw.as_deref(), &from, &to) {
-                            Ok(n) => serde_json::json!({ "ok": true, "moved": n }),
-                            Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
-                        },
-                    }
-                }
-            };
-            req.respond(json_resp(resp))?;
-        }
         ("POST", "/api/secrets/delete") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -4128,8 +4106,11 @@ fn handle(
         // may wait on the resident process
         ("GET", "/api/keeper") => {
             std::thread::spawn(move || {
-                let held = crate::localkeep::held_count();
-                let _ = req.respond(json_resp(serde_json::json!({ "held": held })));
+                let body = match crate::localkeep::held_count() {
+                    Ok(held) => serde_json::json!({ "ok": true, "held": held }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                };
+                let _ = req.respond(json_resp(body));
             });
         }
         // The person asked what it still holds to stop: every terminal it
@@ -4814,6 +4795,25 @@ fn handle(
             Ok(()) => req.respond(json_resp(crate::update::snapshot()))?,
             Err(e) => req.respond(json_resp(serde_json::json!({ "ok": false, "error": e.to_string() })).with_status_code(409))?,
         },
+        // The settings page saving: the settings, the desk files it writes,
+        // and the secrets of every desk and tab whose id it changed, as one
+        // save (`save_settings`)
+        ("POST", "/api/settings/save") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let pw = password.lock().unwrap().clone();
+            let resp = match serde_json::from_str::<serde_json::Value>(&body)
+                .map_err(anyhow::Error::from)
+                .and_then(|p| save_settings(config_path, &secrets_file(config_path), pw.as_deref(), &p))
+            {
+                Ok(()) => serde_json::json!({ "ok": true }),
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            req.respond(json_resp(resp))?;
+        }
         ("POST", "/api/config") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -4855,6 +4855,114 @@ fn handle(
         }
     }
     Ok(())
+}
+
+/// Save what the settings page holds, all of it or none of it: the settings
+/// (`config`), the desk definition files it writes (`files`, each a `file`
+/// and its `body`), and the secrets of every desk and tab whose id changed
+/// (`moves`, see [`crate::config::plan_secret_moves`]).
+///
+/// Saved one part after another, a part that failed left the others written:
+/// secrets filed under ids the settings did not have yet, or a desk file
+/// ahead of the settings that name it. So everything is checked and worked
+/// out before anything is written, each file is read as it was before it is
+/// written, and when a write fails, every one made before it is put back. A
+/// value that names a secret that moved (`@old` -> `@new`) moves with it
+fn save_settings(
+    config_path: &std::path::Path,
+    secrets: &std::path::Path,
+    password: Option<&str>,
+    p: &serde_json::Value,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let mut docs: Vec<(std::path::PathBuf, serde_json::Value)> = Vec::new();
+    for f in p.get("files").and_then(|v| v.as_array()).into_iter().flatten() {
+        let rel = f.get("file").and_then(|v| v.as_str()).unwrap_or_default();
+        let path = safe_desk_file(rel, config_path).ok_or_else(|| anyhow::anyhow!("not a desk file: {rel}"))?;
+        docs.push((path, f.get("body").cloned().unwrap_or_else(|| serde_json::json!({}))));
+    }
+    let config = p.get("config").filter(|c| c.is_object()).cloned().context("no settings to save")?;
+    docs.push((config_path.to_path_buf(), config));
+    let mut moves = Vec::new();
+    for m in p.get("moves").and_then(|v| v.as_array()).into_iter().flatten() {
+        let end = |i: usize| m.get(i).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let (from, to) = (end(0), end(1));
+        if !crate::config::secrets_movable(&from, &to) {
+            anyhow::bail!("not a place secrets are filed under: {from} -> {to}");
+        }
+        moves.push((from, to));
+    }
+    let plan = match moves.is_empty() || !secrets.exists() {
+        true => Vec::new(),
+        false => crate::config::plan_secret_moves(secrets, password, &moves)?,
+    };
+    let renamed: std::collections::HashMap<String, String> =
+        plan.iter().map(|(old, new)| (format!("@{old}"), format!("@{new}"))).collect();
+    let mut texts = Vec::new();
+    for (path, mut doc) in docs {
+        crate::config::fill_tab_uids(&mut doc);
+        refile_secret_names(&mut doc, &renamed);
+        texts.push((path, serde_json::to_string_pretty(&doc)?));
+    }
+    // Written in order, each with what it held before
+    let mut before: Vec<(std::path::PathBuf, Option<String>)> = Vec::new();
+    let put_back = |before: &[(std::path::PathBuf, Option<String>)]| {
+        for (path, was) in before.iter().rev() {
+            let back = match was {
+                Some(text) => crate::crypto::write_atomic(path, text),
+                None => std::fs::remove_file(path).map_err(Into::into),
+            };
+            if let Err(e) = back {
+                crate::append_hook_log(&format!("settings: {} could not be put back as it was: {e:#}", path.display()));
+            }
+        }
+    };
+    if !plan.is_empty() {
+        before.push((secrets.to_path_buf(), Some(std::fs::read_to_string(secrets)?)));
+        if let Err(e) = crate::config::rename_secrets(secrets, password, &plan) {
+            put_back(&before);
+            return Err(e);
+        }
+    }
+    for (path, text) in &texts {
+        let was = match std::fs::read_to_string(path) {
+            Ok(t) => Some(t),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                put_back(&before);
+                return Err(anyhow::Error::from(e).context(format!("{} could not be read", path.display())));
+            }
+        };
+        before.push((path.clone(), was));
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_err(anyhow::Error::from)
+            .and_then(|_| crate::crypto::write_atomic(path, text));
+        if let Err(e) = written {
+            put_back(&before);
+            return Err(e.context(format!("{} could not be written", path.display())));
+        }
+    }
+    Ok(())
+}
+
+/// Every text in `doc` that names a secret by `@key`, named by where that
+/// secret went
+fn refile_secret_names(doc: &mut serde_json::Value, renamed: &std::collections::HashMap<String, String>) {
+    if renamed.is_empty() {
+        return;
+    }
+    match doc {
+        serde_json::Value::String(s) => {
+            if let Some(new) = renamed.get(s.as_str()) {
+                *s = new.clone();
+            }
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|v| refile_secret_names(v, renamed)),
+        serde_json::Value::Object(o) => o.values_mut().for_each(|v| refile_secret_names(v, renamed)),
+        _ => {}
+    }
 }
 
 /// A port as the settings page holds it: a number, or the text typed into a
@@ -7738,6 +7846,7 @@ function keepTerminalsRow(packaged = PACKAGED) {
   };
   const ask = () => fetch("/api/keeper", {headers:{"X-Token":TOKEN}})
     .then(r => r.json()).then(j => {
+      if (!j.ok) throw new Error(j.error || "?");
       count = j.held || 0;
       unknown = false;
       // None left running: whatever the last press said, they are stopped
@@ -7747,8 +7856,16 @@ function keepTerminalsRow(packaged = PACKAGED) {
     .catch(() => { unknown = true; draw(); });
   box.querySelector("input").addEventListener("change", draw);
   ask();
-  const hints = [el("span", {class:"hint"}, T["settings.keep_terminals.hint"])];
-  if (packaged) hints.push(el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"]));
+  // What it does, how to stop them on a line of its own, and what an update
+  // does -- which is not the same for a Store install, so the label promises
+  // nothing about updates and each install is told its own
+  const hints = [
+    el("span", {class:"hint"}, T["settings.keep_terminals.hint"]),
+    el("span", {class:"hint"}, T["settings.keep_terminals.stop_how"]),
+    packaged
+      ? el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"])
+      : el("span", {class:"hint"}, T["settings.keep_terminals.update"]),
+  ];
   const r = row(T["settings.keep_terminals"], box, ...hints, held);
   r.classList.add("keeprow");
   return r;
@@ -17160,8 +17277,8 @@ function payload() {
 }
 
 // The id each desk and each tab had when the page loaded, by who it is: an
-// id changed on this page takes the secrets filed under it along
-// (/api/secrets/move) as it is saved
+// id changed on this page takes the secrets filed under it along, as it is
+// saved (/api/settings/save)
 let idsAtLoad = new Map();
 function idsNow() {
   const m = new Map();
@@ -17171,39 +17288,26 @@ function idsNow() {
   }
   return m;
 }
-// Moves the secrets of every desk and tab whose id changed since the page
-// loaded, and points the desk's destinations at where theirs went. False,
-// with what went wrong said, when they could not be moved: saving then would
-// leave them under an id nothing answers to
-async function moveSecretsOfNewIds() {
+// Where the secrets of every desk and tab whose id changed since the page
+// loaded go, each place named by the ids as they were: the save moves them
+// all at once (two desks that swapped ids swap their secrets), and points
+// every "@name" in the settings at where its secret went
+function secretMovesOfNewIds() {
   const now = idsNow();
   const moves = [];
-  const deskId = uid => ((now.get(uid) || {}).id || "");
+  const idOf = (ids, uid) => ((ids.get(uid) || {}).id || "");
   for (const d of desks) {
-    const was = (idsAtLoad.get(d.uid) || {}).id, is = deskId(d.uid);
+    const was = idOf(idsAtLoad, d.uid), is = idOf(now, d.uid);
     if (!was || !is || was === is) continue;
     moves.push([was + ".", is + "."], ["ssh/" + was + "/", "ssh/" + is + "/"], ["notify/" + was + "/", "notify/" + is + "/"]);
-    const refile = v => (v || "").startsWith("@notify/" + was + "/") ? "@notify/" + is + "/" + v.slice(("@notify/" + was + "/").length) : v;
-    for (const dest of Object.values(d.notify || {})) {
-      if (!dest) continue;
-      dest.webhook = refile(dest.webhook);
-      dest.token = refile(dest.token);
-    }
   }
   for (const [uid, t] of now) {
     const was = (idsAtLoad.get(uid) || {}).id;
     if (!t.desk || !was || !t.id || was === t.id) continue;
-    const desk = deskId(t.desk);
-    if (desk) moves.push(["ssh/" + desk + "/" + was + "/", "ssh/" + desk + "/" + t.id + "/"]);
+    const deskWas = idOf(idsAtLoad, t.desk) || idOf(now, t.desk), deskIs = idOf(now, t.desk);
+    if (deskWas && deskIs) moves.push(["ssh/" + deskWas + "/" + was + "/", "ssh/" + deskIs + "/" + t.id + "/"]);
   }
-  for (const [from, to] of moves) {
-    const r = await settingsApi("/api/secrets/move", {from, to}).catch(e => ({ok:false, error:String(e)}));
-    if (!r || !r.ok) {
-      result(fill(T["settings.save_failed"], {error: fill(T["settings.secrets.move_failed"], {from, error: (r && r.error) || ""})}), true);
-      return false;
-    }
-  }
-  return true;
+  return moves;
 }
 
 async function doSave() {
@@ -17211,17 +17315,16 @@ async function doSave() {
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
   for (const w of desks) ensureIds(w);
   ensureWsIds();
-  if (!(await moveSecretsOfNewIds())) return false;
-  idsAtLoad = idsNow();
+  // One save: the settings, the desk files and the secrets of the ids that
+  // changed are all written, or, when any part fails, none of them is
   const { out, files } = payload();
-  for (const f of files) {
-    const rf = await deskApi("POST", f.file, JSON.stringify(f.body, null, 2));
-    const jf = await rf.json().catch(() => ({ok:false}));
-    if (!jf.ok) { result(fill(T["settings.file_save_failed"], {file: f.file}), true); return false; }
-  }
-  const r = await api("POST", JSON.stringify(out, null, 2));
-  const j = await r.json();
-  if (!j.ok) { result(fill(T["settings.save_failed"], {error: j.error}), true); return false; }
+  const j = await settingsApi("/api/settings/save", {
+    config: out,
+    files: files.map(f => ({file: f.file, body: f.body})),
+    moves: secretMovesOfNewIds(),
+  }).catch(e => ({ok:false, error:String(e && e.message || e)}));
+  if (!j || !j.ok) { result(fill(T["settings.save_failed"], {error: (j && j.error) || ""}), true); return false; }
+  idsAtLoad = idsNow();
   markClean();
   result(T["common.saved"]);
   // The language is only read at launch, so a change won't take effect until a restart.
@@ -18281,6 +18384,93 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+    /// A folder with a settings file and a secret store, for a save to be
+    /// tried against
+    fn save_place(what: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = crate::test_temp(what);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (config, secrets) = (dir.join("config.json"), dir.join("secrets.json"));
+        std::fs::write(&config, r#"{"desks": [{"name": "A", "id": "a"}, {"name": "B", "id": "b"}]}"#).unwrap();
+        let meta = crate::config::SecretMeta::default();
+        for (key, value) in [("a.github", "token of a"), ("b.github", "token of b"), ("ssh/a/prod/password", "pw of a's tab")] {
+            crate::config::upsert_secret(&secrets, None, key, &meta, value).unwrap();
+        }
+        (dir, config, secrets)
+    }
+
+    #[test]
+    fn ids_swapped_between_two_desks_swap_their_secrets_and_what_names_them() {
+        let (dir, config, secrets) = save_place("save-swap");
+        let saved = super::save_settings(&config, &secrets, None, &serde_json::json!({
+            "config": {"desks": [
+                {"name": "A", "id": "b", "notify": {"slack": {"webhook": "@a.github"}}},
+                {"name": "B", "id": "a"}]},
+            "moves": [["a.", "b."], ["ssh/a/", "ssh/b/"], ["b.", "a."], ["ssh/b/", "ssh/a/"]],
+        }));
+        assert!(saved.is_ok(), "{saved:?}");
+        let value = |k| crate::config::secret_value(&secrets, None, k);
+        assert_eq!(value("b.github").as_deref(), Some("token of a"), "desk A's secret went under its new id");
+        assert_eq!(value("a.github").as_deref(), Some("token of b"), "desk B's secret was written over");
+        assert_eq!(value("ssh/b/prod/password").as_deref(), Some("pw of a's tab"));
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(doc["desks"][0]["notify"]["slack"]["webhook"], "@b.github", "what named the secret still names it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_tab_moves_by_its_own_place_inside_a_desk_that_moved_too() {
+        let (dir, config, secrets) = save_place("save-tab");
+        let moves = [("a.", "c."), ("ssh/a/", "ssh/c/"), ("ssh/a/prod/", "ssh/c/live/")].map(|(f, t)| (f.to_string(), t.to_string()));
+        let plan = crate::config::plan_secret_moves(&secrets, None, &moves).unwrap();
+        assert!(plan.contains(&("ssh/a/prod/password".into(), "ssh/c/live/password".into())), "{plan:?}");
+        assert!(plan.contains(&("a.github".into(), "c.github".into())), "{plan:?}");
+        let _ = (config, std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn a_secret_that_would_land_on_another_is_refused_and_nothing_is_saved() {
+        let (dir, config, secrets) = save_place("save-taken");
+        let config_was = std::fs::read_to_string(&config).unwrap();
+        let secrets_was = std::fs::read_to_string(&secrets).unwrap();
+        // Desk A takes B's id while B keeps it: A's secret would land on B's
+        let saved = super::save_settings(&config, &secrets, None, &serde_json::json!({
+            "config": {"desks": [{"name": "A", "id": "b"}, {"name": "B", "id": "b"}]},
+            "moves": [["a.", "b."]],
+        }));
+        let e = format!("{:#}", saved.unwrap_err());
+        assert!(e.contains("b.github"), "the key in the way is named: {e}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), config_was);
+        assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_write_that_fails_puts_back_every_one_made_before_it() {
+        let (dir, _, secrets) = save_place("save-undo");
+        let secrets_was = std::fs::read_to_string(&secrets).unwrap();
+        // The secrets and a desk file written (and one desk file new), then
+        // the settings file cannot be: a folder stands where it goes
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(blocked.join("config.json")).unwrap();
+        std::fs::create_dir_all(blocked.join("desks")).unwrap();
+        let desk = blocked.join("desks").join("a.json");
+        std::fs::write(&desk, r#"{"tabs": []}"#).unwrap();
+        let saved = super::save_settings(&blocked.join("config.json"), &secrets, None, &serde_json::json!({
+            "config": {"desks": [{"name": "A", "id": "c"}]},
+            "files": [
+                {"file": "desks/a.json", "body": {"tabs": [{"name": "t", "id": "t"}]}},
+                {"file": "desks/new.json", "body": {"tabs": []}}],
+            "moves": [["a.", "c."]],
+        }));
+        assert!(saved.is_err(), "the settings could not be written");
+        assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was, "the secrets moved and stayed moved");
+        assert_eq!(crate::config::secret_value(&secrets, None, "a.github").as_deref(), Some("token of a"));
+        assert_eq!(std::fs::read_to_string(&desk).unwrap(), r#"{"tabs": []}"#, "the desk file stayed rewritten");
+        assert!(!blocked.join("desks").join("new.json").exists(), "a desk file the save made was left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A folder on another machine is a branch's folder when it is not the
     /// project's checkout there -- on a MicroVM every folder is a checkout of
     /// its own, so git cannot say it
@@ -19284,7 +19474,8 @@ mod tests {
     fn the_terminals_setting_is_on_and_tells_a_store_install_about_updates() {
         let row = PAGE.split("function keepTerminalsRow(").nth(1).and_then(|r| r.split("\nfunction ").next()).unwrap_or_default();
         assert!(row.contains(r#"checkDefaultOn(current, "keep_terminals""#), "the setting is not on unless turned off: {row}");
-        assert!(row.contains(r#"if (packaged) hints.push(el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"]));"#), "{row}");
+        assert!(row.contains(r#"? el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"])"#), "{row}");
+        assert!(row.contains(r#": el("span", {class:"hint"}, T["settings.keep_terminals.update"])"#), "{row}");
         assert!(PAGE.contains("function keepTerminalsRow(packaged = PACKAGED)"), "the row does not ask the page whether it is a Store install");
         assert!(PAGE.contains("const PACKAGED = __PACKAGED__;"));
         assert!(!crate::config::packaged(), "a test run is a Store install?");
