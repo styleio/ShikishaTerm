@@ -111,6 +111,26 @@ once it reaches its first tagged release.
   whatever it has been renamed to since, and no longer makes the project again
   under its old name. Changing a desk's or a tab's id on the settings page
   moves the secrets filed under it.
+- **A tab put in under a removed tab's name is a new tab.** Taking a tab out
+  of the settings and putting another in under the same name kept the
+  removed tab's terminal running as the new one. The new line now starts a
+  terminal of its own and the removed one stops.
+- **An AI's question to another tab stays with that tab.** An `ask_tab`
+  waiting on a tab that was closed, with another opened under its name, was
+  sent to the new tab and answered from its screen. It now ends saying the
+  tab was closed. The answer goes back to the tab that asked, not to one
+  given its name since. Which tabs an AI may drive stays with what the
+  person named: a terminal or an AI tab named with `<@ID>`, closed, and
+  another opened under the same id, is not driven on that naming.
+- **A MicroVM being prepared writes into the project it was asked for.**
+  Preparing a project's machines, and the start-up check of what each
+  machine was made as, found the desk and the project again by id and name
+  when they finished: renamed meanwhile, they failed, and a project given
+  the old name was written into instead.
+- **An environment survey stays with the tab it was run in.** A survey
+  waiting for its output, and the card it leaves for command suggestions,
+  went to whichever tab had the name, even a new tab opened under a closed
+  one's name.
 - **A desk is found again by who it is when the settings are read again.**
   A desk renamed, given another id, and a new desk given its old id: the
   tabs running in the first one went to the new one. Each desk's running

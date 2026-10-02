@@ -139,7 +139,16 @@ pub enum Phase {
 pub struct Ask {
     pub reply: Option<Sender<Result<Value, String>>>,
     pub caller: Option<String>,
+    /// Who the caller is (`Tab::uid`), fixed as the ask was taken: the tab
+    /// the answer goes back to. A caller closed since, and a tab given its
+    /// name since, is not it. `None` when no tab was calling
+    pub caller_uid: Option<String>,
     pub target: String,
+    /// Who the tab asked is, fixed as the ask was taken: the tab followed,
+    /// sent to and answered from. A tab closed since, and a tab given its
+    /// name since, is not it. `None` when the name found no tab then, and the
+    /// ask is followed by the name
+    pub target_uid: Option<String>,
     pub text: String,
     pub phase: Phase,
     pub asked_at: Instant,
@@ -427,12 +436,14 @@ impl Ask {
 
 /// An answer that outlived the line it was asked on, waiting to be typed into
 /// the caller's tab once that tab is free (a browser run, see `browser_do`)
-pub fn handing(caller: String, target: String, text: String) -> Ask {
+pub fn handing(caller: String, caller_uid: Option<String>, target: String, text: String) -> Ask {
     let now = Instant::now();
     Ask {
         reply: None,
         caller: Some(caller),
+        caller_uid,
         target,
+        target_uid: None,
         text: String::new(),
         phase: Phase::Handing(text),
         asked_at: now,
@@ -1122,6 +1133,9 @@ pub fn wrong_command(command: &str, id: &str, kind: Kind) -> Option<String> {
 pub struct WordsCall {
     pub reply: Option<Sender<Result<Value, String>>>,
     pub caller: Option<String>,
+    /// Who the caller is, fixed as the run was asked for: the tab a late
+    /// answer is typed into ([`handing`])
+    pub caller_uid: Option<String>,
     pub target: String,
     pub pane: usize,
     pub goal: String,
@@ -1203,7 +1217,7 @@ mod tests {
     }
 
     fn sent_ask() -> Ask {
-        let mut a = handing("caller".into(), "otter".into(), String::new());
+        let mut a = handing("caller".into(), None, "otter".into(), String::new());
         a.phase = Phase::Waiting;
         a.text = "review it".into();
         a.deadline = Instant::now() + Duration::from_secs(600);

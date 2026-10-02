@@ -319,7 +319,12 @@ pub fn apply_ws_config(
 /// place once it is idle, which is what a changed launch has always done. A
 /// tab whose folder is still listed is never taken this way: it belongs to that
 /// folder's line. Taking it anyway is how deleting one worktree stopped the AI
-/// at work in another, and started that one again in a conversation of nobody's
+/// at work in another, and started that one again in a conversation of nobody's.
+///
+/// Either way a line takes only the tab it is ([`is_the_tab`]): a line put in
+/// under a removed tab's name is a new tab, and the removed one stops. Taken
+/// for the removed one, the new line was given its terminal, and an ask
+/// waiting on the removed tab was answered from it
 fn claim_running(tabs: &[Tab], wanted: &[(&String, &tab::TabOptions)]) -> Vec<Option<usize>> {
     let mut taken = vec![false; tabs.len()];
     let mut claims: Vec<Option<usize>> = vec![None; wanted.len()];
@@ -327,7 +332,7 @@ fn claim_running(tabs: &[Tab], wanted: &[(&String, &tab::TabOptions)]) -> Vec<Op
         let found = tabs
             .iter()
             .enumerate()
-            .position(|(i, t)| !taken[i] && &t.title == *title && t.stands_at(opts));
+            .position(|(i, t)| !taken[i] && &t.title == *title && t.stands_at(opts) && is_the_tab(t, opts));
         if let Some(i) = found {
             taken[i] = true;
             claims[j] = Some(i);
@@ -337,9 +342,11 @@ fn claim_running(tabs: &[Tab], wanted: &[(&String, &tab::TabOptions)]) -> Vec<Op
         if claims[j].is_some() {
             continue;
         }
+        let opts = wanted[j].1;
         let found = tabs.iter().enumerate().position(|(i, t)| {
             !taken[i]
                 && &t.title == *title
+                && is_the_tab(t, opts)
                 && !wanted.iter().any(|(_, o)| t.stands_at(o))
         });
         if let Some(i) = found {
@@ -348,6 +355,17 @@ fn claim_running(tabs: &[Tab], wanted: &[(&String, &tab::TabOptions)]) -> Vec<Op
         }
     }
     claims
+}
+
+/// Whether the running tab `t` is the one the line `opts` stands for: the
+/// same uid. Two different ones are the same tab only when neither was
+/// written down -- both worked out from the line (`config::uid_is_worked_out`),
+/// which a line's id changed by hand changes
+fn is_the_tab(t: &Tab, opts: &tab::TabOptions) -> bool {
+    match opts.uid.as_deref() {
+        Some(u) => u == t.uid() || (config::uid_is_worked_out(u) && config::uid_is_worked_out(t.uid())),
+        None => true,
+    }
 }
 
 /// Redraws a page's top bar and bottom band to match config.

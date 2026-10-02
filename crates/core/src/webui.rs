@@ -1635,6 +1635,7 @@ pub fn ask_branch_next(folder: &str, rules: bool) -> u64 {
 /// for the app to do on the board (see `/api/project/machine-setup`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrepareAsk {
+    /// The desk and the project, by who they are
     pub desk_id: String,
     pub project: String,
     /// The checkout to open the worktree dialog on once it is prepared,
@@ -2764,7 +2765,11 @@ fn handle(
                         let running: Vec<String> = machines.iter().flatten().filter_map(|id| crate::microvm::preparing_with(id)).collect();
                         let already = running.iter().filter(|with| **with == now).count();
                         let again = running.len() - already;
-                        PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(PrepareAsk { desk_id, project, follow: text("follow") });
+                        // Held by who the desk and the project are from here
+                        // on: renamed before the board takes it up, they are
+                        // still the ones asked for
+                        let ask = PrepareAsk { desk_id: t.desk_uid.clone(), project: t.project_uid.clone(), follow: text("follow") };
+                        PREPARE_ASKS.lock().unwrap_or_else(|e| e.into_inner()).push(ask);
                         serde_json::json!({ "ok": true, "started": true, "machines": machines.len(), "already": already, "again": again })
                     }
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),
@@ -13688,7 +13693,8 @@ function microvmCard(desk, p) {
 async function prepareMicrovms(desk, p, follow) {
   if (snapshot() !== savedSnapshot && !(await save())) return false;
   const q = deskProjects(desk).projects.find(x => x.key === "p:" + p.name) || p;
-  const body = {desk: desk.id, project: q.name};
+  // By who they are, as saved: a rename after this does not change the target
+  const body = {desk: desk.uid || desk.id, project: (q.entry && q.entry.uid) || q.uid || q.name};
   if (follow) body.follow = follow;
   const j = await settingsApi("/api/project/machine-setup", body).catch(e => ({ok:false, error: String(e)}));
   if (!j.ok) { toast(j.error || "", true); return false; }

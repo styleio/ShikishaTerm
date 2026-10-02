@@ -141,19 +141,51 @@ impl Typed {
 pub fn named_for(
     called: &str,
     tabs: &[Tab],
-    composer: &HashMap<String, HashSet<String>>,
+    composer: &HashMap<String, Named>,
 ) -> HashSet<String> {
-    let from_bar = || composer.get(called).cloned().unwrap_or_default();
+    // What the person named to a tab is kept by who that tab is: a tab given
+    // a closed tab's name is not given what the person named to that one
     let Some(t) = tabs.iter().find(|t| t.called() == called) else {
-        return from_bar();
+        return HashSet::new();
     };
+    let heard = composer.get(t.uid());
+    let from_bar = || heard.map(|n| n.values().cloned().collect()).unwrap_or_default();
     let (Some(file), Some(spec)) = (t.record(), t.resume.as_ref().and_then(|r| r.asks.as_ref())) else {
         return from_bar();
     };
     match last_asked(&file, spec, |a| !typed_here(t.uid(), a)) {
-        Some(last) => crate::asktab::named_in(&last),
+        // Each name as it was settled when the person was heard writing it;
+        // one never heard (a request from before this run) as it is now
+        Some(last) => crate::asktab::named_in(&last)
+            .into_iter()
+            .map(|name| heard.and_then(|n| n.get(&name).cloned()).unwrap_or_else(|| named_key(&name, tabs)))
+            .collect(),
         None => from_bar(),
     }
+}
+
+/// What the person named to a tab in what they last sent it: each `<@ID>`
+/// as written, and what it named then ([`named_key`])
+pub type Named = HashMap<String, String>;
+
+/// The names in `text`, each settled to what it names now
+pub fn named_now(text: &str, tabs: &[Tab]) -> Named {
+    crate::asktab::named_in(text).into_iter()
+        .map(|name| {
+            let key = named_key(&name, tabs);
+            (name, key)
+        })
+        .collect()
+}
+
+/// What `name` names among `tabs`: the tab's uid -- so a tab closed since,
+/// and another given its id, is not the one named -- or, for what is not a
+/// tab (a page, by its key), the name itself
+pub fn named_key(name: &str, tabs: &[Tab]) -> String {
+    tabs.iter()
+        .find(|t| t.id.as_deref() == Some(name) || t.called() == name)
+        .map(|t| t.uid().to_string())
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// The last request in a record that `is_persons` accepts, read from the end

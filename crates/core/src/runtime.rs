@@ -1074,7 +1074,7 @@ fn tend_asks(
     // sent them until it is said or given up on. Their line may yet be read
     // from their record, and a second question's answer would be read as it
     let owing: std::collections::HashSet<String> =
-        asks.iter().filter(|a| a.owes_line()).map(|a| a.target.clone()).collect();
+        asks.iter().filter(|a| a.owes_line()).map(ask_key).collect();
     // The desk an ask is kept on, by id, and the tab it went to as the
     // conference names it
     let ask_desk = |a: &crate::asktab::Ask| a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
@@ -1101,26 +1101,26 @@ fn tend_asks(
             }
             None => &keys_here,
         };
-        let find = |name: &str| named(among, keys, name).map(|i| &among[i]);
-        // A caller is kept by the name its key was minted under; its inbox by
-        // the id it is named by
-        let caller_id = |c: &str| {
-            among
-                .iter()
-                .find(|t| t.called() == c)
-                .map(crate::orch::glue::tab_id)
-                .unwrap_or_else(|| c.to_string())
+        // Each tab by who it was as the ask was taken; by name only when the
+        // name found no tab then. A tab closed since is gone, whoever has
+        // been given its name
+        let find = |uid: Option<&str>, name: &str| match uid {
+            Some(u) => among.iter().find(|t| t.uid() == u),
+            None => named(among, keys, name).map(|i| &among[i]),
         };
-        // ...and who it is, for its inbox: a caller closed since has none,
-        // and a tab given its name since is somebody else
-        let caller_uid = |c: &str| {
-            among
-                .iter()
-                .find(|t| t.called() == c)
-                .map(|t| t.uid().to_string())
-                .unwrap_or_else(|| crate::convo::db::gone_uid("", c))
-        };
-        let target = find(&a.target);
+        let target = find(a.target_uid.as_deref(), &a.target);
+        let caller = a.caller.as_deref().and_then(|c| find(a.caller_uid.as_deref(), c));
+        // The caller as it is named now, for its inbox and the conference,
+        // and who it is, for the inbox itself
+        let caller_id = caller
+            .map(crate::orch::glue::tab_id)
+            .or_else(|| a.caller.clone())
+            .unwrap_or_default();
+        let caller_box = a
+            .caller_uid
+            .clone()
+            .or_else(|| caller.map(|t| t.uid().to_string()))
+            .unwrap_or_else(|| crate::convo::db::gone_uid("", a.caller.as_deref().unwrap_or_default()));
         if let Some(t) = target
             && a.time_to_say_why(t.state)
         {
@@ -1132,7 +1132,6 @@ fn tend_asks(
                 t.why_busy(now_ms)
             ));
         }
-        let caller = a.caller.as_deref().and_then(find);
         let caller_free = caller.is_some_and(|t| crate::asktab::turn_over(t.state));
         let same_folder = match (caller.and_then(|t| t.cwd()), target.and_then(|t| t.cwd())) {
             (Some(x), Some(y)) => Some(crate::sessionfind::same_folder(x, y)),
@@ -1182,7 +1181,7 @@ fn tend_asks(
                 true
             }
             // Sent to later, once the tab has its line
-            Step::Send if owing.contains(&a.target) => true,
+            Step::Send if owing.contains(&ask_key(a)) => true,
             Step::Send => match {
                 // Where the terminal's output starts is taken as the command goes in
                 if a.run.is_some()
@@ -1196,7 +1195,14 @@ fn tend_asks(
                 if a.record_from.is_none() {
                     a.record_from = target.and_then(crate::asktab::record_len);
                 }
-                send(a.caller.as_deref(), &a.target, &a.text)
+                // To the tab found, by what it is named now; the caller by
+                // the name its key was minted under
+                let from = caller.map(Tab::called).or(a.caller.as_deref());
+                match (target, &a.target_uid) {
+                    (Some(t), _) => send(from, &crate::orch::glue::tab_id(t), &a.text),
+                    (None, None) => send(from, &a.target, &a.text),
+                    (None, Some(_)) => Err(format!("<@{}> was closed before it was asked", a.target)),
+                }
             } {
                 Ok(_) => {
                     append_hook_log(&format!("ask_tab: sent to {}", a.target));
@@ -1206,7 +1212,7 @@ fn tend_asks(
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
                         let desk = ask_desk(a);
-                        let caller_name = a.caller.as_deref().map(caller_id);
+                        let caller_name = a.caller.is_some().then(|| caller_id.clone());
                         let target_id = ask_target(a, target);
                         // The asker's conversation; one asked from outside every
                         // tab grows from the tab it asked
@@ -1275,10 +1281,8 @@ fn tend_asks(
                         true
                     }
                     ("DONE", Some(r)) if a.caller.is_some() => {
-                        let caller = a.caller.as_deref().unwrap_or_default();
-                        let to = caller_id(caller);
-                        orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &r);
-                        append_hook_log(&format!("ask_tab: {}'s reply is in {to}'s inbox", a.target));
+                        orchestra.mail_tab(&caller_box, &a.target, &crate::asktab::handed_subject(&a.target), &r);
+                        append_hook_log(&format!("ask_tab: {}'s reply is in {caller_id}'s inbox", a.target));
                         owes
                     }
                     _ => owes,
@@ -1300,10 +1304,8 @@ fn tend_asks(
                 false
             }
             Step::Hand(text) => {
-                let caller = a.caller.as_deref().unwrap_or_default();
-                let to = caller_id(caller);
-                orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &text);
-                append_hook_log(&format!("ask_tab: {}'s answer is in {to}'s inbox", a.target));
+                orchestra.mail_tab(&caller_box, &a.target, &crate::asktab::handed_subject(&a.target), &text);
+                append_hook_log(&format!("ask_tab: {}'s answer is in {caller_id}'s inbox", a.target));
                 false
             }
         }
@@ -1332,12 +1334,26 @@ fn origin_of(t: &Tab) -> String {
     format!("{}/{}", t.uid(), t.session.as_ref().map_or("", |s| s.id.as_str()))
 }
 
-/// The asks being answered now, by the name of the tab answering
+/// The asks being answered now, by who the tab answering is ([`ask_key`])
 fn answering_in(asks: &[crate::asktab::Ask]) -> std::collections::HashMap<String, i64> {
     asks.iter()
         .filter(|a| a.run.is_none() && matches!(a.phase, crate::asktab::Phase::Waiting | crate::asktab::Phase::Deliver))
-        .filter_map(|a| Some((a.target.clone(), a.ask_id?)))
+        .filter_map(|a| Some((ask_key(a), a.ask_id?)))
         .collect()
+}
+
+/// The tab an ask went to: who it is, or its name when the name found no tab
+/// as the ask was taken
+fn ask_key(a: &crate::asktab::Ask) -> String {
+    a.target_uid.clone().unwrap_or_else(|| a.target.clone())
+}
+
+/// Whether `t` is the tab `a` went to, `t` named `id`
+fn ask_went_to(a: &crate::asktab::Ask, t: &Tab, id: &str) -> bool {
+    match &a.target_uid {
+        Some(u) => u == t.uid(),
+        None => a.target == id || a.target == t.called(),
+    }
 }
 
 /// The conversation a tab speaks in now, on `desk`: the one it was asked in
@@ -1349,7 +1365,10 @@ fn thread_of_tab(
     desk: &str,
     t: &Tab,
 ) -> Option<(i64, bool)> {
-    let asked = answering.get(&crate::orch::glue::tab_id(t)).or_else(|| answering.get(t.called()));
+    let asked = answering
+        .get(t.uid())
+        .or_else(|| answering.get(&crate::orch::glue::tab_id(t)))
+        .or_else(|| answering.get(t.called()));
     if let Some(thread) = asked.and_then(|ask| log.thread_of_ask(*ask)) {
         return Some((thread, false));
     }
@@ -2178,8 +2197,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let (hooks_tx, hooks_rx) = std::sync::mpsc::channel::<String>();
     let mut ask_rounds: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     // Which tabs each AI tab may drive -- type into a shell, operate a page --
-    // because the person named them in what they last sent it (<@ID>)
-    let mut mention_grants: std::collections::HashMap<String, std::collections::HashSet<String>> =
+    // because the person named them in what they last sent it (<@ID>). By
+    // who the AI tab is (`Tab::uid`), and each name settled to who it named
+    // as the person wrote it (`orch::glue::named_now`)
+    let mut mention_grants: std::collections::HashMap<String, crate::orch::glue::Named> =
         std::collections::HashMap::new();
     // Work one AI tab hands out to others and sees through (`orch`): its
     // record, what each profile says about pasting, and when the tabs were
@@ -2216,8 +2237,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A conversation just begun, put beside the desk's recent ones by the
     // deciding AI on a thread: (the conversation, the one it belongs to)
     let (merge_tx, merge_rx) = std::sync::mpsc::channel::<(i64, i64)>();
-    // The tabs whose CLI has called the stop hook that asks for a line: an
-    // answer from one of them waits a moment for it (`asktab::Ask::hook_expected`)
+    // The tabs whose CLI has called the stop hook that asks for a line, by
+    // who they are: an answer from one of them waits a moment for it
+    // (`asktab::Ask::hook_expected`)
     let mut line_hooked: std::collections::HashSet<String> = std::collections::HashSet::new();
     let (card_tx, card_rx) = std::sync::mpsc::channel::<CardChecked>();
     let mut orch_looked = std::time::Instant::now();
@@ -2293,14 +2315,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut far_polls: std::collections::HashMap<String, FarPoll> = std::collections::HashMap::new();
     // When each MicroVM was last given its minutes again (see `keep_machines_up`)
     let mut kept_up: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
-    // 🔍 environment cards: per tab (by id), the captured output of the last
-    // survey the person ran. Ride along with every ✨ suggestion so the AI
-    // keeps knowing the environment long after the survey scrolled away
+    // 🔍 environment cards: per tab (by who it is, `Tab::uid`), the captured
+    // output of the last survey the person ran. Ride along with every ✨
+    // suggestion so the AI keeps knowing the environment long after the
+    // survey scrolled away. A tab given a closed tab's name is another
+    // machine, perhaps, and is not handed its card
     let mut env_cards: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    // A survey in flight: (tab id, give-up time). The tick below watches the
-    // tab's screen for the probe's end marker — event-paced, no sleeps
-    let mut pending_survey: Option<(String, std::time::Instant)> = None;
+    // A survey in flight: (the tab's uid, its name for the log, give-up
+    // time). The tick below watches that tab's screen for the probe's end
+    // marker — event-paced, no sleeps
+    let mut pending_survey: Option<(String, String, std::time::Instant)> = None;
 
     // Remote UI (monitor/control from a phone, etc). Only starts listening when
     // enabled in config. Status is also handed to the settings page so the QR code
@@ -3740,16 +3765,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // naming a tab there is a conversation begun, as from the composer.
             // What this app typed into the tab itself is not taken for it
             if let Some(desk) = desks.get(desk_index).map(|d| d.uid.clone()) {
+                let mut heard: Vec<(String, String)> = Vec::new();
                 for t in tabs.iter_mut() {
                     for text in t.take_typed() {
                         if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(t.uid(), &text, TYPED_BY_APP_MS) {
                             continue;
                         }
-                        mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&text));
+                        heard.push((t.uid().to_string(), text.clone()));
                         if let Some((thread, _)) = convo_log.thread_for(&desk, &origin_of(t)) {
                             convo_log.line(&desk, thread, None, text.trim(), None, "person");
                         }
                     }
+                }
+                for (uid, text) in heard {
+                    mention_grants.insert(uid, crate::orch::glue::named_now(&text, &tabs));
                 }
             }
             // Cards checked on their threads, written here, where the record is
@@ -4792,11 +4821,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let mut hold = serde_json::Value::Null;
                     if let Some(t) = me {
                         let id = crate::orch::glue::tab_id(t);
-                        line_hooked.insert(id.clone());
+                        line_hooked.insert(t.uid().to_string());
                         let asked = tab_asks
                             .iter_mut()
                             .filter(|a| {
-                                (a.target == id || a.target == t.called())
+                                ask_went_to(a, t, &id)
                                     && a.sent_at.is_some()
                                     && a.run.is_none()
                                     && matches!(a.phase, crate::asktab::Phase::Waiting | crate::asktab::Phase::Deliver)
@@ -4929,7 +4958,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     "id": id, "name": t.title, "kind": kind,
                                     "folder": t.cwd().map(|p| p.display().to_string()).unwrap_or_default(),
                                     "you": call.caller.as_deref() == Some(t.called()),
-                                    "named": granted.contains(&id),
+                                    "named": granted.contains(t.uid()),
                                 }));
                             }
                             Surface::Browser { key, name, .. } => list.push(serde_json::json!({
@@ -5030,7 +5059,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 Some(why)
                             } else if kind == crate::asktab::Kind::Missing {
                                 Some(format!("There is no tab <@{target}> on this desk"))
-                            } else if call.caller.is_some() && !granted.contains(&target) {
+                            } else if call.caller.is_some() && !granted.contains(&crate::orch::glue::named_key(&target, &tabs)) {
                                 Some(format!("Not done: the person has not named <@{target}> in what they asked you. \
                                     A page is only driven when the person names it with @; ask them to."))
                             } else if driving.is_some() || words_waiter.is_some() || !words_calls.is_empty() {
@@ -5040,8 +5069,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 let now = std::time::Instant::now();
                                 append_hook_log(&format!("browser_do: {} drives {target}",
                                     call.caller.as_deref().unwrap_or("outside")));
+                                let caller_uid = call
+                                    .caller
+                                    .as_deref()
+                                    .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                                    .map(|t| t.uid().to_string());
                                 words_calls.push(crate::asktab::WordsCall {
-                                    reply: None, caller: call.caller.clone(), target, pane, goal,
+                                    reply: None, caller: call.caller.clone(), caller_uid, target, pane, goal,
                                     asked_at: now, deadline: now + wait,
                                 });
                                 None
@@ -5093,7 +5127,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             }
                             // A terminal can be a server somewhere: only one the
                             // person named is typed into
-                            if run && call.caller.is_some() && !granted.contains(&target) {
+                            // By who it is: a terminal opened under the id of
+                            // one the person named is not the one named
+                            if run && call.caller.is_some() && !granted.contains(&crate::orch::glue::named_key(&target, &tabs)) {
                                 return Err(format!("Not run: the person has not named <@{target}> in what they asked you. \
                                     A terminal is only typed into when the person names it with @; ask them to."));
                             }
@@ -5117,14 +5153,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         call.caller.as_deref().unwrap_or("outside")
                                     ));
                                     let now = std::time::Instant::now();
-                                    let hook_expected = !run
-                                        && tabs
-                                            .iter()
-                                            .find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target)
-                                            .is_some_and(|t| line_hooked.contains(&crate::orch::glue::tab_id(t)));
+                                    // Who each is, fixed now: a tab closed
+                                    // while the ask waits is not answered for
+                                    // by one given its name
+                                    let asked = tabs.iter().find(|t| t.id.as_deref() == Some(target.as_str()) || t.called() == target);
+                                    let hook_expected =
+                                        !run && asked.is_some_and(|t| line_hooked.contains(t.uid()));
+                                    let caller_uid = call
+                                        .caller
+                                        .as_deref()
+                                        .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                                        .map(|t| t.uid().to_string());
                                     tab_asks.push(crate::asktab::Ask {
                                         reply: Some(call.reply),
                                         caller: call.caller,
+                                        caller_uid,
+                                        target_uid: asked.map(|t| t.uid().to_string()),
                                         target,
                                         text,
                                         phase: crate::asktab::Phase::Queued,
@@ -7137,7 +7181,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(Surface::Session(i)) = surfaces.get(to.wrapping_sub(1))
                 && let Some(t) = tabs.get(*i)
             {
-                mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&line));
+                mention_grants.insert(t.uid().to_string(), crate::orch::glue::named_now(&line, &tabs));
             }
             let said = line.clone();
             if hand_line(&mut tabs, &surfaces, to, line, now_ms, &mut pending_send, &mut ball) {
@@ -9231,7 +9275,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     if unheard && let Some(caller) = w.caller.clone() {
                         let said = v["reply"].as_str().unwrap_or_default();
                         let text = format!("[shikisha] <@{}> finished what you asked ({}):\n{said}", w.target, v["state"].as_str().unwrap_or_default());
-                        tab_asks.push(crate::asktab::handing(caller, w.target.clone(), text));
+                        tab_asks.push(crate::asktab::handing(caller, w.caller_uid.clone(), w.target.clone(), text));
                     }
                 }
                 if let Some(eng) = engine.as_mut() {
@@ -9298,6 +9342,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // pressing Send — or decide not to (then this just lapses)
                     append_hook_log(&format!("survey drafted for tab {tab_id}"));
                     pending_survey = Some((
+                        t.uid().to_string(),
                         tab_id,
                         std::time::Instant::now() + std::time::Duration::from_secs(300),
                     ));
@@ -9320,10 +9365,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // Watch for the survey's end marker (event-paced: the loop's normal
         // tick, no sleeps). Lapses silently if the person never sent it
-        if let Some((tab_id, deadline)) = pending_survey.clone() {
+        if let Some((uid, tab_id, deadline)) = pending_survey.clone() {
             let block = tabs
                 .iter()
-                .find(|t| t.id.as_deref() == Some(tab_id.as_str()) || t.title == tab_id)
+                .find(|t| t.uid() == uid)
                 .and_then(|t| {
                     let s =
                         t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
@@ -9331,7 +9376,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 });
             if let Some(env) = block {
                 append_hook_log(&format!("survey [{tab_id}]: {}", log_excerpt(&env, 160)));
-                env_cards.insert(tab_id, env);
+                env_cards.insert(uid, env);
                 pending_survey = None;
                 let js = r#"{"ok":true}"#;
                 shell.push_surveyed(js);
@@ -10946,7 +10991,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 }
             };
-            let desk_name = desks.iter().find(|d| d.id == ask.desk_id).map(|d| d.uid.clone()).unwrap_or_default();
+            let desk_name = targets.desk_uid.clone();
             // Each worktree's machine after the checkouts', as a checkout of
             // its own folder: nothing of the project's is written for it
             let worktrees = targets.worktrees.into_iter().map(|(host, at)| {
@@ -10975,8 +11020,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     desk: desk_name.clone(),
                     // The desk by who it is, as every job holds it
                     desk_id: desk_name.clone(),
-                    project: ask.project.clone(),
-                    project_key: project_key_of(desks.iter().find(|d| d.uid == desk_name), &ask.project),
+                    project: targets.project_name.clone(),
+                    project_key: targets.project_uid.clone(),
                     at: home.at.clone(),
                     work: VmWork::Prepare {
                         job: crate::microvm::Prepare::start(host.clone(), &home.at, targets.preparing.clone()),
@@ -12551,8 +12596,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let tail: Vec<&str> = s.lines().rev().take(40).collect();
                 tail.into_iter().rev().collect::<Vec<_>>().join("\n")
             };
-            let tab_id = t.id.clone().unwrap_or_else(|| t.title.clone());
-            let env = env_cards.get(&tab_id).cloned().unwrap_or_default();
+            let env = env_cards.get(t.uid()).cloned().unwrap_or_default();
             let engine = cfg
                 .as_ref()
                 .and_then(|c| c.ai_engine.clone())

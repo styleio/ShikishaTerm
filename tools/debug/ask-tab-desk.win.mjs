@@ -138,7 +138,7 @@ try {
   if (process.argv.includes('--probe')) {
     await sleep(8000);
     console.log('state before:', await call('state', 'codex-a'));
-    const r = await call('ask_tab', 'codex-a', 'Reply with only the word PROBE1 and nothing else. Do not use any tools.');
+    const r = await call('ask_tab', 'codex-a', 'A first word.', 'Reply with only the word PROBE1 and nothing else. Do not use any tools.');
     console.log('probe answer:', JSON.stringify(r).slice(0, 200));
     for (let i = 0; i < 6; i++) { console.log('state:', await call('state', 'codex-a')); await sleep(5000); }
     const sc = String(await call('tab_screen', 'codex-a')).split('\n').filter((l) => l.trim()).slice(-8).join('\n');
@@ -164,7 +164,7 @@ try {
     const word = `DESK${nonce()}`;
     const from = logLines().length;
     // A question that takes a while, so the answer comes while the desk is away
-    const asked = call('ask_tab', 'codex-a',
+    const asked = call('ask_tab', 'codex-a', 'A word after a wait.',
       `Run a shell command that waits 20 seconds, then reply with only the word ${word} and nothing else.`);
     // Away the moment the words have gone in
     await until(async () => logLines().slice(from).some((l) => l.includes('ask_tab: sent to codex-a')), 'the words to go in', 60000);

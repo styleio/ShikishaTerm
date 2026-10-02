@@ -741,6 +741,13 @@ impl Prepare {
 /// A project's checkouts on MicroVMs, each with the machine it is on, as
 /// the settings say now -- what preparing the project means
 pub struct Targets {
+    /// The desk and the project, by who they are, and the project's name now:
+    /// what the preparing is held to once it is asked for, so a desk or a
+    /// project renamed while it runs -- or a new one given the old name -- is
+    /// not the one its results are written into
+    pub desk_uid: String,
+    pub project_uid: String,
+    pub project_name: String,
     pub preparing: Preparing,
     /// Each checkout: the entry naming its machine, and the checkout itself
     pub homes: Vec<(crate::config::HostSpec, crate::config::ProjectHome)>,
@@ -751,14 +758,26 @@ pub struct Targets {
     pub worktrees: Vec<(crate::config::HostSpec, String)>,
 }
 
-/// What preparing `project` on desk `desk_id` means, from the saved
-/// settings: the AI and the machine setup as written, and every checkout it
-/// has on a MicroVM. A project with none is said as that
-pub fn prepare_targets(desk_id: &str, project: &str) -> Result<Targets, String> {
+/// What preparing `project` on desk `desk` means, from the saved settings:
+/// the AI and the machine setup as written, and every checkout it has on a
+/// MicroVM. A project with none is said as that. The desk and the project
+/// are each a uid, or -- from a caller that has only that -- the desk's id and
+/// the project's name
+pub fn prepare_targets(desk: &str, project: &str) -> Result<Targets, String> {
     let cfg = crate::config::load().ok_or_else(|| crate::i18n::t("err.config.unreadable"))?;
     let (desks, _) = cfg.resolve_desks();
-    let desk = desks.iter().find(|d| d.id == desk_id).ok_or_else(|| crate::i18n::tp("err.desk.missing", &[("name", desk_id)]))?;
-    let p = desk.projects.iter().find(|p| p.name == project).ok_or_else(|| crate::i18n::tp("err.project.missing", &[("name", project)]))?;
+    let by_uid = crate::config::is_tab_uid;
+    let desk_key = desk;
+    let desk = desks
+        .iter()
+        .find(|d| if by_uid(desk_key) { d.uid == desk_key } else { d.id == desk_key })
+        .ok_or_else(|| crate::i18n::tp("err.desk.missing", &[("name", desk_key)]))?;
+    let p = desk
+        .projects
+        .iter()
+        .find(|p| if by_uid(project) { p.uid.as_deref() == Some(project) } else { p.name == project })
+        .ok_or_else(|| crate::i18n::tp("err.project.missing", &[("name", project)]))?;
+    let project = p.name.as_str();
     let homes: Vec<(crate::config::HostSpec, crate::config::ProjectHome)> = p
         .homes
         .iter()
@@ -781,7 +800,14 @@ pub fn prepare_targets(desk_id: &str, project: &str) -> Result<Targets, String> 
         }
         worktrees.push((h.clone(), at.to_string_lossy().replace('\\', "/")));
     }
-    Ok(Targets { preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()), homes, worktrees })
+    Ok(Targets {
+        desk_uid: desk.uid.clone(),
+        project_uid: p.uid.clone().unwrap_or_else(|| p.name.clone()),
+        project_name: p.name.clone(),
+        preparing: Preparing::of(p.machine_ai.as_deref(), p.machine_setup.as_deref()),
+        homes,
+        worktrees,
+    })
 }
 
 /// Learns, for the checkouts made while a whole project said "private"
@@ -801,9 +827,12 @@ pub fn settle_private_homes() {
                     let Some(host) = cfg.hosts.iter().find(|x| x.name == home.host && x.is_made()) else { continue };
                     let Some(id) = home.sandbox.as_deref() else { continue };
                     match crate::e2b::is_private(&host.with_instance(Some(id))) {
+                        // Written to the desk and the project by who they
+                        // are: the service may take a while to answer, and
+                        // either may be renamed meanwhile
                         Ok(private) => {
                             let said = crate::config::ProjectHome { private: Some(private), ..home.clone() };
-                            if let Err(e) = crate::config::set_project_home(&d.id, &p.name, &said, None) {
+                            if let Err(e) = crate::config::set_project_home(&d.uid, p.uid.as_deref().unwrap_or(&p.name), &said, None) {
                                 all = false;
                                 crate::append_hook_log(&format!("could not write what {} on {} was made as: {e:#}", p.name, home.host));
                             }
@@ -817,7 +846,7 @@ pub fn settle_private_homes() {
                     }
                 }
                 if all
-                    && let Err(e) = crate::config::set_project_flag(&d.id, &p.name, "microvm_private", false) {
+                    && let Err(e) = crate::config::set_project_flag(&d.uid, p.uid.as_deref().unwrap_or(&p.name), "microvm_private", false) {
                         crate::append_hook_log(&format!("could not take the old private mark off {}: {e:#}", p.name));
                     }
             }
