@@ -17471,7 +17471,7 @@ function vaultRow(h, query) {
   row.append(el("div", {class:"vr1"},
     el("span", {class:"vprog"}, live ? (T["vault.live"] || "open") : h.program),
     el("span", {class:"vname"}, h.title),
-    h.thread ? el("span", {class:"vtab"}, convoTabName(h.thread)) : null,
+    h.thread ? el("span", {class:"vtab"}, "@" + (h.thread_name || "")) : null,
     h.pinned ? el("span", {class:"vpin", title:T["convo.pinned"] || ""}, pickIcon("pin")) : null,
     el("span", {class:"vwhen"}, live ? (T["vault.here"] || "on screen") : ago(h.when))));
   if (h.snippet) {

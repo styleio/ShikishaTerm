@@ -1277,7 +1277,9 @@ const TYPED_BY_APP_MS: i64 = 10 * 60 * 1000;
 /// Whose conversation a tab's CLI is having: the tab and its CLI's own id for
 /// the conversation. What a conversation of AIs grows from (`convo::db::Store::thread_for`)
 fn origin_of(t: &Tab) -> String {
-    format!("{}/{}", crate::orch::glue::tab_id(t), t.session.as_ref().map_or("", |s| s.id.as_str()))
+    // By uid: a tab with no conversation yet is "<uid>/", and by name that
+    // was every earlier tab of the name with none either
+    format!("{}/{}", t.uid(), t.session.as_ref().map_or("", |s| s.id.as_str()))
 }
 
 /// The asks being answered now, by the name of the tab answering
@@ -2138,6 +2140,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // conversation it is on, who sent what into it, who answered its
     // questions and who stopped it. Written from this loop only
     let mut convo_log = crate::convo::Log::default();
+    // What an older version wrote under the tabs' names goes under their
+    // uids, before anything new is written beside it
+    convo_log.adopt(
+        &desks
+            .iter()
+            .flat_map(|d| d.tabs.iter().map(move |t| (d.id.clone(), t.cfg.id.clone().unwrap_or_default(), t.cfg.uid.clone().unwrap_or_default())))
+            .collect::<Vec<_>>(),
+    );
     // A page of a conversation for the column's panel, read on a thread
     let (convo_tx, convo_rx) = std::sync::mpsc::channel::<crate::convo::read::Found>();
     // AIs conferring (`convo::confer`): how many times, and on which desk, one
@@ -3635,7 +3645,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             // Which conversation each AI tab is on, and every change of state,
             // for the record of conversations. A model bridge keeps no record
-            // of its own to put this beside
+            // of its own to put this beside. Who every tab is first, so a name
+            // a note or a conversation says is read as the tab called that now
+            convo_log.roster(
+                desks
+                    .get(desk_index)
+                    .map(|d| tabs.iter().map(move |t| (d.id.as_str(), t)))
+                    .into_iter()
+                    .flatten()
+                    .chain(desk_tabs.iter().enumerate().filter(|(i, _)| *i != desk_index).flat_map(|(i, list)| {
+                        let desk = desks.get(i).map_or("", |d| d.id.as_str());
+                        list.iter().map(move |t| (desk, t))
+                    }))
+                    .map(|(desk, t)| (desk, t.called(), t.uid())),
+            );
             convo_log.take_notes();
             // A job's decision, put in the conference of the desk its lead is on
             let answering = answering_in(&tab_asks);
@@ -3653,8 +3676,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(desk) = desks.get(desk_index).map(|d| d.id.clone()) {
                 for t in tabs.iter_mut() {
                     for text in t.take_typed() {
-                        let id = crate::orch::glue::tab_id(t);
-                        if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(&id, &text, TYPED_BY_APP_MS) {
+                        if crate::asktab::named_in(&text).is_empty() || convo_log.typed_by_app(t.uid(), &text, TYPED_BY_APP_MS) {
                             continue;
                         }
                         mention_grants.insert(t.called().to_string(), crate::asktab::named_in(&text));
@@ -3679,11 +3701,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if !t.is_ai() || t.is_model() {
                     continue;
                 }
-                let id = crate::orch::glue::tab_id(t);
                 let cli = t.ai_kind().unwrap_or_default();
-                convo_log.follow(&id, &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
+                convo_log.follow(t.uid(), &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
                 if old != new {
-                    convo_log.state(&id, new, t.limit_note());
+                    convo_log.state(t.uid(), new, t.limit_note());
                 }
             }
             // What people asked the AIs, gathered by folder, and which folders
@@ -13146,7 +13167,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     job: None,
                                     why: None,
                                 };
-                                crate::convo::note_stopped(&crate::orch::glue::tab_id(t), stop);
+                                crate::convo::note_stopped(t.uid(), stop);
                             }
                             let halted: Vec<&str> = halted.iter().map(|t| t.title.as_str()).collect();
                             append_hook_log(&format!(
@@ -15993,7 +16014,7 @@ fn convo_target(
         .ok_or_else(|| i18n::t("convo.no_record"))?;
     Ok(crate::convo::read::Target {
         panel: panel.to_string(),
-        tab: Some(crate::orch::glue::tab_id(t)),
+        tab: Some(t.uid().to_string()),
         live: t.record_at(),
         glob,
         machine: t.machine(),
@@ -16009,7 +16030,7 @@ fn record_sent(tabs: &[Tab], surfaces: &[Surface], at: usize, text: &str, from: 
         && t.is_ai()
         && !t.is_model()
     {
-        crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[text], from);
+        crate::convo::note_sent(t.uid(), &[text], from);
     }
 }
 
@@ -16020,13 +16041,13 @@ fn record_keys(t: &Tab, bytes: &[u8], device: crate::convo::Device) {
     if !t.is_ai() || t.is_model() {
         return;
     }
-    let id = crate::orch::glue::tab_id(t);
+    let id = t.uid();
     if bytes == b"\x1b" && t.state == TabState::Busy {
         let stop = crate::convo::Stop { by: crate::convo::By::Person, device: Some(device), how: "esc", job: None, why: None };
-        crate::convo::note_stopped(&id, stop);
+        crate::convo::note_stopped(id, stop);
         return;
     }
-    crate::convo::note_touched(&id, crate::convo::Origin::person(device, "keys"));
+    crate::convo::note_touched(id, crate::convo::Origin::person(device, "keys"));
 }
 
 pub fn hand_line(
@@ -17457,7 +17478,7 @@ pub fn exec_commands(
                         continue;
                     }
                     if t.is_ai() && !t.is_model() {
-                        crate::convo::note_touched(&crate::orch::glue::tab_id(t), crate::convo::Origin::automation("script"));
+                        crate::convo::note_touched(t.uid(), crate::convo::Origin::automation("script"));
                     }
                     let _ = t.write_bytes(keys.as_bytes());
                 }
@@ -17588,7 +17609,7 @@ pub fn exec_commands(
                         (Some(f), o) if o != 0 => crate::convo::Origin::tab(f, "ask"),
                         _ => crate::convo::Origin::automation("script"),
                     };
-                    crate::convo::note_sent(&crate::orch::glue::tab_id(t), &[&text], sender);
+                    crate::convo::note_sent(t.uid(), &[&text], sender);
                     append_hook_log(&format!("Paste tab{target} ({} chars)", text.chars().count()));
                 }
                 // A self-send (the opening nudge, a model's self-kick) starts

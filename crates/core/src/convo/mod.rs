@@ -40,7 +40,10 @@ pub fn path() -> PathBuf {
 /// into the record by the main loop at its next look ([`Log::take_notes`]).
 /// What types a job's brief or a script's line into a tab is a long way from
 /// the loop that holds the record; a note is how it says so without the
-/// record being handed down to it
+/// record being handed down to it.
+///
+/// `tab` is the tab's uid. A name is taken too, from what knows a tab only by
+/// the name it was given (a job's record): it means the tab called that now
 #[derive(Clone, Debug)]
 enum Note {
     Sent { tab: String, texts: Vec<String>, from: Origin, at: i64 },
@@ -54,7 +57,7 @@ fn note(n: Note) {
     NOTES.lock().unwrap_or_else(|e| e.into_inner()).push(n);
 }
 
-/// Text went into `tab` (by id) from `from`. `texts` are the ways it may land
+/// Text went into `tab` (by uid) from `from`. `texts` are the ways it may land
 /// in the CLI's record: what was typed whole first, then any part of it the
 /// CLI may keep on its own
 pub fn note_sent(tab: &str, texts: &[&str], from: Origin) {
@@ -96,12 +99,23 @@ struct Sighting {
 
 /// The writer of the record, held by the app's main loop. A record that
 /// cannot be opened costs the app nothing but this record: every call becomes
-/// a no-op, and why is said once in the hooks log
+/// a no-op, and why is said once in the hooks log.
+///
+/// A tab is named to it by its uid (`Tab::uid`), and the conference's calls
+/// by the desk and the name a conversation knows it by -- which the record
+/// turns into the uid of the tab called that ([`db::Store::uid_named`]), as
+/// last told by [`Log::roster`]
 pub struct Log {
     store: Option<db::Store>,
     /// Whether a failure has been said already. One line, not one a tick
     said_failure: bool,
+    /// The conversation each tab was last seen on, by uid
     seen: HashMap<String, Sighting>,
+    /// What each tab is called and where, by uid, as last written down
+    names: HashMap<String, (String, String)>,
+    /// The tab each name is answered by now, on any desk: what a note that
+    /// names a tab is taken to mean
+    by_name: HashMap<String, String>,
     /// Goes up every time the conference changes, so a panel showing it
     /// knows to read it again
     pub confer_rev: u64,
@@ -115,18 +129,72 @@ impl Default for Log {
 
 impl Log {
     pub fn open(path: &std::path::Path) -> Self {
-        match db::Store::open(path) {
-            Ok(store) => Log { store: Some(store), said_failure: false, seen: HashMap::new(), confer_rev: 0 },
+        let (store, said_failure) = match db::Store::open(path) {
+            Ok(store) => (Some(store), false),
             Err(e) => {
                 crate::append_hook_log(&format!("conversations: the record could not be opened ({e:#}); nothing is recorded"));
-                Log { store: None, said_failure: true, seen: HashMap::new(), confer_rev: 0 }
+                (None, true)
             }
-        }
+        };
+        Log { store, said_failure, seen: HashMap::new(), names: HashMap::new(), by_name: HashMap::new(), confer_rev: 0 }
     }
 
     /// A record that lives only as long as this value (tests)
     pub fn in_memory() -> Self {
-        Log { store: db::Store::in_memory().ok(), said_failure: false, seen: HashMap::new(), confer_rev: 0 }
+        Log {
+            store: db::Store::in_memory().ok(),
+            said_failure: false,
+            seen: HashMap::new(),
+            names: HashMap::new(),
+            by_name: HashMap::new(),
+            confer_rev: 0,
+        }
+    }
+
+    /// Rewrite what an older version wrote under tabs' names, once, under
+    /// their uids: `tabs` is every tab of the settings -- its desk, its name,
+    /// its uid ([`db::Store::adopt_uids`]). Called before anything else is
+    /// written, so nothing new is mistaken for something old
+    pub fn adopt(&mut self, tabs: &[(String, String, String)]) {
+        let mut did = false;
+        self.write("the tabs' uids", |s| {
+            did = s.adopt_uids(tabs)?;
+            Ok(())
+        });
+        if did {
+            crate::append_hook_log(&format!("conversations: the record now knows tabs by their uids ({} tabs in the settings)", tabs.len()));
+        }
+    }
+
+    /// The tabs there are now: each one's desk, name and uid. What changed
+    /// since the last look is written down, so a name said in a conversation
+    /// is taken to mean the tab called that now, and what a closed tab took
+    /// part in still reads with the name it had
+    pub fn roster<'a>(&mut self, tabs: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) {
+        let at = db::now_ms();
+        for (desk, name, uid) in tabs {
+            if name.is_empty() || uid.is_empty() {
+                continue;
+            }
+            if self.by_name.get(name).map(String::as_str) != Some(uid) {
+                self.by_name.insert(name.to_string(), uid.to_string());
+            }
+            let now = (desk.to_string(), name.to_string());
+            if self.names.get(uid) == Some(&now) {
+                continue;
+            }
+            self.names.insert(uid.to_string(), now);
+            self.write("a tab's name", |s| s.named(uid, desk, name, at));
+        }
+    }
+
+    /// The uid a note's tab stands for: itself when it is one, else the tab
+    /// called that now, else the uid of a name nobody answers to
+    fn uid_of(&self, tab: &str) -> String {
+        if crate::config::is_tab_uid(tab) {
+            return tab.to_string();
+        }
+        self.by_name.get(tab).cloned().unwrap_or_else(|| db::gone_uid("", tab))
     }
 
     fn write(&mut self, what: &str, f: impl FnOnce(&mut db::Store) -> anyhow::Result<()>) {
@@ -168,10 +236,17 @@ impl Log {
             match n {
                 Note::Sent { tab, texts, from, at } => {
                     let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+                    let tab = self.uid_of(&tab);
                     self.sent_at(&tab, &texts, &from, at);
                 }
-                Note::Touched { tab, from, at } => self.touched_at(&tab, &from, at),
-                Note::Stopped { tab, stop, at } => self.write("a stop", |s| s.stopped(&tab, &stop, at)),
+                Note::Touched { tab, from, at } => {
+                    let tab = self.uid_of(&tab);
+                    self.touched_at(&tab, &from, at)
+                }
+                Note::Stopped { tab, stop, at } => {
+                    let tab = self.uid_of(&tab);
+                    self.write("a stop", |s| s.stopped(&tab, &stop, at))
+                }
             }
         }
     }

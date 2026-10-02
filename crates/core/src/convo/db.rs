@@ -17,6 +17,15 @@
 //!   put on them and the cards shared, shown together by `crate::convo::confer`;
 //!   **threads** and **thread_tabs** -- the conversations they belong to, and
 //!   who takes part in each.
+//! * **tab_names** -- what each tab is called, by its uid.
+//!
+//! **A tab is its uid.** What a row is about is the tab's uid
+//! (`config::TabConfig::uid`), never its name: a name goes back in the bag
+//! when its tab closes, and a record kept under it was handed to the next tab
+//! to draw it. Who said or sent something is kept as the name it had then,
+//! the way a chat keeps the name a message was signed with. A name said in a
+//! conversation is taken to mean the tab last seen called that on its desk
+//! ([`Store::uid_named`]).
 //!
 //! The words of a conversation are not kept here: they are in the CLI's
 //! record, and a second copy would be a second thing to drift and to leak.
@@ -50,7 +59,20 @@ pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
     (2, "confer", Step::Sql(include_str!("migrations/0002_confer.sql"))),
     (3, "threads", Step::Sql(include_str!("migrations/0003_threads.sql"))),
+    (4, "tab_uids", Step::Sql(include_str!("migrations/0004_tab_uids.sql"))),
 ];
+
+/// The uid a name stands for once no tab on its desk answers to it: worked
+/// out from the desk and the name, so every row about one closed tab agrees
+/// on it, and never one a tab of the settings has (`config::derived_tab_uid`
+/// is given a scope no desk can be called)
+pub fn gone_uid(desk: &str, name: &str) -> String {
+    crate::config::derived_tab_uid(&format!("\0gone\0{desk}"), name)
+}
+
+/// What `meta` says once the rows written under names were rewritten under
+/// uids ([`Store::adopt_uids`])
+const ADOPTED: &str = "tab_uids";
 
 /// The version the steps bring a record to
 pub fn latest() -> i64 {
@@ -367,6 +389,13 @@ impl Store {
                 params![before],
             )?;
             self.conn.execute("DELETE FROM shares WHERE shared_at < ?1", params![before])?;
+            // A name is kept while a conversation it took part in is: that
+            // is where it is read
+            self.conn.execute(
+                "DELETE FROM tab_names WHERE seen_at < ?1 \
+                 AND NOT EXISTS (SELECT 1 FROM thread_tabs m WHERE m.tab = tab_names.uid)",
+                params![before],
+            )?;
             // A conversation goes once nothing in it is kept
             self.conn.execute(
                 "DELETE FROM threads WHERE last_at < ?1 \
@@ -385,6 +414,146 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    // -- who a tab is (the main loop) ------------------------------------------
+
+    /// `uid` is called `name` on `desk`, seen so at `at`
+    pub fn named(&self, uid: &str, desk: &str, name: &str, at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO tab_names (uid, desk, name, seen_at) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(uid) DO UPDATE SET desk = excluded.desk, name = excluded.name, \
+             seen_at = MAX(seen_at, excluded.seen_at)",
+            params![uid, desk, name, at],
+        )?;
+        Ok(())
+    }
+
+    /// The uid `name` stands for on `desk` now: the tab last seen called
+    /// that there, else the one a name nobody answers to stands for
+    /// ([`gone_uid`]). Reads only
+    pub fn uid_now(&self, desk: &str, name: &str) -> Result<String> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT uid FROM tab_names WHERE desk = ?1 AND name = ?2 ORDER BY seen_at DESC LIMIT 1",
+                params![desk, name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.unwrap_or_else(|| gone_uid(desk, name)))
+    }
+
+    /// [`Store::uid_now`], writing down what a name nobody answers to stands
+    /// for, so what it took part in still reads with its name
+    pub fn uid_named(&self, desk: &str, name: &str) -> Result<String> {
+        let uid = self.uid_now(desk, name)?;
+        self.conn.execute(
+            "INSERT OR IGNORE INTO tab_names (uid, desk, name, seen_at) VALUES (?1, ?2, ?3, 0)",
+            params![uid, desk, name],
+        )?;
+        Ok(uid)
+    }
+
+    /// Rewrite once what was written under names before tabs had uids.
+    /// `tabs` is every tab of the settings: its desk, its name, its uid.
+    ///
+    /// A name meant the tab of the settings called that -- on its desk for a
+    /// row that says which desk, and anywhere for one that does not, when only
+    /// one desk has it. Everything else meant a tab that has closed since, or
+    /// a name two desks share: it is given the uid of a name nobody answers to
+    /// ([`gone_uid`]), and so reads as nobody's now. What a tab of today was
+    /// called before it, the record cannot tell apart from the tab itself.
+    ///
+    /// `true` when it did the rewriting; a record it has rewritten already is
+    /// left alone
+    pub fn adopt_uids(&mut self, tabs: &[(String, String, String)]) -> Result<bool> {
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![ADOPTED], |r| r.get(0))
+            .optional()?;
+        if done.is_some() {
+            return Ok(false);
+        }
+        let mut on_desk: std::collections::HashMap<(String, String), String> = Default::default();
+        let mut anywhere: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for (desk, name, uid) in tabs {
+            on_desk.insert((desk.clone(), name.clone()), uid.clone());
+            anywhere.entry(name.clone()).or_default().push(uid.clone());
+        }
+        let is_uid = crate::config::is_tab_uid;
+        let tx = self.conn.transaction()?;
+        let name = |tx: &rusqlite::Transaction, uid: &str, desk: &str, name: &str, at: i64| -> Result<()> {
+            tx.execute(
+                "INSERT OR IGNORE INTO tab_names (uid, desk, name, seen_at) VALUES (?1, ?2, ?3, ?4)",
+                params![uid, desk, name, at],
+            )?;
+            Ok(())
+        };
+        for (desk, n, uid) in tabs {
+            name(&tx, uid, desk, n, 1)?;
+        }
+        // The tables that do not say which desk
+        let whose = |n: &str| -> (String, String) {
+            match anywhere.get(n).map(Vec::as_slice) {
+                Some([only]) => (only.clone(), String::new()),
+                _ => (gone_uid("", n), String::new()),
+            }
+        };
+        for table in ["conversations", "sends", "spans", "stops"] {
+            let names: Vec<String> = tx
+                .prepare(&format!("SELECT DISTINCT tab FROM {table}"))?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for old in names.into_iter().filter(|n| !is_uid(n)) {
+                let (uid, desk) = whose(&old);
+                if uid == gone_uid("", &old) {
+                    name(&tx, &uid, &desk, &old, 0)?;
+                }
+                // A row its tab already has under its uid is that row twice
+                tx.execute(&format!("UPDATE OR IGNORE {table} SET tab = ?2 WHERE tab = ?1"), params![old, uid])?;
+                tx.execute(&format!("DELETE FROM {table} WHERE tab = ?1"), params![old])?;
+            }
+        }
+        // The tables that do
+        let mine = |desk: &str, n: &str| -> String {
+            on_desk.get(&(desk.to_string(), n.to_string())).cloned().unwrap_or_else(|| gone_uid(desk, n))
+        };
+        let members: Vec<(i64, String, String)> = tx
+            .prepare("SELECT m.thread_id, m.tab, t.desk FROM thread_tabs m JOIN threads t ON t.id = m.thread_id")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (thread, old, desk) in members.into_iter().filter(|m| !is_uid(&m.1)) {
+            let uid = mine(&desk, &old);
+            name(&tx, &uid, &desk, &old, 0)?;
+            tx.execute(
+                "UPDATE OR IGNORE thread_tabs SET tab = ?3 WHERE thread_id = ?1 AND tab = ?2",
+                params![thread, old, uid],
+            )?;
+            tx.execute("DELETE FROM thread_tabs WHERE thread_id = ?1 AND tab = ?2", params![thread, old])?;
+        }
+        let origins: Vec<(i64, String, String)> = tx
+            .prepare("SELECT id, desk, origin FROM threads")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, desk, origin) in origins {
+            let (tab, record) = origin.split_once('/').unwrap_or((origin.as_str(), ""));
+            if is_uid(tab) {
+                continue;
+            }
+            let uid = mine(&desk, tab);
+            tx.execute("UPDATE threads SET origin = ?2 WHERE id = ?1", params![id, format!("{uid}/{record}")])?;
+        }
+        let said: Vec<(i64, String, String)> = tx
+            .prepare("SELECT id, desk, tab FROM lines WHERE tab IS NOT NULL AND tab_uid IS NULL")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (id, desk, n) in said {
+            tx.execute("UPDATE lines SET tab_uid = ?2 WHERE id = ?1", params![id, mine(&desk, &n)])?;
+        }
+        tx.execute("INSERT INTO meta (key, value) VALUES (?1, '1')", params![ADOPTED])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     // -- writing (the main loop) -----------------------------------------------
@@ -564,14 +733,17 @@ impl Store {
         Ok(())
     }
 
-    /// Something happened in a conversation at `at`, `tab` taking part
+    /// Something happened in a conversation at `at`, the tab called `tab`
+    /// taking part
     fn took_part(&self, thread: i64, tab: Option<&str>, at: i64) -> Result<()> {
         self.conn
             .execute("UPDATE threads SET last_at = MAX(last_at, ?2) WHERE id = ?1", params![thread, at])?;
         if let Some(tab) = tab.filter(|t| !t.is_empty() && *t != "person") {
+            let desk: String = self.conn.query_row("SELECT desk FROM threads WHERE id = ?1", params![thread], |r| r.get(0))?;
+            let uid = self.uid_named(&desk, tab)?;
             self.conn.execute(
                 "INSERT OR IGNORE INTO thread_tabs (thread_id, tab, joined_at) VALUES (?1, ?2, ?3)",
-                params![thread, tab, at],
+                params![thread, uid, at],
             )?;
         }
         Ok(())
@@ -632,9 +804,10 @@ impl Store {
         how: &str,
         at: i64,
     ) -> Result<i64> {
+        let uid = tab.map(|t| self.uid_named(desk, t)).transpose()?;
         self.conn.execute(
-            "INSERT INTO lines (desk, thread_id, tab, said_at, text, ask_id, how) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![desk, thread, tab, at, text, ask, how],
+            "INSERT INTO lines (desk, thread_id, tab, tab_uid, said_at, text, ask_id, how) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![desk, thread, tab, uid, at, text, ask, how],
         )?;
         let id = self.conn.last_insert_rowid();
         self.took_part(thread, tab, at)?;
@@ -659,15 +832,18 @@ impl Store {
             .is_some())
     }
 
-    /// The last line `tab` said on `desk` (`None`: the person's) -- in
-    /// `thread` when one is named. A decision is nobody's line to answer
+    /// The last line the tab called `tab` said on `desk` (`None`: the
+    /// person's) -- in `thread` when one is named. A decision is nobody's
+    /// line to answer. A line of an earlier tab of that name is not this
+    /// tab's
     pub fn last_line_of(&self, desk: &str, thread: Option<i64>, tab: Option<&str>) -> Result<Option<i64>> {
+        let uid = tab.map(|t| self.uid_now(desk, t)).transpose()?;
         Ok(self
             .conn
             .query_row(
-                "SELECT id FROM lines WHERE desk = ?1 AND tab IS ?2 AND how != 'agreed' AND (?3 IS NULL OR thread_id = ?3) \
+                "SELECT id FROM lines WHERE desk = ?1 AND tab_uid IS ?2 AND how != 'agreed' AND (?3 IS NULL OR thread_id = ?3) \
                  ORDER BY said_at DESC, id DESC LIMIT 1",
-                params![desk, tab, thread],
+                params![desk, uid, thread],
                 |r| r.get(0),
             )
             .optional()?)
@@ -728,10 +904,12 @@ impl Store {
 
     // -- the conference (the panel's thread) -----------------------------------
 
-    /// The conversations on `desk` -- every one, or those `tab` takes part
-    /// in -- the one something was said in last first: who takes part and how
-    /// it began. One merged into another is not one of its own any more
+    /// The conversations on `desk` -- every one, or those the tab called
+    /// `tab` takes part in -- the one something was said in last first: who
+    /// takes part, by the names they go by, and how it began. One merged into
+    /// another is not one of its own any more
     pub fn threads(&self, desk: &str, tab: Option<&str>, want: usize) -> Result<Vec<ThreadRow>> {
+        let tab = tab.map(|t| self.uid_now(desk, t)).transpose()?;
         let mut st = self.conn.prepare(
             "SELECT t.id, t.last_at FROM threads t WHERE t.desk = ?1 AND t.merged_into IS NULL \
              AND (?3 IS NULL OR EXISTS (SELECT 1 FROM thread_tabs m WHERE m.thread_id = t.id AND m.tab = ?3)) \
@@ -743,7 +921,10 @@ impl Store {
                 Ok(ThreadRow { id: r.get(0)?, last_at: r.get(1)?, tabs: Vec::new(), first: String::new() })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut who = self.conn.prepare("SELECT tab FROM thread_tabs WHERE thread_id = ?1 ORDER BY joined_at, tab")?;
+        let mut who = self.conn.prepare(
+            "SELECT COALESCE(n.name, m.tab) FROM thread_tabs m LEFT JOIN tab_names n ON n.uid = m.tab \
+             WHERE m.thread_id = ?1 ORDER BY m.joined_at, m.tab",
+        )?;
         let mut first = self
             .conn
             .prepare("SELECT text FROM lines WHERE thread_id = ?1 ORDER BY said_at, id LIMIT 1")?;
@@ -839,8 +1020,16 @@ impl Store {
         })
     }
 
-    /// The tab a conversation was carried on, by the CLI's id for it: the
-    /// last tab seen on it
+    /// What the tab `uid` is called, or was when it was last seen
+    pub fn name_of(&self, uid: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT name FROM tab_names WHERE uid = ?1", params![uid], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// The tab a conversation was carried on, by uid, by the CLI's id for
+    /// it: the last tab seen on it
     pub fn tab_of(&self, record_id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -1273,6 +1462,93 @@ mod tests {
         let page = s.conference("d", t, i64::MAX, 10).unwrap();
         let Said::Line { ask: Some(a), .. } = &page[0] else { panic!("{page:?}") };
         assert_eq!(a.reply.as_deref(), Some("the whole answer"));
+    }
+
+    /// A record written before tabs had uids, with a tiger that is still in
+    /// the settings, a heron that has closed, and an otter on two desks
+    fn written_under_names() -> Store {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn, &STEPS[..3], None, WHAT).unwrap();
+        conn.execute_batch(
+            "INSERT INTO conversations (tab, cli, record_id, first_at, last_at) VALUES ('tiger', 'claude', 'r-old', 1, 2);
+             INSERT INTO conversations (tab, cli, record_id, first_at, last_at) VALUES ('heron', 'claude', 'r-heron', 1, 2);
+             INSERT INTO conversations (tab, cli, record_id, first_at, last_at) VALUES ('otter', 'codex', 'r-otter', 1, 2);
+             INSERT INTO sends (tab, sent_at, by, via, sender) VALUES ('tiger', 1, 'tab', 'ask', 'heron');
+             INSERT INTO spans (tab, state, started_at) VALUES ('heron', 'BUSY', 1);
+             INSERT INTO stops (tab, stopped_at, by, how) VALUES ('tiger', 1, 'person', 'esc');
+             INSERT INTO threads (desk, origin, begun_at, last_at) VALUES ('work', 'tiger/r-old', 1, 1);
+             INSERT INTO threads (desk, origin, begun_at, last_at) VALUES ('work', 'heron/', 1, 1);
+             INSERT INTO thread_tabs (thread_id, tab, joined_at) VALUES (1, 'tiger', 1);
+             INSERT INTO thread_tabs (thread_id, tab, joined_at) VALUES (1, 'heron', 1);
+             INSERT INTO lines (desk, thread_id, tab, said_at, text, how) VALUES ('work', 1, 'tiger', 1, 'on it', 'said');",
+        )
+        .unwrap();
+        migrate(&mut conn, STEPS, None, WHAT).unwrap();
+        Store { conn }
+    }
+
+    const TIGER: &str = "11111111-1111-4111-8111-111111111111";
+    const OTTER_WORK: &str = "22222222-2222-4222-8222-222222222222";
+    const OTTER_HOME: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn settings() -> Vec<(String, String, String)> {
+        [("work", "tiger", TIGER), ("work", "otter", OTTER_WORK), ("home", "otter", OTTER_HOME)]
+            .iter()
+            .map(|(d, n, u)| (d.to_string(), n.to_string(), u.to_string()))
+            .collect()
+    }
+
+    /// What was written under a name is the tab's of the settings called
+    /// that; a closed tab's, and a name two desks share, are nobody's now --
+    /// and still read with the name they had
+    #[test]
+    fn rows_written_under_names_go_to_the_tab_the_settings_call_that() {
+        let mut s = written_under_names();
+        assert!(s.adopt_uids(&settings()).unwrap());
+        assert!(!s.adopt_uids(&settings()).unwrap(), "it rewrote the record twice");
+        let tiger = s.conversations(TIGER).unwrap();
+        assert_eq!(tiger.iter().map(|c| c.record_id.as_str()).collect::<Vec<_>>(), vec!["r-old"]);
+        assert_eq!(s.sends(TIGER, 0, 10).unwrap()[0].sender.as_deref(), Some("heron"), "who sent it keeps its name");
+        assert_eq!(s.stops(TIGER, 0, 10).unwrap().len(), 1);
+        // Closed: its conversation is under a uid no tab has
+        assert_eq!(s.tab_of("r-heron").unwrap(), Some(gone_uid("", "heron")));
+        assert_eq!(s.state_now(&gone_uid("", "heron")).unwrap().as_deref(), Some("BUSY"));
+        // Two desks' otters: neither is given the other's conversation
+        assert!(s.conversations(OTTER_WORK).unwrap().is_empty() && s.conversations(OTTER_HOME).unwrap().is_empty());
+        assert_eq!(s.tab_of("r-otter").unwrap(), Some(gone_uid("", "otter")));
+        // The conference: by desk, so the desk's own tab
+        let threads = s.threads("work", Some("tiger"), 10).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].tabs, vec!["tiger", "heron"], "who took part reads with the names they had");
+        assert_eq!(s.thread_for("work", &format!("{TIGER}/r-old"), 5).unwrap(), (1, false), "the conversation it began is not its own");
+        assert_eq!(s.last_line_of("work", None, Some("tiger")).unwrap(), Some(1));
+    }
+
+    /// A new tab given a closed tab's name is somebody else: nothing kept
+    /// about the first is the second's, and a name said in a conversation
+    /// means the tab called that now
+    #[test]
+    fn a_new_tab_with_an_old_name_is_handed_nothing_of_the_old_one() {
+        let s = Store::in_memory().unwrap();
+        let (old, new) = ("44444444-4444-4444-8444-444444444444", "55555555-5555-4555-8555-555555555555");
+        s.named(old, "work", "tiger", 10).unwrap();
+        s.seen(old, "claude", "r-old", false, 10).unwrap();
+        let (t, _) = s.thread_for("work", &format!("{old}/"), 10).unwrap();
+        s.line("work", t, Some("tiger"), "the old one speaking", None, "aside", 10).unwrap();
+        // Closed; another drew the name
+        s.named(new, "work", "tiger", 20).unwrap();
+        assert!(s.conversations(new).unwrap().is_empty(), "the new tab was handed the old one's conversations");
+        assert!(s.threads("work", Some("tiger"), 10).unwrap().is_empty(), "the new tab took part in the old one's conversations");
+        assert_eq!(s.last_line_of("work", None, Some("tiger")).unwrap(), None, "the new tab answered for the old one's line");
+        assert_ne!(s.thread_for("work", &format!("{new}/"), 30).unwrap().0, t, "a tab with no conversation yet joined the old one's");
+        assert_eq!(s.uid_now("work", "tiger").unwrap(), new);
+        // The old one's conversation still reads with its name
+        assert_eq!(s.threads("work", None, 10).unwrap()[0].tabs, vec!["tiger"]);
+        assert_eq!(s.name_of(old).unwrap().as_deref(), Some("tiger"));
+        // A name nobody has answered to stands for one uid, the same each time
+        assert_eq!(s.uid_named("work", "heron").unwrap(), gone_uid("work", "heron"));
+        assert!(crate::config::is_tab_uid(&gone_uid("work", "heron")));
+        assert_ne!(gone_uid("work", "heron"), crate::config::derived_tab_uid("work", "heron"));
     }
 
     #[test]

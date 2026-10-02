@@ -26,8 +26,18 @@ The conference tables (`asks`, `lines`, `reactions`, `shares`) are the exception
 | `shares` | One card: a commit, a pull request, a file or a page an AI put in front of the others, checked before it was taken | |
 | `threads` | One conversation of AIs: begun by a person naming a tab, or by an AI asking another, and keyed by the CLI conversation of the tab that began it. Every ask, line and card carries its id | So two conversations on one desk at once read apart |
 | `thread_tabs` | Who takes part in a conversation: named in it, asking or asked, saying, sharing or marking something | AIConfer shows the conversations of the tab in front. Written by the same writes that record those, so it cannot fall behind them |
+| `tab_names` | What each tab is called, and on which desk, by its uid; kept after the tab closes | So what a closed tab took part in still reads with its name, and so a name said in a conversation means the tab called that now |
 
-`meta` holds one row, `schema`: the version the file is at.
+`meta` holds `schema`, the version the file is at, and `tab_uids` once the rows an older version wrote under tabs' names have been rewritten under their uids.
+
+## A tab is its uid
+
+Every tab has a uid of its own (`config::TabConfig::uid`), drawn when the tab is made and never handed to another tab. Its name -- what `<@ID>` says -- goes back in the bag when the tab closes, and the next tab to draw it used to be handed everything kept under it: the conversation panel of a new tab showed a closed tab's conversations.
+
+- **The columns that say which tab a row is about hold its uid**: `conversations.tab`, `sends.tab`, `spans.tab`, `stops.tab`, `thread_tabs.tab`, the tab half of `threads.origin`, `lines.tab_uid`.
+- **The columns that say who said or sent something keep the name it had then**, the way a chat keeps the name a message was signed with: `sends.sender`, `asks.caller` and `target`, `lines.tab`, `shares.tab`, `reactions.by`.
+- A name said in the conference is taken to mean the tab last seen called that on its desk (`Store::uid_named`). A name nobody answers to any more stands for a uid of its own (`db::gone_uid`), the same each time.
+- Rows written before uids are rewritten once, on the first start, from the settings (`Store::adopt_uids`): a name goes to the tab of the settings called that, on its desk where the row says which desk, and anywhere when only one desk has it. A closed tab's rows, and a name two desks share, go to a uid no tab has.
 
 States and the words in the `by`, `device`, `via` and `how` columns are plain text with no CHECK; what they may be is in the comments on the columns and in `convo::db` (`By`, `Device`, `Origin`, `Stop`).
 
