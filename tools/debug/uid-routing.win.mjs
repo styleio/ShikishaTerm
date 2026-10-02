@@ -155,6 +155,23 @@ try {
   await intent({kind: 'say', tab: 1, uid: desks[1].folders[0].tabs[0].uid, text: 'Inspect <@test-page> again'});
   await until(async () => (await list('caller-B')).some(t => t.id === page.id && t.named), 'permission for replacement page');
   check(true, 'a fresh mention can grant the replacement page');
+  edit(c => {c.operate = {...c.operate, max_rounds: 1}; c.desks[1].name = 'B counted';});
+  await until(async () => (await state()).desk === 'B counted', 'one-round limit');
+  for (const [index, label] of [[0, 'caller-A'], [1, 'caller-B']]) {
+    await intent({kind: 'say', tab: 1, uid: desks[index].folders[0].tabs[0].uid, text: 'Use <@worker>'});
+    await until(async () => (await list(label)).some(t => t.id === 'worker' && t.named), label + ' permission');
+  }
+  // A is behind the viewed desk, so its first request remains pending.
+  // No matter which pipe is served first, A gets one request and B gets its
+  // own one; a single counter under the shared alias cannot satisfy both.
+  const [a1, a2, b1] = await Promise.all([
+    call('caller-A', 'tab_run', ['worker', 'round-A-1', {timeout_ms: 4000}]),
+    call('caller-A', 'tab_run', ['worker', 'round-A-2', {timeout_ms: 4000}]),
+    call('caller-B', 'tab_run', ['worker', 'round-B-1', {timeout_ms: 4000}]),
+  ]);
+  check([a1, a2].filter(r => !r.ok && /round limit/.test(r.error)).length === 1,
+    'a caller keeps its limit while its desk is out of view');
+  check(b1.ok, 'same-name callers on different desks have independent request limits');
   edit(c => {c.desks[0].name = 'A restricted'; c.desks[0].automation_permissions = {send_to_tab: {human: false, ai: false}};});
   await until(async () => JSON.stringify((await state()).ui?.desks).includes('A restricted'), 'reloaded permission settings');
   const denied = await call('caller-A', 'send_to_tab', ['worker', 'MUST-NOT-SEND']);

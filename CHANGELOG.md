@@ -47,6 +47,7 @@ once it reaches its first tagged release.
   front. Messages from an older phone view and hand-offs waiting to be sent
   keep the original tab; closing it never redirects them to its replacement.
   An older page without the recipient's identity asks for a reload.
+  Tabs of the same name on different desks also keep separate request limits.
 - **Naming a page grants that page alone.** A page closed and opened again
   under the same name does not inherit permission from an earlier request.
   Captured permissions survive an app restart without reassigning old names.
