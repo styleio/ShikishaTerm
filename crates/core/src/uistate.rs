@@ -794,6 +794,14 @@ pub struct BranchPlan {
     /// before the button is pressed. None while it is still being counted
     #[serde(default)]
     pub carry_sizes: Option<Vec<crate::worktree::Size>>,
+    /// The app's own rules for places inside, as written, so the dialog can
+    /// say a place was left out by one of the app's and not the project's
+    #[serde(default)]
+    pub shipped_rules: Vec<String>,
+    /// Those of them this project had not been shown when the dialog opened:
+    /// said as added in this version, this once
+    #[serde(default)]
+    pub shipped_new: Vec<String>,
     /// What is in each place inside them the dialog has open, to find what
     /// makes a copy slow and choose how that comes along
     #[serde(default)]

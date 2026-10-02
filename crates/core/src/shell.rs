@@ -3415,6 +3415,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #branch .bcarry .by { min-width:0; display:flex; align-items:center; gap:var(--s1);
     font-size:11px; color:var(--dim); }
   #branch .bcarry .by:empty { display:none; }
+  /* What a rule leaves out of a row that is copied: a fact, dim, under the name */
+  #branch .bcarry .bleft { font-size:11px; color:var(--dim); line-height:1.4; overflow-wrap:anywhere; }
+  #branch .bcarry .bleft:empty { display:none; }
   #branch .bcarry .by .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #branch .bcarry .by .bcdrop { flex:none; width:22px; height:22px; padding:0; border:0; background:transparent;
     color:var(--dim); cursor:pointer; border-radius:var(--r-ctl); font-size:11px; }
@@ -9342,6 +9345,14 @@ function drawSlow(b) {
     sz.textContent = s ? sizeSay(s) : "";
     sz.classList.toggle("big", big);
     sizesOf.push(sz);
+    // What the rules leave out of a copy of it, and how much that is: a
+    // rule's effect said where the copy is chosen. Written only when it
+    // changed, as everything here
+    const leftAt = pick.parentElement.querySelector(".bleft");
+    if (leftAt) {
+      const said = copied && s ? leftSay(p, s.left || []) : "";
+      if (leftAt.dataset.said !== said) { leftAt.dataset.said = said; leftAt.textContent = said; }
+    }
     if (!s || !copied) continue;
     bytes += s.bytes; files += s.files; more = more || s.more;
     if (big && !first) first = sz;
@@ -9377,6 +9388,17 @@ function drawSlow(b) {
     pick.parentElement.scrollIntoView({block:"start"});
     pick.focus();
   }}, T["tui.branch.slow.see"] || "")));
+}
+// "Not brought: .claude/worktrees (412 GB · 1,200,000 files)", with "new in
+// this version" when one of the app's rules this project had not been shown
+// is what leaves it out
+function leftSay(p, left) {
+  if (!left.length) return "";
+  const sum = left.reduce((a, l) => ({bytes: a.bytes + l.bytes, files: a.files + l.files, more: a.more || l.more}), {bytes:0, files:0, more:false});
+  const places = left.slice(0, 3).map(l => l.path).join(", ") + (left.length > 3 ? " …" : "");
+  const said = (T["tui.branch.carry.left"] || "{places} {amount}").replaceAll("{places}", places).replaceAll("{amount}", sizeSay(sum));
+  const fresh = left.some(l => ((p && p.shipped_new) || []).includes(l.by));
+  return fresh ? said + " · " + (T["tui.branch.carry.left_new"] || "") : said;
 }
 // "4.2 GB · 18,000 files", or "at least" both when counting stopped early
 function sizeSay(s) {
@@ -10241,7 +10263,9 @@ function drawCarry(b, items) {
     // own folder is what the worktree sees
     box.append(
       el("div", {class:"crow"}, lookToggle(b, it.name, it.folder && now !== "link"),
-        el("span", {class:"nmcol"}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), ruleSaid(b, it.by, null)),
+        el("span", {class:"nmcol"}, el("span", {class:"nm", title:name}, "‎" + name + "‎"), ruleSaid(b, it.by, null),
+          // What a rule leaves out of it, once counted: see drawSlow
+          el("span", {class:"bleft"})),
         el("span", {class:"sz"}), pick),
       el("div", {class:"bclook", "data-at": it.name}));
   }
@@ -10289,7 +10313,10 @@ function lookToggle(b, at, can) {
 // names it); one written for many places is changed in the project's settings
 function ruleSaid(b, by, own) {
   if (!by) return el("span", {class:"by"});
-  const said = (T["tui.branch.carry.by"] || "{rule}").replaceAll("{rule}", by);
+  // One of the app's own rules is said to be the app's: it is changed in
+  // the project's settings, where it can be put back
+  const app = ((S && S.branch && S.branch.shipped_rules) || []).includes(by);
+  const said = (T[app ? "tui.branch.carry.by_app" : "tui.branch.carry.by"] || "{rule}").replaceAll("{rule}", by);
   const drop = own && by === own ? el("button", {type:"button", class:"bcdrop", title: T["tui.branch.carry.unrule"] || "", "aria-label": T["tui.branch.carry.unrule"] || "",
     onclick: () => choosePlace(b, own, "")}, "✕") : null;
   return el("span", {class:"by", title: said}, el("span", {class:"t"}, said), drop);

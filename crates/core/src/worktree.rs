@@ -1506,6 +1506,8 @@ pub fn carry_into_watched(plan: &Plan, items: &[Carry], tell: &dyn Fn(&FileProgr
                 let _ = std::fs::create_dir_all(parent);
             }
             match step {
+                // Left out by a rule: nothing goes there
+                crate::inside::Step::Left { .. } => Ok(()),
                 crate::inside::Step::Folder => std::fs::create_dir_all(&dest),
                 // A folder that cannot be given a second name is carried back
                 // as a question rather than counted as lost: see
@@ -2981,7 +2983,31 @@ pub struct Size {
     pub files: u64,
     /// Whether counting stopped before the end: there is at least this much
     pub more: bool,
+    /// The places inside it a rule leaves out, each with how much it holds:
+    /// what a copy of it does not take, said so that a rule's effect can be
+    /// seen where the copy is chosen
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<LeftOut>,
 }
+
+/// A place inside a copied thing that a rule leaves out
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LeftOut {
+    /// By its name in the worktree
+    pub path: String,
+    /// The rule that leaves it out, as written
+    pub by: String,
+    pub bytes: u64,
+    pub files: u64,
+    /// Counting stopped before the end
+    pub more: bool,
+}
+
+/// How many files one place left out is counted to. What is said is "this
+/// much or more", and a place left out is left out whatever it holds: the
+/// count is there so the person sees why the rule is worth having, which a
+/// first few hundred thousand files already show
+const LEFT_COUNT_MOST: u64 = 200_000;
 
 /// How much each of these holds, counted on disk.
 ///
@@ -3004,8 +3030,39 @@ pub fn sizes(main: &Path, paths: &[String], most: u64, inside: &crate::inside::I
 /// inside it is not counted. Counts at most `left` files, taking what it
 /// counted off `left`
 fn size_of(path: &str, from: &Path, at: &str, inside: &crate::inside::Inside, left: &mut u64) -> Size {
-    let mut size = Size { path: path.to_string(), bytes: 0, files: 0, more: false };
-    let walked = crate::inside::walk(from, at, "copy", &[], inside, &mut |_, src, step| {
+    let mut size = Size { path: path.to_string(), bytes: 0, files: 0, more: false, left: Vec::new() };
+    let walked = crate::inside::walk(from, at, "copy", &[], inside, &mut |place, src, step| {
+        if let crate::inside::Step::Left { by } = step {
+            let mut out = LeftOut { path: place.to_string(), by: by.to_string(), bytes: 0, files: 0, more: false };
+            let mut budget = LEFT_COUNT_MOST;
+            let counted = crate::inside::walk(src, place, "copy", &[], &crate::inside::Inside::default(), &mut |_, s, st| {
+                if matches!(st, crate::inside::Step::File { .. }) {
+                    if budget == 0 {
+                        return Err(std::io::ErrorKind::Interrupted.into());
+                    }
+                    budget -= 1;
+                    out.files += 1;
+                    out.bytes += std::fs::symlink_metadata(s).map(|m| m.len()).unwrap_or(0);
+                }
+                Ok(())
+            });
+            out.more = counted.is_err();
+            // What a deeper rule brings back out of it is not left: it is
+            // counted with what comes, as the walk goes on into it
+            if !out.more && inside.brings_inside(place) {
+                let _ = crate::inside::walk(src, place, "skip", &[], inside, &mut |_, s, st| {
+                    if matches!(st, crate::inside::Step::File { .. }) {
+                        out.files = out.files.saturating_sub(1);
+                        out.bytes = out.bytes.saturating_sub(std::fs::symlink_metadata(s).map(|m| m.len()).unwrap_or(0));
+                    }
+                    Ok(())
+                });
+            }
+            if out.files > 0 || out.more {
+                size.left.push(out);
+            }
+            return Ok(());
+        }
         if matches!(step, crate::inside::Step::File { .. }) {
             if *left == 0 {
                 return Err(std::io::ErrorKind::Interrupted.into());
@@ -5192,6 +5249,72 @@ tools/conpty.ps1"));
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
+    /// A project that has written nothing about places inside: `.claude` comes
+    /// along and its helpers' worktrees do not, by the app's own rules, and how
+    /// much was left is said. Changed to come along, they come
+    #[test]
+    fn the_apps_rules_keep_a_tools_helpers_out_of_a_copy() {
+        use crate::config::BringRule;
+        let main = scratch("carry-shipped").join("proj-carry-shipped");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(&main).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(main.join(".gitignore"), ".claude/\n").unwrap();
+        for (f, body) in [
+            (".claude/settings.json", "{}"),
+            (".claude/worktrees/agent-1/target/big.bin", "0123456789"),
+            (".claude/checkpoints/one", "12345"),
+        ] {
+            let p = main.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        std::fs::write(main.join("readme.md"), "hi\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "first"]);
+
+        let line = BringRule { pattern: Some(".claude/".into()), how: "copy".into(), ..Default::default() };
+        let offered = carryables(&main, &crate::inside::effective(std::slice::from_ref(&line)));
+        let sizes = carry_sizes_now(&main, &offered, 100);
+        let claude = sizes.iter().find(|s| s.path == ".claude").expect("sized");
+        assert_eq!((claude.files, claude.bytes), (1, 2), "{sizes:?}");
+        let mut left: Vec<(&str, &str, u64)> = claude.left.iter().map(|l| (l.path.as_str(), l.by.as_str(), l.bytes)).collect();
+        left.sort();
+        assert_eq!(left, [(".claude/checkpoints", "**/.claude/checkpoints/", 5), (".claude/worktrees", "**/.claude/worktrees/", 10)]);
+
+        let cut = plan(&main, "feature/shipped", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let said = carry_into_watched(&cut, &offered, &|_| {}, &|| false);
+        assert!(said.missed.is_empty(), "{said:?}");
+        assert!(cut.folder.join(".claude/settings.json").is_file());
+        assert!(!cut.folder.join(".claude/worktrees").exists(), "a helper's worktree was copied");
+        assert!(!cut.folder.join(".claude/checkpoints").exists());
+
+        // Changed in the project's settings to come along: it does
+        let changed = [line.clone(), BringRule {
+            shipped: Some("claude-helper-worktrees".into()),
+            path: Some("**/.claude/worktrees/".into()),
+            how: "copy".into(),
+            ..Default::default()
+        }];
+        let offered = carryables(&main, &crate::inside::effective(&changed));
+        let cut = plan(&main, "feature/shipped-on", None).unwrap();
+        std::fs::create_dir_all(&cut.folder).unwrap();
+        let said = carry_into_watched(&cut, &offered, &|_| {}, &|| false);
+        assert!(said.missed.is_empty(), "{said:?}");
+        assert!(cut.folder.join(".claude/worktrees/agent-1/target/big.bin").is_file(), "a rule changed to come along did not");
+        assert!(!cut.folder.join(".claude/checkpoints").exists(), "changing one rule changed another");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
     /// A place a rule links inside a copied folder, and the same place asked
     /// for again as a copy -- what happens when it could not be linked
     #[test]
@@ -5244,7 +5367,7 @@ tools/conpty.ps1"));
             ..Default::default()
         };
         let items = [carry("deps", true, None), carry(".env", false, None), carry("conf/local.txt", false, Some(&elsewhere))];
-        let size = |path: &str, bytes: u64, files: u64, more: bool| Size { path: path.into(), bytes, files, more };
+        let size = |path: &str, bytes: u64, files: u64, more: bool| Size { path: path.into(), bytes, files, more, left: Vec::new() };
 
         let all = carry_sizes_now(&main, &items, 10);
         assert_eq!(all, [size("deps", 6, 3, false), size(".env", 5, 1, false), size("conf/local.txt", 8, 1, false)]);

@@ -1865,6 +1865,11 @@ fn handle(
                     &serde_json::to_string(crate::config::THIS_PC).unwrap_or_default(),
                 )
                 .replace("__PETNOUNS__", &pet_nouns_json())
+                .replace(
+                    "__SHIPPEDINSIDE__",
+                    &serde_json::to_string(crate::inside::SHIPPED).unwrap_or_else(|_| "[]".into()),
+                )
+                .replace("__INSIDESHOWN__", &crate::inside::shown_json())
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -2592,6 +2597,8 @@ fn handle(
             // not -- so what is said is what they would copy
             let rules: Vec<crate::config::BringRule> =
                 p.get("inside").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            // With the app's own rules put in, the way the page has changed them
+            let rules = crate::inside::effective(&rules);
             std::thread::spawn(move || {
                 let resp = match crate::repo::main_checkout(&at) {
                     None => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.worktree.not_a_repo") }),
@@ -2608,6 +2615,18 @@ fn handle(
                 };
                 let _ = req.respond(json_resp(resp));
             });
+        }
+        // A project's rules for places inside have been put on screen: the
+        // app's own rules as they stand now are no longer new to it
+        ("POST", "/api/project/inside-shown") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            crate::inside::mark_shown(p.get("project").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            req.respond(json_resp(serde_json::json!({ "ok": true })))?;
         }
         // The assistant AI's proposal for how each ignored thing reaches a new
         // worktree. Only a proposal: the page shows it, and the person saves
@@ -5166,6 +5185,10 @@ const PAGE: &str = r##"<!doctype html>
     of the same inline style. */
  .listrow { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s3);
    padding:7px 0; border-bottom:1px solid var(--line); }
+ /* One of the app's own rules for places inside: its place gives way first,
+    cut at its end, so its marks and buttons stay on the line */
+ .listrow.shiprow > .shippath { flex:1 1 0; min-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .listrow.shiprow > .chip { flex:none; }
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
@@ -5827,6 +5850,10 @@ const THIS_PC = __THISPC__;
 // The short words a new tab's automation name is drawn from. Poured in from the
 // app's own word list, the one branch names come from, so there is one list
 const PET_NOUNS = __PETNOUNS__;
+// The app's own rules for places inside (crate::inside::SHIPPED), and which
+// edition of them each project has been shown, by the project's name
+const SHIPPED_INSIDE = __SHIPPEDINSIDE__;
+const INSIDE_SHOWN = __INSIDESHOWN__;
 // A list of branch names as it is typed and as it is stored. Space or comma
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
@@ -13664,7 +13691,7 @@ function inheritPart(desk, p) {
     el("div", {class:"hint"}, T["settings.bring.defaults"]),
     // A line can only speak for a folder as a whole; the places inside one
     // are decided here, in the same card, since they are the same decision
-    insidePart(desk, p),
+    insidePart(desk, p, root),
     // Files from anywhere else are inherited the same way, so they are part
     // of the same card rather than a card of their own
     extraFilesPart(desk, p)].filter(Boolean));
@@ -13697,10 +13724,70 @@ function insideRules(p) {
 // Places inside the folders that come along, each with how it comes: what a
 // line of an ignore file cannot say, since it speaks for a folder as a whole.
 // Written the way such a line is, at any depth; the deepest place decides
-function insidePart(desk, p) {
+// The app's own rules come first: each with its answer, said to be the app's
+// (or changed, with the way back), and newly arrived ones said so until this
+// project's rules have been on screen once. Only what the person changes
+// about one is written to the settings, so a later version's list reaches
+// this project whatever was changed here. What a rule leaves out of the
+// checkout is said under it, with how much that is
+const insideShownAtLoad = Object.assign({}, INSIDE_SHOWN);
+const insideShownSent = new Set();
+function insideLeft(root, p, path) {
+  const sizes = root ? sizesOf(root, p) : null;
+  if (!sizes) return null;
+  const hits = [];
+  for (const s of sizes.sizes || []) for (const l of s.left || []) if (l.by === path) hits.push(l);
+  if (!hits.length) return null;
+  const sum = hits.reduce((a, l) => ({bytes: a.bytes + l.bytes, files: a.files + l.files, more: a.more || l.more}), {bytes:0, files:0, more:false});
+  const names = hits.slice(0, 3).map(l => l.path).join(", ") + (hits.length > 3 ? " " + fill(T["settings.bring.inside.left_more"], {n: hits.length - 3}) : "");
+  return el("div", {class:"hint"}, fill(T["settings.bring.inside.left"], {places: names, amount: sizeLabel(sum)}));
+}
+function insideShipped(desk, p, root, change) {
+  const name = (p.entry && p.entry.name) || p.name || "";
+  const seen = insideShownAtLoad[name] || 0;
+  if (name && !insideShownSent.has(name)) {
+    insideShownSent.add(name);
+    settingsApi("/api/project/inside-shown", {project: name}).catch(() => null);
+  }
+  const bring = (p.entry || {}).bring || [];
+  const changeOf = id => bring.filter(r => r.default === id).pop() || null;
+  // Writes what the person changed about one of the app's rules, or takes
+  // the change away when it says what the app says
+  const setShipped = (s, how, dropped) => change(en => {
+    en.bring = (en.bring || []).filter(r => r.default !== s.id);
+    if (dropped) en.bring.push({default: s.id, path: s.path, how: "", dropped: true});
+    else if (how !== s.how) en.bring.push({default: s.id, path: s.path, how});
+  });
+  const rows = [], away = [];
+  for (const s of SHIPPED_INSIDE) {
+    const c = changeOf(s.id);
+    if (c && c.dropped) { away.push(s); continue; }
+    const how = c && BRING_HOWS.includes(c.how) ? c.how : s.how;
+    const marks = [el("span", {class:"chip"}, T[c ? "settings.bring.inside.changed" : "settings.bring.inside.app"])];
+    if (s.since > seen) marks.push(el("span", {class:"chip"}, T["settings.bring.inside.new"]));
+    // Native append writes an absent part as the word "null"
+    rows.push(el("div", {class:"listrow shiprow"}, ...[
+      el("span", {class:"mono shippath", title: s.path}, s.path),
+      ...marks,
+      howSelect(how, true, v => setShipped(s, v, false)),
+      c ? el("button", {class:"quiet", onclick: () => setShipped(s, s.how, false)}, T["settings.bring.inside.reset"]) : null,
+      el("button", {class:"quiet icon", title: T["settings.bring.inside.drop"], onclick: () => setShipped(s, "", true)}, "✕"),
+    ].filter(Boolean)));
+    const left = insideLeft(root, p, s.path);
+    if (left) rows.push(left);
+  }
+  for (const s of away) {
+    rows.push(el("div", {class:"listrow"},
+      el("span", {class:"hint grow"}, fill(T["settings.bring.inside.dropped"], {rule: s.path})),
+      el("button", {class:"quiet", onclick: () => setShipped(s, s.how, false)}, T["settings.bring.inside.undrop"])));
+  }
+  return rows.filter(Boolean);
+}
+function insidePart(desk, p, root) {
   const rows = el("div");
   const change = fn => { const en = ensureProject(desk, p); fn(en); sel.proj = "p:" + en.name; refreshSave(); render(); };
-  for (const r of insideRules(p)) {
+  rows.append(...insideShipped(desk, p, root, change));
+  for (const r of insideRules(p).filter(r => r.default == null)) {
     const at = el("input", {type:"text", class:"mono grow", placeholder: T["settings.bring.inside.ph"]});
     at.value = r.path || "";
     at.addEventListener("change", () => change(() => { r.path = at.value.trim(); }));
@@ -13715,12 +13802,13 @@ function insidePart(desk, p) {
     // here says how a place comes along, so there is nothing to take back
     const bad = (r.path || "").trim().startsWith("!")
       ? el("div", {class:"site-warn"}, el("span", {}, "⚠"), el("span", {}, T["settings.bring.inside.bang"])) : null;
-    rows.append(...[row, bad].filter(Boolean));
+    rows.append(...[row, bad, insideLeft(root, p, (r.path || "").trim())].filter(Boolean));
   }
-  if (!insideRules(p).length) rows.append(el("div", {class:"hint"}, T["settings.bring.inside.empty"]));
+  if (!insideRules(p).filter(r => r.default == null).length) rows.append(el("div", {class:"hint"}, T["settings.bring.inside.empty"]));
   const c = el("div", {class:"subsec"},
     el("h3", {}, T["settings.bring.inside.title"]),
     el("div", {class:"hint"}, T["settings.bring.inside.hint"]),
+    SHIPPED_INSIDE.length ? el("div", {class:"hint"}, T["settings.bring.inside.app_hint"]) : null,
     el("div", {class:"rows"}, rows),
     el("div", {class:"row"}, el("button", {onclick: () => change(en => {
       en.bring = en.bring || [];
@@ -18888,6 +18976,8 @@ mod tests {
             .replace("__PROTECT__", "[]")
             .replace("__THISPC__", "\"@pc\"")
             .replace("__PETNOUNS__", "[]")
+            .replace("__SHIPPEDINSIDE__", "[]")
+            .replace("__INSIDESHOWN__", "{}")
             .replace("__MD__", "\"\"");
         let mut script = String::new();
         let mut rest = html.as_str();
@@ -18964,6 +19054,8 @@ mod tests {
                 .replace("__PROTECT__", "[]")
                 .replace("__THISPC__", "\"@pc\"")
                 .replace("__PETNOUNS__", "[]")
+                .replace("__SHIPPEDINSIDE__", "[]")
+                .replace("__INSIDESHOWN__", "{}")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

@@ -11392,13 +11392,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // What comes along is the project's answer for each ignore line and
             // for each file it brings from elsewhere, with whatever the dialog
             // changed for this one folder laid over it
-            let rules = project.map(|p| p.bring.clone()).unwrap_or_default();
+            // The app's own rules for places inside come with them, the way
+            // the project has changed them (see `inside::effective`)
+            let rules = crate::inside::effective(&project.map(|p| p.bring.clone()).unwrap_or_default());
             // Whether this ask opens the dialog. What each offered thing holds
             // is counted afresh then -- a build folder grows between one
             // worktree and the next -- and a MicroVM's sign-in is asked of the
             // checkout's machine then, and again only while something of this
             // program keeps it awake
             let opening = branch_view.as_ref().is_none_or(|v| v.seq != ask.seq);
+            // Which of the app's rules this project has not been shown: read
+            // as the dialog opens and kept while it is open, then the project
+            // counts as shown -- the dialog says them this once
+            let shipped_new = match branch_view.as_ref().filter(|_| !opening) {
+                Some(v) => v.shipped_new.clone(),
+                None => {
+                    let name = project.map(|p| p.name.clone()).unwrap_or_default();
+                    let new = crate::inside::new_to(&name);
+                    crate::inside::mark_shown(&name);
+                    new
+                }
+            };
             sizes_watch = None;
             let offers = repo.as_deref().map(|main| {
                 let mut carry = crate::worktree::carryables(main, &rules);
@@ -11551,6 +11565,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 carry: carryable.clone(),
                 carry_lines,
                 carry_sizes,
+                shipped_rules: crate::inside::SHIPPED.iter().map(|s| s.path.to_string()).collect(),
+                shipped_new,
                 looks,
                 large_bytes: crate::inherit::LARGE_BYTES,
                 large_files: crate::inherit::LARGE_FILES,
