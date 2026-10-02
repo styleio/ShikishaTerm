@@ -7338,7 +7338,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // that goes out may hold a secret's value, so that is never logged
             let Some(desk) = desks.get(desk_index).map(|d| d.uid.clone()) else { continue };
             let from = crate::convo::Origin::person(device, "quick");
-            match open_and_say(&desk, &at, &command, &program, &label, text, item.enter, from, &tabs, &mut pending_quicks, &mut reveal) {
+            match open_and_say(&config_file, &desk, &at, &command, &program, &label, text, item.enter, from, &tabs, &mut pending_quicks, &mut reveal) {
                 Some(title) => {
                     append_hook_log(&format!(
                         "quick command \"{label}\" -> new tab \"{title}\" in {}: {}",
@@ -7374,6 +7374,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     _ if Instant::now() > p.until => {
+                        let why = at.and_then(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                            .map(|t| format!("open={}, output={}, state={}, quiet={}ms", t.far_open(), t.had_output(), t.state.label(), t.ms_since_change(now_ms)))
+                            .unwrap_or_else(|| "the tab is absent from this desk".into());
+                        crate::append_hook_log(&format!("quick command {:?} for tab {} timed out: {why}", p.label, p.uid));
                         flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)]));
                     }
                     _ => still.push(p),
@@ -16804,6 +16808,7 @@ pub const QUICK_WAIT: Duration = Duration::from_secs(90);
 /// tells the settings watcher, which is what starts the tab
 #[allow(clippy::too_many_arguments)]
 fn open_and_say(
+    config_file: &std::path::Path,
     desk: &str,
     at: &std::path::Path,
     command: &str,
@@ -16817,14 +16822,18 @@ fn open_and_say(
     reveal: &mut Option<(String, Instant)>,
 ) -> Option<String> {
     let (title, tab_id) = quick_tab_names(label, program, tabs);
-    // Who the new tab is, written with it: the words wait for that tab, not
-    // for whichever tab is given its id in the meantime
-    let uid = config::new_tab_uid();
-    let line = serde_json::json!({"name": title, "id": tab_id, "uid": uid, "command": command});
+    let line = serde_json::json!({"name": title, "id": tab_id, "command": command});
     let (host, cwd) = crate::uistate::place_of(at);
-    if !config::append_tab_on(desk, line, Some(&cwd), host.as_deref()) {
-        return None;
-    }
+    // The settings assign the uid when they add a tab, replacing any uid
+    // supplied in the line. Keep the identity they actually wrote, or the
+    // command waits for a tab that will never exist after the reload.
+    let (tab_id, uid) = match config::add_tab_with_uid_at(config_file, desk, line, Some(&cwd), host.as_deref(), config::NewFolder::Allowed) {
+        Ok(added) => added,
+        Err(e) => {
+            crate::append_hook_log(&format!("could not open a tab for a quick command: {e}"));
+            return None;
+        }
+    };
     *reveal = Some((tab_id.clone(), Instant::now() + Duration::from_secs(20)));
     pending.push(PendingQuick {
         id: tab_id,
@@ -17138,7 +17147,7 @@ fn hand_to_ai_tab(
     // A button the person pressed (resolve the conflicts, review this); the
     // words are the app's, written for them
     let from = crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "button", sender: None, job: None };
-    match open_and_say(&desk.uid, at, &choice.key, &choice.name, label, prompt(), true, from, tabs, pending, reveal) {
+    match open_and_say(&config::config_file_path(), &desk.uid, at, &choice.key, &choice.name, label, prompt(), true, from, tabs, pending, reveal) {
         Some(title) => Ok(serde_json::json!({"title": title, "already": false})),
         None => Err(i18n::tp("msg.quick.open_failed", &[("label", label)])),
     }
@@ -19338,6 +19347,42 @@ mod tests {
         assert_eq!(quick_tab_names("Run tests!", "PowerShell", &[]), ("Run tests!".into(), "run-tests".into()));
         assert_eq!(quick_tab_names("一覧", "PowerShell", &[]), ("一覧".into(), "quick".into()));
         assert_eq!(quick_tab_names("  ", "Claude Code", &[]), ("Claude Code".into(), "claude-code".into()));
+    }
+
+    /// The settings assign a new tab its identity. The command must follow
+    /// that identity across the reload, both here and on another machine.
+    #[test]
+    fn a_quick_command_waits_for_the_tab_that_was_actually_saved() {
+        let dir = std::env::temp_dir().join(format!("shikisha-quick-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        for host in [None, Some("server")] {
+            let doc = serde_json::json!({"desks":[{"name":"Work","id":"work","folders":[
+                {"cwd":dir,"host":host,"tabs":[]}
+            ]}]});
+            std::fs::write(&file, doc.to_string()).unwrap();
+            let at = std::path::PathBuf::from(crate::uistate::place_key(host, &dir));
+            let mut pending = Vec::new();
+            let mut reveal = None;
+            let opened = open_and_say(&file, "Work", &at, "shell", "Shell", "Probe", "echo ready".into(), true,
+                crate::convo::Origin::automation("quick"), &[], &mut pending, &mut reveal);
+            assert_eq!(opened.as_deref(), Some("Probe"));
+            let written: config::Config = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            let desks = written.resolve_desks().0;
+            let line = &desks[0].tabs[0].cfg;
+            assert_eq!(pending.len(), 1);
+            assert_eq!(Some(pending[0].uid.as_str()), line.uid.as_deref(), "the command is waiting for a tab that does not exist");
+            assert_eq!(Some(pending[0].id.as_str()), line.id.as_deref());
+            assert_eq!(reveal.as_ref().map(|r| r.0.as_str()), line.id.as_deref());
+            assert_eq!(pending[0].text, "echo ready");
+            // Refusing a duplicate name must not leave another command or
+            // change which tab is being revealed.
+            assert!(open_and_say(&file, "Work", &at, "shell", "Shell", "Probe", "wrong".into(), true,
+                crate::convo::Origin::automation("quick"), &[], &mut pending, &mut reveal).is_none());
+            assert_eq!(pending.len(), 1);
+            assert_eq!(reveal.as_ref().map(|r| r.0.as_str()), line.id.as_deref());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// With no AI named, a prompt starts the one the tab form offers first,

@@ -64,6 +64,11 @@ in a name is there so the folder can be read at a glance.
 
 ## Confirming a change
 
+`cargo build --bin SHIKISHA-TERM`, then `node tools/debug/quick-commands.win.mjs`
+checks quick commands through an isolated app on Windows: repeated launches,
+a `.cmd` file whose path contains spaces, and a draft pasted without Enter.
+Commands write markers in the test's folder; no live app is restarted.
+
 `node tools/check-conversations.mjs` exercises the board's actual conversation
 state code without a window: tab and desk changes, delayed replies, simultaneous
 viewers, all-history searches, resume locations, and acknowledgements for pins

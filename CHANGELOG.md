@@ -42,6 +42,10 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **Quick commands run in the tab they open again.** The queued command now
+  keeps the identity assigned when the tab is saved, fixing new tabs that
+  opened but never received their command. Buttons that open an AI tab to
+  review or repair work use the same fix.
 - **Messages keep their recipient when desks change.** An API call from a
   tab uses that tab's desk and permissions, even while another desk is in
   front. Messages from an older phone view and hand-offs waiting to be sent
