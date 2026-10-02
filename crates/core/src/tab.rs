@@ -73,6 +73,10 @@ pub struct TabOptions {
     /// own. The API key is minted under it, because that is the name every
     /// call is looked up by -- see [`TabOptions::called`]
     pub id: Option<String>,
+    /// Who this tab is ([`crate::config::TabConfig::uid`]), when its settings
+    /// say. A tab that has no line in the settings -- a model's, a test's --
+    /// is given one of its own when it is made
+    pub uid: Option<String>,
     /// Which git account a git typed in this terminal signs in as: this tab's
     /// own choice when it made one, else its folder's project's.
     ///
@@ -258,6 +262,7 @@ impl Default for TabOptions {
             cloud: None,
             host: None,
             id: None,
+            uid: None,
             // The guarded ones, for anything built without an answer: a tab
             // that lost the setting on the way here must refuse a commit to
             // main, not wave it through
@@ -3040,6 +3045,9 @@ pub struct Tab {
     pub title: String,
     /// ID referenced by automation (optional). If unset, the tab name is used to reference it
     pub id: Option<String>,
+    /// Who this tab is, for as long as it exists and after: what everything
+    /// kept about it beyond this run is kept under ([`Tab::uid`])
+    uid: String,
     /// This tab, as opposed to any other, for as long as the app runs.
     ///
     /// Neither the name nor the id will do: copies of a folder's tabs share
@@ -4188,6 +4196,7 @@ impl Tab {
             resume: resume_spec,
             title,
             id: opts.id.clone(),
+            uid: opts.uid.clone().filter(|u| !u.trim().is_empty()).unwrap_or_else(crate::config::new_tab_uid),
             serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
             model: opts.model.clone(),
             parser,
@@ -4796,6 +4805,13 @@ impl Tab {
             .filter(|&&pid| *self.job_ours.entry(pid).or_insert_with(|| crate::job::is_machinery(pid, helpers)))
             .count() as u32;
         Some(all.saturating_sub(ours))
+    }
+
+    /// Who this tab is: never another tab's, whatever either is called. Its
+    /// name ([`Tab::called`]) is what it is addressed by now; this is what
+    /// anything kept about it is kept under
+    pub fn uid(&self) -> &str {
+        &self.uid
     }
 
     /// How automation identifies this tab

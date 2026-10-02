@@ -1497,6 +1497,11 @@ fn pet_nouns_json() -> String {
     serde_json::to_string(&crate::config::pet_nouns()).unwrap_or_else(|_| "[]".into())
 }
 
+/// The words put in front of them (`config::pet_adjectives`), for the same reason
+fn pet_adjectives_json() -> String {
+    serde_json::to_string(&crate::config::pet_adjectives()).unwrap_or_else(|_| "[]".into())
+}
+
 /// What the quick-command editor has to know that `quick.rs` decides: the
 /// grid's bounds, how long a name and a body may be, where the icons are,
 /// and what a secret named in a body looks like. Handed over rather than
@@ -1865,6 +1870,7 @@ fn handle(
                     &serde_json::to_string(crate::config::THIS_PC).unwrap_or_default(),
                 )
                 .replace("__PETNOUNS__", &pet_nouns_json())
+                .replace("__PETADJECTIVES__", &pet_adjectives_json())
                 .replace("__DICT__", &crate::i18n::dict_json());
             let resp = secure(Response::from_string(html).with_header(
                 Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
@@ -3415,10 +3421,17 @@ fn handle(
                 return Ok(());
             };
             match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(_) => {
+                Ok(mut doc) => {
                     if let Some(dir) = p.parent() {
                         let _ = std::fs::create_dir_all(dir);
                     }
+                    // The same as the settings file: every tab leaves with a uid
+                    let before = doc.clone();
+                    crate::config::fill_tab_uids(&mut doc);
+                    let body = match doc == before {
+                        true => body,
+                        false => serde_json::to_string_pretty(&doc).unwrap_or(body),
+                    };
                     crate::crypto::write_atomic(&p, &body)?;
                     req.respond(Response::from_string(r#"{"ok":true}"#))?;
                 }
@@ -4689,7 +4702,17 @@ fn handle(
             };
             // Always validate before saving, so broken JSON never wipes out the config
             match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(_) => {
+                Ok(mut doc) => {
+                    // A line this page never gave a uid -- typed into its
+                    // text editor, or read from a file that had none -- is
+                    // written with the one reading it gives, so renaming it
+                    // later does not make it another tab
+                    let before = doc.clone();
+                    crate::config::fill_tab_uids(&mut doc);
+                    let body = match doc == before {
+                        true => body,
+                        false => serde_json::to_string_pretty(&doc).unwrap_or(body),
+                    };
                     crate::crypto::write_atomic(config_path, &body)?;
                     req.respond(Response::from_string(r#"{"ok":true}"#))?;
                 }
@@ -5827,6 +5850,7 @@ const THIS_PC = __THISPC__;
 // The short words a new tab's automation name is drawn from. Poured in from the
 // app's own word list, the one branch names come from, so there is one list
 const PET_NOUNS = __PETNOUNS__;
+const PET_ADJECTIVES = __PETADJECTIVES__;
 // A list of branch names as it is typed and as it is stored. Space or comma
 // between them, because both are what people reach for
 const protectList = text => (text || "").split(/[\s,]+/).filter(Boolean);
@@ -6709,19 +6733,27 @@ function followKind(t, before) {
   return true;
 }
 
-// What automation calls a new tab when nobody has said: a short word drawn at
-// random, not taken in this desk. Not the command -- a tab that started as
-// Claude and was turned into SSH went on being "claude-2" -- and not a counter,
-// which says nothing about which tab is which
+// What automation calls a new tab when nobody has said: an adjective and a
+// noun drawn at random, "calm-otter", not taken in this desk. Not the command
+// -- a tab that started as Claude and was turned into SSH went on being
+// "claude-2" -- and not a counter, which says nothing about which tab is which.
+// Two words, as config::pet_id draws them, because a name goes back in the bag
+// when its tab closes and a message that named it still names it
 function petId(desk, self) {
   const used = new Set((desk.tabs || []).filter(t => t !== self)
     .map(t => (t.id || "").trim()).filter(Boolean));
-  for (let i = 0; i < 40 && PET_NOUNS.length; i++) {
-    const n = PET_NOUNS[Math.floor(Math.random() * PET_NOUNS.length)];
+  const pick = bag => bag[Math.floor(Math.random() * bag.length)];
+  for (let i = 0; i < 40 && PET_NOUNS.length && PET_ADJECTIVES.length; i++) {
+    const n = pick(PET_ADJECTIVES) + "-" + pick(PET_NOUNS);
     if (!used.has(n)) return n;
   }
-  return freeId(PET_NOUNS[0] || "tab", used);
+  return freeId((PET_ADJECTIVES[0] || "new") + "-" + (PET_NOUNS[0] || "tab"), used);
 }
+
+// Who a new tab is (config.rs TabConfig::uid): never shown, never another
+// tab's. A tab made on this page is a new tab, so it gets one of its own here;
+// one read from the settings carries its own through to the save
+const newUid = () => crypto.randomUUID();
 
 // ── Sidebar ───────────────────────────────────────
 // Whether this is the folder the app itself is in. Written "." rather than
@@ -7083,6 +7115,7 @@ function addTabTo(desk, group) {
     const far = machineStart(desk, group);
     const command = far !== null ? far : defaultAiCommand();
     const t = newTab({group, command});
+    t.uid = newUid();
     t.name = kindName(command);
     autoNames.set(t, t.name);
     t.id = petId(desk, t);
@@ -14962,7 +14995,7 @@ function addTemplate(kind) {
   const desk = desks[sel.desk];
   const at = (desk.tabs || [])[sel.tab];
   const group = at ? (at.group || 0) : 0;
-  desk.tabs = (desk.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group}, x))));
+  desk.tabs = (desk.tabs || []).concat(TEMPLATES[kind].map(x => newTab(Object.assign({group, uid: newUid()}, x))));
   sel.tab = desk.tabs.length - TEMPLATES[kind].length;
   render();
   msg(T["settings.template.added"]);
@@ -16398,7 +16431,7 @@ function readFolders(desk, w) {
 
 function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
-    out.push({ name: t.name || "", id: t.id || "", command: cmdToText(t.command),
+    out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
@@ -16420,6 +16453,7 @@ function nest(flat) {
   for (const f of flat) {
     const node = { name: f.name, command: f.command };
     if (f.id) node.id = f.id;
+    if (f.uid) node.uid = f.uid;
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
     if ((f.git_account || "").trim()) node.git_account = f.git_account.trim();
@@ -18888,6 +18922,7 @@ mod tests {
             .replace("__PROTECT__", "[]")
             .replace("__THISPC__", "\"@pc\"")
             .replace("__PETNOUNS__", "[]")
+            .replace("__PETADJECTIVES__", "[]")
             .replace("__MD__", "\"\"");
         let mut script = String::new();
         let mut rest = html.as_str();
@@ -18964,6 +18999,7 @@ mod tests {
                 .replace("__PROTECT__", "[]")
                 .replace("__THISPC__", "\"@pc\"")
                 .replace("__PETNOUNS__", "[]")
+                .replace("__PETADJECTIVES__", "[]")
                 .replace("__MD__", "\"\"");
             // Checked on the finished page, not the template: the shared toast
             // is poured in on the way, and a page that kept a copy of one of

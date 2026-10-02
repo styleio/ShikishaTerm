@@ -542,6 +542,9 @@ pub fn unpack(config_path: &Path, text: &str) -> Result<Placed> {
     // in -- so closing one would rename the others. Only within this desk,
     // which is where a tab's name has to be its own
     let mut used = crate::config::tab_ids_in(&desk);
+    // Brought in from somewhere else, perhaps from this very PC: its tabs are
+    // new tabs here, and none of them is one already on a desk
+    crate::config::without_uids(&mut desk);
     crate::config::name_new_tabs(&mut desk, &mut used);
     list.push(desk);
     cfg["desks"] = Value::Array(list);

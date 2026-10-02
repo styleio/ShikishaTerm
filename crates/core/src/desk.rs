@@ -818,6 +818,7 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // Known before the process starts, because the key it calls home
         // with is minted under this very name
         id: cfg.id.clone(),
+        uid: cfg.uid.clone(),
         scrollback: cfg.scrollback.unwrap_or(tab::SCROLLBACK_LINES),
         encoding: tab::TabOptions::encoding_from_name(cfg.encoding.as_deref()),
         log: cfg.log,
