@@ -77,7 +77,7 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls", "jso
 # of one. The same rustls the http client above already carries, used directly
 # because what goes over this line is a WebSocket and a raw byte stream, not a
 # request and a response
-rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "1.0.9"
 vt100 = "0.16"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
@@ -125,3 +125,6 @@ winresource = "0.1.31"
 # the wheel can reach a full-screen program that asked for it as arrow keys
 [patch.crates-io]
 vt100 = { path = "vendor/vt100" }
+# Socket deadlines and bounded connections for the remotely accessible HTTP
+# server. Upgraded WebSockets retain their existing lifetime.
+tiny_http = { path = "vendor/tiny_http" }

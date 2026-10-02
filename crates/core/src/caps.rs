@@ -47,13 +47,13 @@ pub fn take_refusal() -> Option<String> {
 
 /// Files that must never be touched even inside an allowed directory
 /// (prevents self-modification and credential exfiltration)
-fn is_forbidden(path: &Path) -> bool {
+pub(crate) fn is_forbidden(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if matches!(name.as_str(), "config.json" | "secrets.json" | ".env") {
+    if matches!(name.as_str(), "config.json" | "secrets.json" | ".env") || name.starts_with(".env.") {
         return true;
     }
     let ext = path
@@ -444,6 +444,9 @@ impl Capabilities {
             let (tx, rx) = mpsc::channel::<HttpJob>();
             std::thread::spawn(move || {
                 let agent = ureq::Agent::config_builder()
+                    // Permission is for this destination only. In particular,
+                    // custom credential headers must never follow a redirect.
+                    .max_redirects(0)
                     .timeout_global(Some(std::time::Duration::from_secs(15)))
                     .build()
                     .new_agent();
@@ -472,6 +475,9 @@ impl Capabilities {
                         }
                     };
                     match result {
+                        Ok(300..=399) => tell(crate::i18n::tp(
+                            "err.caps.http_redirect", &[("url", &job.url)],
+                        )),
                         Ok(code) => crate::append_hook_log(&format!(
                             "http {} {} -> {code}",
                             job.method, job.url
@@ -683,6 +689,22 @@ impl Capabilities {
         if let Some(h) = self.host.borrow().as_ref() {
             let _ = h.trust(url);
         }
+    }
+
+    /// Automation opening a file needs the same read permission as file I/O.
+    /// Human navigation and configured tabs enter `browser_open` directly.
+    pub fn automation_url(&self, url: &str) -> Result<()> {
+        if let Some(file) = crate::localpage::local_file(url) {
+            let spec = self.spec.borrow();
+            let roots: Vec<_> = spec.allow_dirs.iter().map(|d| self.base.join(d))
+                .chain(spec.files.values().filter(|c| c.read).map(|c| self.base.join(&c.dir)))
+                .collect();
+            resolve_within(&file, &roots, url)?;
+            if is_forbidden(&file) {
+                bail!(crate::i18n::tp("err.caps.file_forbidden", &[("rel", url)]));
+            }
+        }
+        Ok(())
     }
 
     pub fn browser_open(
@@ -1915,6 +1937,50 @@ mod tests {
         assert!(c.write("reports", "a.md", "x").is_err());
         assert!(c.http("api", "{}").is_err());
         assert!(c.write_raw("a.md", "x").is_err());
+    }
+
+    #[test]
+    fn browser_files_need_read_permission_and_cannot_open_secrets() {
+        let dir = crate::test_temp("browser-file-permissions");
+        std::fs::create_dir_all(dir.join("site")).unwrap();
+        for file in ["site/page.html", "site/secrets.json", "outside.html"] {
+            std::fs::write(dir.join(file), "fixture").unwrap();
+        }
+        let url = |file: &str| dir.join(file).display().to_string();
+        let mut spec = CapabilitySpec::default();
+        assert!(caps(spec.clone(), dir.clone()).automation_url(&url("site/page.html")).is_err());
+        spec.files.insert("site".into(), FileCap { dir: "site".into(), read: false, write: true });
+        assert!(caps(spec.clone(), dir.clone()).automation_url(&url("site/page.html")).is_err());
+        spec.files.get_mut("site").unwrap().read = true;
+        let c = caps(spec, dir.clone());
+        assert!(c.automation_url(&url("site/page.html")).is_ok());
+        assert!(c.automation_url(&url("outside.html")).is_err());
+        assert!(c.automation_url(&url("site/secrets.json")).is_err());
+        assert!(c.automation_url("https://example.com/").is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn http_credentials_and_bodies_never_follow_redirects() {
+        use std::time::Duration;
+        for status in [301, 302, 303, 307, 308] {
+            let original = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let other = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let tx = Capabilities::start_sender();
+            tx.send(HttpJob {
+                url: format!("http://{}/send", original.server_addr()), method: "POST".into(),
+                body: "private body".into(), auth: Some(("X-Api-Key".into(), "dummy-secret".into())),
+            }).unwrap();
+            let mut req = original.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            assert!(req.headers().iter().any(|h| h.field.equiv("X-Api-Key") && h.value.as_str() == "dummy-secret"));
+            let mut body = String::new();
+            req.as_reader().read_to_string(&mut body).unwrap();
+            assert_eq!(body, "private body");
+            req.respond(tiny_http::Response::empty(status).with_header(
+                tiny_http::Header::from_bytes("Location", format!("http://localhost:{}/collect", other.server_addr().to_ip().unwrap().port())).unwrap()
+            )).unwrap();
+            assert!(other.recv_timeout(Duration::from_millis(300)).unwrap().is_none(), "followed {status}");
+        }
     }
 
     #[test]

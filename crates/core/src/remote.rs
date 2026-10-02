@@ -730,6 +730,7 @@ pub struct RemoteUi {
     /// rebuilt when the token is rotated. Not necessarily where the server is
     /// listening -- see `reached_at`.
     origin: String,
+    browser_origin: Arc<Mutex<String>>,
     /// The port actually bound, which is not always the port asked for (0 means
     /// "any"). Kept because the address the world reaches this by can change
     /// while the port cannot.
@@ -1298,7 +1299,7 @@ impl RemoteUi {
         // Wait those out; only a port that stays taken is a real error
         let mut waited_ms = 0u64;
         let server = loop {
-            match Server::http((bind, port)) {
+            match Server::http_bounded((bind, port), tiny_http::Limits::default()) {
                 Ok(s) => break s,
                 Err(e) if in_use(e.as_ref()) && waited_ms < 1000 => {
                     std::thread::sleep(std::time::Duration::from_millis(25));
@@ -1326,6 +1327,7 @@ impl RemoteUi {
         // The origin without the token, so the URL can be rebuilt when the token
         // is rotated (see rotate_token).
         let origin = format!("http://{bind}:{real_port}");
+        let browser_origin = Arc::new(Mutex::new(origin.clone()));
         let url = format!("{origin}/?t={token}");
         // Shared so a runtime rotation is seen by the server thread's handlers.
         let token = Arc::new(Mutex::new(token));
@@ -1383,7 +1385,7 @@ impl RemoteUi {
         let loopback = if bind.is_loopback() {
             None
         } else {
-            match Server::http((std::net::Ipv4Addr::LOCALHOST, real_port)) {
+            match Server::http_bounded((std::net::Ipv4Addr::LOCALHOST, real_port), tiny_http::Limits::default()) {
                 Ok(s) => Some(Arc::new(s)),
                 Err(e) => {
                     crate::append_hook_log(&format!(
@@ -1395,45 +1397,9 @@ impl RemoteUi {
         };
 
         let server = Arc::new(server);
-        let accept_thread = {
-            let server = Arc::clone(&server);
-            let token = Arc::clone(&token);
-            let snapshot = Arc::clone(&snapshot);
-            let stop = Arc::clone(&stop);
-            let clients = Arc::clone(&frame_clients);
-            let casting = Arc::clone(&casts);
-            let pipes = Arc::clone(&pipes);
-            let page_line = Arc::clone(&page_line);
-            let pages_open = Arc::clone(&pages_open);
-            let states = Arc::clone(&state_clients);
-            let polls = Arc::clone(&last_poll);
-            let kf = Arc::clone(&keyframe_wanted);
-            let sf = Arc::clone(&sound_from);
-            let settings = Arc::clone(&settings);
-            let gate = Arc::clone(&gate);
-            let book_for_thread = Arc::clone(&book);
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                for req in server.incoming_requests() {
-                    if stop.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    if let Err(e) =
-                        handle(
-                            req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
-                            &pages_open, &states, &polls, &kf, &sf, &settings, &gate,
-                            &book_for_thread, sticky,
-                        )
-                    {
-                        crate::append_hook_log(&crate::i18n::tp(
-                            "err.remote.hook_log",
-                            &[("e", &e.to_string())],
-                        ));
-                    }
-                }
-            })
-        };
-        let loopback_thread = loopback.as_ref().map(|server| {
+        // tiny_http bounds live connections before parsing their headers.
+        // Each one carries at most one HTTP request and a delivery deadline.
+        let serve = |server: &Arc<Server>| {
             let server = Arc::clone(server);
             let token = Arc::clone(&token);
             let snapshot = Arc::clone(&snapshot);
@@ -1449,26 +1415,32 @@ impl RemoteUi {
             let sf = Arc::clone(&sound_from);
             let settings = Arc::clone(&settings);
             let gate = Arc::clone(&gate);
-            let book_for_thread = Arc::clone(&book);
+            let book = Arc::clone(&book);
+            let browser_origin = Arc::clone(&browser_origin);
             let tx = tx.clone();
+            let answer = Arc::new(move |req: tiny_http::Request| {
+                let published = browser_origin.lock().unwrap().clone();
+                if !browser_request_allowed(&req, &published) {
+                    let _ = req.respond(Response::from_string("forbidden origin").with_status_code(403));
+                    return;
+                }
+                if let Err(e) = handle(
+                    req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
+                    &pages_open, &states, &polls, &kf, &sf, &settings, &gate, &book, sticky,
+                ) {
+                    crate::append_hook_log(&crate::i18n::tp("err.remote.hook_log", &[("e", &e.to_string())]));
+                }
+            });
             std::thread::spawn(move || {
                 for req in server.incoming_requests() {
-                    if stop.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    if let Err(e) = handle(
-                        req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
-                        &pages_open, &states, &polls, &kf, &sf, &settings, &gate,
-                        &book_for_thread, sticky,
-                    ) {
-                        crate::append_hook_log(&crate::i18n::tp(
-                            "err.remote.hook_log",
-                            &[("e", &e.to_string())],
-                        ));
-                    }
+                    if stop.load(Ordering::SeqCst) { break; }
+                    let answer = Arc::clone(&answer);
+                    std::thread::spawn(move || answer(req));
                 }
             })
-        });
+        };
+        let accept_thread = serve(&server);
+        let loopback_thread = loopback.as_ref().map(serve);
         Ok(Self {
             url,
             // Said by whoever asked for it, because only they know what it is
@@ -1477,6 +1449,7 @@ impl RemoteUi {
             // person deliberately put there when it is not
             local_only: false,
             origin,
+            browser_origin,
             port: real_port,
             bound: bind,
             token,
@@ -1540,6 +1513,7 @@ impl RemoteUi {
     /// place that has to change: the QR, the reply pages a notification links
     /// to, and the board's own address as the automation sees it.
     pub fn reached_at(&mut self, origin: String) {
+        *self.browser_origin.lock().unwrap() = origin.trim_end_matches('/').to_string();
         self.url = format!("{origin}/?t={}", self.token.lock().unwrap());
         self.origin = origin;
     }
@@ -1957,9 +1931,33 @@ fn websocket_key(req: &tiny_http::Request) -> String {
         .unwrap_or_default()
 }
 
+/// Cookies alone do not authorize another website to drive this board.
+/// SameSite cookies are also sent across ports, so compare the whole origin.
+fn browser_request_allowed(req: &tiny_http::Request, published: &str) -> bool {
+    let values = |name: &'static str| -> Vec<&str> {
+        req.headers().iter().filter(|h| h.field.equiv(name)).map(|h| h.value.as_str()).collect()
+    };
+    let origin = values("Origin");
+    let hosts = values("Host");
+    if origin.len() > 1 || hosts.len() != 1 { return false; }
+    if let Some(origin) = origin.first() {
+        let direct = format!("{}://{}", if req.secure() { "https" } else { "http" }, hosts[0]);
+        return *origin == direct || *origin == published;
+    }
+    // Native clients do not send these headers. Browser writes and WebSocket
+    // handshakes must come from this origin even if Origin was omitted.
+    let safe_navigation = matches!(req.method(), tiny_http::Method::Get | tiny_http::Method::Head)
+        && websocket_key(req).is_empty()
+        && !req.url().starts_with("/api/")
+        && values("Sec-Fetch-Mode") == ["navigate"]
+        && values("Sec-Fetch-Dest") == ["document"];
+    safe_navigation || values("Sec-Fetch-Site").iter().all(|v| matches!(*v, "same-origin" | "none"))
+}
+
 /// Read a request body, capped at `max` bytes; None if it would exceed the cap.
 fn read_body(req: &mut tiny_http::Request, max: usize) -> std::io::Result<Option<String>> {
     use std::io::Read as _;
+    if req.body_length().is_some_and(|n| n > max) { return Ok(None); }
     let mut body = String::new();
     req.as_reader().take(max as u64 + 1).read_to_string(&mut body)?;
     Ok((body.len() <= max).then_some(body))
@@ -3564,6 +3562,56 @@ fn proxy_settings(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cookies_do_not_authorize_other_origins_or_websocket_handshakes() {
+        use super::*;
+        let _book = crate::clients::tests::OwnBook::new();
+        let mut ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "csrf-regression-token".into(), String::new()).unwrap();
+        let base = format!("http://127.0.0.1:{}", ui.port());
+        let mut phone = Phone::new(&base);
+        phone.pair("csrf-regression-token");
+        let body = r#"{"tab":0,"text":"dummy"}"#;
+        for origin in ["http://127.0.0.1:1", "https://127.0.0.1", "https://stranger.example", "null"] {
+            let answer = phone.agent.post(&format!("{base}/api/send"))
+                .header("Cookie", &phone.cookie).header("Origin", origin)
+                .header("Content-Type", "text/plain").send(body).unwrap();
+            assert_eq!(answer.status(), 403, "accepted {origin}");
+            let answer = phone.agent.get(&format!("{base}/ws-state"))
+                .header("Cookie", &phone.cookie).header("Origin", origin)
+                .header("Connection", "Upgrade").header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==").call().unwrap();
+            assert_eq!(answer.status(), 403, "upgraded {origin}");
+        }
+        assert!(ui.rx.try_recv().is_err(), "a refused origin sent a command");
+        let answer = phone.agent.post(&format!("{base}/api/send"))
+            .header("Cookie", &phone.cookie).header("Sec-Fetch-Site", "same-site")
+            .header("Content-Type", "text/plain").send(body).unwrap();
+        assert_eq!(answer.status(), 403);
+        for origin in [&base, "https://board.example"] {
+            if origin.starts_with("https:") { ui.reached_at(origin.to_string()); }
+            let answer = phone.agent.post(&format!("{base}/api/send"))
+                .header("Cookie", &phone.cookie).header("Origin", origin)
+                .header("Content-Type", "application/json").send(body).unwrap();
+            assert_eq!(answer.status(), 200, "refused own origin {origin}");
+            assert!(ui.rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok());
+        }
+        ui.shutdown();
+    }
+
+    #[test]
+    fn an_unfinished_body_does_not_hold_up_other_requests() {
+        use super::*;
+        use std::io::Write;
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "slow-body-test".into(), String::new()).unwrap();
+        let mut slow = std::net::TcpStream::connect(("127.0.0.1", ui.port())).unwrap();
+        write!(slow, "POST /pair/arrive HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: 200\r\n\r\nx", ui.port()).unwrap();
+        let agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(2))).build().new_agent();
+        let mut response = agent.get(&format!("http://127.0.0.1:{}/", ui.port())).call().unwrap();
+        assert_eq!(response.status(), 200);
+        response.body_mut().read_to_string().unwrap();
+        drop(slow);
+        ui.shutdown();
+    }
     use super::*;
 
 

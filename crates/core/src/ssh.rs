@@ -790,14 +790,11 @@ async fn connect(spec: &Spec) -> Result<Open> {
             // before, and what answered is not it. Everything else is "could
             // not reach it", which is what the message says
             let now = met.lock().ok().and_then(|m| m.clone());
-            if let (Some(before), Some(now)) = (&seen, &now)
-                && before != now {
-                    crate::append_hook_log(&format!(
-                        "ssh: the key at {name} changed: {before} -> {now}"
-                    ));
-                    key_changed(KeyChange { machine: name.clone(), before: before.clone(), now: now.clone() });
-                    bail!(crate::i18n::tp("err.ssh.host_changed", &[("host", &addr)]));
-                }
+            if let Some(now) = now.filter(|now| seen.as_ref() != Some(now)) {
+                key_changed(KeyChange { machine: name.clone(), before: seen.clone().unwrap_or_default(), now });
+                let message = if seen.is_none() { "err.ssh.host_unknown" } else { "err.ssh.host_changed" };
+                bail!(crate::i18n::tp(message, &[("host", &addr)]));
+            }
             bail!(crate::i18n::tp(
                 "err.ssh.connect",
                 &[("host", &addr), ("e", &e.to_string())]
@@ -805,17 +802,12 @@ async fn connect(spec: &Spec) -> Result<Open> {
         }
         Ok(Ok(h)) => h,
     };
-    // A server we had not met is remembered now, with its fingerprint, so that
-    // the next time it changes we are able to say so. One read from a line
-    // written the old way is written again under its name, and the old line
-    // is left for any older copy of the app that still reads it
+    // Migrate a previously trusted legacy entry to its current name. A
+    // persistence failure must stop us before any credential is sent.
     if let Some(fp) = met.lock().ok().and_then(|m| m.clone())
         && known_hosts().get(&name) != Some(&fp)
     {
-        let _ = remember_host(&name, &fp);
-        if seen.is_none() {
-            crate::append_hook_log(&format!("ssh: first time at {name}, key {fp}"));
-        }
+        remember_host(&name, &fp)?;
     }
     // It answered with the key we know, so any question about it is over
     key_settled(&name);
@@ -1152,12 +1144,8 @@ async fn write_whole(sftp: &russh_sftp::client::SftpSession, to: &str, bytes: &[
 
 /// Whether the server is the one we met before.
 ///
-/// The first time, whatever answers is taken as the truth and written down --
-/// there is nothing to compare against, and refusing would mean nobody could
-/// ever connect to anything. Every time after that the fingerprint has to
-/// match, and a mismatch ends the connection rather than asking: the moment a
-/// key changes is the moment you cannot tell a reinstall from somebody
-/// standing in the middle, and only one of those costs you a password.
+/// Unknown and changed keys both end the handshake before credentials are
+/// requested. The person must confirm the displayed fingerprint first.
 struct Client {
     expected: Option<String>,
     met: Arc<Mutex<Option<String>>>,
@@ -1182,7 +1170,7 @@ impl russh::client::Handler for Client {
             *m = Some(fp.clone());
         }
         Ok(match &self.expected {
-            None => true,
+            None => false,
             Some(seen) => seen == &fp,
         })
     }
@@ -1722,8 +1710,12 @@ mod tests {
 
     /// A server of our own on the loopback, with a key made for it, that takes
     /// `tester` / `hunter2` and gives out an echoing terminal. Answers its port
-    fn fake_server() -> u16 {
+    fn fake_server() -> u16 { fake_server_trusted(true).0 }
+
+    fn fake_server_trusted(trusted: bool) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
         let (port_tx, port_rx) = channel::<u16>();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1745,15 +1737,20 @@ mod tests {
                 let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
                     .await
                     .expect("listen");
-                let _ = port_tx.send(listener.local_addr().expect("addr").port());
-                let mut server = Fake;
+                let port = listener.local_addr().expect("addr").port();
+                if trusted {
+                    remember_host(&fake_spec(port, "").machine(), &config.keys[0].public_key().fingerprint(Default::default()).to_string()).unwrap();
+                }
+                let _ = port_tx.send(port);
+                let mut server = Fake { attempts: counted };
                 use russh::server::Server as _;
                 let _ = server.run_on_socket(config, &listener).await;
             });
         });
-        port_rx
+        let port = port_rx
             .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the test server did not start")
+            .expect("the test server did not start");
+        (port, attempts)
     }
 
     fn fake_spec(port: u16, password_key: &str) -> Spec {
@@ -1918,6 +1915,23 @@ mod tests {
         assert!(exec(&spec, "true", 15_000).expect("it did not connect with the trusted key").ok());
     }
 
+    #[test]
+    fn a_first_key_requires_explicit_trust_before_signing_in() {
+        let (port, attempts) = fake_server_trusted(false);
+        let spec = fake_spec(port, "ssh/ws/first/password");
+        set_secret("ssh/ws/first/password", "hunter2");
+        let why = exec(&spec, "true", 15_000).expect_err("an unverified server was allowed");
+        assert_eq!(why.to_string(), crate::i18n::tp("err.ssh.host_unknown", &[("host", &spec.address())]));
+        assert!(remembered(&spec).is_none());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0, "credentials reached an unverified server");
+        let question = key_changes().into_iter().find(|c| c.machine == spec.machine()).unwrap();
+        assert!(question.before.is_empty());
+        assert!(answer_key_change(&spec.machine(), "not-the-shown-key", true).is_err());
+        assert!(answer_key_change(&spec.machine(), &question.now, true).unwrap());
+        assert!(exec(&spec, "true", 15_000).unwrap().ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     /// Not trusting it puts the question away and remembers nothing
     #[test]
     fn a_changed_key_not_trusted_is_left_as_it_was() {
@@ -1935,7 +1949,7 @@ mod tests {
     /// The far side of that conversation. It asks for a password, insists on
     /// the one it was told, and gives out a terminal that echoes
     #[derive(Clone)]
-    struct Fake;
+    struct Fake { attempts: Arc<std::sync::atomic::AtomicUsize> }
 
     impl russh::server::Server for Fake {
         type Handler = Self;
@@ -1952,6 +1966,7 @@ mod tests {
             user: &str,
             password: &str,
         ) -> Result<russh::server::Auth, Self::Error> {
+            self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(match (user, password) {
                 ("tester", "hunter2") => russh::server::Auth::Accept,
                 _ => russh::server::Auth::reject(),

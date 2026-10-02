@@ -858,6 +858,7 @@ fn room_verbs(
     }
     bind!("browser_open", (String, String, Option<String>, Option<bool>), |lua_, c, al, (name, url, profile, private)| {
         guard(&name, &al)?;
+        c.automation_url(&url).map_err(|e| mlua::Error::runtime(e.to_string()))?;
         let prof = shikisha_shared::BrowserProfile::new(
             profile.as_deref().unwrap_or_default(),
             private.unwrap_or(false),
@@ -869,7 +870,11 @@ fn room_verbs(
     });
     bind!("browser_go", (String, String, Option<String>), |lua_, c, al, (name, what, url)| {
         guard(&name, &al)?;
-        c.browser_go(&name, go_of(&what, url.clone())?)
+        let go = go_of(&what, url.clone())?;
+        if let shikisha_shared::Go::To(ref url) = go {
+            c.automation_url(url).map_err(|e| mlua::Error::runtime(e.to_string()))?;
+        }
+        c.browser_go(&name, go)
             .map_err(|e| mlua::Error::runtime(e.to_string()))?;
         let mut line = format!("browser_go({}, {}", lua_str(&name), lua_str(&what));
         if let Some(u) = &url {

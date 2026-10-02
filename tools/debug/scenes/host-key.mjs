@@ -44,9 +44,15 @@ const asked = `window.__state(${JSON.stringify(state({ key_changes: [change] }))
   new Promise(r => setTimeout(() => r(document.getElementById("sask").hidden
     ? Promise.reject(new Error("nothing was asked")) : "ok"), 300))`;
 
+const first = `window.__state(${JSON.stringify(state({ key_changes: [{...change, before: ''}] }))});
+  new Promise(r => setTimeout(() => r(document.getElementById("sask").hidden
+    ? Promise.reject(new Error("first key was not asked about")) : "ok"), 300))`;
+
 export default {
   settle: 1200,
   scenes: {
+    first,
+    first_phone: { run: first, served: 'remote', sizes: [['phone', 390, 820]] },
     asked,
     phone: {
       run: asked,

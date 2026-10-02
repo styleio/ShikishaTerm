@@ -10947,10 +10947,10 @@ function drawKeyChanges() {
     el("span", {class:"tag"}, tag), el("span", {class:"nm asis"}, what));
   const answer = trust => send({kind:"hostkey", machine:c.machine, fingerprint:c.now, trust});
   askQuestion({
-    title: T["tui.hostkey.title"] || "",
-    say: T["tui.hostkey.say"] || "",
+    title: T[c.before ? "tui.hostkey.title" : "tui.hostkey.first_title"] || "",
+    say: T[c.before ? "tui.hostkey.say" : "tui.hostkey.first_say"] || "",
     what: c.machine,
-    rows: [put(T["tui.hostkey.before"] || "", c.before), put(T["tui.hostkey.now"] || "", c.now)],
+    rows: [...(c.before ? [put(T["tui.hostkey.before"] || "", c.before)] : []), put(T["tui.hostkey.now"] || "", c.now)],
     label: T["tui.hostkey.go"] || "",
     danger: true,
     go: () => { keyAsking = ""; answer(true); },

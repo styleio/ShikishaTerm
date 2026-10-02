@@ -106,7 +106,7 @@ ureq = { version = "3.3.0", default-features = false, features = ["rustls", "jso
 # of one. The same rustls the http client above already carries, used directly
 # because what goes over this line is a WebSocket and a raw byte stream, not a
 # request and a response
-rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = "1.0.9"
 vt100 = "0.16"
 
@@ -139,6 +139,7 @@ libc = "0.2"
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
 [target.'cfg(windows)'.dependencies]
+junction = "2.1.0"
 # Read the PATH a new terminal is started with -- the one in the registry, which
 # the terminal library uses -- so "is this program installed" is asked of the
 # same list the launch will search. Already in the tree through portable-pty

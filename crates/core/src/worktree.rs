@@ -1738,23 +1738,19 @@ pub fn untrack(main: &Path, paths: &[String]) -> Result<()> {
 fn link_folder(from: &Path, to: &Path) -> bool {
     #[cfg(windows)]
     {
-        // Every part written with a `/` is made a `\` first: cmd reads a
-        // forward slash as the start of a switch, and a name like
-        // `web/node_modules` would be a folder it refuses rather than a path
-        let told = |p: &Path| p.display().to_string().replace('/', "\\");
-        let made = |kind: &str| {
-            let mut link = std::process::Command::new("cmd");
-            link.args(["/c", "mklink", kind])
-                .arg(told(to))
-                .arg(told(from))
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            crate::detach_console(&mut link)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        };
-        made("/J") || made("/D")
+        // Pass paths to filesystem APIs: cmd would interpret &, %, and other
+        // characters in a perfectly valid folder name as commands.
+        let Some(parent) = to.parent() else { return false };
+        let staged = parent.join(format!(".shikisha-link-{}", crate::random_hex(12)));
+        if junction::create(from, &staged).is_err() {
+            // A failed junction can leave its empty directory behind. This
+            // unique staging name is ours; never remove the requested target.
+            let _ = std::fs::remove_dir(&staged);
+            if std::os::windows::fs::symlink_dir(from, &staged).is_err() { return false; }
+        }
+        let made = std::fs::rename(&staged, to).is_ok();
+        if !made { let _ = std::fs::remove_dir(&staged); }
+        made
     }
     #[cfg(unix)]
     {
@@ -3932,6 +3928,23 @@ pub fn run(argv: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(windows)]
+    fn folder_links_preserve_shell_characters_as_names() {
+        let root = crate::test_temp("literal-folder-links");
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["a&echo&b", "%PATH%", "a space", "日本語^(test)!"] {
+            let from = root.join(name);
+            let to = root.join(format!("link-{name}"));
+            std::fs::create_dir_all(&from).unwrap();
+            std::fs::write(from.join("proof"), name).unwrap();
+            assert!(super::link_folder(&from, &to), "could not link {name}");
+            assert_eq!(std::fs::read_to_string(to.join("proof")).unwrap(), name);
+            std::fs::remove_dir(&to).unwrap();
+            assert!(from.join("proof").is_file());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     /// A MicroVM folder is refused while anything in it exists nowhere else:
     /// a change not committed, or a commit not pushed
     #[test]
@@ -5135,9 +5148,7 @@ tools/conpty.ps1"));
 
         // The junction has to go before the folder does, or removing the tree
         // would walk into it and take the original's contents with it
-        let mut unhook = std::process::Command::new("cmd");
-        unhook.args(["/c", "rmdir"]).arg(cut.folder.join("node_modules"));
-        let _ = crate::detach_console(&mut unhook).status();
+        unhook_links(&cut.folder);
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 
@@ -5531,9 +5542,7 @@ tools/conpty.ps1"));
             cut.folder.join("vendor").join("left-pad").join("index.js").exists(),
             "what came along cannot be read",
         );
-        let mut unhook = std::process::Command::new("cmd");
-        unhook.args(["/c", "rmdir"]).arg(cut.folder.join("vendor"));
-        let _ = crate::detach_console(&mut unhook).status();
+        unhook_links(&cut.folder);
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

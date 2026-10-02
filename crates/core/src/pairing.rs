@@ -110,7 +110,7 @@ pub fn new_code() -> anyhow::Result<String> {
     let mut code = String::new();
     let fair = (256 / ALPHABET.len() * ALPHABET.len()) as u8;
     while code.len() < 8 {
-        for b in crate::random_bytes(16).unwrap_or_else(|| crate::random_hex(16).into_bytes()) {
+        for b in crate::random_bytes(16).expect("system random source unavailable; refusing to create a pairing code") {
             if b < fair && code.len() < 8 {
                 code.push(ALPHABET[usize::from(b) % ALPHABET.len()] as char);
             }

@@ -32,6 +32,20 @@ path or a URL of its own. Auth tokens are never visible to a script; the app att
 an automation, even inside an allowed folder. Every file and network operation is logged to
 `logs/hooks.log`.
 
+HTTP capabilities never follow redirects: set the final destination explicitly.
+Automation opening a local file in a browser requires file read permission too.
+
+**Local HTML previews.** Previewing a file serves web assets from its folder on a
+separate loopback origin. Hidden files, configuration, keys, source maps and arbitrary
+data files are refused, including through symbolic links. Keep only public web assets
+in a preview folder. Sites that need JSON or other data endpoints should use their
+own development server.
+
+**SSH server identity.** First connections and changed host keys require confirmation
+of the displayed fingerprint before any credentials are sent. Verify the fingerprint
+with the server owner through a trusted channel. A trusted key must be saved successfully
+before the connection proceeds.
+
 **Runaway protection.** Automatic hand-offs between agents carry a depth counter and stop
 at a configurable limit (10 by default). Anything you type resets it to zero. Nothing is
 sent automatically within 5 seconds of you touching a tab. `Ctrl+B x` stops all automation
@@ -56,6 +70,12 @@ it posts. The bar that asks a person something about a page (`browser_ask`) is d
 app under the page, not inside it, so a page cannot press it for the person.
 
 **Phone access (off by default).** When enabled:
+
+Browser writes and WebSocket handshakes are checked against the board's origin,
+including the port. Cookies from a different origin do not authorize an operation.
+HTTP connections and delivery times are bounded so an unfinished request cannot hold
+up other clients. WebSockets and processing after a complete request keep their normal
+lifetimes.
 
 - The bind address is resolved to a **private network only** — Tailscale (100.64.0.0/10)
   or a LAN address. A public address is refused unless `remote.allow_public` is set by

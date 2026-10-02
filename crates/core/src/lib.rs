@@ -21,6 +21,8 @@ pub mod ball;
 pub mod bridge;
 pub mod browserstate;
 pub mod caps;
+#[cfg(test)]
+mod http_security_tests;
 pub mod charset;
 pub mod cdp;
 pub mod chrome;
@@ -213,10 +215,14 @@ pub fn detach_console(cmd: &mut std::process::Command) -> &mut std::process::Com
 }
 
 pub fn random_hex(bytes: usize) -> String {
-    match random_bytes(bytes) {
-        Some(buf) => buf.iter().map(|b| format!("{b:02x}")).collect(),
-        None => "shikisha-fallback-token".into(),
-    }
+    // Authentication must fail closed if the system cannot supply entropy.
+    // A fixed substitute would open every server using it to anyone.
+    hex_token(random_bytes(bytes))
+}
+
+fn hex_token(bytes: Option<Vec<u8>>) -> String {
+    bytes.expect("system random source unavailable; refusing to create a token")
+        .iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Randomness from the system, or nothing.
@@ -511,6 +517,12 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[should_panic(expected = "refusing to create a token")]
+    fn token_generation_has_no_predictable_fallback() {
+        super::hex_token(None);
+    }
+
     /// A value poured into a page's script cannot end the script element or
     /// start markup, and reads back as exactly what it was
     #[test]

@@ -9,10 +9,10 @@
 //! - **Its own port.** Not the settings server's: a page from the same origin
 //!   could ask the settings of the app, and a file somebody downloaded is not
 //!   to be trusted with that. A page's origin is its port as well as its host.
-//! - **Only the file's folder.** Asking for a file shares the folder it is in
-//!   -- what a page needs beside it (its pictures, its scripts, its styles) is
-//!   usually there and below. Nothing above that folder is answered, however
-//!   the path is spelled, and a link inside it that leads out is not followed.
+//! - **Public page assets only.** The selected page and ordinary web assets
+//!   may be read. Data, configuration, hidden files and private keys are not
+//!   published with a page. Sites needing data endpoints should use their own
+//!   development server. Links are checked against the actual opened file.
 //! - **Under a key nobody can guess.** Each shared folder is reached at
 //!   `/<key>/...`, the key drawn at random when the folder is first shared,
 //!   so another program on this PC cannot walk the disk through the port.
@@ -91,6 +91,9 @@ fn serve(file: &Path) -> Result<String, String> {
     if real.is_dir() {
         return Err(crate::i18n::tp("err.localpage.folder", &[("path", &shown)]));
     }
+    if !public_file(&real) || !public_file(file) {
+        return Err(crate::i18n::tp("err.localpage.private", &[("path", &shown)]));
+    }
     let folder = real.parent().ok_or_else(|| crate::i18n::tp("err.localpage.missing", &[("path", &shown)]))?;
     let shared = server().map_err(|e| crate::i18n::tp("err.localpage.server", &[("e", &e)]))?;
     let key = {
@@ -113,7 +116,7 @@ fn server() -> Result<&'static Shared, String> {
     static SHARED: OnceLock<Result<Shared, String>> = OnceLock::new();
     SHARED
         .get_or_init(|| {
-            let listening = tiny_http::Server::http("127.0.0.1:0").map_err(|e| e.to_string())?;
+            let listening = tiny_http::Server::http_bounded("127.0.0.1:0", tiny_http::Limits::default()).map_err(|e| e.to_string())?;
             let port = listening.server_addr().to_ip().map(|a| a.port()).ok_or("no port")?;
             std::thread::spawn(move || {
                 for req in listening.incoming_requests() {
@@ -142,7 +145,8 @@ fn answer(req: tiny_http::Request) {
     };
     let header = |k: &str, v: &str| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok();
     let mut resp = tiny_http::Response::from_file(open);
-    for h in [header("Content-Type", kind_of(&file)), header("Cache-Control", "no-store")].into_iter().flatten() {
+    for h in [header("Content-Type", kind_of(&file)), header("Cache-Control", "no-store"),
+        header("X-Content-Type-Options", "nosniff"), header("Referrer-Policy", "no-referrer")].into_iter().flatten() {
         resp.add_header(h);
     }
     let _ = req.respond(resp);
@@ -169,7 +173,7 @@ fn found_at(folders: &HashMap<String, PathBuf>, url: &str) -> Option<(std::fs::F
         // no stream of a file (`a.html:x` names an alternate data stream on
         // NTFS), and no control character -- a NUL ends a name early wherever
         // the path reaches C
-        if part == "." || part == ".." || part.contains(['/', '\\', ':']) || part.chars().any(char::is_control) {
+        if part.starts_with('.') || part.ends_with(['.', ' ']) || part.contains(['/', '\\', ':']) || part.chars().any(char::is_control) {
             return None;
         }
         at.push(part);
@@ -177,9 +181,29 @@ fn found_at(folders: &HashMap<String, PathBuf>, url: &str) -> Option<(std::fs::F
     if std::fs::metadata(&at).ok()?.is_dir() {
         at.push("index.html");
     }
+    if !public_file(&at) {
+        return None;
+    }
     let open = std::fs::File::open(&at).ok()?;
     let real = opened_at(&open)?;
-    (real.starts_with(root) && open.metadata().ok()?.is_file()).then_some((open, real))
+    let relative = real.strip_prefix(root).ok()?;
+    if relative.components().any(|p| p.as_os_str().to_string_lossy().starts_with('.')) {
+        return None;
+    }
+    (public_file(&real) && open.metadata().ok()?.is_file()).then_some((open, real))
+}
+
+/// Opening HTML must not publish a project's credentials and configuration.
+/// An allowlist also excludes backups, keys, source maps and arbitrary data.
+fn public_file(file: &Path) -> bool {
+    let name = file.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    if name.starts_with('.') || name.ends_with(['.', ' ']) || crate::caps::is_forbidden(file) {
+        return false;
+    }
+    let ext = file.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    matches!(ext.as_str(), "html" | "htm" | "xhtml" | "css" | "js" | "mjs" | "svg" |
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "ico" | "woff" | "woff2" |
+        "ttf" | "otf" | "wasm" | "pdf" | "mp4" | "webm" | "mp3" | "wav" | "ogg")
 }
 
 /// Where an open file really is: the path the system gives for the handle,
@@ -231,6 +255,7 @@ fn kind_of(file: &Path) -> &'static str {
     let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
         "html" | "htm" => "text/html",
+        "xhtml" => "application/xhtml+xml",
         "css" => "text/css",
         "js" | "mjs" => "text/javascript",
         "json" | "map" => "application/json",
@@ -296,6 +321,30 @@ fn percent_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_cannot_read_sibling_credentials_data_or_hidden_assets() {
+        let root = crate::test_temp("localpage-secrets");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join("index.html"), "page").unwrap();
+        let files = [".env", ".env.local", "secrets.json", "config.json", "private.pem", "id_rsa", "backup.txt", "data.json", "code.js.map", ".git/private.js"];
+        for file in files { std::fs::write(root.join(file), "dummy secret").unwrap(); }
+        let folders = [("k".into(), root.canonicalize().unwrap())].into_iter().collect();
+        assert!(found_at(&folders, "/k/index.html").is_some());
+        for file in files {
+            assert!(found_at(&folders, &format!("/k/{file}")).is_none(), "served {file}");
+        }
+        assert!(found_at(&folders, "/k/%2eenv").is_none());
+        assert!(found_at(&folders, "/k/secrets.json%20").is_none());
+        assert!(address(&root.join("secrets.json").display().to_string()).unwrap().is_err());
+        // Check the handle's actual target too, not just its innocent alias.
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(root.join("secrets.json"), root.join("public.js"));
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(root.join("secrets.json"), root.join("public.js"));
+        if linked.is_ok() { assert!(found_at(&folders, "/k/public.js").is_none()); }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// What reads as a file here, and what is a web address or words
     #[test]
