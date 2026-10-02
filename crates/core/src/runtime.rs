@@ -4741,7 +4741,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let screens = surfaces_written(Some(desk), &titles, &caps.hosted_names(), &[], false)
                 .into_iter().map(|(s, _)| s).collect::<Vec<_>>();
             let own_notifier = notifier.for_desk(config::desk_notify(desk, &|k| caps.secret_value(k).ok()), desk.primary_notify.clone());
-            work.tick(Vec::new(), list, &screens, max_chain, auto_enabled, start.elapsed().as_millis() as u64, rows, cols, &own_notifier, &mut pending_send);
+            work.tick(Vec::new(), list, &screens, max_chain, auto_enabled, start.elapsed().as_millis() as u64, rows, cols, &own_notifier, &mut pending_send, Some(desk));
             if std::mem::take(&mut work.asks.reread) { watcher.poke(); }
         }
         if let Some(a) = api_server.as_ref() {
@@ -5346,7 +5346,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     let commands = engine.as_mut().map(|eng| eng.drain_commands()).unwrap_or_default();
                     let own_notifier = notifier.for_desk(config::desk_notify(desk, &|k| caps.secret_value(k).ok()), desk.primary_notify.clone());
                     let work = background_work.entry(desk.uid.clone()).or_default();
-                    work.tick(commands, tabs, surfaces, max_chain, auto_enabled, start.elapsed().as_millis() as u64, rows, cols, &own_notifier, &mut pending_send);
+                    work.tick(commands, tabs, surfaces, max_chain, auto_enabled, start.elapsed().as_millis() as u64, rows, cols, &own_notifier, &mut pending_send, Some(desk));
                     if std::mem::take(&mut work.asks.reread) { watcher.poke(); }
                 }
             }
@@ -6076,7 +6076,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is for something to vanish without a trace.
         if !waiting.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
-            let ready = take_ready(&mut waiting, &tabs, &surfaces, now_ms, &mut flash);
+            let ready = take_ready(&mut waiting, &tabs, &surfaces, now_ms, &mut flash, desks.get(desk_index));
             if !ready.is_empty() {
                 exec_commands(
                     ready,
@@ -17484,9 +17484,16 @@ impl Waiting {
         Self { cmd, target_uid, origin_uid, give_up_ms }
     }
 
-    fn ready(&mut self, tabs: &[Tab], surfaces: &[Surface], now_ms: u64) -> bool {
+    fn ready(&mut self, tabs: &[Tab], surfaces: &[Surface], now_ms: u64, desk: Option<&config::Desk>) -> bool {
         let keys = surface_keys(surfaces, tabs);
-        let place = |uid: &str| surfaces.iter().position(|s| matches!(s, Surface::Session(i) if tabs.get(*i).is_some_and(|t| t.uid() == uid))).map(|i| i + 1);
+        let place = |uid: &str| surfaces.iter().enumerate().find_map(|(at, surface)| {
+            let found = match surface {
+                Surface::Session(i) => tabs.get(*i).is_some_and(|t| t.uid() == uid),
+                _ => desk.is_some_and(|d| d.tabs.iter().any(|t|
+                    t.cfg.uid.as_deref() == Some(uid) && keys[at].id.as_deref() == Some(t.page_key().as_str()))),
+            };
+            found.then_some(at + 1)
+        });
         let to = match self.target_uid.as_deref() {
             Some(uid) => place(uid),
             None => addressee(&self.cmd).and_then(|r| r.resolve(&keys)),
@@ -17512,11 +17519,11 @@ impl Waiting {
     }
 }
 
-fn take_ready(waiting: &mut Vec<Waiting>, tabs: &[Tab], surfaces: &[Surface], now_ms: u64, flash: &mut Option<String>) -> Vec<Command> {
+fn take_ready(waiting: &mut Vec<Waiting>, tabs: &[Tab], surfaces: &[Surface], now_ms: u64, flash: &mut Option<String>, desk: Option<&config::Desk>) -> Vec<Command> {
     let mut ready = Vec::new();
     let mut kept = Vec::new();
     for mut w in std::mem::take(waiting) {
-        if w.ready(tabs, surfaces, now_ms) {
+        if w.ready(tabs, surfaces, now_ms, desk) {
             ready.push(w.cmd);
         } else if now_ms >= w.give_up_ms {
             let to = addressee(&w.cmd);
@@ -17541,9 +17548,9 @@ struct BackgroundWork {
 impl BackgroundWork {
     #[allow(clippy::too_many_arguments)]
     fn tick(&mut self, mut commands: Vec<Command>, tabs: &mut [Tab], surfaces: &[Surface], max_chain: u32,
-        auto_enabled: bool, now_ms: u64, rows: u16, cols: u16, notifier: &notify::Notifier, pending: &mut Vec<PendingSend>) {
+        auto_enabled: bool, now_ms: u64, rows: u16, cols: u16, notifier: &notify::Notifier, pending: &mut Vec<PendingSend>, desk: Option<&config::Desk>) {
         let mut flash = None;
-        commands.extend(take_ready(&mut self.waiting, tabs, surfaces, now_ms, &mut flash));
+        commands.extend(take_ready(&mut self.waiting, tabs, surfaces, now_ms, &mut flash, desk));
         // A background call never rearranges the person's foreground panes.
         commands.retain(|cmd| !matches!(cmd, Command::Pane(_)));
         let mut panes = crate::layout::Layout::single(0);
@@ -19000,12 +19007,12 @@ mod tests {
         let mut replaced = Waiting::new(Command::CloseTab { target: hooks::TabRef::Index(1) }, &tabs, &surfaces, 1000);
         tabs[0].id = Some("renamed".into());
         tabs.swap(0, 1);
-        assert!(renamed.ready(&tabs, &surfaces, 0));
+        assert!(renamed.ready(&tabs, &surfaces, 0, None));
         assert!(matches!(renamed.cmd, Command::CloseTab { target: hooks::TabRef::Index(2) }));
         tabs[1].kill();
         tabs.pop();
         tabs[0].id = Some("worker".into());
-        assert!(!replaced.ready(&tabs, &[Surface::Session(0)], 0), "the new owner of the position or name received old work");
+        assert!(!replaced.ready(&tabs, &[Surface::Session(0)], 0, None), "the new owner of the position or name received old work");
         tabs[0].kill();
     }
 
@@ -19099,10 +19106,34 @@ mod tests {
         work.tick(vec![
             Command::OpenedTab { id: "research".into(), uid: uid.clone() },
             Command::CloseTab { target: TabRef::Name("research".into()) },
-        ], &mut [], &[], 10, true, 0, 24, 80, &notifier, &mut Vec::new());
+        ], &mut [], &[], 10, true, 0, 24, 80, &notifier, &mut Vec::new(), None);
         assert_eq!(work.waiting.len(), 1);
         assert_eq!(work.waiting[0].target_uid.as_deref(), Some(uid.as_str()),
             "work for a tab still opening must already know its identity");
+    }
+
+    #[test]
+    fn a_waiting_page_can_arrive_and_rename_but_a_replacement_cannot_take_its_work() {
+        let uid = config::new_tab_uid();
+        let cfg: config::Config = serde_json::from_value(serde_json::json!({"desks": [
+            {"id": "a", "name": "A", "tabs": [{"id": "page", "uid": uid, "command": ["browser", "https://example.invalid"]}]}
+        ]})).unwrap();
+        let (mut desks, _) = cfg.resolve_desks();
+        let page = |key: &str| Surface::Browser { key: key.into(), name: key.into(), dir: None, on: None };
+        let mut work = BackgroundWork::default();
+        let notifier = notify::Notifier::new(Default::default(), None);
+        work.tick(vec![
+            Command::OpenedTab { id: "page".into(), uid: uid.clone() },
+            Command::ShowTab { target: hooks::TabRef::Name("page".into()) },
+            Command::CloseTab { target: hooks::TabRef::Name("page".into()) },
+        ], &mut [], &[], 10, true, 0, 24, 80, &notifier, &mut Vec::new(), Some(&desks[0]));
+        assert_eq!(work.waiting.len(), 2);
+        assert!(!work.waiting[0].ready(&[], &[], 1, Some(&desks[0])));
+        assert!(work.waiting[0].ready(&[], &[page("page")], 2, Some(&desks[0])), "the created page waited forever");
+        desks[0].tabs[0].cfg.id = Some("renamed".into());
+        assert!(work.waiting[1].ready(&[], &[page("renamed")], 3, Some(&desks[0])), "renaming lost the page");
+        desks[0].tabs[0].cfg.uid = Some(config::new_tab_uid());
+        assert!(!work.waiting[1].ready(&[], &[page("renamed")], 4, Some(&desks[0])), "a replacement page inherited old work");
     }
 
     /// The whole of the renaming, from the AI's answer to the settings, against
