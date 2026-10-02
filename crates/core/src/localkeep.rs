@@ -107,10 +107,20 @@ pub fn give_keys(keys: Vec<(String, String)>) {
     }
 }
 
-/// Whether this PC's terminals are to be held by it: the person said so
-/// (`keep_terminals`), and this is a system it runs on
+/// Whether this PC's terminals are to be held by it: the setting
+/// (`keep_terminals`) says so -- unset is yes, as the person decided
+/// 2026-10-02 (local-keeper plan §3) -- and this is a system it runs on
 pub fn wanted() -> bool {
-    cfg!(windows) && crate::config::load().and_then(|c| c.keep_terminals).unwrap_or(false)
+    if !cfg!(windows) {
+        return false;
+    }
+    let set = crate::config::load().and_then(|c| c.keep_terminals);
+    // This crate's own tests start tabs with no settings at all, to test the
+    // tab; a resident process there would be a second program under test
+    if cfg!(test) {
+        return set == Some(true);
+    }
+    set.unwrap_or(true)
 }
 
 /// Make the line on a thread of its own, unless it is up or being made: a
@@ -122,8 +132,14 @@ pub fn connect_soon() {
     if link().is_some() || MAKING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // With the setting off, one that is there is gone back to, and none is
+    // started: a terminal of a resident process that was stopped is over
+    if !wanted() && !is_there() {
+        MAKING.store(false, Ordering::SeqCst);
+        return;
+    }
     let _ = std::thread::Builder::new().name("this PC's resident process".into()).spawn(|| {
-        if let Err(e) = connect() {
+        if let Err(e) = connect_or(wanted()) {
             crate::append_hook_log(&format!("this PC's resident process: no line to it ({e:#})"));
         }
         MAKING.store(false, Ordering::SeqCst);
@@ -139,13 +155,26 @@ pub fn is_there() -> bool {
 /// -- starting the resident process first when nobody is at its door. Blocks
 /// until it has named itself; call from a thread
 pub fn connect() -> Result<Arc<Link>> {
+    connect_or(true)
+}
+
+/// The line to the resident process that is there, never starting one
+fn connect_existing() -> Result<Arc<Link>> {
+    connect_or(false)
+}
+
+fn connect_or(starting: bool) -> Result<Arc<Link>> {
     if let Some(l) = link() {
         return Ok(l);
     }
     let home = home()?;
     let door = keep_door()?;
     if matches!(crate::fardaemon::find(&door), crate::fardaemon::Found::Nobody) {
+        if !starting {
+            bail!("this PC's resident process is not there");
+        }
         start(&home)?;
+        ENDED.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     let until = Instant::now() + UP_WAIT;
     while crate::fardaemon::probe(&door).is_none() {
@@ -170,7 +199,16 @@ pub fn connect() -> Result<Arc<Link>> {
     let closer: Box<dyn Fn() + Send + Sync> = Box::new(move || {
         let _ = shut.shutdown(std::net::Shutdown::Both);
     });
-    crate::farlink::link_over(KEY, "this PC", Box::new(conn), input, None, Some(closer), home.to_string_lossy().into_owned())
+    let link = crate::farlink::link_over(KEY, "this PC", Box::new(conn), input, None, Some(closer), home.to_string_lossy().into_owned())?;
+    // A resident process started by an older version of the app keeps
+    // running across an update -- that is what it is for -- and holds what it
+    // holds the way that version did. Said, with what makes it new
+    // (local-keeper plan §8)
+    let theirs = link.version.lock().ok().and_then(|v| v.clone()).unwrap_or_default();
+    if !theirs.is_empty() && theirs != env!("CARGO_PKG_VERSION") {
+        crate::caps::tell(crate::i18n::tp("msg.localkeep.older", &[("theirs", &theirs), ("ours", env!("CARGO_PKG_VERSION"))]));
+    }
+    Ok(link)
 }
 
 /// Start the resident process
@@ -193,14 +231,50 @@ fn start(home: &std::path::Path) -> Result<()> {
 /// ("stop all and quit"). `false` when there is no line to ask on
 pub fn end() -> bool {
     let Some(l) = link() else { return false };
+    ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
     let ok = l.call("end_resident", json!({}), Duration::from_secs(5)).is_ok();
     crate::farlink::let_go_key(KEY);
     ok
 }
 
+/// This app asked the resident process to end everything it holds, and has
+/// not started one since: its terminals are over, and a tab whose line to it
+/// went does not wait for the line to come back
+static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the resident process was ended on purpose (`end`) and none started
+/// since
+pub fn ended_on_purpose() -> bool {
+    ENDED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Let go of the line as the app goes, leaving what it holds running
 pub fn let_go() {
     crate::farlink::let_go_key(KEY);
+}
+
+/// How many terminals the resident process holds that are still running,
+/// asked of it when it is there. Never starts one: a count is not a reason
+/// to have a resident process. Blocks for an answer; call off the loop
+pub fn held_count() -> usize {
+    if connect_existing().is_err() {
+        return 0;
+    }
+    crate::farterm::list_held(&crate::farterm::Place::Here)
+        .and_then(|m| m["terms"].as_array().map(|t| t.iter().filter(|t| t["ended"] == false).count()))
+        .unwrap_or(0)
+}
+
+/// Stop every terminal the resident process holds, and the resident process
+/// with them: the person turned the setting off and asked for what it still
+/// holds to end (the button beside the setting). `false` when there was no
+/// resident process to ask
+pub fn stop_all() -> bool {
+    if connect_existing().is_err() {
+        return false;
+    }
+    crate::append_hook_log("this PC's resident process: asked to stop everything it holds, from the settings");
+    end()
 }
 
 #[cfg(all(test, windows))]
@@ -322,6 +396,36 @@ mod tests {
         // And its end is told, with the code
         let ended = hear(&mut reader, "ended");
         assert_eq!(ended["code"], 0);
+
+        // Which processes a held terminal's job has is told to its owner:
+        // what the app counts as the tab's work in the background
+        let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
+        say(&conn, json!({ "do": "open", "ref": 5, "tab": "p", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let id = hear(&mut reader, "opened")["term"].clone();
+        let procs = loop {
+            let p = hear(&mut reader, "procs");
+            if p["term"] == id && p["pids"].as_array().is_some_and(|a| !a.is_empty()) {
+                break p;
+            }
+        };
+        let root = procs["root"].as_u64().expect("its first process");
+        assert!(procs["pids"].as_array().is_some_and(|p| p.iter().any(|v| v.as_u64() == Some(root))), "its own process among them: {procs}");
+
+        // Asked to open again for a tab whose terminal runs -- the app lost
+        // its note of it -- the one running is handed back, not a second
+        let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
+        say(&conn, json!({ "do": "open", "ref": 2, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let one = hear(&mut reader, "opened");
+        say(&conn, json!({ "do": "open", "ref": 3, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let again = hear(&mut reader, "opened");
+        assert_eq!(again["term"], one["term"], "the running one, not a second");
+        assert_eq!(again["again"], true);
+        // Told to stop (a restart), it is not handed out again: a new one opens
+        let owner = hear(&mut reader, "attached")["owner"].clone();
+        say(&conn, json!({ "do": "stop", "term": again["term"], "owner": owner }));
+        say(&conn, json!({ "do": "open", "ref": 4, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        let fresh = hear(&mut reader, "opened");
+        assert_ne!(fresh["term"], one["term"], "a stopped one is not handed back");
         say(&conn, json!({ "do": "end_all", "ref": 9 }));
         let _ = conn.shutdown(std::net::Shutdown::Both);
     }

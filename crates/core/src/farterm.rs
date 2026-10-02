@@ -176,7 +176,10 @@ fn change_saved(change: impl FnOnce(&mut Vec<Saved>)) {
     }
     let text = serde_json::to_string_pretty(&SavedFile { version: SAVED_VERSION, terms: all }).unwrap_or_default();
     if let Err(e) = crate::crypto::write_atomic(&crate::config::state_path(SAVED_FILE), &text) {
-        crate::append_hook_log(&format!("far terminals: could not be written down: {e:#}"));
+        // Said on the screen, not only in the log: what is not written down
+        // is not gone back to by name after a restart (the resident process
+        // still hands the tab its running terminal when asked to open again)
+        crate::caps::tell(crate::i18n::tp("msg.farterm.unwritten", &[("e", &format!("{e:#}"))]));
     }
 }
 
@@ -290,6 +293,24 @@ pub fn end_held(at: &Place, term: u64, generation: &str) -> bool {
     done
 }
 
+/// Whether a terminal is written down for the tab `uid` on this PC's own
+/// resident process: a tab that left one running there goes back to it
+/// even with the setting now off, rather than starting a second copy of
+/// what is still running (local-keeper plan §3)
+pub fn written_here(uid: &str) -> bool {
+    let machine = Place::Here.machine_key();
+    read_saved().iter().any(|s| s.machine == machine && s.tab == uid)
+}
+
+/// Tell this PC's resident process when to keep the PC up while it holds
+/// terminals (the "keep awake" setting, and which of its terminals an AI is
+/// working in as this app sees it), so that the setting goes on applying
+/// after the app is gone. Not answered; an older resident process ignores it
+pub fn tell_awake(mode: &str, working: &[u64]) {
+    let Some(link) = Place::Here.link().filter(|l| l.holds(JOB)) else { return };
+    let _ = link.to_job(JOB, json!({ "do": "awake", "mode": mode, "working": working }));
+}
+
 /// Stop every one, as the bridge is taken off the machine (§7.7). Nothing
 /// is asked when the line is not up: the resident process is told to end
 /// as the folder goes
@@ -375,8 +396,10 @@ fn ask_open(
     let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
+    // "reuse": the tab's terminal, if one is already running there, rather
+    // than a second AI beside it -- whatever this app wrote down or failed to
     let mut asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
-        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away) });
+        "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away), "reuse": true });
     // On this PC the command is said in full: the program, its arguments and
     // the environment the tab put together for it (`crate::localkeep`)
     if let Some(run) = run {
@@ -431,6 +454,13 @@ pub struct FarTerm {
     then: Option<String>,
     /// On this PC, what is run, said in full (see `ask_open`)
     run: Option<Value>,
+    /// On this PC, the processes its job holds, as last told
+    procs: Mutex<Option<Vec<u32>>>,
+    /// On this PC, the program's first process (0 until told)
+    root: AtomicU64,
+    /// On this PC, how many of its processes are the program at rest, as an
+    /// app that owned it learned and the resident process kept (0 unknown)
+    rest: AtomicU64,
     /// What it does while this app is away (far-keep plan §4.3): changed
     /// when the person changes the machine's setting
     away: Mutex<crate::config::Away>,
@@ -478,6 +508,9 @@ impl FarTerm {
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
             run: None,
+            procs: Mutex::new(None),
+            root: AtomicU64::new(0),
+            rest: AtomicU64::new(0),
             away: Mutex::new(away),
             owner: AtomicU64::new(0),
             at: at.clone(),
@@ -496,6 +529,33 @@ impl FarTerm {
     fn with_run(mut self, run: Option<Value>) -> Self {
         self.run = run;
         self
+    }
+
+    /// The processes its job holds, as the resident process last said: on
+    /// this PC only, and `None` until it has said
+    pub fn procs(&self) -> Option<Vec<u32>> {
+        self.procs.lock().ok().and_then(|p| p.clone())
+    }
+
+    /// The program's first process, on this PC, once the resident process
+    /// has said it: what its ports and its use of the machine are read below
+    pub fn root(&self) -> Option<u32> {
+        u32::try_from(self.root.load(Ordering::SeqCst)).ok().filter(|p| *p != 0)
+    }
+
+    /// How many of its processes are its program at rest, when an app that
+    /// owned it learned that before: what this app counts its work behind the
+    /// prompt against, instead of learning it again with that work running
+    pub fn rest(&self) -> Option<u32> {
+        u32::try_from(self.rest.load(Ordering::SeqCst)).ok().filter(|n| *n != 0)
+    }
+
+    /// Hand the resident process what this app learned of the program at
+    /// rest, for the app after it
+    pub fn learned_rest(&self, n: u32) {
+        if self.rest.swap(u64::from(n), Ordering::SeqCst) != u64::from(n) {
+            self.say(json!({ "do": "rest", "term": self.term(), "owner": self.owner.load(Ordering::SeqCst), "n": n }));
+        }
     }
 
     /// Whether it is held on this PC, by this PC's own resident process
@@ -518,6 +578,11 @@ impl FarTerm {
 
     fn term(&self) -> u64 {
         self.ident.lock().map(|i| i.term).unwrap_or(0)
+    }
+
+    /// Its id at the resident process (0 until it is opened there)
+    pub fn term_id(&self) -> u64 {
+        self.term()
     }
 
     /// Whether its AI goes on once this app went (far-keep plan §4.3)
@@ -810,6 +875,13 @@ impl std::io::Read for FarReader {
                 if self.term.ended.load(Ordering::SeqCst) || self.term.let_go.load(Ordering::SeqCst) {
                     return Ok(0);
                 }
+                // This PC's resident process was asked to end everything it
+                // held (the person's "Stop them"): its terminals are over, and
+                // there is no line to wait for
+                if self.term.here() && crate::localkeep::ended_on_purpose() {
+                    self.term.ended.store(true, Ordering::SeqCst);
+                    return Ok(0);
+                }
                 let address = self.term.at.address();
                 if self.again && !self.said_waiting {
                     // Said first, so the tab shows why it is empty
@@ -952,6 +1024,22 @@ impl std::io::Read for FarReader {
                     }
                     let text = crate::i18n::tp("msg.farterm.unknown", &[("host", &self.term.at.name())]);
                     self.say_last(&text);
+                }
+                // The processes the terminal's job holds (this PC's resident
+                // process says so when it changes): what the tab counts as
+                // its work in the background, as it would for its own job
+                "procs" => {
+                    // What was learned of the program at rest first: the tab
+                    // reads it once it has processes to count, never before
+                    if let Some(rest) = m["rest"].as_u64() {
+                        self.term.rest.store(rest, Ordering::SeqCst);
+                    }
+                    if let (Ok(mut p), Some(list)) = (self.term.procs.lock(), m["pids"].as_array()) {
+                        *p = Some(list.iter().filter_map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok())).collect());
+                    }
+                    if let Some(root) = m["root"].as_u64().and_then(|n| u32::try_from(n).ok()) {
+                        self.term.root.store(u64::from(root), Ordering::SeqCst);
+                    }
                 }
                 "refused" => {
                     crate::append_hook_log(&format!(

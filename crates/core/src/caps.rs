@@ -34,6 +34,12 @@ fn refused(why: String) -> String {
     why
 }
 
+/// Log something the person has to know, and show it on the board the same
+/// way: what went wrong where nothing else would say it
+pub fn tell(why: String) {
+    refused(why);
+}
+
 /// What the board shows next, if a secret was turned down since it last asked
 pub fn take_refusal() -> Option<String> {
     REFUSED.lock().unwrap_or_else(|p| p.into_inner()).take()

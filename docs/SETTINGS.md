@@ -18,6 +18,8 @@ Newer versions, and going back
 
 Tab width, chaining, language
 
+- **Terminals on this PC** — On (the default): the terminals on this PC and the AIs in them keep running in a separate background process when the window is closed, when the app quits or is updated, and when it closes unexpectedly. When you start the app again, each tab comes back to the same terminal, with its screen. To stop them, answer “No” (stop every terminal and AI, then quit) when quitting asks. Off: terminals opened from now on stop when the app quits. Tabs open when you switch it change over when they restart.
+
 - **Tab bar width** — Pixels. Leave empty for the default width, or drag the bar's edge in the window — 0 puts it away
 - **Automatic chain limit** — How many times AIs may hand work to each other in a row
 - **Answer settle time** — Seconds of quiet before an answer counts as finished. Short values hand work over mid-thought
@@ -26,9 +28,8 @@ Tab width, chaining, language
 - **Where to start** — Remembered by name, so reordering or adding desks does not change where you land. Turn this off to always start at the first one.
 - **Deleting a worktree** — Turned off, "Delete completely" in the list's right-click menu deletes the worktree at once, without asking.
 - **The ✕ button** — The AIs keep working and the phone stays connected. Click the icon in the notification area to bring the window back. To quit, right-click that icon and choose Quit, or press Ctrl+B q. Turn this off to quit when the window is closed. Either way, you are asked first while a tab is still working.
-- **Terminals on this PC** — Off (unchecked): the terminals and the AIs in them stop when the app quits. On: they keep running in a separate background process, and when you start the app again each tab comes back to the same terminal, with its screen. To stop them, answer “No” (stop every AI and quit) when quitting asks. Applies to tabs opened after you turn it on; restart a tab to move it.
 - **Screen and work** — Nearly all of this program's memory is the screen. Run it separately and the screen can go -- for want of memory, or in a fault -- while the tabs, the terminals and every AI at work in them carry on; a new screen is put back over them. Closing the screen yourself still does whatever “The ✕ button” above says. The board is served to this machine and nothing else; sharing it with a phone is a separate setting. Takes effect the next time this program starts.
-- **Keep the PC awake** — Keeps Windows from putting the PC and its screen to sleep. "While an AI is working" lets it sleep again once every AI has answered or is waiting for you. Closing a laptop's lid still does what Windows's power settings say.
+- **Keep the PC awake** — Keeps Windows from putting the PC and its screen to sleep. "While an AI is working" lets it sleep again once every AI has answered or is waiting for you. It goes on applying to the terminals left running on this PC after the app quits. Closing a laptop's lid still does what Windows's power settings say.
 - **Copying from full-screen tools** — tmux, Neovim, fzf and most full-screen tools copy this way, including over ssh -- with this off, copying inside them does nothing. Reading the clipboard is never allowed, so nothing running in a tab can see what you copied elsewhere
 - **Pressing an address or a path in a terminal** — Addresses and file paths in a terminal are underlined under the pointer. Ctrl+click always opens one straight away, whichever is chosen here.
 - **Terminal engine** — Windows has one of these and this program carries its own. Which one is in use decides how a program's output reaches the screen. The one shipped here is a fixed version we have checked, so the answer does not depend on how up to date this machine happens to be — on an older Windows, the one in the box can be some way behind.

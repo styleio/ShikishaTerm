@@ -494,6 +494,10 @@ pub enum Ev {
     /// either way the card is put away for good. Window-only: the page it
     /// opens is this PC's
     Thanks { open: bool },
+    /// The card that says this PC's terminals now keep running after the app
+    /// is closed was put away (either of its buttons). Said once: the page
+    /// opens the settings itself when that was the press
+    KeepNotice,
     /// The card that says a newer version is out was pressed. `open` says
     /// whether the settings' Update card is to be opened; either way the
     /// card is put away for that version. Nothing is installed from here
@@ -1385,6 +1389,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             step: v.get("step").and_then(|x| x.as_u64()).unwrap_or(0).min(255) as u8,
         },
         Some("thanks") => Ev::Thanks { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
+        Some("keepnotice") => Ev::KeepNotice,
         Some("update") => Ev::Update { open: v.get("open").and_then(|x| x.as_bool()).unwrap_or(false) },
         Some("help") => Ev::Help,
         Some("installhelp") => Ev::InstallHelp {

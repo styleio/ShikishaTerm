@@ -3719,7 +3719,15 @@ impl Tab {
         // plan), so that the program outlives this app: the person's own
         // program, on this PC, with the setting saying to keep this PC's
         // terminals. A model tab and a held one run nothing of the person's
-        let keep_here = local && opts.model.is_none() && opts.held.is_none() && crate::localkeep::wanted();
+        //
+        // With the setting off, a tab that left its terminal running there
+        // goes back to it all the same, while the resident process is there
+        // to hold it: starting it again here would run the same AI twice. The
+        // setting says where new terminals start (local-keeper plan §3)
+        let keep_here = local
+            && opts.model.is_none()
+            && opts.held.is_none()
+            && (crate::localkeep::wanted() || (crate::farterm::written_here(&uid) && crate::localkeep::is_there()));
         let pair = (local && !keep_here)
             .then(|| {
                 native_pty_system().openpty(PtySize {
@@ -4800,12 +4808,24 @@ impl Tab {
     /// helpers). Only worked out when it is going to be read -- a working
     /// tab's count is not
     fn job_population(&mut self, busy: bool) -> Option<u32> {
-        let job = self.job.as_ref()?;
-        let all = job.active()?;
+        // A terminal this PC's resident process holds is in that process's
+        // job, not this tab's: its processes are as the resident process says
+        let held = self.far_term.as_ref().filter(|t| t.here()).map(|t| t.procs());
+        let (all, pids) = match held {
+            Some(None) => return None,
+            Some(Some(pids)) => (pids.len() as u32, pids),
+            None => {
+                let job = self.job.as_ref()?;
+                let all = job.active()?;
+                if busy || all == 0 {
+                    return Some(all);
+                }
+                (all, job.pids())
+            }
+        };
         if busy || all == 0 {
             return Some(all);
         }
-        let pids = job.pids();
         let helpers = self.detector.helpers();
         self.job_ours.retain(|pid, _| pids.contains(pid));
         let ours = pids
@@ -4813,6 +4833,24 @@ impl Tab {
             .filter(|&&pid| *self.job_ours.entry(pid).or_insert_with(|| crate::job::is_machinery(pid, helpers)))
             .count() as u32;
         Some(all.saturating_sub(ours))
+    }
+
+    /// The first process of what this tab runs on this PC: its own, or the
+    /// one this PC's resident process started for it (local-keeper plan)
+    pub fn root_pid(&self) -> Option<u32> {
+        self.pid.or_else(|| self.far_term.as_ref().filter(|t| t.here()).and_then(|t| t.root()))
+    }
+
+    /// The processes of this tab's job: its own, or as this PC's resident
+    /// process says for one it holds
+    fn job_pids(&self) -> (Option<u32>, Vec<u32>) {
+        match self.far_term.as_ref().filter(|t| t.here()).map(|t| t.procs()) {
+            Some(held) => (held.as_ref().map(|p| p.len() as u32), held.unwrap_or_default()),
+            None => (
+                self.job.as_ref().and_then(crate::job::Job::active),
+                self.job.as_ref().map(crate::job::Job::pids).unwrap_or_default(),
+            ),
+        }
     }
 
     /// Who this tab is: never another tab's, whatever either is called. Its
@@ -5007,8 +5045,20 @@ impl Tab {
         const STARTING: std::time::Duration = std::time::Duration::from_secs(10);
         let busy = self.state == TabState::Busy || self.created.elapsed() < STARTING;
         let population = self.job_population(busy);
+        // A terminal this PC's resident process holds may have been at rest
+        // under an app before this one, which learned what its program is on
+        // its own and left that with the resident process: started again with
+        // work running behind the prompt, this app would learn that work as
+        // the program's own and never see it (local-keeper plan)
+        let held = self.far_term.as_ref().filter(|t| t.here()).cloned();
+        if self.job_rest.is_none() {
+            self.job_rest = held.as_ref().and_then(|t| t.rest());
+        }
         let (counted, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;
+        if let (Some(t), Some(n)) = (held, rest) {
+            t.learned_rest(n);
+        }
         // An AI that says for itself what it left running is believed over
         // the count of its tab's processes (`Aside::speaks`). Only while it is
         // the one in the tab: the shell it hands back to, in a tab it was
@@ -5209,7 +5259,7 @@ impl Tab {
         if self.is_model() || self.own != crate::profile::GENERIC {
             return;
         }
-        let active = self.job.as_ref().and_then(crate::job::Job::active);
+        let (active, pids) = self.job_pids();
         let title = match self.window_title.lock() {
             Ok(t) => t.clone(),
             Err(_) => return,
@@ -5217,7 +5267,6 @@ impl Tab {
         if !self.guest.due(active, &title) {
             return;
         }
-        let pids = self.job.as_ref().map(crate::job::Job::pids).unwrap_or_default();
         if !self.guest.settle(active, &title, &pids) {
             return;
         }

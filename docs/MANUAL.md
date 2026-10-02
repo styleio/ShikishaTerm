@@ -434,14 +434,27 @@ Store copy hands the same button to the Store, which installs and restarts.
 Skipped a few versions? The newest one carries your settings forward one version
 at a time, so nothing has to be installed in between.
 
-**Keeping this PC's terminals running.** With Settings › Basic › **Terminals on
-this PC** turned on, the terminals of this PC (and the AIs in them) run in a
-separate background process of their own rather than inside the app. Quitting the
-app, updating it, or the app closing unexpectedly does not stop them: when the app
-starts again, each tab comes back to the same terminal, with its screen, and what
-the AI there asks of the app through `shikisha` reaches the app that is running
-now. To stop them, answer **No** (stop every AI and quit) when quitting asks. The
-setting applies to tabs opened after it is turned on; restart a tab to move it.
+**Keeping this PC's terminals running.** Settings › Basic › **Terminals on this
+PC** is on from the start. The terminals of this PC (and the AIs in them) run in a
+separate background process of their own rather than inside the app. Closing the
+window, quitting the app, updating it, or the app closing unexpectedly does not stop
+them: when the app starts again, each tab comes back to the same terminal, with its
+screen, and what the AI there asks of the app through `shikisha` reaches the app
+that is running now. Quitting says how many terminals go on running; to stop them,
+answer **No** (stop every terminal and AI, then quit) there. The first time a
+terminal is opened this way, a card in the left column says the same, once.
+
+Turned off, terminals opened from then on run inside the app and stop when it
+quits. Those opened while it was on and still running go on running (their tabs
+come back to the same terminals, so the same AI never runs twice); under the
+setting, how many there are is shown with a **Stop them** button. Restarting a tab
+moves it into the app.
+
+Keeping the PC awake (Settings › Basic › Keep the PC awake) goes on applying to the
+terminals left running after the app quits. With "While an AI is working", that
+lasts until the terminal of an AI that was working when the app quit has shown
+nothing for 10 minutes.
+
 The Store copy is the exception for updates: installing an update from the Store
 closes the background process too, and the tabs then come back on their
-conversations as they do without this setting.
+conversations as they do without this setting. The setting says so too.

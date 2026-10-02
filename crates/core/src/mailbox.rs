@@ -123,6 +123,9 @@ pub struct Mailbox {
     /// The update card was pressed: open the settings' Update card, or just
     /// put the card away
     pub update_card: Option<bool>,
+    /// The card about terminals that keep running after the app is closed
+    /// was put away
+    pub keep_notice_done: bool,
     /// The `?` beside the gear was pressed
     pub help_site: bool,
     /// "How to install it" was pressed on a tab that could not start
@@ -471,6 +474,9 @@ impl Mailbox {
     }
     pub fn take_update_card(&mut self) -> Option<bool> {
         self.update_card.take()
+    }
+    pub fn take_keep_notice(&mut self) -> bool {
+        std::mem::take(&mut self.keep_notice_done)
     }
     pub fn take_install_help(&mut self) -> bool {
         std::mem::take(&mut self.install_help)

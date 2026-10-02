@@ -1024,8 +1024,10 @@ pub struct Config {
     /// Whether this PC's terminals are held by a resident process of their
     /// own, so that what runs in them goes on when the app is quit, updated,
     /// or gone in a crash, and the app finds them again when it starts
-    /// (the local-keeper plan). Unset is "no", and shown as "no"; it applies
-    /// to tabs opened after it is set
+    /// (the local-keeper plan). Unset is "yes", and shown as "yes" (the
+    /// settings write only a "no"); it applies to tabs opened after it is set.
+    /// A tab whose terminal the resident process already holds goes back to
+    /// it whatever this says: the setting decides where new ones start
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_terminals: Option<bool>,
     /// When to keep this PC from going to sleep: "off" (the default), "ai"

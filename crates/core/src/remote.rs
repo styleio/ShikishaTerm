@@ -303,6 +303,10 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // nothing; it opens the settings' Update card, which the phone reaches
         // as /cfg, or puts the card away
         Ev::Update { .. } => true,
+        // Putting away the card that says this PC's terminals keep running
+        // after the app is closed. It is drawn on the phone too, and the
+        // settings it points at are /cfg there
+        Ev::KeepNotice => true,
         // Putting away a tab's usage-limit notice. Reading it is the whole act
         Ev::LimitAck { .. } => true,
         // When to keep the PC up. A person away from the PC is exactly who

@@ -2381,6 +2381,11 @@ pub struct UiState {
     /// its button leads
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thanks: Option<String>,
+    /// The card that says, once, that this PC's terminals keep running after
+    /// the app is closed, while it is up: told to people who never chose the
+    /// setting, when the first terminal is held that way
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_notice: bool,
     /// The newer version the update card asks about, when it is up. Answered
     /// once, either way, and not shown again for that version
     #[serde(default, skip_serializing_if = "Option::is_none")]

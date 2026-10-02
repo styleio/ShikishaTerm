@@ -620,6 +620,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         branch_next: crate::webui::branch_next(),
         assistant: ui.assistant.clone(),
         thanks: ui.thanks.clone(),
+        keep_notice: ui.keep_notice,
         update: ui.update.clone(),
         usage: ui.usage.clone(),
         awake: ui.awake.clone(),
@@ -1848,6 +1849,9 @@ pub struct Ui {
     pub awake: Option<crate::uistate::AwakeState>,
     /// The thanks card, when it is up: which page it would open
     pub thanks: Option<String>,
+    /// The card that says, once, that this PC's terminals keep running after
+    /// the app is closed, while it is up
+    pub keep_notice: bool,
     /// The newer version the update card asks about, when it is up
     pub update: Option<crate::update::Offer>,
     /// Where each git tab's folder pushes to on GitHub (`owner/name`), looked

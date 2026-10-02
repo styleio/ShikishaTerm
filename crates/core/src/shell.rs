@@ -4951,6 +4951,21 @@ function drawTabs() {
         el("button", {class:"quiet", onclick:() => send({kind:"thanks", open:false})},
           T["tui.thanks.close"] || ""))));
   }
+  // Once on this machine, when a terminal is first held by this PC's
+  // resident process for somebody who never chose the setting: closing the
+  // app no longer stops what runs in its terminals, said in so many words,
+  // with the way to change it a press away. Drawn on the phone too: the
+  // settings it opens are /cfg there
+  if (S.keep_notice) {
+    nav.append(el("div", {class:"thanks keepnote"},
+      el("div", {class:"tt"}, T["tui.keep.title"] || ""),
+      el("div", {class:"tb"}, T["tui.keep.body"] || ""),
+      el("div", {class:"tr"},
+        el("button", {class:"go", onclick:() => send({kind:"keepnotice"})},
+          T["tui.keep.ok"] || ""),
+        el("button", {class:"quiet", onclick:() => { send({kind:"keepnotice"}); openSettings("basic"); }},
+          T["tui.keep.settings"] || ""))));
+  }
   // Once per newer version: a card that says one is out. Both of its
   // buttons lead to the same place or nowhere -- the settings' Update card,
   // where the one button that fetches and installs is, or the card is put

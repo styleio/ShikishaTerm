@@ -15,9 +15,15 @@ once it reaches its first tagged release.
   quitting the app, updating it, or the app closing unexpectedly leaves them
   running; when the app starts again each tab is back on the same terminal,
   screen and all, and a `shikisha` command in it reaches the app running now.
-  Quitting and answering "No" stops every AI and the background process. Off
-  unless turned on. The Store copy keeps its terminals across quitting and
-  crashes, but not across a Store update.
+  Quitting and answering "No" stops every AI and the background process. On
+  unless turned off (shown as on; only an "off" is written), and said once on
+  the board the first time a terminal is held that way, with the setting a
+  press away. Quitting says how many of this PC's terminals go on. Turned off,
+  new terminals run inside the app, terminals still held are gone back to
+  rather than started twice, and the setting shows how many still run with a
+  button that stops them. "Keep the PC awake" goes on applying to them after
+  the app quits. The Store copy keeps its terminals across quitting and
+  crashes, but not across a Store update, and its setting says so.
 - **A new worktree no longer takes an AI tool's own working places with it.**
   Claude Code's `.claude/worktrees/` (its helpers' whole checkouts),
   `.claude/checkpoints/`, `.claude/mailbox/`, and the files where it
@@ -36,6 +42,23 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **A terminal this PC's background process holds reads as "working in the
+  background" after the app starts again.** The new app was told nothing of
+  the terminal's processes until they changed, and then learned a server
+  already running behind the prompt as part of the program itself; the
+  processes are now told to whichever app attaches, with what the app before
+  learned of the program at rest.
+- **Stopping the held terminals does not start the background process again.**
+  Tabs whose terminals were stopped read as ended at once, instead of waiting
+  for a line to a process that was told to go.
+- **Calling off a quit no longer keeps a MicroVM running.** The quit question
+  used to ask E2B to keep each MicroVM up before it was even shown, so
+  "Cancel" left the machine extended and a slow line held the question back.
+  It now only says how long each will go on; the machines are kept up once
+  the quit is chosen, all at once and for at most 15 seconds, and when each
+  pauses is left on a banner. Cut short by the account, not done, or not
+  answered in time, the question comes back once with what happened, before
+  anything stops.
 - **A file on this PC opened in a browser tab can no longer reach outside its
   folder through a link.** A link named `index.html` in a shared folder, or a
   name swapped for a link between the check and the opening, served whatever

@@ -193,7 +193,7 @@ pub fn ask_quit(ask: &crate::host::QuitAsk) -> crate::host::Quit {
     }
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let (body, title) = (wide(&ask.words()), wide("SHIKISHA-TERM"));
-    let three = !ask.kept.is_empty();
+    let three = ask.goes_on();
     let answered = unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
@@ -207,7 +207,7 @@ pub fn ask_quit(ask: &crate::host::QuitAsk) -> crate::host::Quit {
         (IDNO, true) => Quit::StopAll,
         _ => Quit::No,
     };
-    crate::append_hook_log(&format!("quit asked ({} at work, kept {:?}): {quit:?}", ask.busy, ask.kept));
+    crate::append_hook_log(&format!("quit asked ({} at work, kept {:?}, {} on this PC): {quit:?}", ask.busy, ask.kept, ask.here));
     quit
 }
 
