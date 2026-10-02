@@ -12,12 +12,14 @@
  *     node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-servers.mjs
  *     node tools/debug/settings-shoot.mjs <scenes.mjs> --only <scene>
  *
- * A scene file default-exports { config, scenes, langs, looks, sizes }:
+ * A scene file default-exports { config, scenes, langs, looks, sizes, init }:
  * `config` is the settings to start from, and each scene is the JavaScript
  * that puts the page into the state being judged (it may return a promise).
  * A scene may instead be `{ query, run }`: the page is opened with `query`
  * added to its address, the way the board opens it on one place, and `run`
  * (optional) is the JavaScript.
+ * `init` runs before the page's scripts, for fixtures that must not reach the
+ * machine's real sign-ins. Other requests still go to the isolated server.
  *
  * Needs Chrome and cargo. The light scheme's colours are laid over the page
  * the way page_dump lays them, so the machine's own scheme does not decide it.
@@ -118,6 +120,7 @@ const sizes = spec.sizes || [['wide', 1280, 860], ['phone', 390, 820]];
 const light = looks.includes('light') ? lightColours() : '';
 const chrome = await connect();
 await chrome.send('Page.enable');
+if (spec.init) await chrome.send('Page.addScriptToEvaluateOnNewDocument', { source: spec.init });
 let taken = 0;
 for (const lang of langs) {
   const server = await serve(lang, spec.config || {});

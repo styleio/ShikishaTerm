@@ -152,7 +152,7 @@ fn target_with(
             if spec.host() != crate::config::GITHUB_HOST {
                 bail!(AccountTrouble(crate::i18n::tp(
                     "err.github.host",
-                    &[("name", &spec.name), ("host", &spec.host())]
+                    &[("name", spec.shown()), ("host", &spec.host())]
                 )));
             }
             spec.token(look).ok_or_else(|| AccountTrouble(spec.no_token_said()))?

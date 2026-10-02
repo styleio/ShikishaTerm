@@ -919,7 +919,7 @@ fn far_of(
     let account = match &git {
         config::GitUse::Unset | config::GitUse::Pc(None) => i18n::t("tui.branch.signin.pc"),
         config::GitUse::Pc(Some(login)) | config::GitUse::Gh { login, .. } => login.clone(),
-        config::GitUse::Account { spec } => spec.name.clone(),
+        config::GitUse::Account { spec } => spec.shown().to_string(),
         config::GitUse::Missing(n) => n.clone(),
     };
     let sign_in = match host.is_made() {
@@ -6277,7 +6277,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .iter()
                         .map(|a| crate::uistate::GitAccountChoice {
                             name: a.name.clone(),
-                            label: a.label.as_deref().map(str::trim).filter(|l| !l.is_empty()).unwrap_or(&a.name).to_string(),
+                            label: a.shown().to_string(),
                             owners: a.owners.iter().map(|o| o.trim().to_ascii_lowercase()).collect(),
                         })
                         .collect()

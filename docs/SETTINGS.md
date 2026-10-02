@@ -60,11 +60,14 @@ Assistant AI, deciding AI, connections, agreements
 
 - **Model**
 
-### Git accounts
+### GitHub / Git
 
-Tokens, and the sign-ins of this PC's git and gh
+Personal access tokens, SSH keys and sign-ins
 
 - **Token**
+
+**GitHub CLI (gh)**
+
 - **Display name**
 
 ### Worktrees
@@ -306,9 +309,9 @@ Worktree creation rules, name and checkout, git account, protected branches, wha
 - **On other machines**
 - **Repository**
 
-**Git account**
+**Git authentication**
 
-- **Account to use**
+- **Authentication**
 - **Delete this project** — The working folders and tabs stay. Only their tie to this project goes
 
 **Worktree Creation Rules**

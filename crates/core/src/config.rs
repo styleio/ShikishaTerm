@@ -320,6 +320,11 @@ pub const GITHUB_HOST: &str = "github.com";
 pub const GH_METHOD: &str = "gh";
 
 impl GitAccountSpec {
+    /// The human name, independent of the stable key projects and secrets use.
+    pub fn shown(&self) -> &str {
+        self.label.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(&self.name)
+    }
+
     pub fn host(&self) -> String {
         self.host
             .as_deref()
@@ -354,8 +359,8 @@ impl GitAccountSpec {
     /// with `gh`, the rest with a token put in the settings
     pub fn no_token_said(&self) -> String {
         match self.is_gh() {
-            true => crate::i18n::tp("err.git.account.gh_signed_out", &[("name", &self.name), ("host", &self.host())]),
-            false => crate::i18n::tp("err.git.account.no_token", &[("name", &self.name)]),
+            true => crate::i18n::tp("err.git.account.gh_signed_out", &[("name", self.shown()), ("host", &self.host())]),
+            false => crate::i18n::tp("err.git.account.no_token", &[("name", self.shown())]),
         }
     }
 
@@ -411,7 +416,7 @@ impl GitUse {
             GitUse::Unset | GitUse::Pc(None) => crate::i18n::t("git.who.pc"),
             GitUse::Pc(Some(login)) => crate::i18n::tp("git.who.pc_as", &[("login", login)]),
             GitUse::Gh { login, .. } => crate::i18n::tp("git.who.gh", &[("login", login)]),
-            GitUse::Account { spec } => crate::i18n::tp("git.who.account", &[("name", &spec.name)]),
+            GitUse::Account { spec } => crate::i18n::tp("git.who.account", &[("name", spec.shown())]),
             GitUse::Missing(name) => crate::i18n::tp("git.who.account", &[("name", name)]),
         }
     }
@@ -463,7 +468,7 @@ impl GitUse {
                         if key.is_empty() || !std::path::Path::new(&key).is_file() {
                             return Err(crate::i18n::tp(
                                 "err.git.account.no_key",
-                                &[("name", &spec.name), ("path", &key)],
+                                &[("name", spec.shown()), ("path", &key)],
                             ));
                         }
                         crate::git::Auth::Ssh { key: key.into() }
@@ -479,7 +484,7 @@ impl GitUse {
                 };
                 Ok(crate::git::As {
                     auth,
-                    account: Some(spec.name.clone()),
+                    account: Some(spec.shown().to_string()),
                     name: some(&spec.user_name),
                     email: some(&spec.user_email),
                 })
@@ -504,7 +509,7 @@ impl GitUse {
             GitUse::Gh { host, login } => Ok(FarSignIn::Gh { host: host.clone(), login: login.clone() }),
             GitUse::Missing(name) => Err(crate::i18n::tp("err.git.account.missing", &[("name", name)])),
             GitUse::Account { spec } if spec.is_ssh() => {
-                Err(crate::i18n::tp("err.microvm.key_account", &[("name", &spec.name)]))
+                Err(crate::i18n::tp("err.microvm.key_account", &[("name", spec.shown())]))
             }
             GitUse::Account { spec } => {
                 let token = spec.token(look).ok_or_else(|| spec.no_token_said())?;
@@ -7952,6 +7957,27 @@ mod tests {
         assert_eq!(super::backspace_first(keys(&["esc", "enter"])), keys(&["backspace", "esc", "enter"]));
     }
 
+
+    #[test]
+    fn token_names_can_change_without_changing_credentials_or_project_choices() {
+        let mut spec = super::GitAccountSpec {
+            name: "git-stable-key".into(), label: Some("VM token 日本語".into()),
+            login: Some("octocat".into()), ..Default::default()
+        };
+        let look = |key: &str| (key == "git/git-stable-key").then(|| "saved-token".to_string());
+        for label in ["VM token 日本語", "Renamed token"] {
+            spec.label = Some(label.into());
+            let chosen = super::GitUse::Account { spec: spec.clone() };
+            assert_eq!(chosen.written(), "git-stable-key");
+            assert_eq!(spec.token(&look).as_deref(), Some("saved-token"));
+            assert_eq!(chosen.to_git(true, &look).unwrap().account.as_deref(), Some(label));
+            assert!(chosen.who().contains(label));
+            assert!(spec.no_token_said().contains(label));
+            assert!(!spec.no_token_said().contains("git-stable-key"));
+        }
+        spec.label = Some("  ".into());
+        assert_eq!(spec.shown(), "git-stable-key");
+    }
 
     fn accounts_desk() -> super::Desk {
         let spec = |name: &str, host: Option<&str>, owners: &[&str]| super::GitAccountSpec {

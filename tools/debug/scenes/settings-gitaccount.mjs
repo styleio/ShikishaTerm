@@ -18,7 +18,7 @@ const REPO = path.resolve(import.meta.dirname, '..', '..', '..').replaceAll('\\'
 const wait = (ms) => 'new Promise(r => setTimeout(r, ' + ms + '))';
 // The project's page, waited for: the account card appears once the app has
 // answered what repository the folder belongs to
-const projectPage = '(async () => { sel = {desk:0, proj:"p:ShikishaTerm", grp:null, tab:null, global:false};'
+const projectPage = '(async () => { sel = {desk:0, proj:"p:ShikishaTerm", grp:null, tab:null, global:false, psection:"basic"};'
   + ' render(); await ' + wait(900) + ';'
   + ' const c = document.getElementById("project-gitacct");'
   + ' if (!c) throw new Error("the account card is not on the project page");'
