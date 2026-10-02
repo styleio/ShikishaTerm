@@ -13694,8 +13694,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // This PC's resident process, when everything is to stop: told to end
     // what it holds and go, rather than keep the ended terminals' codes for a
     // start that is not coming (local-keeper plan §4)
-    if stop_all.get() {
-        crate::localkeep::end();
+    if stop_all.get()
+        && let Err(e) = crate::localkeep::end()
+    {
+        append_hook_log(&format!("this PC's resident process: could not be told to stop on the way out: {e:#}"));
     }
     // Every bridge is told this app is going: what the tabs there ask from
     // now on is answered at once that the PC is away (far-keep plan §4.6)

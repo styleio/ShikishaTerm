@@ -757,6 +757,15 @@ pub fn step(
     if a.answered {
         return line_step(a, target);
     }
+    // The tab gave its answer and is saying its line. The answer is the reply
+    // kept as its turn first ended, whatever it says next -- its line said
+    // already, or the tab closed since -- and it goes to the caller at once:
+    // the line is for the chat, and nobody waits on it. The ask stays for the
+    // line (`line_step`)
+    if a.held.is_some() && !a.answered {
+        a.answered = true;
+        return Step::Answer(answer(a, "DONE", a.held.as_deref(), "record", same_folder, None));
+    }
     let Some(t) = target else {
         return Step::Answer(answer(
             a,
@@ -802,14 +811,6 @@ pub fn step(
             ));
         }
         return Step::Nothing;
-    }
-    // The tab gave its answer and is saying its line. The answer is the reply
-    // kept as its turn first ended, whatever it says next, and it goes to the
-    // caller at once: the line is for the chat, and nobody waits on it. The
-    // ask stays for the line (`line_step`)
-    if a.held.is_some() && !a.answered {
-        a.answered = true;
-        return Step::Answer(answer(a, "DONE", a.held.as_deref(), "record", same_folder, None));
     }
     // Sent: watch it work
     if t.state != TabState::Busy {
@@ -1242,6 +1243,27 @@ mod tests {
         assert_eq!(a.hear_stop("Read it: ABC.", 80), Hear::Line("Read it: ABC.".into()));
         assert!(!a.owes_line());
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
+    }
+
+    #[test]
+    fn the_answer_kept_is_passed_on_even_when_the_line_or_the_closing_came_first() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Busy;
+        // The stop hook's calls are served before the asks are stepped: the
+        // line can be heard before the answer has gone anywhere
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        assert_eq!(a.hear_stop("Read it: ABC.", 80), Hear::Line("Read it: ABC.".into()));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the answer was not passed on") };
+        assert_eq!(v["reply"].as_str(), Some("The memo says ABC."), "the line was taken for the answer");
+        assert!(!a.owes_line(), "nothing left to wait for");
+        // The tab closed between giving its answer and the next look: the
+        // answer it gave still goes, not "the tab was closed"
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        let Step::Answer(v) = step(&mut a, None, false, None, true) else { panic!("the answer was not passed on") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The memo says ABC.")));
+        assert!(matches!(step(&mut a, None, false, None, true), Step::Lined), "the closed tab says no line");
     }
 
     #[test]

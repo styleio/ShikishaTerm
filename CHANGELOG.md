@@ -47,6 +47,12 @@ once it reaches its first tagged release.
   seconds) lost the line the AI was saying for it, and the chat showed its
   first sentence in grey instead. The answer now goes to the asking AI the
   moment it is given, and the line is waited for on its own.
+- **Stopping this PC's held terminals says when it did not work.** A stop
+  that never reached the background process used to count as done, so its
+  terminals, still running, were let go of; they are now taken as stopped
+  only once the background process answers. Beside the setting, a stop that
+  failed says why and asks for another press, and a count that could not be
+  checked says so, with a button to check again.
 - **A terminal this PC's background process holds reads as "working in the
   background" after the app starts again.** The new app was told nothing of
   the terminal's processes until they changed, and then learned a server

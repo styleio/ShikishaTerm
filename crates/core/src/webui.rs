@@ -4136,8 +4136,11 @@ fn handle(
         // holds ends, the AIs in them with it, and the resident process goes
         ("POST", "/api/keeper/stop") => {
             std::thread::spawn(move || {
-                let stopped = crate::localkeep::stop_all();
-                let _ = req.respond(json_resp(serde_json::json!({ "ok": stopped })));
+                let body = match crate::localkeep::stop_all() {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                };
+                let _ = req.respond(json_resp(body));
             });
         }
         // What this machine already offers to open a tab on: the installed WSL
@@ -7697,20 +7700,30 @@ function keepTerminalsRow(packaged = PACKAGED) {
   const box = checkDefaultOn(current, "keep_terminals", T["settings.keep_terminals.label"]);
   const held = el("div", {class:"keepheld", hidden:true});
   let count = 0;
+  // Why the last press did not stop them, and whether the count could not be
+  // asked: said beside the row, with the way to try again, rather than left
+  // as a number nobody can trust
+  let failed = "";
+  let unknown = false;
   const draw = () => {
     held.replaceChildren();
-    held.hidden = !(count > 0 && current.keep_terminals === false);
+    held.hidden = !((count > 0 || failed || unknown) && current.keep_terminals === false);
     if (held.hidden) return;
-    held.append(
+    if (count > 0) held.append(
       el("span", {}, (T["settings.keep_terminals.held"] || "{n}").replaceAll("{n}", String(count))),
       el("button", {type:"button", onclick: async () => {
         const go = await confirmAction(
           (T["settings.keep_terminals.stop.ask"] || "{n}").replaceAll("{n}", String(count)),
           T["settings.keep_terminals.stop"]);
         if (!go) return;
+        failed = "";
         try {
-          await fetch("/api/keeper/stop", {method:"POST", headers:{"X-Token":TOKEN}});
-        } catch (e) {}
+          const j = await (await fetch("/api/keeper/stop", {method:"POST", headers:{"X-Token":TOKEN}})).json();
+          if (!j.ok) failed = j.error || "?";
+        } catch (e) {
+          failed = String(e && e.message || e);
+        }
+        if (failed) { await ask(); return; }
         // The resident process ends what it holds and then itself, which
         // takes a moment: asked again until the count says so
         for (let i = 0; i < 10 && count > 0; i++) {
@@ -7718,9 +7731,20 @@ function keepTerminalsRow(packaged = PACKAGED) {
           await ask();
         }
       }}, T["settings.keep_terminals.stop"]));
+    if (failed) held.append(el("span", {class:"hint warn"}, fill(T["settings.keep_terminals.stop.failed"], {why: failed})));
+    if (unknown) held.append(
+      el("span", {class:"hint warn"}, T["settings.keep_terminals.count_failed"]),
+      el("button", {type:"button", class:"quiet", onclick: () => ask()}, T["settings.keep_terminals.recheck"]));
   };
   const ask = () => fetch("/api/keeper", {headers:{"X-Token":TOKEN}})
-    .then(r => r.json()).then(j => { count = j.held || 0; draw(); }).catch(() => {});
+    .then(r => r.json()).then(j => {
+      count = j.held || 0;
+      unknown = false;
+      // None left running: whatever the last press said, they are stopped
+      if (!count) failed = "";
+      draw();
+    })
+    .catch(() => { unknown = true; draw(); });
   box.querySelector("input").addEventListener("change", draw);
   ask();
   const hints = [el("span", {class:"hint"}, T["settings.keep_terminals.hint"])];

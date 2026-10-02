@@ -174,7 +174,7 @@ fn connect_or(starting: bool) -> Result<Arc<Link>> {
             bail!("this PC's resident process is not there");
         }
         start(&home)?;
-        ENDED.store(false, std::sync::atomic::Ordering::SeqCst);
+        ENDING.store(NOT_ASKED, std::sync::atomic::Ordering::SeqCst);
     }
     let until = Instant::now() + UP_WAIT;
     while crate::fardaemon::probe(&door).is_none() {
@@ -227,25 +227,53 @@ fn start(home: &std::path::Path) -> Result<()> {
     }
 }
 
+/// How long the resident process is given to say it heard "end"
+const END_WAIT: Duration = Duration::from_secs(5);
+
 /// Ask this PC's resident process to end everything it holds and go
-/// ("stop all and quit"). `false` when there is no line to ask on
-pub fn end() -> bool {
-    let Some(l) = link() else { return false };
-    ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
-    let ok = l.call("end_resident", json!({}), Duration::from_secs(5)).is_ok();
-    crate::farlink::let_go_key(KEY);
-    ok
+/// ("stop all and quit"). An error when there is no line to ask on, or the
+/// asking did not get its answer: then nothing is taken to have ended, and
+/// the line is kept -- the terminals there may well still run
+pub fn end() -> Result<()> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let Some(l) = link() else { bail!("there is no line to this PC's resident process") };
+    // Asked before the call goes: the resident process answers and goes at
+    // once, and a tab that sees its line go in that moment must wait to hear
+    // how the asking ended (`ended_on_purpose`), not take the line's going
+    // for the answer
+    ENDING.store(ASKED, SeqCst);
+    match l.call("end_resident", json!({}), END_WAIT) {
+        Ok(_) => {
+            ENDING.store(ENDED, SeqCst);
+            crate::farlink::let_go_key(KEY);
+            Ok(())
+        }
+        Err(e) => {
+            ENDING.store(NOT_ASKED, SeqCst);
+            bail!("this PC's resident process did not answer \"end\": {e}")
+        }
+    }
 }
 
-/// This app asked the resident process to end everything it holds, and has
-/// not started one since: its terminals are over, and a tab whose line to it
-/// went does not wait for the line to come back
-static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Where asking the resident process to end everything it holds stands:
+/// not asked (or a new one started since), asked and not yet answered, or
+/// answered -- its terminals are over, and a tab whose line to it went does
+/// not wait for the line to come back
+static ENDING: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(NOT_ASKED);
+const NOT_ASKED: u8 = 0;
+const ASKED: u8 = 1;
+const ENDED: u8 = 2;
 
 /// Whether the resident process was ended on purpose (`end`) and none started
-/// since
+/// since. While the asking is still out, waits to hear how it ended: a line
+/// that went then is the answer's doing only if the answer was "ending"
 pub fn ended_on_purpose() -> bool {
-    ENDED.load(std::sync::atomic::Ordering::SeqCst)
+    use std::sync::atomic::Ordering::SeqCst;
+    let until = Instant::now() + END_WAIT + Duration::from_secs(1);
+    while ENDING.load(SeqCst) == ASKED && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ENDING.load(SeqCst) == ENDED
 }
 
 /// Let go of the line as the app goes, leaving what it holds running
@@ -267,14 +295,16 @@ pub fn held_count() -> usize {
 
 /// Stop every terminal the resident process holds, and the resident process
 /// with them: the person turned the setting off and asked for what it still
-/// holds to end (the button beside the setting). `false` when there was no
-/// resident process to ask
-pub fn stop_all() -> bool {
-    if connect_existing().is_err() {
-        return false;
-    }
+/// holds to end (the button beside the setting). An error, with why, when
+/// there was no resident process to ask or it did not answer
+pub fn stop_all() -> Result<()> {
+    connect_existing()?;
     crate::append_hook_log("this PC's resident process: asked to stop everything it holds, from the settings");
-    end()
+    let ended = end();
+    if let Err(e) = &ended {
+        crate::append_hook_log(&format!("this PC's resident process: could not be stopped: {e:#}"));
+    }
+    ended
 }
 
 #[cfg(all(test, windows))]
@@ -285,6 +315,28 @@ mod tests {
 
     fn b64(v: &Value) -> Vec<u8> {
         v.as_str().and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()).unwrap_or_default()
+    }
+
+    /// A line that went while "end" was out is the asking's doing only once
+    /// it was answered: unanswered, the terminals are not taken to be over
+    /// (they may still run, and the tab waits for its line instead)
+    #[test]
+    fn a_line_gone_while_end_is_asked_waits_for_the_answer() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for (answer, over) in [(ENDED, true), (NOT_ASKED, false)] {
+            ENDING.store(ASKED, SeqCst);
+            let said = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                ENDING.store(answer, SeqCst);
+            });
+            let asked_at = Instant::now();
+            assert_eq!(ended_on_purpose(), over);
+            assert!(asked_at.elapsed() >= Duration::from_millis(150), "it did not wait for the answer");
+            said.join().unwrap();
+        }
+        ENDING.store(NOT_ASKED, SeqCst);
+        assert!(end().is_err(), "with no line, nothing was asked and nothing is ended");
+        assert!(!ended_on_purpose());
     }
 
     /// The whole road on this PC: the resident process in a folder of its own
