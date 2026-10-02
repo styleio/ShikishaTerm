@@ -3719,7 +3719,15 @@ impl Tab {
         // plan), so that the program outlives this app: the person's own
         // program, on this PC, with the setting saying to keep this PC's
         // terminals. A model tab and a held one run nothing of the person's
-        let keep_here = local && opts.model.is_none() && opts.held.is_none() && crate::localkeep::wanted();
+        //
+        // With the setting off, a tab that left its terminal running there
+        // goes back to it all the same, while the resident process is there
+        // to hold it: starting it again here would run the same AI twice. The
+        // setting says where new terminals start (local-keeper plan §3)
+        let keep_here = local
+            && opts.model.is_none()
+            && opts.held.is_none()
+            && (crate::localkeep::wanted() || (crate::farterm::written_here(&uid) && crate::localkeep::is_there()));
         let pair = (local && !keep_here)
             .then(|| {
                 native_pty_system().openpty(PtySize {
@@ -5037,8 +5045,20 @@ impl Tab {
         const STARTING: std::time::Duration = std::time::Duration::from_secs(10);
         let busy = self.state == TabState::Busy || self.created.elapsed() < STARTING;
         let population = self.job_population(busy);
+        // A terminal this PC's resident process holds may have been at rest
+        // under an app before this one, which learned what its program is on
+        // its own and left that with the resident process: started again with
+        // work running behind the prompt, this app would learn that work as
+        // the program's own and never see it (local-keeper plan)
+        let held = self.far_term.as_ref().filter(|t| t.here()).cloned();
+        if self.job_rest.is_none() {
+            self.job_rest = held.as_ref().and_then(|t| t.rest());
+        }
         let (counted, rest) = crate::detect::background_now(population, busy, self.job_rest);
         self.job_rest = rest;
+        if let (Some(t), Some(n)) = (held, rest) {
+            t.learned_rest(n);
+        }
         // An AI that says for itself what it left running is believed over
         // the count of its tab's processes (`Aside::speaks`). Only while it is
         // the one in the tab: the shell it hands back to, in a tab it was

@@ -834,6 +834,7 @@ impl WinSurface {
                 Ev::RemoteCut => self.mail.remote_cut = true,
                 Ev::Coach { step } => self.mail.coach_done = Some(step),
                 Ev::Thanks { open } => self.mail.thanks = Some(open),
+                Ev::KeepNotice => self.mail.keep_notice_done = true,
                 Ev::Update { open } => self.mail.update_card = Some(open),
                 Ev::Help => self.mail.help_site = true,
                 Ev::InstallHelp { prog: None } => self.mail.install_help = true,

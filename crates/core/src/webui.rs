@@ -1888,6 +1888,7 @@ fn handle(
                     ("__HOTKEYS__", js(crate::hotkeys::catalog_json())),
                     ("__QUICK__", js(quick_json())),
                     ("__REMOTE__", if remote_client { "true" } else { "false" }.to_string()),
+                    ("__PACKAGED__", if crate::config::packaged() { "true" } else { "false" }.to_string()),
                     ("__GRANTS__", js(crate::grants::catalog_json())),
                     (
                         "__GITLUA__",
@@ -4095,6 +4096,23 @@ fn handle(
                 let _ = req.respond(json_resp(serde_json::Value::Array(out)));
             });
         }
+        // How many terminals this PC's resident process still holds, for the
+        // line beside its setting (local-keeper plan §3). Off this thread: it
+        // may wait on the resident process
+        ("GET", "/api/keeper") => {
+            std::thread::spawn(move || {
+                let held = crate::localkeep::held_count();
+                let _ = req.respond(json_resp(serde_json::json!({ "held": held })));
+            });
+        }
+        // The person asked what it still holds to stop: every terminal it
+        // holds ends, the AIs in them with it, and the resident process goes
+        ("POST", "/api/keeper/stop") => {
+            std::thread::spawn(move || {
+                let stopped = crate::localkeep::stop_all();
+                let _ = req.respond(json_resp(serde_json::json!({ "ok": stopped })));
+            });
+        }
         // What this machine already offers to open a tab on: the installed WSL
         // distributions and the hosts in the person's own ssh config. Both were
         // things the settings screen asked people to type from memory
@@ -5244,6 +5262,10 @@ const PAGE: &str = r##"<!doctype html>
     claiming the row's label column. */
  .row > label.beside { width:auto; }
  .hint { color:var(--faint); font-size:11.5px; }
+ /* The terminals the resident process still holds, under its setting: a fact
+    and the press that ends them, on one line that wraps */
+ .keepheld { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s3); font-size:12px; color:var(--text); }
+ .keepheld[hidden] { display:none; }
  /* A hint that is good news rather than an instruction */
  .hint.ok { color:var(--accent); }
  /* The line a tab will really be launched with. It wraps rather than scrolls:
@@ -5895,6 +5917,10 @@ const TOKEN = "__TOKEN__";
 // dialogs (folder/file pickers, export/import) open a window on the PC instead
 // of here, so the buttons that would summon one are left out entirely
 const REMOTE = __REMOTE__;
+// True when the app was installed from the Microsoft Store: an update there
+// closes everything of the app's, the terminals kept running included, and
+// the settings say so where it matters
+const PACKAGED = __PACKAGED__;
 // True when this page is not a screen of its own but a dialog: a frame the
 // board placed over itself (?embed=1), which is how a browser puts a page
 // over the board the way the window places one. The way out is a word to the
@@ -7620,6 +7646,50 @@ function stayAwakeChoice() {
   if (!current.stay_awake) s.value = "off";
   return s;
 }
+// "Terminals on this PC": on unless somebody turned it off, and said to be on
+// (checkDefaultOn shows the value; only an "off" is written). Under it, while
+// it is off and the resident process still holds terminals started while it
+// was on, how many, and the one press that ends them -- turning the setting
+// off is about where new terminals start, and the ones running are somebody's
+// work, so they are neither cut off silently nor left without a way to stop
+// them (local-keeper plan §3). A Store install is told that an update closes
+// them: the package's processes are ended for an update, these among them
+function keepTerminalsRow(packaged = PACKAGED) {
+  const box = checkDefaultOn(current, "keep_terminals", T["settings.keep_terminals.label"]);
+  const held = el("div", {class:"keepheld", hidden:true});
+  let count = 0;
+  const draw = () => {
+    held.replaceChildren();
+    held.hidden = !(count > 0 && current.keep_terminals === false);
+    if (held.hidden) return;
+    held.append(
+      el("span", {}, (T["settings.keep_terminals.held"] || "{n}").replaceAll("{n}", String(count))),
+      el("button", {type:"button", onclick: async () => {
+        const go = await confirmAction(
+          (T["settings.keep_terminals.stop.ask"] || "{n}").replaceAll("{n}", String(count)),
+          T["settings.keep_terminals.stop"]);
+        if (!go) return;
+        try {
+          await fetch("/api/keeper/stop", {method:"POST", headers:{"X-Token":TOKEN}});
+        } catch (e) {}
+        // The resident process ends what it holds and then itself, which
+        // takes a moment: asked again until the count says so
+        for (let i = 0; i < 10 && count > 0; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          await ask();
+        }
+      }}, T["settings.keep_terminals.stop"]));
+  };
+  const ask = () => fetch("/api/keeper", {headers:{"X-Token":TOKEN}})
+    .then(r => r.json()).then(j => { count = j.held || 0; draw(); }).catch(() => {});
+  box.querySelector("input").addEventListener("change", draw);
+  ask();
+  const hints = [el("span", {class:"hint"}, T["settings.keep_terminals.hint"])];
+  if (packaged) hints.push(el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"]));
+  const r = row(T["settings.keep_terminals"], box, ...hints, held);
+  r.classList.add("keeprow");
+  return r;
+}
 function basicCard() {
   return card(T["settings.tab.basic"],
     row(T["settings.tabbar_width"], field(current, "tab_bar_width", T["settings.tab.automation_dir.ph"], {type:"number", width:110, grow:false}),
@@ -7638,8 +7708,7 @@ function basicCard() {
         el("span", {class:"hint"}, T["settings.confirm_worktree_delete.hint"])),
     row(T["settings.resident"], checkDefaultOn(current, "resident", T["settings.resident.label"]),
         el("span", {class:"hint"}, T["settings.resident.hint"])),
-    row(T["settings.keep_terminals"], check(current, "keep_terminals", T["settings.keep_terminals.label"]),
-        el("span", {class:"hint"}, T["settings.keep_terminals.hint"])),
+    keepTerminalsRow(),
     // Directly under the ✕, because the ✕ is what it changes the meaning of:
     // one asks what closing the window costs, the other asks whether the
     // window is the program at all
@@ -19075,6 +19144,22 @@ mod tests {
             "the dialog adds a tab to a group with nowhere to work and asks nothing");
     }
 
+    /// "Terminals on this PC" is on unless turned off (only an "off" is
+    /// written), and the line saying a Store update stops the kept terminals is
+    /// drawn for a Store install and only for one: the page is told which it
+    /// is by the server, and a test run is no Store install
+    #[test]
+    fn the_terminals_setting_is_on_and_tells_a_store_install_about_updates() {
+        let row = PAGE.split("function keepTerminalsRow(").nth(1).and_then(|r| r.split("\nfunction ").next()).unwrap_or_default();
+        assert!(row.contains(r#"checkDefaultOn(current, "keep_terminals""#), "the setting is not on unless turned off: {row}");
+        assert!(row.contains(r#"if (packaged) hints.push(el("span", {class:"hint keepstore"}, T["settings.keep_terminals.store"]));"#), "{row}");
+        assert!(PAGE.contains("function keepTerminalsRow(packaged = PACKAGED)"), "the row does not ask the page whether it is a Store install");
+        assert!(PAGE.contains("const PACKAGED = __PACKAGED__;"));
+        assert!(!crate::config::packaged(), "a test run is a Store install?");
+        let served = fill_page("const PACKAGED = __PACKAGED__;", &[("__PACKAGED__", if crate::config::packaged() { "true" } else { "false" }.to_string())]);
+        assert_eq!(served, "const PACKAGED = false;");
+    }
+
     /// The settings screen's script is JavaScript a browser can actually parse.
     ///
     /// It is one script, so one syntax error anywhere in it takes the whole
@@ -19090,6 +19175,7 @@ mod tests {
         let html = crate::i18n::render(&themed(PAGE.to_string()))
             .replace("__TOKEN__", "t")
             .replace("__REMOTE__", "false")
+            .replace("__PACKAGED__", "false")
             .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
             .replace("__QUICK__", &quick_json())
             .replace("__DICT__", "{}")
@@ -19169,6 +19255,7 @@ mod tests {
             let html = crate::i18n::render(&themed(page.to_string()))
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
+                .replace("__PACKAGED__", "false")
                 .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")

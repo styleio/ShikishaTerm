@@ -2487,6 +2487,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
     let mut thanks_asked = config::state_path("thanks-asked").exists();
+    // Whether this machine has been told, once, that its terminals now keep
+    // running after the app is closed (the setting became on unless turned
+    // off, 2026-10-02), and whether the card saying so is up
+    let mut keep_told = config::state_path("keep-told").exists();
+    let mut keep_show = false;
     // Whether this machine has been told what a tab that was opened as a shell
     // does not do with the conversation an AI started in it
     let mut guest_told = config::state_path("guest-told").exists();
@@ -5297,8 +5302,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .filter(|t| t.far_term.as_ref().is_some_and(|f| f.here()))
                     .filter_map(|t| t.far_key.clone().map(|k| (t.uid().to_string(), k)))
                     .collect();
+                // The first time a terminal is held that way for somebody who
+                // never chose the setting, say once what that means: closing
+                // the app no longer stops it (local-keeper plan §3)
+                if !keep_told
+                    && !keep_show
+                    && !here.is_empty()
+                    && cfg.as_ref().and_then(|c| c.keep_terminals).is_none()
+                {
+                    keep_show = true;
+                }
                 if !here.is_empty() {
                     std::thread::spawn(move || crate::localkeep::give_keys(here));
+                }
+                // And when to keep the PC up while it holds them: the setting,
+                // and which of its terminals an AI is working in now. Said
+                // while the app runs, so the setting goes on applying once it
+                // is gone (local-keeper plan §3)
+                if crate::localkeep::link().is_some() {
+                    let working: Vec<u64> = tabs
+                        .iter()
+                        .chain(desk_tabs.iter().flatten())
+                        .filter(|t| t.is_ai() && t.state == TabState::Busy)
+                        .filter_map(|t| t.far_term.as_ref().filter(|f| f.here()).map(|f| f.term_id()))
+                        .filter(|id| *id != 0)
+                        .collect();
+                    let mode = stay_awake.key();
+                    std::thread::spawn(move || crate::farterm::tell_awake(mode, &working));
                 }
                 bridges.agreed_now(&agreed, &hosts, &awake);
                 bridges.sweep(stray);
@@ -5617,6 +5647,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // the phone: the same fields the window's presses fill
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Update { open }) => {
                         shell.mail().update_card = Some(open);
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::KeepNotice) => {
+                        shell.mail().keep_notice_done = true;
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Coach { step }) => {
                         shell.mail().coach_done = Some(step);
@@ -6155,6 +6188,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 cannot: awake.cannot(),
             }),
             thanks: thanks_show.then(|| thanks_kind.to_string()),
+            keep_notice: keep_show,
             update: update::ask(),
             close_ask: close_ask.clone(),
             hook_ask: hook_ask.clone(),
@@ -12597,6 +12631,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             thanks_asked = true;
             let _ = crate::crypto::write_atomic(&config::state_path("thanks-asked"), "1");
         }
+        // Told once, whichever button: the settings, if that was the press,
+        // were opened by the page itself
+        if shell.mail().take_keep_notice() {
+            keep_show = false;
+            keep_told = true;
+            let _ = crate::crypto::write_atomic(&config::state_path("keep-told"), "1");
+        }
         // The ? beside the gear. It used to open the manual on the site;
         // now it opens something that answers, and the manual is a line
         // inside it. Pressing it again puts it away
@@ -18100,7 +18141,12 @@ pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
     // go on for. Only written down here: the service is asked once the quit
     // is chosen (`keep_up_after_quit`), never while the question is open
     let mut machines: std::collections::BTreeMap<String, (String, u32)> = Default::default();
+    let mut here = 0;
     for t in tabs.iter().chain(parked.iter().flatten()).filter(|t| t.kept_away() && !t.exited()) {
+        if t.far_term.as_ref().is_some_and(|f| f.here()) {
+            here += 1;
+            continue;
+        }
         let host = t.kept_where();
         *kept.entry(host.clone()).or_default() += 1;
         if let (Some(crate::elsewhere::Elsewhere::Cloud(h)), Some(minutes)) = (t.machine(), t.kept_minutes())
@@ -18116,7 +18162,7 @@ pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
         .iter()
         .map(|m| i18n::tp("msg.quit.kept_plan", &[("host", &m.host), ("n", &m.minutes.to_string())]))
         .collect();
-    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect(), notes, machines }
+    crate::host::QuitAsk { busy: quit_busy(tabs, parked), kept: kept.into_iter().collect(), here, notes, machines }
 }
 
 /// What came of keeping one MicroVM up as the app went
@@ -18341,6 +18387,7 @@ mod quit_keep_up_tests {
     fn two_machines() -> QuitAsk {
         QuitAsk {
             busy: 0,
+            here: 0,
             kept: vec![("vm-a".into(), 1), ("vm-b".into(), 2)],
             notes: vec!["plan".into()],
             machines: vec![

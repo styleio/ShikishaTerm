@@ -107,10 +107,20 @@ pub fn give_keys(keys: Vec<(String, String)>) {
     }
 }
 
-/// Whether this PC's terminals are to be held by it: the person said so
-/// (`keep_terminals`), and this is a system it runs on
+/// Whether this PC's terminals are to be held by it: the setting
+/// (`keep_terminals`) says so -- unset is yes, as the person decided
+/// 2026-10-02 (local-keeper plan §3) -- and this is a system it runs on
 pub fn wanted() -> bool {
-    cfg!(windows) && crate::config::load().and_then(|c| c.keep_terminals).unwrap_or(false)
+    if !cfg!(windows) {
+        return false;
+    }
+    let set = crate::config::load().and_then(|c| c.keep_terminals);
+    // This crate's own tests start tabs with no settings at all, to test the
+    // tab; a resident process there would be a second program under test
+    if cfg!(test) {
+        return set == Some(true);
+    }
+    set.unwrap_or(true)
 }
 
 /// Make the line on a thread of its own, unless it is up or being made: a
@@ -122,8 +132,14 @@ pub fn connect_soon() {
     if link().is_some() || MAKING.swap(true, Ordering::SeqCst) {
         return;
     }
+    // With the setting off, one that is there is gone back to, and none is
+    // started: a terminal of a resident process that was stopped is over
+    if !wanted() && !is_there() {
+        MAKING.store(false, Ordering::SeqCst);
+        return;
+    }
     let _ = std::thread::Builder::new().name("this PC's resident process".into()).spawn(|| {
-        if let Err(e) = connect() {
+        if let Err(e) = connect_or(wanted()) {
             crate::append_hook_log(&format!("this PC's resident process: no line to it ({e:#})"));
         }
         MAKING.store(false, Ordering::SeqCst);
@@ -139,13 +155,26 @@ pub fn is_there() -> bool {
 /// -- starting the resident process first when nobody is at its door. Blocks
 /// until it has named itself; call from a thread
 pub fn connect() -> Result<Arc<Link>> {
+    connect_or(true)
+}
+
+/// The line to the resident process that is there, never starting one
+fn connect_existing() -> Result<Arc<Link>> {
+    connect_or(false)
+}
+
+fn connect_or(starting: bool) -> Result<Arc<Link>> {
     if let Some(l) = link() {
         return Ok(l);
     }
     let home = home()?;
     let door = keep_door()?;
     if matches!(crate::fardaemon::find(&door), crate::fardaemon::Found::Nobody) {
+        if !starting {
+            bail!("this PC's resident process is not there");
+        }
         start(&home)?;
+        ENDED.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     let until = Instant::now() + UP_WAIT;
     while crate::fardaemon::probe(&door).is_none() {
@@ -202,14 +231,50 @@ fn start(home: &std::path::Path) -> Result<()> {
 /// ("stop all and quit"). `false` when there is no line to ask on
 pub fn end() -> bool {
     let Some(l) = link() else { return false };
+    ENDED.store(true, std::sync::atomic::Ordering::SeqCst);
     let ok = l.call("end_resident", json!({}), Duration::from_secs(5)).is_ok();
     crate::farlink::let_go_key(KEY);
     ok
 }
 
+/// This app asked the resident process to end everything it holds, and has
+/// not started one since: its terminals are over, and a tab whose line to it
+/// went does not wait for the line to come back
+static ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the resident process was ended on purpose (`end`) and none started
+/// since
+pub fn ended_on_purpose() -> bool {
+    ENDED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Let go of the line as the app goes, leaving what it holds running
 pub fn let_go() {
     crate::farlink::let_go_key(KEY);
+}
+
+/// How many terminals the resident process holds that are still running,
+/// asked of it when it is there. Never starts one: a count is not a reason
+/// to have a resident process. Blocks for an answer; call off the loop
+pub fn held_count() -> usize {
+    if connect_existing().is_err() {
+        return 0;
+    }
+    crate::farterm::list_held(&crate::farterm::Place::Here)
+        .and_then(|m| m["terms"].as_array().map(|t| t.iter().filter(|t| t["ended"] == false).count()))
+        .unwrap_or(0)
+}
+
+/// Stop every terminal the resident process holds, and the resident process
+/// with them: the person turned the setting off and asked for what it still
+/// holds to end (the button beside the setting). `false` when there was no
+/// resident process to ask
+pub fn stop_all() -> bool {
+    if connect_existing().is_err() {
+        return false;
+    }
+    crate::append_hook_log("this PC's resident process: asked to stop everything it holds, from the settings");
+    end()
 }
 
 #[cfg(all(test, windows))]

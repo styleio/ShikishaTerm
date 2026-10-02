@@ -236,6 +236,11 @@ struct Term {
     /// The processes of its job last told to its owner
     #[cfg(windows)]
     pids_said: Mutex<Vec<u32>>,
+    /// How many of its processes are its program at rest, as the app that
+    /// owned it learned (0 until one did): kept here and handed to the next
+    /// owner, since an app that starts again while something runs behind the
+    /// prompt would otherwise learn that something as the program's own
+    rest: AtomicU64,
     /// The terminal's one queue out: what goes to the app, in the order put
     queue: Sender<(u64, Frame)>,
     /// How many bytes of output are in the queue, not yet sent
@@ -318,11 +323,51 @@ fn answer_before(before: &[Before], id: u64, generation: &str, tab: &str, runs: 
     })
 }
 
+/// How long a terminal an AI was last said to be working in may print
+/// nothing before it is no longer taken to be at work, for keeping the PC up.
+///
+/// While the app runs it says, every few seconds, which terminals have an AI
+/// at work; once it is gone that list stands as it was, and only the output
+/// is left to tell a turn still going from one that ended. The CLIs this app
+/// knows draw a moving mark for as long as a turn goes (the screen changes
+/// several times a second), so a silent terminal has finished or is waiting
+/// for somebody. Ten minutes is the margin for a program that thinks quietly
+/// before it writes -- far past any pause seen in a turn, and short enough
+/// that a laptop left behind is let sleep the same hour
+const QUIET_IS_DONE: Duration = Duration::from_secs(10 * 60);
+
+/// What keeps the PC up while this resident process holds terminals: the
+/// app's "keep awake" setting, and the terminals it said an AI is working in
+/// (local-keeper plan §3). Asked of the system from the resident process's
+/// own loop, so a crash or an end hands the PC back to its settings
+#[derive(Default)]
+struct Awake {
+    mode: crate::awake::Stay,
+    /// The terminals the app last said an AI is at work in
+    working: std::collections::HashSet<u64>,
+    /// Each terminal's output count and when it last moved
+    moved: HashMap<u64, (u64, Instant)>,
+    held: crate::awake::Awake,
+}
+
+/// Whether to keep the PC up, from what is known of the terminals held:
+/// each one's id, whether it still runs, and how long since its output last
+/// moved
+fn awake_wanted(mode: crate::awake::Stay, working: &std::collections::HashSet<u64>, terms: &[(u64, bool, Duration)]) -> bool {
+    use crate::awake::Stay;
+    match mode {
+        Stay::Off => false,
+        Stay::Always => terms.iter().any(|(_, runs, _)| *runs),
+        Stay::WhileAi => terms.iter().any(|(id, runs, quiet)| *runs && working.contains(id) && *quiet < QUIET_IS_DONE),
+    }
+}
+
 /// The job
 pub struct Terms {
     /// This resident process's generation: an id asked about under another
     /// was not given by this one
     generation: String,
+    awake: Mutex<Awake>,
     terms: Mutex<HashMap<u64, Arc<Term>>>,
     next: AtomicU64,
     /// The terminals the resident process before this one wrote down
@@ -344,6 +389,36 @@ impl Terms {
             next: AtomicU64::new(0),
             before,
             ended_written: AtomicU64::new(0),
+            awake: Mutex::default(),
+        }
+    }
+
+    /// Hold the PC up, or let it go, by the app's setting and what the
+    /// terminals are doing. Called from the resident process's loop, the one
+    /// thread that asks the system, every time round
+    fn tend_awake(&self, terms: &[(u64, Arc<Term>)]) {
+        let Ok(mut a) = self.awake.lock() else { return };
+        let now = Instant::now();
+        let mut known = Vec::with_capacity(terms.len());
+        for (id, term) in terms {
+            let runs = term.ended.lock().is_ok_and(|e| e.is_none());
+            let seq = term.seen.lock().map(|s| s.seq).unwrap_or(0);
+            let since = match a.moved.get(id) {
+                Some((was, at)) if *was == seq => *at,
+                _ => now,
+            };
+            a.moved.insert(*id, (seq, since));
+            known.push((*id, runs, now.duration_since(since)));
+        }
+        a.moved.retain(|id, _| terms.iter().any(|(t, _)| t == id));
+        let want = awake_wanted(a.mode, &a.working, &known);
+        if a.held.hold(want) {
+            crate::fardaemon::log(&format!(
+                "keep awake: {} ({}, {} terminals)",
+                if a.held.held() { "holding the PC up" } else if a.held.cannot() { "the system refused" } else { "letting it sleep" },
+                a.mode.key(),
+                known.iter().filter(|(_, runs, _)| *runs).count()
+            ));
         }
     }
 
@@ -490,6 +565,7 @@ impl Terms {
             _job: job,
             #[cfg(windows)]
             pids_said: Mutex::new(Vec::new()),
+            rest: AtomicU64::new(0),
             queue,
             queued: Arc::clone(&queued),
             next_owner: AtomicU64::new(0),
@@ -613,6 +689,14 @@ impl Terms {
         }
         let before = seen.owner.replace((line, owner));
         seen.left = None;
+        // A new owner has been told nothing of the terminal's processes:
+        // forgotten here, so the next look tells it (with what was learned of
+        // the program at rest). An app that started again counted nothing in
+        // the background until the processes next changed
+        #[cfg(windows)]
+        if let Ok(mut said) = term.pids_said.lock() {
+            said.clear();
+        }
         // The one attaching says what it is to do while nobody owns it
         if let Some(away) = Away::read(&m["away"]) {
             seen.away = away;
@@ -730,6 +814,15 @@ impl Job for Terms {
                 }
                 Err(no) => Some(no),
             },
+            // What its owner learned of the program at rest: how many of its
+            // processes are the program itself. Kept for the next owner
+            "rest" => match self.owned(line, m) {
+                Ok(term) => {
+                    term.rest.store(m["n"].as_u64().unwrap_or(0), Ordering::SeqCst);
+                    None
+                }
+                Err(no) => Some(no),
+            },
             "stop" => match self.owned(line, m) {
                 Ok(term) => {
                     term.stopped.store(true, Ordering::SeqCst);
@@ -744,6 +837,16 @@ impl Job for Terms {
             // which were its (far-keep plan §7.4), and for the person's list
             // of what runs while the app is away (§7.6)
             "list" => Some(self.list(m)),
+            // The app's "keep awake" setting and the terminals it sees an AI
+            // working in, said every few seconds while it runs: what keeps
+            // the PC up once it is gone (local-keeper plan §3). Not answered
+            "awake" => {
+                if let Ok(mut a) = self.awake.lock() {
+                    a.mode = crate::awake::Stay::parse(m["mode"].as_str());
+                    a.working = m["working"].as_array().map(|w| w.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                }
+                None
+            }
             // The person stops one from that list (§7.6): whoever owns it, if
             // anybody. A terminal of another generation is not this one
             "end" => {
@@ -817,6 +920,7 @@ impl Job for Terms {
     /// has been kept long enough for its app to come back for it
     fn tick(&self, _core: &Arc<Core>) {
         let terms: Vec<(u64, Arc<Term>)> = self.terms.lock().map(|t| t.iter().map(|(i, t)| (*i, Arc::clone(t))).collect()).unwrap_or_default();
+        self.tend_awake(&terms);
         // One that ended since they were written down is struck out there
         let ended = terms.iter().filter(|(_, t)| t.ended.lock().is_ok_and(|e| e.is_some())).count() as u64;
         if self.ended_written.swap(ended, Ordering::SeqCst) != ended {
@@ -840,7 +944,8 @@ impl Job for Terms {
                 changed
             });
             if changed && let Some((line, _)) = term.seen.lock().ok().and_then(|s| s.owner) {
-                let m = json!({ "did": "procs", "term": id, "pids": pids, "root": term.session });
+                let rest = term.rest.load(Ordering::SeqCst);
+                let m = json!({ "did": "procs", "term": id, "pids": pids, "root": term.session, "rest": (rest > 0).then_some(rest) });
                 let _ = term.queue.send((line, Frame::Job { job: NAME.into(), m }));
             }
         }
@@ -980,6 +1085,27 @@ fn login_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Keeping the PC up for the terminals held here, the app gone: never
+    /// with the setting off; for as long as any runs with "always"; and with
+    /// "while an AI works" for a terminal the app last saw an AI working in,
+    /// while it runs and until it has been silent long enough to be done
+    #[test]
+    fn the_pc_is_kept_up_by_the_setting_and_what_still_moves() {
+        use crate::awake::Stay;
+        let working: std::collections::HashSet<u64> = [1].into_iter().collect();
+        let fresh = Duration::from_secs(5);
+        let stale = QUIET_IS_DONE + Duration::from_secs(1);
+        let one = |runs, quiet| vec![(1u64, runs, quiet)];
+        assert!(!awake_wanted(Stay::Off, &working, &one(true, fresh)), "off is off");
+        assert!(awake_wanted(Stay::Always, &working, &one(true, stale)), "always: a running terminal, silent or not");
+        assert!(!awake_wanted(Stay::Always, &working, &one(false, fresh)), "always: nothing left running");
+        assert!(awake_wanted(Stay::WhileAi, &working, &one(true, fresh)), "an AI at work, still printing");
+        assert!(!awake_wanted(Stay::WhileAi, &working, &one(true, stale)), "an AI silent past the margin is done");
+        assert!(!awake_wanted(Stay::WhileAi, &working, &one(false, fresh)), "its program ended");
+        let idle = vec![(2u64, true, fresh)];
+        assert!(!awake_wanted(Stay::WhileAi, &working, &idle), "a busy terminal nobody said an AI works in");
+    }
 
     /// Asked about a terminal of an earlier resident process, the answer is
     /// "ended" only when nothing of its session runs any more: a resident

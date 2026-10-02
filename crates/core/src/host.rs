@@ -23,6 +23,11 @@ pub struct QuitAsk {
     pub busy: usize,
     /// Each machine, by its entry's name, and how many of its AIs go on
     pub kept: Vec<(String, usize)>,
+    /// How many of this PC's terminals its resident process holds, which go
+    /// on once the app is gone and are come back to at the next start
+    /// (local-keeper plan): said apart from the machines, since these are
+    /// terminals -- a shell as much as an AI -- and on this PC
+    pub here: usize,
     /// What else is to be said before the answer. Asked first, these are only
     /// what is planned -- how long each MicroVM is to go on. Asked again after
     /// a quit was chosen, they are what the service made of it: cut short by
@@ -59,20 +64,34 @@ pub enum Quit {
 impl QuitAsk {
     /// Whether there is anything to ask about
     pub fn worth_asking(&self) -> bool {
-        self.busy > 0 || !self.kept.is_empty()
+        self.busy > 0 || self.goes_on()
+    }
+
+    /// Whether anything goes on running once the app is gone: what makes the
+    /// question a three-way one (go and leave it running, stop it all, stay)
+    pub fn goes_on(&self) -> bool {
+        !self.kept.is_empty() || self.here > 0
     }
 
     /// The question, in the words of the language on screen
     pub fn words(&self) -> String {
         let mut out = String::new();
-        if !self.kept.is_empty() {
-            let list = self
-                .kept
-                .iter()
-                .map(|(host, n)| crate::i18n::tp("msg.quit.kept_on", &[("host", host), ("n", &n.to_string())]))
-                .collect::<Vec<_>>()
-                .join(crate::i18n::t("msg.quit.kept_sep").as_str());
-            out.push_str(&crate::i18n::tp("msg.quit.kept", &[("list", &list)]));
+        if self.goes_on() {
+            if self.here > 0 {
+                out.push_str(&crate::i18n::tp("msg.quit.kept_here", &[("n", &self.here.to_string())]));
+            }
+            if !self.kept.is_empty() {
+                let list = self
+                    .kept
+                    .iter()
+                    .map(|(host, n)| crate::i18n::tp("msg.quit.kept_on", &[("host", host), ("n", &n.to_string())]))
+                    .collect::<Vec<_>>()
+                    .join(crate::i18n::t("msg.quit.kept_sep").as_str());
+                if !out.is_empty() {
+                    out.push_str("\n\n");
+                }
+                out.push_str(&crate::i18n::tp("msg.quit.kept", &[("list", &list)]));
+            }
             for note in &self.notes {
                 out.push_str("\n\n");
                 out.push_str(note);
@@ -531,6 +550,23 @@ mod tests {
         let words = kept.words();
         assert!(words.contains("VPS1") && words.contains("vm"), "{words}");
         assert_eq!(words.matches('\n').count(), 6, "the machines, the work in progress, and one line per answer: {words}");
+    }
+
+    /// Terminals this PC's resident process holds go on after a quit just as
+    /// a machine's AIs do: quitting asks, with the three answers, and says
+    /// how many -- apart from the machines, since these are this PC's own
+    #[test]
+    fn quitting_says_this_pcs_terminals_go_on() {
+        let here = QuitAsk { here: 3, ..Default::default() };
+        assert!(here.worth_asking(), "terminals that go on are worth asking about");
+        assert!(here.goes_on(), "and the question has three answers");
+        let words = here.words();
+        assert!(words.contains('3'), "{words}");
+        assert_eq!(words.matches('\n').count(), 4, "the terminals, and one line per answer: {words}");
+        let both = QuitAsk { here: 1, kept: vec![("VPS1".into(), 2)], ..Default::default() };
+        let words = both.words();
+        assert!(words.contains("VPS1"), "{words}");
+        assert_eq!(words.matches("\n\n").count(), 2, "this PC, the machines, then the answers: {words}");
     }
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

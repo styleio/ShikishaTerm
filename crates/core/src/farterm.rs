@@ -293,6 +293,24 @@ pub fn end_held(at: &Place, term: u64, generation: &str) -> bool {
     done
 }
 
+/// Whether a terminal is written down for the tab `uid` on this PC's own
+/// resident process: a tab that left one running there goes back to it
+/// even with the setting now off, rather than starting a second copy of
+/// what is still running (local-keeper plan §3)
+pub fn written_here(uid: &str) -> bool {
+    let machine = Place::Here.machine_key();
+    read_saved().iter().any(|s| s.machine == machine && s.tab == uid)
+}
+
+/// Tell this PC's resident process when to keep the PC up while it holds
+/// terminals (the "keep awake" setting, and which of its terminals an AI is
+/// working in as this app sees it), so that the setting goes on applying
+/// after the app is gone. Not answered; an older resident process ignores it
+pub fn tell_awake(mode: &str, working: &[u64]) {
+    let Some(link) = Place::Here.link().filter(|l| l.holds(JOB)) else { return };
+    let _ = link.to_job(JOB, json!({ "do": "awake", "mode": mode, "working": working }));
+}
+
 /// Stop every one, as the bridge is taken off the machine (§7.7). Nothing
 /// is asked when the line is not up: the resident process is told to end
 /// as the folder goes
@@ -440,6 +458,9 @@ pub struct FarTerm {
     procs: Mutex<Option<Vec<u32>>>,
     /// On this PC, the program's first process (0 until told)
     root: AtomicU64,
+    /// On this PC, how many of its processes are the program at rest, as an
+    /// app that owned it learned and the resident process kept (0 unknown)
+    rest: AtomicU64,
     /// What it does while this app is away (far-keep plan §4.3): changed
     /// when the person changes the machine's setting
     away: Mutex<crate::config::Away>,
@@ -489,6 +510,7 @@ impl FarTerm {
             run: None,
             procs: Mutex::new(None),
             root: AtomicU64::new(0),
+            rest: AtomicU64::new(0),
             away: Mutex::new(away),
             owner: AtomicU64::new(0),
             at: at.clone(),
@@ -521,6 +543,21 @@ impl FarTerm {
         u32::try_from(self.root.load(Ordering::SeqCst)).ok().filter(|p| *p != 0)
     }
 
+    /// How many of its processes are its program at rest, when an app that
+    /// owned it learned that before: what this app counts its work behind the
+    /// prompt against, instead of learning it again with that work running
+    pub fn rest(&self) -> Option<u32> {
+        u32::try_from(self.rest.load(Ordering::SeqCst)).ok().filter(|n| *n != 0)
+    }
+
+    /// Hand the resident process what this app learned of the program at
+    /// rest, for the app after it
+    pub fn learned_rest(&self, n: u32) {
+        if self.rest.swap(u64::from(n), Ordering::SeqCst) != u64::from(n) {
+            self.say(json!({ "do": "rest", "term": self.term(), "owner": self.owner.load(Ordering::SeqCst), "n": n }));
+        }
+    }
+
     /// Whether it is held on this PC, by this PC's own resident process
     pub fn here(&self) -> bool {
         matches!(self.at, Place::Here)
@@ -541,6 +578,11 @@ impl FarTerm {
 
     fn term(&self) -> u64 {
         self.ident.lock().map(|i| i.term).unwrap_or(0)
+    }
+
+    /// Its id at the resident process (0 until it is opened there)
+    pub fn term_id(&self) -> u64 {
+        self.term()
     }
 
     /// Whether its AI goes on once this app went (far-keep plan §4.3)
@@ -833,6 +875,13 @@ impl std::io::Read for FarReader {
                 if self.term.ended.load(Ordering::SeqCst) || self.term.let_go.load(Ordering::SeqCst) {
                     return Ok(0);
                 }
+                // This PC's resident process was asked to end everything it
+                // held (the person's "Stop them"): its terminals are over, and
+                // there is no line to wait for
+                if self.term.here() && crate::localkeep::ended_on_purpose() {
+                    self.term.ended.store(true, Ordering::SeqCst);
+                    return Ok(0);
+                }
                 let address = self.term.at.address();
                 if self.again && !self.said_waiting {
                     // Said first, so the tab shows why it is empty
@@ -980,6 +1029,11 @@ impl std::io::Read for FarReader {
                 // process says so when it changes): what the tab counts as
                 // its work in the background, as it would for its own job
                 "procs" => {
+                    // What was learned of the program at rest first: the tab
+                    // reads it once it has processes to count, never before
+                    if let Some(rest) = m["rest"].as_u64() {
+                        self.term.rest.store(rest, Ordering::SeqCst);
+                    }
                     if let (Ok(mut p), Some(list)) = (self.term.procs.lock(), m["pids"].as_array()) {
                         *p = Some(list.iter().filter_map(|v| v.as_u64().and_then(|n| u32::try_from(n).ok())).collect());
                     }
