@@ -75,6 +75,11 @@ put('.claude/settings.json', '{}');
 put('.claude/worktrees/agent-1/target/big.bin', Buffer.alloc(HELPER_BYTES, 7));
 put('.claude/worktrees/agent-1/src/main.rs', 'fn main() {}');
 put('.claude/checkpoints/one', 'x');
+// Its record of this PC's state, files and a folder
+put('.claude/agent-registry.json', '{}');
+put('.claude/scheduled_tasks.json', '[]');
+put('.claude/routines/.state/run.json', '{}');
+put('.claude/routines/mine.md', 'a routine somebody wrote');
 
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -148,6 +153,9 @@ const open = async () => {
 };
 const leftSaid = () => run(`(() => { const s = document.querySelector('#branch .bcarry select[data-name=".claude"]');
   const l = s && s.parentElement.querySelector('.bleft'); return l ? l.textContent : null; })()`);
+// Every place the app counted as left out of .claude, by its name
+const leftPlaces = async () => JSON.parse(await run(
+  `JSON.stringify((((S.branch.carry_sizes || []).find(s => s.path === ".claude") || {}).left || []).map(l => l.path))`));
 const make = async (name) => {
   await run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(name)}; q.dispatchEvent(new Event("input")); return true; })()`);
   await until(() => run(`!!(S.branch && S.branch.asked === ${JSON.stringify(name)} && !S.branch.error)`), 'the answer about ' + name, 30000);
@@ -164,12 +172,20 @@ try {
 
   console.log('1. the dialog says what the app\'s rules leave out of .claude, as new');
   await open();
-  check(await run(`JSON.stringify(S.branch.shipped_rules)`) === JSON.stringify(['**/.claude/worktrees/', '**/.claude/checkpoints/', '**/.claude/mailbox/']),
-    'the app\'s rules are listed: ' + await run(`JSON.stringify(S.branch.shipped_rules)`));
-  check((await run(`S.branch.shipped_new.length`)) === 3, 'all three are new to a project never shown them');
-  await until(async () => /\.claude\/worktrees/.test((await leftSaid()) || ''), 'the line under .claude', 15000);
+  const listed = JSON.parse(await run(`JSON.stringify(S.branch.shipped_rules)`));
+  check(listed.length === 8 && listed[0] === '**/.claude/worktrees/' && listed.includes('**/.claude/scheduled_tasks.json'),
+    'the app\'s rules are listed: ' + JSON.stringify(listed));
+  check((await run(`S.branch.shipped_new.length`)) === 8, 'all of them are new to a project never shown them');
+  await until(async () => /\.claude\/worktrees/.test((await leftSaid()) || ''), 'the line under .claude', 15000).catch(async (e) => {
+    console.log('--- said: ' + JSON.stringify(await leftSaid()) + '\n--- sizes: ' +
+      await run(`JSON.stringify((S.branch.carry_sizes || []).map(s => ({path: s.path, left: s.left})))`));
+    throw e;
+  });
   const first = await leftSaid();
-  check(/\.claude\/worktrees/.test(first) && /\.claude\/checkpoints/.test(first), 'it names what is not brought: ' + first);
+  check(/^持っていかない場所: \.claude\/worktrees,/.test(first), 'it names the largest place first: ' + first);
+  const leftNow = await leftPlaces();
+  check(leftNow.length === 5 && leftNow.includes('.claude/checkpoints') && leftNow.includes('.claude/scheduled_tasks.json'),
+    'every place left out is counted: ' + JSON.stringify(leftNow));
   check(/MB/.test(first), 'it says how big: ' + first);
   check(/この版で追加/.test(first), 'it says the rules are new here: ' + first);
   await run(`document.querySelector('#branch .bcarry select[data-name=".claude"]').parentElement.scrollIntoView({block:'center'}); true`);
@@ -182,7 +198,11 @@ try {
   check(!fs.existsSync(path.join(one, '.claude', 'worktrees')), 'the helpers\' worktrees did not');
   check(!fs.existsSync(path.join(one, '.claude', 'checkpoints')), 'nor the record of edits');
   const shown = JSON.parse(fs.readFileSync(SHOWN, 'utf8'));
-  check(shown.shop === 1, 'the project counts as shown the app\'s rules: ' + JSON.stringify(shown));
+  check(shown.shop === 2, 'the project counts as shown the app\'s rules: ' + JSON.stringify(shown));
+  for (const f of ['agent-registry.json', 'scheduled_tasks.json', 'routines/.state']) {
+    check(!fs.existsSync(path.join(one, '.claude', f)), 'nor ' + f);
+  }
+  check(fs.existsSync(path.join(one, '.claude', 'routines', 'mine.md')), 'a routine somebody wrote still came');
 
   console.log('3. opened again, nothing is new any more');
   await run(`closeBranch(); true`);
@@ -193,9 +213,13 @@ try {
 
   console.log('4. a version that adds a rule marks it new again');
   await run(`closeBranch(); true`);
-  fs.writeFileSync(SHOWN, JSON.stringify({ shop: 0 }));
+  // Shown the first edition only: the second batch is what is new
+  fs.writeFileSync(SHOWN, JSON.stringify({ shop: 1 }));
   await sleep(300);
   await open();
+  const fresh = JSON.parse(await run(`JSON.stringify(S.branch.shipped_new)`));
+  check(fresh.length === 5 && !fresh.includes('**/.claude/worktrees/') && fresh.includes('**/.claude/agent-registry.json'),
+    'only the second batch is new to a project shown the first: ' + JSON.stringify(fresh));
   await until(async () => /この版で追加/.test((await leftSaid()) || ''), 'the mark on a rule newer than what was shown', 15000);
   check(true, 'marked new against an older edition: ' + await leftSaid());
   await run(`closeBranch(); true`);
@@ -206,7 +230,9 @@ try {
   await open();
   await until(async () => !/\.claude\/worktrees/.test((await leftSaid()) || ''), 'the line no longer naming the helpers', 15000);
   const now = await leftSaid();
-  check(/\.claude\/checkpoints/.test(now), 'the rule not changed still leaves its place out: ' + now);
+  const leftThen = await leftPlaces();
+  check(leftThen.includes('.claude/checkpoints') && !leftThen.includes('.claude/worktrees'),
+    'the rules not changed still leave their places out: ' + JSON.stringify(leftThen) + ' / ' + now);
   const two = await make('second-cut');
   check(fs.statSync(path.join(two, '.claude', 'worktrees', 'agent-1', 'target', 'big.bin')).size === HELPER_BYTES, 'the helpers\' worktrees came along');
   check(!fs.existsSync(path.join(two, '.claude', 'checkpoints')), 'the other rule still holds');

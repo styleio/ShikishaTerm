@@ -204,7 +204,8 @@ QR コード、`r` 終了したタブを再起動、`w` デスク切替、`t` �
   持って行くか、実行される `git worktree add` の行そのもの
 
 AI のツールがプロジェクトの中に自分用に作る場所（Claude Code の `.claude/worktrees/`・
-`.claude/checkpoints/`・`.claude/mailbox/`）は、`.claude` をコピーするときも持っていきません。
+`.claude/checkpoints/`・`.claude/mailbox/` と、この PC での状態を書いたファイル
+`agent-registry.json`・`scheduled_tasks.json` など）は、`.claude` をコピーするときも持っていきません。
 アプリが用意している「既定」の規則で、プロジェクトの設定の「ワークツリーの作成ルール」の
 「フォルダの中の規則」に並んでいます。持っていきたい場合は、その行を「コピー」に変えてください。
 新しい版で既定の規則が増えると、その行に「この版で追加」と出ます。ダイアログでは、持っていかない

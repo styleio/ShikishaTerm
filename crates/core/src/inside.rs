@@ -62,6 +62,15 @@ pub const SHIPPED: &[Shipped] = &[
     Shipped { id: "claude-checkpoints", path: "**/.claude/checkpoints/", how: "skip", since: 1 },
     // What its agents leave each other
     Shipped { id: "claude-mailbox", path: "**/.claude/mailbox/", how: "skip", since: 1 },
+    // Its record of this PC's state at this place: routines it ran, agents it
+    // started, its background process, its scheduled tasks. Small, but about
+    // this checkout on this PC -- in another worktree they would describe
+    // something that is not there
+    Shipped { id: "claude-routine-state", path: "**/.claude/routines/.state/", how: "skip", since: 2 },
+    Shipped { id: "claude-agent-registry", path: "**/.claude/agent-registry.json", how: "skip", since: 2 },
+    Shipped { id: "claude-assistant-state", path: "**/.claude/assistant-daemon-state.json", how: "skip", since: 2 },
+    Shipped { id: "claude-schedule-lock", path: "**/.claude/scheduled_tasks.lock", how: "skip", since: 2 },
+    Shipped { id: "claude-schedule", path: "**/.claude/scheduled_tasks.json", how: "skip", since: 2 },
 ];
 
 /// The newest edition of [`SHIPPED`]: what a project has been shown once its
@@ -672,6 +681,36 @@ mod tests {
         assert_eq!(inside.at(".claude/worktrees", true).map(|d| d.how), Some("skip"));
         assert_eq!(inside.at("web/.claude/worktrees", true).map(|d| d.how), Some("skip"));
         assert!(inside.at(".claude/settings.json", false).is_none());
+        // The state files are files: a rule written without a trailing /
+        // names a file as well, at any depth
+        for f in ["agent-registry.json", "assistant-daemon-state.json", "scheduled_tasks.lock", "scheduled_tasks.json"] {
+            assert_eq!(inside.at(&format!(".claude/{f}"), false).map(|d| d.how), Some("skip"), "{f}");
+            assert_eq!(inside.at(&format!("web/.claude/{f}"), false).map(|d| d.how), Some("skip"), "{f} deeper");
+        }
+        assert_eq!(inside.at(".claude/routines/.state", true).map(|d| d.how), Some("skip"));
+        assert!(inside.at(".claude/routines/my.md", false).is_none(), "a routine the person wrote was left out");
+        assert!(inside.at(".claude/agent-memory-local", true).is_none());
+    }
+
+    /// The editions as shipped: the second batch is new to a project shown
+    /// only the first three, and nothing is new to one shown both
+    #[test]
+    fn the_second_batch_is_new_to_whoever_saw_only_the_first() {
+        let first: Vec<&str> = SHIPPED.iter().filter(|s| s.since == 1).map(|s| s.path).collect();
+        assert_eq!(first, ["**/.claude/worktrees/", "**/.claude/checkpoints/", "**/.claude/mailbox/"]);
+        assert_eq!(
+            newer_than(SHIPPED, 1),
+            [
+                "**/.claude/routines/.state/",
+                "**/.claude/agent-registry.json",
+                "**/.claude/assistant-daemon-state.json",
+                "**/.claude/scheduled_tasks.lock",
+                "**/.claude/scheduled_tasks.json",
+            ]
+        );
+        assert_eq!(newer_than(SHIPPED, 0).len(), SHIPPED.len());
+        assert!(newer_than(SHIPPED, shipped_edition()).is_empty());
+        assert_eq!(shipped_edition(), 2);
     }
 
     /// A copy of a folder walks past what a rule leaves out without going in,

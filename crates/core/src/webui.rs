@@ -13793,7 +13793,7 @@ function insideLeft(root, p, path) {
   for (const s of sizes.sizes || []) for (const l of s.left || []) if (l.by === path) hits.push(l);
   if (!hits.length) return null;
   const sum = hits.reduce((a, l) => ({bytes: a.bytes + l.bytes, files: a.files + l.files, more: a.more || l.more}), {bytes:0, files:0, more:false});
-  const names = hits.slice(0, 3).map(l => l.path).join(", ") + (hits.length > 3 ? " " + fill(T["settings.bring.inside.left_more"], {n: hits.length - 3}) : "");
+  const names = hits.slice().sort((a, b) => b.bytes - a.bytes).slice(0, 3).map(l => l.path).join(", ") + (hits.length > 3 ? " " + fill(T["settings.bring.inside.left_more"], {n: hits.length - 3}) : "");
   return el("div", {class:"hint"}, fill(T["settings.bring.inside.left"], {places: names, amount: sizeLabel(sum)}));
 }
 function insideShipped(desk, p, root, change) {
