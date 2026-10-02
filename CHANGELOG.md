@@ -20,8 +20,10 @@ once it reaches its first tagged release.
   crashes, but not across a Store update.
 - **A new worktree no longer takes an AI tool's own working places with it.**
   Claude Code's `.claude/worktrees/` (its helpers' whole checkouts),
-  `.claude/checkpoints/` and `.claude/mailbox/` are left out even when
-  `.claude` is copied, by Default rules the app provides under the project's
+  `.claude/checkpoints/`, `.claude/mailbox/`, and the files where it
+  records its state on this PC (`routines/.state/`, `agent-registry.json`,
+  `assistant-daemon-state.json`, `scheduled_tasks.lock`,
+  `scheduled_tasks.json`) are left out even when `.claude` is copied, by Default rules the app provides under the project's
   Worktree Creation Rules › Rules for places inside folders. A row can be
   changed to come along, put back to the default, or not used; only that
   change is kept in the settings, so rules a later version adds or removes

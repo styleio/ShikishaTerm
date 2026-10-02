@@ -9396,7 +9396,8 @@ function drawSlow(b) {
 function leftSay(p, left) {
   if (!left.length) return "";
   const sum = left.reduce((a, l) => ({bytes: a.bytes + l.bytes, files: a.files + l.files, more: a.more || l.more}), {bytes:0, files:0, more:false});
-  const places = left.slice(0, 3).map(l => l.path).join(", ") + (left.length > 3 ? " …" : "");
+  // Largest first: the place that makes the rule worth having is the one named
+  const places = left.slice().sort((a, b) => b.bytes - a.bytes).slice(0, 3).map(l => l.path).join(", ") + (left.length > 3 ? " …" : "");
   const said = (T["tui.branch.carry.left"] || "{places} {amount}").replaceAll("{places}", places).replaceAll("{amount}", sizeSay(sum));
   const fresh = left.some(l => ((p && p.shipped_new) || []).includes(l.by));
   return fresh ? said + " · " + (T["tui.branch.carry.left_new"] || "") : said;

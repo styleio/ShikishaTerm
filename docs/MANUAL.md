@@ -227,7 +227,9 @@ and the terminal run over there.
   `node_modules`) to bring along, and the exact `git worktree add` line.
 
 The places AI tools keep for themselves inside a project (Claude Code's
-`.claude/worktrees/`, `.claude/checkpoints/` and `.claude/mailbox/`) are not brought,
+`.claude/worktrees/`, `.claude/checkpoints/`, `.claude/mailbox/`, and the files where
+it records its state on this PC, such as `agent-registry.json` and
+`scheduled_tasks.json`) are not brought,
 even when `.claude` is copied. These are the app's Default rules, listed under the
 project's settings, Worktree Creation Rules › Rules for places inside folders. To bring one,
 change its row to Copy. When a new version adds a Default rule, its row says "New in
