@@ -5,7 +5,7 @@
  * hook held its turn's end once, or its first sentence when it could not be).
  *
  *     cargo build
- *     node tools/debug/confer-real.win.mjs [--n=10] [--pair=claude-a,codex-b] [--keep]
+ *     node tools/debug/confer-real.win.mjs [--n=10] [--pair=claude-a,codex-b] [--slow=110] [--keep]
  *
  * Pairs: claude-a -> codex-b, codex-b -> claude-c, claude-a -> claude-c, --n
  * asks each. A trial passes when the asker reports what only the other tab's
@@ -13,6 +13,13 @@
  * the reply kept holds that text (the answer, not a word said after it), and
  * the answer has a line. How many answers said their own line and how many
  * had their first sentence taken is counted apart.
+ *
+ * --slow=S has the tab asked wait S seconds with a shell command before it
+ * answers (ping, in the foreground: Claude Code refuses a bare sleep and puts
+ * it in the background, and the turn then ends before the wait does). Past 100 s the asker's `shikisha` command hands its wait over and
+ * the answer comes later, through its inbox -- the road most real asks (a
+ * review, a build) take, and the one where every answer's line was lost
+ * until 2026-10-02.
  *
  * Needs Windows, Node 22, git, and `claude` and `codex` signed in on this
  * machine. Spends real turns of both accounts.
@@ -38,6 +45,7 @@ const arg = (name, dflt) => {
   return a ? a.slice(name.length + 3) : dflt;
 };
 const N = Number(arg('n', 10));
+const SLOW = Number(arg('slow', 0));
 const KEEP = process.argv.includes('--keep');
 const RUN = path.join(os.tmpdir(), 'sk-confer');
 const APP = path.join(RUN, 'app');
@@ -257,7 +265,9 @@ const recorded = (sinceMs, target) => {
       .get(target, sinceMs);
     if (!ask) return { ask: null, lines: [], members: [] };
     const lines = db.prepare('SELECT tab, text, how, thread_id FROM lines WHERE ask_id = ? ORDER BY id').all(ask.id);
-    const members = db.prepare('SELECT tab FROM thread_tabs WHERE thread_id = ? ORDER BY tab').all(ask.thread_id).map((r) => r.tab);
+    // Members are kept by uid; the names they were seen under say who
+    const members = db.prepare('SELECT COALESCE(n.name, t.tab) AS tab FROM thread_tabs t LEFT JOIN tab_names n ON n.uid = t.tab ' +
+      'WHERE t.thread_id = ? ORDER BY 1').all(ask.thread_id).map((r) => r.tab);
     return { ask, lines, members };
   } finally { db.close(); }
 };
@@ -275,7 +285,10 @@ const trial = async (n, caller, callee) => {
   const name = `memo-${nonce()}.txt`;
   const value = `${nonce()}-${nonce()}`;
   fs.writeFileSync(path.join(TABS[callee].cwd, name), value + '\n');
-  const ask = `Ask <@${callee}> to tell you the text written in ${name} in its own folder. ` +
+  const wait = SLOW
+    ? `first run \`ping -n ${SLOW + 1} 127.0.0.1\` in the foreground (it takes about ${SLOW} seconds; do not put it in the background) and then `
+    : '';
+  const ask = `Ask <@${callee}> to ${wait}tell you the text written in ${name} in its own folder. ` +
     'That memo is only in its folder. When you have its answer, reply to me with only that text.';
   const t0 = Date.now();
   const since = Date.now() - 1000;
@@ -283,7 +296,7 @@ const trial = async (n, caller, callee) => {
   await door('send_to_tab', caller, ask);
   // Done when the asker shows the text and is quiet, and the ask is answered
   let pass = false, why = 'TIMEOUT';
-  const end = Date.now() + 6 * 60000;
+  const end = Date.now() + 6 * 60000 + SLOW * 1000;
   while (Date.now() < end) {
     const st = await state(caller).catch(() => '?');
     if (['QUESTION', 'EXIT', 'FAILED', 'LIMIT'].includes(st)) { why = `caller ${st}`; break; }

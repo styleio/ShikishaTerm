@@ -1056,7 +1056,12 @@ fn tend_asks(
     // sent them until it is said or given up on. Their line may yet be read
     // from their record, and a second question's answer would be read as it
     let owing: std::collections::HashSet<String> =
-        asks.iter().filter(|a| a.held.is_some() && !a.lined).map(|a| a.target.clone()).collect();
+        asks.iter().filter(|a| a.owes_line()).map(|a| a.target.clone()).collect();
+    // The desk an ask is kept on, by id, and the tab it went to as the
+    // conference names it
+    let ask_desk = |a: &crate::asktab::Ask| a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
+    let ask_target =
+        |a: &crate::asktab::Ask, t: Option<&Tab>| t.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
     asks.retain_mut(|a| {
         // The tabs of the desk it was asked on. A desk that is not in front
         // keeps its tabs running and their state read (`Tab::tick_away`), so
@@ -1182,9 +1187,9 @@ fn tend_asks(
                     // Into the conference, with the asker's line. A command
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
-                        let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
+                        let desk = ask_desk(a);
                         let caller_name = a.caller.as_deref().map(caller_id);
-                        let target_id = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+                        let target_id = ask_target(a, target);
                         // The asker's conversation; one asked from outside every
                         // tab grows from the tab it asked
                         let thread = match caller {
@@ -1210,18 +1215,19 @@ fn tend_asks(
             },
             Step::Answer(v) => {
                 let state = v["state"].as_str().unwrap_or_default().to_string();
+                // A tab still saying its line has passed its answer on: the
+                // ask is kept for the line, written down once it is settled
+                // (`Step::Lined`)
+                let owes = a.owes_line();
                 if let Some(ask) = a.ask_id {
-                    let desk = a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
-                    let target = target.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
-                    // Its line, read from its record: written first, so the
-                    // answer is not given its first sentence instead
-                    if let Some(line) = a.late_line.take()
-                        && let Some(thread) = log.thread_of_ask(ask)
-                    {
-                        append_hook_log(&format!("confer: {target}'s line was read from its record"));
-                        log.line(&desk, thread, Some(&target), &line, Some(ask), "said");
+                    log.ask_answered(ask, &state, v["reply"].as_str());
+                    if !owes {
+                        let (desk, target) = (ask_desk(a), ask_target(a, target));
+                        log.answer_lined(&desk, ask, &target, &state, v["reply"].as_str(), line_max);
                     }
-                    log.ask_answered(&desk, ask, &target, &state, v["reply"].as_str(), line_max);
+                }
+                if owes {
+                    append_hook_log(&format!("confer: {} has its answer passed on; its line is waited for", a.target));
                 }
                 append_hook_log(&format!(
                     "ask_tab: {} -> {state} ({}s, from {})",
@@ -1238,7 +1244,7 @@ fn tend_asks(
                             a.phase = Phase::Deliver;
                             return true;
                         }
-                        return false;
+                        return owes;
                     }
                     append_hook_log("ask_tab: the caller let go of the line; the reply goes into its tab");
                 }
@@ -1255,10 +1261,25 @@ fn tend_asks(
                         let to = caller_id(caller);
                         orchestra.mail_tab(&caller_uid(caller), &a.target, &crate::asktab::handed_subject(&a.target), &r);
                         append_hook_log(&format!("ask_tab: {}'s reply is in {to}'s inbox", a.target));
-                        false
+                        owes
                     }
-                    _ => false,
+                    _ => owes,
                 }
+            }
+            Step::Lined => {
+                if let Some(ask) = a.ask_id {
+                    let (desk, target) = (ask_desk(a), ask_target(a, target));
+                    // Its line, read from its record: written first, so the
+                    // answer is not given its first sentence instead
+                    if let Some(line) = a.late_line.take()
+                        && let Some(thread) = log.thread_of_ask(ask)
+                    {
+                        append_hook_log(&format!("confer: {target}'s line was read from its record"));
+                        log.line(&desk, thread, Some(&target), &line, Some(ask), "said");
+                    }
+                    log.answer_lined(&desk, ask, &target, "DONE", a.held.as_deref(), line_max);
+                }
+                false
             }
             Step::Hand(text) => {
                 let caller = a.caller.as_deref().unwrap_or_default();
@@ -5116,6 +5137,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                         held_idle: None,
                                         line_unheard: false,
                                         late_line: None,
+                                        answered: false,
                                     });
                                 }
                             }

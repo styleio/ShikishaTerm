@@ -351,11 +351,18 @@ impl Log {
         Some(id)
     }
 
-    /// How an ask ended. A reply with no line of its own is given its first
-    /// sentence, marked as taken for it
-    pub fn ask_answered(&mut self, desk: &str, ask: i64, target: &str, state: &str, reply: Option<&str>, line_max: u32) {
+    /// How an ask ended. The answer's line is a step of its own
+    /// ([`Self::answer_lined`]): a tab still saying it has passed its answer
+    /// on already, and its line comes after
+    pub fn ask_answered(&mut self, ask: i64, state: &str, reply: Option<&str>) {
         let at = db::now_ms();
         self.written("an answer to an ask", |s| s.ask_answered(ask, state, reply, at));
+    }
+
+    /// The answer's line is said, or given up on: a reply with no line of its
+    /// own is given its first sentence, marked as taken for it
+    pub fn answer_lined(&mut self, desk: &str, ask: i64, target: &str, state: &str, reply: Option<&str>, line_max: u32) {
+        let at = db::now_ms();
         let Some(reply) = reply.filter(|_| state == "DONE") else { return };
         let has = self.store.as_ref().is_some_and(|s| s.ask_has_answer_line(ask).unwrap_or(true));
         let line = confer::first_sentence(reply, line_max);

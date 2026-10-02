@@ -42,6 +42,11 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **An AI that takes a while to answer another now says its own line in
+  AIConfer.** An answer that came after the asking AI stopped waiting (100
+  seconds) lost the line the AI was saying for it, and the chat showed its
+  first sentence in grey instead. The answer now goes to the asking AI the
+  moment it is given, and the line is waited for on its own.
 - **A terminal this PC's background process holds reads as "working in the
   background" after the app starts again.** The new app was told nothing of
   the terminal's processes until they changed, and then learned a server
