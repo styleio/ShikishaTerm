@@ -163,7 +163,7 @@ pub struct Mailbox {
     /// Lines a person finished in the composer, each with the tab it is for,
     /// awaiting delivery. Filled from both surfaces: the window's ipc and the
     /// phone's relay, each saying which it was
-    pub says: Vec<(usize, String, crate::convo::Device)>,
+    pub says: Vec<(String, String, crate::convo::Device)>,
     /// Quick commands pressed, by id, each with the tab it is for (0 = the one
     /// in view). Filled from both surfaces, like `says`
     pub quicks: Vec<(String, usize, crate::convo::Device)>,
@@ -541,7 +541,7 @@ impl Mailbox {
         std::mem::take(&mut self.frames)
     }
     /// Takes ownership of chat lines typed into model tabs
-    pub fn take_says(&mut self) -> Vec<(usize, String, crate::convo::Device)> {
+    pub fn take_says(&mut self) -> Vec<(String, String, crate::convo::Device)> {
         std::mem::take(&mut self.says)
     }
     /// Takes the quick commands pressed since the last drain

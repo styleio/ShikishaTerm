@@ -42,6 +42,21 @@ once it reaches its first tagged release.
   closed tab is rarely given out again.
 
 ### Fixed
+- **Messages keep their recipient when desks change.** An API call from a
+  tab uses that tab's desk and permissions, even while another desk is in
+  front. Messages from an older phone view and hand-offs waiting to be sent
+  keep the original tab; closing it never redirects them to its replacement.
+  An older page without the recipient's identity asks for a reload.
+  Tabs of the same name on different desks also keep separate request limits.
+- **Naming a page grants that page alone.** A page closed and opened again
+  under the same name does not inherit permission from an earlier request.
+  Captured permissions survive an app restart without reassigning old names.
+- **Projects of the same name on different desks keep their own checkouts.**
+  A remote project's main checkout is no longer mistaken for another project's
+  worktree. CI repairs and merge-conflict helpers stay with their original
+  desk and project; a result waits while its desk is out of view.
+- **Earlier closed-tab history is carried over to its desk.** An unambiguous
+  old desk name is adopted once, so renaming the desk keeps its history.
 - **Two desks of one name are no longer mixed up.** Adding, renaming or
   removing a tab or a folder, starting a folder, and the note that a tab's
   program could not start went to the first desk of the name when the second

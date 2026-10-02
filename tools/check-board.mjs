@@ -174,6 +174,24 @@ for (const side of ['window', 'remote']) {
     // down when, and only when, the board has been drawn
     const splash = await chrome.run('(document.getElementById("splash")||{}).hidden === true');
     if (!splash) fail(what, 'the splash stayed up after the board arrived');
+    // The page binds a message to the tab in its view before either transport
+    // sees it. An explicitly captured identity survives a later view change.
+    try {
+      const sent = await chrome.run(`(() => {
+        const state = S, ipc = window.ipc, fetch = window.fetch, out = [];
+        try {
+          S = {...S, active: 2, tabs: [{index: 2, uid: "original-tab"}]};
+          window.ipc = {postMessage: text => out.push(JSON.parse(text))};
+          window.fetch = (_, opts) => {out.push(JSON.parse(opts.body)); return Promise.resolve({});};
+          send({kind: "say", tab: 2, text: "first"});
+          S.tabs = [{index: 2, uid: "replacement-tab"}];
+          send({kind: "say", tab: 2, uid: "original-tab", text: "captured"});
+          send({kind: "say", tab: 9, text: "missing"});
+          return out;
+        } finally { S = state; window.ipc = ipc; window.fetch = fetch; }
+      })()`);
+      if (sent.length !== 2 || sent.some(s => s.uid !== 'original-tab')) fail(what, 'a message lost its recipient identity');
+    } catch (e) { fail(what, 'sending threw: ' + String(e.message).split('\n')[0]); }
     // And the terminal's own contents, which arrive by their own call
     chrome.thrown.length = 0;
     try {

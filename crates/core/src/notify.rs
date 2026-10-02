@@ -103,6 +103,11 @@ pub struct Notifier {
 }
 
 impl Notifier {
+    /// Use the same delivery worker with the requesting desk's destinations.
+    pub fn for_desk(&self, dests: HashMap<String, Destination>, primary: Option<String>) -> Self {
+        Self { reach: std::cell::RefCell::new(Reach { dests, primary }), tx: self.tx.clone() }
+    }
+
     pub fn new(dests: HashMap<String, Destination>, primary: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel::<(String, Destination, String, Option<usize>)>();
         std::thread::spawn(move || {

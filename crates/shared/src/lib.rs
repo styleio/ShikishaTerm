@@ -811,7 +811,7 @@ pub enum Ev {
     /// Naming it is the whole point. "Whichever tab is in front" is a
     /// different tab from the one the sender meant whenever the two messages
     /// "look at N" and "here is a line" do not land in that order.
-    Say { tab: usize, text: String },
+    Say { tab: usize, uid: String, text: String },
     /// A quick command was pressed, for the tab it names (0 = the one in
     /// view). Only its id travels: what it sends is looked up in the settings
     /// on arrival, which is also where any secret it names is put in -- so a
@@ -1771,6 +1771,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             alt: v.get("alt").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("say") => Ev::Say {
+            uid: v.get("uid")?.as_str().filter(|u| !u.is_empty())?.to_string(),
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
             text: v
                 .get("text")
@@ -1931,6 +1932,14 @@ pub trait Clipboard: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_needs_the_identity_the_senders_view_saw() {
+        assert!(parse_intent(&serde_json::json!({"kind": "say", "tab": 2, "text": "hello"})).is_none());
+        assert!(parse_intent(&serde_json::json!({"kind": "say", "tab": 2, "uid": "", "text": "hello"})).is_none());
+        assert!(matches!(parse_intent(&serde_json::json!({"kind": "say", "tab": 2, "uid": "original-tab", "text": "hello"})),
+            Some(Ev::Say { uid, text, .. }) if uid == "original-tab" && text == "hello"));
+    }
 
     /// The worktree dialog's places inside reach the app as the page sends
     /// them: the open places with the question, a rule for a place with the

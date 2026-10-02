@@ -184,6 +184,9 @@ pub fn install_page(prog: &str) -> Option<String> {
     match prog.trim() {
         p if p.eq_ignore_ascii_case("git") => Some("https://git-scm.com/downloads".to_string()),
         p if p.eq_ignore_ascii_case("gh") => Some("https://cli.github.com/".to_string()),
+        // The phone page in the person's language: it begins with putting
+        // Tailscale on the PC and the phone, which is the install that matters here
+        p if p.eq_ignore_ascii_case("tailscale") => Some(crate::i18n::t("settings.phone.guide.url")),
         p => crate::profile::install_url_for(p),
     }
 }
@@ -1735,16 +1738,8 @@ fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
 
 /// Where the project a folder on another machine belongs to is checked out
 /// there
-fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec) -> Option<String> {
-    let c = crate::config::load()?;
-    let (desks, _) = c.resolve_desks();
-    let project = desks
-        .iter()
-        .flat_map(|d| d.folders.iter())
-        .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), at)))?
-        .project
-        .clone()?;
-    desks.into_iter().flat_map(|d| d.projects).find(|p| p.name == project)?.home_on(&host.name).map(|h| h.at.clone())
+fn far_home_of(at: &std::path::Path, host: &crate::config::HostSpec, desk: Option<&str>) -> Option<String> {
+    crate::config::load()?.project_of(desk, at)?.home_on(&host.name).map(|h| h.at.clone())
 }
 
 /// Whether a folder on another machine is a branch's folder: one that is not
@@ -2360,7 +2355,7 @@ fn handle(
             // offer to write one -- and the project's own page must offer it,
             // which is the half that was missing
             let named = crate::config::load()
-                .and_then(|c| c.project_of(desk.as_deref(), at).map(|p| (p.name.clone(), p.at.clone())));
+                .and_then(|c| c.project_of(desk.as_deref(), at));
             // A folder on another machine: nothing of it is on this disk. Its
             // project is the settings' answer, its branch what git there last
             // said (asked on a thread, see `git::far_place`), and it is a
@@ -2374,22 +2369,13 @@ fn handle(
                 let branch = crate::elsewhere::Elsewhere::of(&host)
                     .ok()
                     .and_then(|m| crate::git::far_place(&m, &path, true).0);
-                let home_at = named.as_ref().and_then(|(n, _)| {
-                    crate::config::load()?
-                        .resolve_desks()
-                        .0
-                        .into_iter()
-                        .flat_map(|d| d.projects)
-                        .find(|p| &p.name == n)?
-                        .home_on(&host.name)
-                        .map(|h| h.at.clone())
-                });
+                let home_at = named.as_ref().and_then(|p| p.home_on(&host.name)).map(|h| h.at.clone());
                 let checkout = home_at.clone().unwrap_or_else(|| path.to_string_lossy().to_string());
                 req.respond(json_resp(serde_json::json!({
                     "family": crate::uistate::far_family(&host.name, &checkout),
                     "cut": far_cut(at, home_at.as_deref()),
                     "branch": branch,
-                    "project": named.as_ref().map(|(n, _)| n.clone()),
+                    "project": named.as_ref().map(|p| p.name.clone()),
                     "project_at": home_at,
                     "host": host.name,
                 })))?;
@@ -2404,8 +2390,8 @@ fn handle(
                     "family": crate::repo::family_of(at).map(|f| f.display().to_string()),
                     "cut": crate::repo::is_linked(at),
                     "branch": crate::repo::branch_of(at),
-                    "project": named.as_ref().map(|(n, _)| n.clone()),
-                    "project_at": named.and_then(|(_, a)| a),
+                    "project": named.as_ref().map(|p| p.name.clone()),
+                    "project_at": named.and_then(|p| p.at),
                 }),
             };
             req.respond(json_resp(resp))?;
@@ -2934,7 +2920,7 @@ fn handle(
             let far = far_host_of(&at);
             let planned = match &far {
                 Some(host) => {
-                    let cut = far_cut(&at, far_home_of(&at, host).as_deref());
+                    let cut = far_cut(&at, far_home_of(&at, host, p.get("desk").and_then(|d| d.as_str())).as_deref());
                     let path = crate::uistate::place_of(&at).1.to_string_lossy().to_string();
                     // While a name is typed, the branch the page shows: the
                     // machine is asked only on the press (see rename_plan_far)
@@ -5814,7 +5800,7 @@ const PAGE: &str = r##"<!doctype html>
  /* Which network the phone's connection link leads to. The tone names are its
     own (not the page-wide .warn, which is a paragraph of danger text) so that
     a badge stays a badge whatever else those words come to mean. */
- .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600;
+ .netbadge { display:inline-flex; align-items:center; gap:var(--s2); font-size:12px; font-weight:600; text-decoration:none; cursor:pointer;
    line-height:1.5; white-space:nowrap; border-radius:999px; padding:2px 10px; border:1px solid; }
  .netbadge.ok   { color:var(--live);   border-color:var(--live);
    background:color-mix(in srgb, var(--live) 14%, transparent); }
@@ -12453,6 +12439,14 @@ function remoteCard() {
   l.append(onoff, document.createTextNode(T["settings.phone.enable.label"]));
 
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.enable"]), l));
+  // Where the whole thing is written out: putting Tailscale on the PC and the
+  // phone, step by step, and what the same Wi-Fi alone gives. Shown before the
+  // box is ticked, since that is when it is wanted. The address is the link's
+  // own text, so it is readable and typable even where a window will not follow it.
+  box.append(el("div", {style:"margin:var(--s1) 0 var(--s3)"},
+    el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
+    el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
+       T["settings.phone.guide.url"])));
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.phone.port"]),
     (() => {
       const i = el("input", {type:"number", style:"width:110px"});
@@ -12617,14 +12611,6 @@ function remoteCard() {
                                 style:"margin-top:var(--s2)"},
           r.sticky_token ? T["settings.phone.install.on"] : T["settings.phone.install.need"]));
       }
-      // Where the whole thing is written out: what works on the same Wi-Fi
-      // with nothing installed, what reaching it from a cafe costs, and what
-      // the line above is for. The address is the link's own text, so it is
-      // readable and typable even where a window will not follow it.
-      qrbox.append(el("div", {style:"margin-top:var(--s3)"},
-        el("span", {class:"hint"}, T["settings.phone.guide"] + " "),
-        el("a", {class:"hint", href:T["settings.phone.guide.url"], target:"_blank"},
-           T["settings.phone.guide.url"])));
     }
   }
 
@@ -12654,7 +12640,10 @@ function remoteCard() {
     };
     const skin = nets[kind];
     if (!skin) return el("span");
-    return el("span", {class:"netbadge " + skin[0], title: skin[3]},
+    // Pressed, the same walkthrough as the line under the switch: the badge is
+    // where "why amber?" is asked, and a tooltip answers nobody on a touch screen
+    return el("a", {class:"netbadge " + skin[0], title: skin[3],
+      href:T["settings.phone.guide.url"], target:"_blank"},
       (skin[1] ? skin[1] + " " : "") + skin[2]);
   }
 
@@ -13615,7 +13604,7 @@ function folderPane(desk, g, gi) {
     // Throwing a folder away is only for a branch: the project's own is never
     // on the table
     if (!where.cut) return;
-    if (where.branch) box.insertBefore(renameCard(g, where.branch), buttons);
+    if (where.branch) box.insertBefore(renameCard(desk, g, where.branch), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
       if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
@@ -15110,7 +15099,7 @@ function inheritConfirm(desk, p, res) {
 // having is the one nobody could think of on the first day: work gets its name
 // once it is under way. The line that will run is under the box and follows
 // what is typed, so nothing happens that was not read first
-function renameCard(g, branch) {
+function renameCard(desk, g, branch) {
   const box = el("input", {type:"text", class:"grow", value: branch});
   // The same box a tab's real command line gets: one look for "this is what
   // will run", wherever in these settings it is being said
@@ -15126,7 +15115,7 @@ function renameCard(g, branch) {
     // to press, and an empty box would be a box with nothing in it
     if (!want || want === branch) { said.hidden = true; line.textContent = ""; note.textContent = ""; go.disabled = true; return; }
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, from: branch})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, from: branch})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     // An answer about a name that has since been typed over says nothing
     // about the one in the box now
@@ -15144,7 +15133,7 @@ function renameCard(g, branch) {
   go.addEventListener("click", async () => {
     const want = box.value.trim();
     const r = await fetch("/api/folder/rename",
-      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({path: placeKey(g), name: want, go: true})})
+      {method:"POST", headers:{"X-Token":TOKEN}, body:JSON.stringify({desk: desk.uid || desk.id, path: placeKey(g), name: want, go: true})})
       .then(r => r.json()).catch(() => ({ok:false, error:""}));
     if (!r.ok) { toast(r.error || T["settings.group.rename.failed"], true); return; }
     toast(fill(T["msg.branch.renamed"], {from: r.from, to: r.to}));
@@ -15180,7 +15169,7 @@ async function familyOf(cwd, desk) {
   if (!(cwd || "").trim()) return null;
   try {
     return await fetch("/api/family?path=" + encodeURIComponent(cwd)
-                       + "&desk=" + encodeURIComponent((desk && desk.id) || ""),
+                       + "&desk=" + encodeURIComponent((desk && (desk.uid || desk.id)) || ""),
                        {headers:{"X-Token":TOKEN}}).then(r => r.json());
   } catch (e) { return null; }
 }
@@ -20082,6 +20071,18 @@ mod tests {
         );
         // Errors out (and isn't saved) for conversational text alone
         assert!(extract_lua("どのような自動化を作りますか？").is_err());
+    }
+
+    /// The network badge under a phone's QR opens the phone page, which begins
+    /// with putting Tailscale on both ends: the board's window asks for it by
+    /// this name, and the address is the app's own words, never the page's.
+    #[test]
+    fn tailscale_opens_the_phone_page() {
+        let url = super::install_page("tailscale").unwrap_or_default();
+        assert!(url.starts_with("https://shikisha-term.com/") && url.ends_with("phone/"),
+                "the badge opens {url:?}");
+        assert!(PAGE.contains(r#"href:T["settings.phone.guide.url"], target:"_blank"},"#),
+                "the settings' badge opens nothing");
     }
 
     /// The setup splits the assistant AIs by whether this PC has them, in the

@@ -24,6 +24,9 @@ use tiny_http::{Header, Response, Server};
 #[derive(Clone, Serialize, Default)]
 pub struct RemoteTab {
     pub index: usize,
+    /// Identity to include when sending from this snapshot, even after its
+    /// screen position is occupied by another tab.
+    pub uid: String,
     pub name: String,
     pub state: String,
     pub locked: bool,
@@ -76,8 +79,11 @@ pub struct Snapshot {
 /// Operations arriving from remote. Executed on the main loop
 #[derive(Debug)]
 pub enum RemoteCmd {
+    /// A remote viewer opened the board. Its screen takes over from keys
+    /// pressed at the PC before it connected; later keys can take it back.
+    Viewing,
     /// Send an instruction to a tab (treated as human input)
-    Send { tab: usize, text: String },
+    Send { uid: String, text: String },
     /// Raw keys, e.g. an answer to a confirmation
     Keys { tab: usize, keys: String },
     /// An answer typed on a reply page, which a notification linked to.
@@ -2750,7 +2756,13 @@ fn handle(
             }
             // Asking for the state IS watching, and this is the only trace a
             // viewer without a socket leaves (see `watched`).
-            *last_poll.lock().unwrap() = Some(Instant::now());
+            if !gate.is_here(&session) {
+                let mut last = last_poll.lock().unwrap();
+                if last.is_none_or(|t| t.elapsed() >= RemoteUi::POLL_LIFE) {
+                    let _ = tx.send(RemoteCmd::Viewing);
+                }
+                *last = Some(Instant::now());
+            }
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
@@ -2861,6 +2873,9 @@ fn handle(
                 session: session.clone(),
                 panes: wants_panes,
             });
+            if !gate.is_here(&session) {
+                let _ = tx.send(RemoteCmd::Viewing);
+            }
             std::thread::spawn(move || {
                 let mut w = crate::ws::WsWriter::new(stream);
                 while let Ok(msg) = srx.recv() {
@@ -3172,8 +3187,12 @@ fn handle(
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let tab = v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as usize;
             if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+                let Some(uid) = v.get("uid").and_then(|v| v.as_str()).filter(|u| !u.is_empty()) else {
+                    req.respond(json_response(serde_json::json!({"ok": false, "error": crate::i18n::t("err.send.refresh")})).with_status_code(409))?;
+                    return Ok(());
+                };
                 let _ = tx.send(RemoteCmd::Send {
-                    tab,
+                    uid: uid.to_string(),
                     text: text.to_string(),
                 });
             } else if let Some(keys) = v.get("keys").and_then(|x| x.as_str()) {
@@ -3570,7 +3589,7 @@ mod tests {
         let base = format!("http://127.0.0.1:{}", ui.port());
         let mut phone = Phone::new(&base);
         phone.pair("csrf-regression-token");
-        let body = r#"{"tab":0,"text":"dummy"}"#;
+        let body = r#"{"tab":0,"uid":"tab-uid","text":"dummy"}"#;
         for origin in ["http://127.0.0.1:1", "https://127.0.0.1", "https://stranger.example", "null"] {
             let answer = phone.agent.post(&format!("{base}/api/send"))
                 .header("Cookie", &phone.cookie).header("Origin", origin)
@@ -3930,6 +3949,10 @@ mod tests {
         let page = window.text("/");
         assert!(page.contains("const AT_PC = true;"), "the window is not told it is at this PC");
         assert_eq!(crate::clients::load().clients.len(), devices, "this PC's window was written into the book of devices");
+
+        assert_eq!(window.state("tok123456789012"), 200);
+        assert!(ui.last_poll.lock().unwrap().is_none(), "this PC's own window counts as a polling phone");
+        assert!(ui.rx.try_recv().is_err(), "this PC's own window took remote ownership of the width");
 
         let mut phone = Phone::new(&base);
         phone.pair("tok123456789012");
@@ -5164,8 +5187,16 @@ mod tests {
         let stranger = Phone::new(&base);
         assert_eq!(stranger.status("/api/state?t=tok123456789012"), 403);
         assert!(!ui.watched(), "someone who was refused counts as watching");
+        assert!(ui.rx.try_recv().is_err(), "a refused viewer took the terminal's width");
         phone.get("/api/state?t=tok123456789012");
         assert!(ui.watched(), "someone who came for the state does not count as watching");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
+        phone.get("/api/state?t=tok123456789012");
+        assert!(ui.rx.try_recv().is_err(), "a routine poll took the width from someone typing at the PC");
+        *ui.last_poll.lock().unwrap() = Some(Instant::now() - RemoteUi::POLL_LIFE);
+        phone.get("/api/state?t=tok123456789012");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)),
+            "a returning poller did not take the terminal's width");
         ui.shutdown();
     }
 
@@ -5192,12 +5223,16 @@ mod tests {
         }];
         let body = phone.text("/api/state?t=tok123456789012");
         assert!(body.contains("実装") && body.contains("QUESTION"), "{body}");
+        assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
 
+        // A position from an old page is not enough to send anything.
+        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"stale"}"#);
+        assert!(ui.rx.try_recv().is_err(), "a request without a tab identity was accepted");
         // The instruction reaches the main loop
-        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"text":"続けて"}"#);
+        phone.post("/api/send?t=tok123456789012", r#"{"tab":1,"uid":"tab-uid","text":"続けて"}"#);
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Send { tab, text } => {
-                assert_eq!((tab, text.as_str()), (1, "続けて"));
+            RemoteCmd::Send { uid, text } => {
+                assert_eq!((uid.as_str(), text.as_str()), ("tab-uid", "続けて"));
             }
             other => panic!("unexpected: {other:?}"),
         }
@@ -5557,6 +5592,12 @@ mod tests {
         laptop.pair("tok-panes-00001");
         let mut phone_line = open(&phone.cookie, "");
         let mut laptop_line = open(&laptop.cookie, "&panes=1");
+
+        // Every new view takes over, even if another socket is still present
+        // (as happens briefly while a browser reloads the board).
+        for _ in 0..2 {
+            assert!(matches!(ui.rx.recv_timeout(Duration::from_secs(2)), Ok(RemoteCmd::Viewing)));
+        }
 
         // Both are seeded with the ui and the screen; only the laptop with the panes
         for line in [&mut phone_line, &mut laptop_line] {

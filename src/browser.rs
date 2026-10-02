@@ -3619,8 +3619,8 @@ mod nav_tests {
             Some(Ev::OpenSettings { tabpos, .. }) => assert!(tabpos.is_none(), "it came in though there was no position"),
             other => panic!("opensettings was not read: {other:?}"),
         }
-        match read(r#"{"kind":"say","tab":3,"text":"hello"}"#) {
-            Some(Ev::Say { tab, text }) => {
+        match read(r#"{"kind":"say","tab":3,"uid":"tab-uid","text":"hello"}"#) {
+            Some(Ev::Say { tab, text, .. }) => {
                 assert_eq!((tab, text.as_str()), (3, "hello"), "the addressee and the text do not match");
             }
             other => panic!("say was not read: {other:?}"),
@@ -3741,7 +3741,7 @@ mod tests {
             parse_intent(&v).unwrap_or_else(|| panic!("parse_intent cannot read: {s}"))
         };
         for s in [
-            r#"{"kind":"say","tab":1,"text":"rm -rf ~"}"#,
+            r#"{"kind":"say","tab":1,"uid":"tab-uid","text":"rm -rf ~"}"#,
             r#"{"kind":"key","text":"x"}"#,
             r#"{"kind":"runlua","code":"print(1)"}"#,
             r#"{"kind":"runaction","index":0}"#,
@@ -3790,7 +3790,7 @@ mod tests {
         let stranger = |body: &str, asked: &mut Asked| heard(body, Some("web"), false, asked);
         // The very message the review found going into the terminal
         assert!(
-            stranger(r#"{"kind":"say","tab":1,"text":"SECURITY_REVIEW_MARKER"}"#, &mut asked)
+            stranger(r#"{"kind":"say","tab":1,"uid":"tab-uid","text":"SECURITY_REVIEW_MARKER"}"#, &mut asked)
                 .is_none(),
             "a say from a page that is not ours reaches the terminal"
         );
@@ -3827,7 +3827,7 @@ mod tests {
         // The board's own reports carry no name -- except the bar's press,
         // which names the page the bar stands under
         assert!(matches!(
-            heard(r#"{"kind":"say","tab":1,"text":"ls"}"#, None, true, &mut asked),
+            heard(r#"{"kind":"say","tab":1,"uid":"tab-uid","text":"ls"}"#, None, true, &mut asked),
             Some(Ev::Say { tab: 1, .. })
         ));
         match heard(r#"{"kind":"button","name":"br"}"#, None, true, &mut asked) {
