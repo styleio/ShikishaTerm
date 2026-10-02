@@ -952,7 +952,7 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
     }
     // What it holds ends with it (far-keep plan §7.7): the person was told
     // how many AIs run there before they took it off
-    crate::farterm::end_all(at);
+    crate::farterm::end_all(&crate::farterm::Place::Far(at.clone()));
     disconnect(at);
     let home = far_home(at)?;
     if !home.ends_with(HOME_DIR) {
@@ -977,7 +977,7 @@ pub fn remove(at: &crate::elsewhere::Elsewhere) -> Result<()> {
         bail!("the bridge's resident process on {} did not end; its folder is left, to be taken off again", at.address());
     }
     // Its terminals went with it: none is to be gone back to
-    crate::farterm::forget_machine(at);
+    crate::farterm::forget_machine(&crate::farterm::Place::Far(at.clone()));
     crate::append_hook_log(&format!("bridge: removed from {}", at.address()));
     Ok(())
 }

@@ -43,6 +43,58 @@ const LIST_WAIT: Duration = Duration::from_secs(10);
 /// (`farlink::Keeper`), a few times a minute
 const LINE_BACK_WAIT: Duration = Duration::from_secs(10 * 60);
 
+/// Where a held terminal is: on another machine, held by the bridge there;
+/// or on this PC, held by this PC's own resident process (the local-keeper
+/// plan), which is the same resident process run here
+#[derive(Debug, Clone)]
+pub enum Place {
+    Far(crate::elsewhere::Elsewhere),
+    Here,
+}
+
+impl Place {
+    /// What its terminals are written down under
+    pub fn machine_key(&self) -> String {
+        match self {
+            Place::Far(at) => at.machine_key(),
+            Place::Here => crate::localkeep::KEY.to_string(),
+        }
+    }
+
+    /// How the log names it
+    pub fn address(&self) -> String {
+        match self {
+            Place::Far(at) => at.address(),
+            Place::Here => "this PC".to_string(),
+        }
+    }
+
+    /// How a person is told it, in their language
+    pub fn name(&self) -> String {
+        match self {
+            Place::Far(at) => at.address(),
+            Place::Here => crate::i18n::t("msg.localkeep.this_pc"),
+        }
+    }
+
+    /// The line to its resident process, when it is up
+    pub fn link(&self) -> Option<Arc<crate::farlink::Link>> {
+        match self {
+            Place::Far(at) => crate::farlink::link(at),
+            Place::Here => crate::localkeep::link(),
+        }
+    }
+
+    /// The MicroVM's entry, when it is one: what pausing and keeping it up
+    /// is about
+    pub fn cloud(&self) -> Option<&crate::config::HostSpec> {
+        match self {
+            Place::Far(crate::elsewhere::Elsewhere::Cloud(h)) => Some(h),
+            _ => None,
+        }
+    }
+}
+
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
@@ -144,9 +196,9 @@ fn strike(all: &mut Vec<Saved>, machine: &str, generation: &str, term: u64) {
 /// it was, to be taken up again on the next start (far-keep plan §5): its
 /// resident process keeps the terminal, rather than ending the AI on a clock
 /// of its own that a pause stops and a start takes up again
-fn on_the_line(at: &crate::elsewhere::Elsewhere, away: crate::config::Away) -> Value {
-    match (at, away) {
-        (crate::elsewhere::Elsewhere::Cloud(_), crate::config::Away::Minutes(_)) => crate::config::Away::Always.on_the_line(),
+fn on_the_line(at: &Place, away: crate::config::Away) -> Value {
+    match (at.cloud(), away) {
+        (Some(_), crate::config::Away::Minutes(_)) => crate::config::Away::Always.on_the_line(),
         _ => away.on_the_line(),
     }
 }
@@ -157,7 +209,7 @@ fn now_secs() -> u64 {
 
 /// Every terminal written down for a machine taken off: its bridge, and
 /// every terminal in it, is gone with it
-pub fn forget_machine(at: &crate::elsewhere::Elsewhere) {
+pub fn forget_machine(at: &Place) {
     let machine = at.machine_key();
     change_saved(|all| all.retain(|o| o.machine != machine));
 }
@@ -166,7 +218,7 @@ pub fn forget_machine(at: &crate::elsewhere::Elsewhere) {
 /// the one written down for it; or, with nothing written down -- the note
 /// was lost -- one the bridge holds for the same tab and folder that no app
 /// owns (far-keep plan §7.4). Asked of the bridge only when its line is up
-pub fn left_running(at: &crate::elsewhere::Elsewhere, cwd: &str, tab: &str) -> Option<Saved> {
+pub fn left_running(at: &Place, cwd: &str, tab: &str) -> Option<Saved> {
     let machine = at.machine_key();
     if let Some(s) = read_saved().into_iter().find(|s| s.is_tab(&machine, cwd, tab)) {
         return Some(s);
@@ -185,8 +237,8 @@ pub fn left_running(at: &crate::elsewhere::Elsewhere, cwd: &str, tab: &str) -> O
 /// Ask the bridge on `at` something of its terminals job, and wait for the
 /// answer: through the one router of its line, which a second listener would
 /// take the line's messages from
-fn ask(at: &crate::elsewhere::Elsewhere, mut m: Value) -> Option<Value> {
-    let link = crate::farlink::link(at).filter(|l| l.holds(JOB))?;
+fn ask(at: &Place, mut m: Value) -> Option<Value> {
+    let link = at.link().filter(|l| l.holds(JOB))?;
     let r = router(at, &link);
     let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = channel::<Value>();
@@ -200,12 +252,12 @@ fn ask(at: &crate::elsewhere::Elsewhere, mut m: Value) -> Option<Value> {
 
 /// Every terminal the bridge on `at` holds, with its generation: for the
 /// person's list of what runs while the app is away (far-keep plan §7.6)
-pub fn list_held(at: &crate::elsewhere::Elsewhere) -> Option<Value> {
+pub fn list_held(at: &Place) -> Option<Value> {
     ask(at, json!({ "do": "list" })).filter(|m| m["did"] == "list")
 }
 
 /// Stop one of them, whoever owns it: the person asked to, from that list
-pub fn end_held(at: &crate::elsewhere::Elsewhere, term: u64, generation: &str) -> bool {
+pub fn end_held(at: &Place, term: u64, generation: &str) -> bool {
     let done = ask(at, json!({ "do": "end", "term": term, "gen": generation })).is_some_and(|m| m["did"] == "ending");
     if done {
         let machine = at.machine_key();
@@ -217,7 +269,7 @@ pub fn end_held(at: &crate::elsewhere::Elsewhere, term: u64, generation: &str) -
 /// Stop every one, as the bridge is taken off the machine (§7.7). Nothing
 /// is asked when the line is not up: the resident process is told to end
 /// as the folder goes
-pub fn end_all(at: &crate::elsewhere::Elsewhere) {
+pub fn end_all(at: &Place) {
     if ask(at, json!({ "do": "end_all" })).is_some() {
         crate::append_hook_log(&format!("far terminals on {}: every one stopped, the bridge being taken off", at.address()));
         std::thread::sleep(Duration::from_millis(500));
@@ -238,7 +290,7 @@ static ROUTERS: OnceLock<Mutex<HashMap<String, Arc<Mutex<Router>>>>> = OnceLock:
 static NEXT_REF: AtomicU64 = AtomicU64::new(0);
 
 /// The router for a machine's line, started the first time it is needed
-fn router(at: &crate::elsewhere::Elsewhere, link: &crate::farlink::Link) -> Arc<Mutex<Router>> {
+fn router(at: &Place, link: &crate::farlink::Link) -> Arc<Mutex<Router>> {
     let mut all = ROUTERS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let key = at.machine_key();
     if let Some(r) = all.get(&key) {
@@ -283,14 +335,15 @@ fn router(at: &crate::elsewhere::Elsewhere, link: &crate::farlink::Link) -> Arc<
 /// Ask the bridge on `at` for a terminal. Its id and generation, and where
 /// what is said about it comes
 fn ask_open(
-    at: &crate::elsewhere::Elsewhere,
+    at: &Place,
     tab: &str,
     (rows, cols): (u16, u16),
     cwd: Option<&str>,
     then: Option<&str>,
+    run: Option<&Value>,
     away: crate::config::Away,
 ) -> Result<(u64, String, Receiver<Value>, Arc<crate::farlink::Link>)> {
-    let link = crate::farlink::link(at).ok_or_else(|| anyhow!("the bridge on {} is not connected", at.address()))?;
+    let link = at.link().ok_or_else(|| anyhow!("the bridge on {} is not connected", at.address()))?;
     if !link.holds(JOB) {
         bail!("the bridge on {} does not hold terminals (an older version)", at.address());
     }
@@ -298,8 +351,14 @@ fn ask_open(
     let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = channel::<Value>();
     r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
-    let asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
+    let mut asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
         "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away) });
+    // On this PC the command is said in full: the program, its arguments and
+    // the environment the tab put together for it (`crate::localkeep`)
+    if let Some(run) = run {
+        asked["argv"] = run["argv"].clone();
+        asked["env_all"] = run["env_all"].clone();
+    }
     if !link.to_job(JOB, asked) {
         bail!("the bridge on {} could not be asked for a terminal", at.address());
     }
@@ -346,13 +405,15 @@ pub struct FarTerm {
     /// what a terminal found ended is opened again with
     cwd: Option<String>,
     then: Option<String>,
+    /// On this PC, what is run, said in full (see `ask_open`)
+    run: Option<Value>,
     /// What it does while this app is away (far-keep plan §4.3): changed
     /// when the person changes the machine's setting
     away: Mutex<crate::config::Away>,
     owner: AtomicU64,
     /// Where it is, and the line to it now: a line that went and came back
     /// is another line
-    at: crate::elsewhere::Elsewhere,
+    at: Place,
     link: Mutex<Option<Arc<crate::farlink::Link>>>,
     size: Mutex<(u16, u16)>,
     /// The tab's own parser and what beside it a program's asks are kept in,
@@ -380,7 +441,7 @@ struct Bound {
 
 impl FarTerm {
     fn new(
-        at: &crate::elsewhere::Elsewhere,
+        at: &Place,
         ident: Ident,
         tab: &str,
         size: (u16, u16),
@@ -392,6 +453,7 @@ impl FarTerm {
             tab: tab.to_string(),
             cwd: cwd.map(str::to_string),
             then: then.map(str::to_string),
+            run: None,
             away: Mutex::new(away),
             owner: AtomicU64::new(0),
             at: at.clone(),
@@ -402,11 +464,19 @@ impl FarTerm {
             let_go: AtomicBool::new(false),
             left: Mutex::new(None),
             stopping: AtomicBool::new(false),
-            open_there: Mutex::new(match at {
-                crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().map(crate::e2b::Opened::new),
-                crate::elsewhere::Elsewhere::Ssh(_) => None,
-            }),
+            open_there: Mutex::new(at.cloud().and_then(|h| h.instance.as_deref()).map(crate::e2b::Opened::new)),
         }
+    }
+
+    /// What is run on this PC, said in full (`ask_open`)
+    fn with_run(mut self, run: Option<Value>) -> Self {
+        self.run = run;
+        self
+    }
+
+    /// Whether it is held on this PC, by this PC's own resident process
+    pub fn here(&self) -> bool {
+        matches!(self.at, Place::Here)
     }
 
     /// The tab's parser, once it has one: states handed over go into it
@@ -459,10 +529,7 @@ impl FarTerm {
         self.let_go.store(true, Ordering::SeqCst);
         // When, for the next start to tell whether its machine was paused
         // since (a MicroVM freezes what runs on it)
-        let run = match &self.at {
-            crate::elsewhere::Elsewhere::Cloud(h) => h.instance.as_deref().and_then(crate::e2b::run_left),
-            crate::elsewhere::Elsewhere::Ssh(_) => None,
-        };
+        let run = self.at.cloud().and_then(|h| h.instance.as_deref()).and_then(crate::e2b::run_left);
         let (machine, generation, term) = (self.at.machine_key(), self.generation(), self.term());
         change_saved(|all| {
             if let Some(s) = all.iter_mut().find(|s| s.machine == machine && s.generation == generation && s.term == term) {
@@ -489,7 +556,7 @@ impl FarTerm {
     /// The line is up: be routed its messages again and attach, which hands
     /// the state over. `None` while the line is not up yet
     fn attach_again(&self) -> Option<Receiver<Value>> {
-        let link = crate::farlink::link(&self.at).filter(|l| l.holds(JOB))?;
+        let link = self.at.link().filter(|l| l.holds(JOB))?;
         let r = router(&self.at, &link);
         let (tx, rx) = channel();
         r.lock().unwrap_or_else(|e| e.into_inner()).by_term.insert(self.term(), tx);
@@ -580,14 +647,15 @@ fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, fresh: bool) -> 
 /// Open a terminal for `tab` in the bridge's resident process on `at`: a
 /// shell in `cwd`, with `then` typed into it
 pub fn open(
-    at: &crate::elsewhere::Elsewhere,
+    at: &Place,
     tab: &str,
     (rows, cols): (u16, u16),
     (cwd, then): (Option<&str>, Option<&str>),
+    run: Option<Value>,
     away: crate::config::Away,
 ) -> Result<Opened> {
-    let (id, generation, rx, link) = ask_open(at, tab, (rows, cols), cwd, then, away)?;
-    let term = Arc::new(FarTerm::new(at, Ident { term: id, generation }, tab, (rows, cols), (cwd, then), away));
+    let (id, generation, rx, link) = ask_open(at, tab, (rows, cols), cwd, then, run.as_ref(), away)?;
+    let term = Arc::new(FarTerm::new(at, Ident { term: id, generation }, tab, (rows, cols), (cwd, then), away).with_run(run));
     if let Ok(mut l) = term.link.lock() {
         *l = Some(link);
     }
@@ -600,14 +668,15 @@ pub fn open(
 /// terminal ended, when a new one is opened with `then`, the way the tab
 /// starts where its conversation was
 pub fn reattach(
-    at: &crate::elsewhere::Elsewhere,
+    at: &Place,
     saved: Saved,
     (rows, cols): (u16, u16),
     (cwd, then): (Option<&str>, Option<&str>),
+    run: Option<Value>,
     away: crate::config::Away,
 ) -> Opened {
     crate::append_hook_log(&format!("far terminal {}: going back to it on {} for {}", saved.term, at.address(), saved.tab));
-    let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), (cwd, then), away));
+    let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), (cwd, then), away).with_run(run));
     if let Ok(mut l) = term.left.lock() {
         *l = saved.left;
     }
@@ -622,14 +691,15 @@ pub fn reattach(
 /// want of the line at the moment it was started. The tab says it is
 /// waiting, and gives up -- starting nothing -- if the line never comes
 pub fn open_later(
-    at: &crate::elsewhere::Elsewhere,
+    at: &Place,
     tab: &str,
     (rows, cols): (u16, u16),
     (cwd, then): (Option<&str>, Option<&str>),
+    run: Option<Value>,
     away: crate::config::Away,
 ) -> Opened {
     crate::append_hook_log(&format!("far terminal for {tab}: to be opened on {} once its line is up", at.address()));
-    let term = Arc::new(FarTerm::new(at, Ident { term: 0, generation: String::new() }, tab, (rows, cols), (cwd, then), away));
+    let term = Arc::new(FarTerm::new(at, Ident { term: 0, generation: String::new() }, tab, (rows, cols), (cwd, then), away).with_run(run));
     let (_, gone) = channel();
     made(term, gone, true, true)
 }
@@ -672,7 +742,7 @@ impl FarReader {
     /// Or there was none yet (`open_later`), and this is its first
     fn open_in_its_place(&mut self) -> bool {
         let (rows, cols) = self.term.size.lock().map(|s| *s).unwrap_or((24, 80));
-        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.away()) {
+        match ask_open(&self.term.at, &self.term.tab, (rows, cols), self.term.cwd.as_deref(), self.term.then.as_deref(), self.term.run.as_ref(), self.term.away()) {
             Ok((id, generation, rx, link)) => {
                 if self.fresh {
                     crate::append_hook_log(&format!("far terminal {id} opened on {} once its line was up", self.term.at.address()));
@@ -730,10 +800,16 @@ impl std::io::Read for FarReader {
                     if self.term.let_go.load(Ordering::SeqCst) {
                         return Ok(0);
                     }
+                    // The line to this PC's resident process is made by the
+                    // tabs that need it, not by the round that keeps the
+                    // other machines' lines: asked again while it is down
+                    if self.term.here() {
+                        crate::localkeep::connect_soon();
+                    }
                     if self.fresh {
                         // Nothing there yet to attach to: opened as soon as
                         // the line is up
-                        if crate::farlink::link(&self.term.at).is_some_and(|l| l.holds(JOB)) {
+                        if self.term.at.link().is_some_and(|l| l.holds(JOB)) {
                             self.open_in_its_place();
                             break Some(None);
                         }
@@ -778,7 +854,7 @@ impl std::io::Read for FarReader {
                     let mut frozen = false;
                     if self.again && !self.attached {
                         crate::append_hook_log(&format!("far terminal {}: went back to it", self.term.term()));
-                        if let (crate::elsewhere::Elsewhere::Cloud(h), Some(left)) = (&self.term.at, self.term.left.lock().ok().and_then(|l| *l))
+                        if let (Some(h), Some(left)) = (self.term.at.cloud(), self.term.left.lock().ok().and_then(|l| *l))
                             && let Some(id) = h.instance.as_deref()
                         {
                             frozen = crate::e2b::begun_again_since(id, left).unwrap_or(false);
@@ -850,7 +926,7 @@ impl std::io::Read for FarReader {
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;
                     }
-                    let text = crate::i18n::tp("msg.farterm.unknown", &[("host", &self.term.at.address())]);
+                    let text = crate::i18n::tp("msg.farterm.unknown", &[("host", &self.term.at.name())]);
                     self.say_last(&text);
                 }
                 "refused" => {

@@ -812,8 +812,8 @@ pub(crate) fn supported_keyboard_flags(asked: u16) -> u8 {
 }
 
 /// Whether the bridge on `at` is connected and holds terminals
-fn far_holds(at: &crate::elsewhere::Elsewhere) -> bool {
-    crate::farlink::link(at).is_some_and(|l| l.holds("terms"))
+fn far_holds(at: &crate::farterm::Place) -> bool {
+    at.link().is_some_and(|l| l.holds("terms"))
 }
 
 /// What the AIs on the machine a tab's entry names do while the app is
@@ -3385,6 +3385,17 @@ impl Tab {
         self.opts.host.as_deref()
     }
 
+    /// Where this tab's AI goes on once the app is gone, as a person is told
+    /// it: the machine's name, or this PC for one this PC's resident process
+    /// holds (local-keeper plan)
+    pub fn kept_where(&self) -> String {
+        match (self.host_name(), self.far_term.as_ref().is_some_and(|t| t.here())) {
+            (_, true) => crate::i18n::t("msg.localkeep.this_pc"),
+            (Some(h), false) => h.to_string(),
+            (None, false) => String::new(),
+        }
+    }
+
     pub fn remote(&self) -> Option<&crate::ssh::Spec> {
         self.opts.remote.as_ref()
     }
@@ -3661,7 +3672,12 @@ impl Tab {
         // here: from the writer down, all three are a thing that reads bytes,
         // writes bytes, and has a size
         let local = opts.remote.is_none() && opts.cloud.is_none();
-        let pair = local
+        // Held on this PC by its own resident process (the local-keeper
+        // plan), so that the program outlives this app: the person's own
+        // program, on this PC, with the setting saying to keep this PC's
+        // terminals. A model tab and a held one run nothing of the person's
+        let keep_here = local && opts.model.is_none() && opts.held.is_none() && crate::localkeep::wanted();
+        let pair = (local && !keep_here)
             .then(|| {
                 native_pty_system().openpty(PtySize {
                     rows,
@@ -3820,7 +3836,33 @@ impl Tab {
             // folder is held before it is started (`TabOptions::hold`)
             (None, true) => std::env::current_dir()?,
         };
-        cmd.cwd(cwd);
+        cmd.cwd(&cwd);
+        // On this PC's resident process, the command goes as it was put
+        // together here -- the program, its arguments, and every variable of
+        // the environment -- since this is the one place a tab's command is
+        // made, and the resident process has only what the app had when it
+        // was started. The terminal it left running, if there is one, is gone
+        // back to instead (local-keeper plan §7)
+        let here_opened = if keep_here {
+            let run = serde_json::json!({
+                "argv": cmd.get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+                "env_all": cmd.iter_full_env_as_str().map(|(k, v)| (k.to_string(), serde_json::Value::from(v))).collect::<serde_json::Map<_, _>>(),
+            });
+            let at = crate::farterm::Place::Here;
+            let folder = cwd.to_string_lossy().into_owned();
+            let called = opts.called(&title);
+            let started = (Some(folder.as_str()), None);
+            crate::localkeep::connect_soon();
+            let away = crate::config::Away::Always;
+            Some(match crate::farterm::left_running(&at, &folder, called) {
+                Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, Some(run), away),
+                None if crate::localkeep::link().is_some() => crate::farterm::open(&at, called, (rows, cols), started, Some(run), away)?,
+                None => crate::farterm::open_later(&at, called, (rows, cols), started, Some(run), away),
+            })
+        } else {
+            None
+        };
+        let mut here_opened = here_opened;
         // Whether the terminal on a MicroVM is open yet: it opens when the tab
         // is first looked at (see `e2b::shown`), and until then the line it
         // shows is this app's, not the program's
@@ -3837,8 +3879,8 @@ impl Tab {
         // the line is up -- never the old way for want of the line
         let away = held_away(opts.host.as_deref());
         let held_there = match (&pair, opts.remote.as_ref(), opts.cloud.as_ref()) {
-            (None, Some(spec), _) => Some(crate::elsewhere::Elsewhere::Ssh(spec.clone())),
-            (None, None, Some(host)) => Some(crate::elsewhere::Elsewhere::Cloud(host.clone())),
+            (None, Some(spec), _) => Some(crate::farterm::Place::Far(crate::elsewhere::Elsewhere::Ssh(spec.clone()))),
+            (None, None, Some(host)) => Some(crate::farterm::Place::Far(crate::elsewhere::Elsewhere::Cloud(host.clone()))),
             _ => None,
         }
         .zip(away)
@@ -3864,9 +3906,9 @@ impl Tab {
             (None, _, _, Some((at, left, away))) => {
                 let started = (opts.remote_cwd.as_deref(), far_typed.as_deref());
                 let (m, k, t) = match left {
-                    Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, away),
-                    None if far_holds(&at) => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, away)?,
-                    None => crate::farterm::open_later(&at, opts.called(&title), (rows, cols), started, away),
+                    Some(left) => crate::farterm::reattach(&at, left, (rows, cols), started, None, away),
+                    None if far_holds(&at) => crate::farterm::open(&at, opts.called(&title), (rows, cols), started, None, away)?,
+                    None => crate::farterm::open_later(&at, opts.called(&title), (rows, cols), started, None, away),
                 };
                 far_term = Some(t);
                 (m, k, None, None)
@@ -3891,7 +3933,14 @@ impl Tab {
                 )?;
                 (m, k, None, None)
             }
-            (None, None, None, None) => anyhow::bail!("a tab with no terminal of any kind"),
+            // This PC's own resident process holds it (local-keeper plan)
+            (None, None, None, None) => match here_opened.take() {
+                Some((m, k, t)) => {
+                    far_term = Some(t);
+                    (m, k, None, None)
+                }
+                None => anyhow::bail!("a tab with no terminal of any kind"),
+            },
         };
         // Everything this tab goes on to start belongs to this tab. Killing the
         // program we launched has never reached what it launched -- a .cmd shim
@@ -4393,6 +4442,13 @@ impl Tab {
     /// restart of the tab
     pub fn refresh_away(&self, cfg: &crate::config::Config) {
         let Some(t) = self.far_term.as_ref() else { return };
+        // A terminal this PC's resident process holds was opened to outlive
+        // the app, and goes on doing so: turning the setting off takes effect
+        // for the tabs opened after it (local-keeper plan §3), and stopping
+        // what runs is "stop everything and quit"
+        if t.here() {
+            return;
+        }
         let away = self
             .opts
             .host

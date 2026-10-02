@@ -17976,7 +17976,7 @@ pub fn quit_ask(tabs: &[Tab], parked: &[Vec<Tab>]) -> crate::host::QuitAsk {
     // is gone (far-keep plan §5)
     let mut machines: std::collections::BTreeMap<String, (String, u32)> = Default::default();
     for t in tabs.iter().chain(parked.iter().flatten()).filter(|t| t.kept_away() && !t.exited()) {
-        let host = t.host_name().unwrap_or_default().to_string();
+        let host = t.kept_where();
         *kept.entry(host.clone()).or_default() += 1;
         if let (Some(crate::elsewhere::Elsewhere::Cloud(h)), Some(minutes)) = (t.machine(), t.kept_minutes())
             && let Some(id) = h.instance.clone()

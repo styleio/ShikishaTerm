@@ -58,6 +58,29 @@ pub fn link() -> Option<Arc<Link>> {
     crate::farlink::link_by_key(KEY)
 }
 
+/// Whether this PC's terminals are to be held by it: the person said so
+/// (`keep_terminals`), and this is a system it runs on
+pub fn wanted() -> bool {
+    cfg!(windows) && crate::config::load().and_then(|c| c.keep_terminals).unwrap_or(false)
+}
+
+/// Make the line on a thread of its own, unless it is up or being made: a
+/// tab that needs it waits for it (`farterm::open_later`), and does not hold
+/// up the app while the resident process starts
+pub fn connect_soon() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static MAKING: AtomicBool = AtomicBool::new(false);
+    if link().is_some() || MAKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("this PC's resident process".into()).spawn(|| {
+        if let Err(e) = connect() {
+            crate::append_hook_log(&format!("this PC's resident process: no line to it ({e:#})"));
+        }
+        MAKING.store(false, Ordering::SeqCst);
+    });
+}
+
 /// Whether a resident process is there now, without starting one
 pub fn is_there() -> bool {
     keep_door().is_ok_and(|d| crate::fardaemon::probe(&d).is_some())

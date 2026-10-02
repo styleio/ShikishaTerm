@@ -4276,7 +4276,7 @@ fn handle(
             let machines: Vec<serde_json::Value> = crate::farlink::up_for(&host)
                 .iter()
                 .filter_map(|at| {
-                    let listed = crate::farterm::list_held(at)?;
+                    let listed = crate::farterm::list_held(&crate::farterm::Place::Far(at.clone()))?;
                     Some(serde_json::json!({
                         "machine": at.machine_key(),
                         "address": at.address(),
@@ -4299,7 +4299,7 @@ fn handle(
             let host = crate::farlink::host_of(machine).unwrap_or_default();
             let at = crate::farlink::up_for(&host).into_iter().find(|a| a.machine_key() == machine);
             let resp = match at {
-                Some(at) if crate::farterm::end_held(&at, v["term"].as_u64().unwrap_or(0), v["gen"].as_str().unwrap_or_default()) => {
+                Some(at) if crate::farterm::end_held(&crate::farterm::Place::Far(at.clone()), v["term"].as_u64().unwrap_or(0), v["gen"].as_str().unwrap_or_default()) => {
                     serde_json::json!({ "ok": true })
                 }
                 Some(_) => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.away.list.not_there") }),

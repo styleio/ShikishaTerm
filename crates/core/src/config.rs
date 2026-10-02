@@ -1010,6 +1010,13 @@ pub struct Config {
     /// rather than quitting (default: yes). Put away, the tabs go on working
     /// and the phone stays connected; the icon's menu is where quitting is
     pub resident: Option<bool>,
+    /// Whether this PC's terminals are held by a resident process of their
+    /// own, so that what runs in them goes on when the app is quit, updated,
+    /// or gone in a crash, and the app finds them again when it starts
+    /// (the local-keeper plan). Unset is "no", and shown as "no"; it applies
+    /// to tabs opened after it is set
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_terminals: Option<bool>,
     /// When to keep this PC from going to sleep: "off" (the default), "ai"
     /// while an AI tab is working on a turn, "always" while this program
     /// runs (see [`crate::awake`]). What a closed lid does stays Windows's
