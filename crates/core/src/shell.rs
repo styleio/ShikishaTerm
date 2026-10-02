@@ -11576,7 +11576,11 @@ function drawStatus() {
     el("span", {class:"grow"}),
     buildStamp(),
     restartBtn(),
-    el("span", {id:"stop", onclick:() => send({kind:"stop"})},
+    el("span", {id:"stop", onclick:() => askQuestion({
+      title:T["tui.stop.confirm"], say:T["tui.stop.say"],
+      label:T["tui.stop.go"], danger:true,
+      go:() => send({kind:"stop"}),
+    })},
       T["tui.stop"] || "STOP"),
   ].forEach(x => { if (x) s.append(x); });
   if (wasAt) mid.scrollLeft = wasAt;
