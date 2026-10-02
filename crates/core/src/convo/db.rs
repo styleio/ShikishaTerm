@@ -941,7 +941,10 @@ impl Store {
     /// takes part, by the names they go by, and how it began. One merged into
     /// another is not one of its own any more
     pub fn threads(&self, desk: &str, tab: Option<&str>, want: usize) -> Result<Vec<ThreadRow>> {
-        let tab = tab.map(|t| self.uid_now(desk, t)).transpose()?;
+        let tab = tab.map(|t| match crate::config::is_tab_uid(t) {
+            true => Ok(t.to_string()),
+            false => self.uid_now(desk, t),
+        }).transpose()?;
         let mut st = self.conn.prepare(
             "SELECT t.id, t.last_at FROM threads t WHERE t.desk = ?1 AND t.merged_into IS NULL \
              AND (?3 IS NULL OR EXISTS (SELECT 1 FROM thread_tabs m WHERE m.thread_id = t.id AND m.tab = ?3)) \
@@ -1571,6 +1574,9 @@ mod tests {
         s.named(new, "work", "tiger", 20).unwrap();
         assert!(s.conversations(new).unwrap().is_empty(), "the new tab was handed the old one's conversations");
         assert!(s.threads("work", Some("tiger"), 10).unwrap().is_empty(), "the new tab took part in the old one's conversations");
+        assert!(s.threads("work", Some(new), 10).unwrap().is_empty());
+        assert_eq!(s.threads("work", Some(old), 10).unwrap()[0].id, t, "a viewer can follow a tab by its stable identity");
+        assert!(s.threads("other-desk", Some(old), 10).unwrap().is_empty());
         assert_eq!(s.last_line_of("work", None, Some("tiger")).unwrap(), None, "the new tab answered for the old one's line");
         assert_ne!(s.thread_for("work", &format!("{new}/"), 30).unwrap().0, t, "a tab with no conversation yet joined the old one's");
         assert_eq!(s.uid_now("work", "tiger").unwrap(), new);

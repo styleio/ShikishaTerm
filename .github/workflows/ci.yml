@@ -34,6 +34,9 @@ jobs:
       - name: The board comes up when it is handed a state
         run: node tools/check-board.mjs
 
+      - name: Conversation replies stay with the requesting viewer and tab
+        run: node tools/check-conversations.mjs
+
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line
       # in a pull request; caught at the tag, it is a release already downloaded.

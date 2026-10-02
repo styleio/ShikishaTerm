@@ -135,12 +135,7 @@ fn ask_of(line: &[u8], spec: &AskSpec) -> Option<String> {
     // CLI's injected context, including its project-instruction wrapper.
     let text = crate::reader::human_part(&text);
     let text = text.trim();
-    // Everything either CLI injects arrives wrapped in a tag -- the folder it
-    // is standing in, the plugins it could install, a background job that
-    // finished, a picture's dimensions. A person opening with `<` is a person
-    // writing about HTML, and losing that one request costs less than
-    // describing a folder from a list of plugins
-    match text.is_empty() || text.starts_with('<') {
+    match text.is_empty() {
         true => None,
         false => Some(text.to_string()),
     }
@@ -241,6 +236,13 @@ mod tests {
         }}).to_string();
         assert_eq!(one(&line(text), &codex()), None);
         assert_eq!(one(&line(&format!("{text}\nFix the history")), &codex()).as_deref(), Some("Fix the history"));
+    }
+
+    #[test]
+    fn a_request_beginning_with_markup_is_still_a_request() {
+        let text = "<my-widget>直してください</my-widget>";
+        let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": text}}).to_string();
+        assert_eq!(one(&line, &claude()).as_deref(), Some(text));
     }
 
     /// The CLIs that ship with this app describe their own records, and what

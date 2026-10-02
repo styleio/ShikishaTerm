@@ -6,12 +6,12 @@
  * a note written on it and pinned, one whose words a phone sent -- and over a
  * conversation opened from it, the way back and Resume, with the places a
  * conversation whose worktree was removed can go instead. Answered the way the
- * app answers them, through the state and `window.__vaultWhere`.
+ * app answers them, through `window.__convo` and `window.__vaultWhere`.
  */
 
 const folder = 'D:/work/shop';
 const hits = [
-  {program: 'claude', id: 'aaaa', title: 'shop', cwd: folder, when: 1790000000, at: 120, thread: 'coder',
+  {program: 'claude', id: 'aaaa', title: 'shop', cwd: folder, when: 1790000000, at: 120, thread: 'coder', thread_name: 'coder',
     snippet: '…The cart total is computed by the pricing module on every request…',
     said: {who: 'ai', when: null, head: 'The cart total'}},
   {program: 'claude', id: 'bbbb', title: 'shop', cwd: folder, when: 1789990000, at: 40,
@@ -47,6 +47,8 @@ const setup = `
   setSideWidth(420);
   window.__openVault();
   cvUi.q.value = "pricing"; CV.q = "pricing";
+  allFindNow();
+  window.__convo({panel:"vault", act:"find", ok:true, req:cvAllSeq.all, vault:S.vault});
   delete cvUi.list.dataset.all;
   drawConvo();
   "ok"`;
@@ -55,8 +57,8 @@ const setup = `
 const gone = `
   cvAll = false; cvFromAll = true;
   CV.past = {program: "codex", id: "gone", host: ""}; CV.loading = false; CV.rows = []; CV.rev++;
-  cvWhereReq = 7;
-  window.__vaultWhere({req: 7, ok: true, program: "codex", id: "gone", folder: "D:/work/shop-fix-tax",
+  cvWhereReq = convoRequest(CV.seq, "where");
+  window.__vaultWhere({req: cvWhereReq, ok: true, program: "codex", id: "gone", folder: "D:/work/shop-fix-tax",
     exists: false, branch: "fix/tax", homes: [{dir: "${folder}", local: true}]});
   drawConvo();
   document.querySelector("#convoHead .hgo").click();

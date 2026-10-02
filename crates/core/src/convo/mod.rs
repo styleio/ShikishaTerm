@@ -183,13 +183,14 @@ impl Log {
     /// part in still reads with the name it had
     pub fn roster<'a>(&mut self, tabs: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) {
         let at = db::now_ms();
+        let mut current: HashMap<String, Option<String>> = HashMap::new();
         for (desk, name, uid) in tabs {
             if name.is_empty() || uid.is_empty() {
                 continue;
             }
-            if self.by_name.get(name).map(String::as_str) != Some(uid) {
-                self.by_name.insert(name.to_string(), uid.to_string());
-            }
+            current.entry(name.to_string())
+                .and_modify(|known| { if known.as_deref() != Some(uid) { *known = None; } })
+                .or_insert_with(|| Some(uid.to_string()));
             let now = (desk.to_string(), name.to_string());
             if self.names.get(uid) == Some(&now) {
                 continue;
@@ -197,6 +198,7 @@ impl Log {
             self.names.insert(uid.to_string(), now);
             self.write("a tab's name", |s| s.named(uid, desk, name, at));
         }
+        self.by_name = current.into_iter().filter_map(|(name, uid)| uid.map(|uid| (name, uid))).collect();
     }
 
     /// The uid a note's tab stands for: itself when it is one, else the tab
@@ -455,6 +457,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_roster_does_not_keep_closed_or_ambiguous_names() {
+        let mut log = Log::in_memory();
+        log.roster([("one", "coder", "uid-one")]);
+        assert_eq!(log.uid_of("coder"), "uid-one");
+        log.roster([("one", "coder", "uid-one"), ("two", "coder", "uid-two")]);
+        assert!(!["uid-one", "uid-two"].contains(&log.uid_of("coder").as_str()));
+        log.roster([]);
+        assert_ne!(log.uid_of("coder"), "uid-one");
+        log.roster([("two", "coder", "uid-two")]);
+        assert_eq!(log.uid_of("coder"), "uid-two");
+    }
+
+    #[test]
     fn a_tab_is_written_down_only_when_it_moves() {
         let mut log = Log::in_memory();
         for _ in 0..5 {
@@ -474,7 +489,7 @@ mod tests {
         let mut log = Log::in_memory();
         log.follow("t", "claude", Some("a"), false);
         log.state("t", TabState::Question, None);
-        log.sent("t", &["<shikisha-note>x</shikisha-note>yes, go on"], &Origin::person(Device::Phone, "composer"));
+        log.sent("t", &["<system-reminder>x</system-reminder>yes, go on"], &Origin::person(Device::Phone, "composer"));
         let store = log.store.as_ref().unwrap();
         let sent = store.sends("t", 0, i64::MAX).unwrap();
         assert_eq!(sent[0].record_id.as_deref(), Some("a"));

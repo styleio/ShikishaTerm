@@ -2302,9 +2302,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // one that comes without a machine's name
     let (vault_far_tx, vault_far_rx) = std::sync::mpsc::channel::<(u64, Option<String>, crate::vault::FarFound)>();
     let mut vault_seq: u64 = 0;
-    // Which search is the current one. Reading this PC's records gives up the
-    // moment a newer search replaces it: reading on would only hold that one up
-    let vault_now = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut vault_searches = crate::vault::Searches::default();
     // Where a past conversation was had, for picking it back up
     let (vault_where_tx, vault_where_rx) = std::sync::mpsc::channel::<String>();
     // What was said before in a tab's folder on another machine, read there
@@ -9492,8 +9490,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is polled right below
         // The Vault: search past conversations, and reopen one as a resuming tab.
         //
-        // A search is answered into `vault_view`, which the state carries while
-        // the overlay is open. Reopening writes a tab into the active
+        // Each viewer receives the search it asked for. Old clients still
+        // receive `vault_view` in the state. Reopening writes a tab into the active
         // desk's settings; the change-watcher then launches it, resumed,
         // through the ordinary reload -- the one place a tab is safely made
         // What was said in one tab's folder before. Asked by a tab that came
@@ -9526,7 +9524,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             past_view = None;
         }
-        for (query, wake) in shell.mail().take_vault_queries() {
+        let mut vault_changed = Vec::new();
+        for crate::vault::Query { query, wake, viewer, req } in shell.mail().take_vault_queries() {
             // The present, then the past. What is on screen right now across
             // every open tab comes first -- a live match is more likely the
             // thing being looked for than an old conversation -- then the
@@ -9561,12 +9560,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Then this PC's records, read through on a thread of their own:
             // all of every record, which is too long to hold the loop for
             vault_seq += 1;
-            vault_now.store(vault_seq, std::sync::atomic::Ordering::Relaxed);
+            let cancelled = vault_searches.begin(viewer, req, vault_seq);
+            vault_changed.push(vault_seq);
             {
-                let (tx, q, seq, now) = (vault_far_tx.clone(), query.clone(), vault_seq, vault_now.clone());
+                let (tx, q, seq) = (vault_far_tx.clone(), query.clone(), vault_seq);
                 std::thread::spawn(move || {
                     let found = crate::vault::search_until(&q, 40, &|| {
-                        now.load(std::sync::atomic::Ordering::Relaxed) != seq
+                        cancelled.load(std::sync::atomic::Ordering::Relaxed)
                     });
                     let mut hits = found.hits;
                     for n in crate::vault::note_hits(&q) {
@@ -9609,7 +9609,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     });
                 }
             }
-            vault_view = Some(crate::uistate::VaultState {
+            vault_searches.get_mut(vault_seq).unwrap().state = crate::uistate::VaultState {
                 query,
                 hits,
                 capped: false,
@@ -9618,13 +9618,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 asking,
                 sleeping,
                 seq: vault_seq,
-            });
+            };
         }
         // Hits from another machine, joining the search that asked for them.
         // A conversation a copied machine carries from the one it was copied
         // from is listed once
         while let Ok((seq, machine, found)) = vault_far_rx.try_recv() {
-            let Some(v) = vault_view.as_mut().filter(|v| v.seq == seq) else { continue };
+            let Some(pending) = vault_searches.get_mut(seq) else { continue };
+            let v = &mut pending.state;
+            vault_changed.push(seq);
             match machine {
                 None => v.searching = false,
                 Some(name) => {
@@ -9663,6 +9665,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None => true,
             });
             v.hits.truncate(120);
+        }
+        vault_changed.sort_unstable();
+        vault_changed.dedup();
+        for seq in vault_changed {
+            let Some(pending) = vault_searches.get_mut(seq) else { continue };
+            if pending.viewer.is_empty() {
+                vault_view = Some(pending.state.clone());
+            } else {
+                let _ = convo_tx.send(crate::convo::read::Found {
+                    answer: serde_json::json!({"panel": "vault", "act": "find", "ok": true,
+                        "req": pending.req, "vault": pending.state}),
+                    forget: Vec::new(),
+                });
+            }
+            vault_searches.finished(seq);
         }
         // Where a past conversation was had, asked by the conversation panel
         // when it shows one opened from the search: the folder, whether it is
@@ -9755,10 +9772,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             let tx = convo_tx.clone();
-            std::thread::spawn(move || {
+            let ev_is_mark = act == "mark";
+            let answer = move || {
                 let found = crate::convo::read::answer(&target, &act, &args, &crate::convo::path(), &crate::convo::marks::path());
                 let _ = tx.send(found);
-            });
+            };
+            // Writes follow input order. Separate worker threads can acquire
+            // the marks lock in reverse order and restore an older note.
+            if ev_is_mark {
+                answer();
+            } else {
+                std::thread::spawn(answer);
+            }
         }
         while let Ok(found) = convo_rx.try_recv() {
             for (tab, record) in &found.forget {

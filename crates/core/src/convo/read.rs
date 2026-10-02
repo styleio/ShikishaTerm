@@ -299,7 +299,7 @@ impl Ctx<'_> {
         if q.is_empty() && !pins {
             return Ok(json!({"rows": [], "capped": false}));
         }
-        let turn = Searching::begin(&self.target.panel);
+        let turn = Searching::begin(&self.target.panel, args.get("viewer").and_then(Value::as_str).unwrap_or_default());
         let chain = self.chain();
         // Read forwards, each conversation from its start, so the work between
         // the things said is looked through too -- with the same rule the
@@ -434,10 +434,10 @@ impl Ctx<'_> {
         };
         // Another session's message says who sent it already; the rest are
         // matched to what the app sent
-        let persons: Vec<(Option<i64>, &str)> = said
+        let persons: Vec<(&str, Option<i64>, &str)> = said
             .iter()
             .filter(|(_, t)| t.who == Who::You && t.peer.is_none())
-            .map(|(_, t)| (t.when, t.text.as_str()))
+            .map(|(record, t)| (record.as_str(), t.when, t.text.as_str()))
             .collect();
         let matched = attribute(&persons, &sends);
         let mut matched = matched.into_iter();
@@ -539,7 +539,8 @@ pub fn origins(record_id: &str, lines: &[(Option<i64>, &str)]) -> Vec<Option<Val
     let Ok(store) = Store::open_read(&super::path()) else { return vec![None; lines.len()] };
     let Some(tab) = store.tab_of(record_id).ok().flatten() else { return vec![None; lines.len()] };
     let sends = store.sends(&tab, i64::MIN, i64::MAX).unwrap_or_default();
-    attribute(lines, &sends).into_iter().map(|m| m.map(|i| origin_json(&sends[i]))).collect()
+    let lines: Vec<_> = lines.iter().map(|(when, text)| (record_id, *when, *text)).collect();
+    attribute(&lines, &sends).into_iter().map(|m| m.map(|i| origin_json(&sends[i]))).collect()
 }
 
 fn origin_json(s: &Send) -> Value {
@@ -547,25 +548,25 @@ fn origin_json(s: &Send) -> Value {
 }
 
 /// Which send each of a person's lines was, in the order the lines are given
-/// (their time, where the record says, and their words). A line matches a
+/// (their record, time where the record says, and words). A line matches a
 /// send whose fingerprints include how the line begins and that was sent near
 /// enough in time; where several could, the nearest in time wins, and no send
 /// is used twice. A line with no time is matched to the earliest send left
 /// that fits it
-pub fn attribute(lines: &[(Option<i64>, &str)], sends: &[Send]) -> Vec<Option<usize>> {
-    let mut pairs: Vec<(i64, usize, usize)> = Vec::new();
-    for (i, (when, text)) in lines.iter().enumerate() {
+pub fn attribute(lines: &[(&str, Option<i64>, &str)], sends: &[Send]) -> Vec<Option<usize>> {
+    let mut pairs: Vec<(u64, usize, usize)> = Vec::new();
+    for (i, (record, when, text)) in lines.iter().enumerate() {
         let Some(h) = db::head(text) else { continue };
         for (j, s) in sends.iter().enumerate() {
-            if !s.heads.contains(&h) {
+            if s.record_id.as_deref().is_some_and(|id| id != *record) || !s.heads.contains(&h) {
                 continue;
             }
             let apart = match when {
-                Some(w) => (w - s.sent_at).abs(),
+                Some(w) => w.abs_diff(s.sent_at),
                 // Not known: after every pair that is, earliest send first
-                None => i64::MAX / 2 + j as i64,
+                None => u64::MAX / 2 + j as u64,
             };
-            if when.is_some() && apart > NEAR_MS {
+            if when.is_some() && apart > NEAR_MS as u64 {
                 continue;
             }
             pairs.push((apart, i, j));
@@ -583,26 +584,39 @@ pub fn attribute(lines: &[(Option<i64>, &str)], sends: &[Send]) -> Vec<Option<us
     out
 }
 
-/// A search the panel is waiting for. A newer one from the same panel makes
+/// A search a viewer is waiting for. A newer one from that viewer's panel makes
 /// an older one stop reading: only the last thing typed is being looked for
 struct Searching {
-    panel: String,
+    key: (String, String),
     turn: u64,
 }
 
-static SEARCHES: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static SEARCHES: Mutex<Option<HashMap<(String, String), u64>>> = Mutex::new(None);
+static SEARCH_TURN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Searching {
-    fn begin(panel: &str) -> Self {
+    fn begin(panel: &str, viewer: &str) -> Self {
         let mut g = SEARCHES.lock().unwrap_or_else(|e| e.into_inner());
-        let n = g.get_or_insert_with(HashMap::new).entry(panel.to_string()).or_insert(0);
-        *n += 1;
-        Searching { panel: panel.to_string(), turn: *n }
+        let key = (panel.to_string(), viewer.to_string());
+        let turn = SEARCH_TURN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        g.get_or_insert_with(HashMap::new).insert(key.clone(), turn);
+        Searching { key, turn }
     }
 
     fn current(&self) -> bool {
         let g = SEARCHES.lock().unwrap_or_else(|e| e.into_inner());
-        g.as_ref().and_then(|m| m.get(&self.panel)).is_some_and(|n| *n == self.turn)
+        g.as_ref().and_then(|m| m.get(&self.key)).is_some_and(|n| *n == self.turn)
+    }
+}
+
+impl Drop for Searching {
+    fn drop(&mut self) {
+        let mut g = SEARCHES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(m) = g.as_mut()
+            && m.get(&self.key) == Some(&self.turn)
+        {
+            m.remove(&self.key);
+        }
     }
 }
 
@@ -630,12 +644,24 @@ mod tests {
     #[test]
     fn each_line_is_matched_to_the_nearest_send_that_fits_and_each_send_once() {
         let sends = vec![send(1_000, "yes", "person"), send(50_000, "yes", "job"), send(60_000, "fix it", "tab")];
-        let lines = [(Some(51_000), "yes"), (Some(2_000), "yes"), (Some(70_000), "fix  it"), (Some(80_000), "typed at the CLI")];
+        let lines = [("r", Some(51_000), "yes"), ("r", Some(2_000), "yes"), ("r", Some(70_000), "fix  it"), ("r", Some(80_000), "typed at the CLI")];
         assert_eq!(attribute(&lines, &sends), vec![Some(1), Some(0), Some(2), None]);
         // Too far apart in time is not the same thing sent
-        assert_eq!(attribute(&[(Some(1_000 + NEAR_MS + 1), "yes")], &sends[..1]), vec![None]);
+        assert_eq!(attribute(&[("r", Some(1_000 + NEAR_MS + 1), "yes")], &sends[..1]), vec![None]);
         // No time: the earliest send left
-        assert_eq!(attribute(&[(None, "yes"), (None, "yes")], &sends), vec![Some(0), Some(1)]);
+        assert_eq!(attribute(&[("r", None, "yes"), ("r", None, "yes")], &sends), vec![Some(0), Some(1)]);
+    }
+
+    #[test]
+    fn two_viewers_can_search_one_panel_without_cancelling_each_other() {
+        let a = Searching::begin("shared-panel-test", "desktop");
+        let b = Searching::begin("shared-panel-test", "phone");
+        assert!(a.current());
+        assert!(b.current());
+        let newer = Searching::begin("shared-panel-test", "desktop");
+        assert!(!a.current());
+        assert!(newer.current());
+        assert!(b.current());
     }
 
     fn line(when: &str, who: &str, text: &str) -> String {
@@ -672,7 +698,8 @@ mod tests {
         }
         fn target(&self, live: &str) -> Target {
             Target {
-                panel: "t".into(),
+                // Parallel tests are separate app instances and viewers.
+                panel: self.dir.to_string_lossy().into_owned(),
                 tab: Some("t".into()),
                 live: Record::named(&self.glob(), live, None),
                 glob: self.glob(),
@@ -769,6 +796,22 @@ mod tests {
         target.past = None;
         target.live = Record::named(&p.glob(), "foreign", None);
         assert!(got_all(&target, &p)["rows"].as_array().unwrap().iter().any(|r| r["text"] == "someone else's request"), "an explicitly resumed live conversation is preserved");
+    }
+
+    #[test]
+    fn the_same_words_in_another_record_do_not_change_the_sender() {
+        let p = Place::new("sender-record");
+        let at = ms("2026-09-28T02:00:00Z");
+        p.record("new", &[line("2026-09-28T02:00:00Z", "user", "continue")]);
+        {
+            let s = Store::open(&p.db()).unwrap();
+            s.seen("t", "codex", "new", false, at).unwrap();
+            s.sent("t", Some("old"), &["continue"], &Origin::job(Some(3), Some("lead"), "brief"), at-1).unwrap();
+            s.sent("t", Some("new"), &["continue"], &Origin::person(Device::Phone, "composer"), at-1000).unwrap();
+        }
+        let got = got_all(&p.target("new"), &p);
+        let said = got["rows"].as_array().unwrap().iter().find(|r| r["k"] == "say").unwrap();
+        assert_eq!(said["from"]["by"], "person", "{got}");
     }
 
     /// A tab started again and again with nothing said is a conversation a

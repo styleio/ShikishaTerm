@@ -68,23 +68,23 @@ const work = {pieces: [
   {kind: 'call', name: 'Edit', text: 'src/pricing.rs'},
 ]};
 
-const answer = (msg) => `window.__convo(Object.assign({panel: "coder", ok: true}, ${JSON.stringify(msg)})); "ok"`;
+const answer = (msg, slot = msg.act) => `window.__convo(Object.assign({panel: CV.panel, ok: true, req: CV.seq[${JSON.stringify(slot)}]}, ${JSON.stringify(msg)})); "ok"`;
 
 export default {
   setup,
   scenes: {
-    chat: answer({act: 'page', req: 'page#1', rows, older: {record: REC, before: 900, until: at(30)}})
+    chat: answer({act: 'page', rows, older: {record: REC, before: 900, until: at(30)}})
       + `; document.querySelector('#convopanel .vwork .vmore').click();`
-      + answer({act: 'work', req: 'work:w' + REC + '@6000#1', record: REC, from: 6000, work, q: ''}),
+      + answer({act: 'work', record: REC, from: 6000, work, q: ''}, 'work:w' + REC + '@6000'),
     // Words typed: two things said hold them, and a tool run does too -- with
     // tool runs put away, the line at the foot says so and offers to show them
     search: `CV.show.work = false;`
-      + answer({act: 'page', req: 'page#1', rows, older: null})
+      + answer({act: 'page', rows, older: null})
       + `; const q = document.querySelector('#convopanel .fsearch input'); q.value = 'tax'; q.dispatchEvent(new Event('input'));`
       // The search the page asks a moment after the typing stops, asked now
-      + `; clearTimeout(cvTimer); convoAsk("find", {q: "tax", pins: false}); ${answer({act: 'find', req: 'find#1', q: 'tax', pins: false, capped: false,
+      + `; clearTimeout(cvTimer); convoAsk("find", {q: "tax", pins: false}); ${answer({act: 'find', q: 'tax', pins: false, capped: false,
         rows: [rows[2], {...rows[5], hit: true}, rows[7], rows[8]]})}`,
-    empty: answer({act: 'page', req: 'page#1', rows: [], older: null}),
+    empty: answer({act: 'page', rows: [], older: null}),
   },
   settle: 1200,
 };

@@ -78,7 +78,7 @@ const threads = [
   { id: 1, last_at: at(1), tabs: ['otter', 'finch', 'heron'], first: said[0].text },
   { id: 2, last_at: at(240), tabs: ['otter', 'heron'], first: 'Could you check why the staging build is slow?' },
 ];
-const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, desk: "work", req: "${msg.act}#" + CF.seq["${msg.act}"]}, ${JSON.stringify(msg)})); "ok"`;
+const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, desk: "work", req: CF.seq["${msg.act}"]}, ${JSON.stringify(msg)})); "ok"`;
 const listed = (list) => answer({ act: 'confer_threads', tab: 'otter', threads: list });
 const page = (rows) => answer({ act: 'confer', thread: 1, said: rows, more: false });
 

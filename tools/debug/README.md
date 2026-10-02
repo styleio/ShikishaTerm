@@ -56,6 +56,16 @@ in a name is there so the folder can be read at a glance.
 
 ## Confirming a change
 
+`node tools/check-conversations.mjs` exercises the board's actual conversation
+state code without a window: tab and desk changes, delayed replies, simultaneous
+viewers, all-history searches, resume locations, and acknowledgements for pins
+on different rows. CI runs it too.
+
+`cargo build --bin SHIKISHA-TERM`, then `node tools/debug/convo-viewers.win.mjs`
+checks simultaneous searches and the resume location through an isolated app's
+real remote door and state socket, plus multiple pins and rapid note edits,
+using generated records and no AI account.
+
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
 | `tools/debug/cli-process.win.mjs` | Windows, Node | Same-name Codex stand-ins with shared-process behavior, current and older options, and explicit resume. Verifies separate API callers, conversation IDs, working and finished states, with and without the terminal keeper. With `--real`, starts two installed Codex CLIs over an empty home without sending a prompt. No accounts or AI requests | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/cli-process.win.mjs`, also with `--keeper` and `--real` |

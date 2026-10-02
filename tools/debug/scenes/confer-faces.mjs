@@ -34,8 +34,8 @@ const said = names.map((n, i) => ({ k: 'line', id: i + 1, tab: n, at: now - (nam
 export default {
   setup: `window.__state(${JSON.stringify(state)}); setSideWidth(400); sideReveal("convo"); convoModeTo("confer"); "ok"`,
   scenes: {
-    crowd: `window.__convo({panel: "confer", ok: true, req: "confer_threads#" + CF.seq.confer_threads, act: "confer_threads", desk: "work", tab: "otter", threads: [{id: 1, last_at: ${now}, tabs: ${JSON.stringify(names)}, first: "This is otter."}]});`
-      + ` window.__convo({panel: "confer", ok: true, req: "confer#" + CF.seq.confer, act: "confer", desk: "work", thread: 1, said: ${JSON.stringify(said)}, more: false});`
+    crowd: `window.__convo({panel: "confer", ok: true, req: CF.seq.confer_threads, act: "confer_threads", desk: "work", tab: "otter", threads: [{id: 1, last_at: ${now}, tabs: ${JSON.stringify(names)}, first: "This is otter."}]});`
+      + ` window.__convo({panel: "confer", ok: true, req: CF.seq.confer, act: "confer", desk: "work", thread: 1, said: ${JSON.stringify(said)}, more: false});`
       + ` JSON.stringify(${JSON.stringify(names)}.map(n => cfPair(n).join("")))`,
   },
   langs: ['en'],
