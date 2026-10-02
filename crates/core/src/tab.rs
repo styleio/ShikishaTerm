@@ -2573,6 +2573,15 @@ fn plan_launch(
     argv: &[String],
     plan: Resume,
 ) -> (Vec<String>, Option<Session>) {
+    let (out, session) = plan_conversation(spec, argv, plan);
+    (crate::cli_launch::local(spec, &out), session)
+}
+
+fn plan_conversation(
+    spec: Option<&crate::profile::ResumeSpec>,
+    argv: &[String],
+    plan: Resume,
+) -> (Vec<String>, Option<Session>) {
     let Some(spec) = spec else {
         return (argv.to_vec(), None);
     };
@@ -2629,6 +2638,24 @@ pub fn far_launch(
     argv: &[String],
     plan: Resume,
 ) -> (String, Option<Session>) {
+    let (line, session) = far_conversation(spec, argv, plan.clone());
+    let line = crate::cli_launch::far(spec, argv, line, |with_flag| {
+        let (line, other) = far_conversation(spec, with_flag, plan);
+        // Both branches describe one launch: a CLI accepting a fresh id
+        // must receive the same one whichever version is installed there.
+        match (session.as_ref(), other) {
+            (Some(s), Some(other)) if other.source == SessionSource::Minted => line.replace(&other.id, &s.id),
+            _ => line,
+        }
+    });
+    (line, session)
+}
+
+fn far_conversation(
+    spec: Option<&crate::profile::ResumeSpec>,
+    argv: &[String],
+    plan: Resume,
+) -> (String, Option<Session>) {
     // The tab's own command, as it was written (see `worktree::as_written`)
     let shell = crate::worktree::as_written;
     if let (Some(spec), Resume::Id(s)) = (spec, &plan)
@@ -2653,7 +2680,7 @@ pub fn far_launch(
             _ => (resume, Some(s.clone())),
         };
     }
-    let (out, session) = plan_launch(spec, argv, plan);
+    let (out, session) = plan_conversation(spec, argv, plan);
     (shell(&out), session)
 }
 
@@ -6970,6 +6997,19 @@ mod far_launch_tests {
         line.split_whitespace().map(str::to_string).collect()
     }
     const ID: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn both_process_choices_keep_the_same_new_conversation() {
+        let mut spec = claude();
+        spec.process_flag = Some("--own-process".into());
+        let (line, session) = far_launch(Some(&spec), &argv("cli"), Resume::Fresh);
+        let id = session.unwrap().id;
+        assert_eq!(line.matches(&id).count(), 2, "both branches must hand over the remembered id: {line}");
+        assert!(line.contains(&format!("then cli --session-id {id} --own-process")), "{line}");
+        let s = Some("Codex CLI".into());
+        let shown = far_launch_line(&argv("codex"), &s, Resume::Fresh, "NEW");
+        assert!(shown.contains("--no-daemon"), "the preview hides the process option: {shown}");
+    }
 
     /// A tab on a MicroVM starts its CLI with the arguments a tab here gets:
     /// a new conversation under an id this app chose, so the app knows which
