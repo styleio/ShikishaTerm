@@ -49,6 +49,8 @@ in a name is there so the folder can be read at a glance.
 | `tools/debug/scenes/settings-shared.mjs` | anywhere, with Chrome | Every settings form's validation, focus and error recovery; both languages, schemes and widths | `node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-shared.mjs --remote-http` |
 | `tools/debug/scenes/snip-toast.mjs` | anywhere, with Chrome | Shared notifications on the picture tools page, including warning timing and dismissal | `node tools/debug/shoot.mjs tools/debug/scenes/snip-toast.mjs` |
 | `tools/debug/chrome.test.mjs` | anywhere, with Node | CDP responses, protocol errors, timeouts and disconnect cleanup | `node --test tools/debug/chrome.test.mjs` |
+| `crates/core/src/bin/conversation_probe.rs` | anywhere | Reads the conversation panel without a window or database writes, to check history attribution and injected context. Prints conversation JSON: redirect into a private file when inspecting real records | `cargo run -p shikisha-core --bin conversation_probe -- <db> <tab uid> <live record id> <cwd> <record glob> [cwd field]` |
+| `tools/debug/add-tab.win.mjs` | Windows, Node | The native tab bar's + and active folder; cancellation, More settings and saving when `crypto.randomUUID` is unavailable, including preserved identities and pin/archive flags | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/add-tab.win.mjs` |
 | `tools/debug/folder-management.win.mjs` | Windows | Saved pin/archive/restore, stale desk rejection, capacity and actual bulk deletion in an isolated app; verifies primary, pinned and dirty worktrees survive | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/folder-management.win.mjs` |
 | `tools/debug/scenes/folder-management.mjs` | anywhere, with Chrome | Folder management, selection across filters, cancellation and confirmation, restore, explicit capacity requests and desk isolation; photographs both board pages in both languages and schemes | `node tools/debug/shoot.mjs tools/debug/scenes/folder-management.mjs` |
 | `src/bin/pty_probe.rs` | anywhere | A command in a pseudo terminal, with everything it says captured for about ten seconds. `--watch` never types into it — some of what is worth watching is an AI, and typing into one is a turn on somebody's account | `cargo run --bin pty_probe -- [--watch] <command> [args...]` |
@@ -61,6 +63,16 @@ in a name is there so the folder can be read at a glance.
 | `crates/core/src/bin/resume_probe.rs` | anywhere | Why each tab of an install would, or would not, come back to the conversation it was having. Asks the same question a launch asks, against a real install's settings and its real `data\last-session`, with nothing running -- and prints every part of the answer: what is remembered, what the tab is, whether the CLI's record of that conversation is still on this computer | `cargo run -p shikisha-core --bin resume_probe -- <install folder>` |
 
 ## Confirming a change
+
+`node tools/check-conversations.mjs` exercises the board's actual conversation
+state code without a window: tab and desk changes, delayed replies, simultaneous
+viewers, all-history searches, resume locations, and acknowledgements for pins
+on different rows. CI runs it too.
+
+`cargo build --bin SHIKISHA-TERM`, then `node tools/debug/convo-viewers.win.mjs`
+checks simultaneous searches and the resume location through an isolated app's
+real remote door and state socket, plus multiple pins and rapid note edits,
+using generated records and no AI account.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|

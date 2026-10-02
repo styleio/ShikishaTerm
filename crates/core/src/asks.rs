@@ -131,13 +131,11 @@ fn ask_of(line: &[u8], spec: &AskSpec) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n"),
     };
+    // Use the conversation reader's boundary between typed words and the
+    // CLI's injected context, including its project-instruction wrapper.
+    let text = crate::reader::human_part(&text);
     let text = text.trim();
-    // Everything either CLI injects arrives wrapped in a tag -- the folder it
-    // is standing in, the plugins it could install, a background job that
-    // finished, a picture's dimensions. A person opening with `<` is a person
-    // writing about HTML, and losing that one request costs less than
-    // describing a folder from a list of plugins
-    match text.is_empty() || text.starts_with('<') {
+    match text.is_empty() {
         true => None,
         false => Some(text.to_string()),
     }
@@ -228,6 +226,23 @@ mod tests {
             one(r#"{"type":"response_item","payload":{"role":"user","content":[{"type":"input_image","image_url":"data:..."}]}}"#, &spec),
             None
         );
+    }
+
+    #[test]
+    fn project_instructions_do_not_name_the_folder() {
+        let text = "# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nFollow the project rules.\n</INSTRUCTIONS>\n<environment_context><cwd>/work/project</cwd></environment_context>";
+        let line = |text: &str| serde_json::json!({"type": "response_item", "payload": {
+            "role": "user", "content": [{"type": "input_text", "text": text}]
+        }}).to_string();
+        assert_eq!(one(&line(text), &codex()), None);
+        assert_eq!(one(&line(&format!("{text}\nFix the history")), &codex()).as_deref(), Some("Fix the history"));
+    }
+
+    #[test]
+    fn a_request_beginning_with_markup_is_still_a_request() {
+        let text = "<my-widget>直してください</my-widget>";
+        let line = serde_json::json!({"type": "user", "message": {"role": "user", "content": text}}).to_string();
+        assert_eq!(one(&line, &claude()).as_deref(), Some(text));
     }
 
     /// The CLIs that ship with this app describe their own records, and what

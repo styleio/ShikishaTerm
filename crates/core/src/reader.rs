@@ -58,6 +58,15 @@ const CHUNK: usize = 256 * 1024;
 /// still has to answer in the time a person will wait for a tap
 const BUDGET: usize = 8 * 1024 * 1024;
 
+// A page may finish its first line past the usual budget to advance its
+// cursor. Keep that exception bounded, and report an oversized line rather
+// than returning the same cursor forever.
+const LINE_MOST: usize = 64 * 1024 * 1024;
+
+fn line_too_large() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "a conversation record line exceeds the 64 MiB reading limit")
+}
+
 /// Who said it. Named for the reader, not for the API underneath: the person
 /// holding the phone is "you", and everything the CLI produced is the AI
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -447,7 +456,10 @@ pub fn read_after_by(
             work.push(s);
         }
     }
-    'walk: while at < len && read < BUDGET {
+    'walk: while at < len && (read < BUDGET || carried_at == from.min(len)) {
+        if carried.len() >= LINE_MOST {
+            return Err(line_too_large());
+        }
         let n = ((len - at) as usize).min(CHUNK);
         let buf = read_at(at, n)?;
         if buf.len() != n {
@@ -556,8 +568,12 @@ pub fn read_back_by(
     let mut work: Vec<Stretch> = Vec::new();
     let mut open: Option<Stretch> = None;
     let mut next_said = end;
+    let mut trim_tail = true;
 
-    while end > 0 && read < BUDGET && !enough {
+    while end > 0 && (read < BUDGET || from == before.min(len)) && !enough {
+        if carried.len() >= LINE_MOST {
+            return Err(line_too_large());
+        }
         let start = end.saturating_sub(CHUNK as u64);
         let mut buf = read_at(start, (end - start) as usize)?;
         if buf.len() != (end - start) as usize {
@@ -565,6 +581,20 @@ pub fn read_back_by(
         }
         read += buf.len();
         buf.extend_from_slice(&carried);
+
+        // The writer may not have finished its last JSONL line. Both reading
+        // directions wait for its newline, even if the JSON already parses.
+        if trim_tail {
+            let Some(last) = buf.iter().rposition(|b| *b == b'\n') else {
+                from = start;
+                end = start;
+                continue;
+            };
+            buf.truncate(last + 1);
+            from = start + buf.len() as u64;
+            next_said = from;
+            trim_tail = false;
+        }
 
         // Where each line begins within `buf`
         let mut heads: Vec<usize> = vec![0];
@@ -937,8 +967,7 @@ fn look_at(line: &[u8]) -> Seen {
     let Ok(text) = std::str::from_utf8(line) else {
         return Seen::Nothing;
     };
-    let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
-    let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
+    let spoken = may_speak(text);
     if !spoken && !text.contains("_use\"") && !text.contains("_call\"") && !text.contains("\"toolCalls\"") {
         return Seen::Nothing;
     }
@@ -1103,16 +1132,22 @@ fn words_of(content: &Value) -> String {
 /// instruction blocks Codex puts in front of one. Read back as a conversation
 /// those are noise nobody wrote and nobody can answer.
 ///
-/// They are told apart by the SHAPE of the tag rather than by a list of names:
-/// every envelope of this kind is spelled with a hyphen or an underscore
-/// (`system-reminder`, `user_instructions`, `environment_context`), and no HTML
-/// tag a person might paste into a message is. A list of names would have to be
-/// kept in step with two CLIs' releases; the shape does not.
+/// Only known CLI envelopes are removed. A hyphen or underscore alone also
+/// occurs in custom HTML elements and in XML someone is asking about.
 ///
 /// An envelope that is never closed is left alone. Cutting to the end of the
 /// message on the strength of one opening tag would swallow the very words
 /// this is trying to rescue.
 pub fn human_part(text: &str) -> String {
+    // Codex puts project instructions in a user message with a Markdown
+    // heading and an uppercase envelope. Match that complete wrapper, not
+    // an arbitrary mention of AGENTS.md or an unclosed tag someone pasted.
+    let text = text.trim_start();
+    let text = text.strip_prefix("# AGENTS.md instructions for ")
+        .and_then(|rest| rest.split_once('\n'))
+        .and_then(|(_, rest)| rest.trim_start().strip_prefix("<INSTRUCTIONS>"))
+        .and_then(|rest| rest.split_once("</INSTRUCTIONS>"))
+        .map_or(text, |(_, rest)| rest);
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('<') {
@@ -1121,8 +1156,9 @@ pub fn human_part(text: &str) -> String {
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
             .collect();
-        let envelope = name.starts_with(|c: char| c.is_ascii_alphabetic())
-            && (name.contains('-') || name.contains('_'));
+        let envelope = matches!(name.as_str(),
+            "system-reminder" | "user_instructions" | "environment_context"
+            | "session_context" | "recommended_plugins" | "task-notification");
         let closing = format!("</{name}>");
         match envelope.then(|| after.find(&closing)).flatten() {
             Some(shut) => {
@@ -1215,12 +1251,18 @@ enum Line {
 /// One line of a record, read for the whole conversation. The same reading
 /// as `look_at`, and one thing more: what came back from a tool, which the
 /// walk from the end has no use for and the whole conversation shows
+fn may_speak(text: &str) -> bool {
+    // JSON permits whitespace around a colon. Gate on keys, never on a
+    // particular serializer's spelling of a key and its value.
+    (text.contains("\"role\"") || text.contains("\"type\""))
+        && (text.contains("\"text\"") || text.contains("\"content\""))
+}
+
 fn read_line(line: &[u8]) -> Line {
     let Ok(text) = std::str::from_utf8(line) else {
         return Line::Nothing;
     };
-    let named = text.contains("\"role\"") || SPEAKERS.iter().any(|(s, _)| text.contains(&format!("\"type\":\"{s}\"")));
-    let spoken = named && (text.contains("\"text\"") || text.contains("\"content\":\""));
+    let spoken = may_speak(text);
     let tooling = text.contains("_use\"")
         || text.contains("_call\"")
         || text.contains("\"toolCalls\"")
@@ -1724,12 +1766,66 @@ mod tests {
         assert_eq!(turn.text, "直して", "an envelope the machine inserted is not the person's words");
     }
 
-    /// The tag shape is the rule, so pasted HTML survives — it has no hyphen
+    /// Pasted HTML and an unfinished envelope survive.
     #[test]
     fn pasted_markup_is_left_alone() {
         assert_eq!(human_part("<div>hello</div>"), "<div>hello</div>");
         // ...and an envelope that never closes is not an excuse to cut
         assert_eq!(human_part("<system-reminder>ここから先"), "<system-reminder>ここから先");
+    }
+
+    #[test]
+    fn user_markup_and_json_spacing_do_not_erase_speech() {
+        let words = "Fix <my-widget>the title</my-widget> and <user_data>the record</user_data>";
+        assert_eq!(human_part(words), words);
+        let line = r#"{"type": "user", "message": {"role": "user", "content": "hello"}}"#;
+        let Seen::Said(turn) = look_at(line.as_bytes()) else { panic!("valid JSON with spaces lost the user's words") };
+        assert_eq!(turn.text, "hello");
+        let Line::Said(turn) = read_line(line.as_bytes()) else { panic!("the forward reader lost the user's words") };
+        assert_eq!(turn.text, "hello");
+    }
+
+    #[test]
+    fn an_unfinished_last_line_is_not_published_by_the_backward_reader() {
+        let line = record("user", "still being written");
+        let page = read_back_by(line.len() as u64, u64::MAX, 10, &mut |at, n| Ok(line.as_bytes()[at as usize..at as usize+n].to_vec())).unwrap();
+        assert!(page.turns.is_empty());
+        let complete = format!("{}\n{line}", record("user", "finished"));
+        let page = read_back_by(complete.len() as u64, u64::MAX, 10, &mut |at, n| Ok(complete.as_bytes()[at as usize..at as usize+n].to_vec())).unwrap();
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].text, "finished");
+    }
+
+    #[test]
+    fn a_line_bigger_than_the_page_budget_does_not_trap_the_cursor() {
+        let text = format!("{}\n", record("user", &"a".repeat(BUDGET + CHUNK)));
+        let read = &mut |at: u64, n: usize| Ok(text.as_bytes()[at as usize..at as usize+n].to_vec());
+        let page = read_back_by(text.len() as u64, u64::MAX, 10, read).unwrap();
+        assert_eq!(page.turns.len(), 1);
+        assert!(!page.more);
+        let later = read_after_by(text.len() as u64, 0, 10, "", read).unwrap();
+        assert_eq!(later.turns.len(), 1);
+        assert!(!later.more);
+    }
+
+    #[test]
+    fn project_instructions_are_not_something_the_person_said() {
+        let instructions = "# AGENTS.md instructions for /work/project\n\n<INSTRUCTIONS>\nFollow the project rules.\n</INSTRUCTIONS>";
+        let context = format!("{instructions}\n<environment_context><cwd>/work/project</cwd></environment_context>");
+        let line = |text: &str| serde_json::json!({
+            "type": "response_item", "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": text}]}
+        }).to_string();
+        assert!(matches!(look_at(line(&context).as_bytes()), Seen::Nothing));
+        assert!(mention(line(&context).as_bytes(), "project rules").is_none());
+        let mixed = format!("{context}\nPlease fix the history.");
+        let Seen::Said(turn) = look_at(line(&mixed).as_bytes()) else { panic!("the typed request was lost") };
+        assert_eq!(turn.text, "Please fix the history.");
+        let quoted = format!("Explain this:\n{instructions}");
+        assert_eq!(human_part(&quoted), quoted);
+        let unfinished = "# AGENTS.md instructions for /work/project\n<INSTRUCTIONS>not closed";
+        assert_eq!(human_part(unfinished), unfinished);
+        assert_eq!(human_part("Please edit AGENTS.md"), "Please edit AGENTS.md");
     }
 
     fn record(who: &str, text: &str) -> String {

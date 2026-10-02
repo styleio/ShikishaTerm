@@ -242,7 +242,7 @@ pub struct Mailbox {
     pub surveys: usize,
     /// Vault searches awaiting an answer -- what to look for in past
     /// conversations. The loop runs the search and puts the hits into state
-    pub vault_queries: Vec<(String, bool)>,
+    pub vault_queries: Vec<crate::vault::Query>,
     /// Past conversations asked to be reopened as resuming tabs
     pub vault_opens: Vec<shikisha_shared::Ev>,
     /// Past conversations asked where they were had, to be picked back up
@@ -628,7 +628,13 @@ impl Mailbox {
     pub fn queue_ui(&mut self, ev: shikisha_shared::Ev) {
         use shikisha_shared::Ev;
         match ev {
-            Ev::VaultSearch { query, wake } => self.vault_queries.push((query, wake)),
+            Ev::VaultSearch { query, wake } => self.vault_queries.push(crate::vault::Query { query, wake, ..Default::default() }),
+            Ev::Convo { panel, act, args } if panel == "vault" && act == "find" => self.vault_queries.push(crate::vault::Query {
+                query: args.get("q").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                wake: args.get("wake").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                viewer: args.get("viewer").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(),
+                req: args.get("req").cloned().unwrap_or_default(),
+            }),
             ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
             ev @ Ev::VaultWhere { .. } => self.vault_wheres.push(ev),
             ev @ Ev::Convo { .. } => self.convos.push(ev),
@@ -637,7 +643,7 @@ impl Mailbox {
             _ => {}
         }
     }
-    pub fn take_vault_queries(&mut self) -> Vec<(String, bool)> {
+    pub fn take_vault_queries(&mut self) -> Vec<crate::vault::Query> {
         std::mem::take(&mut self.vault_queries)
     }
     pub fn take_vault_opens(&mut self) -> Vec<shikisha_shared::Ev> {

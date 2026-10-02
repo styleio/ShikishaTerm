@@ -31,6 +31,51 @@ use std::time::SystemTime;
 
 use crate::profile::{ProfileFile, ResumeSpec};
 
+/// A search from one page. Old clients leave the viewer and request empty.
+#[derive(Default)]
+pub struct Query {
+    pub query: String,
+    pub wake: bool,
+    pub viewer: String,
+    pub req: serde_json::Value,
+}
+
+pub struct Pending {
+    pub viewer: String,
+    pub req: serde_json::Value,
+    pub state: crate::uistate::VaultState,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Only a newer search by the same viewer cancels a pending one.
+#[derive(Default)]
+pub struct Searches(std::collections::HashMap<u64, Pending>);
+
+impl Searches {
+    pub fn begin(&mut self, viewer: String, req: serde_json::Value, seq: u64) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.0.retain(|_, p| p.viewer != viewer);
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.0.insert(seq, Pending { viewer, req, state: crate::uistate::VaultState::default(), cancelled: cancelled.clone() });
+        cancelled
+    }
+
+    pub fn get_mut(&mut self, seq: u64) -> Option<&mut Pending> {
+        self.0.get_mut(&seq)
+    }
+
+    pub fn finished(&mut self, seq: u64) {
+        if self.0.get(&seq).is_some_and(|p| !p.state.searching && p.state.asking == 0) {
+            self.0.remove(&seq);
+        }
+    }
+}
+
 /// How much of a record's start is read for what it says about itself -- its
 /// id and folder -- when a blank search only lists the recent ones
 const READ_CAP: usize = 512 * 1024;
@@ -547,13 +592,16 @@ pub fn belongs(program: &str, cwd: &Path, id: &str) -> bool {
 
 /// The same question asked of one CLI's records, so a test can supply its own.
 fn belongs_in(src: &Source, cwd: &Path, id: &str) -> bool {
-    let Some(path) = crate::sessionfind::locate(&src.verify, id) else {
-        return false;
-    };
-    let Some(head) = read_some(&path, FOLDER_CAP) else {
-        return false;
-    };
-    cwd_of(&head, src).is_some_and(|at| crate::uistate::same_folder(Path::new(&at), cwd))
+    record_folder(&src.verify, id, src.cwd_path.as_deref())
+        .is_some_and(|at| crate::uistate::same_folder(Path::new(&at), cwd))
+}
+
+/// The local record's own folder, independent of the app's tab associations.
+/// An unreadable or not-yet-written record establishes no folder.
+pub(crate) fn record_folder(glob: &str, id: &str, field: Option<&str>) -> Option<String> {
+    let path = crate::sessionfind::locate(glob, id)?;
+    let head = read_some(&path, FOLDER_CAP)?;
+    recorded_folder(&head, field)
 }
 
 /// The same question asked of one CLI's records, so a test can supply its own.
@@ -748,7 +796,11 @@ fn id_of(path: &Path, text: &str, src: &Source) -> Option<String> {
 /// The folder a record belongs to: where the CLI records it, or the first
 /// `"cwd"` the file mentions.
 fn cwd_of(text: &str, src: &Source) -> Option<String> {
-    if let Some(p) = &src.cwd_path
+    recorded_folder(text, src.cwd_path.as_deref())
+}
+
+fn recorded_folder(text: &str, field: Option<&str>) -> Option<String> {
+    if let Some(p) = field
         && let Some(c) = first_line_field(text, p) {
             return Some(c);
         }
@@ -1178,6 +1230,44 @@ fn expand(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_searches_cancel_only_their_own_viewers_previous_query() {
+        use std::sync::atomic::Ordering;
+        let mut searches = Searches::default();
+        let a = searches.begin("desktop".into(), serde_json::json!("a"), 1);
+        let b = searches.begin("phone".into(), serde_json::json!("b"), 2);
+        assert!(!a.load(Ordering::Relaxed));
+        assert!(!b.load(Ordering::Relaxed));
+        let c = searches.begin("desktop".into(), serde_json::json!("c"), 3);
+        assert!(a.load(Ordering::Relaxed));
+        assert!(searches.get_mut(1).is_none());
+        assert!(!b.load(Ordering::Relaxed));
+        assert!(!c.load(Ordering::Relaxed));
+        searches.get_mut(2).unwrap().state.searching = true;
+        searches.finished(2);
+        assert!(searches.get_mut(2).is_some());
+        searches.get_mut(2).unwrap().state.searching = false;
+        searches.finished(2);
+        assert!(searches.get_mut(2).is_none());
+        assert!(!c.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_viewers_search_reaches_the_runtime_with_its_request_and_wake_choice() {
+        let mut mail = crate::mailbox::Mailbox::default();
+        let event = shikisha_shared::parse_intent(&serde_json::json!({
+            "kind": "convo", "panel": "vault", "act": "find",
+            "args": {"q": "notes", "wake": true, "viewer": "phone", "req": "all#phone:1"}
+        })).unwrap();
+        mail.queue_ui(event);
+        assert!(mail.take_convos().is_empty());
+        let query = mail.take_vault_queries().pop().unwrap();
+        assert_eq!(query.query, "notes");
+        assert!(query.wake);
+        assert_eq!(query.viewer, "phone");
+        assert_eq!(query.req, "all#phone:1");
+    }
 
     fn write(path: &Path, lines: &[&str]) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

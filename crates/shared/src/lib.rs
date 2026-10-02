@@ -454,7 +454,7 @@ pub enum Ev {
         id: String,
         /// The machine it was had on, by its settings entry: none is this PC
         host: Option<String>,
-        req: u64,
+        req: serde_json::Value,
     },
     /// What has been said in one tab's folder before. Asked when a tab came up
     /// on a conversation of nobody's although that folder has been worked in:
@@ -1367,7 +1367,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             program: v.get("program").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             host: v.get("host").and_then(|x| x.as_str()).map(str::to_string).filter(|h| !h.is_empty()),
-            req: v.get("req").and_then(|x| x.as_u64()).unwrap_or(0),
+            req: v.get("req").cloned().unwrap_or_default(),
         },
         Some("pastlist") => Ev::PastList {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
@@ -1938,6 +1938,14 @@ pub trait Clipboard: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_resume_location_echoes_opaque_and_legacy_request_ids() {
+        for req in [serde_json::json!("where#phone:7"), serde_json::json!(7)] {
+            let ev = parse_intent(&serde_json::json!({"kind": "vaultwhere", "program": "codex", "id": "r", "req": req})).unwrap();
+            assert!(matches!(ev, Ev::VaultWhere { req: found, .. } if found == req));
+        }
+    }
 
     #[test]
     fn a_message_needs_the_identity_the_senders_view_saw() {

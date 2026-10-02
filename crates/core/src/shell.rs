@@ -13924,6 +13924,20 @@ const CV = {
   rev: 0,
 };
 let cvUi = null, cvTimer = 0, cvAgain = 0;
+// Answers are broadcast to the window and every remote viewer. A request
+// belongs to this page instance as well as to its panel and slot.
+const convoViewer = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, "0")).join("");
+let convoSerial = 0;
+function convoRequest(seq, slot) {
+  return seq[slot] = slot + "#" + convoViewer + ":" + (++convoSerial);
+}
+function convoAnswerSlot(d, seq) {
+  const req = String(d.req || ""), slot = req.slice(0, req.lastIndexOf("#"));
+  if (seq[slot] !== req) return null;
+  delete seq[slot];
+  return slot;
+}
+function convoTabKey(t) { return t ? (t.uid || t.id || t.name) : null; }
 // What the boxes were left as, per viewer. A convenience: without it every
 // box starts as it is written above
 (function () {
@@ -13946,14 +13960,15 @@ function convoTab() {
 // reading the newest page again are different questions
 function convoAsk(act, args, slot) {
   if (!CV.panel) return;
-  const s = slot || act;
-  CV.seq[s] = (CV.seq[s] || 0) + 1;
-  const a = Object.assign({req: s + "#" + CV.seq[s]}, args || {});
+  const s = slot || (act === "mark" ? "mark:" + args.record + "@" + args.at : act);
+  const a = Object.assign({}, args || {}, {req: convoRequest(CV.seq, s), viewer: convoViewer});
   if (CV.past) a.past = CV.past;
   send({kind: "convo", panel: CV.panel, act, args: a});
 }
 // Start over on another tab, or on a conversation opened by name
 function convoReset(panel, past) {
+  clearTimeout(cvTimer); clearTimeout(cvAgain);
+  CV.seq = {};
   CV.panel = panel;
   CV.past = past || null;
   window.__convoPast = CV.past;
@@ -14005,10 +14020,10 @@ function convoMerge(fresh, older) {
 window.__convo = function (d) {
   if (!d || !d.act) return;
   if (d.panel === "confer") { cfGot(d); return; }
+  if (d.panel === "vault") { allGot(d); return; }
   if (d.panel !== CV.panel) return;
-  const cut = String(d.req || "").lastIndexOf("#");
-  const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
-  if (Number(n) !== CV.seq[slot]) return;
+  const slot = convoAnswerSlot(d, CV.seq);
+  if (slot === null) return;
   if (!d.ok) {
     CV.loading = false;
     CV.said = d.error || ""; CV.bad = true; CV.rev++;
@@ -14031,7 +14046,14 @@ window.__convo = function (d) {
     // it was drawn: what comes back in its place takes the place of what was
     const fresh = d.rows || [];
     const back = new Set(fresh.map(convoKey));
-    CV.rows = fresh.concat(CV.rows.filter(r => !back.has(convoKey(r))));
+    const cursor = CV.newer;
+    CV.rows = fresh.concat(CV.rows.filter(r => {
+      // A provisional answer can become work when a tool call follows it.
+      // Replace the reread span even when a row changes its kind and key.
+      const at = r.k === "say" ? r.at : r.k === "work" ? r.from : null;
+      return !(cursor && r.record === cursor.record && at != null && at >= cursor.to)
+        && !back.has(convoKey(r));
+    }));
     CV.newer = d.newer;
   } else if (d.act === "find") {
     if (d.stale) return;
@@ -14082,7 +14104,7 @@ window.__openConvo = function (o) {
   const past = {program: o.program || "", id: o.id, host: o.host || ""};
   const from = convoTab();
   convoReset("past:" + (o.host || "") + ":" + o.id, past);
-  CV.pastFrom = from ? (from.id || from.name) : null;
+  CV.pastFrom = convoTabKey(from);
   CV.q = (o.query || "").trim();
   if (cvUi) cvUi.q.value = CV.q;
   if (o.at != null) convoAsk("open", {at: o.at});
@@ -14388,11 +14410,11 @@ function drawConvo() {
 function convoFollow() {
   const t = convoTab();
   // A conversation opened by name stays until another tab is looked at
-  if (CV.past && (t ? (t.id || t.name) : null) === CV.pastFrom) return "";
+  if (CV.past && convoTabKey(t) === CV.pastFrom) return "";
   if (!t) return T["convo.notab"] || "";
   if (t.kind !== "pty" || t.model || !t.ai) return T["convo.not_ai"] || "";
   if (!t.readable) return T["convo.no_record"] || "";
-  const key = t.id || t.name;
+  const key = convoTabKey(t);
   // What moves when something is said: the state, and the output the tab row
   // draws as its bar. A quick answer can come and go between two looks at
   // the state, so the output is watched too
@@ -14560,14 +14582,13 @@ function cfWords(text) {
 }
 function cfAsk(act, args, slot) {
   const s = slot || act;
-  CF.seq[s] = (CF.seq[s] || 0) + 1;
-  send({kind: "convo", panel: "confer", act, args: Object.assign({req: s + "#" + CF.seq[s]}, args || {})});
+  send({kind: "convo", panel: "confer", act, args: Object.assign({}, args || {}, {req: convoRequest(CF.seq, s)})});
 }
 // The tab whose conversations are shown: the AI tab in front. Anything
 // else in front shows the desk's
 function cfFocus() {
   const t = convoTab();
-  return t && t.kind === "pty" && t.ai && !t.model ? (t.id || t.name) : null;
+  return t && t.kind === "pty" && t.ai && !t.model ? convoTabKey(t) : null;
 }
 // Read the conversations again, and the one shown. Another desk or another
 // tab in front starts over: its conversations, the newest shown
@@ -14575,11 +14596,12 @@ function cfRefresh() {
   const desk = (S && S.desk_id) || "";
   const focus = cfFocus();
   if (CF.desk !== desk || CF.focus !== focus) {
+    const keep = CF.desk === desk && CF.picked;
+    CF.seq = {}; CF.bad = "";
     CF.desk = desk;
     CF.focus = focus;
     CF.threads = [];
-    if (!CF.picked) CF.thread = null;
-    cfShow(CF.thread, CF.picked);
+    cfShow(keep ? CF.thread : null, keep);
   }
   cfAsk("confer_threads", focus ? {tab: focus} : {});
   if (CF.thread != null) cfAsk("confer", {thread: CF.thread});
@@ -14587,6 +14609,7 @@ function cfRefresh() {
 // Show one conversation, from its newest page
 function cfShow(thread, picked) {
   if (thread !== CF.thread) {
+    delete CF.seq.earlier; delete CF.seq.confer;
     CF.said = []; CF.more = false; CF.full = new Set(); CF.stick = true;
   }
   CF.thread = thread;
@@ -14608,9 +14631,8 @@ function cfKey(s) {
 }
 // A page of the conference arrived
 function cfGot(d) {
-  const cut = String(d.req || "").lastIndexOf("#");
-  const slot = String(d.req || "").slice(0, cut), n = String(d.req || "").slice(cut + 1);
-  if (Number(n) !== CF.seq[slot]) return;
+  const slot = convoAnswerSlot(d, CF.seq);
+  if (slot === null) return;
   CF.loading = false;
   // Read for a desk no longer in front
   if (d.desk !== undefined && d.desk !== CF.desk) return;
@@ -17597,7 +17619,9 @@ let cvAll = false;       // the panel is listing every conversation found, not r
 let cvFromAll = false;   // the conversation being read was opened from that list
 let cvAllTimer = 0;
 let cvWhere = null;      // where that conversation was had (`vaultwhere`), for picking it back up
-let cvWhereReq = 0;
+let cvWhereReq = "";
+let cvAllState = null;
+const cvAllSeq = {};
 // Every road that opened the search -- INDEX's menu, the palette, the key --
 // opens the panel on every conversation, the search box ready
 window.__openVault = function () {
@@ -17606,9 +17630,17 @@ window.__openVault = function () {
   setTimeout(() => { if (cvUi) cvUi.q.focus(); }, 30);
 };
 // Searched as typed, with a short pause so a search does not run on every letter
-function allFindNow() {
+function allFindNow(wake = false) {
   clearTimeout(cvAllTimer);
-  send({kind:"vaultsearch", query: CV.q});
+  const req = convoRequest(cvAllSeq, "all");
+  cvAllState = {query: CV.q, hits: [], searching: true};
+  send({kind:"convo", panel:"vault", act:"find", args:{q:CV.q, wake, req, viewer:convoViewer}});
+  drawAllIfShown();
+}
+function allGot(d) {
+  if (d.req !== cvAllSeq.all || !d.vault) return;
+  cvAllState = d.vault;
+  drawAllIfShown();
 }
 function allFindSoon() {
   clearTimeout(cvAllTimer);
@@ -17730,14 +17762,14 @@ function openFound(h) {
   cvWhere = null;
   if (cvUi) { delete cvUi.list.dataset.all; delete cvUi.list.dataset.rev; }
   window.__openConvo({program:h.program, id:h.id, host:h.host || "", at:h.at, query:CV.q});
-  cvWhereReq += 1;
+  cvWhereReq = convoRequest(CV.seq, "where");
   send({kind:"vaultwhere", program:h.program, id:h.id, host:h.host || "", req:cvWhereReq});
   drawHead();
 }
 // The list, and at its foot what is still being searched, what could not be,
 // and what there is to press
 function drawAll(u) {
-  const vs = S && S.vault;
+  const vs = cvAllState || (S && S.vault);
   const hits = (vs && vs.hits) || [];
   const sig = JSON.stringify([vs ? vs.query : null, hits.map(h => [h.id, h.tab, h.pinned, !!h.from]),
     vs && vs.searching, vs && vs.asking, vs && vs.sleeping, vs && vs.capped, vs && vs.failed, (S.tabs || []).length]);
@@ -17754,7 +17786,7 @@ function drawAll(u) {
   if (vs && vs.asking) line((T["vault.asking"] || "").replaceAll("{n}", vs.asking));
   if (vs && vs.failed && vs.failed.length) line((T["vault.failed"] || "{names}").replaceAll("{names}", vs.failed.join(", ")), "bad");
   if (vs && vs.sleeping) {
-    u.say.append(el("button", {type:"button", class:"cshowall", onclick:() => send({kind:"vaultsearch", query:CV.q, wake:true})},
+    u.say.append(el("button", {type:"button", class:"cshowall", onclick:() => allFindNow(true)},
       (T["vault.wake"] || "").replaceAll("{n}", vs.sleeping)));
   }
   if (!vs || vs.searching || vs.asking) return;
@@ -17925,7 +17957,7 @@ function tabTitleOf(past, here) {
   return past.host ? past.host + ": " + name : name;
 }
 window.__vaultWhere = function (d) {
-  if (!d || d.req !== cvWhereReq) return;
+  if (!d || d.req !== cvWhereReq || convoAnswerSlot(d, CV.seq) !== "where") return;
   cvWhere = d;
   drawHead();
 };
