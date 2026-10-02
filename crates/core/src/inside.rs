@@ -143,10 +143,24 @@ fn shown_all() -> std::collections::BTreeMap<String, u32> {
         .unwrap_or_default()
 }
 
-/// The edition of the app's rules this project has been shown. A project
-/// never shown any is 0, and every rule of the app's is new to it
-pub fn shown(project: &str) -> u32 {
-    shown_all().get(project).copied().unwrap_or(0)
+/// What a project is kept under in that file: its desk and its name. A name
+/// is a project's only on its desk -- another desk can have a project of the
+/// same name, and its having been shown the rules says nothing of this one
+pub fn shown_key(desk: &str, project: &str) -> String {
+    format!("{desk}/{project}")
+}
+
+/// The edition of the app's rules the project `project` of `desk` has been
+/// shown; 0 for one never shown any. A file written before projects were
+/// kept by desk has the name alone, which is read when the desk's own is not
+/// there yet
+pub fn shown(desk: &str, project: &str) -> u32 {
+    shown_in(&shown_all(), desk, project)
+}
+
+/// [`shown`], read from what the file holds
+fn shown_in(all: &std::collections::BTreeMap<String, u32>, desk: &str, project: &str) -> u32 {
+    all.get(&shown_key(desk, project)).or_else(|| all.get(project)).copied().unwrap_or(0)
 }
 
 /// Every project's, for a page that lists several
@@ -154,25 +168,28 @@ pub fn shown_json() -> String {
     serde_json::to_string(&shown_all()).unwrap_or_else(|_| "{}".into())
 }
 
-/// This project has now been shown the app's rules as they stand
-pub fn mark_shown(project: &str) {
+/// The project `project` of `desk` has now been shown the app's rules as
+/// they stand
+pub fn mark_shown(desk: &str, project: &str) {
     if project.is_empty() {
         return;
     }
     let mut all = shown_all();
     let now = shipped_edition();
-    if all.get(project) == Some(&now) {
+    let key = shown_key(desk, project);
+    if all.get(&key) == Some(&now) {
         return;
     }
-    all.insert(project.to_string(), now);
+    all.insert(key, now);
     if let Ok(text) = serde_json::to_string_pretty(&all) {
         let _ = crate::crypto::write_atomic(&shown_file(), &text);
     }
 }
 
-/// The app's rules newer than what this project has been shown, as written
-pub fn new_to(project: &str) -> Vec<String> {
-    newer_than(SHIPPED, shown(project))
+/// The app's rules newer than what the project `project` of `desk` has been
+/// shown, as written
+pub fn new_to(desk: &str, project: &str) -> Vec<String> {
+    newer_than(SHIPPED, shown(desk, project))
 }
 
 /// What came after the edition `seen`. Nothing for a project that has never
@@ -697,6 +714,19 @@ mod tests {
         assert_eq!(inside.at(".claude/routines/.state", true).map(|d| d.how), Some("skip"));
         assert!(inside.at(".claude/routines/my.md", false).is_none(), "a routine the person wrote was left out");
         assert!(inside.at(".claude/agent-memory-local", true).is_none());
+    }
+
+    /// What a project has been shown is kept by its desk and its name: a
+    /// name is a project's only on its desk
+    #[test]
+    fn a_project_is_shown_the_rules_as_its_desks() {
+        let all: std::collections::BTreeMap<String, u32> =
+            [(shown_key("work", "shop"), 2), ("shop".to_string(), 1)].into_iter().collect();
+        assert_eq!(shown_in(&all, "work", "shop"), 2);
+        // Another desk's project of the same name has a history of its own;
+        // until it has one, what a file from before desks says is read
+        assert_eq!(shown_in(&all, "home", "shop"), 1);
+        assert_eq!(shown_in(&all, "home", "cafe"), 0);
     }
 
     /// The editions as shipped: the second batch is new to a project shown

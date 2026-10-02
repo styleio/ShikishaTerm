@@ -2663,7 +2663,8 @@ fn handle(
                 return Ok(());
             };
             let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            crate::inside::mark_shown(p.get("project").and_then(|v| v.as_str()).unwrap_or_default().trim());
+            let text = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+            crate::inside::mark_shown(&text("desk"), &text("project"));
             req.respond(json_resp(serde_json::json!({ "ok": true })))?;
         }
         // The assistant AI's proposal for how each ignored thing reaches a new
@@ -13830,10 +13831,15 @@ function insideLeft(root, p, path) {
 }
 function insideShipped(desk, p, root, change) {
   const name = (p.entry && p.entry.name) || p.name || "";
-  const seen = insideShownAtLoad[name] || 0;
-  if (name && !insideShownSent.has(name)) {
-    insideShownSent.add(name);
-    settingsApi("/api/project/inside-shown", {project: name}).catch(() => null);
+  // A project is its desk's: another desk's project of the same name has a
+  // history of its own (inside::shown_key). The name alone is what a file
+  // from before that says, read while this desk's is not there yet
+  const deskId = (desk.id || "").trim();
+  const key = deskId + "/" + name;
+  const seen = insideShownAtLoad[key] || insideShownAtLoad[name] || 0;
+  if (name && !insideShownSent.has(key)) {
+    insideShownSent.add(key);
+    settingsApi("/api/project/inside-shown", {desk: deskId, project: name}).catch(() => null);
   }
   const bring = (p.entry || {}).bring || [];
   const changeOf = id => bring.filter(r => r.default === id).pop() || null;

@@ -11472,8 +11472,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Some(v) => v.shipped_new.clone(),
                 None => {
                     let name = project.map(|p| p.name.clone()).unwrap_or_default();
-                    let new = crate::inside::new_to(&name);
-                    crate::inside::mark_shown(&name);
+                    let desk = desks.get(desk_index).map(|d| d.id.as_str()).unwrap_or_default();
+                    let new = crate::inside::new_to(desk, &name);
+                    crate::inside::mark_shown(desk, &name);
                     new
                 }
             };
