@@ -2300,7 +2300,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // When each still-working tab is due to be mentioned to automation again,
     // for the tabs automation was told about in the first place. Empty unless
     // the interval is set, and emptied for a tab the moment it stops working
-    let mut busy_again: std::collections::HashMap<usize, u64> =
+    // Kept by which tab it is (its serial), not where it stands: closing a
+    // tab or switching desks moves the numbers out from under it
+    let mut busy_again: std::collections::HashMap<u64, u64> =
         std::collections::HashMap::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
@@ -2311,8 +2313,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut pending_send: Vec<PendingSend> = Vec::new();
     // Tabs that look like they've finished responding, and the time that gets confirmed.
     // We hold off firing until we've verified it stayed quiet, so we don't fire on a
-    // mid-response pause for breath.
-    let mut pending_done: Vec<(usize, u64)> = Vec::new();
+    // mid-response pause for breath. Kept by tab serial, like `busy_again`: a
+    // tab closed while it waited took its number with it, and the number
+    // then pointed past the end of the list -- or at somebody else's tab.
+    let mut pending_done: Vec<(u64, u64)> = Vec::new();
     // The name drawn for a worktree nobody named, by the folder the dialog was
     // opened on. Kept for as long as that dialog keeps asking, so the name on
     // screen is the name that gets made
@@ -4248,8 +4252,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     // Once a follow-up starts, cancel any pending completion confirmation
                     for &(idx, _, new) in &transitions {
-                        if new == TabState::Busy || new == TabState::Exited {
-                            pending_done.retain(|&(t, _)| t != idx);
+                        if (new == TabState::Busy || new == TabState::Exited)
+                            && let Some(t) = tabs.get(idx - 1)
+                        {
+                            let serial = t.serial();
+                            pending_done.retain(|&(s, _)| s != serial);
                         }
                     }
                     for &(idx, old, new) in &transitions {
@@ -4280,7 +4287,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // ...and from here it may be mentioned again
                                 // while it is still working (below)
                                 if let Some(every) = busy_repeat_ms {
-                                    busy_again.insert(idx, now_ms + every);
+                                    busy_again.insert(tabs[idx - 1].serial(), now_ms + every);
                                 }
                             }
                             _ if new.turn_ended() && old == TabState::Busy && !answering => {
@@ -4302,8 +4309,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 // Use the AI-specific setting if given, otherwise the base config.
                                 let wait = tabs[idx - 1].done_confirm_ms().unwrap_or(done_confirm_ms);
                                 let at = now_ms + wait;
-                                pending_done.retain(|&(t, _)| t != idx);
-                                pending_done.push((idx, at));
+                                let serial = tabs[idx - 1].serial();
+                                pending_done.retain(|&(s, _)| s != serial);
+                                pending_done.push((serial, at));
                             }
                             TabState::Question => {
                                 let screen =
@@ -4319,18 +4327,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // for in the CLI's own record waits for it, a few seconds
                     // at most, so the hook is handed the words and not the
                     // screen they were drawn on
-                    let (ready, waiting): (Vec<_>, Vec<_>) = pending_done.iter().partition(|&&(idx, at)| {
-                        now_ms >= at && !tabs.get(idx.wrapping_sub(1)).is_some_and(|t| t.reply_settling())
+                    // A tab that is no longer in this list -- closed, or on a
+                    // desk switched away from -- has nobody left to fire for
+                    pending_done.retain(|&(s, _)| tabs.iter().any(|t| t.serial() == s));
+                    let (ready, waiting): (Vec<_>, Vec<_>) = pending_done.iter().partition(|&&(s, at)| {
+                        now_ms >= at && !tabs.iter().any(|t| t.serial() == s && t.reply_settling())
                     });
                     pending_done = waiting;
-                    for (idx, _) in ready {
-                        if let Some(t) = tabs.get_mut(idx.wrapping_sub(1)) {
-                            if !t.state.turn_ended() {
-                                continue;
-                            }
-                            // One response per submit. Waiting for the next one requires another submit.
-                            t.finish_response();
+                    for (serial, _) in ready {
+                        let Some(i) = tabs.iter().position(|t| t.serial() == serial) else {
+                            continue;
+                        };
+                        let idx = i + 1;
+                        let t = &mut tabs[i];
+                        if !t.state.turn_ended() {
+                            continue;
                         }
+                        // One response per submit. Waiting for the next one requires another submit.
+                        t.finish_response();
                         let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
                         // Narrowing the width makes vt100 truncate each line to that
                         // width, so if it got narrower while waiting for a response,
@@ -4395,8 +4409,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // somebody asked for it. A hook that starts running on a timer
                     // by itself is a hook that surprises whoever wrote it
                     if let Some(every) = busy_repeat_ms {
-                        let states: Vec<TabState> = tabs.iter().map(|t| t.state).collect();
-                        for idx in busy_repeat_due(now_ms, every, &states, &mut busy_again) {
+                        let states: Vec<(u64, TabState)> = tabs.iter().map(|t| (t.serial(), t.state)).collect();
+                        for serial in busy_repeat_due(now_ms, every, &states, &mut busy_again) {
+                            let Some(idx) = tabs.iter().position(|t| t.serial() == serial).map(|i| i + 1) else {
+                                continue;
+                            };
                             let ctx = tab_ctx(&tabs[idx - 1], surface_at(&surfaces, idx));
                             append_hook_log(&format!(
                                 "on_busy again tab{idx}: still working after {}s",
@@ -15939,18 +15956,18 @@ pub fn page_ctx(
 pub fn busy_repeat_due(
     now_ms: u64,
     every: u64,
-    states: &[TabState],
-    tracked: &mut std::collections::HashMap<usize, u64>,
-) -> Vec<usize> {
-    tracked.retain(|&idx, _| states.get(idx - 1).is_some_and(|s| *s == TabState::Busy));
-    let mut due: Vec<usize> = tracked
+    states: &[(u64, TabState)],
+    tracked: &mut std::collections::HashMap<u64, u64>,
+) -> Vec<u64> {
+    tracked.retain(|&serial, _| states.iter().any(|&(s, st)| s == serial && st == TabState::Busy));
+    // In the order the tabs stand, so the hooks fire in the order a person reads them
+    let due: Vec<u64> = states
         .iter()
-        .filter(|(_, at)| now_ms >= **at)
-        .map(|(&idx, _)| idx)
+        .map(|&(s, _)| s)
+        .filter(|s| tracked.get(s).is_some_and(|&at| now_ms >= at))
         .collect();
-    due.sort_unstable();
-    for idx in &due {
-        tracked.insert(*idx, now_ms + every);
+    for serial in &due {
+        tracked.insert(*serial, now_ms + every);
     }
     due
 }
@@ -19183,8 +19200,9 @@ mod tests {
     fn a_tab_that_keeps_working_is_mentioned_again_but_only_on_those_terms() {
         use std::collections::HashMap;
         let every = 300_000; // five minutes
-        let busy = vec![TabState::Busy, TabState::Busy, TabState::Done];
-        let mut tracked: HashMap<usize, u64> = HashMap::new();
+        // Tabs are known by serial, not by where they stand
+        let busy = vec![(1, TabState::Busy), (2, TabState::Busy), (3, TabState::Done)];
+        let mut tracked: HashMap<u64, u64> = HashMap::new();
 
         // Tab 1 is the only one automation was told about
         tracked.insert(1, 300_000);
@@ -19209,7 +19227,7 @@ mod tests {
 
         // The work ends, and the asking stops with it -- including for a tab
         // that has gone to waiting on a person
-        let answered = vec![TabState::Question, TabState::Busy, TabState::Done];
+        let answered = vec![(1, TabState::Question), (2, TabState::Busy), (3, TabState::Done)];
         assert!(
             busy_repeat_due(900_000, every, &answered, &mut tracked).is_empty(),
             "it keeps calling about a tab that is waiting for a person"
@@ -19221,6 +19239,16 @@ mod tests {
         assert!(
             busy_repeat_due(1_000_000, every, &busy, &mut tracked).is_empty(),
             "it calls about a tab that no longer exists"
+        );
+
+        // A tab before it closed: the one that was second now stands first,
+        // and is still the one being asked about -- not whatever took its place
+        tracked.insert(2, 0);
+        let moved = vec![(2, TabState::Busy), (3, TabState::Done)];
+        assert_eq!(
+            busy_repeat_due(1_000_000, every, &moved, &mut tracked),
+            vec![2],
+            "it lost the tab when the tabs before it closed"
         );
     }
 
