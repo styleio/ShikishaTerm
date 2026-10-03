@@ -67,6 +67,19 @@ export async function connectCdp(target, {timeout = 30000} = {}) {
   return {ws, send, run, thrown, stop:() => ws.close()};
 }
 
+/** The port Chrome wrote, or 0 while the file is still missing, being
+ * written (Windows reports EBUSY while Chrome holds it open), or partial. */
+function activePort(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); }
+  catch (error) {
+    if (['ENOENT', 'EBUSY', 'EPERM', 'EACCES'].includes(error.code)) return 0;
+    throw error;
+  }
+  const port = Number(text.split(/\r?\n/)[0]);
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : 0;
+}
+
 /** Port and profile belong to this process; concurrent checks cannot attach
  * to each other's Chrome, even when started from the same worktree. */
 export async function startChrome({chrome = findChrome(), args = []} = {}) {
@@ -88,9 +101,8 @@ export async function startChrome({chrome = findChrome(), args = []} = {}) {
     while (Date.now() < deadline) {
       if (spawnError) throw spawnError;
       if (proc.exitCode !== null) throw new Error('Chrome exited before opening its debugging port');
-      const active = path.join(profile, 'DevToolsActivePort');
-      if (fs.existsSync(active)) {
-        const port = Number(fs.readFileSync(active, 'utf8').split(/\r?\n/)[0]);
+      const port = activePort(path.join(profile, 'DevToolsActivePort'));
+      if (port) {
         const list = await fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json()).catch(() => []);
         const target = list.find(t => t.type === 'page');
         if (target) {
