@@ -72,7 +72,7 @@ try {
   const question = async () => {
     await run(`void discardFolder(${choose}); 'asked'`);
     for (let n=0; n<80; n++) {
-      const shown = await run(`(() => { const q=document.getElementById('sask'); return q && !q.hidden && q.querySelector('.vtitle').textContent === T['tui.discard.title'] ? {
+      const shown = await run(`(async () => { await new Promise(r => setTimeout(r, 0)); const q=document.getElementById('sask'); return q && !q.hidden && q.querySelector('.vtitle').textContent === T['tui.discard.title'] ? {
         say:q.querySelector('.vsay').textContent, files:q.querySelector('.blist').textContent,
         never:q.querySelector('.snever').hidden, focused:document.activeElement.className,
         label:q.querySelector('.go').textContent} : null; })()`);
@@ -89,10 +89,11 @@ try {
   assert.ok(shown.files.includes('saved.txt') && shown.files.includes('new file.txt'));
   assert.ok(shown.files.includes('topic'), 'kept branch must be named');
   assert.ok(shown.never, 'dirty-file consent must not be remembered');
-  assert.ok(shown.focused.includes('quiet'), 'Cancel must have initial focus');
-  await run(`document.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); 'cancelled'`);
+  assert.ok(shown.focused.includes('quiet'), 'Cancel must have initial focus: ' + JSON.stringify(shown));
+  await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); 'cancelled'`);
   await sleep(500);
   assert.ok(fs.existsSync(work), 'Enter on Cancel must preserve the folder');
+  assert.ok(await run(`document.getElementById('sask').hidden`), 'Enter on Cancel must close the question');
   console.log('PASS dirty changes are reviewed even when clean confirmations are off; Enter cancels');
 
   await question();
