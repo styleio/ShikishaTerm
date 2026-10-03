@@ -17009,24 +17009,36 @@ if (REMOTE) {
 // them as two separate one-directional sockets means neither one can
 // clog the other. Coordinates are sent as a 0..1 fraction, independent of the device's screen size
 let castWs = null, castIn = null, castCtx = null, castBound = false;
-// The screen shape already reported to the PC (it re-shapes the page's
-// viewport to match, so a portrait phone gets a full screen, not a
-// letterboxed strip). Width-keyed: the keyboard opening only changes the
+// The content area already reported to the PC, where the page lays itself
+// out at the viewer's width. Width-keyed: the keyboard opening only changes the
 // height, and re-shaping the page for that would make it jump around
-let castShaped = false, shapeW = 0, shapeT = 0;
+let castShaped = false, shapeW = 0, shapeT = 0, castTarget = "", shapeDpr = 0;
 function sendShape(force) {
   const cv = document.getElementById("cast");
   const w = Math.round(cv.clientWidth), h = Math.round(cv.clientHeight);
   if (!w || !h) return false;
-  if (!force && w === shapeW) return true;
+  const dpr = window.devicePixelRatio || 1;
+  if (!force && w === shapeW && dpr === shapeDpr) return true;
   // With how dense this screen is, so the page is drawn with as many pixels
   // as are here to show it: stretched from fewer, it arrives soft
-  if (!sendIn({kind:"inject", what:"view", w:w, h:h, dpr:window.devicePixelRatio || 1})) return false;
-  shapeW = w;
+  if (!sendIn({kind:"inject", what:"view", w:w, h:h, dpr:dpr})) return false;
+  shapeW = w; shapeDpr = dpr;
   return true;
 }
 function castStart() {
-  if (!REMOTE || castWs || remoteCut) return;
+  if (!REMOTE || remoteCut) return;
+  const tab = activeTab();
+  const target = JSON.stringify([S && S.desk, tab && tab.index, tab && tab.id]);
+  if (target !== castTarget) {
+    castTarget = target;
+    castShaped = false; shapeW = 0;
+  }
+  // The input line lives for the whole relay, including when video replaces
+  // the JPEG line. A state update must not open another input socket then.
+  if (castIn) {
+    if (!castShaped) castShaped = sendShape(true);
+    return;
+  }
   const ear = document.getElementById("castear");
   if (ear && !ear.onclick) ear.onclick = castEarTap;
   const cv = document.getElementById("cast");
@@ -17036,6 +17048,7 @@ function castStart() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const tok = encodeURIComponent(TOKEN);
   castIn = new WebSocket(proto + "//" + location.host + "/ws-in?t=" + tok);
+  castIn.onopen = () => { castShaped = sendShape(true); };
   castIn.onclose = () => { castIn = null; };
   bindCastInput(cv);
   videoTry();
@@ -17095,8 +17108,8 @@ async function castFrame(e) {
       // is idempotent on the PC side, so this can't ping-pong
       castShaped = false;
     }
-    // Report the screen shape only once a frame exists: the PC computes
-    // the new viewport from the current one, so it must have seen a frame
+    // Retry if the first report raced the input socket opening or a hidden
+    // content area. The layout size itself does not depend on this frame.
     if (!castShaped) castShaped = sendShape(true);
     // A picture has arrived, so say which way it came and stop saying that
     // one is on its way. Said here rather than when the line opened: an open
@@ -17333,7 +17346,7 @@ function videoDamaged() {
   }).catch(() => {});
 }
 // Rotating the phone changes the width — tell the PC the new shape (debounced)
-window.addEventListener("resize", () => {
+function scheduleCastShape() {
   // Whichever way the picture is arriving. Asking only about the JPEG line
   // meant that once video took over -- which closes that line -- turning the
   // phone never told the PC, and the page went on being drawn to the shape
@@ -17341,7 +17354,13 @@ window.addEventListener("resize", () => {
   if (!castWs && !videoOn) return;
   clearTimeout(shapeT);
   shapeT = setTimeout(() => { if (castWs || videoOn) sendShape(false); }, 300);
-});
+}
+window.addEventListener("resize", scheduleCastShape);
+// The sidebar and split panes can change the content width without changing
+// the window. Observe the same box sendShape measures.
+if (window.ResizeObserver) {
+  new ResizeObserver(scheduleCastShape).observe(document.getElementById("cast"));
+}
 function castStop() {
   if (castWs) { castWs.close(); castWs = null; }
   if (castIn) { castIn.close(); castIn = null; }
@@ -17349,7 +17368,8 @@ function castStop() {
   // nothing is being watched any more
   videoOn = false;
   videoStop();
-  castShaped = false; shapeW = 0;
+  clearTimeout(shapeT);
+  castShaped = false; shapeW = 0; shapeDpr = 0; castTarget = "";
   castWay(null);
   castWaiting(false);
   castEar(false);

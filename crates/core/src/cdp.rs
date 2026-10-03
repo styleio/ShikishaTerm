@@ -132,18 +132,9 @@ pub fn wheel_event(x: f64, y: f64, dx: f64, dy: f64) -> serde_json::Value {
     })
 }
 
-/// Re-shape a page's viewport to the shape of the screen looking at it.
-///
-/// A phone in portrait looking at a page shaped for a desktop sees a strip
-/// across the middle with black above and below it. The width is kept -- the
-/// page is still a desktop page, and a site that switches to its mobile layout
-/// below 400px would become a different site -- and the height is stretched to
-/// the viewer's aspect ratio.
-///
-/// `fit` says whose width it is. A page keeps its own. A DevTools screen is
-/// the app's own tool, laid out for whatever width it is given, and takes the
-/// viewer's: shrunk from a PC's width onto a phone, its lettering was a third
-/// of its size (measured 2026-09-30: 990 CSS pixels onto 390).
+/// Lay out a relayed page at the viewer's CSS width and height. Ordinary
+/// pages and DevTools follow the same rule: retaining the desktop width
+/// shrinks the lettering and prevents responsive layouts from reflowing.
 ///
 /// `zoom` is the browser zoom the caller puts on that screen (1 where it has
 /// none to put). Its viewport is the viewer's screen times that, so at the
@@ -156,42 +147,19 @@ pub fn wheel_event(x: f64, y: f64, dx: f64, dy: f64) -> serde_json::Value {
 /// own: a CSS zoom on the page left the DevTools measuring its tabs in one
 /// scale and drawing them in the other (the tabs that did not fit were drawn
 /// over the panel). At one to one it is the right size and stretched at the
-/// far end. Only the app's own screen is zoomed: zooming somebody's site
-/// would be changing their page
-///
-/// `None` means take the override away: the page's own shape is already as
-/// tall as the viewer wants, which is what a phone turned sideways reports.
-pub fn view_metrics(nat: (f64, f64), w: f64, h: f64, zoom: f64, fit: ViewFit) -> Option<serde_json::Value> {
-    if nat.0 < 1.0 || nat.1 < 1.0 || w <= 0.0 || h <= 0.0 {
+/// far end. No source frame is needed: the viewer supplies both dimensions.
+/// `None` means the viewer has no usable area yet.
+pub fn view_metrics(w: f64, h: f64, zoom: f64) -> Option<serde_json::Value> {
+    if !w.is_finite() || !h.is_finite() || !zoom.is_finite() || w < 1.0 || h < 1.0 {
         return None;
     }
-    if fit == ViewFit::Viewer {
-        let z = zoom.max(1.0);
-        return Some(serde_json::json!({
-            "width": (w * z).floor(),
-            "height": (h * z).floor(),
-            "deviceScaleFactor": 0,
-            "mobile": false,
-        }));
-    }
-    let want_h = (nat.0 * (h / w).clamp(0.2, 3.0)).round();
-    (want_h > nat.1 * 1.02).then(|| {
-        serde_json::json!({
-            "width": nat.0.round(),
-            "height": want_h,
-            "deviceScaleFactor": 0,
-            "mobile": false,
-        })
-    })
-}
-
-/// Whose width a page is drawn at for a viewer (see [`view_metrics`])
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewFit {
-    /// The page's own: a site is not shown its mobile layout
-    Page,
-    /// The viewer's: a screen of the app's own that lays itself out for any width
-    Viewer,
+    let z = zoom.max(1.0);
+    Some(serde_json::json!({
+        "width": (w * z).floor(),
+        "height": (h * z).floor(),
+        "deviceScaleFactor": 0,
+        "mobile": false,
+    }))
 }
 
 /// How much a screen fitted to its viewer is zoomed: the viewer's density,
@@ -330,41 +298,43 @@ mod tests {
         assert_eq!(mouse_event("pressed", 1.0, 1.0, false, false, 9).0["clickCount"], 3);
     }
 
-    /// A portrait viewer gets a taller page; a landscape one gets its own back
+    /// Both orientations use the viewer's width, even before a frame exists.
     #[test]
     fn the_viewport_follows_the_shape_of_the_screen_looking_at_it() {
-        let nat = (1200.0, 800.0);
-        let tall = view_metrics(nat, 400.0, 900.0, 1.0, ViewFit::Page).expect("it did not fit a tall screen");
-        assert_eq!(tall["width"], 1200.0, "it changes the width too");
-        assert_eq!(tall["height"], 2700.0);
-        assert!(view_metrics(nat, 1200.0, 400.0, 1.0, ViewFit::Page).is_none(), "it overrides on a wide screen");
-        // Nothing to go on: the page has not produced a frame yet
-        assert!(view_metrics((0.0, 0.0), 400.0, 900.0, 1.0, ViewFit::Page).is_none());
+        let tall = view_metrics(400.0, 900.0, 1.0).unwrap();
+        assert_eq!(tall["width"], 400.0);
+        assert_eq!(tall["height"], 900.0);
+        let wide = view_metrics(900.0, 400.0, 1.0).unwrap();
+        assert_eq!(wide["width"], 900.0);
+        assert_eq!(wide["height"], 400.0);
     }
 
-    /// A site keeps its own width, whatever the density of the screen looking
+    /// A hidden viewer must not clear a page's usable shape or hand invalid
+    /// numbers to the browser protocol.
     #[test]
-    fn a_page_keeps_its_width_at_any_density() {
-        let m = view_metrics((990.0, 900.0), 390.0, 748.0, 3.0, ViewFit::Page).unwrap();
-        assert_eq!(m["width"], 990.0, "the page was given another width");
-        assert_eq!(m["deviceScaleFactor"], 0);
+    fn an_unmeasurable_viewer_does_not_supply_a_viewport() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(view_metrics(bad, 844.0, 1.0).is_none());
+            assert!(view_metrics(390.0, bad, 1.0).is_none());
+        }
+        assert!(view_metrics(390.0, 844.0, f64::NAN).is_none());
     }
 
-    /// The app's own DevTools gets the phone's screen in the phone's pixels
+    /// A relayed page gets the phone's screen in the phone's pixels
     /// and is zoomed by its density, so it lays itself out at the phone's
     /// width with a pixel for every pixel shown: shrunk from a PC's width its
     /// lettering was a third of its size, and at one to one it was stretched
     #[test]
-    fn a_devtools_screen_takes_the_screen_looking_at_it_pixel_for_pixel() {
+    fn a_relayed_page_takes_the_screen_looking_at_it_pixel_for_pixel() {
         let z = viewer_zoom(390.0, 718.0, 3.0);
         assert_eq!(z, 3.0);
-        let m = view_metrics((990.0, 900.0), 390.0, 718.0, z, ViewFit::Viewer).unwrap();
+        let m = view_metrics(390.0, 718.0, z).unwrap();
         assert_eq!((m["width"].as_f64(), m["height"].as_f64()), (Some(1170.0), Some(2154.0)));
         // With no zoom to put on it, the phone's own width, one to one
-        let flat = view_metrics((990.0, 900.0), 390.0, 718.0, 1.0, ViewFit::Viewer).unwrap();
+        let flat = view_metrics(390.0, 718.0, 1.0).unwrap();
         assert_eq!(flat["width"], 390.0);
         // Turned sideways it still takes the phone's shape
-        let side = view_metrics((990.0, 900.0), 844.0, 390.0, viewer_zoom(844.0, 390.0, 3.0), ViewFit::Viewer).unwrap();
+        let side = view_metrics(844.0, 390.0, viewer_zoom(844.0, 390.0, 3.0)).unwrap();
         assert_eq!(side["width"], 2532.0);
         // A density that would take the picture past its limit is brought down
         // to it, and a screen with no more pixels than CSS pixels is not zoomed

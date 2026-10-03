@@ -1712,11 +1712,6 @@ fn run_window(
         String,
         std::rc::Rc<std::cell::Cell<shikisha_shared::Rect>>,
     > = std::collections::HashMap::new();
-    // Each cast target's own (pre-override) viewport in CSS px. Held for the
-    // life of the cast so a phone rotating back and forth always re-shapes
-    // from the real size, and torn down (override cleared) with the cast
-    let mut naturals: std::collections::HashMap<Option<String>, (f64, f64)> =
-        std::collections::HashMap::new();
     // The browser zoom put on a cast target fitted to its viewer (see
     // `cdp::view_metrics`). A press arrives as a share of the picture, and the
     // picture is that many times wider than the page is in its own pixels, so
@@ -2279,13 +2274,11 @@ fn run_window(
                     } else if let Some(cast) = casts.remove(&to) {
                         sound_pid.store(0, std::sync::atomic::Ordering::SeqCst);
                         // Give the page its own shape back before the stream goes away
-                        if naturals.remove(&to).is_some()
+                        if zooms.remove(&to).is_some()
                             && let Some(view) = target(main_view(&shell), &children, &overlays, &to) {
                                 let wv = cdp::webview_of(view);
                                 cdp::call(&wv, "Emulation.clearDeviceMetricsOverride", "{}");
-                                if zooms.remove(&to).is_some() {
-                                    let _ = view.zoom(1.0);
-                                }
+                                let _ = view.zoom(1.0);
                             }
                         cdp::stop(cast);
                     }
@@ -2315,44 +2308,18 @@ fn run_window(
                                 }
                             }
                             Input::View { w, h, dpr } => {
-                                // A phone reported its screen shape. Re-shape this page's
-                                // viewport to that aspect while keeping the PC-side width,
-                                // so the relay fills the phone's screen instead of leaving
-                                // the bottom black (a DevTools takes the phone's width and
-                                // density instead: `cdp::view_metrics`). Cleared when the
-                                // cast ends. The first
-                                // report must come after a frame (cast_dims filled), which
-                                // the sender guarantees
-                                let (cw, ch) = cast_dims.get();
-                                // Big enough to be a page somebody is looking
-                                // at. Anything under this is the picture a
-                                // window collapses to while it is being put
-                                // away or brought back, and measuring from it
-                                // once fixes the page at that size for as long
-                                // as the phone keeps watching
-                                if cw >= 320.0 && ch >= 240.0 {
-                                    let nat = *naturals.entry(to.clone()).or_insert((cw, ch));
-                                    let fit = to.as_deref().map_or(shikisha_core::cdp::ViewFit::Page, shikisha_core::caps::view_fit);
-                                    // The browser zoom the app's own screen is given here
-                                    let zoom = match fit {
-                                        shikisha_core::cdp::ViewFit::Viewer => shikisha_core::cdp::viewer_zoom(w, h, dpr),
-                                        shikisha_core::cdp::ViewFit::Page => 1.0,
-                                    };
-                                    match shikisha_core::cdp::view_metrics(nat, w, h, zoom, fit) {
-                                        Some(m) => cdp::call(
-                                            &wv,
-                                            "Emulation.setDeviceMetricsOverride",
-                                            &m.to_string(),
-                                        ),
-                                        // e.g. rotated to landscape — the real shape is fine
-                                        None => cdp::call(&wv, "Emulation.clearDeviceMetricsOverride", "{}"),
-                                    }
-                                    // The app's own screen, given the phone's pixels, is
-                                    // zoomed to lay itself out at the phone's width (see
-                                    // `view_metrics`). Taken away when the watching stops
-                                    if fit == shikisha_core::cdp::ViewFit::Viewer {
-                                        let _ = view.zoom(zoom);
-                                        zooms.insert(to.clone(), zoom);
+                                // The viewer supplies the layout size. Measuring from
+                                // the PC's frame kept sites at desktop width and made
+                                // a minimized window determine the phone's layout.
+                                let zoom = shikisha_core::cdp::viewer_zoom(w, h, dpr);
+                                if let Some(m) = shikisha_core::cdp::view_metrics(w, h, zoom) {
+                                    cdp::call(&wv, "Emulation.setDeviceMetricsOverride", &m.to_string());
+                                    let _ = view.zoom(zoom);
+                                    zooms.insert(to.clone(), zoom);
+                                    // A static page may have sent its one frame
+                                    // before the new metrics took effect.
+                                    if casts.contains_key(&to) {
+                                        cdp::kick(&wv);
                                     }
                                 }
                             }
@@ -2684,35 +2651,8 @@ fn run_window(
                         size: wry::dpi::PhysicalSize::new(w, h).into(),
                     });
                 }
-                // A page being watched from a phone is re-shaped to that
-                // phone's aspect, worked out from the width the page has
-                // HERE. This window just changed size, so that width has
-                // changed and the shape on the phone is worked out from a
-                // number that no longer exists. Take the override off and let
-                // the next report from the phone measure it again.
-                //
-                // Without this the arithmetic survives its own inputs: the
-                // window came back from minimized, where Windows had told it
-                // it was 128 wide, and the page went on being drawn 128 wide
-                // in a full-sized pane -- one character per line, on the PC
-                // and on the phone both
-                if !window.is_minimized() && !naturals.is_empty() {
-                    for to in naturals.keys() {
-                        if let Some(v) = target(main_view(&shell), &children, &overlays, to) {
-                            cdp::call(
-                                &cdp::webview_of(v),
-                                "Emulation.clearDeviceMetricsOverride",
-                                "{}",
-                            );
-                            // Its zoom goes with the shape it was for
-                            if zooms.contains_key(to) {
-                                let _ = v.zoom(1.0);
-                            }
-                        }
-                    }
-                    naturals.clear();
-                    zooms.clear();
-                }
+                // A relay uses the viewer's dimensions, independent of this
+                // window. Its override ends when the viewer stops watching.
             }
             // The move notice the same hook gave, for the same reason:
             // Chromium places its popups (select lists, tooltips) by where
@@ -3383,9 +3323,10 @@ pub(crate) mod cdp {
         Some(ConsoleArm { receivers, webview: webview.clone() })
     }
 
-    /// Force the current screen out as one frame (re-issues startScreencast).
+    /// Force a fresh first frame, even if the page has not changed.
     /// Used when a new viewer joins but the page is static and no new change is coming
     pub fn kick(webview: &ICoreWebView2) {
+        call(webview, "Page.stopScreencast", "{}");
         call(webview, "Page.startScreencast", CAST_PARAMS);
     }
 
@@ -3697,35 +3638,6 @@ mod tests {
         assert!(
             body.contains("window.is_minimized()"),
             "a pane is re-sized by the layout of a window nobody can see"
-        );
-    }
-
-    /// What a phone is shown is worked out from the width the page has here,
-    /// so a window that changes size invalidates it.
-    ///
-    /// Nothing re-takes that width by itself: it is measured once, when the
-    /// phone first says what shape it is. Coming back from minimized left the
-    /// page drawn at the width Windows reports for a minimized window, in a
-    /// pane the full size of the screen
-    #[test]
-    fn a_window_that_changes_size_measures_the_page_again() {
-        let src = include_str!("browser.rs");
-        let resized =
-            src.find("event: WindowEvent::Resized(size),").expect("nothing follows the size");
-        // To the next thing the window is told, however long this arm grows
-        let rest = &src[resized + 1..];
-        let end = rest.find("event: WindowEvent::").map_or(rest.len(), |n| n + 1);
-        let body = &src[resized..resized + end];
-        assert!(
-            body.contains("naturals.clear()"),
-            "the shape sent to a phone outlives the window it was measured from"
-        );
-        assert!(body.contains("zooms.clear()"), "a zoom put on for a phone outlives the shape it was for");
-        let view = src.find("Input::View { w, h, dpr } => {").expect("no view intent");
-        let body = &src[view..view + 1600];
-        assert!(
-            body.contains("cw >= 320.0 && ch >= 240.0"),
-            "a page is measured from a size nothing could be read at"
         );
     }
 

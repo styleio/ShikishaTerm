@@ -68,7 +68,20 @@ if (-not $Mcp) { $Mcp = Join-Path $At 'mcp.json' }
 function Stop-Copy {
     Get-Process -Name 'SHIKISHA-TERM' -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path -like (Join-Path $At '*') } |
-        ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }
+        ForEach-Object {
+            # Killing the window's tree may already have stopped a runtime
+            # found by the same enumeration. Only stop a process still here.
+            $still = Get-Process -Id $_.Id -ErrorAction SilentlyContinue
+            if ($still -and $still.Path -eq $_.Path) {
+                try {
+                    & taskkill.exe /PID $still.Id /T /F 2>&1 | Out-Null
+                } catch {
+                    # The process or one of its children can exit between
+                    # the check and taskkill. A surviving target is an error.
+                    if (Get-Process -Id $still.Id -ErrorAction SilentlyContinue) { throw }
+                }
+            }
+        }
 }
 
 # Free means nothing is listening on the loopback now, and the way to ask is to

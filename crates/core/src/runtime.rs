@@ -2769,6 +2769,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
+    // The window and the phone each remember their own browser layout. Like
+    // terminal sizes, passive reports do not take ownership from the operator.
+    let mut browser_views = [None::<(f64, f64, f64)>; 2];
+    let mut browser_view = None;
     // Desks use a virtual-desktop model: switching means hiding, not stopping.
     // Each desk keeps its own set of tabs, launched the first time it's activated.
     // Launched tabs live in `tabs`; the shelf reserves space for the remaining desks.
@@ -5650,9 +5654,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     // Input on the relay screen is injected as real input into the browser being viewed
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Inject { input, .. }) => {
-                        if let Some(key) = &shown_browser {
-                            let _ = caps.browser_inject(key, input);
+                    remote::RemoteCmd::BrowserInput { input, here } => {
+                        match input {
+                            shikisha_shared::Input::View { w, h, dpr } => {
+                                if crate::cdp::view_metrics(w, h, 1.0).is_some() {
+                                    browser_views[usize::from(!here)] = Some((w, h, dpr));
+                                }
+                            }
+                            input => {
+                                operator = Some(if here { crate::view::Operator::Here } else { crate::view::Operator::Afar });
+                                if let Some(key) = &shown_browser {
+                                    let _ = caps.browser_inject(key, input);
+                                }
+                            }
                         }
                     }
                     // The top bar (back/forward/refresh/URL) doesn't turn into terminal
@@ -6070,6 +6084,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None
             };
             if want != casting {
+                browser_view = None;
                 if let Some(old) = &casting {
                     let _ = caps.browser_screencast(old, false);
                 }
@@ -6096,6 +6111,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // told the PC did not know what was playing
                 if !r.sound_is_known() {
                     r.sound_comes_from(caps.browser_sound_from(key).unwrap_or(0));
+                }
+            }
+            // One decision per pass, shared with terminals. In a split app
+            // the local window is itself a relay viewer and reports again as
+            // frames change; forwarding every report made the page alternate
+            // between desktop and phone widths continuously.
+            let afar = crate::view::far_decides(r.watched(), operator);
+            if let Some(key) = &casting {
+                let size = browser_views[usize::from(afar)];
+                if size != browser_view {
+                    if let Some((w, h, dpr)) = size {
+                        if caps.browser_inject(key, shikisha_shared::Input::View { w, h, dpr }).is_ok() {
+                            browser_view = size;
+                        }
+                    } else if browser_view.take().is_some() {
+                        // A native window has no relay-size report of its
+                        // own. Letting it take over clears the override.
+                        let _ = caps.browser_screencast(key, false);
+                        let _ = caps.browser_screencast(key, true);
+                    }
                 }
             }
         }

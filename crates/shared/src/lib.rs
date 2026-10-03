@@ -52,11 +52,10 @@ pub enum Input {
     /// ctrl/alt can be composed from the fixed toggles in the auxiliary
     /// key row (e.g. Ctrl+C)
     Key { named: String, ctrl: bool, alt: bool },
-    /// The viewer's screen shape in CSS pixels. The page's viewport gets
-    /// re-shaped to the same aspect ratio (keeping the PC-side width) so a
-    /// portrait phone sees a full screen instead of a letterboxed strip.
+    /// The viewer's content area in CSS pixels. Every relayed page lays
+    /// itself out at this width and height, including responsive sites.
     /// `dpr` is how many of the viewer's device pixels make one of those: a
-    /// screen of the app's own (a DevTools) is drawn with that many pixels,
+    /// page rendered with browser zoom is drawn with that many pixels,
     /// so its picture has as many as the screen showing it (see
     /// `cdp::view_metrics`). 1 when not said
     View {

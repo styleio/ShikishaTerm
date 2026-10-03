@@ -82,6 +82,9 @@ pub enum RemoteCmd {
     /// A remote viewer opened the board. Its screen takes over from keys
     /// pressed at the PC before it connected; later keys can take it back.
     Viewing,
+    /// Browser input with its trusted origin. The window of a split app
+    /// watches the same relay as a phone; its size must not fight the phone's.
+    BrowserInput { input: shikisha_shared::Input, here: bool },
     /// Send an instruction to a tab (treated as human input)
     Send { uid: String, text: String },
     /// Raw keys, e.g. an answer to a confirmation
@@ -1045,6 +1048,14 @@ impl Gate {
         allowed_from_afar(ev) || (self.is_here(id) && allowed_from_here(ev))
     }
 
+    /// Preserve the authenticated viewer's identity on both input transports.
+    fn command(&self, id: &str, ev: shikisha_shared::Ev) -> RemoteCmd {
+        match ev {
+            shikisha_shared::Ev::Inject { input, .. } => RemoteCmd::BrowserInput { input, here: self.is_here(id) },
+            ev => RemoteCmd::Ui(ev),
+        }
+    }
+
     /// Whether the password factor is satisfied (always, when none is set)
     fn unlocked(&self, id: &str) -> bool {
         // The password is asked of a device reaching this PC from elsewhere;
@@ -1768,7 +1779,7 @@ impl RemoteUi {
     /// this answer, so it has to count the poller too: a phone reduced to
     /// polling is still a phone-sized screen looking at the same terminal.
     pub fn watched(&self) -> bool {
-        self.has_state_clients()
+        self.has_devices()
             || self
                 .last_poll
                 .lock()
@@ -3121,7 +3132,7 @@ fn handle(
                             };
                             if let Some(ev) = shikisha_shared::parse_intent(&v)
                                 && gate.admits(&session, &ev) {
-                                    let _ = tx.send(RemoteCmd::Ui(ev));
+                                    let _ = tx.send(gate.command(&session, ev));
                                 }
                         }
                         Ok((crate::ws::Op::Close, _)) | Err(_) => break,
@@ -3167,7 +3178,7 @@ fn handle(
             let mut took = false;
             if let Some(ev) = shikisha_shared::parse_intent(&v)
                 && gate.admits(&session, &ev) {
-                    let _ = tx.send(RemoteCmd::Ui(ev));
+                    let _ = tx.send(gate.command(&session, ev));
                     took = true;
                 }
             req.respond(json_response(serde_json::json!({"ok": took})))?;
@@ -3790,6 +3801,13 @@ mod tests {
         let mut lost = Vec::new();
         for name in &allowed {
             let asked = format!("Ev::{name}");
+            // Browser input keeps the session's origin before reaching the
+            // runtime, so sizing can distinguish the window from a phone.
+            if name == "Inject" {
+                assert!(gate_src.contains("=> RemoteCmd::BrowserInput"));
+                assert!(loop_src.contains("remote::RemoteCmd::BrowserInput { input, here } =>"));
+                continue;
+            }
             // A report is not an ask: these arrive from a page, and the gate
             // names them for the same reason it names everything else
             if matches!(name.as_str(), "Button") {
@@ -3905,9 +3923,30 @@ mod tests {
         assert_eq!(window.state("tok123456789012"), 200);
         assert!(ui.last_poll.lock().unwrap().is_none(), "this PC's own window counts as a polling phone");
         assert!(ui.rx.try_recv().is_err(), "this PC's own window took remote ownership of the width");
+        let (tx, _rx) = channel();
+        ui.state_clients.lock().unwrap().push(StateClient {
+            tx, pending: Arc::new(AtomicUsize::new(0)),
+            session: rs.strip_prefix("rs=").unwrap().to_string(), panes: true,
+        });
+        assert!(ui.has_state_clients());
+        assert!(!ui.watched(), "the local window keeps remote sizing alive after the phone leaves");
 
         let mut phone = Phone::new(&base);
         phone.pair("tok123456789012");
+        // A payload cannot claim to be the local viewer. Both input
+        // transports classify the authenticated session in the same place.
+        let shape = r#"{"kind":"inject","what":"view","w":390,"h":748,"dpr":3,"here":true}"#;
+        for (viewer, expected_here) in [(&mut phone, false), (&mut window, true)] {
+            let (status, _) = viewer.said_post("/api/intent?t=tok123456789012", shape);
+            assert_eq!(status, 200);
+            match ui.rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+                RemoteCmd::BrowserInput { input: shikisha_shared::Input::View { w, h, dpr }, here } => {
+                    assert_eq!(here, expected_here);
+                    assert_eq!((w, h, dpr), (390.0, 748.0, 3.0));
+                }
+                other => panic!("browser dimensions lost their viewer: {other:?}"),
+            }
+        }
         let press = r#"{"kind":"linkpress","tab":"t","target":"https://a.io","lk":"web","act":"pc","ask":""}"#;
         let (_, said) = phone.said_post("/api/intent?t=tok123456789012", press);
         assert!(said.contains("false"), "a phone had this PC's browser opened: {said}");
@@ -5728,10 +5767,10 @@ mod tests {
         sock.write_all(&mask_text_frame(intent)).unwrap();
 
         match ui.rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap() {
-            RemoteCmd::Ui(shikisha_shared::Ev::Inject {
+            RemoteCmd::BrowserInput {
                 input: shikisha_shared::Input::Mouse { phase, x, y, .. },
-                ..
-            }) => {
+                here: false,
+            } => {
                 assert_eq!(phase, "pressed");
                 assert!((x - 0.5).abs() < 1e-9 && (y - 0.25).abs() < 1e-9);
             }

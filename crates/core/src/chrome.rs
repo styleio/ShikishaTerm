@@ -837,8 +837,11 @@ struct Page {
     context: Option<String>,
     /// Whether a relayed mouse button is being held down
     held: bool,
-    /// The shape this page's frames had before a viewer asked for its own
-    natural: Option<(f64, f64)>,
+    /// Whether a viewer has supplied the layout size; cleared with the cast.
+    reshaped: bool,
+    casting: bool,
+    /// The latest desktop layout, restored after the relay releases it.
+    bounds: Option<(i32, i32)>,
 }
 
 /// What the reading threads write down and the runtime reads back.
@@ -1365,32 +1368,15 @@ impl shikisha_shared::BrowserHost for Pages {
             // A viewer said what shape its screen is. The page is re-shaped to
             // match, so a phone sees a full screen rather than a strip
             Input::View { w, h, .. } => {
-                if cw >= 1.0 && ch >= 1.0 {
-                    let natural = {
-                        let mut open = self.open.borrow_mut();
-                        let page = open.get_mut(&name);
-                        page.map(|p| *p.natural.get_or_insert((cw, ch)))
-                    };
-                    if let Some(nat) = natural {
-                        // No browser zoom to put on a page here: this browser is
-                        // spoken to only through its debugging protocol, which has
-                        // none, and a CSS zoom breaks the DevTools' own layout (see
-                        // `view_metrics`). A DevTools screen takes the viewer's
-                        // width one to one -- its lettering the right size, if
-                        // softer than in the window, where the zoom is the browser's
-                        match crate::cdp::view_metrics(nat, w, h, 1.0, crate::caps::view_fit(&name)) {
-                            Some(m) => {
-                                chrome.call_page(&session, "Emulation.setDeviceMetricsOverride", m)?;
-                            }
-                            // e.g. turned sideways -- its own shape is right
-                            None => {
-                                chrome.call_page(
-                                    &session,
-                                    "Emulation.clearDeviceMetricsOverride",
-                                    serde_json::json!({}),
-                                )?;
-                            }
-                        }
+                // CDP has no browser zoom: use the viewer's CSS size one to
+                // one. A CSS zoom would break layouts that measure themselves.
+                if let Some(m) = crate::cdp::view_metrics(w, h, 1.0) {
+                    chrome.call_page(&session, "Emulation.setDeviceMetricsOverride", m)?;
+                    if let Some(page) = self.open.borrow_mut().get_mut(&name) {
+                        page.reshaped = true;
+                    }
+                    if self.open.borrow().get(&name).is_some_and(|p| p.casting) {
+                        self.screencast(to, true)?;
                     }
                 }
             }
@@ -1406,7 +1392,17 @@ impl shikisha_shared::BrowserHost for Pages {
     fn screencast(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         let name = to.unwrap_or_default().to_string();
         let (chrome, session) = self.at(to)?;
+        if let Some(page) = self.open.borrow_mut().get_mut(&name) {
+            page.casting = on;
+        }
         if on {
+            // Chrome paints its active page. A later-opened tab can still
+            // own that surface even though the board is showing this one;
+            // reshaping a hidden page alone produces no relay frames.
+            chrome.call_page(&session, "Page.bringToFront", serde_json::json!({}))?;
+            // Starting an already-running cast need not emit a static page
+            // again. A new viewer, or new metrics, needs a fresh first frame.
+            chrome.call_page(&session, "Page.stopScreencast", serde_json::json!({}))?;
             let params: serde_json::Value =
                 serde_json::from_str(crate::cdp::CAST_PARAMS).unwrap_or_default();
             chrome.call_page(&session, "Page.startScreencast", params)?;
@@ -1414,17 +1410,14 @@ impl shikisha_shared::BrowserHost for Pages {
         }
         chrome.call_page(&session, "Page.stopScreencast", serde_json::json!({}))?;
         // Give the page its own shape back, if a viewer had reshaped it
-        let reshaped = self
-            .open
-            .borrow_mut()
-            .get_mut(&name)
-            .and_then(|p| p.natural.take())
-            .is_some();
-        if reshaped {
+        let restore = self.open.borrow_mut().get_mut(&name)
+            .and_then(|p| std::mem::take(&mut p.reshaped).then_some(p.bounds));
+        if let Some(bounds) = restore {
+            let metrics = bounds.and_then(|(w, h)| crate::cdp::view_metrics(w as f64, h as f64, 1.0));
             chrome.call_page(
                 &session,
-                "Emulation.clearDeviceMetricsOverride",
-                serde_json::json!({}),
+                if metrics.is_some() { "Emulation.setDeviceMetricsOverride" } else { "Emulation.clearDeviceMetricsOverride" },
+                metrics.unwrap_or_else(|| serde_json::json!({})),
             )?;
         }
         self.seen.lock().unwrap_or_else(|e| e.into_inner()).cast.remove(&name);
@@ -1573,7 +1566,9 @@ impl shikisha_shared::BrowserHost for Pages {
                 target,
                 context,
                 held: false,
-                natural: None,
+                reshaped: false,
+                casting: false,
+                bounds: (rect.2 > 0 && rect.3 > 0).then_some((rect.2, rect.3)),
             },
         );
         chrome.call_page(&session, "Page.navigate", serde_json::json!({ "url": url }))?;
@@ -1588,6 +1583,12 @@ impl shikisha_shared::BrowserHost for Pages {
     fn child_bounds(&self, name: &str, rect: (i32, i32, i32, i32)) -> anyhow::Result<()> {
         if rect.2 <= 0 || rect.3 <= 0 {
             return Ok(());
+        }
+        if let Some(page) = self.open.borrow_mut().get_mut(name) {
+            page.bounds = Some((rect.2, rect.3));
+            if page.reshaped {
+                return Ok(());
+            }
         }
         let (chrome, session) = self.at(Some(name))?;
         chrome.call_page(
