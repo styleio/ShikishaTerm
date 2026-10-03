@@ -39,6 +39,12 @@
  *
  *     cargo build
  *     node tools/debug/local-keeper.win.mjs
+ *     node tools/debug/local-keeper.win.mjs --restart-collision [--before=<old exe>]
+ *
+ * The collision scenario uses eight distinguishable programs. It first
+ * restarts just the app (optionally upgrading from the given older build),
+ * then ends the isolated resident process too and restores the tabs in
+ * reverse terminal order. Reused numbers must not cross-wire their screens.
  *
  * Needs Windows and Node. Isolated the way a new-user run is: its own folder
  * and LOCALAPPDATA (so its resident process has a folder of its own too). The
@@ -55,6 +61,8 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
+const collision = process.argv.includes('--restart-collision');
+const beforeExe = process.argv.find(a => a.startsWith('--before='))?.slice('--before='.length);
 const RUN = path.join(os.tmpdir(), 'sk-local-keeper');
 const APP = path.join(RUN, 'app');
 const WORK = path.join(RUN, 'work');
@@ -109,6 +117,7 @@ fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, WORK, LOCAL, SHOTS]) fs.mkdirSync(d, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
+if (beforeExe) fs.copyFileSync(path.resolve(beforeExe), path.join(APP, 'SHIKISHA-TERM.exe'));
 // It prints its id, then asks the app something through its own `shikisha`
 // every two seconds and says how that went: an AI's report to the app, made
 // the same way. After a restart the answer must come from the app there now
@@ -132,6 +141,13 @@ const baseConfig = {
     { name: 'bg', id: 'bg', command: ['powershell.exe', '-NoLogo', '-NoProfile', '-Command', serving] },
   ] }] }],
 };
+if (collision) {
+  baseConfig.desks[0].folders[0].tabs = Array.from({length: 8}, (_, i) => ({
+    name: `route-${i}`, id: `route-${i}`,
+    command: ['powershell.exe', '-NoLogo', '-NoProfile', '-Command',
+      `$n = 0; while ($true) { Write-Output ('ROUTE ${i} PID=' + $PID + ' STEP=' + $n + ' ${MARK} routing-${i}'); $n++; Start-Sleep -Milliseconds 500 }`],
+  }));
+}
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify(baseConfig, null, 2));
 /** The settings as the app has them now, changed by `change` and written back */
@@ -219,6 +235,59 @@ async function board() {
 /** What the board says of a tab: its state and the ports under it */
 const tabSays = (b, id) => b.run(`(() => { const t = S.tabs.find(t => t.id === ${JSON.stringify(id)}); return t ? { state: t.state, ports: (t.place || {}).ports || [] } : null; })()`);
 const workingBehind = async (b) => { const t = await tabSays(b, 'bg'); return !!t && t.state === 'BACKGROUND' && t.ports.includes(PORT); };
+
+if (collision) {
+  const ids = Array.from({length: 8}, (_, i) => `route-${i}`);
+  const screens = async () => {
+    const result = [];
+    for (const id of ids) result.push(String(await call('tab_screen', id)));
+    return result;
+  };
+  const ready = async () => {
+    const shown = await screens();
+    lastScreen = shown.join('\n');
+    return shown.every((s, i) => new RegExp(`ROUTE ${i} PID=\\d+ STEP=\\d+`).test(s));
+  };
+  const pids = shown => shown.map(s => Number(s.match(/PID=(\d+)/)[1]));
+  const stopWindow = async () => {
+    const pid = appPid();
+    if (pid) ps('-Command', `& taskkill.exe /PID ${pid} /T /F 2>&1 | Out-Null`);
+    await until(() => !alive(pid), 'the isolated window to exit');
+  };
+  start();
+  await until(ready, 'all eight distinguishable screens', 60000);
+  const first = pids(await screens());
+  console.log('1. restarting the app while its eight programs keep running');
+  await stopWindow();
+  if (beforeExe) {
+    fs.renameSync(path.join(APP, 'SHIKISHA-TERM.exe'), path.join(APP, 'SHIKISHA-TERM.exe.old'));
+    fs.copyFileSync(exe, path.join(APP, 'SHIKISHA-TERM.exe'));
+  }
+  start();
+  await until(ready, 'the eight screens after restarting the app', 60000);
+  check(JSON.stringify(pids(await screens())) === JSON.stringify(first), 'all eight programs are the originals');
+  for (let round = 1; round <= 2; round++) {
+    console.log(`2.${round}. restarting the resident process, restoring in reverse terminal order`);
+    const saved = JSON.parse(fs.readFileSync(stateFile('far-terminals'), 'utf8')).terms;
+    await stopWindow();
+    stopAll();
+    await until(() => !keeperPid(), 'the isolated resident process to exit');
+    editConfig(c => c.desks[0].folders[0].tabs.sort((a, b) =>
+      saved.find(t => t.tab === b.uid).term - saved.find(t => t.tab === a.uid).term));
+    start();
+    await until(ready, 'all eight restored screens after number reuse', 60000);
+    const shown = await screens();
+    check(shown.every((s, i) => [...s.matchAll(/ROUTE (\d+) PID=/g)].every(m => Number(m[1]) === i)), 'every tab shows only its own program');
+    for (let i = 0; i < ids.length; i++) check(programsOf(`routing-${i}`).length === 1, `${ids[i]} has exactly one program`);
+    const after = JSON.parse(fs.readFileSync(stateFile('far-terminals'), 'utf8')).terms;
+    check(after.length === 8, 'all eight restore records survive');
+    check(after.every(t => t.generation !== saved[0].generation), 'the resident process has a new lifetime');
+    check(after.some(t => saved.some(old => old.term === t.term && old.tab !== t.tab)), 'terminal numbers were reused by different tabs');
+  }
+  stopAll();
+  console.log(failures ? `${failures} failed` : 'all restart collision checks passed');
+  process.exit(failures ? 1 : 0);
+}
 
 start();
 await until(() => programs().length === 1 && programsOf('bg-word').length === 1, 'the tabs\' programs to start');

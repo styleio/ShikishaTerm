@@ -302,7 +302,9 @@ pub fn let_go() {
 pub fn held_count() -> Result<usize> {
     match crate::fardaemon::find(&keep_door()?) {
         crate::fardaemon::Found::Nobody => return Ok(0),
-        crate::fardaemon::Found::Unreachable(why) => bail!("this PC's resident process could not be reached: {why}"),
+        crate::fardaemon::Found::Unreachable(why) => {
+            bail!("this PC's resident process could not be reached: {why}")
+        }
         _ => {}
     }
     connect_existing()?;
@@ -445,7 +447,7 @@ mod tests {
 
         // Back on a new line: attached again, the screen in the state
         let (conn, mut reader) = line(2);
-        say(&conn, json!({ "do": "attach", "term": term, "gen": generation, "tab": "t", "rows": 24, "cols": 80, "away": "always" }));
+        say(&conn, json!({ "do": "attach", "ref": 11, "term": term, "gen": generation, "tab": "t", "rows": 24, "cols": 80, "away": "always" }));
         let mut back = String::new();
         let until = Instant::now() + Duration::from_secs(20);
         loop {
@@ -454,6 +456,8 @@ mod tests {
             reader.read_line(&mut l).unwrap();
             if let Ok(crate::farlink::Frame::Job { m, .. }) = serde_json::from_str::<crate::farlink::Frame>(&l) {
                 if m["did"] == "attached" {
+                    assert_eq!(m["gen"], generation);
+                    assert_eq!(m["ref"], 11, "attach acknowledgement is addressed to its request");
                     let state = b64(&m["state"]);
                     back = vt100::Screen::from_snapshot(&state).map(|s| s.contents()).expect("a state it can read");
                     break;
@@ -466,6 +470,14 @@ mod tests {
         // And its end is told, with the code
         let ended = hear(&mut reader, "ended");
         assert_eq!(ended["code"], 0);
+        assert_eq!(ended["gen"], generation);
+        // A stale acknowledgement of another lifetime cannot erase this
+        // terminal's exit record, even when its number is the same.
+        say(&conn, json!({ "do": "forget", "term": term, "gen": "previous" }));
+        say(&conn, json!({ "do": "attach", "ref": 12, "term": term, "gen": generation, "tab": "t" }));
+        let over = hear(&mut reader, "over");
+        assert_eq!(over["gen"], generation);
+        assert_eq!(over["ref"], 12);
 
         // Which processes a held terminal's job has is told to its owner:
         // what the app counts as the tab's work in the background
@@ -491,6 +503,15 @@ mod tests {
         assert_eq!(again["term"], one["term"], "the running one, not a second");
         assert_eq!(again["again"], true);
         // Told to stop (a restart), it is not handed out again: a new one opens
+        let owner = hear(&mut reader, "attached")["owner"].clone();
+        // The line, terminal number and owner number may all be reused
+        // after a restart. A command from the old lifetime is refused.
+        say(&conn, json!({ "do": "stop", "ref": 13, "term": again["term"], "gen": "previous", "owner": owner }));
+        let refused = hear(&mut reader, "refused");
+        assert_eq!(refused["gen"], "previous");
+        assert_eq!(refused["ref"], 13);
+        say(&conn, json!({ "do": "open", "ref": 14, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
+        assert_eq!(hear(&mut reader, "opened")["term"], one["term"], "the stale stop ended the current program");
         let owner = hear(&mut reader, "attached")["owner"].clone();
         say(&conn, json!({ "do": "stop", "term": again["term"], "owner": owner }));
         say(&conn, json!({ "do": "open", "ref": 4, "tab": "u", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));

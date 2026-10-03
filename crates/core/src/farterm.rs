@@ -20,13 +20,21 @@
 //! Used for a machine whose AIs the person chose what to do with while the
 //! app is away (its entry's `away`, far-keep plan §4.3), with the bridge put
 //! there. Every other machine's tabs are opened as before.
+//!
+//! Routing has three distinct identities: the connection, a request's ref,
+//! and a terminal's (resident generation, number). Only an open/attach
+//! acknowledgement may establish an output route. Request registrations are
+//! scoped to their receivers; a late reply cannot revive one. Peers which
+//! predate generation-labelled output are usable within their current
+//! lifetime, but cannot safely answer questions about an earlier one.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
+use crate::farterms::Identity as Ident;
 use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -229,12 +237,10 @@ pub fn left_running(at: &Place, cwd: &str, uid: &str, name: &str) -> Option<Save
     }
     let said = list_held(at)?;
     let generation = said["gen"].as_str().unwrap_or_default().to_string();
-    let found = said["terms"].as_array()?.iter().find(|t| {
-        t["tab"].as_str().is_some_and(|tab| is_this_tab(tab, uid, name))
-            && t["cwd"] == cwd
-            && t["owned"] == false
-            && t["ended"] == false
-    })?;
+    let found = said["terms"]
+        .as_array()?
+        .iter()
+        .find(|t| t["tab"].as_str().is_some_and(|tab| is_this_tab(tab, uid, name)) && t["cwd"] == cwd && t["owned"] == false && t["ended"] == false)?;
     let tab = found["tab"].as_str().unwrap_or(uid).to_string();
     let s = Saved { machine, cwd: cwd.to_string(), tab, generation, term: found["term"].as_u64()?, since: now_secs(), left: None, stopping: false };
     crate::append_hook_log(&format!("far terminal {}: found on {} for {name}, with nothing written down about it", s.term, at.address()));
@@ -264,17 +270,10 @@ fn written_for(saved: &[Saved], machine: &str, cwd: &str, uid: &str, name: &str)
 /// Ask the bridge on `at` something of its terminals job, and wait for the
 /// answer: through the one router of its line, which a second listener would
 /// take the line's messages from
-fn ask(at: &Place, mut m: Value) -> Option<Value> {
+fn ask(at: &Place, m: Value) -> Option<Value> {
     let link = at.link().filter(|l| l.holds(JOB))?;
     let r = router(at, &link);
-    let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
-    let (tx, rx) = channel::<Value>();
-    r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
-    m["ref"] = json!(reference);
-    if !link.to_job(JOB, m) {
-        return None;
-    }
-    rx.recv_timeout(LIST_WAIT).ok()
+    r.send(&link, m, RouteKind::Reply)?.from.recv_timeout(LIST_WAIT).ok()
 }
 
 /// Every terminal the bridge on `at` holds, with its generation: for the
@@ -323,53 +322,211 @@ pub fn end_all(at: &Place) {
 
 // ── The line ────────────────────────────────────────────────────────────────
 
-/// Every message of the terms job from one machine, handed to the terminal
-/// it is about (by its id, or by the reference an open was asked with)
-#[derive(Default)]
-struct Router {
-    by_term: HashMap<u64, Sender<Value>>,
-    by_ref: HashMap<u64, Sender<Value>>,
+/// Each request owns its registration. A timed-out request, a closed tab,
+/// and a dead connection all release their senders, even if no reply arrives.
+struct Messages {
+    from: Receiver<Value>,
+    router: Weak<Router>,
+    reference: u64,
 }
 
-static ROUTERS: OnceLock<Mutex<HashMap<String, Arc<Mutex<Router>>>>> = OnceLock::new();
+impl Messages {
+    fn gone() -> Self {
+        let (_, from) = channel();
+        Self { from, router: Weak::new(), reference: 0 }
+    }
+}
+
+impl Drop for Messages {
+    fn drop(&mut self) {
+        if let Some(r) = self.router.upgrade() {
+            r.routes.lock().unwrap_or_else(|e| e.into_inner()).remove(self.reference);
+        }
+    }
+}
+
+enum RouteKind {
+    Reply,
+    Open,
+    Attach(Ident),
+    Stream(Ident),
+}
+
+struct Route {
+    to: Sender<Value>,
+    kind: RouteKind,
+}
+
+/// Requests and streams have different lifetimes. A management reply must
+/// never take over a terminal's output route just because it names a term.
+#[derive(Default)]
+struct Routes {
+    by_term: HashMap<Ident, u64>,
+    by_ref: HashMap<u64, Route>,
+    peer: Option<Peer>,
+}
+
+#[derive(Clone)]
+struct Peer {
+    generation: String,
+    identities: bool,
+}
+
+impl Routes {
+    fn remove(&mut self, reference: u64) {
+        self.by_ref.remove(&reference);
+        self.by_term.retain(|_, r| *r != reference);
+    }
+
+    fn identity(&self, m: &Value) -> Option<Ident> {
+        if let Some(id) = Ident::read(m) {
+            return Some(id);
+        }
+        // Compatibility with an older resident process is confined to its
+        // current generation, learned before any stream is registered.
+        let peer = self.peer.as_ref().filter(|p| !p.identities && m.get("gen").is_none())?;
+        Some(Ident { term: m["term"].as_u64().filter(|n| *n != 0)?, generation: peer.generation.clone() })
+    }
+
+    fn deliver(&mut self, m: Value) {
+        let identity = self.identity(&m);
+        let reference = if let Some(r) = m["ref"].as_u64() {
+            // A late answer to an abandoned request cannot become output.
+            r
+        } else {
+            // Older peers don't echo attach refs. Only current-generation
+            // attaches are allowed against those peers (Router::attach).
+            let Some(id) = identity.as_ref() else { return };
+            let Some(r) = self.by_term.get(id) else {
+                return;
+            };
+            *r
+        };
+        let Some(route) = self.by_ref.get_mut(&reference) else {
+            return;
+        };
+        let mut terminal_reply = false;
+        match &route.kind {
+            RouteKind::Reply => terminal_reply = true,
+            RouteKind::Open if m["did"] == "opened" && identity.is_some() => {
+                let id = identity.unwrap();
+                route.kind = RouteKind::Stream(id.clone());
+                self.by_term.insert(id, reference);
+            }
+            RouteKind::Attach(expected) if identity.as_ref() == Some(expected) => {
+                if m["did"] == "attached" {
+                    let id = expected.clone();
+                    route.kind = RouteKind::Stream(id.clone());
+                    self.by_term.insert(id, reference);
+                } else {
+                    terminal_reply = matches!(m["did"].as_str(), Some("over" | "unknown" | "refused" | "failed"));
+                    if !terminal_reply {
+                        return;
+                    }
+                }
+            }
+            RouteKind::Stream(expected) if identity.as_ref() == Some(expected) => {}
+            RouteKind::Open if m["did"] == "failed" => terminal_reply = true,
+            _ => return,
+        }
+        if route.to.send(m).is_err() || terminal_reply {
+            self.remove(reference);
+        }
+    }
+}
+
+struct Router {
+    link: Weak<crate::farlink::Link>,
+    routes: Mutex<Routes>,
+    peer: OnceLock<Peer>,
+    checking_peer: Mutex<()>,
+}
+
+impl Router {
+    fn register(self: &Arc<Self>, kind: RouteKind) -> Messages {
+        let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
+        let (to, from) = channel();
+        self.routes.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, Route { to, kind });
+        Messages { from, router: Arc::downgrade(self), reference }
+    }
+
+    fn send(self: &Arc<Self>, link: &crate::farlink::Link, mut m: Value, kind: RouteKind) -> Option<Messages> {
+        let messages = self.register(kind);
+        m["ref"] = json!(messages.reference);
+        link.to_job(JOB, m).then_some(messages)
+    }
+
+    fn peer(self: &Arc<Self>, link: &crate::farlink::Link) -> Option<&Peer> {
+        if let Some(peer) = self.peer.get() {
+            return Some(peer);
+        }
+        let _one = self.checking_peer.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(peer) = self.peer.get() {
+            return Some(peer);
+        }
+        let messages = self.send(link, json!({ "do": "list" }), RouteKind::Reply)?;
+        let m = messages.from.recv_timeout(LIST_WAIT).ok()?;
+        if m["did"] != "list" {
+            return None;
+        }
+        let peer = Peer { generation: m["gen"].as_str().filter(|s| !s.is_empty())?.to_string(), identities: m["identities"] == true };
+        self.routes.lock().unwrap_or_else(|e| e.into_inner()).peer = Some(peer.clone());
+        let _ = self.peer.set(peer);
+        self.peer.get()
+    }
+
+    fn attach(self: &Arc<Self>, link: &crate::farlink::Link, m: Value) -> Option<Messages> {
+        let id = Ident::read(&m)?;
+        let peer = self.peer(link)?;
+        if !peer.identities && peer.generation != id.generation {
+            // An old peer cannot label its answer about a previous lifetime.
+            // Do not ask it an ambiguous question or start another AI.
+            let mut answer = json!({ "did": "unknown", "why": "the older resident process cannot identify a terminal from its previous run" });
+            id.stamp(&mut answer);
+            let (to, from) = channel();
+            let _ = to.send(answer);
+            return Some(Messages { from, router: Weak::new(), reference: 0 });
+        }
+        let messages = self.register(RouteKind::Attach(id.clone()));
+        if !peer.identities {
+            self.routes.lock().unwrap_or_else(|e| e.into_inner()).by_term.insert(id, messages.reference);
+        }
+        let mut m = m;
+        m["ref"] = json!(messages.reference);
+        link.to_job(JOB, m).then_some(messages)
+    }
+
+    fn close(&self) {
+        let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+        routes.by_ref.clear();
+        routes.by_term.clear();
+    }
+}
+
+static ROUTERS: OnceLock<Mutex<HashMap<String, Arc<Router>>>> = OnceLock::new();
 static NEXT_REF: AtomicU64 = AtomicU64::new(0);
 
-/// The router for a machine's line, started the first time it is needed
-fn router(at: &Place, link: &crate::farlink::Link) -> Arc<Mutex<Router>> {
+/// A router belongs to one connection, not just to a machine. Cleanup of
+/// an old connection must not remove the router of its replacement.
+fn router(at: &Place, link: &Arc<crate::farlink::Link>) -> Arc<Router> {
     let mut all = ROUTERS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let key = at.machine_key();
-    if let Some(r) = all.get(&key) {
+    if let Some(r) = all.get(&key)
+        && r.link.ptr_eq(&Arc::downgrade(link))
+    {
         return Arc::clone(r);
     }
-    let r = Arc::new(Mutex::new(Router::default()));
+    let r = Arc::new(Router { link: Arc::downgrade(link), routes: Mutex::default(), peer: OnceLock::new(), checking_peer: Mutex::new(()) });
     let from = link.listen_job(JOB);
     let (r2, key2) = (Arc::clone(&r), key.clone());
     std::thread::spawn(move || {
         for m in from {
-            let mut rt = r2.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(reference) = m["ref"].as_u64()
-                && let Some(tx) = rt.by_ref.get(&reference)
-            {
-                // Its id is known from now on
-                if let Some(id) = m["term"].as_u64() {
-                    let tx = tx.clone();
-                    rt.by_term.insert(id, tx);
-                }
-                let _ = rt.by_ref.get(&reference).map(|tx| tx.send(m.clone()));
-                if m["did"] != "failed" {
-                    rt.by_ref.remove(&reference);
-                }
-                continue;
-            }
-            if let Some(id) = m["term"].as_u64()
-                && let Some(tx) = rt.by_term.get(&id)
-                && tx.send(m).is_err()
-            {
-                rt.by_term.remove(&id);
-            }
+            r2.routes.lock().unwrap_or_else(|e| e.into_inner()).deliver(m);
         }
-        // The line ended: every terminal on it is told by its channel closing
-        if let Ok(mut all) = ROUTERS.get_or_init(Default::default).lock() {
+        r2.close();
+        if let Ok(mut all) = ROUTERS.get_or_init(Default::default).lock()
+            && all.get(&key2).is_some_and(|r| Arc::ptr_eq(r, &r2))
+        {
             all.remove(&key2);
         }
     });
@@ -387,18 +544,16 @@ fn ask_open(
     then: Option<&str>,
     run: Option<&Value>,
     away: crate::config::Away,
-) -> Result<(u64, String, Receiver<Value>, Arc<crate::farlink::Link>)> {
+) -> Result<(u64, String, Messages, Arc<crate::farlink::Link>)> {
     let link = at.link().ok_or_else(|| anyhow!("the bridge on {} is not connected", at.address()))?;
     if !link.holds(JOB) {
         bail!("the bridge on {} does not hold terminals (an older version)", at.address());
     }
     let r = router(at, &link);
-    let reference = NEXT_REF.fetch_add(1, Ordering::SeqCst) + 1;
-    let (tx, rx) = channel::<Value>();
-    r.lock().unwrap_or_else(|e| e.into_inner()).by_ref.insert(reference, tx);
+    r.peer(&link).ok_or_else(|| anyhow!("the bridge on {} did not identify its terminals", at.address()))?;
     // "reuse": the tab's terminal, if one is already running there, rather
     // than a second AI beside it -- whatever this app wrote down or failed to
-    let mut asked = json!({ "do": "open", "ref": reference, "tab": tab, "rows": rows, "cols": cols,
+    let mut asked = json!({ "do": "open", "tab": tab, "rows": rows, "cols": cols,
         "cwd": cwd.unwrap_or_default(), "then": then.unwrap_or_default(), "away": on_the_line(at, away), "reuse": true });
     // On this PC the command is said in full: the program, its arguments and
     // the environment the tab put together for it (`crate::localkeep`)
@@ -406,16 +561,14 @@ fn ask_open(
         asked["argv"] = run["argv"].clone();
         asked["env_all"] = run["env_all"].clone();
     }
-    if !link.to_job(JOB, asked) {
-        bail!("the bridge on {} could not be asked for a terminal", at.address());
-    }
-    let opened = rx.recv_timeout(OPEN_WAIT).map_err(|_| anyhow!("the bridge on {} did not open a terminal", at.address()))?;
+    let rx = r.send(&link, asked, RouteKind::Open).ok_or_else(|| anyhow!("the bridge on {} could not be asked for a terminal", at.address()))?;
+    let opened = rx.from.recv_timeout(OPEN_WAIT).map_err(|_| anyhow!("the bridge on {} did not open a terminal", at.address()))?;
     if opened["did"] != "opened" {
         bail!("the bridge on {} could not open a terminal: {}", at.address(), opened["why"].as_str().unwrap_or("no reason given"));
     }
     let term = opened["term"].as_u64().unwrap_or(0);
     let generation = opened["gen"].as_str().unwrap_or_default().to_string();
-    crate::append_hook_log(&format!("far terminal {term} opened on {} for {tab}", at.address()));
+    crate::append_hook_log(&format!("far terminal {term} ({generation}) opened on {} for {tab}", at.address()));
     change_saved(|all| {
         put(
             all,
@@ -435,13 +588,6 @@ fn ask_open(
 }
 
 // ── The terminal ────────────────────────────────────────────────────────────
-
-/// Which terminal there this is. Changes once, when a terminal gone back to
-/// after a start is found to have ended and a new one is opened in its place
-struct Ident {
-    term: u64,
-    generation: String,
-}
 
 /// A held terminal: what it takes to ask about it again, and what this end
 /// holds of it
@@ -665,7 +811,12 @@ impl FarTerm {
         self.ident.lock().map(|i| i.generation.clone()).unwrap_or_default()
     }
 
-    fn say(&self, m: Value) -> bool {
+    fn say(&self, mut m: Value) -> bool {
+        if let Ok(id) = self.ident.lock() {
+            id.stamp(&mut m);
+        } else {
+            return false;
+        }
         self.link.lock().ok().and_then(|l| l.clone()).is_some_and(|l| l.to_job(JOB, m))
     }
 
@@ -677,15 +828,14 @@ impl FarTerm {
 
     /// The line is up: be routed its messages again and attach, which hands
     /// the state over. `None` while the line is not up yet
-    fn attach_again(&self) -> Option<Receiver<Value>> {
+    fn attach_again(&self) -> Option<Messages> {
         let link = self.at.link().filter(|l| l.holds(JOB))?;
         let r = router(&self.at, &link);
-        let (tx, rx) = channel();
-        r.lock().unwrap_or_else(|e| e.into_inner()).by_term.insert(self.term(), tx);
+        let rx = r.attach(&link, self.attach_message())?;
         if let Ok(mut l) = self.link.lock() {
             *l = Some(Arc::clone(&link));
         }
-        link.to_job(JOB, self.attach_message()).then_some(rx)
+        Some(rx)
     }
 
     /// Told to stop: written down as stopping until its end is seen
@@ -743,7 +893,7 @@ impl FarTerm {
 
 type Opened = (Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<FarTerm>);
 
-fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, fresh: bool) -> Opened {
+fn made(term: Arc<FarTerm>, from: Messages, again: bool, fresh: bool) -> Opened {
     let (rows, cols) = term.size.lock().map(|s| *s).unwrap_or((24, 80));
     let reader = FarReader {
         from,
@@ -756,6 +906,8 @@ fn made(term: Arc<FarTerm>, from: Receiver<Value>, again: bool, fresh: bool) -> 
         attached: false,
         said_waiting: false,
         last: false,
+        waiting_since: None,
+        ack_until: None,
     };
     let master = FarMaster {
         term: Arc::clone(&term),
@@ -797,15 +949,14 @@ pub fn reattach(
     run: Option<Value>,
     away: crate::config::Away,
 ) -> Opened {
-    crate::append_hook_log(&format!("far terminal {}: going back to it on {} for {}", saved.term, at.address(), saved.tab));
+    crate::append_hook_log(&format!("far terminal {} ({}): going back to it on {} for {}", saved.term, saved.generation, at.address(), saved.tab));
     let term = Arc::new(FarTerm::new(at, Ident { term: saved.term, generation: saved.generation }, &saved.tab, (rows, cols), (cwd, then), away).with_run(run));
     if let Ok(mut l) = term.left.lock() {
         *l = saved.left;
     }
     term.stopping.store(saved.stopping, Ordering::SeqCst);
     // Read as a line that went: the reader attaches as soon as it is up
-    let (_, gone) = channel();
-    made(term, gone, true, false)
+    made(term, Messages::gone(), true, false)
 }
 
 /// Open a terminal for `tab` once the line to its machine is up: a tab of a
@@ -822,14 +973,13 @@ pub fn open_later(
 ) -> Opened {
     crate::append_hook_log(&format!("far terminal for {tab}: to be opened on {} once its line is up", at.address()));
     let term = Arc::new(FarTerm::new(at, Ident { term: 0, generation: String::new() }, tab, (rows, cols), (cwd, then), away).with_run(run));
-    let (_, gone) = channel();
-    made(term, gone, true, true)
+    made(term, Messages::gone(), true, true)
 }
 
 /// What comes from the terminal there, as bytes to read: its output, and
 /// any state handed over put into the tab's parser on the way
 struct FarReader {
-    from: Receiver<Value>,
+    from: Messages,
     term: Arc<FarTerm>,
     /// How far into the output the tab has it: output already in a state
     /// that was taken is not read again
@@ -844,6 +994,10 @@ struct FarReader {
     said_waiting: bool,
     /// What is in `rest` is the last of it: the terminal ends after it
     last: bool,
+    /// One deadline across retries, including a connected peer which never
+    /// acknowledges an attach. Reset only after its state is received.
+    waiting_since: Option<std::time::Instant>,
+    ack_until: Option<std::time::Instant>,
 }
 
 impl FarReader {
@@ -880,6 +1034,8 @@ impl FarReader {
                 }
                 self.from = rx;
                 self.again = false;
+                self.attached = false;
+                self.ack_until = None;
                 true
             }
             Err(e) => {
@@ -901,7 +1057,22 @@ impl std::io::Read for FarReader {
             if self.last {
                 return Ok(0);
             }
-            let Ok(m) = self.from.recv() else {
+            let received = if self.attached {
+                self.from.from.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                let until = *self.ack_until.get_or_insert_with(|| std::time::Instant::now() + OPEN_WAIT);
+                self.waiting_since.get_or_insert_with(std::time::Instant::now);
+                let now = std::time::Instant::now();
+                if now >= until { Err(RecvTimeoutError::Timeout) } else { self.from.from.recv_timeout(until - now) }
+            };
+            let Ok(m) = received else {
+                if matches!(received, Err(RecvTimeoutError::Timeout)) {
+                    crate::append_hook_log(&format!("far terminal {}: no attach acknowledgement; retrying", self.term.term()));
+                }
+                self.from = Messages::gone();
+                self.attached = false;
+                self.ack_until = None;
+                self.term.owner.store(0, Ordering::SeqCst);
                 // The line went (or, gone back to after a start, is not up
                 // yet). The terminal there may well still be there: wait for
                 // the line to come back and attach to it again
@@ -924,10 +1095,13 @@ impl std::io::Read for FarReader {
                     continue;
                 }
                 crate::append_hook_log(&format!("far terminal {}: the line went; waiting for it to come back", self.term.term()));
-                let until = std::time::Instant::now() + LINE_BACK_WAIT;
+                let until = *self.waiting_since.get_or_insert_with(std::time::Instant::now) + LINE_BACK_WAIT;
                 let again = loop {
                     if self.term.let_go.load(Ordering::SeqCst) {
                         return Ok(0);
+                    }
+                    if std::time::Instant::now() >= until {
+                        break None;
                     }
                     // The line to this PC's resident process is made by the
                     // tabs that need it, not by the round that keeps the
@@ -945,9 +1119,6 @@ impl std::io::Read for FarReader {
                     } else if let Some(rx) = self.term.attach_again() {
                         break Some(Some(rx));
                     }
-                    if std::time::Instant::now() >= until {
-                        break None;
-                    }
                     std::thread::sleep(Duration::from_secs(2));
                 };
                 match again {
@@ -960,11 +1131,10 @@ impl std::io::Read for FarReader {
                     }
                     // Not reached: the terminal stays written down, and a
                     // restart of the tab asks again. Nothing new is started
-                    None if self.again => {
+                    None => {
                         self.say_last(&crate::i18n::tp("msg.farterm.not_reached", &[("host", &address)]));
                         continue;
                     }
-                    None => return Ok(0),
                 }
             };
             match m["did"].as_str().unwrap_or_default() {
@@ -990,6 +1160,8 @@ impl std::io::Read for FarReader {
                         }
                     }
                     self.attached = true;
+                    self.waiting_since = None;
+                    self.ack_until = None;
                     self.again = false;
                     self.term.owned_by(m["owner"].as_u64().unwrap_or(0));
                     let taken = self.term.take_state(&m);
@@ -1035,6 +1207,9 @@ impl std::io::Read for FarReader {
                 // once, and handed the state with everything in it
                 "taken" if m["why"].as_str().is_some_and(|w| w.contains("keep up")) => {
                     crate::append_hook_log(&format!("far terminal {}: fell behind; attaching again", self.term.term()));
+                    self.attached = false;
+                    self.ack_until = None;
+                    self.term.owner.store(0, Ordering::SeqCst);
                     self.term.say(self.term.attach_message());
                 }
                 "taken" => {
@@ -1254,6 +1429,235 @@ mod tests {
     }
 
     use super::*;
+
+    fn test_router(identities: bool) -> Arc<Router> {
+        let peer = Peer { generation: "new".into(), identities };
+        Arc::new(Router {
+            link: Weak::new(),
+            routes: Mutex::new(Routes { peer: Some(peer.clone()), ..Default::default() }),
+            peer: OnceLock::from(peer),
+            checking_peer: Mutex::new(()),
+        })
+    }
+
+    fn delivered(r: &Router, m: Value) {
+        r.routes.lock().unwrap().deliver(m);
+    }
+
+    fn recv(messages: &Messages) -> Value {
+        messages.from.recv_timeout(Duration::from_secs(1)).expect("the intended recipient heard it")
+    }
+
+    /// A real Link over a loopback socket, with the far end controlled by
+    /// the test so replies and connection shutdowns can be ordered exactly.
+    struct Wire {
+        at: Place,
+        server: std::net::TcpStream,
+        reader: std::io::BufReader<std::net::TcpStream>,
+        link: Arc<crate::farlink::Link>,
+    }
+
+    impl Wire {
+        fn new(at: Option<Place>) -> Self {
+            use std::io::Write as _;
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (mut server, _) = listener.accept().unwrap();
+            server.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            writeln!(server, "{}", json!({ "t": "hello", "version": "test", "rev": "test", "jobs": [JOB] })).unwrap();
+            let at = at.unwrap_or_else(|| {
+                Place::Far(crate::elsewhere::Elsewhere::Ssh(crate::ssh::Spec {
+                    host: format!("routing-{}.invalid", crate::random_hex(8)),
+                    ..Default::default()
+                }))
+            });
+            let link = crate::farlink::link_over(
+                &at.machine_key(),
+                &at.address(),
+                Box::new(client.try_clone().unwrap()),
+                client.try_clone().unwrap(),
+                Some(client),
+                None,
+                String::new(),
+            )
+            .unwrap();
+            Self { at, reader: std::io::BufReader::new(server.try_clone().unwrap()), server, link }
+        }
+
+        fn hear(&mut self) -> Value {
+            use std::io::BufRead as _;
+            loop {
+                let mut line = String::new();
+                assert!(self.reader.read_line(&mut line).unwrap() > 0);
+                if let crate::farlink::Frame::Job { m, .. } = serde_json::from_str(&line).unwrap() {
+                    return m;
+                }
+            }
+        }
+
+        fn say(&mut self, m: Value) {
+            use std::io::Write as _;
+            writeln!(self.server, "{}", json!({ "t": "job", "job": JOB, "m": m })).unwrap();
+        }
+    }
+
+    impl Drop for Wire {
+        fn drop(&mut self) {
+            let _ = self.server.shutdown(std::net::Shutdown::Both);
+            if crate::farlink::link_by_key(&self.at.machine_key()).is_some_and(|l| Arc::ptr_eq(&l, &self.link)) {
+                crate::farlink::let_go_key(&self.at.machine_key());
+            }
+        }
+    }
+
+    #[test]
+    fn a_replaced_connections_late_messages_and_cleanup_stay_on_that_connection() {
+        let mut old = Wire::new(None);
+        let old_router = router(&old.at, &old.link);
+        let old_messages = old_router.register(RouteKind::Reply);
+        let mut new = Wire::new(Some(old.at.clone()));
+        let new_router = router(&new.at, &new.link);
+        assert!(!Arc::ptr_eq(&old_router, &new_router));
+        let new_messages = new_router.register(RouteKind::Reply);
+        old.say(json!({ "did": "list", "ref": new_messages.reference, "gen": "old" }));
+        old.server.shutdown(std::net::Shutdown::Both).unwrap();
+        assert_eq!(old_messages.from.recv_timeout(Duration::from_secs(2)), Err(RecvTimeoutError::Disconnected));
+        assert!(Arc::ptr_eq(&new_router, &router(&new.at, &new.link)), "old cleanup removed the replacement");
+        new.say(json!({ "did": "list", "ref": new_messages.reference, "gen": "new" }));
+        assert_eq!(recv(&new_messages)["gen"], "new");
+    }
+
+    #[test]
+    fn a_live_legacy_peer_reattaches_only_its_current_lifetime() {
+        let mut wire = Wire::new(None);
+        let r = router(&wire.at, &wire.link);
+        std::thread::scope(|scope| {
+            let link = Arc::clone(&wire.link);
+            let r = Arc::clone(&r);
+            let checked = scope.spawn(move || r.peer(&link).unwrap().clone());
+            let request = wire.hear();
+            assert_eq!(request["do"], "list");
+            wire.say(json!({ "did": "list", "ref": request["ref"], "gen": "new", "terms": [] }));
+            assert!(!checked.join().unwrap().identities);
+        });
+        let unknown = r.attach(&wire.link, json!({ "do": "attach", "gen": "old", "term": 6, "tab": "a" })).unwrap();
+        assert_eq!(recv(&unknown)["did"], "unknown");
+        let current = r.attach(&wire.link, json!({ "do": "attach", "gen": "new", "term": 6, "tab": "b" })).unwrap();
+        // No request about old/6 crossed the line.
+        let request = wire.hear();
+        assert_eq!(request["gen"], "new");
+        wire.say(json!({ "did": "attached", "term": 6, "owner": 1 }));
+        wire.say(json!({ "did": "out", "term": 6, "b": "right" }));
+        assert_eq!(recv(&current)["did"], "attached");
+        assert_eq!(recv(&current)["b"], "right");
+    }
+
+    /// The observed restart: a newly opened tab is given 6 while another
+    /// tab is still asking about 6 of the previous resident process. Its
+    /// answer may precede, interrupt, or follow the new screen's delivery.
+    #[test]
+    fn a_previous_generations_end_never_closes_a_new_tabs_screen() {
+        for position in 0..=3 {
+            let r = test_router(true);
+            let current = r.register(RouteKind::Open);
+            let old = r.register(RouteKind::Attach(Ident { term: 6, generation: "old".into() }));
+            let mut frames = vec![
+                json!({ "did": "opened", "ref": current.reference, "term": 6, "gen": "new" }),
+                json!({ "did": "attached", "term": 6, "gen": "new", "owner": 1 }),
+                json!({ "did": "out", "term": 6, "gen": "new", "b": "the right tab" }),
+            ];
+            frames.insert(position, json!({ "did": "over", "ref": old.reference, "term": 6, "gen": "old", "code": -1 }));
+            for frame in frames {
+                delivered(&r, frame);
+            }
+            assert_eq!(recv(&old)["did"], "over");
+            assert_eq!(old.from.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected));
+            for did in ["opened", "attached", "out"] {
+                assert_eq!(recv(&current)["did"], did);
+            }
+            assert_eq!(current.from.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+            // Even unsolicited or late messages of that lifetime go nowhere.
+            delivered(&r, json!({ "did": "ended", "term": 6, "gen": "old" }));
+            delivered(&r, json!({ "did": "over", "ref": old.reference, "term": 6, "gen": "new" }));
+            assert_eq!(current.from.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty));
+        }
+    }
+
+    #[test]
+    fn replies_timeouts_and_closed_tabs_do_not_steal_or_keep_streams() {
+        let r = test_router(true);
+        let stream = r.register(RouteKind::Open);
+        delivered(&r, json!({ "did": "opened", "ref": stream.reference, "term": 2, "gen": "new" }));
+        recv(&stream);
+        let query = r.register(RouteKind::Reply);
+        delivered(&r, json!({ "did": "ending", "ref": query.reference, "term": 2, "gen": "new" }));
+        assert_eq!(recv(&query)["did"], "ending");
+        let late = r.register(RouteKind::Open);
+        let reference = late.reference;
+        drop(late); // The request timed out, or its send failed.
+        delivered(&r, json!({ "did": "opened", "ref": reference, "term": 2, "gen": "new" }));
+        delivered(&r, json!({ "did": "out", "term": 2, "gen": "new" }));
+        assert_eq!(recv(&stream)["did"], "out");
+        drop(stream);
+        let routes = r.routes.lock().unwrap();
+        assert!(routes.by_term.is_empty() && routes.by_ref.is_empty(), "abandoned registrations are retained");
+    }
+
+    #[test]
+    fn an_attach_needs_the_requested_identity_and_a_dead_line_releases_every_waiter() {
+        let r = test_router(true);
+        let attach = r.register(RouteKind::Attach(Ident { term: 2, generation: "new".into() }));
+        delivered(&r, json!({ "did": "attached", "ref": attach.reference, "term": 2, "gen": "old" }));
+        delivered(&r, json!({ "did": "attached", "ref": attach.reference, "term": 3, "gen": "new" }));
+        assert!(attach.from.try_recv().is_err());
+        delivered(&r, json!({ "did": "attached", "ref": attach.reference, "term": 2, "gen": "new" }));
+        assert_eq!(recv(&attach)["did"], "attached");
+        let query = r.register(RouteKind::Reply);
+        r.close();
+        for rx in [&attach, &query] {
+            assert_eq!(rx.from.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected));
+        }
+    }
+
+    #[test]
+    fn only_legacy_peers_may_omit_the_generation_on_current_output() {
+        for legacy in [false, true] {
+            let r = test_router(!legacy);
+            let stream = r.register(RouteKind::Open);
+            delivered(&r, json!({ "did": "opened", "ref": stream.reference, "term": 1, "gen": "new" }));
+            recv(&stream);
+            delivered(&r, json!({ "did": "out", "term": 1 }));
+            assert_eq!(stream.from.try_recv().is_ok(), legacy);
+            delivered(&r, json!({ "did": "out", "term": 1, "gen": "old" }));
+            assert!(stream.from.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn a_reconnect_deadline_ends_the_wait_without_claiming_the_ai_ended() {
+        use std::io::Read as _;
+        let at = Place::Far(crate::elsewhere::Elsewhere::Ssh(crate::ssh::Spec { host: "no-connection.invalid".into(), ..Default::default() }));
+        let term = Arc::new(FarTerm::new(&at, Ident { term: 6, generation: "old".into() }, "t", (24, 80), (None, None), crate::config::Away::Always));
+        let mut reader = FarReader {
+            from: Messages::gone(),
+            term: term.clone(),
+            seen: 0,
+            rest: Vec::new(),
+            at: 0,
+            again: true,
+            fresh: false,
+            attached: false,
+            said_waiting: true,
+            last: false,
+            waiting_since: Some(std::time::Instant::now() - LINE_BACK_WAIT),
+            ack_until: None,
+        };
+        let mut buf = [0; 4096];
+        let n = reader.read(&mut buf).unwrap();
+        assert!(n > 0 && reader.last, "the person was not told the wait ended");
+        assert_eq!(reader.read(&mut buf).unwrap(), 0);
+        assert!(!term.ended.load(Ordering::SeqCst), "a missing answer was mistaken for an ended AI");
+    }
 
     fn saved(machine: &str, cwd: &str, tab: &str, generation: &str, term: u64) -> Saved {
         Saved { machine: machine.into(), cwd: cwd.into(), tab: tab.into(), generation: generation.into(), term, since: 1, left: None, stopping: false }

@@ -51,6 +51,25 @@ use crate::farlink::Frame;
 
 /// The job's name on the line
 pub const NAME: &str = "terms";
+
+/// A number is only unique within one resident process's lifetime. Used on
+/// both ends of the line, including refusals about a previous lifetime.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Identity {
+    pub term: u64,
+    pub generation: String,
+}
+
+impl Identity {
+    pub fn read(m: &Value) -> Option<Self> {
+        Some(Self { term: m["term"].as_u64().filter(|n| *n != 0)?, generation: m["gen"].as_str().filter(|s| !s.is_empty())?.to_string() })
+    }
+
+    pub fn stamp(&self, m: &mut Value) {
+        m["term"] = json!(self.term);
+        m["gen"] = json!(self.generation);
+    }
+}
 pub use crate::termstate::SCROLLBACK_SENT;
 /// Scrollback kept by the resident process's own parser
 const SCROLLBACK_KEPT: usize = 5000;
@@ -582,8 +601,12 @@ impl Terms {
         // the terminal's lock
         {
             let core = Arc::clone(core);
+            let identity = Identity { term: id, generation: self.generation.clone() };
             std::thread::spawn(move || {
-                for (line, frame) in out {
+                for (line, mut frame) in out {
+                    if let Frame::Job { m, .. } = &mut frame {
+                        identity.stamp(m);
+                    }
                     if let Frame::Job { m, .. } = &frame
                         && m["did"] == "out"
                     {
@@ -705,6 +728,7 @@ impl Terms {
         let held = seen.parser.callbacks();
         let state = json!({
             "did": "attached",
+            "ref": m["ref"],
             "term": id,
             "owner": owner,
             "seq": seen.seq,
@@ -748,23 +772,40 @@ impl Terms {
                     .collect()
             })
             .unwrap_or_default();
-        json!({ "did": "list", "ref": m["ref"], "gen": self.generation, "terms": terms })
+        json!({ "did": "list", "ref": m["ref"], "gen": self.generation, "identities": true, "terms": terms })
     }
 
     /// The terminal, when `m` comes from its owner now; otherwise the refusal
     fn owned(&self, line: u64, m: &Value) -> Result<Arc<Term>, Value> {
         let id = m["term"].as_u64().unwrap_or(0);
-        let term = self
-            .terms
-            .lock()
-            .ok()
-            .and_then(|t| t.get(&id).cloned())
-            .ok_or_else(|| json!({ "did": "unknown", "term": id, "why": "no such terminal here" }))?;
+        // Older apps omitted gen. Their line and owner still fence their
+        // commands; a supplied generation must never be ignored.
+        if !self.same_generation(m) {
+            return Err(json!({ "did": "refused", "term": id, "why": "another generation of the resident process" }));
+        }
+        let term =
+            self.terms.lock().ok().and_then(|t| t.get(&id).cloned()).ok_or_else(|| json!({ "did": "unknown", "term": id, "why": "no such terminal here" }))?;
         let owner = term.seen.lock().ok().and_then(|s| s.owner);
         match owner {
             Some((l, n)) if l == line && Some(n) == m["owner"].as_u64() => Ok(term),
             _ => Err(json!({ "did": "refused", "term": id, "why": "the terminal was taken from somewhere else" })),
         }
+    }
+
+    fn same_generation(&self, m: &Value) -> bool {
+        m.get("gen").is_none() || m["gen"].as_str() == Some(self.generation.as_str())
+    }
+
+    /// Direct answers identify the request's terminal, not a newer one
+    /// which happens to have the same number. One-shot replies retain ref.
+    fn reply(&self, asked: &Value, mut answer: Value) -> Value {
+        if answer["term"].as_u64().is_some() {
+            answer["gen"] = asked.get("gen").cloned().unwrap_or_else(|| json!(self.generation));
+        }
+        if let Some(reference) = asked.get("ref") {
+            answer["ref"] = reference.clone();
+        }
+        answer
     }
 }
 
@@ -863,7 +904,9 @@ impl Job for Terms {
                         }
                         json!({ "did": "ending", "ref": m["ref"], "term": id })
                     }
-                    None => json!({ "did": "unknown", "ref": m["ref"], "term": id, "why": "no such terminal here" }),
+                    None => {
+                        json!({ "did": "unknown", "ref": m["ref"], "term": id, "why": "no such terminal here" })
+                    }
                 })
             }
             // What it does while nobody owns it, changed by its owner: the
@@ -885,7 +928,8 @@ impl Job for Terms {
             // The app has the code of an ended terminal: nothing is kept
             "forget" => {
                 let id = m["term"].as_u64().unwrap_or(0);
-                if let Ok(mut t) = self.terms.lock()
+                if self.same_generation(m)
+                    && let Ok(mut t) = self.terms.lock()
                     && t.get(&id).is_some_and(|term| term.ended.lock().is_ok_and(|e| e.is_some()))
                 {
                     t.remove(&id);
@@ -895,7 +939,7 @@ impl Job for Terms {
             other => Some(json!({ "did": "failed", "ref": m["ref"], "why": format!("the terminals job has nothing called {other}") })),
         };
         if let Some(a) = answer {
-            Self::say(core, line, a);
+            Self::say(core, line, self.reply(m, a));
         }
         true
     }
@@ -1085,6 +1129,22 @@ fn login_shell() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_names_the_requested_lifetime_and_preserves_its_request() {
+        let terms = Terms::new();
+        let answer = terms.reply(&json!({ "gen": "previous", "term": 6, "ref": 42 }), json!({ "did": "over", "term": 6 }));
+        assert_eq!(answer["gen"], "previous");
+        assert_eq!(answer["ref"], 42);
+        let current = terms.reply(&json!({ "term": 6 }), json!({ "did": "refused", "term": 6 }));
+        assert_eq!(current["gen"], terms.generation);
+        assert!(terms.same_generation(&json!({ "term": 6 })), "older app compatibility");
+        assert!(terms.same_generation(&json!({ "gen": terms.generation })));
+        for generation in [json!("previous"), json!(""), Value::Null, json!(1)] {
+            assert!(!terms.same_generation(&json!({ "gen": generation })));
+            assert_eq!(terms.owned(1, &json!({ "gen": generation, "term": 6, "owner": 1 })).err().unwrap()["did"], "refused");
+        }
+    }
 
     /// Keeping the PC up for the terminals held here, the app gone: never
     /// with the setting off; for as long as any runs with "always"; and with
