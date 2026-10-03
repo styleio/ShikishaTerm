@@ -73,6 +73,7 @@ export default {
       window.__git({act:'branch', ok:true, data:{name:'login', upstream:'origin/login', ahead:5, behind:0, integrated_into:'main'}});
       window.__git({act:'branches', ok:true, data:[{name:'login', current:true}, {name:'main', current:false}]});
       window.__git({act:'status', ok:true, data:[]}); drawSide();
+      if (gitUi.steps.getBoundingClientRect().height || gitUi.msgBox.getBoundingClientRect().height) throw new Error('Finished work still asks for a commit or push');
       return 'ok';
     })()`,
     // Its row says it is going, and offers nothing that cannot be done

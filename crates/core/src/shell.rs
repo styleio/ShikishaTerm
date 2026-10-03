@@ -2287,6 +2287,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      for attention, the ones done ticked and quiet, the ones not this branch's faint */
   #gitpanel .gsteps { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1) var(--s2);
     font-size:11.5px; color:var(--faint); }
+  #gitpanel .gsteps[hidden] { display:none; }
   #gitpanel .gsteps .st { display:inline-flex; align-items:center; gap:var(--s1); white-space:nowrap; }
   #gitpanel .gsteps .st.done { color:var(--dim); }
   #gitpanel .gsteps .st.now { color:var(--brand); font-weight:600; }
@@ -21064,7 +21065,12 @@ function drawGitCommit() {
 // Commit, push, pull request, merge: the one being worked on stands out, the
 // ones behind it are ticked. A protected branch is where pull requests go, so
 // its last two are shown as not being its to do
+function gitIntegratedClean() {
+  return !!(G.branch && G.branch.integrated_into) && Array.isArray(G.rows) && !G.rows.length && !gitPrFormShown();
+}
 function drawGitSteps(u) {
+  u.steps.hidden = gitIntegratedClean();
+  if (u.steps.hidden) return;
   const b = G.branch || {};
   const prs = Array.isArray(G.prs) ? G.prs : [];
   const merged = prs.filter(p => p.state === "merged").length;
@@ -21094,7 +21100,7 @@ function drawGitPrForm(u) {
   const shown = gitPrFormShown() && !!I.pr && I.pr.from === "git";
   u.prForm.hidden = !shown;
   // Nothing is left to commit while it is up, so the message box steps aside
-  u.msgBox.hidden = shown;
+  u.msgBox.hidden = shown || gitIntegratedClean();
   if (!shown) return;
   const p = I.pr;
   const sig = JSON.stringify(p.bases);

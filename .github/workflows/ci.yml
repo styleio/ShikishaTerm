@@ -44,6 +44,9 @@ jobs:
       - name: Remote authentication survives delayed replies
         run: node --test tools/check-remote-auth.mjs
 
+      - name: Folder removal requires reviewing the changes
+        run: node --test tools/debug/removal-review.test.mjs
+
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line
       # in a pull request; caught at the tag, it is a release already downloaded.
