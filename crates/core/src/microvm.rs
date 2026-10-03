@@ -1159,7 +1159,7 @@ pub fn ai_sign_in_note(
     let blank = crate::uistate::AiSignInNote {
         ai: known_ai.key.clone(),
         name: known_ai.name.clone(),
-        checkout: home.at.clone(),
+        checkout: crate::uistate::place_key(Some(&host.name), std::path::Path::new(&home.at)),
         state: String::new(),
         error: String::new(),
         on: if host.is_made() { String::new() } else { "server".into() },
