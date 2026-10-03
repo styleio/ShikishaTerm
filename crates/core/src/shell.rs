@@ -621,17 +621,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-ctl); white-space:pre-wrap; word-break:break-all; }
   #login .lhelp { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px dashed var(--line);
     border-radius:var(--r-ctl); }
-  #login .lhelpsay { font-size:12px; color:var(--dim); line-height:1.5; }
   #login .lurlrow, #login .lcoderow { display:flex; align-items:center; gap:var(--s2); min-width:0; }
   #login .lkeys { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin:var(--s2) 0; }
   #login .lkeyssay { font-size:12px; color:var(--dim); }
   #login .lkey { min-width:44px; font-family:var(--mono); }
   #login .lurl { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono);
     font-size:12px; color:var(--brand); }
-  #login .lurlnone { flex:1; font-size:12px; color:var(--dim); }
   #login .lcode { flex:1; min-width:0; font-family:var(--mono); font-size:13px; padding:6px 8px; background:var(--raise);
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   #login .lstate { font-size:12.5px; color:var(--dim); line-height:1.5; }
+  /* An AI's sign-in: the one thing to do now, under the terminal's keys */
+  #login .lguide { display:flex; flex-direction:column; gap:var(--s2); }
+  #login .lguide .lstate { font-size:14px; font-weight:600; color:var(--text); }
+  #login .lhelp[hidden] { display:none; }
   #login .lstate.yes { color:var(--brand); }
   /* Something the person still has to do: the dialog warn box (5.1), in the step's own size */
   #login .lstate.bwarn { color:var(--text); }
@@ -10270,24 +10272,34 @@ function drawLogin() {
       el("div", {class:"shead"},
         el("span", {class:"stitle"}, say("tui.login.title")),
         el("span", {class:"vclose", title:T["tui.login.later"] || "", onclick:later}, "✕")),
+      // An AI's sign-in is the title, the terminal and its keys, and under
+      // them one guide that says the one thing to do now -- the address to
+      // open, the code to paste, what is left -- and nothing else: words
+      // that stay put whatever happens are words nobody reads
       el("div", {class:"sbody"},
-        el("div", {class:"lstrong"}, say("tui.login.say")),
-        // Where things stand, under the step's first line: what is left
-        // to do is read before the terminal, on a phone without scrolling
-        el("div", {class:"lstate"}),
-        el("div", {class:"ssay"}, say("tui.login.how")),
-        // The account the clone signs in as, when one was chosen: the one to
-        // sign in as in the browser
-        ...(git && st.account ? [el("div", {class:"lstrong"}, (T["tui.gitsignin.as"] || "{account}").split("{account}").join(st.account))] : []),
-        // A server's git: the commands drafted for it, to copy and run in
-        // the terminal below -- nothing runs from here, the person does
-        ...(git ? [loginCommands(st.commands || [])] : []),
-        loginTerminal(),
-        loginKeys(),
-        ...(git ? [loginType()] : [loginHelp(st)])),
+        ...(git ? [
+          el("div", {class:"lstrong"}, say("tui.login.say")),
+          el("div", {class:"lstate"}),
+          el("div", {class:"ssay"}, say("tui.login.how")),
+          // The account the clone signs in as, when one was chosen: the one
+          // to sign in as in the browser
+          ...(st.account ? [el("div", {class:"lstrong"}, (T["tui.gitsignin.as"] || "{account}").split("{account}").join(st.account))] : []),
+          // The commands drafted for the server, to copy and run in the
+          // terminal below -- nothing runs from here, the person does
+          loginCommands(st.commands || []),
+          loginTerminal(),
+          loginKeys(),
+          loginType(),
+        ] : [
+          loginTerminal(),
+          loginKeys(),
+          el("div", {class:"lguide"}, el("div", {class:"lstate"}), loginHelp(st)),
+        ])),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
-        el("button", {type:"button", class:"primary", id:"loginnext",
+        // Pressable all along, and blue only once the sign-in is done: a
+        // blue button is pressed without reading
+        el("button", {type:"button", class:"quiet", id:"loginnext",
           onclick:() => send({kind:"login", folder: st.folder, act:"next"})}, say("tui.login.next")))));
     // A paste anywhere in the step that is not in the code field goes to
     // the terminal, whatever has the focus: Ctrl+V after a press on a
@@ -10303,11 +10315,15 @@ function drawLogin() {
     // Keys go to the terminal behind, as they do with nothing open
     if (!REMOTE) kbd.focus();
   }
+  const next = box.querySelector("#loginnext");
+  if (next) next.className = st.state === "yes" ? "primary" : "quiet";
   const state = box.querySelector(".lstate");
   if (state) {
+    // Not signed in, and the AI has printed where to sign in: that address,
+    // and the code it gives back, are what the guide is about now
     const text = st.state === "yes" ? say("tui.login.yes")
       : st.state === "finishing" ? say("tui.login.finishing")
-      : st.state === "no" ? say("tui.login.no")
+      : st.state === "no" ? say(!git && st.url ? "tui.login.no.url" : "tui.login.no")
       : st.state === "error" ? say("tui.login.error") + (st.error ? " " + st.error : "")
       : say("tui.login.asking");
     if (state.textContent !== text) state.textContent = text;
@@ -10427,25 +10443,26 @@ function loginHelp(st) {
   code.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendCode(); } e.stopPropagation(); });
   code.addEventListener("keyup", e => e.stopPropagation());
   code.addEventListener("keypress", e => e.stopPropagation());
-  return el("div", {class:"lhelp"},
-    el("div", {class:"lhelpsay"}, T["tui.login.help"] || ""),
-    el("div", {class:"lurlrow"}, el("span", {class:"lurlnone"}, T["tui.login.url.none"] || ""), url, copy),
+  const help = el("div", {class:"lhelp"},
+    el("div", {class:"lurlrow"}, url, copy),
     el("div", {class:"lcoderow"}, code, el("button", {type:"button", class:"quiet", id:"logincodesend", onclick:sendCode}, T["tui.login.code.send"] || "")));
+  help.hidden = true;
+  return help;
 }
+// The address and the code field are there only while the AI is showing an
+// address to sign in at, and not signed in yet: the moment they are what to
+// do, and gone once they are not
 function loginHelpDraw(box, st) {
+  const help = box.querySelector(".lhelp");
   const url = box.querySelector(".lurl");
-  const none = box.querySelector(".lurlnone");
-  const copy = box.querySelector(".lurlrow button");
-  if (!url || !none || !copy) return;
-  const at = st.url || "";
+  if (!help || !url) return;
+  const at = st.state === "no" ? st.url || "" : "";
   if (url.getAttribute("href") !== at) {
     url.setAttribute("href", at);
     url.textContent = at.length > 72 ? at.slice(0, 69) + "…" : at;
     url.title = at;
   }
-  url.hidden = !at;
-  copy.hidden = !at;
-  none.hidden = !!at;
+  help.hidden = !at;
 }
 // Text into the clipboard of whoever is looking: this machine's at the
 // window (the runtime does it), the browser's from afar -- by the older

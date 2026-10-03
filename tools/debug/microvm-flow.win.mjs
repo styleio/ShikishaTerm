@@ -264,8 +264,9 @@ try {
   await until(() => board.run('(() => { const t = (S.tabs || []).find(x => x.index === S.active); return !!t && t.name === "claude" && (S.groups || [])[t.group] && (S.groups || [])[t.group].folder === ' + JSON.stringify(CHECKOUT) + '; })()'),
     'the checkout\'s Claude tab in front', 30000);
   await until(() => board.run('/Claude/.test((document.querySelector("#login .lmirror") || {textContent:""}).textContent)'), 'the checkout\'s Claude mirrored in the step', 90000);
-  check(await board.run('document.querySelector("#login .lstrong").textContent.includes("ログインしてください")'), 'the ask is said, and said first');
+  check(await board.run('document.querySelector("#login .stitle").textContent.includes("ログインしてください")'), 'the ask is the title');
   check(await board.run('!document.getElementById("loginnext").disabled'), 'and the way on is open without it');
+  check(await board.run('!document.getElementById("loginnext").classList.contains("primary")'), 'but not blue until signed in');
   // Claude's own sign-in, walked to the address it prints: keys sent to the
   // terminal in the step, and the address picked up beside it for the help
   const screenText = () => board.run('(document.querySelector("#login .lmirror") || {textContent:""}).textContent');
@@ -284,7 +285,7 @@ try {
       console.log('    (the step says url=' + JSON.stringify((s || {}).url || '') + '; the terminal text has https at ' + text.indexOf('https') + ', ' + text.length + ' chars, saved beside the shots)');
       throw e;
     });
-  check(await board.run('!document.querySelector("#login .lurl").hidden && /^https:\\/\\/claude\\.(ai|com)\\//.test(document.querySelector("#login .lurl").getAttribute("href"))'),
+  check(await board.run('!document.querySelector("#login .lhelp").hidden && /^https:\\/\\/claude\\.(ai|com)\\//.test(document.querySelector("#login .lurl").getAttribute("href"))'),
     'the address is beside the terminal, to copy or open: ' + (await step()).url.slice(0, 60) + '…');
   check(/Paste code here/i.test(await screenText()), 'Claude asks for the code in the terminal');
   // A code the length and shape of a real one, so the send is judged as a
