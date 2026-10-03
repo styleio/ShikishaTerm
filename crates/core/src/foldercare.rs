@@ -216,17 +216,14 @@ pub fn deletion_guard(
     };
     let primary = match &folder.host {
         None => at.exists() && !crate::repo::is_linked(at),
+        // A MicroVM holding the project's checkout may go: the deletion drops
+        // the project's record of it, and the next worktree makes a new one
+        Some(h) if h.is_made() => false,
         Some(h) => desk
             .projects
             .iter()
             .filter_map(|p| p.home_on(&h.name))
-            .any(|home| {
-                if h.is_made() {
-                    home.sandbox == h.instance
-                } else {
-                    crate::uistate::same_folder(Path::new(&home.at), at)
-                }
-            }),
+            .any(|home| crate::uistate::same_folder(Path::new(&home.at), at)),
     };
     if primary {
         return Some("err.worktree.not_a_branch");
@@ -396,6 +393,29 @@ mod tests {
         assert!(manager.pending.is_empty());
         assert!(!manager.view("first").results["b"].error.is_empty());
         assert!(manager.view("second").results.is_empty());
+    }
+
+    #[test]
+    fn a_microvm_checkout_may_go_but_a_server_checkout_may_not() {
+        let home = |host: &str| crate::config::ProjectHome {
+            host: host.into(), at: "/work/project".into(), sandbox: Some("vm-1".into()), ..Default::default()
+        };
+        let desk = crate::config::Desk {
+            uid: "here".into(),
+            projects: vec![crate::config::ProjectSpec {
+                name: "project".into(), homes: vec![home("vm"), home("server")], ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let on = |name: &str, kind: Option<&str>| crate::config::Folder {
+            cwd: Some("/work/project".into()),
+            host: Some(crate::config::HostSpec {
+                name: name.into(), kind: kind.map(Into::into), instance: Some("vm-1".into()), ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(deletion_guard(&on("vm", Some("e2b")), &desk, std::slice::from_ref(&desk)), None);
+        assert_eq!(deletion_guard(&on("server", None), &desk, std::slice::from_ref(&desk)), Some("err.worktree.not_a_branch"));
     }
 
     #[test]
