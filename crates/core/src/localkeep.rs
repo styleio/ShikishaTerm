@@ -385,6 +385,16 @@ mod tests {
             let key = crate::fardaemon::door_key(&home).unwrap();
             (&conn).write_all(format!("{}\n", json!({ "role": "port", "key": key })).as_bytes()).unwrap();
             let _ = n;
+            // Say it is there, as the app does: a line silent for a minute is
+            // dropped, and on a busy machine this test waits longer than that
+            let ticks = conn.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let tick = format!("{}\n", serde_json::to_string(&crate::farlink::Frame::Tick).unwrap());
+                // Ends once the line is shut from this side
+                while (&ticks).write_all(tick.as_bytes()).is_ok() {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            });
             (conn, reader)
         };
         let say = |conn: &crate::keepipe::Conn, m: Value| {
