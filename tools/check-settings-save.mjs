@@ -61,3 +61,19 @@ function page() {
   assert.equal(p.run('secretMovesOfNewIds()[0][1]'), 'latest.');
   console.log('PASS failed saves and edits during a save retain their pending changes');
 }
+{
+  const p = page();
+  p.run("desks=[{uid:'a',id:'work.dev',tabs:[]}]; idsAtLoad=idsNow();");
+  p.replies.push({ok:true,renamed:{}});
+  assert.equal(await p.run('doSave()'), true, 'an unchanged legacy name remains savable');
+  p.run("desks[0].id='work'");
+  p.replies.push({ok:true,renamed:{}});
+  assert.equal(await p.run('doSave()'), true, 'a legacy name can be repaired');
+  for (const bad of ['work.dev','work/dev','work dev','仕事']) {
+    p.c.bad = bad;
+    p.run('desks[0].id=bad');
+    assert.equal(await p.run('doSave()'), false);
+  }
+  assert.equal(p.asks.length, 2, 'invalid names must not reach the save API');
+  console.log('PASS new names use one rule while legacy names can be repaired');
+}

@@ -4831,17 +4831,90 @@ fn handle(
     Ok(())
 }
 
-/// Save what the settings page holds, all of it or none of it: the settings
-/// (`config`), the desk definition files it writes (`files`, each a `file`
-/// and its `body`), and the secrets of every desk and tab whose id changed
-/// (`moves`, see [`crate::config::plan_secret_moves`]).
-///
-/// Saved one part after another, a part that failed left the others written:
-/// secrets filed under ids the settings did not have yet, or a desk file
-/// ahead of the settings that name it. So everything is checked and worked
-/// out before anything is written, each file is read as it was before it is
-/// written, and when a write fails, every one made before it is put back. A
-/// value that names a secret that moved (`@old` -> `@new`) moves with it
+/// An automation name and its stable owner, independent of the file holding it.
+#[derive(Clone)]
+struct SettingsId {
+    key: String,
+    id: String,
+    desk: Option<String>,
+}
+
+impl SettingsId {
+    fn prefixes(&self, ids: &[Self]) -> Vec<String> {
+        match &self.desk {
+            None => vec![format!("{}.", self.id), format!("ssh/{}/", self.id), format!("notify/{}/", self.id)],
+            Some(desk) => ids.iter().find(|d| &d.key == desk)
+                .map(|d| vec![format!("ssh/{}/{}/", d.id, self.id)]).unwrap_or_default(),
+        }
+    }
+
+    fn related(&self, owner: &str, ids: &[Self]) -> bool {
+        self.key == owner || self.desk.as_deref() == Some(owner)
+            || ids.iter().any(|id| id.key == owner && id.desk.as_deref() == Some(self.key.as_str()))
+    }
+}
+
+fn valid_settings_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+}
+
+/// The identities in exactly the documents the page read or is saving.
+/// Resolve missing uids the same way as settings migration, then follow a
+/// desk's own file when its tabs live there.
+fn settings_ids(docs: &[(std::path::PathBuf, serde_json::Value)], config: &std::path::Path) -> Vec<SettingsId> {
+    fn add(out: &mut Vec<SettingsId>, row: &serde_json::Value, desk: Option<&str>) -> Option<String> {
+        let uid = row.get("uid")?.as_str()?;
+        let id = row.get("id")?.as_str()?.trim();
+        if id.is_empty() { return None; }
+        let key = format!("{}:{uid}", if desk.is_some() { "tab" } else { "desk" });
+        out.push(SettingsId { key: key.clone(), id: id.into(), desk: desk.map(str::to_string) });
+        Some(key)
+    }
+    fn tabs(out: &mut Vec<SettingsId>, list: &serde_json::Value, desk: &str) {
+        for row in list.as_array().into_iter().flatten() {
+            add(out, row, Some(desk));
+            tabs(out, &row["children"], desk);
+        }
+    }
+    let docs: Vec<_> = docs.iter().map(|(path, doc)| {
+        let mut doc = doc.clone();
+        crate::config::fill_tab_uids(&mut doc);
+        (path, doc)
+    }).collect();
+    let mut out = Vec::new();
+    let Some((_, root)) = docs.iter().find(|(path, _)| path.as_path() == config) else { return out };
+    for desk in root["desks"].as_array().into_iter().flatten() {
+        let key = add(&mut out, desk, None).unwrap_or_else(|| format!("desk:{}", desk["uid"].as_str().unwrap_or_default()));
+        let body = desk["file"].as_str().and_then(|f| safe_desk_file(f, config))
+            .and_then(|file| docs.iter().find(|(path, _)| **path == file).map(|(_, doc)| doc)).unwrap_or(desk);
+        tabs(&mut out, &body["tabs"], &key);
+        for folder in body["folders"].as_array().into_iter().flatten() {
+            tabs(&mut out, &folder["tabs"], &key);
+        }
+    }
+    if !root["desks"].is_array() {
+        tabs(&mut out, &root["tabs"], "legacy");
+        for folder in root["folders"].as_array().into_iter().flatten() {
+            tabs(&mut out, &folder["tabs"], "legacy");
+        }
+    }
+    out
+}
+
+fn settings_id_moves(before: &[SettingsId], after: &[SettingsId]) -> Vec<(String, String, String)> {
+    let mut moves = Vec::new();
+    for now in after {
+        let Some(was) = before.iter().find(|old| old.key == now.key && old.id != now.id) else { continue };
+        for (from, to) in was.prefixes(before).into_iter().zip(now.prefixes(after)) {
+            moves.push((from, to, now.key.clone()));
+        }
+    }
+    moves
+}
+
+/// Save the settings, desk files and renamed secrets together. A failed
+/// write, including the completion record, rolls every changed file back.
+/// Secret references follow the exact committed renames returned to the page.
 fn save_settings(
     config_path: &std::path::Path,
     secrets: &std::path::Path,
@@ -4849,6 +4922,9 @@ fn save_settings(
     p: &serde_json::Value,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     use anyhow::Context as _;
+    // Recover before planning secret moves or taking another set of copies.
+    // An unfinished rollback must never become the next save's baseline.
+    finish_settings_save(config_path)?;
     let mut docs: Vec<(std::path::PathBuf, serde_json::Value)> = Vec::new();
     for f in p.get("files").and_then(|v| v.as_array()).into_iter().flatten() {
         let rel = f.get("file").and_then(|v| v.as_str()).unwrap_or_default();
@@ -4857,12 +4933,29 @@ fn save_settings(
     }
     let config = p.get("config").filter(|c| c.is_object()).cloned().context("no settings to save")?;
     docs.push((config_path.to_path_buf(), config));
+    let before = docs.iter().map(|(path, _)| {
+        let value = match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => return Err(e.into()),
+        };
+        Ok((path.clone(), value))
+    }).collect::<anyhow::Result<Vec<_>>>()?;
+    let old_ids = settings_ids(&before, config_path);
+    let new_ids = settings_ids(&docs, config_path);
+    for id in &new_ids {
+        let unchanged = old_ids.iter().any(|old| old.key == id.key && old.id == id.id);
+        if !unchanged && !valid_settings_id(&id.id) {
+            anyhow::bail!(crate::i18n::tp("settings.id.invalid", &[("id", &id.id)]));
+        }
+    }
+    let legacy = settings_id_moves(&old_ids, &new_ids);
     let mut moves = Vec::new();
     for m in p.get("moves").and_then(|v| v.as_array()).into_iter().flatten() {
         let end = |i: usize| m.get(i).and_then(|v| v.as_str()).unwrap_or_default().to_string();
         let (from, to) = (end(0), end(1));
-        if !crate::config::secrets_movable(&from, &to) {
-            anyhow::bail!("not a place secrets are filed under: {from} -> {to}");
+        if !crate::config::secrets_movable(&from, &to) && !legacy.iter().any(|(a, b, _)| a == &from && b == &to) {
+            anyhow::bail!(crate::i18n::t("settings.id.move_unmatched"));
         }
         moves.push((from, to));
     }
@@ -4870,6 +4963,20 @@ fn save_settings(
         true => Vec::new(),
         false => crate::config::plan_secret_moves(secrets, password, &moves)?,
     };
+    // Old ids could contain namespace separators. A genuine rename still
+    // cannot move keys when another desk or tab could own the same prefix.
+    for (from, to) in &moves {
+        if !plan.iter().any(|(key, _)| key.starts_with(from)) { continue; }
+        if let Some((_, _, owner)) = legacy.iter().find(|(a, b, _)| a == from && b == to) {
+            for (ids, prefix) in [(&old_ids, from), (&new_ids, to)] {
+                for id in ids.iter().filter(|id| !id.related(owner, ids)) {
+                    if id.prefixes(ids).iter().any(|p| p.starts_with(prefix) || prefix.starts_with(p)) {
+                        anyhow::bail!(crate::i18n::t("settings.id.move_ambiguous"));
+                    }
+                }
+            }
+        }
+    }
     let renamed: std::collections::HashMap<String, String> =
         plan.iter().map(|(old, new)| (format!("@{old}"), format!("@{new}"))).collect();
     let mut texts = Vec::new();
@@ -4888,14 +4995,13 @@ fn save_settings(
     // a write that failed, or this program ending in the middle of one -- is
     // put back to what was there before, now or at the next start. One cut
     // short before is finished first, so its copies are not taken for this one's
-    finish_settings_save(config_path);
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     if !plan.is_empty() {
         files.push(secrets.to_path_buf());
     }
     files.extend(texts.iter().map(|(path, _)| path.clone()));
     let record = SaveRecord::begin(config_path, &files)?;
-    let written = (|| -> anyhow::Result<()> {
+    record.commit(|| -> anyhow::Result<()> {
         if !plan.is_empty() {
             crate::config::rename_secrets(secrets, password, &plan)?;
         }
@@ -4906,17 +5012,8 @@ fn save_settings(
             crate::crypto::write_atomic(path, text).with_context(|| format!("{} could not be written", path.display()))?;
         }
         Ok(())
-    })();
-    match written {
-        Ok(()) => {
-            record.settle();
-            Ok(renamed)
-        }
-        Err(e) => {
-            record.put_back();
-            Err(e)
-        }
-    }
+    })?;
+    Ok(renamed)
 }
 
 /// What a settings save keeps while it writes, so that it ends with every
@@ -4983,7 +5080,7 @@ impl SaveRecord {
 
     /// Every file as it was before the save. When one cannot be, the record
     /// and the copies stay, and the next start tries again
-    fn put_back(self) -> bool {
+    fn put_back(mut self) -> anyhow::Result<()> {
         for f in &self.files {
             let back = match f.existed {
                 true => std::fs::read_to_string(beside(&f.path, ".before-save"))
@@ -4996,21 +5093,33 @@ impl SaveRecord {
             };
             if let Err(e) = back {
                 crate::append_hook_log(&format!("settings: {} could not be put back as it was before the save: {e:#}", f.path.display()));
-                return false;
+                return Err(e);
             }
         }
-        self.settle();
-        true
+        self.settle()
+    }
+
+    /// Success includes the durable completion record. Otherwise both the
+    /// files and secret names are put back before an error reaches the page.
+    fn commit(mut self, write: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
+        let written = write().and_then(|()| self.settle());
+        if let Err(error) = written {
+            if let Err(back) = self.put_back() {
+                crate::append_hook_log(&format!("settings: rollback is still pending: {back:#}"));
+                return Err(error.context(crate::i18n::t("webui.err.save_recover")));
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Nothing left to put back: said so first, so that a copy cleared is
     /// never one a start would need, then cleared
-    fn settle(mut self) {
+    fn settle(&mut self) -> anyhow::Result<()> {
         self.stage = "settled".into();
-        match self.write() {
-            Ok(()) => self.clear(),
-            Err(e) => crate::append_hook_log(&format!("settings: the save could not be marked finished ({e:#}); the next start finishes it")),
-        }
+        self.write().map_err(|e| e.context(crate::i18n::t("webui.err.save_finish")))?;
+        self.clear();
+        Ok(())
     }
 
     /// The copies, then the record
@@ -5026,22 +5135,23 @@ impl SaveRecord {
 /// short while writing is put back to what was there before it (the settings
 /// page said nothing of it saving), and one cut short before writing or after
 /// it has its copies cleared. Run at the start, before the settings are read
-pub fn finish_settings_save(config_path: &std::path::Path) {
+pub fn finish_settings_save(config_path: &std::path::Path) -> anyhow::Result<()> {
     let at = beside(config_path, ".saving");
-    let Ok(text) = std::fs::read_to_string(&at) else { return };
-    let Ok(mut record) = serde_json::from_str::<SaveRecord>(&text) else {
-        crate::append_hook_log("settings: the record of a save cut short could not be read; it is set aside as it is");
-        let _ = std::fs::rename(&at, beside(&at, ".unreadable"));
-        return;
+    let text = match std::fs::read_to_string(&at) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(anyhow::Error::from(e).context(crate::i18n::t("webui.err.save_recover"))),
     };
+    let mut record = serde_json::from_str::<SaveRecord>(&text)
+        .map_err(|e| anyhow::Error::from(e).context(crate::i18n::t("webui.err.save_recover")))?;
     record.at = at;
     if record.stage == "writing" {
-        if record.put_back() {
-            crate::append_hook_log("settings: a save cut short was put back to what was there before it");
-        }
+        record.put_back().map_err(|e| e.context(crate::i18n::t("webui.err.save_recover")))?;
+        crate::append_hook_log("settings: a save cut short was put back to what was there before it");
     } else {
         record.clear();
     }
+    Ok(())
 }
 
 /// Every text in `doc` that names a secret by `@key`, named by where that
@@ -5750,7 +5860,7 @@ const PAGE: &str = r##"<!doctype html>
  .dot.on { background:var(--live); }
  .dot.off { background:var(--warn); }
  .site-row { display:flex; gap:var(--s2); }
- .site-row input.bad { border-color:var(--warn); }
+ .site-row input.bad, input[data-automation-id].bad { border-color:var(--warn); }
  /* Where the answer points. Long enough to find, short enough not to nag */
  @keyframes lookhere {
    0%   { box-shadow:0 0 0 0 color-mix(in srgb, var(--warn) 55%, transparent); }
@@ -6506,6 +6616,20 @@ function field(obj, key, ph, opts = {}) {
   i.value = obj[key] ?? "";
   i.addEventListener("input", () => { obj[key] = i.value; if (opts.onInput) opts.onInput(i.value); });
   return i;
+}
+function automationIdField(obj) {
+  const input = field(obj, "id", "", {grow:false, width:280, mono:true});
+  input.dataset.automationId = obj.uid || "";
+  const check = () => {
+    const id = (obj.id || "").trim();
+    const bad = id && !validSettingsId(id) && (idsAtLoad.get(obj.uid) || {}).id !== id;
+    input.setCustomValidity(bad ? fill(T["settings.id.invalid"], {id}) : "");
+    input.classList.toggle("bad", !!bad);
+    input.setAttribute("aria-invalid", String(!!bad));
+  };
+  input.addEventListener("input", check);
+  check();
+  return input;
 }
 // Names this machine already knows: the installed WSL distributions, the hosts
 // in the person's own ssh config.
@@ -12637,7 +12761,7 @@ function deskBasic(desk) {
     desk.id = uniqueWsId(slugId(desk.name) || "desk", desk);
     refreshSave();
   }
-  const deskIdInput = field(desk, "id", "", {grow:false, width:280, mono:true});
+  const deskIdInput = automationIdField(desk);
   box.append(card(T["settings.desk"],
     row(T["settings.desk.name"], field(desk, "name", T["settings.desk.name"], {grow:false, width:280,
         onInput:() => renderNav()})),
@@ -15473,7 +15597,7 @@ function tabPane(desk, t) {
     t.id = uniqueId(desk, inferredTabId(t), t);
     refreshSave(); renderNav();
   }
-  const idInput = field(t, "id", "", {grow:false, width:280, mono:true});
+  const idInput = automationIdField(t);
   const refreshIdPh = () => {
     idInput.placeholder = uniqueId(desk, inferredTabId(t), t);
   };
@@ -17300,6 +17424,7 @@ function payload() {
 // id changed on this page takes the secrets filed under it along, as it is
 // saved (/api/settings/save)
 let idsAtLoad = new Map();
+function validSettingsId(id) { return /^[A-Za-z0-9_-]+$/.test(id); }
 function idsNow() {
   const m = new Map();
   for (const d of desks) {
@@ -17346,6 +17471,12 @@ async function doSave() {
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
   for (const w of desks) ensureIds(w);
   ensureWsIds();
+  for (const [uid, item] of idsNow()) {
+    if (!validSettingsId(item.id) && (idsAtLoad.get(uid) || {}).id !== item.id) {
+      result(fill(T["settings.id.invalid"], {id:item.id}), true);
+      return false;
+    }
+  }
   // One save: the settings, the desk files and the secrets of the ids that
   // changed are all written, or, when any part fails, none of them is
   const { out, files } = payload();
@@ -18434,6 +18565,84 @@ mod tests {
     }
 
     #[test]
+    fn settings_names_use_one_rule_and_legacy_names_can_be_repaired() {
+        for with_secrets in [false, true] {
+            for own_file in [false, true] {
+                let (dir, config, secrets) = save_place("save-old-id");
+                let desk_uid = "11111111-2222-4333-8444-555555555555";
+                let tab_uid = "22222222-3333-4444-8555-666666666666";
+                let mut holder = serde_json::json!({"tabs":[{"id":"prod.dev","uid":tab_uid,"command":"sh","env":{"TOKEN":"@work.dev.github"}}]});
+                let mut doc = serde_json::json!({"desks":[{"name":"Work","id":"work.dev","uid":desk_uid}]});
+                if own_file {
+                    doc["desks"][0]["file"] = "desk.json".into();
+                    std::fs::write(dir.join("desk.json"), holder.to_string()).unwrap();
+                } else { doc["desks"][0]["tabs"] = holder["tabs"].clone(); }
+                std::fs::write(&config, doc.to_string()).unwrap();
+                if with_secrets {
+                    let meta = crate::config::SecretMeta::default();
+                    crate::config::upsert_secret(&secrets, None, "work.dev.github", &meta, "kept").unwrap();
+                    crate::config::upsert_secret(&secrets, None, "ssh/work.dev/prod.dev/password", &meta, "password").unwrap();
+                } else { std::fs::remove_file(&secrets).unwrap(); }
+                let files = |body: &serde_json::Value| if own_file { serde_json::json!([{"file":"desk.json","body":body}]) } else { serde_json::json!([]) };
+                // Unchanged legacy ids remain savable; newly introduced ones do not.
+                super::save_settings(&config, &secrets, None, &serde_json::json!({"config":doc,"files":files(&holder)})).unwrap();
+                let mut bad = doc.clone();
+                bad["desks"][0]["id"] = "new.invalid".into();
+                assert!(super::save_settings(&config, &secrets, None, &serde_json::json!({"config":bad,"files":files(&holder)})).is_err());
+                doc["desks"][0]["id"] = "work".into();
+                holder["tabs"][0]["id"] = "prod".into();
+                if !own_file { doc["desks"][0]["tabs"] = holder["tabs"].clone(); }
+                let got = super::save_settings(&config, &secrets, None, &serde_json::json!({"config":doc,"files":files(&holder),"moves":[
+                    ["work.dev.","work."],["ssh/work.dev/","ssh/work/"],["notify/work.dev/","notify/work/"],
+                    ["ssh/work.dev/prod.dev/","ssh/work/prod/"]
+                ]})).unwrap();
+                if with_secrets {
+                    assert_eq!(got.get("@work.dev.github").map(String::as_str), Some("@work.github"));
+                    assert_eq!(crate::config::secret_value(&secrets, None, "work.github").as_deref(), Some("kept"));
+                    assert_eq!(crate::config::secret_value(&secrets, None, "ssh/work/prod/password").as_deref(), Some("password"));
+                } else { assert!(got.is_empty()); }
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    #[test]
+    fn new_desk_and_tab_names_follow_the_same_rule_even_without_uids() {
+        let (dir, config, secrets) = save_place("save-new-id");
+        let was = std::fs::read_to_string(&config).unwrap();
+        for id in ["work.dev", "work/dev", "work dev", "仕事"] {
+            for in_tab in [false, true] {
+                let mut doc = serde_json::json!({"desks":[{"name":"New","id":"new","tabs":[{"id":"shell","command":"sh"}]}]});
+                if in_tab { doc["desks"][0]["tabs"][0]["id"] = id.into(); }
+                else { doc["desks"][0]["id"] = id.into(); }
+                let err = super::save_settings(&config, &secrets, None, &serde_json::json!({"config":doc})).unwrap_err();
+                assert_eq!(err.to_string(), crate::i18n::tp("settings.id.invalid", &[("id", id)]));
+                assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ambiguous_legacy_secret_names_are_never_moved_by_guessing() {
+        let (dir, config, secrets) = save_place("save-ambiguous-id");
+        let mut doc = serde_json::json!({"desks":[
+            {"name":"Work","id":"work","uid":"11111111-2222-4333-8444-555555555555"},
+            {"name":"Dev","id":"work.dev","uid":"22222222-3333-4444-8555-666666666666"}
+        ]});
+        std::fs::write(&config, doc.to_string()).unwrap();
+        crate::config::upsert_secret(&secrets, None, "work.dev.token", &Default::default(), "not-guessed").unwrap();
+        let was = std::fs::read_to_string(&config).unwrap();
+        doc["desks"][1]["id"] = "dev".into();
+        let saved = super::save_settings(&config, &secrets, None, &serde_json::json!({"config":doc,"moves":[["work.dev.","dev."]]}));
+        assert!(saved.is_err());
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
+        assert_eq!(crate::config::secret_value(&secrets, None, "work.dev.token").as_deref(), Some("not-guessed"));
+        assert!(crate::config::secret_value(&secrets, None, "dev.token").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn ids_swapped_between_two_desks_swap_their_secrets_and_what_names_them() {
         let (dir, config, secrets) = save_place("save-swap");
         let saved = super::save_settings(&config, &secrets, None, &serde_json::json!({
@@ -18487,6 +18696,49 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn a_locked_completion_record_never_acknowledges_a_save() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let (dir, config, secrets) = save_place("save-commit-lock");
+        let was = std::fs::read_to_string(&config).unwrap();
+        let secrets_was = std::fs::read_to_string(&secrets).unwrap();
+        let record = super::SaveRecord::begin(&config, &[config.clone(), secrets.clone()]).unwrap();
+        let held = std::fs::OpenOptions::new().read(true).share_mode(1).open(&record.at).unwrap();
+        let answer = record.commit(|| {
+            crate::crypto::write_atomic(&config, r#"{"language":"ja"}"#)?;
+            crate::config::rename_secrets(&secrets, None, &[("a.github".into(), "c.github".into())])
+        });
+        assert!(answer.is_err(), "a save that recovery would undo was acknowledged");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
+        assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was);
+        let journal = super::beside(&config, ".saving");
+        let written = std::fs::read_to_string(&journal).unwrap();
+        assert!(super::save_settings(&config, &secrets, None, &serde_json::json!({"config":{"language":"en"}})).is_err());
+        assert_eq!(std::fs::read_to_string(&journal).unwrap(), written, "a new save overwrote pending recovery");
+        drop(held);
+        super::finish_settings_save(&config).unwrap();
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
+        assert!(!journal.exists());
+        super::save_settings(&config, &secrets, None, &serde_json::json!({"config":{"language":"ja"}})).unwrap();
+        super::finish_settings_save(&config).unwrap();
+        assert!(std::fs::read_to_string(&config).unwrap().contains("ja"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unreadable_recovery_records_are_preserved_and_block_new_saves() {
+        let (dir, config, secrets) = save_place("save-unreadable");
+        let was = std::fs::read_to_string(&config).unwrap();
+        let journal = super::beside(&config, ".saving");
+        std::fs::write(&journal, "{cut").unwrap();
+        assert!(super::finish_settings_save(&config).is_err());
+        assert!(super::save_settings(&config, &secrets, None, &serde_json::json!({"config":{}})).is_err());
+        assert_eq!(std::fs::read_to_string(&journal).unwrap(), "{cut");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_save_cut_short_while_writing_is_put_back_at_the_next_start() {
         let (dir, config, secrets) = save_place("save-cut");
         let (config_was, secrets_was) = (std::fs::read_to_string(&config).unwrap(), std::fs::read_to_string(&secrets).unwrap());
@@ -18498,7 +18750,7 @@ mod tests {
         std::fs::create_dir_all(made.parent().unwrap()).unwrap();
         std::fs::write(&made, "{}").unwrap();
         std::mem::forget(record);
-        super::finish_settings_save(&config);
+        super::finish_settings_save(&config).unwrap();
         assert_eq!(std::fs::read_to_string(&secrets).unwrap(), secrets_was, "the secrets were left moved");
         assert_eq!(std::fs::read_to_string(&config).unwrap(), config_was);
         assert!(!made.exists(), "a file the save made was left behind");
@@ -18519,7 +18771,7 @@ mod tests {
         std::mem::forget(record);
         // What was written since is not taken back: nothing of the save was
         std::fs::write(&config, r#"{"desks": []}"#).unwrap();
-        super::finish_settings_save(&config);
+        super::finish_settings_save(&config).unwrap();
         assert_eq!(std::fs::read_to_string(&config).unwrap(), r#"{"desks": []}"#);
         assert!(!super::beside(&secrets, ".before-save").exists() && !super::beside(&config, ".saving").exists());
         let _ = std::fs::remove_dir_all(&dir);
