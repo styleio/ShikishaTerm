@@ -206,9 +206,10 @@ Open **Manage work folders** in the left list to search by folder, project or ma
 - **Pin** brings a project and its pinned folders forward. The choice survives restarts.
 - **Archive** asks before closing tabs and hiding folders from the usual list. Files and tab settings stay.
   Choose **Archived**, select the folders and press **Restore** to use them again.
-- **Delete folders** always confirms the selected targets, then processes them in order. Primary checkouts,
-  pinned or busy folders, and uncommitted work stay. Open file editors and use by another workspace also prevent
-  deletion; each folder keeps its result in the list.
+- **Delete folders** always confirms the selected targets, then processes them in order. The question lists
+  each folder's uncommitted and untracked files (open one to see its changes) and deletes them only on
+  **Discard changes and delete**. Primary checkouts and pinned or busy folders stay. Open file editors and use
+  by another workspace also prevent deletion; each folder keeps its result in the list.
 - **Measure capacity** scans the visible folders in the background. **Largest first** orders the estimates.
   Linked contents are excluded. Each estimate has a measurement time or an error; it may differ from space freed by deletion.
 
