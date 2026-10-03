@@ -680,11 +680,7 @@ impl Desk {
     /// what the folder wrote down, and failing that by which of this desk's
     /// projects has its own checkout in the same repository.
     pub fn project_of(&self, cwd: &std::path::Path) -> Option<&ProjectSpec> {
-        let named = self
-            .folders
-            .iter()
-            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), cwd)))
-            .and_then(|f| f.project.as_deref());
+        let named = self.folder_named(cwd).and_then(|f| f.project.as_deref());
         project_among(&self.projects, named, Some(&crate::uistate::place_of(cwd).1))
     }
 
@@ -737,7 +733,7 @@ impl Config {
         let (desks, _) = self.resolve_desks();
         let mut matching = desks.iter().filter(|d| match desk_id {
             Some(id) => d.uid == id || (!is_tab_uid(id) && d.id == id),
-            None => d.folders.iter().any(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), cwd))),
+            None => d.folder_named(cwd).is_some(),
         });
         let here = matching.next()?;
         if matching.next().is_some() { return None; }
@@ -3749,6 +3745,18 @@ impl Desk {
     /// another machine is never it
     pub fn folder_at(&self, key: &Path) -> Option<&Folder> {
         self.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, key)))
+    }
+
+    /// The folder a page or a tool names, which is how everything asked of a
+    /// folder from outside finds it: by its place key, or by a bare path --
+    /// what a page older than place keys sends, and what a tool types --
+    /// which names that path on whichever machine has it
+    /// ([`crate::uistate::is_place`]). Whether the folder is on another
+    /// machine is read off the folder found, never off how it was named
+    pub fn folder_named(&self, key: &Path) -> Option<&Folder> {
+        self.folders.iter().find(|f| {
+            f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), key))
+        })
     }
 }
 

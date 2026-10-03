@@ -156,11 +156,12 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   remote: { enabled: false },
   hosts: [{ name: 'srv', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) },
     { name: 'relay', at: `ssh://${USER}@127.0.0.1:${relay.address().port}`, keepalive: 3, ...(KEY ? { key: KEY } : {}) },
-    // The same server again, for the clone of step 3b
-    { name: 'srv2', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) }],
+    // The same server again, for the clone of step 3b. Not srv2: step 6
+    // adds a server of that name from the page
+    { name: 'twin', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) }],
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: HERE, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] }] }],
 }, null, 2));
-fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD, 'ssh/host/relay/password': PASSWORD, 'ssh/host/srv2/password': PASSWORD } : {} }, null, 2));
+fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD, 'ssh/host/relay/password': PASSWORD, 'ssh/host/twin/password': PASSWORD } : {} }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
@@ -313,14 +314,14 @@ try {
   const pagesBefore = await firstPages();
   const projectsBefore = (desk().projects || []).length;
   await board.run(`openBranch(${g}); true`);
-  await until(() => board.run('!!(S.branch && (S.branch.hosts || []).some(h => h.name === "srv2"))'), 'the dialog\'s answer');
+  await until(() => board.run('!!(S.branch && (S.branch.hosts || []).some(h => h.name === "twin"))'), 'the dialog\'s answer');
   check(await board.run('S.branch.origin') === REPO, 'the dialog knows where the project is fetched from: ' + await board.run('S.branch.origin'));
   await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
   await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(KEPT)}; q.dispatchEvent(new Event("input")); return true; })()`);
   await board.run('document.getElementById("bdest").click(); true');
-  await until(() => board.run('[...document.querySelectorAll(".fmenu .aphost")].some(r => r.textContent.includes("srv2"))'), 'the list of places');
-  await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv2")).click(); true');
-  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "locate" && apHost === "srv2"'), 'the question for the second entry');
+  await until(() => board.run('[...document.querySelectorAll(".fmenu .aphost")].some(r => r.textContent.includes("twin"))'), 'the list of places');
+  await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("twin")).click(); true');
+  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "locate" && apHost === "twin"'), 'the question for the second entry');
   check((await board.run('document.querySelector("#addproj [data-ap=clone]").textContent')).includes(REPO), 'the clone says what it clones from');
   await board.run('document.querySelector("#addproj [data-ap=clone]").click(); true');
   await until(() => board.run('apStep === "sshclone"'), 'the clone page');
@@ -331,7 +332,7 @@ try {
   await board.shot('3b-clone');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
   await until(() => board.run('document.getElementById("addproj").hidden'), 'the question closed on the press', 20000);
-  check(await board.run('!document.getElementById("branch").hidden && branchHost === "srv2"'), 'the worktree dialog, still open, is on the second entry');
+  check(await board.run('!document.getElementById("branch").hidden && branchHost === "twin"'), 'the worktree dialog, still open, is on the second entry');
   check(await board.run('document.getElementById("bq").value') === KEPT, 'and as it was left');
   const CLONED = `${CLONES}/${NAME}`;
   // While the server's git clones, the dialog says so rather than that the
@@ -343,12 +344,12 @@ try {
   } else {
     console.log('    (the clone was done before the dialog was looked at)');
   }
-  await until(() => (project()?.homes || []).some((h) => h.host === 'srv2' && h.at === CLONED), 'the clone written down as the project\'s checkout there', 180000);
+  await until(() => (project()?.homes || []).some((h) => h.host === 'twin' && h.at === CLONED), 'the clone written down as the project\'s checkout there', 180000);
   check((await there(`git -C ${CLONED} remote get-url origin`)) === REPO, 'cloned on the server from the project\'s remote');
   check((desk().projects || []).length === projectsBefore, 'no second project was made for it');
-  check(((desk().folders || []).find((f) => f.host === 'srv2' && f.cwd === CLONED) || {}).project === NAME, 'the folder over there is on the desk, in the project');
+  check(((desk().folders || []).find((f) => f.host === 'twin' && f.cwd === CLONED) || {}).project === NAME, 'the folder over there is on the desk, in the project');
   // The dialog asks again by itself once the checkout is there
-  await until(() => board.run(`!!(S.branch && S.branch.host === "srv2" && !S.branch.error && S.branch.folder)`), 'the dialog ready to make a worktree there', 60000)
+  await until(() => board.run(`!!(S.branch && S.branch.host === "twin" && !S.branch.error && S.branch.folder)`), 'the dialog ready to make a worktree there', 60000)
     .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify({host: S.branch && S.branch.host, error: S.branch && S.branch.error})') + ')'); throw e; });
   check(await board.run('!document.querySelector("#branch .bgo .go").disabled'), 'and the button can be pressed: ' + await board.run('S.branch.line'));
   check((await board.run('S.branch.line')).includes(`git -C ${CLONED} worktree add`), 'cut from the clone');
@@ -360,7 +361,7 @@ try {
   await until(() => board.run('document.querySelectorAll("#tabs .mhead, nav .mhead, .mhead").length >= 3'), 'the parts of the project', 20000)
     .catch(async (e) => { console.log('    (groups: ' + await board.run('JSON.stringify((S.groups || []).map(g => [g.folder, g.host || "", g.whole || ""]))') + ')'); throw e; });
   const parts = await board.run('[...document.querySelectorAll(".mhead .nm")].map(n => n.textContent).join(",")');
-  check(parts === 'この PC,srv,srv2', 'the project is drawn once, this PC then each server: ' + parts);
+  check(parts === 'この PC,srv,twin', 'the project is drawn once, this PC then each server: ' + parts);
   check(await board.run(`[...document.querySelectorAll(".phead .nm")].filter(n => n.textContent === ${JSON.stringify(NAME)}).length`) === 1, 'under one heading');
   await board.shot('3b-list');
 
@@ -401,7 +402,14 @@ try {
   const menuOf = (folder) => board.run(`(() => { const g = (S.groups || []).find(x => x.folder === ${JSON.stringify(folder)}); if (!g) return "no group"; folderMenu({currentTarget: document.body, preventDefault(){}}, g); const said = [...document.querySelectorAll(".fmenu .warn")].map(w => w.textContent).join(","); closeFolderMenu(); return said; })()`);
   check(await menuOf(TREE) === '完全削除', 'the worktree on the server can be deleted from its menu');
   check(await menuOf(REPO) === '', 'the project\'s own folder there cannot');
-  const flashSaid = (re, what) => until(() => board.run('S.flash || ""').then((t) => re.test(t)), what, 60000).then(() => board.run('S.flash'));
+  // Every line the board says while waiting, so a wait that ends in nothing
+  // says what was said instead
+  const flashSaid = (re, what) => {
+    const heard = [];
+    return until(() => board.run('S.flash || ""').then((t) => { if (t && heard[heard.length - 1] !== t) heard.push(t); return re.test(t); }), what, 60000)
+      .then(() => board.run('S.flash'))
+      .catch((e) => { console.log('    (the board said: ' + JSON.stringify(heard) + ')'); throw e; });
+  };
   const discard = (folder) => board.run(`send({kind:"folderdiscard", folder:${JSON.stringify(folder)}, unasked:false}); true`);
   // Something not committed there: refused, said why, and nothing is closed
   await there(`echo draft > ${TREE}/draft.txt`);

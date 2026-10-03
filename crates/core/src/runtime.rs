@@ -10076,20 +10076,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 Err((why, true)) => {
                     folder_manager.finish(&folder, why.clone());
-                    if crate::uistate::place_of(std::path::Path::new(&folder)).0.is_none() {
+                    // Which machine, by the folder the check was run on: a
+                    // folder named by its path alone is still on its machine
+                    let key = std::path::PathBuf::from(&folder);
+                    let Some(host) = desks.get(desk_index).and_then(|d| d.folder_named(&key)).and_then(|f| f.host.clone()) else {
                         flash = Some(why);
                         continue;
-                    }
+                    };
                     // A MicroVM's folder loses what is not pushed too; a
                     // server's keeps its branch, and says only why
-                    let key = std::path::PathBuf::from(&folder);
-                    let on_server = desks.get(desk_index).is_some_and(|d| {
-                        d.folders.iter().any(|f| {
-                            f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key))
-                                && f.host.as_ref().is_some_and(|h| !h.is_made())
-                        })
-                    });
-                    let said = if on_server { "msg.folder.not_discarded_server" } else { "msg.folder.not_discarded" };
+                    let said = if host.is_made() { "msg.folder.not_discarded" } else { "msg.folder.not_discarded_server" };
                     let path = crate::uistate::place_of(&key).1.display().to_string();
                     flash = Some(i18n::tp(said, &[("path", &path), ("why", &why)]));
                 }
@@ -10134,9 +10130,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // a new one -- while the worktrees copied from it are machines of
             // their own and stay
             let on_microvm = desks.get(desk_index).and_then(|d| {
-                d.folders
-                    .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                d.folder_named(&key)
                     .and_then(|f| f.host.clone().filter(|h| h.is_made()).map(|h| (h, f.project.clone())))
             });
             if let Some((h, project)) = on_microvm {
@@ -10225,9 +10219,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // is a worktree at all -- and then removed by git there. Its branch
             // stays in the project's repository on the server, as one here does
             let on_server = desks.get(desk_index).and_then(|d| {
-                d.folders
-                    .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                d.folder_named(&key)
                     .and_then(|f| f.host.clone().filter(|h| !h.is_made()).map(|h| (h, f.project.clone())))
             });
             if let Some((h, project)) = on_server {
@@ -10329,9 +10321,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for folder in shell.mail().take_far_ports() {
             let key = std::path::PathBuf::from(&folder);
             let host = desks.get(desk_index).and_then(|d| {
-                d.folders
-                    .iter()
-                    .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                d.folder_named(&key)
                     .and_then(|f| f.host.clone())
             });
             let Some(host) = host else { continue };
@@ -10445,9 +10435,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (false, true) => {
                     let key = std::path::PathBuf::from(&folder);
                     let host = desks.get(desk_index).and_then(|d| {
-                        d.folders
-                            .iter()
-                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                        d.folder_named(&key)
                             .and_then(|f| f.host.clone())
                     });
                     match host.map(|h| crate::e2b::forward(&h, port)) {
@@ -10472,9 +10460,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (true, _) => {
                     let key = std::path::PathBuf::from(&folder);
                     let spec = desks.get(desk_index).and_then(|d| {
-                        d.folders
-                            .iter()
-                            .find(|f| f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &key)))
+                        d.folder_named(&key)
                             .and_then(|f| f.host.clone())
                     });
                     match spec.map(|h| config::host_spec(&h).and_then(|s| crate::ssh::forward(&s, port))) {
@@ -10598,12 +10584,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // On a MicroVM the folder is its machine, and taking it off the
             // list leaves the machine as it leaves files on a disk -- but a
             // machine is paid for. Said, with where it is deleted from
-            let on_microvm = desks.get(desk_index).is_some_and(|d| {
-                d.folders.iter().any(|f| {
-                    f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), at))
-                        && f.host.as_ref().is_some_and(|h| h.is_made())
-                })
-            });
+            let on_microvm = desks
+                .get(desk_index)
+                .and_then(|d| d.folder_named(at))
+                .is_some_and(|f| f.host.as_ref().is_some_and(|h| h.is_made()));
             match config::take_folder(&desk, at) {
                 // Said out loud, because the folder is still on disk and this
                 // is the only sign that it was left there on purpose. Said by
@@ -11936,12 +11920,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // of it is cut on that machine unless another place is chosen.
             // Nothing chosen means "where the folder is", and this PC chosen
             // from a folder elsewhere is said in so many words
-            let from_far = desks.get(desk_index).and_then(|d| {
-                d.folders
-                    .iter()
-                    .find(|f| f.host.is_some() && f.cwd.as_deref().is_some_and(|c| crate::uistate::is_place(c, f.host.as_ref().map(|h| h.name.as_str()), &from_key)))
-                    .and_then(|f| f.host.clone())
-            });
+            let from_far = desks.get(desk_index).and_then(|d| d.folder_named(&from_key)).and_then(|f| f.host.clone());
             let wanted_host = match (ask.host.trim(), &from_far) {
                 (HERE, _) => "",
                 ("", Some(f)) => f.name.as_str(),
