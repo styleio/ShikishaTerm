@@ -2834,6 +2834,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // taking a tab out from under them would point the rest of the pass at its
     // neighbours
     let mut ending: Vec<u64> = Vec::new();
+    let mut close_requests: Vec<CloseRequest> = Vec::new();
+    let mut close_replies: Vec<CloseReply> = Vec::new();
     // Conversations to hand tabs as they are started again, by automation name
     let mut resume_for: std::collections::HashMap<String, tab::Session> =
         std::collections::HashMap::new();
@@ -2999,20 +3001,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
         // Tabs closed on the last pass end here, before the rows are worked out
         if !ending.is_empty() {
-            let mut at = 0;
-            tabs.retain_mut(|t| {
-                let goes = ending.contains(&t.serial());
-                if goes {
-                    t.kill();
-                    if at < started_fired.len() {
-                        started_fired.remove(at);
-                    }
-                } else {
-                    at += 1;
-                }
-                !goes
-            });
+            for at in end_tabs(&mut tabs, &ending).into_iter().rev() {
+                if at < started_fired.len() { started_fired.remove(at); }
+            }
+            for list in &mut desk_tabs { end_tabs(list, &ending); }
             ending.clear();
+        }
+        // A following tab_list must see the tab gone, even when both calls
+        // arrived on the same pass. Never acknowledge merely putting it in a queue.
+        for reply in std::mem::take(&mut close_replies) {
+            let _ = reply.send(Ok(serde_json::Value::Null));
         }
 
         // What's laid out on screen, in the order written in config.
@@ -4766,12 +4764,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 } else {
                     (&mut tabs, &mut engine)
                 };
-                let other_surfaces = if away {
-                    let titles = tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>();
-                    surfaces_written(desks.get(owner), &titles, &caps.hosted_names(), &[], false)
-                        .into_iter().map(|(s, _)| s).collect::<Vec<_>>()
-                } else { Vec::new() };
-                let surfaces = if away { &other_surfaces[..] } else { &surfaces[..] };
+                // Settings may have reloaded since this pass drew its rows.
+                // Every caller gets the current layout of its own desk.
+                let titles = tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>();
+                let call_surfaces = surfaces_written(desks.get(owner), &titles, &caps.hosted_names(),
+                    if away { &[] } else { &editors }, !away && issues_open)
+                    .into_iter().map(|(s, _)| s).collect::<Vec<_>>();
+                let surfaces = &call_surfaces[..];
                 let desk_index = owner;
                 for mut call in std::iter::once(call) {
                     // A tab's key names it by who it is (`api::child_env`); every
@@ -5339,6 +5338,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         other => other,
                     };
+                    if call.method == "close_tab" && answer.is_ok() {
+                        let target = engine.as_mut().and_then(HookEngine::take_close);
+                        let at = target.as_ref().and_then(|t| t.resolve(&surface_keys(surfaces, tabs)));
+                        if let Some(at) = at {
+                            close_requests.push(CloseRequest {
+                                desk: desks.get(owner).map(|d| d.uid.clone()).unwrap_or_default(),
+                                at, key: surface_key(&surfaces[at - 1], tabs), sure: false,
+                                reply: Some(call.reply),
+                            });
+                        } else {
+                            let _ = call.reply.send(Err(i18n::t("err.api.tab_closed")));
+                        }
+                        continue;
+                    }
                     let _ = call.reply.send(answer);
                 }
                 if away && let Some(desk) = desks.get(owner) {
@@ -7074,32 +7087,55 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The rows are worked out again here because a reload earlier in this
         // pass may have changed them; the key a press carries is checked
         // against these
-        let closing = shell.mail().take_close_tabs();
-        if !closing.is_empty() {
-            let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-            let rows = surfaces_written(desks.get(desk_index), &titles, &caps.hosted_names(), &editors, issues_open);
-            for (at, key, sure) in closing {
+        let shown_desk = desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default();
+        close_requests.extend(shell.mail().take_close_tabs().into_iter().map(|(at, key, sure)|
+            CloseRequest { desk: shown_desk.clone(), at, key, sure, reply: None }));
+        for (desk, work) in &mut background_work {
+            close_requests.extend(std::mem::take(&mut work.asks.closes).into_iter().map(|(at, key)|
+                CloseRequest { desk: desk.clone(), at, key, sure: false, reply: None }));
+        }
+        if !close_requests.is_empty() {
+            for request in std::mem::take(&mut close_requests) {
+                let Some(owner) = desks.iter().position(|d| d.uid == request.desk)
+                    .or_else(|| request.desk.is_empty().then_some(desk_index)) else {
+                    request.failed(i18n::t("err.api.tab_closed"));
+                    continue;
+                };
+                let _scope = desks.get(owner).map(|desk| caps.on_desk(owner, desk));
+                let list = if owner == desk_index { &tabs } else { &desk_tabs[owner] };
+                let titles: Vec<&str> = list.iter().map(|t| t.title.as_str()).collect();
+                let rows = surfaces_written(desks.get(owner), &titles, &caps.hosted_names(),
+                    if owner == desk_index { &editors } else { &[] }, owner == desk_index && issues_open);
                 close_asked += 1;
                 match crate::closed::close(
-                    at,
-                    &key,
-                    sure,
+                    request.at,
+                    &request.key,
+                    request.sure,
                     &rows,
-                    &tabs,
-                    desks.get(desk_index),
+                    list,
+                    desks.get(owner),
                     &caps,
                     &mut closed_tabs,
                     close_asked,
                 ) {
-                    crate::closed::Closing::Nothing => {}
-                    crate::closed::Closing::Ask(ask) => close_ask = Some(ask),
+                    crate::closed::Closing::Nothing => {
+                        request.failed(i18n::t("err.api.tab_closed"));
+                    }
+                    crate::closed::Closing::Ask(ask) => {
+                        if request.reply.is_none() && owner == desk_index {
+                            close_ask = Some(ask);
+                        } else {
+                            request.failed(i18n::tp("err.tab_close.busy", &[("tab", &ask.name)]));
+                        }
+                    }
                     crate::closed::Closing::Closed { note, settings, ends } => {
-                        close_ask = None;
+                        if owner == desk_index && request.reply.is_none() { close_ask = None; }
                         match ends {
                             crate::closed::Ends::Tab(serial) => ending.push(serial),
                             crate::closed::Ends::Editor(key) => editors.retain(|e| e.key != key),
                             crate::closed::Ends::Nothing => {}
                         }
+                        if let Some(reply) = request.reply { close_replies.push(reply); }
                         if settings {
                             // The reload that takes the line out says this
                             // instead of "settings reloaded"
@@ -7110,8 +7146,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     crate::closed::Closing::Failed(why) => {
-                        close_ask = None;
-                        flash = Some(why);
+                        if owner == desk_index && request.reply.is_none() { close_ask = None; }
+                        flash = Some(why.clone());
+                        request.failed(why);
                     }
                 }
             }
@@ -13572,13 +13609,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // box, unsent — which is what stopping means here.
                             pending_send.clear();
                             // Discard every waiting loop too (don't let them revive on resume)
-                            if let Some(eng) = engine.as_mut() {
+                            for eng in engine.iter_mut().chain(engines.iter_mut().flatten()) {
                                 eng.cancel_all();
+                            }
+                            waiting.clear();
+                            pending_quicks.clear();
+                            for work in background_work.values_mut() {
+                                work.waiting.clear();
                             }
                             // And the AIs themselves. Stopping the hand-overs
                             // leaves whoever is mid-turn working, and the one
                             // still working is the one the stop was for
-                            let halted: Vec<&Tab> = tabs.iter().filter(|t| t.interrupt()).collect();
+                            let halted: Vec<&Tab> = tabs.iter().chain(desk_tabs.iter().flatten())
+                                .filter(|t| t.interrupt()).collect();
                             for t in halted.iter().filter(|t| t.is_ai() && !t.is_model()) {
                                 let stop = crate::convo::Stop {
                                     by: crate::convo::By::Person,
@@ -16349,7 +16392,7 @@ pub const MANUAL_GUARD_MS: u64 = 5000;
 /// and submitted the way a person at its keyboard would. Deciding that out at
 /// the edges meant every edge had to know, and the phone's edge did not.
 /// What the column's conversation panel is looking at: the tab named by
-/// `panel` (its id, or its name when it has none), or one conversation found
+/// `panel` (its stable uid; older clients may still send its id), or one conversation found
 /// by the search of every conversation (`args.past`: program, id, and the
 /// name of the machine it was had on). Refused with the reason a person reads
 fn convo_target(
@@ -16393,7 +16436,9 @@ fn convo_target(
     }
     let t = tabs
         .iter()
-        .find(|t| t.key().matches(panel) || crate::orch::glue::tab_id(t) == panel)
+        .find(|t| t.uid() == panel)
+        .or_else(|| (!config::is_tab_uid(panel)).then(|| tabs.iter()
+            .find(|t| t.key().matches(panel) || crate::orch::glue::tab_id(t) == panel)).flatten())
         .ok_or_else(|| i18n::t("convo.gone"))?;
     if !t.is_ai() || t.is_model() {
         return Err(i18n::t("convo.not_ai"));
@@ -17647,6 +17692,37 @@ fn take_ready(waiting: &mut Vec<Waiting>, tabs: &[Tab], surfaces: &[Surface], no
     }
     *waiting = kept;
     ready
+}
+
+type CloseReply = std::sync::mpsc::Sender<Result<serde_json::Value, String>>;
+
+struct CloseRequest {
+    desk: String,
+    at: usize,
+    key: String,
+    sure: bool,
+    reply: Option<CloseReply>,
+}
+
+impl CloseRequest {
+    fn failed(self, why: String) {
+        if let Some(reply) = self.reply { let _ = reply.send(Err(why)); }
+        else { append_hook_log(&format!("tab close: {why}")); }
+    }
+}
+
+/// Remove only the incarnations that were closed. Serial numbers are unique
+/// across desks, so switching desks cannot retarget an outstanding close.
+fn end_tabs(tabs: &mut Vec<Tab>, ending: &[u64]) -> Vec<usize> {
+    let mut removed = Vec::new();
+    let mut at = 0;
+    tabs.retain_mut(|t| {
+        let goes = ending.contains(&t.serial());
+        if goes { t.kill(); removed.push(at); }
+        at += 1;
+        !goes
+    });
+    removed
 }
 
 #[derive(Default)]
@@ -19105,6 +19181,41 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conversation_targets_use_uid_without_adopting_a_namesake() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut t = Tab::spawn("Same name".into(), &[crate::test_shell()], Some("Codex CLI".into()), 10, 40, opts).unwrap();
+        t.id = Some("coder".into());
+        let uid = t.uid().to_string();
+        let args = serde_json::json!({});
+        for panel in [&uid, "coder"] {
+            let got = convo_target(panel, &args, std::slice::from_ref(&t), &[]).unwrap();
+            assert_eq!(got.tab.as_deref(), Some(uid.as_str()));
+            assert_eq!(got.panel, panel);
+        }
+        t.id = Some("renamed".into());
+        assert!(convo_target(&uid, &args, std::slice::from_ref(&t), &[]).is_ok());
+        let gone = config::new_tab_uid();
+        t.id = Some(gone.clone());
+        assert!(convo_target(&gone, &args, std::slice::from_ref(&t), &[]).is_err(),
+            "a new tab's mutable id impersonated an old tab's uid");
+        t.kill();
+    }
+
+    #[test]
+    fn ending_tabs_removes_only_the_closed_incarnations() {
+        let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };
+        let mut tabs: Vec<_> = (0..3).map(|_| Tab::spawn("Same name".into(), &[crate::test_shell()],
+            None, 10, 40, opts.clone()).unwrap()).collect();
+        let kept = tabs[1].serial();
+        let ending = vec![tabs[0].serial(), tabs[2].serial()];
+        assert_eq!(end_tabs(&mut tabs, &ending), [0, 2]);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0].serial(), kept);
+        assert!(end_tabs(&mut tabs, &ending).is_empty());
+        tabs[0].kill();
+    }
+
     #[test]
     fn waiting_commands_follow_identity_through_renaming_and_never_take_a_replacement() {
         let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };

@@ -340,6 +340,12 @@ pub fn close(
                 return Closing::Nothing;
             }
             if let Some(done) = take(closed, name, None, Ends::Nothing) {
+                // Only the visible desk reconciles its pages on reload. Close
+                // the page here too, before acknowledging a background close.
+                if matches!(done, Closing::Closed { .. })
+                    && let Err(e) = caps.browser_close(page) {
+                        return Closing::Failed(format!("{e:#}"));
+                    }
                 return done;
             }
             // Written in the older list beside the desk

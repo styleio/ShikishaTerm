@@ -64,10 +64,6 @@ Assistant AI, deciding AI, connections, agreements
 
 Personal access tokens, SSH keys and sign-ins
 
-- **Token**
-
-**GitHub CLI (gh)**
-
 - **Display name**
 
 ### Worktrees

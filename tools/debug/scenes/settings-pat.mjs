@@ -88,6 +88,7 @@ export default {
     'pat-dialog': scene(async () => {
       await openPat();
       const modal = lastModal();
+      check(modal.innerText.includes(T['settings.gitacct.shown_hint']), 'Local display name is not explained');
       typeIn(modal.querySelector('input[type=text]'), 'My VM token');
       typeIn(modal.querySelector('input[type=password]'), 'github_pat_screenshot_fixture');
       check(!modal.querySelector('select'), 'PAT dialog still asks for an authentication method');
@@ -100,6 +101,25 @@ export default {
       await until(()=>lastModal()?.querySelector('input[type=password]'), 'Git dialog missing');
       check(lastModal().innerText.includes(T['settings.gitacct.pc_add_hint']), 'Replacement is not explained');
       check(lastModal().querySelector('.primary').textContent === T['settings.gitacct.pc_save'], 'Destination missing from save button');
+    }),
+    'pat-permissions': scene(async () => {
+      await openPat();
+      const modal = lastModal();
+      Array.from(modal.querySelectorAll('.foldhead')).find(b=>b.textContent.includes(T['settings.gitacct.permissions'])).click();
+      for (const key of ['repositories','push','pr','classic','workflow','workflow_classic']) {
+        check(modal.innerText.includes(T['settings.gitacct.permissions.'+key]), 'Permission missing: '+key);
+      }
+      check(document.documentElement.scrollWidth <= innerWidth, 'Permission guide overflows horizontally');
+    }),
+    'pat-gh-permissions': scene(async () => {
+      await openAccounts();
+      Array.from(document.querySelectorAll('#detail button')).find(b=>b.textContent === T['settings.gitacct.gh_add']).click();
+      await until(()=>lastModal()?.querySelector('input[type=password]'), 'GitHub CLI dialog missing');
+      const modal = lastModal();
+      modal.querySelector('.foldhead').click();
+      check(modal.innerText.includes(T['settings.gitacct.permissions.gh']), 'GitHub CLI sign-in scopes missing');
+      check(!modal.innerText.includes(T['settings.gitacct.permissions.classic']), 'Git scopes substituted for GitHub CLI scopes');
+      check(document.documentElement.scrollWidth <= innerWidth, 'GitHub CLI permission guide overflows horizontally');
     }),
     'pat-other-methods': scene(async () => {
       await openAccounts();

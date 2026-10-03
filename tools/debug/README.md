@@ -46,6 +46,7 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
+| `tools/debug/cli-process.win.mjs --desks` | Windows, Node, Chrome | Conversation UIDs on both screens, STOP across desks and a background close that must finish before success | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/cli-process.win.mjs --desks` |
 | `tools/debug/scenes/settings-shared.mjs` | anywhere, with Chrome | Every settings form's validation, focus and error recovery; both languages, schemes and widths | `node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-shared.mjs --remote-http` |
 | `tools/debug/scenes/snip-toast.mjs` | anywhere, with Chrome | Shared notifications on the picture tools page, including warning timing and dismissal | `node tools/debug/shoot.mjs tools/debug/scenes/snip-toast.mjs` |
 | `tools/debug/chrome.test.mjs` | anywhere, with Node | CDP responses, protocol errors, timeouts and disconnect cleanup | `node --test tools/debug/chrome.test.mjs` |
