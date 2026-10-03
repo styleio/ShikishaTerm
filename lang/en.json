@@ -2092,6 +2092,7 @@
   "settings.tab.cat.cmd.far": "Command (that machine's shell)",
   "settings.tab.ai.pick": "AI to use",
   "settings.tab.ai.flags": "Show flags",
+  "settings.tab.ai.far_missing": "{ai} is not installed on {host}. This tab cannot start it there until it is installed on {host}. Choose an AI that {host} has.",
   "settings.tab.ai.flags_loading": "Running --help…",
   "settings.tab.ai.flags_failed": "Couldn't get the --help output (is the command installed?)",
   "settings.tab.ai.add": "＋ Add an AI…",
