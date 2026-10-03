@@ -3826,7 +3826,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 }
                 let cli = t.ai_kind().unwrap_or_default();
-                convo_log.follow(t.uid(), &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking());
+                convo_log.follow(t.uid(), &cli, t.session.as_ref().map(|s| s.id.as_str()), t.runs_without_asking(), t.cwd());
                 if old != new {
                     convo_log.state(t.uid(), new, t.limit_note());
                 }
@@ -5539,7 +5539,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
             let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
-            let fx = orchestra.tick(&scene);
+            let fx = if auto_enabled { orchestra.tick(&scene) } else { Vec::new() };
             orch_board = orchestra.board(&scene);
             if !fx.is_empty() {
                 let now_ms = start.elapsed().as_millis() as u64;
@@ -13571,14 +13571,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // Whatever has already gone over stays in the input
                             // box, unsent — which is what stopping means here.
                             pending_send.clear();
+                            pending_quicks.clear();
+                            waiting.clear();
+                            for work in background_work.values_mut() { work.waiting.clear(); }
                             // Discard every waiting loop too (don't let them revive on resume)
-                            if let Some(eng) = engine.as_mut() {
+                            for eng in engine.iter_mut().chain(engines.iter_mut().filter_map(Option::as_mut)) {
                                 eng.cancel_all();
+                                eng.drain_commands();
                             }
                             // And the AIs themselves. Stopping the hand-overs
                             // leaves whoever is mid-turn working, and the one
                             // still working is the one the stop was for
-                            let halted: Vec<&Tab> = tabs.iter().filter(|t| t.interrupt()).collect();
+                            let halted = interrupt_all_desks(&tabs, &desk_tabs);
                             for t in halted.iter().filter(|t| t.is_ai() && !t.is_model()) {
                                 let stop = crate::convo::Stop {
                                     by: crate::convo::By::Person,
@@ -17209,6 +17213,10 @@ pub fn opened_for(label: &str, at: &std::path::Path, tabs: &[Tab], pending: &[Pe
         .iter()
         .find(|p| p.label == label && crate::uistate::same_folder(&p.at, at))
         .map(|p| (p.title.clone(), p.id.clone()))
+}
+
+pub(crate) fn interrupt_all_desks<'a>(tabs: &'a [Tab], away: &'a [Vec<Tab>]) -> Vec<&'a Tab> {
+    tabs.iter().chain(away.iter().flatten()).filter(|t| t.interrupt()).collect()
 }
 
 pub fn quick_ready(t: &Tab, now_ms: u64) -> bool {

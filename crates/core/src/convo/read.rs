@@ -135,13 +135,23 @@ impl Ctx<'_> {
                 continue;
             }
             if t.machine.is_none()
-                && let Some(cwd) = &t.cwd
                 && let Some(at) = crate::vault::record_folder(&t.glob, &c.record_id, t.cwd_field.as_deref())
-                && !crate::uistate::same_folder(std::path::Path::new(&at), cwd)
             {
-                // Keep the underlying record: it remains available through
-                // all conversations and the tab whose folder it belongs to.
-                continue;
+                let at = std::path::Path::new(&at);
+                let matches = |p: &std::path::Path| crate::uistate::same_folder(at, p);
+                // Judge a record against where its tab was then. For rows
+                // from before folders were kept, other sightings of this uid
+                // also establish its earlier places; the current folder alone
+                // cannot distinguish a move from an old crossed association.
+                let belongs = match c.observed_cwd.as_deref() {
+                    Some(cwd) => matches(std::path::Path::new(cwd)),
+                    None => t.cwd.as_deref().is_none_or(matches)
+                        || known.iter().filter_map(|c| c.observed_cwd.as_deref()).any(|p| matches(std::path::Path::new(p))),
+                };
+                if !belongs {
+                    // Keep the record available in all conversations.
+                    continue;
+                }
             }
             records.extend(named(&c.record_id).map(|r| (r, c.is_yolo)));
         }
@@ -796,6 +806,36 @@ mod tests {
         target.past = None;
         target.live = Record::named(&p.glob(), "foreign", None);
         assert!(got_all(&target, &p)["rows"].as_array().unwrap().iter().any(|r| r["text"] == "someone else's request"), "an explicitly resumed live conversation is preserved");
+    }
+
+    #[test]
+    fn moving_a_tab_keeps_its_history_and_search_without_importing_crossed_records() {
+        let p = Place::new("moved-history");
+        let before = crate::local_path("D:/before");
+        let after = crate::local_path("D:/after");
+        let other = crate::local_path("D:/other");
+        let rows = [("legacy", &before), ("old", &before), ("foreign", &other), ("live", &after)];
+        {
+            let s = Store::open(&p.db()).unwrap();
+            for (i, (id, cwd)) in rows.iter().enumerate() {
+                let meta = format!("{}\n", json!({"type":"session_meta", "payload":{"cwd":cwd}}));
+                p.record(id, &[meta, line("2026-09-28T02:00:00Z", "user", &format!("request {id}"))]);
+                let observed = match *id { "legacy" => None, "live" => Some(after.as_str()), _ => Some(before.as_str()) };
+                s.seen_in("t", "codex", id, false, i as i64, observed).unwrap();
+            }
+        }
+        let mut target = p.target("live");
+        target.cwd = Some(after.into());
+        target.cwd_field = Some("payload.cwd".into());
+        for act in ["page", "find"] {
+            let found = answer(&target, act, &json!({"q":"request"}), &p.db(), &p.marks());
+            let rows = found.answer["rows"].as_array().unwrap();
+            for id in ["legacy", "old", "live"] {
+                assert!(rows.iter().any(|r| r["record"] == id), "{act} lost {id}: {}", found.answer);
+            }
+            assert!(!rows.iter().any(|r| r["record"] == "foreign"), "{act} imported another tab's record");
+            assert!(found.forget.is_empty());
+        }
     }
 
     #[test]

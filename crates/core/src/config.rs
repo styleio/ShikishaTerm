@@ -4796,7 +4796,11 @@ fn fill_holder_uids(holder: &mut serde_json::Value, hosts: &[HostSpec], scope: &
     else {
         return;
     };
-    let (_, tabs, _) = resolve_folders(&foldered_with(&folders, &legacy), &[], hosts, scope);
+    // Writing visits archived folders too. Resolve their tabs as well, in
+    // that same order, or the first hidden line consumes a visible tab's uid.
+    let mut all = foldered_with(&folders, &legacy);
+    for folder in &mut all { folder.parked = false; }
+    let (_, tabs, _) = resolve_folders(&all, &[], hosts, scope);
     let mut uids = tabs.into_iter().map(|t| t.cfg.uid.unwrap_or_default());
     visit_tab_lines(holder, &mut |line| {
         let Some(uid) = uids.next() else { return };
@@ -9311,6 +9315,30 @@ mod tests {
         let once = doc.clone();
         fill_tab_uids(&mut doc);
         assert_eq!(doc, once, "it changed the second time");
+    }
+
+    #[test]
+    fn saving_archived_folders_keeps_every_tabs_identity() {
+        for archived in [0, 1] {
+            for own_file in [false, true] {
+                let holder = serde_json::json!({"name":"Work", "tabs":[{"id":"legacy","command":"sh"}], "folders":[
+                    {"tabs":[{"id":"same","command":"sh","children":[{"command":"sh"}]}]},
+                    {"tabs":[{"id":"same","command":"sh"},{"id":"kept","uid":"11111111-2222-4333-8444-555555555555","command":"sh"}]}
+                ]});
+                let mut expected = if own_file { holder.clone() } else { serde_json::json!({"desks":[holder.clone()]}) };
+                fill_tab_uids(&mut expected);
+                let mut doc = if own_file { holder } else { serde_json::json!({"desks":[holder]}) };
+                let h = if own_file { &mut doc } else { &mut doc["desks"][0] };
+                h["folders"][archived]["parked"] = serde_json::json!(true);
+                fill_tab_uids(&mut doc);
+                let once = doc.clone();
+                fill_tab_uids(&mut doc);
+                assert_eq!(doc, once, "a second save changed identity");
+                let h = if own_file { &mut doc } else { &mut doc["desks"][0] };
+                h["folders"][archived].as_object_mut().unwrap().remove("parked");
+                assert_eq!(doc, expected, "restoring the folder changed a tab's identity");
+            }
+        }
     }
 
     /// Two tabs holding one uid -- a line copied by hand -- are two tabs on

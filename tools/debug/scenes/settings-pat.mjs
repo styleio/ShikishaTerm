@@ -94,6 +94,16 @@ export default {
       check(modal.querySelector('.foldbody').hidden, 'Advanced fields are open by default');
       check(document.documentElement.scrollWidth <= innerWidth, 'Dialog overflows horizontally');
     }),
+    'pat-help': scene(async () => {
+      await openPat();
+      const modal = lastModal();
+      Array.from(modal.querySelectorAll('.foldhead')).find(b=>b.textContent.includes(T['settings.gitacct.token_help'])).click();
+      check(modal.querySelector('a[href="https://github.com/settings/personal-access-tokens/new"]'), 'Creation link missing');
+      for (const k of ['repos', 'perm_contents', 'perm_pulls', 'perm_issues', 'perm_actions', 'perm_workflows', 'classic']) {
+        check(modal.innerText.includes(T['settings.gitacct.token_'+k]), 'Missing PAT guidance: '+k);
+      }
+      check(document.documentElement.scrollWidth <= innerWidth, 'PAT help overflows horizontally');
+    }),
     'pat-pc-update': scene(async () => {
       await openAccounts();
       Array.from(document.querySelectorAll('#detail button')).find(b=>b.textContent === T['settings.gitacct.pc_add']).click();

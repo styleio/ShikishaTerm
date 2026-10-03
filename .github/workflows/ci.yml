@@ -36,8 +36,10 @@ jobs:
           node --test tools/debug/chrome.test.mjs
           node tools/check-board.mjs
 
-      - name: Conversation replies stay with the requesting viewer and tab
-        run: node tools/check-conversations.mjs
+      - name: Conversation replies and repeated settings saves keep their identities
+        run: |
+          node tools/check-conversations.mjs
+          node tools/check-settings-save.mjs
 
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line

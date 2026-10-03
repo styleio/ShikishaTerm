@@ -60,6 +60,7 @@ pub const STEPS: &[(i64, &str, Step)] = &[
     (2, "confer", Step::Sql(include_str!("migrations/0002_confer.sql"))),
     (3, "threads", Step::Sql(include_str!("migrations/0003_threads.sql"))),
     (4, "tab_uids", Step::Sql(include_str!("migrations/0004_tab_uids.sql"))),
+    (5, "conversation_folder", Step::Sql(include_str!("migrations/0005_conversation_folder.sql"))),
 ];
 
 /// The uid a name stands for once no tab on its desk answers to it: worked
@@ -229,6 +230,7 @@ pub struct Conversation {
     pub is_yolo: bool,
     pub first_at: i64,
     pub last_at: i64,
+    pub observed_cwd: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -592,12 +594,19 @@ impl Store {
 
     /// A tab seen on a conversation at `at`: made the first time, its last
     /// sighting moved on after that
+    #[cfg(test)]
     pub fn seen(&self, tab: &str, cli: &str, record_id: &str, is_yolo: bool, at: i64) -> Result<()> {
+        self.seen_in(tab, cli, record_id, is_yolo, at, None)
+    }
+
+    /// The folder of the tab when this conversation was first observed, not
+    /// the folder it may have moved to since. Older rows acquire it when seen.
+    pub fn seen_in(&self, tab: &str, cli: &str, record_id: &str, is_yolo: bool, at: i64, cwd: Option<&str>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO conversations (tab, cli, record_id, is_yolo, first_at, last_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5) \
+            "INSERT INTO conversations (tab, cli, record_id, is_yolo, first_at, last_at, observed_cwd) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6) \
              ON CONFLICT(tab, record_id) DO UPDATE SET last_at = MAX(last_at, excluded.last_at), \
-             is_yolo = MAX(is_yolo, excluded.is_yolo)",
-            params![tab, cli, record_id, is_yolo as i64, at],
+             is_yolo = MAX(is_yolo, excluded.is_yolo), observed_cwd = COALESCE(conversations.observed_cwd, excluded.observed_cwd)",
+            params![tab, cli, record_id, is_yolo as i64, at, cwd],
         )?;
         Ok(())
     }
@@ -1041,7 +1050,7 @@ impl Store {
 
     // -- reading (the panel's thread) ------------------------------------------
 
-    const CONVERSATION_COLS: &'static str = "id, tab, cli, record_id, is_yolo, first_at, last_at";
+    const CONVERSATION_COLS: &'static str = "id, tab, cli, record_id, is_yolo, first_at, last_at, observed_cwd";
 
     fn conversation_row(r: &rusqlite::Row) -> rusqlite::Result<Conversation> {
         Ok(Conversation {
@@ -1052,6 +1061,7 @@ impl Store {
             is_yolo: r.get::<_, i64>(4)? != 0,
             first_at: r.get(5)?,
             last_at: r.get(6)?,
+            observed_cwd: r.get(7)?,
         })
     }
 
@@ -1270,6 +1280,20 @@ mod tests {
     }
 
     #[test]
+    fn a_conversation_keeps_its_first_known_folder_after_a_move() {
+        let s = Store::in_memory().unwrap();
+        let first = crate::local_path("D:/first");
+        let next = crate::local_path("D:/next");
+        s.seen("t", "codex", "a", false, 10).unwrap();
+        s.seen_in("t", "codex", "a", false, 20, Some(&first)).unwrap();
+        s.seen_in("t", "codex", "a", false, 30, Some(&next)).unwrap();
+        s.seen("t", "codex", "a", false, 40).unwrap();
+        let rows = s.conversations("t").unwrap();
+        assert_eq!(rows[0].observed_cwd.as_deref(), Some(first.as_str()));
+        assert_eq!(rows[0].last_at, 40);
+    }
+
+    #[test]
     fn the_reader_reads_beside_the_writer() {
         let dir = scratch("read");
         let path = dir.join("conversations.db");
@@ -1330,6 +1354,18 @@ mod tests {
         let before = schema(&conn).unwrap();
         migrate(&mut conn, STEPS, None, WHAT).unwrap();
         assert_eq!(schema(&conn).unwrap(), before, "running them again changes nothing");
+    }
+
+    #[test]
+    fn earlier_sightings_gain_a_folder_without_losing_rows() {
+        let mut conn = migrated(&STEPS[..4]);
+        conn.execute("INSERT INTO conversations(tab,cli,record_id,first_at,last_at) VALUES ('t','codex','old',10,20)", []).unwrap();
+        migrate(&mut conn, STEPS, None, WHAT).unwrap();
+        let row: (String, i64, i64, Option<String>) = conn.query_row(
+            "SELECT record_id, first_at, last_at, observed_cwd FROM conversations", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!(row, ("old".into(), 10, 20, None));
     }
 
     #[test]
