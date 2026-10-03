@@ -633,6 +633,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); border:1px solid var(--line); border-radius:var(--r-ctl); }
   #login .lstate { font-size:12.5px; color:var(--dim); line-height:1.5; }
   #login .lstate.yes { color:var(--brand); }
+  /* Something the person still has to do: the dialog warn box (5.1), in the step's own size */
+  #login .lstate.bwarn { color:var(--text); }
   #login .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px; border-top:1px solid var(--line); }
   #login .sfoot button.primary { background:var(--brand); color:#fff; font-weight:600; }
   #addproj button.apway { display:flex; align-items:center; gap:var(--s3); width:100%; min-height:52px;
@@ -10261,6 +10263,9 @@ function drawLogin() {
         el("span", {class:"vclose", title:T["tui.login.later"] || "", onclick:later}, "✕")),
       el("div", {class:"sbody"},
         el("div", {class:"lstrong"}, say("tui.login.say")),
+        // Where things stand, under the step's first line: what is left
+        // to do is read before the terminal, on a phone without scrolling
+        el("div", {class:"lstate"}),
         el("div", {class:"ssay"}, say("tui.login.how")),
         // The account the clone signs in as, when one was chosen: the one to
         // sign in as in the browser
@@ -10270,8 +10275,7 @@ function drawLogin() {
         ...(git ? [loginCommands(st.commands || [])] : []),
         loginTerminal(),
         loginKeys(),
-        ...(git ? [loginType()] : [loginHelp(st)]),
-        el("div", {class:"lstate"})),
+        ...(git ? [loginType()] : [loginHelp(st)])),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
         el("button", {type:"button", class:"primary", id:"loginnext",
@@ -10299,6 +10303,9 @@ function drawLogin() {
       : say("tui.login.asking");
     if (state.textContent !== text) state.textContent = text;
     state.classList.toggle("yes", st.state === "yes");
+    // Signed in with the first-run questions still open: what is left to
+    // do, in the same warn box as everything else a person has to do
+    state.classList.toggle("bwarn", st.state === "finishing");
   }
   loginMirror(box, st.screen || "");
   if (!git) loginHelpDraw(box, st);
