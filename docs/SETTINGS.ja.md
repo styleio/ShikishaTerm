@@ -64,10 +64,6 @@
 
 Personal access tokens・SSH keys・サインイン
 
-- **トークン**
-
-**GitHub CLI（gh）**
-
 - **表示名**
 
 ### ワークツリー

@@ -5666,6 +5666,17 @@ return o"#,
         std::mem::take(&mut *self.commands.borrow_mut())
     }
 
+    /// An external close waits for the loop's result rather than acknowledging
+    /// a queued command. Take that close without disturbing earlier commands.
+    pub fn take_close(&mut self) -> Option<TabRef> {
+        let mut commands = self.commands.borrow_mut();
+        let at = commands.iter().rposition(|c| matches!(c, Command::CloseTab { .. }))?;
+        match commands.remove(at) {
+            Command::CloseTab { target } => Some(target),
+            _ => unreachable!(),
+        }
+    }
+
     fn resume_thread(&mut self, thread: Thread, hook: &str, origin: usize, args: MultiValue) {
         let _budget = self.budget.arm();
         match thread.resume::<MultiValue>(args) {
@@ -7033,6 +7044,11 @@ mod tests {
         e.call_primitive("close_tab", &[serde_json::json!("research")]).unwrap();
         let got: Vec<String> = e.drain_commands().into_iter().map(|c| format!("{c:?}")).collect();
         assert_eq!(got, vec![r#"CloseTab { target: Name("research") }"#.to_string()]);
+        e.commands.borrow_mut().push(Command::Log("keep this".into()));
+        e.call_primitive("close_tab", &[serde_json::json!("research")]).unwrap();
+        assert!(matches!(e.take_close(), Some(TabRef::Name(s)) if s == "research"));
+        assert!(e.take_close().is_none());
+        assert!(matches!(&e.drain_commands()[..], [Command::Log(s)] if s == "keep this"));
     }
 
     #[test]

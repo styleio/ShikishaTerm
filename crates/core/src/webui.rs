@@ -12731,6 +12731,25 @@ function gitAccountsCard() {
   return c;
 }
 
+// The same permission guide wherever a PAT is entered. GitHub's permission
+// names stay intact; each row says which operation needs them.
+function gitTokenPermissions(method = "token") {
+  return foldMore(T["settings.gitacct.token_help"], false,
+    el("div", {class:"hint"}, T[method === "gh" ? "settings.gitacct.token_create_classic" : "settings.gitacct.token_create"]),
+    el("a", {href:method === "gh" ? "https://github.com/settings/tokens/new" : "https://github.com/settings/personal-access-tokens/new",
+      target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_create_link"]),
+    ...(method === "gh" ? [] : [
+      el("p", {class:"hint"}, T["settings.gitacct.token_repos"]),
+      el("ul", {class:"hint"}, ...[T["settings.gitacct.token_perm_contents"], T["settings.gitacct.token_perm_pulls"],
+        T["settings.gitacct.token_perm_issues"], T["settings.gitacct.token_perm_actions"], T["settings.gitacct.token_perm_workflows"]]
+        .map(text => el("li", {}, text)))]),
+    el("p", {}, el("strong", {}, T["settings.gitacct.kind_full.classic"])),
+    el("p", {class:"hint"}, T[method === "gh" ? "settings.gitacct.permissions.gh" : "settings.gitacct.token_classic"]),
+    method === "gh" ? el("p", {class:"hint"}, T["settings.gitacct.permissions.workflow_classic"]) : null,
+    el("a", {href:"https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+      target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_docs"]));
+}
+
 // Adding a git account, or changing one. `name` is null for a new one.
 function gitAccountDialog(name, redraw, method = "token") {
   const editing = !!name;
@@ -12738,7 +12757,7 @@ function gitAccountDialog(name, redraw, method = "token") {
   const a = editing ? (accts.find(x => x.name === name) || {}) : {};
   const input = (value, attrs) => { const i = el("input", Object.assign({type:"text"}, attrs || {})); i.value = value || ""; return i; };
   if (editing) method = gitAccountMethod(a);
-  // The editable token name is a label. Keep the stored identity stable so a
+  // The editable display name is local. Keep the stored identity stable so a
   // rename cannot orphan its secret or change what projects and tabs choose.
   const id = editing ? name : "git-" + newUid();
   const nameIn = input(editing ? gitAccountShown(a) : "", {placeholder:T["settings.gitacct.name_ph"]});
@@ -12767,22 +12786,13 @@ function gitAccountDialog(name, redraw, method = "token") {
   const field = sfield;
   const loginField = field(T["settings.gitacct.login"], loginIn, T["settings.gitacct.login_hint"]);
   const tokenHint = el("div", {class:"hint"});
-  const tokenHelp = foldMore(T["settings.gitacct.token_help"], false,
-    el("div", {class:"hint"}, T["settings.gitacct.token_create"]),
-    el("a", {href:"https://github.com/settings/personal-access-tokens/new", target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_create_link"]),
-    el("p", {class:"hint"}, T["settings.gitacct.token_repos"]),
-    el("ul", {class:"hint"}, ...[T["settings.gitacct.token_perm_contents"], T["settings.gitacct.token_perm_pulls"],
-      T["settings.gitacct.token_perm_issues"], T["settings.gitacct.token_perm_actions"], T["settings.gitacct.token_perm_workflows"]]
-      .map(text => el("li", {}, text))),
-    el("p", {class:"hint"}, T["settings.gitacct.token_classic"]),
-    el("a", {href:"https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens", target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_docs"]));
   // Where the value ends up. A store nobody has given a master password keeps
   // it as it stands, and that is said here, in the colour for danger, at the
   // moment the token is about to be typed
   const tokenPlain = el("div", {class:"warn"});
   tokenPlain.hidden = true;
-  const tokenField = el("div", {class:"field"}, el("label", {}, T["settings.gitacct.token"]),
-    el("div", {class:"fieldctl"}, tokenIn), tokenHint, tokenHelp, tokenPlain);
+  const tokenField = field(T["settings.gitacct.token"], tokenIn,
+    el("div", {}, tokenHint, gitTokenPermissions(), tokenPlain));
   const keyField = field(T["settings.gitacct.key"], keyIn, T["settings.gitacct.key_hint"]);
   // Nothing to fill in for a gh account: it signs in with what GitHub CLI has
   const ghNote = el("div", {class:"hint"}, T["settings.gitacct.gh_hint"]);
@@ -12826,8 +12836,7 @@ function gitAccountDialog(name, redraw, method = "token") {
     // repository owners, a commit identity -- folded under one line, open when any
     // of it is already written so nothing written is out of sight
     el("div", {class:"mbody"},
-      field(method === "token" ? T["settings.gitacct.token_name"] : T["settings.gitacct.name"], nameIn,
-        method === "token" ? T["settings.gitacct.name_hint"] : null),
+      field(T["settings.gitacct.shown"], nameIn, T["settings.gitacct.shown_hint"]),
       ghNote, keyField, tokenField,
       foldMore(T["settings.gitacct.more"], !!(a.host || a.login || a.user_name || a.user_email || (a.owners || []).length),
         field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]),
@@ -12979,7 +12988,7 @@ function ghSignInsCard() {
     listBox,
     el("div", {class:"row"},
       el("button", {onclick: () => tokenDialog(T["settings.gitacct.gh_add_title"], T["settings.gitacct.gh_add_hint"], true,
-        async (token, host) => postJson("/api/gh-accounts/add", {token, host}), draw, T["settings.gitacct.gh_login"])}, T["settings.gitacct.gh_add"])));
+        async (token, host) => postJson("/api/gh-accounts/add", {token, host}), draw, T["settings.gitacct.gh_login"], "gh")}, T["settings.gitacct.gh_add"])));
 }
 
 // A sign-in this PC holds: what to call it, and -- at the left of the foot,
@@ -13023,7 +13032,7 @@ function signInDialog(key, login, destroyWord, destroyAsk, destroy, done) {
 // One token, pasted, and handed to `submit(token, host)`; the window stays,
 // saying why, until GitHub or the program took it. `withHost` adds the server
 // for a sign-in that can be to another GitHub than github.com
-function tokenDialog(title, hint, withHost, submit, done, action) {
+function tokenDialog(title, hint, withHost, submit, done, action, method = "token") {
   const tokenIn = el("input", {type:"password", placeholder:T["settings.gitacct.token_ph"]});
   const hostIn = el("input", {type:"text", class:"mono", placeholder:GIT_HOST});
   const save = el("button", {class:"primary"}, action || T["common.save"]);
@@ -13037,7 +13046,8 @@ function tokenDialog(title, hint, withHost, submit, done, action) {
       el("button", {class:"quiet icon", title:T["common.close"], onclick: () => shut()}, "✕")),
     el("div", {class:"mbody"},
       withHost ? field(T["settings.gitacct.host"], hostIn, T["settings.gitacct.host_hint"]) : null,
-      field(T["settings.gitacct.token"], tokenIn, hint)),
+      field(T["settings.gitacct.token"], tokenIn, hint),
+      gitTokenPermissions(method)),
     el("div", {class:"mfoot"},
       why,
       el("span", {class:"grow"}),

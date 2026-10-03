@@ -1,6 +1,7 @@
 // CLI process identity regression through the app's real HTTP and pipe doors.
 // Windows + Node, after `cargo build --bin SHIKISHA-TERM`.
 // Run: node tools/debug/cli-process.win.mjs
+// --desks also checks conversation UIDs, STOP and acknowledged closes across desks.
 // --real starts two installed Codex CLIs over an empty CODEX_HOME, without
 // sending a prompt. Otherwise uses synthetic terminals. No AI calls.
 import fs from 'node:fs';
@@ -11,6 +12,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import {connectCdp, startChrome} from './chrome.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const target = path.join(root, 'target');
@@ -39,6 +41,8 @@ assert(files.stdout.trim().split(/\r?\n/).every(f => fs.statSync(path.join(root,
 const token = crypto.randomBytes(24).toString('hex');
 const checks = [];
 let port, cookie = '';
+const clients = [];
+const desksCheck = process.argv.includes('--desks');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (test, what, ms = 20000) => {
   const end = Date.now() + ms;
@@ -106,6 +110,7 @@ if (mode !== 'old' && !args.includes('--no-daemon')) {
 }
 fs.writeFileSync(path.join(__dirname, label + '.auth.json'), JSON.stringify(identity));
 fs.writeFileSync(path.join(__dirname, label + '.argv.json'), JSON.stringify(args));
+fs.writeFileSync(path.join(__dirname, label + '.pid'), String(process.pid));
 async function call(method, params) {
   return new Promise((resolve, reject) => {
     const socket=net.connect(identity.pipe); let buffer='', ready=false;
@@ -124,7 +129,7 @@ call('set_session', ['session-' + label]).then(()=>{
   fs.writeFileSync(path.join(__dirname,label+'.ready'),'ready');
 });
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
-process.stdin.on('data',()=>{});
+process.stdin.on('data',d=>fs.appendFileSync(path.join(__dirname,label+'.heard'),d));
 setInterval(()=>{},1000);
 `);
 const folders = ['modern', 'old'].map(mode => {
@@ -139,6 +144,15 @@ const cfg = {language: 'en', keep_terminals: process.argv.includes('--keeper'),
   agent_hooks: {'Codex CLI': 'off', 'Claude Code': 'off', 'Gemini CLI': 'off'},
   remote: {fixed_token: token, sticky_token: true},
   desks: [{id:'test', name:'Process identity', folders}]};
+if (desksCheck) {
+  const page = path.join(fixture, 'page.html');
+  fs.writeFileSync(page, '<!doctype html><title>Disposable page</title><p>Close this test tab.</p>');
+  cfg.desks[0].automation_permissions = {close_tab:{ai:true}};
+  cfg.desks.push({id:'away',name:'Other desk',automation_permissions:{close_tab:{ai:true}},
+    folders:[{cwd:folders[0].cwd,tabs:[...['away-caller','away-worker'].map(id=>({id,name:'Same name',
+      uid:crypto.randomUUID(),profile:'Codex CLI',command:folders[0].tabs[0].command})),
+      {id:'away-page',name:'Disposable page',uid:crypto.randomUUID(),command:['browser',page]}]}]});
+}
 const real = process.argv.includes('--real');
 if (real) {
   assert(!cfg.keep_terminals, '--real uses terminals owned by the test process');
@@ -199,7 +213,73 @@ try {
     return ['alpha','beta','resume','legacy'].every(id => saved.some(t => t.id === id && t.session === 'session-' + id));
   }, 'each tab keeps its own conversation');
   check(true, 'conversation IDs are saved against their own tabs');
+  if (desksCheck) {
+    const desk = async index => {
+      assert.equal((await intent({kind:'opendesk'})).data.ok, true);
+      await until(async () => (await state()).ui?.desk_open, 'desk picker');
+      await intent({kind:'menu',key:String(index+1)});
+      await until(async () => (await state()).ui?.desk_index === index, 'desk '+index);
+    };
+    await desk(1);
+    for (const id of ['away-caller','away-worker']) {
+      await until(() => fs.existsSync(path.join(fixture,id+'.ready')), id+' starts');
+    }
+    await desk(0);
+
+    const cdpPort = Number(started.match(/cdp=http:\/\/127\.0\.0\.1:(\d+)/)?.[1]);
+    const targets = await (await fetch('http://127.0.0.1:'+cdpPort+'/json/list')).json();
+    const native = await connectCdp(targets.find(t=>t.type==='page'));
+    clients.push(native);
+    const remote = await startChrome(); clients.push(remote);
+    await remote.send('Page.navigate',{url:'http://127.0.0.1:'+port+'/?t='+token});
+    for (const [label,client] of [['native',native],['remote',remote]]) {
+      await until(() => client.run('typeof S !== "undefined" && S?.tabs?.length > 0').catch(()=>false),label+' loads');
+      await client.run('window.reviewReplies=[]; window.reviewConvo=window.__convo; window.__convo=d=>{reviewReplies.push(d);reviewConvo(d);}');
+      for (const panel of ['alpha',uid('alpha')]) {
+        const req = crypto.randomUUID();
+        await client.run('send('+JSON.stringify({kind:'convo',panel,act:'page',args:{req}})+')');
+        let reply;
+        await until(async()=>{reply=await client.run('reviewReplies.find(d=>d.req==='+JSON.stringify(req)+')');return reply;},label+' conversation reply');
+        check(reply.ok === true, label+' reads an existing conversation by '+(panel==='alpha'?'id':'uid'));
+      }
+      for (const id of ['alpha','away-worker']) {
+        const reply = await call(id,'set_state',['BUSY',Date.now()]);
+        assert(reply.ok, JSON.stringify(reply));
+      }
+      await until(async()=> (await state()).tabs.find(t=>t.uid===uid('alpha'))?.state==='BUSY','foreground AI busy');
+      const counts = ['alpha','away-worker','beta'].map(id=>heard(id).split('\x1b').length);
+      // Use the actual screen transport for each surface, not a synthetic key.
+      await client.run('send({kind:"stop"})');
+      await until(()=>['alpha','away-worker'].every((id,i)=>heard(id).split('\x1b').length>counts[i]),label+' STOP reaches both desks');
+      check(true,label+' STOP interrupts working AIs on both desks');
+      check(heard('beta').split('\x1b').length===counts[2],label+' STOP leaves idle AI input alone');
+      check((await state()).ui?.desk_index===0,label+' STOP does not switch desks');
+    }
+    const refused = await call('away-caller','close_tab',['away-worker']);
+    check(refused.ok === false && refused.error.includes('not closed'), 'a busy background close reports refusal instead of success');
+    check((await list('away-caller')).some(t=>t.id==='away-worker'),'refused close keeps the tab');
+    await call('away-worker','set_state',['DONE',Date.now()]);
+    // The hook's state is consumed on the detection tick. A busy refusal is
+    // observable and safe to retry; success is never returned for that refusal.
+    let closed;
+    await until(async()=>{closed=await call('away-caller','close_tab',['away-worker']);return closed.ok;},'background close completes');
+    check(!(await list('away-caller')).some(t=>t.id==='away-worker'),'success is followed immediately by a tab list without the closed tab');
+    check((await state()).ui?.desk_index===0,'background close completes without displaying its desk');
+    check(!JSON.parse(fs.readFileSync(liveConfig,'utf8')).desks[1].folders[0].tabs.some(t=>t.id==='away-worker'),'background close is persisted');
+    const pid=Number(fs.readFileSync(path.join(fixture,'away-worker.pid'),'utf8'));
+    await until(()=>{try{process.kill(pid,0);return false;}catch{return true;}},'closed tab process ends');
+    check(true,'the background process ended');
+    await sleep(500);
+    check(!(await list('away-caller')).some(t=>t.id==='away-worker'),'a refused earlier close cannot reappear after success');
+    const page = await call('away-caller','close_tab',['away-page']);
+    assert(page.ok, JSON.stringify(page));
+    const afterPage = await list('away-caller');
+    assert(!afterPage.some(t=>t.id==='away-page'), JSON.stringify(afterPage));
+    check(true, 'background browser close also finishes before success');
+    const shown = await call('alpha','close_tab',['legacy']);
+    check(shown.ok && !(await list('alpha')).some(t=>t.id==='legacy'), 'foreground close uses the same completed-result contract');
+  }
   }
   fs.writeFileSync(path.join(run, 'result.json'), JSON.stringify({testedAt:new Date().toISOString(), keeper:cfg.keep_terminals, real, exeSha256:hash(exe), checks},null,2));
   console.log('Evidence: ' + path.join(run, 'result.json'));
-} finally { ps('-Stop'); }
+} finally { for (const client of clients) client.stop(); ps('-Stop'); }
