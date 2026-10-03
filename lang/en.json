@@ -29,7 +29,7 @@
   "tui.folders.archive.title": "Archive these folders?",
   "tui.folders.archive.say": "Their tabs will close and the folders will leave the usual list. Files and tab settings stay, ready to restore from Manage work folders. Busy folders stay open.",
   "tui.folders.delete.title": "Delete these work folders?",
-  "tui.folders.delete.say": "This removes the folders and their files. Pinned folders, primary checkouts, busy folders and folders with uncommitted work are kept. Each result will appear in the list.",
+  "tui.folders.delete.say": "This removes the folders and their files. Pinned folders, primary checkouts and busy folders are kept; uncommitted work is listed first and deleted only once you agree. Each result will appear in the list.",
   "tui.folders.deleting": "Deletion in progress…",
   "tui.folders.done": "Done",
   "err.folders.action": "This folder action is not supported.",

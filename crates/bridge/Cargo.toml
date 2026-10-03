@@ -1,6 +1,6 @@
 [package]
 name = "shikisha-bridge"
-version = "0.23.1"
+version = "0.24.0"
 edition = "2024"
 description = "SHIKISHA-TERM's small helper on another machine: carries the shikisha command of the tabs there to the app, and reads what the app asks it to read there."
 license = "MIT"

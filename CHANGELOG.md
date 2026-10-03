@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-03
+
 ### Added
 - **This PC's terminals can outlive the app.** With Settings › Basic ›
   "Terminals on this PC" on, the terminals of this PC run in a background
@@ -37,15 +39,114 @@ once it reaches its first tagged release.
   been seen once, and the worktree dialog says what is left out and how big
   it is.
 
+- **Work folders can be pinned, archived, measured and deleted in bulk.**
+  "Manage work folders" at the top of the left list (and in a folder's menu)
+  opens a list of the desk's folders to search by folder, project or
+  machine, show in use, archived or all, and act on a selection. Pin keeps a
+  project and its pinned folders ahead of the others on the board, marked
+  with a pin, across restarts. Archive closes a folder's tabs and takes it
+  off the usual list while its files and tab settings stay; Restore brings
+  it back and starts its tabs again, and a tab cannot be added to an
+  archived folder (`open_tab` says so instead of restoring it). "Measure
+  capacity" estimates each shown folder's size in the background without
+  following links, at most half a minute per folder (a cut-short count shows
+  as "≥"), and "Largest first" sorts by it. Archiving or deleting always
+  asks first, and deletions go one at a time with each result left on its
+  row. A folder is not archived or deleted while a tab in it -- on any desk
+  -- is working, waiting for an answer or working in the background, or while
+  one of its files is open for editing; it is not deleted while it is
+  pinned, is the project's primary checkout, or is used, it or a folder
+  inside it, by another desk. Deleting a folder from its own menu, the git
+  panel or the settings now checks the same things.
+
 ### Changed
 - **A new tab is named with two words** (`calm-otter`), so the name of a
   closed tab is rarely given out again.
+
+- **GitHub tokens each have a name of their own, and the page says how to
+  make one.** Settings › Git accounts is now Settings › GitHub / Git. Its
+  first card lists personal access tokens, one row per token: several tokens
+  for one GitHub account can be added side by side, each under any display
+  name that is not already taken. A row says whether its token is
+  fine-grained, classic, OAuth or a GitHub App token. Renaming a token keeps
+  its stored value and every project and tab that chose it, because the app
+  gives each token a fixed id of its own when it is added. SSH keys and
+  GitHub CLI are folded under "SSH keys / GitHub CLI". The token dialog folds
+  a guide under "Create a PAT and choose permissions": a link to make one on
+  GitHub, and which permissions fetching, pushing, pull requests, issues, CI
+  runs and workflow files each need, for fine-grained and classic tokens and
+  for a GitHub CLI sign-in. "Remove" says that the token is not revoked on
+  GitHub. A project's "Git account" is now "Git authentication", and its
+  menu groups the choices into tokens, SSH keys, this PC's git and GitHub
+  CLI.
+- **Deleting a working folder shows what would be lost, and can take
+  uncommitted work once you have seen it.** A worktree with uncommitted
+  changes used to be refused outright. "Delete working folder" -- from the
+  folder's menu, the git panel, the settings, Manage work folders or the
+  phone -- now lists each changed and untracked file, with "View changes"
+  and "View staged changes" opening its diff, says whether the branch and
+  its committed history are kept, and deletes on "Discard changes and
+  delete". If anything in the folder changes while the question is open,
+  nothing is deleted and you are asked to look again. "Skip this
+  confirmation for folders without changes" now applies only to clean
+  folders, and the message after deleting names the branch that was kept. A
+  MicroVM folder with commits that were never pushed is still refused.
+- **The git panel knows when a branch's work is already in its base.** When
+  the folder's current commit is contained in the base branch -- squash
+  merges included, with or without a pull request -- the panel says
+  "Changes are in main", offers "Delete working folder" as the next step,
+  and stops asking for a commit or a push while nothing is uncommitted.
+  Commits made after that point bring the usual steps back, and pushing them
+  reads "Push N to working branch".
+- **Destructive questions start with Cancel selected.** On the board, a
+  question that deletes or discards something now puts the focus on Cancel,
+  and Enter presses whichever button has the focus rather than always the
+  main one.
+- **The STOP button asks before it stops.** Pressing it says that all
+  automation will stop and the AIs will be interrupted, and stops only on
+  "Stop"; Cancel is where Enter lands.
+- **Automation names of desks and tabs use one rule.** "Name used by
+  automation" now takes ASCII letters, digits, `_` and `-`; a new or changed
+  name outside that is marked in the field and not saved. A name saved
+  before that breaks the rule still saves unchanged, and renaming it moves
+  its secrets, SSH passwords included, to the new name -- unless another
+  desk's or tab's secrets would overlap, which stops the save and says so.
+- **A server reached over SSH for the first time is checked before anything
+  is sent to it.** The first connection used to take whatever key answered
+  as the right one. It now stops before any password or key goes out and
+  asks you to compare the server's fingerprint with the one its owner gives
+  you, the same question a changed key already asked; the key is trusted only
+  once you say so, and only if it could be written down.
+- **Automation asks for more before it reaches files and other sites.** An
+  HTTP request allowed for one address no longer follows a redirect to
+  another one, so a credential header or a body cannot leave with it: it
+  stops and says to set the final address in the HTTP permission. A script
+  opening a file on this PC in a browser tab needs read permission for that
+  folder, the same as reading the file. Files such as `.env.local` are
+  protected like `.env`.
+- **A file on this PC opened in a browser tab shares only web files beside
+  it.** Pages, styles, scripts, pictures, fonts and media are served; hidden
+  files and folders, settings and secrets files, keys, source maps and other
+  data files are not, even through a link. Opening such a file says so. A
+  site that needs data files should be viewed through its own development
+  server.
+- **The network badge under a phone's QR code opens the phone guide.** Pressing
+  "Tailscale", "LAN" or another badge opens the step-by-step page that starts
+  with putting Tailscale on the PC and the phone, on the board and in the
+  settings alike. In the settings, the "Step by step:" link now shows under
+  the switch before phone access is turned on.
+- **The picture tools speak through the app's usual message bar.** Their
+  messages can be tapped away and copied. When a picture cannot be loaded,
+  the warning stays on screen long enough to read, and the tool no longer
+  closes itself a moment later.
 
 ### Fixed
 - **Quick commands run in the tab they open again.** The queued command now
   keeps the identity assigned when the tab is saved, fixing new tabs that
   opened but never received their command. Buttons that open an AI tab to
-  review or repair work use the same fix.
+  review or repair work use the same fix. Work waiting for a browser tab that
+  is still opening reaches it too, and follows it when it is renamed, but not
+  a new page given its name.
 - **Messages keep their recipient when desks change.** An API call from a
   tab uses that tab's desk and permissions, even while another desk is in
   front. Messages from an older phone view and hand-offs waiting to be sent
@@ -90,7 +191,9 @@ once it reaches its first tagged release.
   pointed at its new name, wherever it is in the settings. A save cut short
   by the app ending in the middle of it is put back at the next start, and a
   save may hold as many desk files as could be saved one by one before; one
-  too large says which, and nothing is saved.
+  too large says which, and nothing is saved. The open settings page takes
+  the new names at once, so saving it a second time no longer writes the old
+  names back.
 - **A resident process that could not be reached is no longer taken for
   none.** Its door busy or refusing used to read as no resident process: the
   settings counted its terminals as none, and a second one could be started.
@@ -206,6 +309,102 @@ once it reaches its first tagged release.
   looked at the list.
 - **A program whose tab was closed is told what to do** when it calls the app,
   in the app's language.
+- **STOP and `close_tab` reach every desk.** Only the desk in front had its
+  working AIs interrupted and its waiting automation thrown away; AIs busy
+  or asking a question on other desks went on. Now every desk's working AIs
+  are interrupted, and every desk's waiting automation is cleared, along
+  with quick commands and words still waiting to be sent. A tab at rest is
+  left alone. While automation is off, jobs handed between AI tabs no longer
+  go on handing out work. `close_tab` closes a tab on a desk that is not
+  displayed (a page tab's page included). Called from the API or MCP, it
+  answers only once the tab is closed, so a `tab_list` straight after no
+  longer shows it, and a tab that is working or waiting for an answer is
+  left open with an error instead of an unseen question.
+- **Each Codex tab runs a Codex of its own.** Codex shared one background
+  process between its tabs, which kept the first tab's settings, so the
+  other tabs reported to the app as that tab, and their commands did too.
+  When the installed Codex offers `--no-daemon`, each tab is started with
+  it, unless its command connects with `--remote`. On a server or a MicroVM
+  the Codex installed there is checked, and an older Codex starts as before.
+  A conversation another tab reported this way is not resumed in the wrong
+  folder at the next start. The Chat panel and its search leave out a
+  conversation recorded in another folder, which stays readable in all
+  conversations. A tab moved to another folder keeps its own earlier
+  conversations. Codex's project instructions (`AGENTS.md`) are no longer
+  shown as something you said, or used as the request a conversation is
+  named by.
+- **The PC and the phone can read conversations at the same time.** The
+  answers to the Chat panel and to the conversation search went to every
+  open page, and a search from one page cancelled a search from another.
+  Each page now gets the answers it asked for, and only a newer search from
+  the same page replaces its own. Notes edited one after another are saved
+  in that order, so an older note no longer comes back. Words you sent are
+  credited to you or to the job that sent them by the conversation they are
+  in, not by the same words said in another conversation. An answer that
+  turned into work is no longer shown twice.
+- **The Chat panel no longer drops or cuts what was said.** A request
+  starting with a tag (`<my-widget>…`) was left out, and tags written with
+  a hyphen or an underscore were cut from your words; only the wrappers the
+  AI tools themselves add are removed now. A record written with spaces
+  around its colons is read. A line still being written is not shown half
+  done. A line bigger than one page no longer leaves "earlier" stuck where
+  it is; a line over 64 MiB says it is too large.
+- **An AI's line in AIConfer keeps its quotes and what it meant.** Quote
+  marks at either end of a line were taken off even when they belonged to
+  the sentence (「認証」と「認可」 lost its first and last mark). Quotes
+  that wrap the whole line are still taken off. An AI is now asked to keep
+  its answer's meaning, tone, scope and doubts in its one line, and to reuse
+  an answer that is already short.
+- **The settings page on its own can answer a server's key question.**
+  Opened in a browser or from Settings.cmd, without the board, a connection
+  to a server whose key was new or had changed had nobody to ask, and
+  failed. The page now shows the question with the key's fingerprint
+  (Cancel is where Enter lands), and the answer is remembered as it is from
+  the board.
+- **A settings save that cannot be finished says so.** When the record that
+  marks a save as complete could not be written, the save was reported done
+  and only noted in a log; now every file and secret is put back and the
+  page says to close other programs using the settings files and save
+  again. A save cut short that cannot be put back stops the next save, and
+  the next start, with that message instead of letting the half-written
+  settings be read.
+- **A board with a password asks for it once.** A browser on a slow line could
+  show the password box twice, and the second answer could cancel the first.
+  A password sent again from a device that is already signed in, or from
+  another tab, is accepted without counting as a wrong guess. A failed
+  connection says "Could not sign in" instead of "Wrong password", a device
+  the PC disconnected is told so instead of being asked again, and after too
+  many wrong tries the box waits before it comes back.
+- **A phone that opens the board gets a terminal fitted to it.** A key pressed
+  at the PC before the phone connected kept the terminal at the PC's width
+  until someone typed on the phone. Opening the board from afar now takes
+  the width at once, and typing at the PC takes it back. A phone that reads
+  the board without a live connection is no longer shown an empty or old
+  terminal after a resize.
+- **Copying and pasting work from a board reached over a plain address.** The
+  "Copy" button on a missed call in the settings did nothing from a phone or
+  another PC. A right press on the sign-in terminal, where the browser will
+  not let the page read the clipboard, now puts the cursor in the code field
+  and says to paste there and press Enter.
+- **Phone access cannot be driven from another website.** Changes and live
+  connections to the board are accepted only from the board's own address,
+  port included, whatever cookies the browser holds. A connection that
+  never finishes its request can no longer hold up other devices, and an
+  oversized request is refused before it is read.
+- **A folder whose path holds `&`, `%` or `^` can be shared with a new
+  worktree.** Folders were shared through a command line that read such
+  characters as commands, so they failed or were reported as unable to be
+  shared. They are now linked directly.
+- **A terminal gone back to after a restart is the one it was.** When the
+  process keeping terminals in the background (on this PC or on a server)
+  had itself been restarted, it could give out the same terminal numbers
+  again: a late answer or a stop meant for its earlier run could reach a
+  different tab's program and end it. Each message now names the run it
+  belongs to. A terminal that never confirms it is back is tried again
+  instead of leaving the tab waiting.
+- **The settings page warns about a site address the save would refuse.** A
+  secret's "sites" line with a port above 65535, or with spacing other than
+  a plain space, passed the page's check and then failed on save.
 
 ## [0.23.1] - 2026-10-02
 
@@ -4419,7 +4618,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...v0.23.0
 [0.22.1]: https://github.com/styleio/ShikishaTerm/compare/v0.22.0...v0.22.1

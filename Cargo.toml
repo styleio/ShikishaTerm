@@ -38,7 +38,7 @@ tokio = { version = "1.53.1", default-features = false }
 
 [package]
 name = "shikisha-term"
-version = "0.23.1"
+version = "0.24.0"
 edition = "2024"
 description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows."
 authors = ["styleio"]
