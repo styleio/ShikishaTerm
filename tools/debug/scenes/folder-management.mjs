@@ -24,7 +24,8 @@ const run = `
       [groups[0].key]:{bytes:893427712, measured},
       [groups[1].key]:{bytes:251658240, measured},
       [groups[2].key]:{bytes:16384, measured, partial:true, error:T["err.folders.measure_timeout"]},
-    }, results:{[groups[0].key]:{error:T["err.folders.pinned"]}}}};
+    }, results:{[groups[0].key]:{error:T["err.folders.pinned"]},
+      [groups[1].key]:{error:T["err.folders.shared"]}}}};
   document.getElementById("splash").hidden = true;
   drawTabs();
   check(!document.getElementById("tabs").textContent.includes("Earlier layout"), "Archived folder leaked into the board");

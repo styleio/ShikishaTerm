@@ -5393,45 +5393,6 @@ pub fn append_folder_at(
     })
 }
 
-/// Renames a folder in the list. An empty name hands it back to what the
-/// folder itself says -- its branch, or its own last part
-/// Renames a tab in the settings, found by the title it has now: its name, or
-/// what its command calls it when it has none. An empty name hands it back to
-/// its command. Answers the title it goes by afterwards, or None when no tab
-/// of this desk has that title
-pub fn rename_tab(desk_name: &str, title: &str, name: &str) -> Result<Option<String>> {
-    rename_tab_at(&config_file_path(), desk_name, title, name)
-}
-
-pub fn rename_tab_at(path: &Path, desk_name: &str, title: &str, name: &str) -> Result<Option<String>> {
-    let mut after = None;
-    with_folders(path, desk_name, |folders| {
-        for tab in folders.iter_mut().filter_map(|g| g.get_mut("tabs")).filter_map(|t| t.as_array_mut()).flatten() {
-            let Ok(cfg) = serde_json::from_value::<TabConfig>(tab.clone()) else { continue };
-            let argv = cfg.command.argv();
-            let now = cfg.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| crate::view::title_of(&argv));
-            if now != title {
-                continue;
-            }
-            match name.trim() {
-                "" => {
-                    if let Some(o) = tab.as_object_mut() {
-                        o.shift_remove("name");
-                    }
-                    after = Some(crate::view::title_of(&argv));
-                }
-                n => {
-                    tab["name"] = serde_json::json!(n);
-                    after = Some(n.to_string());
-                }
-            }
-            break;
-        }
-        Ok(())
-    })?;
-    Ok(after)
-}
-
 /// Change one saved organization flag for the whole selection atomically.
 pub fn arrange_folders(desk: &str, paths: &[std::path::PathBuf], action: &str) -> Result<()> {
     arrange_folders_at(&config_file_path(), desk, paths, action)
@@ -5936,6 +5897,9 @@ fn tab_spot(folders: &[serde_json::Value], written: usize, mark: &TabMark) -> Re
     }
     let mut spots: Vec<(usize, Vec<usize>)> = Vec::new();
     for (fi, g) in folders.iter().enumerate() {
+        // Desk::tabs contains only unarchived folders. Keep that ordering,
+        // and never fall back to a hidden namesake when a target has gone.
+        if g.get("parked").and_then(|v| v.as_bool()) == Some(true) { continue; }
         let mut paths = Vec::new();
         if let Some(list) = g.get("tabs").and_then(|t| t.as_array()) {
             walk(list, &mut Vec::new(), &mut paths);
@@ -5976,8 +5940,7 @@ fn tab_list_mut<'a>(
     Some((list, *last))
 }
 
-/// A person naming a tab that has no session to be found by its title -- a
-/// page, a git or file panel, an editor -- found by where it is written, the
+/// A person naming any tab, found by where it is written and who it is, the
 /// way one is moved to a folder. The name automation calls it, settled when
 /// the settings were read, is written down beside the name when the line had
 /// none: the board knows the row by it, and a row whose name it came from
@@ -6357,40 +6320,31 @@ pub(crate) fn ensure_folders(holder: &mut serde_json::Value) {
     }
 }
 
-/// The tabs of the working folder at this path, making one if there is none.
-/// One answer to "where does a tab go", used by everything that adds one.
+/// The saved folder a new tab would enter. Resolve it once, so validation
+/// and insertion cannot choose different folders with the same path.
 /// A folder on the machine `host` names is preferred: two machines can each
 /// have a folder at the same path, and a tab for one of them belongs in that one
-fn folder_tabs_on<'a>(
-    holder: &'a mut serde_json::Value,
+fn folder_at_on(
+    holder: &serde_json::Value,
     cwd: Option<&Path>,
     host: Option<&str>,
-) -> &'a mut Vec<serde_json::Value> {
-    ensure_folders(holder);
-    let folders = holder["folders"].as_array_mut().expect("made just above");
+) -> Option<usize> {
+    let folders = holder.get("folders")?.as_array()?;
     let same = |g: &serde_json::Value| {
         let here = g.get("cwd").and_then(|c| c.as_str()).map(resolve_folder_cwd);
-        here.as_deref() == cwd
+        match (here.as_deref(), cwd) {
+            (Some(here), Some(want)) => crate::uistate::same_folder(here, want),
+            (None, None) => true,
+            _ => false,
+        }
     };
     // On the machine named; with none named, this PC's folder of that path
     // before one of the same path elsewhere
     let on = |g: &serde_json::Value| g.get("host").and_then(|h| h.as_str()).map(str::trim) == host;
-    let at = folders
+    folders
         .iter()
         .position(|g| same(g) && on(g))
-        .or_else(|| folders.iter().position(same));
-    let at = match at {
-        Some(i) => i,
-        None => {
-            let mut g = serde_json::json!({ "tabs": [] });
-            if let Some(c) = cwd {
-                g["cwd"] = serde_json::json!(c.display().to_string());
-            }
-            folders.push(g);
-            folders.len() - 1
-        }
-    };
-    folders[at]["tabs"].as_array_mut().expect("tabs is an array")
+        .or_else(|| host.is_none().then(|| folders.iter().position(same)).flatten())
 }
 
 /// Copies of tabs need names automation can still tell apart. The one it uses
@@ -6977,7 +6931,7 @@ pub fn append_tab(desk: &str, tab: serde_json::Value, cwd: Option<&Path>) -> boo
 }
 
 /// The same, into the folder at `cwd` on the machine `host` names (see
-/// `folder_tabs_on`)
+/// `folder_at_on`)
 pub fn append_tab_on(desk: &str, tab: serde_json::Value, cwd: Option<&Path>, host: Option<&str>) -> bool {
     append_tab_at_on(&config_file_path(), desk, tab, cwd, host)
 }
@@ -7021,7 +6975,7 @@ pub enum NewFolder {
 }
 
 /// Add a tab to one desk, into the folder at `cwd` on the machine `host`
-/// names (see `folder_tabs_on`), and answer the automation name it went in
+/// names (see `folder_at_on`), and answer the automation name it went in
 /// under.
 ///
 /// Every road that adds a tab to the settings comes through here, so this is
@@ -7064,31 +7018,15 @@ pub fn add_tab_with_uid_at(
         .and_then(|w| w.as_array_mut())
         .and_then(|list| list.iter_mut().find(|w| desk_is(w, desk)))
         .ok_or_else(|| tp("err.tab_add.no_desk", &[("desk", desk)]))?;
-    // The folder as the desk already spells it -- on the machine asked for,
-    // when one was -- so the line lands in that folder's list and not in a
-    // second one spelled another way. No machine asked for is this PC's
-    // folder first, and a folder of that path anywhere after
-    let spelled = cwd.and_then(|want| {
-        let on = |g: &serde_json::Value, strict: bool| {
-            let there = g.get("host").and_then(|h| h.as_str()).map(str::trim);
-            match host {
-                Some(_) => there == host,
-                None => !strict || there.is_none(),
-            }
-        };
-        let fs = holder.get("folders").and_then(|f| f.as_array())?;
-        let find = |strict: bool| {
-            fs.iter()
-                .filter(|g| on(g, strict))
-                .filter_map(|g| g.get("cwd").and_then(|c| c.as_str()))
-                .map(resolve_folder_cwd)
-                .find(|c| crate::uistate::same_folder(c, want))
-        };
-        find(true).or_else(|| find(false))
-    });
-    if new_folder == NewFolder::Refused && spelled.is_none() {
+    ensure_folders(holder);
+    let destination = folder_at_on(holder, cwd, host);
+    if new_folder == NewFolder::Refused && (cwd.is_none() || destination.is_none()) {
         let at = cwd.map(|c| c.display().to_string()).unwrap_or_default();
         return Err(tp("err.tab_add.no_folder", &[("folder", &at)]));
+    }
+    if destination.is_some_and(|i| holder["folders"][i]["parked"].as_bool() == Some(true)) {
+        let at = cwd.map(|c| c.display().to_string()).unwrap_or_default();
+        return Err(tp("err.tab_add.archived", &[("folder", &at)]));
     }
     let mut used = tab_ids_in(holder);
     let written = tab
@@ -7113,8 +7051,15 @@ pub fn add_tab_with_uid_at(
         .map(str::to_string)
         .ok_or_else(|| t("err.tab_add.no_command"))?;
     let uid = tab.get("uid").and_then(|u| u.as_str()).unwrap_or_default().to_string();
-    let at = spelled.or_else(|| cwd.map(Path::to_path_buf));
-    folder_tabs_on(holder, at.as_deref(), host).push(tab);
+    let folders = holder["folders"].as_array_mut().expect("ensured above");
+    let at = destination.unwrap_or_else(|| {
+        let mut folder = serde_json::json!({"tabs": []});
+        if let Some(cwd) = cwd { folder["cwd"] = serde_json::json!(cwd.display().to_string()); }
+        if let Some(host) = host { folder["host"] = serde_json::json!(host); }
+        folders.push(folder);
+        folders.len() - 1
+    });
+    folders[at]["tabs"].as_array_mut().expect("tabs is an array").push(tab);
     let out = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
     crate::crypto::write_atomic(path, &out).map_err(|e| e.to_string())?;
     Ok((id, uid))
@@ -9146,6 +9091,21 @@ mod tests {
     /// another way is that folder, and the line lands in its list rather than
     /// in a second one
     #[test]
+    fn adding_to_an_archived_folder_is_refused_without_writing() {
+        let (dir, file, proj) = one_desk();
+        let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        doc["desks"][0]["folders"][0]["parked"] = true.into();
+        std::fs::write(&file, doc.to_string()).unwrap();
+        let before = std::fs::read(&file).unwrap();
+        for policy in [NewFolder::Refused, NewFolder::Allowed] {
+            let result = add_tab_at(&file, "Demo", serde_json::json!({"command":"codex"}), Some(Path::new(&proj)), None, policy);
+            assert!(result.is_err(), "an archived tab was reported as opened: {result:?}");
+            assert_eq!(std::fs::read(&file).unwrap(), before);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn automation_adds_only_to_a_folder_the_desk_has() {
         let (dir, file, proj) = one_desk();
         let elsewhere = crate::local_path("D:/somewhere/else");
@@ -10863,21 +10823,40 @@ mod browser_kind_tests {
         assert_eq!(at(&[]), None);
     }
 
-    /// A tab is found by the title it goes by, named or not, and an empty name
-    /// hands it back to its command
     #[test]
-    fn a_tab_is_renamed_by_the_title_it_goes_by() {
+    fn a_rename_keeps_archived_namesakes_and_follows_the_live_identity() {
+        use super::{new_tab_uid, rename_tab_written_at, TabMark};
         let dir = std::env::temp_dir().join(format!("shikisha-tabname-{}", crate::random_hex(6)));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
-        std::fs::write(&path, r#"{"desks":[{"name":"W","folders":[{"cwd":"D:/a","tabs":[
-            {"name":"lead","command":"claude"},{"command":"codex --x"}]}]}]}"#).unwrap();
-        assert_eq!(crate::config::rename_tab_at(&path, "W", "CODEX", "second").unwrap().as_deref(), Some("second"));
-        assert_eq!(crate::config::rename_tab_at(&path, "W", "lead", "").unwrap().as_deref(), Some("CLAUDE"), "an empty name keeps a name");
-        assert_eq!(crate::config::rename_tab_at(&path, "W", "nobody", "x").unwrap(), None);
-        let cfg: crate::config::Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let tabs = &cfg.desks[0].folders[0].tabs;
-        assert_eq!((tabs[0].name.as_deref(), tabs[1].name.as_deref()), (None, Some("second")));
+        let (hidden, live, child) = (new_tab_uid(), new_tab_uid(), new_tab_uid());
+        let doc = serde_json::json!({"desks":[{"name":"W","folders":[
+            {"cwd":dir.join("archive"),"parked":true,"tabs":[{"name":"Same","uid":hidden,"command":"cmd"}]},
+            {"cwd":dir.join("live"),"tabs":[{"name":"Same","uid":live,"command":"cmd",
+                "children":[{"name":"Same","uid":child,"command":"cmd"}]}]}]}]});
+        std::fs::write(&path, doc.to_string()).unwrap();
+        let read = || {
+            let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            cfg.resolve_desks().0.remove(0)
+        };
+        let desk = read();
+        let mark = TabMark::of(&desk, &desk.tabs[0]);
+        rename_tab_written_at(&path, &desk.uid, 0, &mark, "Renamed").unwrap();
+        let desk = read();
+        let mark_child = TabMark::of(&desk, &desk.tabs[1]);
+        rename_tab_written_at(&path, &desk.uid, 1, &mark_child, "").unwrap();
+        let mut after: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(after["desks"][0]["folders"][0], doc["desks"][0]["folders"][0], "the archived namesake changed");
+        let tab = &after["desks"][0]["folders"][1]["tabs"][0];
+        assert_eq!(tab["uid"], live);
+        assert_eq!(tab["name"], "Renamed");
+        assert_eq!(tab["children"][0]["uid"], child);
+        assert!(tab["children"][0].get("name").is_none());
+        after["desks"][0]["folders"][1]["parked"] = true.into();
+        std::fs::write(&path, after.to_string()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(rename_tab_written_at(&path, &desk.uid, 0, &mark, "Stale edit").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before, "a stale request renamed a newly archived tab");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

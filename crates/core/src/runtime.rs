@@ -9838,42 +9838,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A folder renamed in the list, or taken out of it. Both are changes
         // to the settings, so the reload that follows is what actually shows
-        // A tab renamed where it stands. The settings match a running tab to
-        // its entry by title, so the running tab takes the new title first:
-        // the reload that follows the write then finds it under that title,
-        // rather than ending it and starting another under the new one
+        // Every kind of tab is renamed by its saved identity. A hidden tab
+        // may have the same title, and must never receive this tab's edit.
         for (index, name) in shell.mail().take_tab_names() {
             let wanted = name.trim();
-            let Some(i) = session_at(&surfaces, index) else {
-                // No session: a page, a git or file panel, an editor. Found by
-                // where it is written, the way a tab moved to a folder is
-                let Some(desk) = desks.get(desk_index) else { continue };
-                let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
-                let rows = surfaces_written(Some(desk), &titles, &caps.hosted_names(), &editors, issues_open);
-                let written = index.checked_sub(1).and_then(|i| rows.get(i)).and_then(|(_, w)| *w);
-                let Some((written, ft)) = written.and_then(|w| desk.tabs.get(w).map(|ft| (w, ft))) else {
-                    flash = Some(i18n::t("err.tab.not_in_settings"));
-                    continue;
-                };
-                let mark = config::TabMark::of(desk, ft);
-                if let Err(e) = config::rename_tab_written(&desk.uid, written, &mark, wanted) {
-                    flash = Some(format!("{e:#}"));
-                }
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let titles: Vec<&str> = tabs.iter().map(|t| t.title.as_str()).collect();
+            let rows = surfaces_written(Some(desk), &titles, &caps.hosted_names(), &editors, issues_open);
+            let Some((surface, Some(written))) = index.checked_sub(1).and_then(|i| rows.get(i)) else {
+                flash = Some(i18n::t("err.tab.not_in_settings"));
                 continue;
             };
-            let Some(old) = tabs.get(i).map(|t| t.title.clone()) else { continue };
-            if !wanted.is_empty() && wanted != old && tabs.iter().any(|t| t.title == wanted) {
-                flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
-                continue;
-            }
-            let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
-            match config::rename_tab(&desk, &old, wanted) {
-                Ok(Some(title)) => {
-                    if let Some(t) = tabs.get_mut(i) {
-                        t.title = title;
-                    }
+            let Some(ft) = desk.tabs.get(*written) else { continue };
+            if let Surface::Session(i) = surface {
+                if !wanted.is_empty() && tabs.get(*i).is_some_and(|t| t.title != wanted)
+                    && tabs.iter().enumerate().any(|(at, t)| at != *i && t.title == wanted) {
+                    flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
+                    continue;
                 }
-                Ok(None) => {}
+            }
+            let mark = config::TabMark::of(desk, ft);
+            match config::rename_tab_written(&desk.uid, *written, &mark, wanted) {
+                Ok(()) => {
+                    if let Surface::Session(i) = surface && let Some(t) = tabs.get_mut(*i) {
+                        t.title = if wanted.is_empty() { crate::view::title_of(&mark.argv) } else { wanted.to_string() };
+                    }
+                    watcher.poke();
+                }
                 Err(e) => flash = Some(format!("{e:#}")),
             }
         }
@@ -9925,7 +9916,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if action == "archive" {
                     let removing = folder_manager.pending.contains_key(&key)
                         || leavings.iter().any(|l| crate::uistate::same_folder(&l.removal.place(), std::path::Path::new(&key)));
-                    let why = crate::foldercare::blocking_work(f, &tabs, &editors)
+                    let why = crate::foldercare::blocking_work(f, tabs.iter().chain(desk_tabs.iter().flatten()), &editors)
                         .or_else(|| removing.then(|| i18n::t("err.folders.removing").to_string()));
                     if let Some(why) = why { folder_manager.note(&desk, &key, false, why); continue; }
                 }
@@ -10013,14 +10004,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // Which folder, by its place key (its machine and its path), and
             // the path itself, which is what is asked about and deleted there
             let key = std::path::PathBuf::from(&folder);
-            let at = crate::uistate::place_of(&key).1;
-            if let Some(desk) = folder_manager.pending.get(&folder) {
-                let d = desks.get(desk_index).filter(|d| &d.uid == desk);
-                let f = d.and_then(|d| d.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, &key))));
+            let (on, at) = crate::uistate::place_of(&key);
+            {
+                // Every deletion door checks before taking settings or files.
+                // A worktree found by git may not yet have a saved folder row.
+                let d = desks.get(desk_index).filter(|d| folder_manager.pending.get(&folder).is_none_or(|desk| &d.uid == desk));
+                let unsaved = config::Folder { cwd: Some(at.clone()), ..Default::default() };
+                let f = d.and_then(|d| d.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, &key))))
+                    .or_else(|| (on.is_none() && !folder_manager.pending.contains_key(&folder)).then_some(&unsaved));
                 let why = match (d, f) {
                     (Some(d), Some(f)) => {
                         crate::foldercare::deletion_guard(f, d, &desks).map(|key| i18n::t(key).to_string())
-                            .or_else(|| crate::foldercare::blocking_work(f, &tabs, &editors))
+                            .or_else(|| crate::foldercare::blocking_work(f, tabs.iter().chain(desk_tabs.iter().flatten()), &editors))
                             .or_else(|| leavings.iter().any(|l| crate::uistate::same_folder(&l.removal.place(), &key))
                                 .then(|| i18n::t("err.folders.removing").to_string()))
                     }
@@ -10028,7 +10023,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 };
                 if let Some(why) = why {
                     far_discard_checked.remove(&folder);
-                    folder_manager.finish(&folder, why);
+                    folder_manager.finish(&folder, why.clone());
+                    flash = Some(why);
                     continue;
                 }
             }

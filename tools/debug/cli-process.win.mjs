@@ -43,6 +43,7 @@ const checks = [];
 let port, cookie = '';
 const clients = [];
 const desksCheck = process.argv.includes('--desks');
+const archivedFolder = path.join(fixture, 'archived folder');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (test, what, ms = 20000) => {
   const end = Date.now() + ms;
@@ -147,7 +148,9 @@ const cfg = {language: 'en', keep_terminals: process.argv.includes('--keeper'),
 if (desksCheck) {
   const page = path.join(fixture, 'page.html');
   fs.writeFileSync(page, '<!doctype html><title>Disposable page</title><p>Close this test tab.</p>');
-  cfg.desks[0].automation_permissions = {close_tab:{ai:true}};
+  cfg.desks[0].automation_permissions = {close_tab:{ai:true},open_tab:{ai:true}};
+  fs.mkdirSync(archivedFolder);
+  cfg.desks[0].folders.push({cwd:archivedFolder,parked:true,tabs:[]});
   cfg.desks.push({id:'away',name:'Other desk',automation_permissions:{close_tab:{ai:true}},
     folders:[{cwd:folders[0].cwd,tabs:[...['away-caller','away-worker'].map(id=>({id,name:'Same name',
       uid:crypto.randomUUID(),profile:'Codex CLI',command:folders[0].tabs[0].command})),
@@ -214,6 +217,10 @@ try {
   }, 'each tab keeps its own conversation');
   check(true, 'conversation IDs are saved against their own tabs');
   if (desksCheck) {
+    const before = fs.readFileSync(liveConfig, 'utf8');
+    const archived = await call('alpha', 'open_tab', [{command:'cmd.exe',folder:archivedFolder}]);
+    check(!archived.ok && archived.error.includes('archived'), 'open_tab refuses an archived destination with a reason');
+    check(fs.readFileSync(liveConfig, 'utf8') === before, 'refusing an archived destination does not change settings');
     const desk = async index => {
       assert.equal((await intent({kind:'opendesk'})).data.ok, true);
       await until(async () => (await state()).ui?.desk_open, 'desk picker');

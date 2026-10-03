@@ -161,28 +161,13 @@ impl Drop for Manager {
 
 /// Closing saved tabs must not discard a live turn or an editor's unsaved text.
 /// Include child directories: a shell may have changed directory since launch.
-pub fn blocking_work(
+pub fn blocking_work<'a>(
     folder: &crate::config::Folder,
-    tabs: &[crate::tab::Tab],
+    tabs: impl IntoIterator<Item = &'a crate::tab::Tab>,
     editors: &[crate::view::EditorOpen],
 ) -> Option<String> {
-    let root = folder.cwd.as_deref()?;
-    let on = folder.host.as_ref().map(|h| h.name.as_str());
-    let inside = |path: &Path| {
-        if on.is_none() {
-            crate::worktree::inside_checkout(root, path)
-        } else {
-            let (path, root) = (path.to_string_lossy(), root.to_string_lossy());
-            let root = root.trim_end_matches('/');
-            path == root
-                || path
-                    .strip_prefix(root)
-                    .is_some_and(|rest| rest.starts_with('/'))
-        }
-    };
-    if let Some(tab) = tabs.iter().find(|t| {
-        t.host() == on
-            && t.cwd().is_some_and(inside)
+    if let Some(tab) = tabs.into_iter().find(|t| {
+        t.cwd().is_some_and(|path| contains(folder, path, t.host()))
             && matches!(
                 t.state,
                 crate::detect::TabState::Busy | crate::detect::TabState::Question | crate::detect::TabState::Background
@@ -195,11 +180,25 @@ pub fn blocking_work(
     }
     if editors
         .iter()
-        .any(|e| !e.read_only && e.on.as_deref() == on && e.dir.as_deref().is_some_and(inside))
+        .any(|e| !e.read_only && e.dir.as_deref().is_some_and(|path| contains(folder, path, e.on.as_deref())))
     {
         return Some(crate::i18n::t("err.folders.editor").to_string());
     }
     None
+}
+
+/// The same machine, at this folder or below it. Remote paths must not be
+/// canonicalized or case-folded using this PC's filesystem rules.
+fn contains(folder: &crate::config::Folder, path: &Path, on: Option<&str>) -> bool {
+    let Some(root) = folder.cwd.as_deref() else { return false };
+    if folder.host.as_ref().map(|h| h.name.as_str()) != on { return false; }
+    if on.is_none() {
+        crate::worktree::inside_checkout(root, path)
+    } else {
+        let (path, root) = (path.to_string_lossy(), root.to_string_lossy());
+        let root = root.trim_end_matches('/');
+        path == root || path.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
+    }
 }
 
 pub fn deletion_guard(
@@ -210,7 +209,7 @@ pub fn deletion_guard(
     if folder.keep_first {
         return Some("err.folders.pinned");
     }
-    let (Some(at), Some(key)) = (folder.cwd.as_deref(), folder.place()) else {
+    let Some(at) = folder.cwd.as_deref() else {
         return Some("err.folders.changed");
     };
     let primary = match &folder.host {
@@ -233,8 +232,7 @@ pub fn deletion_guard(
     if desks.iter().any(|other| {
         other.uid != desk.uid
             && other.folders.iter().any(|f| {
-                f.place()
-                    .is_some_and(|p| crate::uistate::same_folder(&p, &key))
+                f.cwd.as_deref().is_some_and(|p| contains(folder, p, f.host.as_ref().map(|h| h.name.as_str())))
             })
     }) {
         return Some("err.folders.shared");
@@ -396,6 +394,53 @@ mod tests {
         assert!(manager.pending.is_empty());
         assert!(!manager.view("first").results["b"].error.is_empty());
         assert!(manager.view("second").results.is_empty());
+    }
+
+    #[test]
+    fn a_child_folder_on_another_desk_blocks_parent_deletion() {
+        let root = std::env::temp_dir().join(format!("shikisha-guard-{}", crate::random_hex(6)));
+        let folder = crate::config::Folder { cwd: Some(root.clone()), ..Default::default() };
+        let here = crate::config::Desk { uid: "here".into(), ..Default::default() };
+        let mut other = crate::config::Desk { uid: "away".into(), folders: vec![crate::config::Folder {
+            cwd: Some(root.join("src")), ..Default::default()
+        }], ..Default::default() };
+        assert_eq!(deletion_guard(&folder, &here, std::slice::from_ref(&other)), Some("err.folders.shared"));
+        other.folders[0].cwd = Some(root.with_file_name("neighbour"));
+        assert_eq!(deletion_guard(&folder, &here, &[other]), None);
+    }
+
+    #[test]
+    fn folder_protection_distinguishes_machines_and_path_components() {
+        let folder = crate::config::Folder {
+            cwd: Some("/work/project".into()),
+            host: Some(crate::config::HostSpec { name: "server-a".into(), ..Default::default() }),
+            ..Default::default()
+        };
+        assert!(contains(&folder, Path::new("/work/project/src"), Some("server-a")));
+        assert!(!contains(&folder, Path::new("/work/project-other"), Some("server-a")));
+        assert!(!contains(&folder, Path::new("/work/Project/src"), Some("server-a")));
+        assert!(!contains(&folder, Path::new("/work/project/src"), Some("server-b")));
+        assert!(!contains(&folder, Path::new("/work/project/src"), None));
+    }
+
+    #[test]
+    fn working_tabs_from_any_desk_protect_their_parent_folder() {
+        use crate::{detect::TabState, tab::{Tab, TabOptions}};
+        let root = std::env::temp_dir().join(format!("shikisha-busy-folder-{}", crate::random_hex(6)));
+        let child = root.join("src");
+        std::fs::create_dir_all(&child).unwrap();
+        let folder = crate::config::Folder { cwd: Some(root.clone()), ..Default::default() };
+        let mut tab = Tab::spawn("Background worker".into(), &[crate::test_shell()], None, 10, 40,
+            TabOptions { cwd: Some(child), ..Default::default() }).unwrap();
+        let foreground: Vec<Tab> = Vec::new();
+        for state in [TabState::Busy, TabState::Question, TabState::Background] {
+            tab.state = state;
+            assert!(blocking_work(&folder, foreground.iter().chain(std::iter::once(&tab)), &[]).is_some());
+        }
+        tab.state = TabState::Wait;
+        assert!(blocking_work(&folder, foreground.iter().chain(std::iter::once(&tab)), &[]).is_none());
+        tab.kill();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
