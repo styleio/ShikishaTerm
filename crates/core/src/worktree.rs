@@ -1956,10 +1956,16 @@ pub fn discard_waiting(folder: &Path) -> Result<()> {
 }
 
 pub fn discard_waiting_reviewed(folder: &Path, approved: Option<&str>) -> Result<()> {
+    discard_waiting_from(folder, approved, &std::sync::atomic::AtomicBool::new(false))
+}
+
+fn discard_waiting_from(folder: &Path, approved: Option<&str>, progress: &std::sync::atomic::AtomicBool) -> Result<()> {
+    use std::sync::atomic::Ordering;
     let until = std::time::Instant::now() + REMOVAL_WAIT;
-    let mut released = false;
+    let mut released = progress.load(Ordering::Acquire);
     loop {
         let tried = discard_step(folder, &mut released, approved);
+        progress.store(released, Ordering::Release);
         // Gone is the only thing that counts as done: git can let go of a
         // folder while Windows still holds the empty shell of it open
         if !folder.exists() {
@@ -2017,6 +2023,9 @@ pub struct Removal {
     pub folder: PathBuf,
     pub kept_branch: Option<String>,
     approved: Option<String>,
+    /// Git may have removed its pointer before Windows releases a file.
+    /// A user retry must retain permission to finish this same removal.
+    released: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The machine the folder is on, when it is not this PC: a MicroVM, which
     /// the folder is -- what a second try deletes, and what putting it back
     /// lets the program speak to again -- or a server, where git removes it
@@ -2032,10 +2041,15 @@ impl Removal {
     }
 
     pub fn start_reviewed(folder: PathBuf, approved: Option<String>) -> Removal {
-        let removal = Removal { kept_branch: crate::repo::branch_of(&folder), folder: folder.clone(), approved: approved.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
+        let branch = crate::repo::branch_of(&folder);
+        Self::start_local(folder, approved, branch, Default::default())
+    }
+
+    fn start_local(folder: PathBuf, approved: Option<String>, kept_branch: Option<String>, released: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Removal {
+        let removal = Removal { kept_branch, folder: folder.clone(), approved: approved.clone(), released: released.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
         let (outcome, deleting) = (removal.outcome.clone(), removal.deleting.clone());
         std::thread::spawn(move || {
-            let said = count_while(&folder, &deleting, || discard_waiting_reviewed(&folder, approved.as_deref())).map_err(|e| format!("{e:#}"));
+            let said = count_while(&folder, &deleting, || discard_waiting_from(&folder, approved.as_deref(), &released)).map_err(|e| format!("{e:#}"));
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
             }
@@ -2052,7 +2066,7 @@ impl Removal {
         if let Some(id) = host.instance.as_deref() {
             crate::e2b::let_go(id);
         }
-        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: None, on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
+        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: None, released: Default::default(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = match (host.instance.as_deref(), crate::e2b::key()) {
@@ -2076,7 +2090,7 @@ impl Removal {
     }
 
     pub fn start_on_server_reviewed(folder: PathBuf, host: crate::config::HostSpec, approved: Option<String>) -> Removal {
-        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: approved.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
+        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: approved.clone(), released: Default::default(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = discard_on_server(&host, &folder.to_string_lossy(), approved.as_deref()).map_err(|e| format!("{e:#}"));
@@ -2095,7 +2109,7 @@ impl Removal {
         match &self.on {
             Some(host) if host.is_made() => Removal::start_on_microvm(self.folder.clone(), host.clone()),
             Some(host) => Removal::start_on_server_reviewed(self.folder.clone(), host.clone(), self.approved.clone()),
-            None => Removal::start_reviewed(self.folder.clone(), self.approved.clone()),
+            None => Removal::start_local(self.folder.clone(), self.approved.clone(), self.kept_branch.clone(), self.released.clone()),
         }
     }
 
@@ -4045,7 +4059,7 @@ origin/master
             instance: Some(id.into()),
             ..Default::default()
         };
-        let on_vm = Removal { kept_branch: None, folder: PathBuf::from("/home/user/site"), approved: None, on: Some(vm("m1")), outcome: Default::default(), deleting: Default::default() };
+        let on_vm = Removal { kept_branch: None, folder: PathBuf::from("/home/user/site"), approved: None, released: Default::default(), on: Some(vm("m1")), outcome: Default::default(), deleting: Default::default() };
         let cloud = |id: &str| crate::elsewhere::Elsewhere::Cloud(vm(id));
         assert!(on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m1"))));
         assert!(on_vm.takes(Path::new("/home/user/other"), Some(&cloud("m1"))), "the rest of the machine stays open");
@@ -4053,7 +4067,7 @@ origin/master
         assert!(!on_vm.takes(Path::new("/home/user/site"), None), "an editor on this PC is closed");
 
         let here = PathBuf::from(crate::local_path("D:/work/site"));
-        let local = Removal { kept_branch: None, folder: here.clone(), approved: None, on: None, outcome: Default::default(), deleting: Default::default() };
+        let local = Removal { kept_branch: None, folder: here.clone(), approved: None, released: Default::default(), on: None, outcome: Default::default(), deleting: Default::default() };
         assert!(local.takes(&here, None));
         assert!(local.takes(&here.join("src"), None));
         assert!(!local.takes(Path::new(&crate::local_path("D:/work/site-2")), None), "a neighbour whose name starts the same goes too");
@@ -4065,7 +4079,7 @@ origin/master
         let srv = server("ssh://ubuntu@203.0.113.5:22");
         let there = crate::elsewhere::Elsewhere::of(&srv).unwrap();
         let other = crate::elsewhere::Elsewhere::of(&server("ssh://ubuntu@203.0.113.6:22")).unwrap();
-        let on_server = Removal { kept_branch: None, approved: None, folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default(), deleting: Default::default() };
+        let on_server = Removal { kept_branch: None, approved: None, released: Default::default(), folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default(), deleting: Default::default() };
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x"), Some(&there)));
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x/src"), Some(&there)));
         assert!(!on_server.takes(Path::new("/home/ubuntu/site-x2"), Some(&there)), "a neighbour whose name starts the same goes too");
@@ -5848,6 +5862,38 @@ tools/conpty.ps1"));
         drop(held);
         discard_step(&cut.folder, &mut released, None).unwrap();
         assert!(!cut.folder.exists(), "the rest was not finished once the file was let go");
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retrying_a_partial_removal_finishes_the_same_worktree() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (main, cut) = cut_for_removal("retry-held");
+        let target = cut.folder.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let path = target.join("held.bin");
+        std::fs::write(&path, "still in use").unwrap();
+        let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&path).unwrap();
+        let wait = |removal: &Removal| {
+            let until = std::time::Instant::now() + REMOVAL_WAIT * 2;
+            loop {
+                if let Some(result) = removal.outcome() { break result; }
+                assert!(std::time::Instant::now() < until, "removal did not answer");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let removal = Removal::start(cut.folder.clone());
+        assert!(wait(&removal).unwrap_err().contains("held.bin"));
+        assert!(!crate::repo::is_linked(&cut.folder), "git should have released the folder");
+        assert!(discard(&cut.folder).is_err(), "a new request must not adopt an unrelated folder");
+        drop(held);
+        let retry = removal.again();
+        wait(&retry).unwrap();
+        assert_eq!(retry.kept_branch.as_deref(), Some(cut.branch.as_str()));
+        assert!(!cut.folder.exists());
+        assert!(!git_lists(&main, &cut.folder));
+        assert!(main.join("readme.md").exists());
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }
 

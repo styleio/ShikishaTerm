@@ -277,6 +277,21 @@ struct Term {
     session: Option<u32>,
 }
 
+impl Term {
+    /// Closing a kept terminal ends its whole job immediately. Its screen and
+    /// exit can stay around for the owner without keeping its children alive.
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        #[cfg(windows)]
+        if let Some(job) = &self._job {
+            job.terminate();
+        }
+        if let Ok(mut killer) = self.killer.lock() {
+            let _ = killer.kill();
+        }
+    }
+}
+
 /// The file the terminals held are written down in, in the bridge's folder:
 /// which generation, which id, which tab, and the session its program runs
 /// in. Read by the next resident process, so that one asked about a
@@ -866,10 +881,7 @@ impl Job for Terms {
             },
             "stop" => match self.owned(line, m) {
                 Ok(term) => {
-                    term.stopped.store(true, Ordering::SeqCst);
-                    if let Ok(mut k) = term.killer.lock() {
-                        let _ = k.kill();
-                    }
+                    term.stop();
                     None
                 }
                 Err(no) => Some(no),
@@ -898,10 +910,7 @@ impl Job for Terms {
                 Some(match term {
                     Some(term) => {
                         crate::fardaemon::log(&format!("terminal {id}: stopped by the person"));
-                        term.stopped.store(true, Ordering::SeqCst);
-                        if let Ok(mut k) = term.killer.lock() {
-                            let _ = k.kill();
-                        }
+                        term.stop();
                         json!({ "did": "ending", "ref": m["ref"], "term": id })
                     }
                     None => {
@@ -1011,10 +1020,7 @@ impl Job for Terms {
                 && seen.left.zip(seen.away.ends_after()).is_some_and(|(left, after)| left.elapsed() >= after);
             if due {
                 crate::fardaemon::log(&format!("terminal {id}: left alone past what it was to be kept for ({:?}); ending it", seen.away));
-                term.stopped.store(true, Ordering::SeqCst);
-                if let Ok(mut k) = term.killer.lock() {
-                    let _ = k.kill();
-                }
+                term.stop();
             }
             drop(seen);
         }
@@ -1037,10 +1043,7 @@ impl Job for Terms {
     fn end(&self) {
         let terms: Vec<Arc<Term>> = self.terms.lock().map(|t| t.values().cloned().collect()).unwrap_or_default();
         for term in terms {
-            term.stopped.store(true, Ordering::SeqCst);
-            if let Ok(mut k) = term.killer.lock() {
-                let _ = k.kill();
-            }
+            term.stop();
         }
     }
 }

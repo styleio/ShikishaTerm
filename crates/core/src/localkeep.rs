@@ -481,12 +481,14 @@ mod tests {
 
         // Which processes a held terminal's job has is told to its owner:
         // what the app counts as the tab's work in the background
-        let long = ["cmd.exe", "/d", "/q", "/c", "ping -n 30 127.0.0.1 >nul"];
+        // Start the nested command after the terminal has been put in its
+        // job. This tests stopping a held job, not launcher startup timing.
+        let long = ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "Start-Sleep -Milliseconds 500; ping -n 30 127.0.0.1 | Out-Null"];
         say(&conn, json!({ "do": "open", "ref": 5, "tab": "p", "cwd": "", "rows": 24, "cols": 80, "away": "always", "reuse": true, "argv": long }));
         let id = hear(&mut reader, "opened")["term"].clone();
         let procs = loop {
             let p = hear(&mut reader, "procs");
-            if p["term"] == id && p["pids"].as_array().is_some_and(|a| !a.is_empty()) {
+            if p["term"] == id && p["pids"].as_array().is_some_and(|a| a.len() >= 2) {
                 break p;
             }
         };
@@ -518,6 +520,13 @@ mod tests {
         let fresh = hear(&mut reader, "opened");
         assert_ne!(fresh["term"], one["term"], "a stopped one is not handed back");
         say(&conn, json!({ "do": "end_all", "ref": 9 }));
+        // The terminal is still retained for its exit to be acknowledged.
+        // Its launcher AND children must already release their resources.
+        let until = Instant::now() + Duration::from_secs(5);
+        while procs["pids"].as_array().unwrap().iter().any(|p| crate::guest::image_of(p.as_u64().unwrap() as u32).is_some()) {
+            assert!(Instant::now() < until, "a closed terminal left a child running: {procs}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let _ = conn.shutdown(std::net::Shutdown::Both);
     }
 }

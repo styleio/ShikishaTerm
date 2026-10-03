@@ -4533,6 +4533,9 @@ impl Tab {
     }
 
     pub fn kill(&mut self) {
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
         let _ = self.killer.kill();
     }
 

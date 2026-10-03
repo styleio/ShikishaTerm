@@ -426,15 +426,16 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
     // The ones somebody put out of sight for this run. Taken off the list here,
     // before anything is numbered against it, so a tab cannot end up pointing
     // at a heading that is no longer drawn -- and taken off in one place, so
-    // the window and the phone put away the same folders
-    let put_away: Vec<std::path::PathBuf> = match ui.folders_hidden.is_empty() {
-        true => Vec::new(),
-        false => groups
-            .iter()
-            .map(|(k, _)| k.clone())
-            .filter(|k| ui.folders_hidden.iter().any(|h| crate::uistate::same_folder(h, k)))
-            .collect(),
-    };
+    // the window and the phone put away the same folders. A removal has its
+    // own row until the settings reload closes the tabs: do not draw their
+    // ordinary folder as well while git is taking it apart.
+    let put_away: Vec<std::path::PathBuf> = groups
+        .iter()
+        .map(|(k, _)| k.clone())
+        .filter(|k| ui.folders_hidden.iter().any(|h| crate::uistate::same_folder(h, k))
+            || ui.making.iter().any(|m| matches!(m.stage.as_str(), "removing" | "unremoved")
+                && crate::uistate::same_folder(m.place(), k)))
+        .collect();
     // A row is put away with the folder it stands in: that path on that
     // machine (see [`surface_place`])
     let hidden_here = |place: Option<&std::path::Path>| {
@@ -492,7 +493,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         .iter()
         .map(|(k, _)| k.clone())
         .chain(put_away.iter().cloned())
-        .chain(ui.making.iter().map(|m| std::path::PathBuf::from(&m.folder)))
+        .chain(ui.making.iter().map(|m| m.place().to_path_buf()))
         .collect();
     let discovered = discovered_of(&cuts, &listed, &ui.worktrees_kept, &ui.worktree_bases);
     // A folder on another machine joins its project's household there, as
@@ -606,7 +607,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         coach: ui.coach,
         discard_unasked: ui.discard_unasked,
         link_press: ui.link_press.clone(),
-        hidden: put_away.len(),
+        hidden: put_away.iter().filter(|k| ui.folders_hidden.iter().any(|h| crate::uistate::same_folder(h, k))).count(),
         setup: ui.setup.clone(),
         add_project: ui.add_project.clone(),
         discovered,
@@ -1048,6 +1049,34 @@ mod page_folder_tests {
 #[cfg(test)]
 mod drawn_away_tests {
     use super::{Surface, Ui, ui_state_of};
+
+    #[test]
+    fn a_folder_being_deleted_has_only_its_removal_row() {
+        let path = std::path::PathBuf::from(crate::local_path("D:/work/leaving"));
+        let far = std::path::PathBuf::from(crate::uistate::place_key(Some("server"), &path));
+        let mut ui = Ui {
+            folders: vec![(path.clone(), "here".into()), (far.clone(), "there".into())],
+            surfaces: vec![Surface::Git { key: "git".into(), name: "git".into(), dir: Some(path.clone()), at: None,
+                on: None, protect: Vec::new(), git: Default::default() }],
+            making: vec![crate::uistate::MakingState { folder: path.display().to_string(), stage: "removing".into(), ..Default::default() }],
+            ..Default::default()
+        };
+        for stage in ["removing", "unremoved"] {
+            ui.making[0].stage = stage.into();
+            let state = ui_state_of(&[], &ui, None);
+            assert_eq!(state.groups.len(), 1);
+            assert_eq!(state.groups[0].name, "there", "a different machine's folder was hidden");
+            assert!(state.tabs.is_empty(), "a panel in the removed folder stayed on the board");
+            assert_eq!(state.making.len(), 1);
+            assert_eq!(state.hidden, 0, "deletion was advertised as a folder the user can unhide");
+        }
+        ui.making[0].key = far.display().to_string();
+        let state = ui_state_of(&[], &ui, None);
+        assert_eq!(state.groups[0].name, "here");
+        assert_eq!(state.tabs.len(), 1);
+        ui.making.clear();
+        assert_eq!(ui_state_of(&[], &ui, None).groups.len(), 2, "restoring the folder must show it again");
+    }
 
     /// Where a page is drawn reaches the screen with the page, and only with
     /// that page.

@@ -43,6 +43,15 @@ impl Job {
         Some(Job { group: std::sync::Mutex::new(None) })
     }
 
+    /// Stop members even while their terminal is kept to report its exit.
+    pub fn terminate(&self) {
+        if let Some(g) = self.group.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            // SAFETY: a group id and signal. Take it once so a later Drop
+            // cannot signal a group that has reused the old process id.
+            unsafe { libc::killpg(g, libc::SIGKILL) };
+        }
+    }
+
     /// How many processes the group holds right now.
     ///
     /// `None` where the answer cannot be had, which on unix is always: there
@@ -83,29 +92,33 @@ impl Job {
 
 #[cfg(unix)]
 impl Drop for Job {
-    /// Ending the group is what ends the processes. As on Windows there is no
-    /// separate "kill" step to forget.
+    /// Also end the group when its owner disappears without an explicit stop.
     fn drop(&mut self) {
-        if let Some(g) = *self.group.lock().unwrap_or_else(|e| e.into_inner()) {
-            // SAFETY: a group id and a signal number. An already-gone group
-            // answers ESRCH, which is nothing to do
-            unsafe { libc::killpg(g, libc::SIGKILL) };
-        }
+        self.terminate();
     }
 }
 
 /// Whether a process is somebody's own machinery rather than work: this
-/// program itself, or one of the CLI's helpers named by file (`helpers`,
-/// compared without regard to case).
+/// program itself, a console host, or one of the CLI's helpers named by file
+/// (`helpers`, compared without regard to case).
 pub fn is_machinery(pid: u32, helpers: &[String]) -> bool {
     if is_this_program(pid) {
         return true;
     }
-    if helpers.is_empty() {
-        return false;
-    }
     let Some(image) = crate::guest::image_of(pid) else { return false };
-    let file = image.rsplit(['\\', '/']).next().unwrap_or(&image);
+    machinery_image(&image, helpers)
+}
+
+fn machinery_image(image: &str, helpers: &[String]) -> bool {
+    let file = image.rsplit(['\\', '/']).next().unwrap_or(image);
+    // A console host carries a console; it is not the command using it.
+    // In particular, a CLI helper may start conhost only on its first use.
+    // Counting that host after excluding the helper permanently raised the
+    // resting population and made a finished turn look like background work.
+    #[cfg(windows)]
+    if ["conhost.exe", "OpenConsole.exe"].iter().any(|h| h.eq_ignore_ascii_case(file)) {
+        return true;
+    }
     helpers.iter().any(|h| h.eq_ignore_ascii_case(file))
 }
 
@@ -213,6 +226,15 @@ impl Job {
         (ok != 0).then_some(info.ActiveProcesses)
     }
 
+    /// End every member now. A kept terminal owns its job until its output
+    /// drains and its exit is acknowledged, which can be much later than a
+    /// person's close. Killing only its launcher leaves children holding the
+    /// output pipe and the working folder, preventing that drain and deletion.
+    pub fn terminate(&self) {
+        // SAFETY: this job owns the handle for the entire call.
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) };
+    }
+
     /// Which processes the job holds right now, by id.
     ///
     /// The count says a tab has something running; the ids say *what*. Asked
@@ -311,6 +333,18 @@ impl Drop for Job {
 mod tests {
     use super::*;
 
+    #[test]
+    fn console_hosts_are_not_background_work_but_their_commands_are() {
+        let helpers = vec!["codex-code-mode-host.exe".to_string()];
+        for image in [r"C:\Windows\System32\conhost.exe", r"C:\tools\OpenConsole.EXE", r"C:\cli\codex-code-mode-host.exe"] {
+            assert!(machinery_image(image, &helpers), "{image}");
+        }
+        assert!(machinery_image(r"C:\Windows\System32\conhost.exe", &[]));
+        for image in [r"C:\Windows\System32\cmd.exe", r"C:\tools\pwsh.exe", r"C:\tools\node.exe", r"C:\cli\codex.exe"] {
+            assert!(!machinery_image(image, &helpers), "{image}");
+        }
+    }
+
     /// The whole promise, end to end: a process started inside the job is gone
     /// once the job is dropped -- and so is the child it started, which is the
     /// case that walking a process tree gets wrong.
@@ -397,6 +431,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
+        // Retaining the job to read its last state must not retain the
+        // processes after an explicit close.
+        job.terminate();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while job.active() != Some(0) {
+            assert!(std::time::Instant::now() < deadline, "children survived explicit termination");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = parent.kill();
         let _ = parent.wait();
         drop(job);

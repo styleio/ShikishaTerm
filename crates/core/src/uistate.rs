@@ -1258,6 +1258,10 @@ pub struct MakingState {
     pub name: String,
     /// Where it is being made
     pub folder: String,
+    /// The folder's place key when its machine is known. Older states use
+    /// `folder`, which names a place on this PC.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
     /// Being made: `preparing`, `creating`, `setting_up` or `stopping`,
     /// and `failed` once it failed. Being deleted: `removing`, and
     /// `unremoved` once its folder would not go. `untrusted` is the made
@@ -1293,6 +1297,12 @@ pub struct MakingState {
     /// no files are being copied or deleted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<MakingFiles>,
+}
+
+impl MakingState {
+    pub fn place(&self) -> &std::path::Path {
+        std::path::Path::new(if self.key.is_empty() { &self.folder } else { &self.key })
+    }
 }
 
 /// Files copied or deleted so far, of how many, and since when

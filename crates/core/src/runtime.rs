@@ -247,6 +247,7 @@ impl Pending {
             // not change under the person at the moment the row becomes a card
             name: self.label.clone(),
             folder: plan.folder.display().to_string(),
+            key: crate::uistate::place_key(plan.host.as_ref().map(|h| h.name.as_str()), &plan.folder),
             stage: match (&self.error, &self.trust, self.made || self.written.is_some()) {
                 (Some(_), _, _) => "failed".into(),
                 // The folder is there and git will not go into it: not a
@@ -440,6 +441,7 @@ impl Leaving {
             family: self.family.clone(),
             name: self.name.clone(),
             folder: self.removal.folder.display().to_string(),
+            key: self.removal.place().display().to_string(),
             stage: match self.error {
                 Some(_) => "unremoved".into(),
                 None => "removing".into(),
@@ -10952,7 +10954,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .any(|f| f.place().is_some_and(|c| crate::uistate::same_folder(&c, &l.removal.place())))
                 })
             };
-            !l.gone && !l.restored.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
+            // A fast deletion can finish before the settings watcher closes
+            // its tabs. Keep its removal row until that reload has arrived,
+            // or the now non-repository folder reappears on its own.
+            (!l.gone || listed()) && !l.restored.is_some_and(|at| at.elapsed() > MAKING_CARD_WAIT || listed())
         });
         // A project from a URL, or made new. Cloning takes as long as the
         // network does, so it runs on its own and is looked at every turn; a

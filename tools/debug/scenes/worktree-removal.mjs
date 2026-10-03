@@ -81,7 +81,7 @@ export default {
     // A big folder going: how many of its files are gone, of how many, for
     // how long, and the bar under the words
     removing_files: `const s = JSON.parse(${JSON.stringify(state([{ ...leaving, stage: 'removing', files: { done: 4210, of: 12506, since: 0 } }]))});`
-      + ' s.making[0].files.since = Math.floor(Date.now() / 1000) - 42; window.__state(JSON.stringify(s)); "ok"',
+      + ' s.making[0].files.since = Math.floor(Date.now() / 1000) - 42; window.__state(JSON.stringify(s)); document.getElementById("app").classList.add("drawer"); "ok"',
     // The same row while a new worktree is being set up: what is being
     // copied in from the project, and how far it has got
     copying_files: `const s = JSON.parse(${JSON.stringify(state([{ ...leaving, stage: 'setting_up', files: { name: 'site/node_modules', done: 9377, of: 12506, since: 0 } }]))});`
