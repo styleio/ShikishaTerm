@@ -646,6 +646,10 @@ enum VmWork {
         /// What it is cloned from and where, kept to try again
         url: String,
         parent: String,
+        /// The project it is the checkout of on that server, when it was
+        /// asked for from the worktree dialog of a project already here.
+        /// None makes a project of its own, named for the folder
+        of: Option<String>,
     },
 }
 
@@ -690,6 +694,12 @@ impl VmJob {
                 VmWork::Prepare { .. } => self.host.name.clone(),
             },
             folder: self.at.clone(),
+            // A server's clone says which machine it is on: the worktree
+            // dialog waits on it for that machine
+            key: match &self.work {
+                VmWork::SshClone { .. } => crate::uistate::place_key(Some(&self.host.name), std::path::Path::new(&self.at)),
+                _ => String::new(),
+            },
             stage: match (&self.error, self.stopping, phase) {
                 (Some(_), _, _) => "failed".into(),
                 (None, true, _) => "stopping".into(),
@@ -6495,6 +6505,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default(),
+            project_checkouts: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.projects
+                        .iter()
+                        .map(|p| {
+                            let here = p.at.iter().map(std::path::PathBuf::from);
+                            let far = p.homes.iter().map(|h| {
+                                std::path::PathBuf::from(crate::uistate::place_key(Some(&h.host), std::path::Path::new(&h.at)))
+                            });
+                            (p.name.clone(), here.chain(far).collect())
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             folder_items: desks
                 .get(desk_index)
                 .map(|w| w.folders.iter().filter_map(|f| place(f).zip(f.work_item.clone())).collect())
@@ -10736,8 +10761,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     again: None,
                                 })
                             }
-                            VmWork::SshClone { spec, url, parent, .. } => crate::addproject::start_clone_on(spec.clone(), url, parent)
-                                .map(|job| VmWork::SshClone { job, spec: spec.clone(), url: url.clone(), parent: parent.clone() }),
+                            VmWork::SshClone { spec, url, parent, of, .. } => crate::addproject::start_clone_on(spec.clone(), url, parent)
+                                .map(|job| VmWork::SshClone { job, spec: spec.clone(), url: url.clone(), parent: parent.clone(), of: of.clone() }),
                         };
                         match again {
                             Ok(work) => {
@@ -11143,17 +11168,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     match started {
                         Ok((job, spec)) => {
                             let desk = desks.get(desk_index);
-                            let project = crate::addproject::repo_name_of(&text).unwrap_or_default();
+                            // The folder is named for the repository; the row
+                            // for the project it is a checkout of, when it is one
+                            let folder = crate::addproject::repo_name_of(&text).unwrap_or_default();
+                            let of = Some(a.project.trim().to_string()).filter(|p| !p.is_empty());
+                            let project = of.clone().unwrap_or_else(|| folder.clone());
                             making_seq += 1;
                             vm_jobs.push(VmJob {
                                 id: making_seq,
                                 desk: desk.map(|d| d.uid.clone()).unwrap_or_default(),
                                 desk_id: desk.map(|d| d.uid.clone()).unwrap_or_default(),
-                                at: crate::addproject::remote_join(&parent, &project),
+                                at: crate::addproject::remote_join(&parent, &folder),
                                 project_key: project.clone(),
                                 project,
                                 host: h.clone(),
-                                work: VmWork::SshClone { job, spec, url: text.clone(), parent: parent.clone() },
+                                work: VmWork::SshClone { job, spec, url: text.clone(), parent: parent.clone(), of },
                                 error: None,
                                 stopping: false,
                                 gone: false,
@@ -11378,7 +11407,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // A server's clone: the folder there written on the desk, and the
             // project on through its rules, as a MicroVM's goes. A stopped
             // one has taken back what it made and goes with its row
-            if let VmWork::SshClone { job, spec, url, parent } = &j.work {
+            if let VmWork::SshClone { job, spec, url, parent, of } = &j.work {
                 match job.outcome() {
                     crate::addproject::Outcome::Running(_) => {}
                     crate::addproject::Outcome::Failed(_) if j.stopping => j.gone = true,
@@ -11418,11 +11447,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     crate::addproject::Outcome::Done(at) => {
                         let at = at.to_string_lossy().to_string();
-                        match add_remote_to_desk(desks.iter().find(|d| d.uid == j.desk), &j.host.name, &at, None) {
+                        match add_remote_to_desk(desks.iter().find(|d| d.uid == j.desk), &j.host.name, &at, of.as_deref()) {
                             Ok(Added::New(said)) | Ok(Added::Already(said)) => {
                                 said_before_reload = Some((Instant::now(), said.clone()));
                                 flash = Some(said);
-                                crate::webui::ask_branch_next(&at, true);
+                                // A new project goes on through its worktree
+                                // rules; one that was here already has its
+                                // rules, and its worktree dialog is where the
+                                // clone was asked for
+                                if of.is_none() {
+                                    crate::webui::ask_branch_next(&at, true);
+                                }
                                 j.gone = true;
                             }
                             Err(e) => j.error = Some(e),
@@ -12120,6 +12155,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .as_deref()
                     .map(|p| p.display().to_string())
                     .or(far_checkout)
+                    .unwrap_or_default(),
+                // The checkout here says it; a project that lives only on
+                // other machines has it written down
+                origin: checkout
+                    .as_deref()
+                    .and_then(crate::repo::remote_url_of)
+                    .or_else(|| project.and_then(|p| p.origin.clone()))
+                    .map(|u| crate::folders::scrub(&u))
                     .unwrap_or_default(),
                 hosts: machines
                     .iter()

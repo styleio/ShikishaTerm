@@ -545,6 +545,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             g.empty = false;
         }
     }
+    // Once every household is known: which project each is a checkout of, so
+    // one project on several machines is drawn as one
+    crate::uistate::GroupState::join_wholes(&mut groups, &ui.project_checkouts, &ui.folder_projects);
     // Management includes saved folders temporarily hidden from the board.
     // Ad-hoc folders still belong only to their live tabs.
     let folder_catalog = groups.iter().filter(|(k, _)| ui.folders.iter().any(|(p, _)| crate::uistate::same_folder(k, p)))
@@ -1782,6 +1785,10 @@ pub struct Ui {
     /// Of those, the ones the settings say which project they are in: (the
     /// folder, the project's name)
     pub folder_projects: Vec<(std::path::PathBuf, String)>,
+    /// Each project of the desk with its own checkouts, by place key: the one
+    /// here and the one on each machine it is worked on
+    /// ([`crate::uistate::GroupState::join_wholes`])
+    pub project_checkouts: Vec<(String, Vec<std::path::PathBuf>)>,
     /// The places the projects' settings say their worktrees go on this PC,
     /// where they say one (`worktree::chosen_base`). A worktree in one of
     /// these is somebody's choice, even inside a place an AI tool keeps for

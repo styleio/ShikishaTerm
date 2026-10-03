@@ -1067,10 +1067,23 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.phead .caret { flex:none; cursor:pointer; color:var(--dim); font-size:9px; min-width:22px; min-height:22px;
     display:flex; align-items:center; justify-content:center; }
-  .tab.phead .caret:hover, .tab.phead .more:hover { color:var(--text); }
-  .tab.phead .more { flex:none; padding:0 4px; color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
+  .tab.phead .caret:hover, .tab.phead .more:hover, .tab.mhead .more:hover { color:var(--text); }
+  .tab.phead .more, .tab.mhead .more { flex:none; padding:0 4px; color:var(--dim); cursor:pointer; font-size:13px; line-height:1;
     min-width:22px; min-height:22px; display:flex; align-items:center; justify-content:center; }
   .tab.phead > .dot { flex:none; }
+  /* One machine's part of a project checked out on several: set in by a
+     branch's step and a size quieter than the project's heading, so it reads
+     as a part of that project and never as a project of its own */
+  .tab.mhead { padding:var(--s1) 10px 2px 14px; gap:var(--s2); flex-wrap:nowrap; cursor:default; min-width:0; color:var(--dim); }
+  .tab.mhead:hover { background:none; }
+  .tab.mhead > .ico { display:flex; flex:none; }
+  .tab.mhead .nm { font-size:12px; color:var(--dim); opacity:1; flex:0 1 auto; min-width:0;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.mhead .kd { font-size:11px; color:var(--faint); flex:none; white-space:nowrap; }
+  .tab.mhead > .dot { flex:none; }
+  .tab.mhead .caret { flex:none; margin-left:auto; cursor:pointer; color:var(--dim); font-size:9px; min-width:22px; min-height:22px;
+    display:flex; align-items:center; justify-content:center; }
+  .tab.mhead .caret:hover { color:var(--text); }
   .tab.folder.wcard { padding:6px 10px 6px 14px; flex-wrap:wrap; row-gap:2px; }
   .tab.folder.wcard .nm { font-size:13px; opacity:1; letter-spacing:0; flex:0 1 auto; }
   .tab.folder.wcard.front .nm { font-weight:600; }
@@ -4862,8 +4875,9 @@ function drawTabs() {
     else loose.push(t);
   }
   // The folders of one project: the repository's own checkout and the
-  // worktrees cut from it. A folder in no repository is a project of its own
-  const kinOf = g => g.family ? folders.filter(o => !o.parked && o.family === g.family) : [g];
+  // worktrees cut from it, on every machine the project is checked out on.
+  // A folder in no repository is a project of its own
+  const kinOf = g => g.family ? folders.filter(o => !o.parked && projKey(o, folders) === projKey(g, folders)) : [g];
   // The order the folders are read in, and the headings that break it up.
   //
   // By project unless another axis is chosen. Two groupings at once would put
@@ -4879,14 +4893,20 @@ function drawTabs() {
   const keyed = folders.map((g, gi) => ({ gi, g, ...groupOf(g, inside[gi], axis) })).filter(r => !r.g.parked);
   // Drawn by project, every folder of one repository under its heading: the
   // folders of a project brought together where the first of them stands,
-  // the checkout the others were cut from first among them. Stable otherwise
-  const projectKey = g => g.family || "dir:" + g.folder;
+  // the checkout the others were cut from first among them. A project on
+  // several machines keeps each machine's folders together, this PC first,
+  // then the MicroVMs, then the servers. Stable otherwise
+  const projectKey = g => projKey(g, folders);
   if (axis === "none") {
     const firsts = [];
     for (const r of keyed) if (!firsts.includes(projectKey(r.g))) firsts.push(projectKey(r.g));
     const pinned = new Set(keyed.filter(r => r.g.keep_first).map(r => projectKey(r.g)));
     firsts.sort((a, b) => Number(pinned.has(b)) - Number(pinned.has(a)));
+    const homes = [];
+    for (const r of keyed) if (!homes.includes(r.g.family)) homes.push(r.g.family);
     keyed.sort((a, b) => (firsts.indexOf(projectKey(a.g)) - firsts.indexOf(projectKey(b.g)))
+      || (machineRank(a.g.host) - machineRank(b.g.host))
+      || (homes.indexOf(a.g.family) - homes.indexOf(b.g.family))
       || (Number(!!b.g.keep_first) - Number(!!a.g.keep_first))
       || ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));
   }
@@ -4899,7 +4919,7 @@ function drawTabs() {
     seen.sort((a, b) => groupRank(a, axis) - groupRank(b, axis));
     keyed.sort((a, b) => seen.indexOf(a.key) - seen.indexOf(b.key) || Number(!!b.g.keep_first) - Number(!!a.g.keep_first));
   }
-  let groupKey = null, headKey = null;
+  let groupKey = null, headKey = null, homeKey = null, spread = false;
   for (const row of keyed) {
     const gi = row.gi, g = row.g;
     if (axis !== "none" && row.key !== groupKey) {
@@ -4912,17 +4932,33 @@ function drawTabs() {
       const pk = projectKey(g);
       if (pk !== headKey) {
         headKey = pk;
+        homeKey = null;
         const kin = kinOf(g);
-        nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));
+        // Said machine by machine once any of it is on another machine --
+        // even a project on that one alone, so it never reads as this PC's.
+        // A project only on this PC is drawn as it always was
+        spread = kin.some(o => o.host);
+        nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || []), pk));
         // Worktrees git knows this project has and the desk does not list, said
         // under the heading until somebody shows them or keeps them hidden
         const found = foundFor(g);
         if (found && !found.kept && !folded.has("proj:" + pk)) nav.append(foundRow(found));
         // Said even with the project put away: it is on its way, and its ✕
-        // is the only way to stop it
-        if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
+        // is the only way to stop it. On a project on several machines,
+        // each under its own machine, below
+        if (g.family && !spread) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
+      }
+      // A project on several machines: each machine's folders under a line
+      // saying which machine, with its own + for a worktree there
+      if (spread && g.family !== homeKey) {
+        homeKey = g.family;
+        const part = kinOf(g).filter(o => o.family === g.family);
+        if (!folded.has("proj:" + pk)) nav.append(machineHead(part.find(o => !o.linked) || g,
+          part.flatMap(o => inside[folders.indexOf(o)] || [])));
+        for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));
       }
       if (folded.has("proj:" + pk)) continue;
+      if (spread && folded.has("machine:" + (g.family || g.folder))) continue;
       // One box for the folder and everything in it, so where one folder ends
       // and the next begins is drawn rather than guessed from indents. The box
       // is the group; the rows inside it draw no boxes of their own. The folder
@@ -6266,6 +6302,7 @@ function openAddProject() {
   box.onclick = e => { if (e.target === box && box.dataset.down === "1") closeAddProject(); };
   apHost = "";
   apFor = "";
+  apForUrl = "";
   apReturn = null;
   apShow("start");
 }
@@ -6286,7 +6323,8 @@ function apShow(step) {
   apLive = null;
   box.textContent = "";
   const title = {start:"tui.addproj.title", clone:"tui.addproj.clone", create:"tui.addproj.create",
-    remote:"tui.addproj.ssh", host:"tui.addproj.host", microvm:"tui.addproj.microvm", sshclone:"tui.addproj.ssh"}[step];
+    remote:"tui.addproj.ssh", host:"tui.addproj.host", microvm:"tui.addproj.microvm", sshclone:"tui.addproj.ssh",
+    locate:"tui.addproj.locate"}[apFor && (step === "remote" || step === "sshclone") ? "locate" : step];
   const body = el("div", {class:"sbody"});
   box.append(el("div", {class:"sbox", role:"dialog", "aria-modal":"true"},
     el("div", {class:"shead"},
@@ -6299,23 +6337,42 @@ function apShow(step) {
   else if (step === "host") apHostAdd(body);
   else if (step === "microvm") apMicrovm(body);
   else if (step === "sshclone") apSshClone(body);
+  else if (step === "locate") apLocate(body);
   else apCreate(body);
+}
+
+// Where a project already here is on a server that has no checkout of it,
+// asked over the worktree dialog: a folder already there, or a clone of the
+// project made there. Either is written down as the project's checkout on
+// that server, and the worktree dialog goes on on it
+function apLocate(body) {
+  const say = k => (T[k] || "").replaceAll("{host}", apHost).replaceAll("{project}", apFor).replaceAll("{url}", apForUrl);
+  const there = apWay(body, "folder", "folderOpen", say("tui.addproj.locate.folder"), say("tui.addproj.locate.folder.say"),
+    () => apShow("remote"), true);
+  body.append(el("div", {class:"ssay"}, say("tui.addproj.locate.say")), there,
+    el("div", {class:"aplist"},
+      apWay(body, "clone", "globe", say("tui.addproj.locate.clone"),
+        say(apForUrl ? "tui.addproj.locate.clone.say" : "tui.addproj.locate.clone.say_none"), () => apShow("sshclone"))));
+  setTimeout(() => there.focus(), 0);
 }
 
 // The ways in. The one nearly everybody wants stands alone; the others share
 // a list below it
+// A way in, as a card (5 "the ways in"): pressing it chooses the way and
+// nothing more
+function apWay(body, id, icon, title, say, go, main) {
+  const b = el("button", {class:"apway" + (main ? " main" : ""), "data-ap":id, type:"button", onclick:go},
+    el("span", {class:"tile"}, pickIcon(icon)),
+    el("span", {class:"words"}, el("span", {class:"t"}, title), el("span", {class:"d"}, say)),
+    el("span", {class:"enter"}, "⏎"));
+  // The card the keyboard is on is the one Enter presses, and says so
+  b.addEventListener("focus", () => {
+    for (const w of body.querySelectorAll("[data-ap]")) w.classList.toggle("on", w === b);
+  });
+  return b;
+}
 function apStart(body) {
-  const way = (id, icon, title, say, go, main) => {
-    const b = el("button", {class:"apway" + (main ? " main" : ""), "data-ap":id, type:"button", onclick:go},
-      el("span", {class:"tile"}, pickIcon(icon)),
-      el("span", {class:"words"}, el("span", {class:"t"}, title), el("span", {class:"d"}, say)),
-      el("span", {class:"enter"}, "⏎"));
-    // The card the keyboard is on is the one Enter presses, and says so
-    b.addEventListener("focus", () => {
-      for (const w of body.querySelectorAll("[data-ap]")) w.classList.toggle("on", w === b);
-    });
-    return b;
-  };
+  const way = (...a) => apWay(body, ...a);
   // The ways in are this PC's; a server's are on its own page, where the
   // server is chosen once, above what to do there
   const browse = way("browse", "folderOpen", T["tui.addproj.browse"] || "", T["tui.addproj.browse.say"] || "",
@@ -6449,6 +6506,15 @@ function apClone(body) {
 // and choosing another draws the same tab again for it. Hands back the
 // picker, for a tab to point at when no server is chosen
 function apSshHead(body, step) {
+  // Asked where one project is on one server: that server, said, and the
+  // way back is to the two ways of saying it
+  if (apFor) {
+    const h = apHostOf(apHost);
+    const btn = el("div", {class:"bpick"}, pickIcon("server"), el("span", {class:"nm"}, apHost),
+      ...(h ? [el("span", {class:"at"}, apAt(h.at))] : []));
+    body.append(apBack("locate"), apField(T["tui.addproj.sshclone.host"] || "", btn));
+    return btn;
+  }
   const hosts = ((S && S.hosts) || []).filter(h => h.kind === "ssh");
   // A server chosen stays chosen -- one added a moment ago is not in the
   // settings the board has read yet, and is drawn by its name until it is
@@ -6481,7 +6547,7 @@ let apSshUrl = "";
 
 function apSshClone(body) {
   const hostBtn = apSshHead(body, "sshclone");
-  const url = apInput(apSshUrl, "https://github.com/user/repo.git", true);
+  const url = apInput(apFor ? apForUrl : apSshUrl, "https://github.com/user/repo.git", true);
   const parent = apInput(apRemoteParent(apHostOf(apHost)), "~", true);
   const into = el("div", {class:"shint mono"});
   const sayInto = () => {
@@ -6521,7 +6587,7 @@ function apSshClone(body) {
       : !parent.value.trim() ? {at:parent, why:T["tui.addproj.need_parent"] || ""} : null,
     () => {
       apAsk = Date.now();
-      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account()});
+      send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account(), project:apFor});
       apLive.running = true;
       drawAddProject();
     });
@@ -6731,11 +6797,15 @@ function drawAddProject() {
     go.why.textContent = mine.error;
     go.why.hidden = false;
   }
-  // The work went to a row on the board, which says the rest
+  // The work went to a row on the board, which says the rest. Asked from
+  // the worktree dialog, that dialog goes on on the server, and waits there
+  // for the clone
   if (mine && mine.started) {
+    const back = apReturn;
     apAsk = 0;
     apLive = null;
     closeAddProject();
+    if (back) backToBranch(back);
     return;
   }
   if (mine && mine.done) {
@@ -6749,12 +6819,23 @@ function drawAddProject() {
     closeAddProject();
     // Where a project is on a server, said from the worktree dialog: back to
     // it, on that server
-    if (back) { reopenBranchOn(back.folder, back.host); return; }
+    if (back) { backToBranch(back); return; }
     // A project goes on through its worktree rules to its first worktree --
     // one cloned onto a MicroVM or a server as well, cut on that machine. A
     // folder opened on a server is added, and that is the end of it
     if (!mine.host || mine.microvm || kind === "clone") rulesFirst(path);
   }
+}
+// The worktree dialog it was asked from, on the machine now said: as it was
+// left -- the name, the AI and the rest -- when it is still open under this
+// one, and opened again when somebody closed it meanwhile
+function backToBranch(back) {
+  const b = document.getElementById("branch");
+  if (!b || b.hidden || branchFrom !== back.folder) { reopenBranchOn(back.folder, back.host); return; }
+  branchHost = back.host;
+  document.getElementById("bdest").dataset.said = "";
+  drawBranch();
+  askBranch();
 }
 // The worktree dialog opened again on a folder, on a machine chosen for it
 function reopenBranchOn(folder, host) {
@@ -6775,6 +6856,8 @@ let apHost = "";
 // was opened to say where one project is on that machine; and the worktree
 // dialog it goes back to once that is said
 let apFor = "";
+// And where that project is fetched from, which a clone of it there starts from
+let apForUrl = "";
 let apReturn = null;
 // The MicroVM a clone onto one goes to
 let apVm = "";
@@ -7256,8 +7339,7 @@ function drawCoach() {
 // -- putting all of it away, and another worktree. A folder in no repository
 // is a project of its own, with a folder's mark and nothing to cut from.
 // Shut, it says the state of whichever tab inside is waiting on somebody first
-function projectHead(g, kin, tabs) {
-  const key = g.family || "dir:" + g.folder;
+function projectHead(g, kin, tabs, key) {
   const shut = folded.has("proj:" + key);
   const main = kin.find(o => !o.linked) || g;
   const git = !!g.family;
@@ -7306,6 +7388,52 @@ function projectHead(g, kin, tabs) {
       T["tui.project.settings"] || ""));
     openList(row, rows, false, e);
   });
+  return row;
+}
+
+// The heading a folder stands under: its repository's household, or its own
+// for a folder in no repository -- and one project of the settings checked
+// out on several machines, a household on each, under one heading for all
+// of them. A project on one machine keeps its household's key, so what was
+// put away stays put away
+function projKey(g, folders) {
+  if (g.whole && g.family && folders.some(o => o.whole === g.whole && o.family && o.family !== g.family)) return "whole:" + g.whole;
+  return g.family || "dir:" + g.folder;
+}
+// Where a machine's folders stand among a project's: this PC first, then the
+// MicroVMs, then the servers, each kind in the order the settings list them
+function machineRank(host) {
+  if (!host) return 0;
+  const hosts = (S && S.hosts) || [];
+  const i = hosts.findIndex(h => h.name === host);
+  const kind = i < 0 ? 2 : hosts[i].kind === "microvm" ? 1 : 2;
+  return kind * 10000 + (i < 0 ? 9999 : i);
+}
+// One machine's part of a project on another machine: a quiet line under the
+// project's heading saying which machine -- its mark, its name, what kind of
+// machine -- with that part's own ▾ and the + for another worktree there.
+// The project's colour and name stay on the heading above; this only says
+// where. Shut, it says the state of whichever tab inside is waiting first
+function machineHead(g, tabs) {
+  const key = "machine:" + (g.family || g.folder);
+  const shut = folded.has(key);
+  const h = g.host ? ((S && S.hosts) || []).find(x => x.name === g.host) : null;
+  const kind = !g.host ? "here" : h && h.kind === "microvm" ? "microvm" : "ssh";
+  const row = el("div", {class:"tab mhead", title:g.folder || ""},
+    pickIcon(kind === "here" ? "desktop" : kind === "microvm" ? "cloud" : "server"),
+    el("span", {class:"nm"}, g.host || T["tui.branch.dest.here"] || "This PC"));
+  if (kind !== "here") row.append(el("span", {class:"kd"},
+    kind === "microvm" ? T["tui.branch.dest.microvm"] || "MicroVM" : T["tui.addproj.ssh"] || "SSH"));
+  if (shut && tabs.length) {
+    const worst = worstOf(tabs);
+    row.append(el("span", {class:"dot " + worst, title:(tabs.find(t => t.state === worst) || {}).state_label || worst}));
+  }
+  row.append(el("span", {class:"caret", title:T["tui.folder.fold.title"] || "",
+    onclick:e => { e.stopPropagation(); fold(key); }}, shut ? "▸" : "▾"));
+  if (g.color) {
+    row.append(el("span", {class:"more", title:T["tui.folder.branch"] || "",
+      onclick:e => { e.stopPropagation(); openBranch(g); }}, "+"));
+  }
   return row;
 }
 
@@ -9880,7 +10008,13 @@ function drawBranch() {
   // The reason a press without a project was refused stays until a project is
   // chosen; the app's own errors are about the project that is
   const err = b.querySelector(".berr");
-  if (!err.dataset.need) err.textContent = mine && p.error ? p.error : "";
+  // Waiting for a clone onto the chosen server says so, rather than that the
+  // server has no checkout -- which is what is being fixed
+  const waitOn = here ? (branchHost === HERE ? "" : (branchHost || p.host || "")) : "";
+  const waits = cloningOn(waitOn, p);
+  if (!err.dataset.need) err.textContent = waits
+    ? (T["tui.branch.dest.cloning.say"] || "").replaceAll("{host}", waitOn).replaceAll("{project}", waits.name)
+    : mine && p.error ? p.error : "";
   // Open in another folder already: asked, with the two answers in place of
   // the button that would only have failed
   const taken = mine && !p.error ? p.in_use : null;
@@ -9971,9 +10105,10 @@ function drawDest(b, p) {
     for (const m of machines) {
       // A server the project has no checkout on is told where it is, from
       // the same listing a project is added from over there
-      const untold = m.kind === "ssh" && !m.at;
+      const untold = m.kind === "ssh" && !m.at && !cloningOn(m.name, p);
       const note = m.at ? m.at
-        : m.kind === "microvm" ? (T["tui.branch.dest.first_vm"] || "") : (T["tui.branch.dest.tell_ssh"] || "");
+        : m.kind === "microvm" ? (T["tui.branch.dest.first_vm"] || "")
+        : untold ? (T["tui.branch.dest.tell_ssh"] || "") : (T["tui.branch.dest.cloning"] || "");
       rows.push(el("div", {class:"aphost", onclick:() => untold ? tellCheckout(m.name, p) : pick(m.name)},
         el("span", {class:"ck"}, m.name === on ? "✓" : ""), el("span", {class:"nm"}, m.name),
         el("span", {class:"at"}, (m.kind === "microvm" ? (T["tui.branch.dest.microvm"] || "") + " · " : "") + note)));
@@ -9982,6 +10117,11 @@ function drawDest(b, p) {
       T["tui.addproj.microvm.add"] || ""));
     openList(box, rows);
   };
+  // A clone of the project onto the chosen server, under way: once it is
+  // done the server has a checkout, and the dialog asks again about it
+  const cloning = !!cloningOn(on, p);
+  if (box.dataset.cloning === "1" && !cloning) askBranch();
+  box.dataset.cloning = cloning ? "1" : "";
   // A MicroVM with no checkout yet makes one first: what it says it will
   // do, and the AI that checkout is given
   const say = b.querySelector(".bdestsay");
@@ -10016,6 +10156,15 @@ function drawDest(b, p) {
   drawSignIn(b.querySelector(".bsignin"), offer && offer.kind === "microvm" ? p.sign_in : null, !!(offer && offer.kind === "microvm"),
     () => { closeBranch(); openSettings("project-gitacct", true, branchFrom); });
   drawAiSignIn(b.querySelector(".baisignin"), offer && (offer.kind === "microvm" || offer.kind === "ssh") ? p.ai_sign_in : null);
+}
+
+// The clone of a project onto a server that its worktree dialog asked for,
+// while it runs: its row on the board, found by the machine it is on
+function cloningOn(host, p) {
+  const name = p && (p.project_name || p.project);
+  if (!host || !name) return null;
+  return ((S && S.making) || []).find(m => m.key && m.key === placeKeyOf(host, m.folder)
+    && m.name === name && m.stage !== "failed") || null;
 }
 
 // Whether the AI on the checkout's machine is signed in, since the worktree
@@ -10426,18 +10575,20 @@ function microvmArrived() {
   chosen(added.name);
 }
 
-// A server the project has no checkout on: where it is there is chosen from
-// the same listing a project is added from over there, as this project's,
-// and the dialog comes back on that machine
+// A server the project has no checkout on: asked over the worktree dialog,
+// which stays as it is, where the project is there -- a folder already there,
+// chosen from the listing a project is added from over there, or a clone of
+// it -- and the dialog goes on on that machine. Closed without an answer, the
+// dialog is where it was
 function tellCheckout(host, p) {
   closeFolderMenu();
   const back = {folder: branchFrom, host};
-  closeBranch();
   openAddProject();
   apHost = host;
   apFor = (p && (p.project_name || p.project)) || "";
+  apForUrl = (p && p.origin) || "";
   apReturn = back;
-  apShow("remote");
+  apShow("locate");
 }
 function drawBases(b, p) {
   const box = document.getElementById("bbase");
@@ -26141,7 +26292,7 @@ mod tests {
         // folder there as its two tabs, with the same head on both
         assert!(PAGE.contains(r#"const hostBtn = apSshHead(body, "sshclone");"#) && PAGE.contains(r#"const hostBtn = apSshHead(body, "remote");"#),
             "the two things to do on a server are not tabs under one server");
-        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account()});"#),
+        assert!(PAGE.contains(r#"send({kind:"addproject", how:"clone", text:url.value.trim(), parent:parent.value.trim(), ask:apAsk, host:apHost, account:account(), project:apFor});"#),
             "a project cannot be cloned onto a server");
         // As the GitHub account chosen for it, from the ones the server holds
         assert!(PAGE.contains(r#"send({kind:"addproject", how:"ssh_accounts", text:"", parent:"", ask:acctAsk, host:apHost});"#),
@@ -26156,7 +26307,7 @@ mod tests {
 
     #[test]
     fn a_worktree_being_made_is_a_row_under_its_project_until_it_is_a_card() {
-        assert!(PAGE.contains("if (g.family) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));"),
+        assert!(PAGE.contains("if (g.family && !spread) for (const m of making) if (sameFolder(m.family, g.family)) nav.append(makingRow(m));"),
             "a worktree being made is not said under its project");
         assert!(PAGE.contains("for (const m of making) if (!headed(m)) nav.append(makingRow(m));"),
             "one whose project has no heading is not said at all");
@@ -26187,9 +26338,16 @@ mod tests {
 
     #[test]
     fn the_list_is_drawn_by_project_with_every_folder_a_card_under_its_heading() {
-        assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || [])));"),
+        assert!(PAGE.contains("nav.append(projectHead(g, kin, kin.flatMap(o => inside[folders.indexOf(o)] || []), pk));"),
             "there is no heading over a project");
-        assert!(PAGE.contains(r#"const projectKey = g => g.family || "dir:" + g.folder;"#), "a folder in no repository has no heading of its own");
+        assert!(PAGE.contains(r#"return g.family || "dir:" + g.folder;"#), "a folder in no repository has no heading of its own");
+        // One project on several machines: one heading, each machine a part
+        // under it, this PC first
+        assert!(PAGE.contains(r#"return "whole:" + g.whole;"#), "a project on several machines is drawn as several projects");
+        assert!(PAGE.contains("|| (machineRank(a.g.host) - machineRank(b.g.host))"), "a project's machines are not kept together in order");
+        assert!(PAGE.contains(r#"if (!folded.has("proj:" + pk)) nav.append(machineHead("#), "a machine's part of a project is not said");
+        assert!(PAGE.contains("spread = kin.some(o => o.host);"), "a project only on another machine reads as this PC's");
+        assert!(PAGE.contains(r#"if (spread && folded.has("machine:" + (g.family || g.folder))) continue;"#), "a machine's part cannot be put away");
         assert!(PAGE.contains("|| ((a.g.linked ? 1 : 0) - (b.g.linked ? 1 : 0)) || (a.gi - b.gi));"),
             "a project's folders are not brought together, the checkout first");
         assert!(PAGE.contains(r#"if (folded.has("proj:" + pk)) continue;"#), "a project cannot be put away from its heading");

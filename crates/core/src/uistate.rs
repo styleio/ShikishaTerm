@@ -537,6 +537,13 @@ pub struct GroupState {
     /// git has
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    /// The project of the settings this household is a checkout of, by its
+    /// name, where the settings say so ([`GroupState::join_wholes`]). One
+    /// project checked out on this PC and on other machines is a household
+    /// on each machine and still one project: the list draws them under one
+    /// heading, a machine to each part, rather than as projects side by side
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole: Option<String>,
     /// The branch this folder is on. Worn by the checkout's heading when it
     /// has branches under it, so the row that is the project says which
     /// branch the project itself is standing on
@@ -636,6 +643,7 @@ impl GroupState {
                         .map(|f| Self::color_of(f, chosen)),
                     linked: t.place.linked,
                     family: t.place.family.as_ref().map(|f| f.display().to_string()),
+                    whole: None,
                     branch: t.place.branch.clone(),
                     // Filled in by whoever is drawing: whether a folder is
                     // here, and how far it has drifted, are questions for the
@@ -684,6 +692,7 @@ impl GroupState {
                     color: None,
                     linked: family.is_some(),
                     family,
+                    whole: None,
                     branch: None,
                     health: Default::default(),
                     drift: Default::default(),
@@ -749,6 +758,54 @@ impl GroupState {
             if let Some(n) = own.or(kin) {
                 g.project = Some(n);
             }
+        }
+    }
+
+    /// Say which project of the settings each household is a checkout of.
+    ///
+    /// `checkouts` is (a project's name, the place key of each of its own
+    /// checkouts: here, and on each machine it is worked on). A household is
+    /// the project's when its checkout is one of those -- read off the folder
+    /// at that place, or for one on another machine off the household the
+    /// settings give it there ([`far_family`]); and when a folder of it says
+    /// it is in that project (`named`). Nothing is read off the disk: this
+    /// runs on every frame
+    pub fn join_wholes(
+        groups: &mut [(std::path::PathBuf, GroupState)],
+        checkouts: &[(String, Vec<std::path::PathBuf>)],
+        named: &[(std::path::PathBuf, String)],
+    ) {
+        let mut of: Vec<(String, String)> = Vec::new();
+        let mut add = |family: String, name: &str| {
+            if !of.iter().any(|(f, _)| same_folder(std::path::Path::new(f), std::path::Path::new(&family))) {
+                of.push((family, name.to_string()));
+            }
+        };
+        let family_at = |at: &std::path::Path| groups.iter().find(|(k, _)| same_folder(k, at)).and_then(|(_, g)| g.family.clone());
+        for (name, places) in checkouts {
+            for at in places {
+                match (family_at(at), place_of(at)) {
+                    (Some(f), _) => add(f, name),
+                    (None, (Some(host), path)) => add(far_family(&host, &path.to_string_lossy()), name),
+                    (None, (None, path)) => add(path.join(".git").display().to_string(), name),
+                }
+            }
+        }
+        for (at, name) in named {
+            // Only a project the settings have: a name on a folder whose
+            // project was since removed says nothing about where it belongs
+            if checkouts.iter().any(|(n, _)| n == name)
+                && let Some(f) = family_at(at)
+            {
+                add(f, name);
+            }
+        }
+        for (_, g) in groups.iter_mut() {
+            g.whole = g.family.as_deref().and_then(|f| {
+                of.iter()
+                    .find(|(k, _)| same_folder(std::path::Path::new(k), std::path::Path::new(f)))
+                    .map(|(_, n)| n.clone())
+            });
         }
     }
 
@@ -847,6 +904,11 @@ pub struct BranchPlan {
     pub project: String,
     #[serde(default)]
     pub project_at: String,
+    /// Where the project is fetched from, without any sign-in written into
+    /// it: what a clone of it onto a server starts from, when the dialog asks
+    /// where the project is on a server that has no checkout of it yet
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin: String,
     /// The machines this can be made on besides this one: the ones the project
     /// has a checkout on, and the ones it could have one on. Names and kinds
     /// only: the addresses and what is filed under them are the settings'
@@ -2883,6 +2945,46 @@ mod tests {
         GroupState::name_projects(&mut named, &[(at, "Orion API".into())]);
         let projects: Vec<Option<&str>> = named.iter().map(|(_, g)| g.project.as_deref()).collect();
         assert_eq!(projects.iter().filter(|p| **p == Some("Orion API")).count(), 2, "{projects:?}");
+    }
+
+    /// One project checked out here, on a MicroVM and on a server is one
+    /// project: every household is said to be it, whether found by its
+    /// checkout's folder, by the household the settings give it over there,
+    /// or by a folder that names it. A repository no project has is nobody's
+    #[test]
+    fn one_project_on_several_machines_is_one_whole() {
+        let at = |s: &str| std::path::PathBuf::from(s);
+        let here = crate::local_path(r"D:\proj");
+        let here_git = crate::local_path(r"D:\proj\.git");
+        let vm = place_key(Some("vm"), std::path::Path::new("/home/user/proj"));
+        let srv = place_key(Some("srv"), std::path::Path::new("/srv/proj"));
+        let srv_cut = place_key(Some("srv"), std::path::Path::new("/srv/proj.branches/fix"));
+        let g = |family: &str, linked: bool| GroupState { family: Some(family.to_string()), linked, ..Default::default() };
+        let mut groups = vec![
+            (at(&here), g(&here_git, false)),
+            (at(&crate::local_path(r"D:\proj.worktrees\a")), g(&here_git, true)),
+            (at(&crate::local_path(r"D:\other")), g(&crate::local_path(r"D:\other\.git"), false)),
+            (at(&vm), g(&far_family("vm", "/home/user/proj"), false)),
+            (at(&srv_cut), g(&far_family("srv", "/srv/proj"), true)),
+            (at(&crate::local_path(r"D:\plain")), GroupState::default()),
+        ];
+        let checkouts = vec![("Proj".to_string(), vec![at(&here), at(&vm), at(&srv)])];
+        GroupState::join_wholes(&mut groups, &checkouts, &[]);
+        let wholes: Vec<Option<&str>> = groups.iter().map(|(_, g)| g.whole.as_deref()).collect();
+        assert_eq!(wholes, vec![Some("Proj"), Some("Proj"), None, Some("Proj"), Some("Proj"), None]);
+
+        // A checkout not on the desk is still known by where the settings
+        // put it; a folder that names a project the settings do not have
+        // joins nothing
+        let mut cuts = vec![(at(&crate::local_path(r"D:\proj.worktrees\a")), g(&here_git, true))];
+        GroupState::join_wholes(&mut cuts, &checkouts, &[]);
+        assert_eq!(cuts[0].1.whole.as_deref(), Some("Proj"));
+        let other = at(&crate::local_path(r"D:\other"));
+        let mut named = vec![(other.clone(), g(&crate::local_path(r"D:\other\.git"), false))];
+        GroupState::join_wholes(&mut named, &checkouts, &[(other.clone(), "Gone".into())]);
+        assert_eq!(named[0].1.whole, None);
+        GroupState::join_wholes(&mut named, &checkouts, &[(other, "Proj".into())]);
+        assert_eq!(named[0].1.whole.as_deref(), Some("Proj"));
     }
 
     #[test]
