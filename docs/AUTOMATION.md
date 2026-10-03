@@ -993,6 +993,8 @@ written at all.
 | `shikisha.open_tab({ command = "codex", name = "Research" })` | **Add a tab**, written the way the settings write one: `command` is what runs in it, and `name`, `id` and the rest are the settings' own keys. It goes into the caller's folder, or into `folder` when one is given (a folder the desk already has; `host`, the machine's name in the settings, says which one when two machines have a folder at that path). Returns `{ id = ..., uid = ..., folder = ..., host = ... }`: the automation name it went in under, drawn when `id` is left out (two words, `calm-otter`), who the tab is (`uid`: never handed to another tab, whatever either is called later), and where it went. An `id` another tab on the desk already has is refused. Anything addressed to the new id before the tab is up -- `send_to_tab`, `show`, `close_tab` -- waits for it |
 | `shikisha.close_tab(tab)` | Close a tab, including on a desk that is not displayed. The external API and MCP return success after the close is carried out; a working tab or one awaiting an answer is left open and returns an error. Lua automation on the displayed desk asks the person, the way the tab's ✕ does |
 
+An archived folder is refused before a tab is added. Restore it first or choose an active folder; `open_tab` does not restore folders automatically.
+
 **Hand a question to another AI** -- the commands in the order you would say them:
 
 ```lua

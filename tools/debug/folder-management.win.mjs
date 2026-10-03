@@ -7,6 +7,7 @@
 import {connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -32,13 +33,22 @@ const assert = (ok, why) => { if (!ok) throw Error(why); console.log('PASS ' + w
 fs.mkdirSync(repo);
 git(['init','-q','-b','main']);
 fs.writeFileSync(path.join(repo,'readme.txt'), 'kept content\n');
+fs.mkdirSync(path.join(repo,'src'));
+fs.writeFileSync(path.join(repo,'src','work.txt'), 'child folder content\n');
 git(['add','.']); git(['commit','-qm','Start folder fixture']);
-const names = ['clean','pinned','dirty','stored'];
+const names = ['clean','pinned','dirty','stored','shared'];
 for (const name of names) git(['worktree','add','-qb',name,path.join(area,name)]);
+const sharedContent = fs.readFileSync(path.join(area,'shared','src','work.txt'));
 fs.writeFileSync(path.join(area,'dirty','unsaved.txt'),'keep me');
 const folders = ['main',...names].map(name => ({name,cwd:path.join(area,name),tabs:[],keep_first:name === 'pinned'}));
-folders.find(f => f.name === 'stored').tabs = [{name:'Stored shell', id:'stored-shell', command:'cmd.exe'}];
-fs.writeFileSync(config, JSON.stringify({language:'en', agent_hooks:{'Claude Code':'off','Codex CLI':'off','Gemini CLI':'off'}, desks:[{name:'Folder check',id:'folder-check',folders}]}));
+const liveUid = crypto.randomUUID(), hiddenUid = crypto.randomUUID();
+folders.find(f => f.name === 'stored').tabs = [{name:'Stored shell', id:'stored-shell', uid:liveUid, command:'cmd.exe'}];
+Object.assign(folders.find(f => f.name === 'pinned'), {parked:true,
+  tabs:[{name:'Stored shell',id:'hidden-shell',uid:hiddenUid,command:'cmd.exe'}]});
+fs.writeFileSync(config, JSON.stringify({language:'en', agent_hooks:{'Claude Code':'off','Codex CLI':'off','Gemini CLI':'off'}, desks:[
+  {name:'Folder check',id:'folder-check',folders},
+  {name:'Other desk',id:'away',folders:[{cwd:path.join(area,'shared','src'),tabs:[{id:'away-shell',command:'cmd.exe'}]}]},
+]}));
 
 let ws, readState;
 try {
@@ -54,7 +64,7 @@ try {
   ws = connection.ws;
   const js = connection.run;
   let state = await until(async () => {
-    const s = await js('S'); return s?.folder_catalog?.length === 5 && s;
+    const s = await js('S'); return s?.folder_catalog?.length === folders.length && s;
   }, 'saved folder catalog');
   readState = () => js('({folders:S.folder_catalog, results:S.folder_manage.results, tabs:S.tabs.map(t => ({id:t.id,state:t.state,name:t.name}))})');
   const desk = state.desk_uid;
@@ -69,6 +79,23 @@ try {
     // Observe a full quiet second so the shell's startup banner has finished.
     return quietSince && Date.now() - quietSince >= 1000;
   }, 'idle saved shell');
+  await js('send({kind:"tabname",tab:S.tabs.find(t=>t.id==="stored-shell").index,name:"Live renamed"})');
+  await until(() => saved().find(f=>f.name==='stored').tabs[0].name === 'Live renamed', 'the visible tab is renamed');
+  assert(saved().find(f=>f.name==='pinned').tabs[0].name === 'Stored shell', 'an archived namesake is not renamed');
+  await until(async () => (await js('S')).tabs.some(t=>t.uid===liveUid && t.name==='Live renamed'), 'the live UID keeps its new title');
+  assert(saved().find(f=>f.name==='stored').tabs[0].uid === liveUid && saved().find(f=>f.name==='pinned').tabs[0].uid === hiddenUid, 'renaming preserves both tab identities');
+  const switchDesk = async index => {
+    await js('send({kind:"opendesk"})');
+    await until(() => js('S.desk_open'), 'desk picker');
+    await js('send('+JSON.stringify({kind:'menu',key:String(index+1)})+')');
+    await until(() => js('S.desk_index==='+index), 'desk switch');
+  };
+  await switchDesk(1);
+  await until(() => js('S.tabs.some(t=>t.id==="away-shell")'), 'another desk holds the child directory');
+  await switchDesk(0);
+  await js('send('+JSON.stringify({kind:'folderdiscard',folder:keys.shared,unasked:false})+')');
+  await until(() => js('S.flash?.includes("Another desk")'), 'individual deletion reports shared child protection');
+  assert(fs.readFileSync(path.join(area,'shared','src','work.txt')).equals(sharedContent), 'individual deletion preserves files used by another desk');
   await action('pin',['stored']);
   await until(async () => saved().find(f => f.name === 'stored')?.keep_first, 'pin persistence');
   await action('archive',['stored']);
@@ -89,17 +116,18 @@ try {
   await until(async () => (await js('S')).folder_manage.usage[keys.stored], 'capacity measurement');
   state = await js('S');
   assert(state.folder_manage.usage[keys.stored].bytes > 0 && !state.folder_manage.usage[keys.stored].partial, 'capacity returns a completed nonzero estimate');
-  await action('delete',['main','pinned','dirty','clean']);
+  await action('delete',['main','pinned','dirty','clean','shared']);
   await until(async () => {
     const results = (await js('S')).folder_manage.results;
-    return ['main','pinned','dirty','clean'].every(n => results[keys[n]] && !results[keys[n]].busy);
+    return ['main','pinned','dirty','clean','shared'].every(n => results[keys[n]] && !results[keys[n]].busy);
   }, 'all deletion outcomes', 60000);
   state = await js('S');
   assert(!fs.existsSync(path.join(area,'clean')) && !saved().some(f => f.name === 'clean'), 'clean worktree is removed from disk and settings');
-  for (const name of ['main','pinned','dirty']) {
+  for (const name of ['main','pinned','dirty','shared']) {
     assert(fs.existsSync(path.join(area,name,'readme.txt')) && !!state.folder_manage.results[keys[name]].error, `${name} is retained with a reason`);
   }
   assert(fs.readFileSync(path.join(area,'dirty','unsaved.txt'),'utf8') === 'keep me', 'uncommitted content survives bulk deletion');
+  assert(fs.readFileSync(path.join(area,'shared','src','work.txt')).equals(sharedContent), 'bulk deletion preserves the other desk child files and folder');
   console.log('All folder management checks passed. Fixture: ' + area);
 } catch (error) {
   if (readState) console.error(JSON.stringify(await readState(), null, 2));
