@@ -1,6 +1,6 @@
 [package]
 name = "shikisha-server"
-version = "0.24.0"
+version = "0.24.1"
 edition = "2024"
 description = "SHIKISHA with no window: the runtime, serving its board over the network."
 license = "MIT"

@@ -8,6 +8,108 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-10-04
+
+### Changed
+- **A project worked on in more than one place is listed once.** A project
+  with folders on this PC, a MicroVM or an SSH host used to show up as a
+  separate project for each machine. It now stands under one project
+  heading. Under it is one line per machine (this PC first, then MicroVMs,
+  then SSH hosts, in the order of the settings), saying the machine's name
+  and kind. Each line has its own ▾ to fold that machine's folders and a `+`
+  that makes a worktree on that machine. A project kept on this PC alone
+  looks as it did.
+- **The worktree dialog asks where a project is on a server without closing.**
+  If you chose an SSH host with no checkout of the project under "Where it
+  runs", the worktree dialog used to close and send you to the add-a-project
+  list. Now "Say where the project is" opens over the worktree dialog and
+  offers "Use a folder on {host}" or "Clone onto {host}", the second with the
+  project's own address filled in. Either one becomes the project's checkout
+  on that server; a clone does not start a project of its own. While the
+  clone runs, the machine reads "cloning…" and the dialog says so. When it
+  finishes, the worktree dialog goes on with the server, keeping the name and
+  everything else you had entered.
+- **A worktree that first makes a MicroVM's checkout asks for the AI's sign-in
+  before copying it.** Every worktree on a MicroVM is a copy of the checkout
+  machine, so a worktree copied before the sign-in has none. A worktree made
+  from the worktree dialog that also made the checkout now stops at "Waiting
+  for the sign-in to the AI on the MicroVM" and shows the same sign-in step
+  as a project cloned onto a MicroVM. It continues on "Next" or "Later", and
+  the worktrees asked for together with it are copies of the signed-in
+  machine too.
+- **The AI sign-in step says one thing at a time.** Under the terminal and its
+  keys, one line now says what to do next. That line is either to follow the
+  terminal (↑ ↓ to choose, Enter to go on), or, once the AI prints a sign-in
+  address, to open it and paste the code back with "Send to the terminal".
+  The address and the code box are shown only while they are needed. First-run
+  questions still open after the sign-in are shown in a yellow box. "Next" can
+  be pressed at any time, but turns blue only once the sign-in is done. In a
+  server git's sign-in, what is left to do now sits right under the step's
+  first line.
+- **The bridge is called the SHIKISHA bridge, and adding a machine offers it.**
+  Settings › Where it runs › a machine now reads "SHIKISHA bridge" with a line
+  saying what it is. The box "Put the SHIKISHA bridge on this machine" is
+  already ticked on the form that adds a machine, both in the settings and in
+  the add-a-project dialog's "Add host" form, which now explains it beside the
+  box. Unticked, the answer is kept. A machine added before this asks once,
+  on the window or a phone, when one of its tabs is open: "Put the SHIKISHA
+  bridge on {host}?", with "Put it there" or "Do not". Either answer is kept
+  in the settings, and removing the machine forgets it. A question closed
+  without an answer comes back at the next start. One pushed aside by another
+  question comes back when that question is done.
+- **A web page watched from a phone is laid out at the phone's width.** A
+  page was drawn at the PC's width and stretched taller for a portrait
+  phone, so it arrived shrunk and a site with a phone layout never showed
+  it. Every page relayed to a phone now lays itself out at the size of the
+  area showing it, as DevTools already did. It follows when the phone turns
+  or the side list or a split pane changes that area, and it gets the
+  window's shape back when the phone stops watching. With the program split
+  in two, where the window watches the same relay as the phone, the page no
+  longer flips between the PC's width and the phone's: its size follows the
+  screen being used, as a terminal's does. A page shown on the board while
+  another page was opened after it now sends pictures to the phone.
+
+### Fixed
+- **Work folders can be deleted once their tabs are closed.** Closing a tab,
+  or deleting its folder (which closes its tabs), stopped only the program
+  the tab had started. Whatever that program had started in turn -- an AI
+  CLI's helpers, a development server, a build -- went on running in the
+  folder, so Windows would not let it go and the deletion ended in "The
+  folder could not be deleted". Closing a tab now ends everything started in
+  it, in the app and in the terminals the background process keeps. A tab
+  whose AI had finished could also stay "Running in background", because the
+  console window an AI CLI opens for a helper was counted as work, and its
+  folder was then refused for deleting and archiving; that console no longer
+  counts. When a deletion stopped after git had already let the folder go,
+  "Try again" refused it; it now finishes that deletion and keeps the branch
+  as the first try would have. While a folder is being deleted the board
+  shows only its deletion row, not the folder as well, and a folder at the
+  same path on another machine is no longer hidden with it. A MicroVM folder
+  that is the project's own checkout on that MicroVM can now be deleted (it
+  was refused with "This is the project's own folder, not a branch cut from
+  it."): the project forgets that checkout and the next worktree there makes
+  a new one. A server's checkout is still kept. A deletion on a server or a
+  MicroVM refused for work that exists nowhere else now always names the
+  folder, even when the folder was asked for by its path alone.
+- **A page watched from a phone shows its video.** When the relay moved from
+  a run of pictures to video, the picture area kept its black background in
+  front of the video, so the phone showed black -- or a last still picture
+  that was being drawn as video took over -- while the video played unseen
+  behind it. The video now shows through, and taps still land on the page.
+- **A tab on another machine made an AI from Kind starts an AI that machine
+  has.** Choosing AI as a tab's Kind in its settings put this PC's chosen AI
+  in the command even for a folder on a server or a MicroVM, and the tab
+  answered "command not found" when that machine did not have it. It now
+  starts an AI the machine has, as a new tab there already did, with Yolo
+  mode's flag when Yolo mode is on. "AI to use" marks the AIs that machine
+  lacks as "(not installed)", and choosing one says under it that the AI is
+  not installed on that machine and to choose one it has.
+- **The sign-in step finds the checkout's tab on its own machine.** "Open the
+  checkout's tab" and the terminal shown in the sign-in step looked the tab up
+  by its folder's path alone. A folder at the same path on another machine or
+  on this PC could be taken instead. They now also check the machine, and so
+  does the check for whether a new checkout already has its AI tab open.
+
 ## [0.24.0] - 2026-10-03
 
 ### Added
@@ -4618,7 +4720,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...v0.23.1
 [0.23.0]: https://github.com/styleio/ShikishaTerm/compare/v0.22.1...v0.23.0
