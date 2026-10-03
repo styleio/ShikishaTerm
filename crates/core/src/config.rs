@@ -1193,6 +1193,11 @@ pub struct Config {
     /// list takes the bridge off it
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bridges: Vec<String>,
+    /// The machines a person said not to put the bridge on: unticked on the
+    /// form, or "do not put it" when asked. A machine on neither list was
+    /// added before the form had the box, and is asked once (`save_bridge`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges_declined: Vec<String>,
     /// The person's answers about the AI CLIs' hooks on other machines: the
     /// machine's entry name -> the CLI's name -> [`HOOK_ON`] / [`HOOK_OFF`].
     /// Nothing is written into a CLI's settings on a machine without "on"
@@ -7549,6 +7554,52 @@ fn save_far_hook_at(path: &Path, host: &str, cli: &str, on: bool) -> bool {
     }
 }
 
+/// The person's answer about the SHIKISHA bridge on the machine `host` (its
+/// entry's name): on the list of machines agreed to ([`Config::bridges`]),
+/// or on the list of those it was declined for ([`Config::bridges_declined`])
+/// -- never both -- leaving the rest of the settings as they wrote it.
+/// Returns whether it was written
+pub fn save_bridge(host: &str, on: bool) -> bool {
+    save_bridge_at(&config_file_path(), host, on)
+}
+
+fn save_bridge_at(path: &Path, host: &str, on: bool) -> bool {
+    let host = host.trim();
+    if host.is_empty() {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record the answer about the bridge: settings are not readable");
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    for (key, has) in [("bridges", on), ("bridges_declined", !on)] {
+        let mut list: Vec<String> = doc[key]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).map(str::to_string).collect())
+            .unwrap_or_default();
+        list.retain(|b| b != host);
+        if has {
+            list.push(host.to_string());
+        }
+        match list.is_empty() {
+            true => {
+                if let Some(o) = doc.as_object_mut() {
+                    o.remove(key);
+                }
+            }
+            false => doc[key] = serde_json::json!(list),
+        }
+    }
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
 pub fn save_agreed(row: &str, kind: &str) -> bool {
     save_agreed_at(&config_file_path(), row, kind)
 }
@@ -8651,6 +8702,31 @@ mod tests {
         assert_eq!(doc["language"], "ja", "other settings changed");
         let cfg: Config = serde_json::from_value(doc).unwrap();
         assert_eq!(cfg.agent_hooks.get("Codex CLI").map(String::as_str), Some(HOOK_ON));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A machine put on the bridge list once, taken off by its name alone, and
+    /// the rest of the file left as it was written
+    #[test]
+    fn the_bridge_list_is_kept_by_machine_name() {
+        let dir = std::env::temp_dir().join(format!("shikisha-bridges-{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"language": "ja", "bridges": ["build"]}"#).unwrap();
+        assert!(save_bridge_at(&path, "vm", true));
+        assert!(save_bridge_at(&path, "vm", true), "asked twice");
+        assert!(!save_bridge_at(&path, " ", true), "no machine named");
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(doc["bridges"], serde_json::json!(["build", "vm"]));
+        assert_eq!(doc["language"], "ja");
+        assert!(save_bridge_at(&path, "build", false));
+        assert!(save_bridge_at(&path, "vm", false));
+        let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(doc.get("bridges").is_none(), "an empty list is no list: {doc}");
+        assert_eq!(doc["bridges_declined"], serde_json::json!(["build", "vm"]));
+        assert!(save_bridge_at(&path, "vm", true), "changing one's mind");
+        let cfg: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!((cfg.bridges, cfg.bridges_declined), (vec!["vm".to_string()], vec!["build".to_string()]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

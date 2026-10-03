@@ -553,8 +553,13 @@ pub enum Ev {
     /// add-a-project dialog: its name, its address (`ssh://user@host:port`)
     /// and how it signs in there -- a key file, or a password, kept in the
     /// secret store under the name the connection reads it by, never in the
-    /// settings. Allowed from a phone, as `AddProject` is
-    AddHost { name: String, at: String, key: String, password: String, ask: u64 },
+    /// settings -- and whether the SHIKISHA bridge goes on it (the form's box,
+    /// ticked to begin with). Allowed from a phone, as `AddProject` is
+    AddHost { name: String, at: String, key: String, password: String, ask: u64, bridge: bool },
+    /// The question about the SHIKISHA bridge on a machine added before the
+    /// forms had the box, answered: `on` puts it there, and either answer is
+    /// kept so the machine is not asked again
+    Bridge { host: String, on: bool },
     /// What to do about a project's worktrees that git knows and the desk does
     /// not list. `family` names the project by its shared git folder; `act` is
     /// `show` (put them on the desk), `keep` (keep them hidden, the row goes)
@@ -1434,6 +1439,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             key: v.get("key").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             password: v.get("password").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             ask: v.get("ask").and_then(|x| x.as_u64()).unwrap_or(0),
+            bridge: v.get("bridge").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("bridge") => Ev::Bridge {
+            host: v.get("host").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            on: v.get("on").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("found") => Ev::Found {
             family: v.get("family").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

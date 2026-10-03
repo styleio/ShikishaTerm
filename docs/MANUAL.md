@@ -326,7 +326,7 @@ next time the machine is reached. A machine an earlier version wrote into withou
 once: keep it, or take it out.
 
 **Keeping a machine's AIs running while this app is away.** Open the machine under
-Settings > Where it runs, put the bridge on it, and choose under "While this app is away": stop them when SHIKISHA-TERM quits,
+Settings > Where it runs, put the SHIKISHA bridge on it, and choose under "While this app is away": stop them when SHIKISHA-TERM quits,
 keep them running for a number of hours, or (a server only) keep them running for as long as they run.
 Kept running, the AIs there go on working when SHIKISHA-TERM quits or this PC is off, and the next start
 goes back to each of them -- the same AI, its screen as it was. Quitting asks whether to leave them running

@@ -1042,6 +1042,16 @@ pub struct MachineAiChoice {
     pub name: String,
 }
 
+/// A machine added before the forms asked about the SHIKISHA bridge, with a
+/// tab open on it: asked once whether to put the bridge there
+#[derive(Clone, Serialize, PartialEq, Debug, Default)]
+pub struct BridgeOffer {
+    /// The machine's entry's name
+    pub host: String,
+    /// `microvm` or `ssh`
+    pub kind: String,
+}
+
 /// The sign-in step of a project just cloned onto a MicroVM: the checkout's
 /// machine has the AI, and a worktree is a copy of that machine, so the
 /// sign-in is done here, once, before the first worktree is cut. Shown only
@@ -2442,6 +2452,9 @@ pub struct UiState {
     /// whether to trust the new one
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_changes: Vec<crate::ssh::KeyChange>,
+    /// A machine to ask about the SHIKISHA bridge, once
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge_offer: Option<BridgeOffer>,
     /// The sign-in step of a project just cloned onto a MicroVM, while it
     /// is open
     #[serde(default, skip_serializing_if = "Option::is_none")]

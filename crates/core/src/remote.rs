@@ -401,6 +401,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // way they cut a worktree. Refused, the dialog waits for an answer
         // that never comes and looks stuck
         Ev::AddProject { .. } | Ev::RemoteList { .. } | Ev::AddHost { .. } => true,
+        // The question about the bridge on a machine is asked on the phone
+        // too, since the person may be there rather than at the window
+        Ev::Bridge { .. } => true,
         // Putting a folder that is not on this machine out of sight until the
         // next launch, and telling one to work somewhere else. The first
         // writes nothing at all; the second writes one path, which is less
@@ -3703,7 +3706,8 @@ mod tests {
                 private: false,
             },
             Ev::RemoteList { host: "srv".into(), path: "/srv".into(), ask: 1 },
-            Ev::AddHost { name: "srv".into(), at: "ssh://me@example.test:22".into(), key: String::new(), password: String::new(), ask: 1 },
+            Ev::AddHost { name: "srv".into(), at: "ssh://me@example.test:22".into(), key: String::new(), password: String::new(), ask: 1, bridge: true },
+            Ev::Bridge { host: "srv".into(), on: true },
         ] {
             assert!(
                 super::allowed_from_afar(&arranging),

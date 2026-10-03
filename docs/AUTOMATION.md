@@ -855,11 +855,12 @@ person`: you are notified, and you answer on the job's panel. The lead reads the
 with `shikisha skill orchestration`.
 
 **Tabs on a server or a MicroVM.** An AI there has no `shikisha` command of its own, so it
-cannot report or ask its lead. Put the bridge on that machine (Settings > Where it runs > the machine >
-"Put the bridge on this machine"): a small program (about 1 MB, in
+cannot report or ask its lead. Put the SHIKISHA bridge on that machine (Settings > Where it runs > the machine >
+"Put the SHIKISHA bridge on this machine"): a small program (about 1 MB, in
 `~/.local/share/shikisha/bridge/`) that carries the `shikisha` command of the AI tabs there to
-this app and reads their conversation records there. It is put there only when you tick that
-box, runs while this app is using a tab on that machine -- and, when you chose to keep that machine's AIs
+this app and reads their conversation records there. The box is ticked already when you add a
+machine, and a machine added before asks once, the first time one of its tabs is opened. It is put
+there only while that box is ticked, runs while this app is using a tab on that machine -- and, when you chose to keep that machine's AIs
 running while the app is away, while they run -- and is deleted when you untick it.
 Until then, a task cannot be assigned to a tab there; `ask_tab` still works.
 

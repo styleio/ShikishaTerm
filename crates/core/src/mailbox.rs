@@ -143,6 +143,8 @@ pub struct Mailbox {
     pub remote_lists: Vec<(String, String, u64)>,
     /// Machines to write into the settings: (name, address, key file, number)
     pub add_hosts: Vec<HostAsk>,
+    /// Answers about the SHIKISHA bridge on a machine: (its name, put it there)
+    pub bridges: Vec<(String, bool)>,
     /// Answers about a project's found worktrees: (its shared git folder, act)
     pub found: Vec<(String, String)>,
     /// Answers from the row of a worktree being made: (its number, act)
@@ -337,6 +339,8 @@ pub struct HostAsk {
     /// The password it signs in with, or empty
     pub password: String,
     pub ask: u64,
+    /// Whether the SHIKISHA bridge goes on it
+    pub bridge: bool,
 }
 
 /// A project asked for from the add-a-project dialog (see
@@ -503,6 +507,9 @@ impl Mailbox {
     }
     pub fn take_add_hosts(&mut self) -> Vec<HostAsk> {
         std::mem::take(&mut self.add_hosts)
+    }
+    pub fn take_bridges(&mut self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.bridges)
     }
     pub fn take_setup_refresh(&mut self) -> Option<u8> {
         self.setup_refresh.take()

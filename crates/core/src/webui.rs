@@ -11473,11 +11473,13 @@ function hostDialog(at, redraw, kind, done) {
       }}, false);
   if (mark) atIn.addEventListener("input", () => mark.schedule());
 
-  // The bridge: put on this machine only because the person ticks it here, and
-  // taken off by unticking it. What it is, where it goes, how big it is and how
-  // it comes off are all said before the box, since the box is the agreement
+  // The bridge: put on this machine only while this box is ticked, and taken
+  // off by unticking it. What it is, where it goes, how big it is and how it
+  // comes off are all said before the box, since the box is the agreement.
+  // A machine being added has it ticked: without it most of what an AI there
+  // can do with the others is not there, and it is seen and unticked here
   const bridgeIn = el("input", {type:"checkbox"});
-  bridgeIn.checked = editing && (current.bridges || []).includes((h.name || "").trim());
+  bridgeIn.checked = editing ? (current.bridges || []).includes((h.name || "").trim()) : true;
   const bridgeBox = el("div", {class:"bridgecard"},
     el("div", {class:"hint"}, T["settings.hosts.bridge.what"]),
     el("div", {class:"hint"}, T["settings.hosts.bridge.where"]),
@@ -11709,6 +11711,12 @@ function hostDialog(at, redraw, kind, done) {
             } else if (!await confirmAction(fill(T["settings.hosts.drop.sure"], {name: h.name || ""}),
                                      T["settings.hosts.drop"])) return;
             if (current.far_hooks) { delete current.far_hooks[hostKey]; if (!Object.keys(current.far_hooks).length) delete current.far_hooks; }
+            // "No bridge" was said of this machine; one added again under its
+            // name is answered on the form it is added with
+            if (current.bridges_declined) {
+              current.bridges_declined = current.bridges_declined.filter(b => b !== hostKey);
+              if (!current.bridges_declined.length) delete current.bridges_declined;
+            }
             current.hosts.splice(at, 1);
             refreshSave(); shut(); redraw();
           }}, T["settings.hosts.drop"])
@@ -11774,10 +11782,14 @@ function hostDialog(at, redraw, kind, done) {
     if (!editing) (current.hosts = current.hosts || []).push(it);
     // The agreement goes with the entry's name: renamed, it follows; unticked,
     // the machine is taken off the list and the app takes the bridge off it
+    // Unticked is an answer as well, kept so the machine is never asked about
+    // it (see config::save_bridge, which writes the same two lists)
     const was = (h.name || "").trim();
-    const bridges = (current.bridges || []).filter(b => b !== was && b !== it.name);
-    if (bridgeIn.checked && it.name) bridges.push(it.name);
-    if (bridges.length) current.bridges = bridges; else delete current.bridges;
+    for (const [key, has] of [["bridges", bridgeIn.checked], ["bridges_declined", !bridgeIn.checked]]) {
+      const list = (current[key] || []).filter(b => b !== was && b !== it.name);
+      if (has && it.name) list.push(it.name);
+      if (list.length) current[key] = list; else delete current[key];
+    }
     // What its AIs do while the app is away: only with the bridge, and only
     // as chosen. Nothing chosen is nothing written
     const awayNow = bridgeIn.checked ? awayChoice() : undefined;

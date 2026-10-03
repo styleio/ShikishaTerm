@@ -568,9 +568,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     line-height:1.5; color:var(--text);
     background:color-mix(in srgb, var(--warn) 9%, transparent);
     border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
-  #setup .syolo { display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; cursor:pointer;
+  #setup .syolo, #addproj .syolo { display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; cursor:pointer;
     font-size:14px; color:var(--text); }
-  #setup .syolo input { width:15px; height:15px; margin:0; }
+  #setup .syolo input, #addproj .syolo input { width:15px; height:15px; margin:0; }
   #setup .syolo .risk { font-size:12px; color:var(--stop); }
   /* Back, beside the page's own button: quiet, like every cancel (5.3) */
   #setup button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
@@ -7046,12 +7046,20 @@ function apHostAdd(body) {
       apAsk = Date.now();
       const byKey = auth.value === "key";
       send({kind:"addhost", name:name.value.trim(), ask:apAsk, key:byKey ? key.value.trim() : "",
-        password:byKey ? "" : pass.value,
+        password:byKey ? "" : pass.value, bridge:bridge.checked,
         at:"ssh://" + user.value.trim() + "@" + addr.value.trim() + ":" + port.value.trim()});
       pass.value = "";
       if (apLive) apLive.running = true;
       drawAddProject();
     });
+  // The SHIKISHA bridge, ticked to begin with: what it is and where it goes
+  // are said beside the box, which is the agreement. Unticked is kept as the
+  // answer, and the settings' form for the machine changes it either way
+  const bridge = el("input", {type:"checkbox"});
+  bridge.checked = true;
+  const bridgeField = el("div", {class:"sfield"},
+    el("label", {class:"syolo"}, bridge, el("span", {}, T["settings.hosts.bridge.put"] || "")),
+    el("div", {class:"shint"}, T["tui.addproj.host.bridge.say"] || ""));
   const aliases = (S && S.ssh_aliases) || [];
   const fill = aliases.length ? el("button", {class:"bpick", type:"button", onclick:e => {
       e.stopPropagation();
@@ -7077,6 +7085,7 @@ function apHostAdd(body) {
     el("div", {class:"aprow2"}, apField(T["tui.addproj.host.user"] || "", user), apField(T["tui.addproj.host.port"] || "", port)),
     apField(T["tui.addproj.host.auth"] || "", auth),
     keyField, passField,
+    bridgeField,
     el("div", {class:"apfoot"}, go.why, go.btn));
   drawAuth();
   addr.addEventListener("blur", () => { split(); go.check(); });
@@ -10570,6 +10579,29 @@ function drawSignIn(box, note, shown, change) {
   if (note.kind === "unknown") box.append(el("div", {class:"say"}, T["tui.signin.unknown"] || ""));
 }
 
+// A machine added before the forms asked about the SHIKISHA bridge, with a
+// tab open on it: asked once, in the board's question, when nothing else is
+// being asked. Either answer is kept in the settings, and the machine is not
+// offered again; put away unanswered, it is asked at the next start
+const bridgeAsked = new Set();
+function bridgeOffered() {
+  const o = S && S.bridge_offer;
+  if (!o || bridgeAsked.has(o.host) || S.settings_open || S.login_step) return;
+  const ask = document.getElementById("sask");
+  const branch = document.getElementById("branch");
+  if (!ask || !ask.hidden || (branch && !branch.hidden)) return;
+  bridgeAsked.add(o.host);
+  const answer = on => send({kind:"bridge", host:o.host, on});
+  askQuestion({
+    title: (T["tui.bridge.ask.title"] || "{host}").replaceAll("{host}", o.host),
+    say: T["settings.hosts.bridge.what"] || "",
+    more: {label: T["tui.bridge.ask.more"] || "", say: (T["settings.hosts.bridge.where"] || "") + " " + (T["settings.hosts.bridge.off"] || "")},
+    label: T["tui.bridge.ask.put"] || "",
+    no: {label: T["tui.bridge.ask.no"] || "", act: () => answer(false)},
+    go: () => answer(true),
+  });
+}
+
 // A MicroVM added from a picker: the settings' own form, over the board.
 // `chosen` is told its name once it is in the settings the board has read,
 // so the picker goes on with it chosen
@@ -12305,6 +12337,7 @@ window.__state = function (json) {
   projectFlow();
   microvmArrived();
   drawLogin();
+  bridgeOffered();
   mentionsArrived();
   conferArrived(before);
   // The settings were read in again while the worktree dialog is open: what

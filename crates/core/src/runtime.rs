@@ -518,6 +518,22 @@ impl LoginPending {
 /// How often the machine is asked again while the sign-in step is open
 const LOGIN_FRESH: Duration = Duration::from_secs(10);
 
+/// The machine to ask about the SHIKISHA bridge, if any: one a tab on the
+/// desk is open on, that has no answer about it in the settings. A machine
+/// is answered by the box on the form it is added with, so this is only one
+/// added before the form had it -- asked once, as one of its tabs is open.
+/// `open_on` is the machines the desk's tabs are on, by name
+fn bridge_offer<'a>(cfg: &config::Config, mut open_on: impl Iterator<Item = &'a str>) -> Option<crate::uistate::BridgeOffer> {
+    let answered = |name: &str| cfg.bridges.iter().chain(&cfg.bridges_declined).any(|b| b == name);
+    open_on.find_map(|name| {
+        let h = cfg.hosts.iter().find(|h| h.name == name && !answered(name))?;
+        Some(crate::uistate::BridgeOffer {
+            host: h.name.clone(),
+            kind: if h.is_made() { "microvm" } else { "ssh" }.into(),
+        })
+    })
+}
+
 /// The sign-in step for a server's git: a clone onto the server could not
 /// read the repository, and the server's git is to be given a sign-in to
 /// GitHub by the person, in a terminal on the server, with the commands the
@@ -6032,8 +6048,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteList { host, path, ask }) => {
                         shell.mail().remote_lists.push((host, path, ask));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddHost { name, at, key, password, ask }) => {
-                        shell.mail().add_hosts.push(crate::mailbox::HostAsk { name, at, key, password, ask });
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::AddHost { name, at, key, password, ask, bridge }) => {
+                        shell.mail().add_hosts.push(crate::mailbox::HostAsk { name, at, key, password, ask, bridge });
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Bridge { host, on }) => {
+                        shell.mail().bridges.push((host, on));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderColor { folder, color }) => {
                         shell.mail().folder_colors.push((folder, color));
@@ -6405,6 +6424,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_list: remote_view.clone(),
             far_ports: far_ports_view.clone(),
             key_changes: crate::ssh::key_changes(),
+            bridge_offer: cfg.as_ref().and_then(|c| bridge_offer(c, tabs.iter().filter_map(|t| t.host()))),
             login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
             project_home: project_home.clone(),
@@ -11283,6 +11303,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 remote_view = Some(answer);
             }
         }
+        // The question about the bridge on a machine, answered here or on a
+        // phone. Kept in the settings either way, and in what was read of
+        // them, so the question is gone before the file is read again
+        for (host, on) in shell.mail().take_bridges() {
+            if !config::save_bridge(&host, on) {
+                flash = Some(i18n::t("msg.hooks.not_saved"));
+                continue;
+            }
+            append_hook_log(&format!("bridge: the person said {} for {host}", if on { "put it there" } else { "do not" }));
+            if let Some(c) = cfg.as_mut() {
+                c.bridges.retain(|b| b != &host);
+                c.bridges_declined.retain(|b| b != &host);
+                match on {
+                    true => c.bridges.push(host),
+                    false => c.bridges_declined.push(host),
+                }
+            }
+        }
         // A machine written into the settings from the dialog. The dialog goes
         // on with it chosen once the settings are read back
         for h in shell.mail().take_add_hosts() {
@@ -11320,6 +11358,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             add_view = Some(match config::add_host(&spec) {
                 Ok(()) => {
+                    // The form's box about the bridge, written as the answer
+                    // either way: a machine added with it is never asked
+                    if !config::save_bridge(&spec.name, h.bridge) {
+                        append_hook_log(&format!("could not write down the answer about the bridge on {}", spec.name));
+                    }
                     let said = i18n::tp("msg.host.added", &[("name", &spec.name)]);
                     said_before_reload = Some((Instant::now(), said.clone()));
                     flash = Some(said);
@@ -19340,6 +19383,22 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A machine with a tab open is asked about the bridge only while the
+    /// settings have no answer about it, either way
+    #[test]
+    fn the_bridge_is_offered_only_for_an_unanswered_machine() {
+        let host = |name: &str, kind: Option<&str>| config::HostSpec { name: name.into(), kind: kind.map(Into::into), ..Default::default() };
+        let mut cfg = config::Config { hosts: vec![host("vm", Some("e2b")), host("srv", None)], ..Default::default() };
+        let offer = |cfg: &config::Config, on: &[&str]| bridge_offer(cfg, on.iter().copied()).map(|o| (o.host, o.kind));
+        assert_eq!(offer(&cfg, &[]), None, "no tab open on a machine");
+        assert_eq!(offer(&cfg, &["gone"]), None, "a machine the settings do not have");
+        assert_eq!(offer(&cfg, &["vm", "srv"]), Some(("vm".into(), "microvm".into())));
+        cfg.bridges = vec!["vm".into()];
+        assert_eq!(offer(&cfg, &["vm", "srv"]), Some(("srv".into(), "ssh".into())));
+        cfg.bridges_declined = vec!["srv".into()];
+        assert_eq!(offer(&cfg, &["vm", "srv"]), None, "both answered");
+    }
+
     /// A worktree waiting on its checkout's sign-in goes on whichever way the
     /// step is left -- "next" or "later" -- and never waits for good
     #[test]

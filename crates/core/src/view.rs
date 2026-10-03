@@ -621,6 +621,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         far_ports: ui.far_ports.clone(),
         folder_manage: ui.folder_manage.clone(),
         key_changes: ui.key_changes.clone(),
+        bridge_offer: ui.bridge_offer.clone(),
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
         skills: ui.skills.clone(),
@@ -1874,6 +1875,8 @@ pub struct Ui {
     pub far_ports: Option<crate::uistate::FarPortsState>,
     /// Servers over SSH whose key changed, waiting to be answered
     pub key_changes: Vec<crate::ssh::KeyChange>,
+    /// A machine to ask about the SHIKISHA bridge, once
+    pub bridge_offer: Option<crate::uistate::BridgeOffer>,
     /// The sign-in step of a project just cloned onto a MicroVM, while open
     pub login_step: Option<crate::uistate::LoginStepState>,
     /// The AIs a MicroVM can be given
