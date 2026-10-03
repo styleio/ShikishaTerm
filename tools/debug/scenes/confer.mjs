@@ -11,16 +11,19 @@
 
 const now = Date.UTC(2026, 9, 1, 5, 30);
 const at = (min) => now - min * 60000;
+const deskUid = 'b7e166dc-1190-4347-ad31-2cf0b9235a11';
+const tabUid = name => ({otter:'3a3f5e2d-f411-47fa-8191-7b724d38c113',
+  finch:'07b6cb08-2492-4515-b0c3-8e9d3a902934', heron:'b84e2c32-e0a1-41a4-b3d6-0668b65bf6ec'})[name];
 
 const tab = (index, name, extra) => Object.assign({
-  index, name, id: name, state: 'DONE', state_label: 'Done', profile: 'Claude Code',
+  index, name, id: name, uid: tabUid(name), state: 'DONE', state_label: 'Done', profile: 'Claude Code',
   locked: false, depth: 0, activity: [0, 1, 3, 2, 0, 0, 1, 0, 0, 0], group: 0, kind: 'pty',
   model: false, busy: false, settings: false, auto: false, restartable: true,
   readable: true, key: 'tab:' + index,
 }, extra);
 
 const state = JSON.stringify({
-  desk: 'work', desk_id: 'work', desks: ['work'], desk_index: 0, active: 1,
+  desk: 'work', desk_id: 'work', desk_uid: deskUid, desks: ['work'], desk_index: 0, active: 1,
   hotkeys: {}, quick: { cols: 0, rows: 0, pages: 0, items: [], dests: [] }, quick_to: {},
   groups: [
     { name: 'shop', folder: 'D:/work/shop', color: '#5b7cff', linked: false, family: 'D:/work/shop/.git', branch: 'fix/tax',
@@ -34,7 +37,7 @@ const state = JSON.stringify({
     tab(3, 'heron', { ai: 'claude', group: 1, state: 'QUESTION', state_label: 'Waiting for you' }),
   ],
   jobs: [],
-  confer: { rev: 7, open: 0, open_desk: 'work', auto_open: true, line_max: 80, max_rounds: 3 },
+  confer: { rev: 7, open: 0, open_desk: deskUid, auto_open: true, line_max: 80, max_rounds: 3 },
   ball: { holder: 0, from: 0, depth: 0, max: 0, phase: '', progress: 0, awaiting_human: false },
   auto_enabled: true, build: '', help_rows: [], ais: [],
 });
@@ -78,14 +81,21 @@ const threads = [
   { id: 1, last_at: at(1), tabs: ['otter', 'finch', 'heron'], first: said[0].text },
   { id: 2, last_at: at(240), tabs: ['otter', 'heron'], first: 'Could you check why the staging build is slow?' },
 ];
-const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, desk: "work", req: CF.seq["${msg.act}"]}, ${JSON.stringify(msg)})); "ok"`;
-const listed = (list) => answer({ act: 'confer_threads', tab: 'otter', threads: list });
-const page = (rows) => answer({ act: 'confer', thread: 1, said: rows, more: false });
+const answer = (msg) => `window.__convo(Object.assign({panel: "confer", ok: true, desk: "${deskUid}", req: CF.seq["${msg.act}"]}, ${JSON.stringify(msg)})); "ok"`;
+const listed = (list) => answer({ act: 'confer_threads', tab: tabUid('otter'), threads: list });
+const page = (rows) => answer({ act: 'confer', thread: 1, said: rows, more: false }) + `;
+  if (CF.said.length !== ${rows.length} || !cvUi.list.textContent.includes("Ship it."))
+    throw new Error("The saved conference was not drawn");
+  const requestsBefore = convoSerial;
+  drawConvo();
+  if (requestsBefore !== convoSerial) throw new Error("Drawing a loaded conference requested it again");
+  "ok"`;
 
 export default {
   setup,
   scenes: {
     chat: listed(threads) + ';' + page(said),
+    remote: {served: 'remote', run: listed(threads) + ';' + page(said)},
     // The whole answer opened under a line
     full: listed(threads) + ';' + page(said)
       + `; document.querySelectorAll('#convopanel .cffold .vmore')[1].click(); "ok"`,

@@ -14399,7 +14399,7 @@ function drawConvo() {
     const c = (S && S.confer) || {};
     // Read when it comes into view, again whenever it changed, and afresh
     // when another desk is in front
-    if (CF.asked !== c.rev || CF.desk !== ((S && S.desk_id) || "")) { CF.asked = c.rev; cfRefresh(); }
+    if (CF.asked !== c.rev || CF.desk !== cfDesk()) { CF.asked = c.rev; cfRefresh(); }
     CF.seen = c.rev;
     drawConfer(u);
     return;
@@ -14639,6 +14639,9 @@ function cfAsk(act, args, slot) {
   const s = slot || act;
   send({kind: "convo", panel: "confer", act, args: Object.assign({}, args || {}, {req: convoRequest(CF.seq, s)})});
 }
+// The reader and stored conversations name the desk by its stable UID.
+// Its readable ID can change or be reused by a different desk.
+function cfDesk() { return (S && S.desk_uid) || ""; }
 // The tab whose conversations are shown: the AI tab in front. Anything
 // else in front shows the desk's
 function cfFocus() {
@@ -14648,7 +14651,7 @@ function cfFocus() {
 // Read the conversations again, and the one shown. Another desk or another
 // tab in front starts over: its conversations, the newest shown
 function cfRefresh() {
-  const desk = (S && S.desk_id) || "";
+  const desk = cfDesk();
   const focus = cfFocus();
   if (CF.desk !== desk || CF.focus !== focus) {
     const keep = CF.desk === desk && CF.picked;
@@ -14993,7 +14996,7 @@ function drawThreads(box) {
 // The conference, drawn into the panel's list
 function drawConfer(u) {
   // Another tab in front: its conversations
-  if (CF.focus !== cfFocus() || CF.desk !== ((S && S.desk_id) || "")) cfRefresh();
+  if (CF.focus !== cfFocus() || CF.desk !== cfDesk()) cfRefresh();
   drawThreads(u.threads);
   drawCast(u.cast);
   u.say.textContent = "";

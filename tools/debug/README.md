@@ -76,7 +76,14 @@ Commands write markers in the test's folder; no live app is restarted.
 `node tools/check-conversations.mjs` exercises the board's actual conversation
 state code without a window: tab and desk changes, delayed replies, simultaneous
 viewers, all-history searches, resume locations, and acknowledgements for pins
-on different rows. CI runs it too.
+on different rows. Conference replies use a desk UID distinct from its readable
+ID, including renaming the desk and reusing its ID for another desk. CI runs it too.
+
+`node tools/debug/shoot.mjs tools/debug/scenes/confer.mjs --only chat` (also
+`--only remote`) checks conference replies with desk and tab UIDs through the
+actual window and remote pages. It asserts that speech is drawn and that another
+draw does not start reading it again; pictures cover both languages, schemes,
+and widths. No running app or AI account is used.
 
 `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/convo-viewers.win.mjs`
 checks simultaneous searches and the resume location through an isolated app's

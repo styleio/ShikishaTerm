@@ -22,7 +22,7 @@ function viewer() {
     document:{getElementById:()=>null}, localStorage:{getItem:()=>null},
     setTimeout:()=>1, clearTimeout:()=>{}, CONVO_KINDS:[], T:{},
     drawConvo:()=>{}, drawSide:()=>{}, sideReveal:()=>{}, drawHead:()=>{}, drawAllIfShown:()=>{},
-    S:{active:1, tabs:[tab('tab-a')]}, cvFromAll:false,
+    S:{desk_id:'work', desk_uid:'desk-a', active:1, tabs:[tab('tab-a')]}, cvFromAll:false,
   });
   context.window = context;
   vm.runInContext(core + '\n' + follow + '\n' + conference + '\n' + history, context);
@@ -72,10 +72,30 @@ check('the conference clears speech when following another tab',()=>{
   v.context.S.tabs=[{...tab('tab-b'),id:'other'}]; v.run('cfRefresh()');
   assert.equal(v.run('CF.said.length'),0);
 });
+check('the conference accepts the desk UID returned by its reader',()=>{
+  const v=viewer(); v.run('cfRefresh()');
+  assert.equal(v.sent.at(-1).args.tab,'tab-a');
+  v.reply(v.sent.at(-1),{desk:'desk-a',tab:'tab-a',threads:[{id:1}]});
+  assert.equal(v.run('CF.thread'),1);
+  assert.equal(v.sent.at(-1).act,'confer');
+  v.reply(v.sent.at(-1),{desk:'desk-a',thread:1,said:[{k:'line',id:1,text:'Review complete'}],more:false});
+  assert.equal(v.run('CF.said[0].text'),'Review complete');
+  assert.equal(v.run('CF.loading'),false);
+});
+check('renaming a desk keeps its chosen conference',()=>{
+  const v=viewer();
+  v.run('cfRefresh(); cfShow(1,true); CF.said=[{k:"line",id:1,text:"Still here"}]');
+  v.context.S.desk_id='renamed'; v.run('cfRefresh()');
+  assert.equal(v.run('CF.thread'),1);
+  assert.equal(v.run('CF.said[0].text'),'Still here');
+});
 check('a chosen conference does not stay visible in another desk',()=>{
   const v=viewer();
   v.run('cfRefresh(); cfShow(1, true); CF.said=[{id:1,k:"line",text:"from A"}]');
-  v.context.S.desk_id='another-desk'; v.run('cfRefresh()');
+  const old=v.sent.at(-1);
+  // A different desk can reuse the same readable ID.
+  v.context.S.desk_uid='desk-b'; v.run('cfRefresh()');
+  v.reply(old,{desk:'desk-a',thread:1,said:[{k:'line',id:2,text:'Late from A'}]});
   assert.equal(v.run('CF.thread'),null);
   assert.equal(v.run('CF.said.length'),0);
 });
@@ -83,7 +103,7 @@ check('an earlier conference page from a previous visit is rejected',()=>{
   const v=viewer(); v.run('cfRefresh(); cfShow(1,false); cfAsk("confer",{thread:1},"earlier")');
   const old=v.sent.at(-1);
   v.run('cfShow(2,false); cfShow(1,false)');
-  v.reply(old,{desk:'',thread:1,said:[{k:'line',id:1,text:'stale'}],more:false});
+  v.reply(old,{desk:'desk-a',thread:1,said:[{k:'line',id:1,text:'stale'}],more:false});
   assert.equal(v.run('CF.said.length'),0);
 });
 check('a reply delivered twice does not duplicate an older page',()=>{
