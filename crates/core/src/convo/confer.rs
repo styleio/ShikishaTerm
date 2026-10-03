@@ -360,11 +360,10 @@ pub fn belongs_to(
 /// person reads, and "the person's language" was answered from that.
 /// The reply that follows is the line, whole: nothing is run to say it
 pub fn stop_reason(max: u32) -> String {
-    let max = if max == 0 { String::new() } else { format!("at most {max} characters, ") };
+    let max = if max == 0 { String::new() } else { format!("Use at most {max} characters. ") };
     format!(
-        "Your answer has been passed on in full to the tab that asked you. The person follows the tabs as a chat: \
-         reply now with only one short line about your answer, the way you would say it to a colleague -- \
-         {max}one line. Nothing else: no quotes, no heading, no repeat of the answer. {}",
+        "Your full answer is kept separately. Reply with only one short line as your own chat message to the asking tab. \
+         Keep its meaning, tone, scope and uncertainty; reuse it if already short. {max}No heading. {}",
         crate::asking::answer_in(&crate::i18n::language_name())
     )
 }
@@ -393,6 +392,7 @@ mod tests {
         // the other tab's ask, which is often in English
         assert!(why.ends_with(&crate::asking::answer_in(&crate::i18n::language_name())), "{why}");
         assert!(!why.contains("the language the person uses"), "{why}");
+        assert!(!stop_reason(0).contains("at most"), "zero means no character limit");
     }
 
     #[test]

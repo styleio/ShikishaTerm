@@ -6,6 +6,13 @@
  *
  *     cargo build
  *     node tools/debug/confer-real.win.mjs [--n=10] [--pair=claude-a,codex-b] [--slow=110] [--keep]
+ *     node tools/debug/confer-real.win.mjs --scenario=dialogue --lang=ja [--caller=codex] [--reverse]
+ *     node tools/debug/confer-real.win.mjs --scenario=lines --lang=ja
+ *
+ * dialogue runs five conversational asks and two security reviews around a
+ * real code edit and fix. It saves both full replies and displayed lines for
+ * human comparison. --out chooses the results directory; --exe names a saved
+ * baseline build (and deliberately skips the current-source freshness check).
  *
  * Pairs: claude-a -> codex-b, codex-b -> claude-c, claude-a -> claude-c, --n
  * asks each. A trial passes when the asker reports what only the other tab's
@@ -35,11 +42,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
-const OUT = path.join(ROOT, 'target', 'confer-real');
 const arg = (name, dflt) => {
   const a = process.argv.find((x) => x.startsWith(`--${name}=`));
   return a ? a.slice(name.length + 3) : dflt;
@@ -47,25 +53,40 @@ const arg = (name, dflt) => {
 const N = Number(arg('n', 10));
 const SLOW = Number(arg('slow', 0));
 const KEEP = process.argv.includes('--keep');
-const RUN = path.join(os.tmpdir(), 'sk-confer');
-const APP = path.join(RUN, 'app');
+const SCENARIO = arg('scenario', 'memo');
+if (!['memo', 'dialogue', 'lines'].includes(SCENARIO)) throw new Error('unknown scenario');
+const CODEX_PAIR = SCENARIO === 'lines' || (SCENARIO === 'dialogue' && arg('caller', 'claude') === 'codex');
+const OUT = path.resolve(arg('out', path.join(ROOT, 'target', 'confer-real')));
+const RUN = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-confer-'));
+const INSTANCE = path.join(RUN, 'copy');
+const APP = path.join(INSTANCE, 'app');
 const HOME = path.join(RUN, 'home');
 const WORK = path.join(RUN, 'work');
 const F = { a: path.join(WORK, 'fa'), b: path.join(WORK, 'fb'), c: path.join(WORK, 'fc') };
-const CONFIG = path.join(APP, 'config', 'config.json');
+const CONFIG = path.join(RUN, 'config.json');
 const TOKEN = 'confer-check-token-0123456789';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
-const ps = (...args) => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8' });
-const stopApp = () => ps('-Command',
-  `Get-Process -ErrorAction SilentlyContinue | ` +
-  `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
-  `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
+const ps = (...args) => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8', windowsHide: true });
+const launcher = path.join(ROOT, 'tools', 'debug', 'instance.win.ps1');
+const stopApp = () => ps('-File', launcher, '-At', INSTANCE, '-Stop');
+let cleaned = false;
+const cleanup = () => {
+  if (KEEP || cleaned) return;
+  stopApp();
+  if (fs.existsSync(HOME)) {
+    if (fs.realpathSync(HOME) !== path.join(fs.realpathSync(RUN), 'home'))
+      throw new Error('the test home no longer belongs to this run');
+    fs.rmSync(HOME, { recursive: true, force: true });
+  }
+  cleaned = true;
+};
+// Also covers a failure while staging or signing in, before the trials begin.
+process.on('exit', cleanup);
 const nonce = () => Math.random().toString(36).slice(2, 8).toUpperCase();
-const freePort = () => new Promise((r) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
+const exe = path.resolve(arg('exe', path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe')));
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 // A check of an older build says nothing about the code in front of you
 // (cargo test does not build the app itself)
@@ -75,11 +96,11 @@ if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first
     const p = path.join(dir, e.name);
     return e.isDirectory() ? newer(p) : fs.statSync(p).mtimeMs > built;
   });
-  if (['src', path.join('crates', 'core', 'src')].some((d) => newer(path.join(ROOT, d)))) {
+  if (!arg('exe', '') && ['src', path.join('crates', 'core', 'src')].some((d) => newer(path.join(ROOT, d)))) {
     die('the build at target\\debug is older than the sources -- run cargo build first');
   }
 }
-for (const cli of ['claude', 'codex']) {
+for (const cli of CODEX_PAIR ? ['codex'] : ['claude', 'codex']) {
   if (spawnSync('where.exe', [cli], { encoding: 'utf8' }).status !== 0) die(`${cli} is not on PATH`);
 }
 const REAL = os.homedir();
@@ -87,14 +108,11 @@ const SIGN_INS = [
   [path.join(REAL, '.claude', '.credentials.json'), path.join(HOME, '.claude', '.credentials.json')],
   [path.join(REAL, '.claude.json'), path.join(HOME, '.claude.json')],
   [path.join(REAL, '.codex', 'auth.json'), path.join(HOME, '.codex', 'auth.json')],
-];
+].filter(([from]) => !CODEX_PAIR || from.includes('.codex'));
 for (const [from] of SIGN_INS) if (!fs.existsSync(from)) die(`not signed in: ${from} is missing`);
 
 // ── The copy, its home, its folders and its tabs ───────────────────────────
 console.log('starting this checkout\'s build, isolated');
-stopApp();
-await sleep(800);
-fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, HOME, path.join(HOME, '.claude'), path.join(HOME, '.codex'), ...Object.values(F),
   path.join(RUN, 'localappdata'), OUT]) fs.mkdirSync(d, { recursive: true });
 for (const [from, to] of SIGN_INS) fs.copyFileSync(from, to);
@@ -109,10 +127,7 @@ fs.writeFileSync(path.join(HOME, '.claude', 'settings.json'), JSON.stringify({ s
 // npm install -g and moved this PC from 0.155 to 0.159)
 fs.writeFileSync(path.join(HOME, '.codex', 'config.toml'),
   'windows_wsl_setup_acknowledged = true\ncheck_for_update_on_startup = false\n\n[windows]\nsandbox = "unelevated"\n');
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
-const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
-if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
-const skillText = spawnSync(appExe, ['--cli', 'skill'], { encoding: 'utf8' }).stdout;
+const skillText = spawnSync(exe, ['--cli', 'skill'], { encoding: 'utf8', windowsHide: true }).stdout;
 if (!skillText.includes('name: shikisha')) die('the app did not print its skill:\n' + skillText);
 for (const dir of Object.values(F)) {
   for (const where of ['.claude', '.agents']) {
@@ -130,23 +145,34 @@ const TABS = {
   'codex-b': { cwd: F.b, command: codexCmd },
   'claude-c': { cwd: F.c, command: claudeCmd },
 };
-const port = await freePort();
+if (SCENARIO !== 'memo') delete TABS['claude-c'];
+if (CODEX_PAIR) {
+  delete TABS['claude-a'];
+  TABS['codex-a'] = {cwd:F.a,command:codexCmd};
+}
+if (SCENARIO === 'lines') delete TABS['codex-a'];
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
-  language: 'en',
-  remote: { enabled: true, bind: '127.0.0.1', port, sticky_token: true, fixed_token: TOKEN },
+  language: arg('lang', 'en'),
+  keep_terminals: false,
+  remote: { sticky_token: true, fixed_token: TOKEN },
   external_api: { access: 'user' },
   // The hooks agreed to, so this copy writes them -- into this run's home
-  agent_hooks: { 'Claude Code': 'on', 'Codex CLI': 'on' },
+  agent_hooks: CODEX_PAIR ? {'Codex CLI':'on'} : { 'Claude Code': 'on', 'Codex CLI': 'on' },
   desks: [{ name: 'Confer', id: 'confer', folders: Object.entries(TABS).map(([id, t]) => ({ cwd: t.cwd, tabs: [{ name: id, id, command: t.command }] })) }],
 }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|CODEX_HOME)/i.test(k)));
-Object.assign(env, { LOCALAPPDATA: path.join(RUN, 'localappdata'), USERPROFILE: HOME, HOME, CODEX_HOME: path.join(HOME, '.codex'),
-  DISABLE_AUTOUPDATER: '1' });
-const child = spawn(appExe, ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' });
-const pid = child.pid;
-child.unref();
+Object.assign(env, { USERPROFILE: HOME, HOME, CODEX_HOME: path.join(HOME, '.codex'),
+  DISABLE_AUTOUPDATER: '1', TERM: 'xterm-256color' });
+const started = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
+  '-At', INSTANCE, '-Work', WORK, '-Exe', exe, '-Config', CONFIG, '-Cdp', '0'],
+  {env, encoding:'utf8', windowsHide:true});
+if (started.status !== 0) die('launch failed: '+started.stdout+started.stderr);
+const pid = Number(/^pid=(\d+)/m.exec(started.stdout)?.[1]);
+const port = Number(/board=http:\/\/127\.0\.0\.1:(\d+)/.exec(started.stdout)?.[1]);
+if (!pid || !port) die('the launcher did not identify its copy');
+console.log('isolated copy: '+RUN);
 
 // ── The door: the pipe, as the person ─────────────────────────────────────
 const dataDir = () => [path.join(APP, 'data'), path.join(RUN, 'localappdata', 'ShikishaTerm', 'data')]
@@ -161,15 +187,22 @@ const openDoor = async () => {
   await new Promise((r, j) => { sock.once('connect', r); sock.once('error', j); });
   let buf = '';
   const waiting = [];
+  const disconnected = () => {
+    for (const w of waiting.splice(0)) w.reject(new Error('the test app disconnected'));
+  };
+  sock.on('error', disconnected); sock.on('close', disconnected);
   sock.on('data', (d) => {
     buf += d.toString('utf8');
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i); buf = buf.slice(i + 1);
-      const w = waiting.shift(); if (w) w(JSON.parse(line));
+      const w = waiting.shift(); if (w) w.resolve(JSON.parse(line));
     }
   });
-  const line = (o) => new Promise((r) => { waiting.push(r); sock.write(JSON.stringify(o) + '\n'); });
+  const line = (o) => new Promise((resolve,reject) => {
+    if (sock.destroyed) { reject(new Error('the test app disconnected')); return; }
+    waiting.push({resolve,reject}); sock.write(JSON.stringify(o) + '\n');
+  });
   const hello = await line({ token: fs.readFileSync(path.join(dir, 'api-token'), 'utf8').trim() });
   if (!hello.ok) die('the door refused: ' + JSON.stringify(hello));
   let n = 0;
@@ -181,7 +214,13 @@ const openDoor = async () => {
 };
 const until = async (test, what, ms) => {
   const end = Date.now() + ms;
-  while (Date.now() < end) { if (await test().catch(() => false)) return true; await sleep(500); }
+  while (Date.now() < end) {
+    if (await test().catch(e => {
+      if (/needs to sign in|test app disconnected/.test(e.message)) throw e;
+      return false;
+    })) return true;
+    await sleep(500);
+  }
   throw new Error('timed out waiting for ' + what);
 };
 const screen = (id) => door('tab_screen', id).then((s) => String(s || ''));
@@ -189,6 +228,13 @@ const state = (id) => door('state', id);
 const hooksLog = () => {
   const f = path.join(APP, 'logs', 'hooks.log');
   return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split(/\r?\n/) : [];
+};
+const exchanges = (sinceMs) => {
+  const db = new DatabaseSync(path.join(dataDir(), 'conversations.db'), { readOnly: true });
+  try {
+    return db.prepare('SELECT * FROM asks WHERE asked_at >= ? ORDER BY id').all(sinceMs)
+      .map(ask => ({...ask, lines:db.prepare('SELECT tab, text, how FROM lines WHERE ask_id = ? ORDER BY id').all(ask.id)}));
+  } finally { db.close(); }
 };
 
 // ── The hooks, agreed to the way a person agrees ───────────────────────────
@@ -210,7 +256,7 @@ const agreeToHooks = async () => {
   await fetch(`${base}/api/intent?t=${TOKEN}`, { method: 'POST', headers: { Cookie: cookies },
     body: JSON.stringify({ kind: 'agenthooks', answer: 'on', seq: asked.seq }), signal: AbortSignal.timeout(10000) });
   const written = (f) => fs.existsSync(f) && fs.readFileSync(f, 'utf8').includes('--hook') && fs.readFileSync(f, 'utf8').includes('line');
-  await until(async () => written(path.join(HOME, '.claude', 'settings.json')) && written(path.join(HOME, '.codex', 'hooks.json')),
+  await until(async () => (CODEX_PAIR || written(path.join(HOME, '.claude', 'settings.json'))) && written(path.join(HOME, '.codex', 'hooks.json')),
     'the hooks to be written', 60000);
   for (const id of Object.keys(TABS)) await door('restart', id, 'fresh');
   await sleep(3000);
@@ -363,19 +409,28 @@ try {
   }
   await sleep(3000);
   const only = arg('pair', '').split(',').filter(Boolean);
-  const pairs = [['claude-a', 'codex-b'], ['codex-b', 'claude-c'], ['claude-a', 'claude-c']]
-    .filter(([a, b]) => !only.length || (a === only[0] && b === only[1]));
-  for (let n = 1; n <= N; n++) {
-    for (const [caller, callee] of pairs) await trial(n, caller, callee);
+  if (SCENARIO === 'lines') {
+    const {lines} = await import('./confer-dialogue.mjs');
+    await lines({door,exchanges,until,out:OUT});
+  } else if (SCENARIO === 'dialogue') {
+    const {dialogue} = await import('./confer-dialogue.mjs');
+    await dialogue({door, state, screen, exchanges, until, sleep, out:OUT, folders:F,
+      first:CODEX_PAIR?'codex-a':'claude-a', reverse:process.argv.includes('--reverse')});
+  } else {
+    const pairs = [['claude-a', 'codex-b'], ['codex-b', 'claude-c'], ['claude-a', 'claude-c']]
+      .filter(([a, b]) => !only.length || (a === only[0] && b === only[1]));
+    for (let n = 1; n <= N; n++) {
+      for (const [caller, callee] of pairs) await trial(n, caller, callee);
+    }
+    if (results.some(r => !r.pass)) process.exitCode = 1;
   }
 } catch (e) {
   console.error('stopped: ' + e.message);
+  process.exitCode = 1;
 } finally {
-  summary();
+  if (SCENARIO === 'memo') summary();
   if (!KEEP) {
-    stopApp();
-    await sleep(1500);
-    fs.rmSync(HOME, { recursive: true, force: true });
+    cleanup();
     console.log('the run\'s home, with its copy of the sign-ins, is deleted');
   } else {
     console.log(`kept: ${RUN} (board: http://127.0.0.1:${port}/?t=${TOKEN}); delete ${HOME} when done -- it holds a copy of the sign-ins`);

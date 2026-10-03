@@ -85,6 +85,20 @@ actual window and remote pages. It asserts that speech is drawn and that another
 draw does not start reading it again; pictures cover both languages, schemes,
 and widths. No running app or AI account is used.
 
+`node tools/debug/confer-real.win.mjs --scenario=dialogue --lang=ja` uses real
+Claude and Codex tabs for five conversational exchanges, then a code change,
+security review, fix and second review. `--caller=codex` uses two independent
+Codex tabs; `--reverse` exchanges their roles. An independent check verifies
+owner, other-user and anonymous access, a missing document and the new field.
+`--scenario=lines` sends three fixed full answers through real Codex and the
+app's stop hook, isolating the displayed line from differences in the task.
+Compare builds with `--exe=<saved exe> --out=<results folder>`; without `--exe`,
+the build must match the current sources. These runs spend account usage and
+start only an isolated copy through `instance.win.ps1`. The output checks
+delivery, length and preservation of the full answer; inspect the saved JSON
+for tone, concrete findings, review scope and unverified claims. A structural
+pass is not a judgment of the prose. CI does not spend real account usage.
+
 `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/convo-viewers.win.mjs`
 checks simultaneous searches and the resume location through an isolated app's
 real remote door and state socket, plus multiple pins and rapid note edits,

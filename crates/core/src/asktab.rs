@@ -495,9 +495,21 @@ pub enum Step {
     Drop,
 }
 
-/// A line as a person says one: quotes or ticks around it are not part of it
+/// Remove a wrapper only when it encloses the whole line. A quote around a
+/// title or a code name inside the sentence belongs to what was said.
 fn bare_line(said: &str) -> &str {
-    said.trim().trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '「' | '」' | '“' | '”')).trim()
+    let mut line = said.trim();
+    loop {
+        let inner = [('"', '"'), ('\'', '\''), ('`', '`'), ('「', '」'), ('“', '”')]
+            .into_iter()
+            .find_map(|(open, close)| {
+                line.strip_prefix(open)?.strip_suffix(close).filter(|s| !s.contains([open, close]))
+            });
+        match inner {
+            Some(s) => line = s.trim(),
+            None => return line,
+        }
+    }
 }
 
 /// `tab_run(tab, command, {timeout_ms})` and `browser_do(tab, goal, ...)`,
@@ -1223,6 +1235,16 @@ mod tests {
         a.deadline = Instant::now() + Duration::from_secs(600);
         a.hook_expected = true;
         a
+    }
+
+    #[test]
+    fn a_line_keeps_quotes_that_belong_to_the_sentence() {
+        for line in ["「白鳥」、弾けたら素敵だね！", "`readDocument` を直しました。", "\"read\" calls \"check\"", "「認証」と「認可」"] {
+            assert_eq!(bare_line(line), line);
+        }
+        assert_eq!(bare_line("  \"Ship it.\"  "), "Ship it.");
+        assert_eq!(bare_line("「修正を確認しました。」"), "修正を確認しました。");
+        assert_eq!(bare_line("`\"Ready.\"`"), "Ready.");
     }
 
     #[test]
