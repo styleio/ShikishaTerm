@@ -1013,6 +1013,17 @@ impl FarReader {
         self.last = true;
     }
 
+    /// The person's words for `key`, about the machine this terminal is on.
+    /// This PC's own resident process is not the bridge a far machine runs,
+    /// and is not reached over a connection, so it has words of its own
+    fn told(&self, key: &str) -> String {
+        if self.term.here() {
+            crate::i18n::t(&format!("{key}_here"))
+        } else {
+            crate::i18n::tp(key, &[("host", &self.term.at.name())])
+        }
+    }
+
     /// The terminal gone back to ended while this app was not there: its end
     /// is known, so the tab starts where its conversation was, in a new one.
     /// Or there was none yet (`open_later`), and this is its first
@@ -1086,12 +1097,11 @@ impl std::io::Read for FarReader {
                     self.term.ended.store(true, Ordering::SeqCst);
                     return Ok(0);
                 }
-                let address = self.term.at.address();
                 if self.again && !self.said_waiting {
                     // Said first, so the tab shows why it is empty
                     self.said_waiting = true;
                     let key = if self.fresh { "msg.farterm.waiting_line" } else { "msg.farterm.going_back" };
-                    self.say(&crate::i18n::tp(key, &[("host", &address)]));
+                    self.say(&self.told(key));
                     continue;
                 }
                 crate::append_hook_log(&format!("far terminal {}: the line went; waiting for it to come back", self.term.term()));
@@ -1132,7 +1142,7 @@ impl std::io::Read for FarReader {
                     // Not reached: the terminal stays written down, and a
                     // restart of the tab asks again. Nothing new is started
                     None => {
-                        self.say_last(&crate::i18n::tp("msg.farterm.not_reached", &[("host", &address)]));
+                        self.say_last(&self.told("msg.farterm.not_reached"));
                         continue;
                     }
                 }
@@ -1230,7 +1240,7 @@ impl std::io::Read for FarReader {
                     if let Ok(mut o) = self.term.open_there.lock() {
                         *o = None;
                     }
-                    let text = crate::i18n::tp("msg.farterm.unknown", &[("host", &self.term.at.name())]);
+                    let text = self.told("msg.farterm.unknown");
                     self.say_last(&text);
                 }
                 // The processes the terminal's job holds (this PC's resident

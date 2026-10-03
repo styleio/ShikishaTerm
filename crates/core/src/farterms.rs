@@ -275,6 +275,8 @@ struct Term {
     since: Instant,
     /// The session its shell leads (the shell's process id)
     session: Option<u32>,
+    /// What tells this run of the session from a later one with its id
+    mark: Option<String>,
 }
 
 impl Term {
@@ -307,6 +309,46 @@ struct Before {
     tab: String,
     /// The session its shell leads: every process of the program in it
     session: u32,
+    /// What tells this run of the session from a later process given the
+    /// same id ([`run_mark`]). Absent in what an older resident process wrote
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mark: Option<String>,
+}
+
+impl Before {
+    /// Whether its program still runs: its session does, and is the same run
+    /// of it that was written down. A process id is handed out again, and
+    /// after the PC starts again a small one is soon some other program's
+    fn runs(&self) -> bool {
+        session_runs(self.session) && self.mark.as_ref().is_none_or(|m| run_mark(self.session).as_ref() == Some(m))
+    }
+}
+
+/// When the process that leads a session was started, which no later process
+/// given the same id shares
+#[cfg(windows)]
+fn run_mark(session: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: opened only to read its times, and closed below
+    unsafe {
+        let p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, session);
+        if p.is_null() {
+            return None;
+        }
+        let blank = || FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut made, mut gone, mut kernel, mut user) = (blank(), blank(), blank(), blank());
+        let ok = GetProcessTimes(p, &mut made, &mut gone, &mut kernel, &mut user) != 0;
+        CloseHandle(p);
+        ok.then(|| ((u64::from(made.dwHighDateTime) << 32) | u64::from(made.dwLowDateTime)).to_string())
+    }
+}
+
+/// This start of the machine: a session of an earlier one does not run,
+/// whatever now leads one with the same id
+#[cfg(unix)]
+fn run_mark(_session: u32) -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string())
 }
 
 /// Whether the program a terminal started still runs. On Windows every
@@ -348,9 +390,9 @@ fn session_runs(session: u32) -> bool {
 
 /// What is answered about a terminal of an earlier resident process: ended
 /// when nothing of its session runs, not known while something does
-fn answer_before(before: &[Before], id: u64, generation: &str, tab: &str, runs: impl Fn(u32) -> bool) -> Option<Value> {
+fn answer_before(before: &[Before], id: u64, generation: &str, tab: &str, runs: impl Fn(&Before) -> bool) -> Option<Value> {
     let b = before.iter().find(|b| b.generation == generation && b.term == id && b.tab == tab)?;
-    Some(if runs(b.session) {
+    Some(if runs(b) {
         json!({ "did": "unknown", "term": id, "why": "another generation of the resident process, and its program still runs" })
     } else {
         json!({ "did": "over", "term": id, "code": -1, "why": "its resident process ended, and it with it" })
@@ -466,13 +508,17 @@ impl Terms {
         // the list before or the list after, never an older one over a newer
         static WRITING: Mutex<()> = Mutex::new(());
         let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-        let mut all: Vec<Before> = self.before.iter().filter(|b| session_runs(b.session)).cloned().collect();
+        let mut all: Vec<Before> = self.before.iter().filter(|b| b.runs()).cloned().collect();
+        // Ended ones too, for as long as this process keeps them: what ended
+        // is known only here, and a resident process that goes right after
+        // (Windows shutting down ends the programs first, then this) would
+        // otherwise leave the next one unable to tell an ended terminal from
+        // one it never heard of. Its session no longer runs, so the next one
+        // answers it as ended
         if let Ok(t) = self.terms.lock() {
             for (id, term) in t.iter() {
-                if let Some(session) = term.session
-                    && term.ended.lock().is_ok_and(|e| e.is_none())
-                {
-                    all.push(Before { generation: self.generation.clone(), term: *id, tab: term.tab.clone(), session });
+                if let Some(session) = term.session {
+                    all.push(Before { generation: self.generation.clone(), term: *id, tab: term.tab.clone(), session, mark: term.mark.clone() });
                 }
             }
         }
@@ -486,7 +532,7 @@ impl Terms {
     /// nothing of its session runs any more (the resident process ended and
     /// took it with it), else not known -- it may still run, out of reach
     fn of_before(&self, id: u64, generation: &str, tab: &str) -> Option<Value> {
-        answer_before(&self.before, id, generation, tab, session_runs)
+        answer_before(&self.before, id, generation, tab, Before::runs)
     }
 
     fn say(core: &Arc<Core>, line: u64, m: Value) {
@@ -608,6 +654,7 @@ impl Terms {
             ended_at: Mutex::new(None),
             since: Instant::now(),
             session,
+            mark: session.and_then(run_mark),
         });
         if let Ok(mut t) = self.terms.lock() {
             t.insert(id, Arc::clone(&term));
@@ -1179,11 +1226,28 @@ mod tests {
     /// and a second AI is not started beside it (far-keep plan §4.4)
     #[test]
     fn a_terminal_of_an_earlier_resident_process_is_ended_only_once_nothing_of_it_runs() {
-        let before = vec![Before { generation: "g1".into(), term: 4, tab: "t".into(), session: 77 }];
-        assert_eq!(answer_before(&before, 4, "g1", "t", |_| false).unwrap()["did"], "over");
-        assert_eq!(answer_before(&before, 4, "g1", "t", |_| true).unwrap()["did"], "unknown");
-        assert!(answer_before(&before, 4, "g1", "other tab", |_| false).is_none(), "another tab's");
-        assert!(answer_before(&before, 5, "g1", "t", |_| false).is_none(), "an id it never had");
+        let before = vec![Before { generation: "g1".into(), term: 4, tab: "t".into(), session: 77, mark: None }];
+        assert_eq!(answer_before(&before, 4, "g1", "t", |_: &Before| false).unwrap()["did"], "over");
+        assert_eq!(answer_before(&before, 4, "g1", "t", |_: &Before| true).unwrap()["did"], "unknown");
+        assert!(answer_before(&before, 4, "g1", "other tab", |_: &Before| false).is_none(), "another tab's");
+        assert!(answer_before(&before, 5, "g1", "t", |_: &Before| false).is_none(), "an id it never had");
+    }
+
+    /// A process id written down before the PC started again may lead some
+    /// other program now: it is the same run only when its mark matches, and
+    /// one written by an older resident process, with no mark, is taken as
+    /// it was before
+    #[test]
+    fn a_session_is_the_one_written_down_only_when_its_mark_matches() {
+        #[cfg(windows)]
+        let mine = std::process::id();
+        #[cfg(unix)]
+        // SAFETY: getsid only reads
+        let mine = unsafe { libc::getsid(0) } as u32;
+        let at = |mark: Option<String>| Before { generation: "g".into(), term: 1, tab: "t".into(), session: mine, mark };
+        assert!(at(run_mark(mine)).runs(), "this very run");
+        assert!(at(None).runs(), "written without a mark");
+        assert!(!at(Some("another run".into())).runs(), "another program given the same id");
     }
 
     /// A session runs while any of its processes does: this test's own does,
