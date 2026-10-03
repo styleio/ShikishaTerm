@@ -10582,23 +10582,37 @@ function drawSignIn(box, note, shown, change) {
 // A machine added before the forms asked about the SHIKISHA bridge, with a
 // tab open on it: asked once, in the board's question, when nothing else is
 // being asked. Either answer is kept in the settings, and the machine is not
-// offered again; put away unanswered, it is asked at the next start
-const bridgeAsked = new Set();
+// offered again; closed unanswered (✕, Esc), it is asked at the next start.
+// The question box is shared, and another question (a server's key, a hook)
+// can take it over: one taken over before it was answered is asked again
+// once the box is free
+const bridgePut = new Set();
+let bridgeShowing = null;
 function bridgeOffered() {
-  const o = S && S.bridge_offer;
-  if (!o || bridgeAsked.has(o.host) || S.settings_open || S.login_step) return;
   const ask = document.getElementById("sask");
+  if (bridgeShowing && ask && (ask.hidden || ask.querySelector(".vtitle").textContent !== bridgeShowing.title)) {
+    bridgeShowing = null;
+  }
+  const o = S && S.bridge_offer;
+  if (!o || bridgeShowing || bridgePut.has(o.host) || S.settings_open || S.login_step) return;
   const branch = document.getElementById("branch");
   if (!ask || !ask.hidden || (branch && !branch.hidden)) return;
-  bridgeAsked.add(o.host);
-  const answer = on => send({kind:"bridge", host:o.host, on});
+  const title = (T["tui.bridge.ask.title"] || "{host}").replaceAll("{host}", o.host);
+  bridgeShowing = {host: o.host, title};
+  const answer = on => { bridgePut.add(o.host); bridgeShowing = null; send({kind:"bridge", host:o.host, on}); };
   askQuestion({
-    title: (T["tui.bridge.ask.title"] || "{host}").replaceAll("{host}", o.host),
+    title,
     say: T["settings.hosts.bridge.what"] || "",
     more: {label: T["tui.bridge.ask.more"] || "", say: (T["settings.hosts.bridge.where"] || "") + " " + (T["settings.hosts.bridge.off"] || "")},
     label: T["tui.bridge.ask.put"] || "",
     no: {label: T["tui.bridge.ask.no"] || "", act: () => answer(false)},
     go: () => answer(true),
+    // Called when the box is closed unanswered, and when another question
+    // takes it over -- then the box is still up, and this is asked again
+    back: () => {
+      bridgeShowing = null;
+      if (document.getElementById("sask").hidden) bridgePut.add(o.host);
+    },
   });
 }
 
