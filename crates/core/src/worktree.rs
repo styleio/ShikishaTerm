@@ -13,6 +13,8 @@
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
+pub mod review;
+
 /// Everything decided about a branch that is about to get its own folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
@@ -1797,15 +1799,9 @@ pub fn unhook_links(folder: &Path) {
 /// everything after that file on disk
 const LONG_PATHS: &str = "core.longpaths=true";
 
-/// Gets rid of a branch's folder, once there is nothing in it to lose.
-///
-/// Refused while anything is uncommitted. A folder full of work that only
-/// exists there is the one thing this must never take, and "are you sure" is
-/// not a good enough answer when the app is the one that made the folder in
-/// the first place. What it does not check is whether the branch was merged:
-/// that is a judgement, and it belongs to the person.
+/// Removes a clean working folder. Its branch and committed history remain.
 pub fn discard(folder: &Path) -> Result<()> {
-    discard_step(folder, &mut false)
+    discard_step(folder, &mut false, None)
 }
 
 /// One try at [`discard`]. `released` is whether git has let go of this
@@ -1814,19 +1810,19 @@ pub fn discard(folder: &Path) -> Result<()> {
 /// folder a worktree. Without that record, a folder git half-deleted looks
 /// the same as a folder that was never a worktree, and it could never be
 /// finished.
-fn discard_step(folder: &Path, released: &mut bool) -> Result<()> {
+fn discard_step(folder: &Path, released: &mut bool, approved: Option<&str>) -> Result<()> {
     if !folder.exists() {
         return Ok(());
     }
     if crate::repo::is_linked(folder) {
-        ready_to_discard(folder)?;
+        let force = ready_to_discard_reviewed(folder, approved)?;
         let main = crate::repo::main_checkout(folder)
             .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.worktree.not_a_repo")))?;
         // Git's own removal, so the repository stops listing it too. Anything
         // linked into the folder is unhooked first: removing the folder with a
         // junction still in it walks through and takes what is on the other side
         unhook_links(folder);
-        let removed = run(&[
+        let mut args = vec![
             "git".into(),
             "-C".into(),
             main.display().to_string(),
@@ -1834,8 +1830,11 @@ fn discard_step(folder: &Path, released: &mut bool) -> Result<()> {
             LONG_PATHS.into(),
             "worktree".into(),
             "remove".into(),
-            folder.display().to_string(),
-        ]);
+        ];
+        if force { args.push("--force".into()); }
+        args.push("--".into());
+        args.push(folder.display().to_string());
+        let removed = run(&args);
         // Git deletes `.git` before anything else in the folder. If it is still
         // there, git refused before it touched anything, and git's reason is the
         // answer. If it is gone, git got part of the way, and the rest is ours
@@ -1953,10 +1952,14 @@ const REMOVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// `ready_to_discard` before anything was closed, while saying no was still
 /// free.
 pub fn discard_waiting(folder: &Path) -> Result<()> {
+    discard_waiting_reviewed(folder, None)
+}
+
+pub fn discard_waiting_reviewed(folder: &Path, approved: Option<&str>) -> Result<()> {
     let until = std::time::Instant::now() + REMOVAL_WAIT;
     let mut released = false;
     loop {
-        let tried = discard_step(folder, &mut released);
+        let tried = discard_step(folder, &mut released, approved);
         // Gone is the only thing that counts as done: git can let go of a
         // folder while Windows still holds the empty shell of it open
         if !folder.exists() {
@@ -2012,6 +2015,8 @@ fn count_while<T>(folder: &Path, deleting: &std::sync::Mutex<Option<FileProgress
 /// written to a log.
 pub struct Removal {
     pub folder: PathBuf,
+    pub kept_branch: Option<String>,
+    approved: Option<String>,
     /// The machine the folder is on, when it is not this PC: a MicroVM, which
     /// the folder is -- what a second try deletes, and what putting it back
     /// lets the program speak to again -- or a server, where git removes it
@@ -2023,10 +2028,14 @@ pub struct Removal {
 
 impl Removal {
     pub fn start(folder: PathBuf) -> Removal {
-        let removal = Removal { folder: folder.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
+        Self::start_reviewed(folder, None)
+    }
+
+    pub fn start_reviewed(folder: PathBuf, approved: Option<String>) -> Removal {
+        let removal = Removal { kept_branch: crate::repo::branch_of(&folder), folder: folder.clone(), approved: approved.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
         let (outcome, deleting) = (removal.outcome.clone(), removal.deleting.clone());
         std::thread::spawn(move || {
-            let said = count_while(&folder, &deleting, || discard_waiting(&folder)).map_err(|e| format!("{e:#}"));
+            let said = count_while(&folder, &deleting, || discard_waiting_reviewed(&folder, approved.as_deref())).map_err(|e| format!("{e:#}"));
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {}: {why}", folder.display()));
             }
@@ -2043,7 +2052,7 @@ impl Removal {
         if let Some(id) = host.instance.as_deref() {
             crate::e2b::let_go(id);
         }
-        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
+        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: None, on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
             let said = match (host.instance.as_deref(), crate::e2b::key()) {
@@ -2061,14 +2070,16 @@ impl Removal {
 
     /// A worktree on a server reached over SSH: git there removes it, as git
     /// here removes one here, and its branch stays in the project's
-    /// repository on that server, as a worktree's here does. Only a worktree
-    /// is removed, and git refuses one with work in it whatever was asked
-    /// before
+    /// repository on that server, as a worktree's here does.
     pub fn start_on_server(folder: PathBuf, host: crate::config::HostSpec) -> Removal {
-        let removal = Removal { folder: folder.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
+        Self::start_on_server_reviewed(folder, host, None)
+    }
+
+    pub fn start_on_server_reviewed(folder: PathBuf, host: crate::config::HostSpec, approved: Option<String>) -> Removal {
+        let removal = Removal { kept_branch: None, folder: folder.clone(), approved: approved.clone(), on: Some(host.clone()), outcome: Default::default(), deleting: Default::default() };
         let outcome = removal.outcome.clone();
         std::thread::spawn(move || {
-            let said = discard_on_server(&host, &folder.to_string_lossy()).map_err(|e| format!("{e:#}"));
+            let said = discard_on_server(&host, &folder.to_string_lossy(), approved.as_deref()).map_err(|e| format!("{e:#}"));
             if let Err(why) = &said {
                 crate::append_hook_log(&format!("could not remove {} on {}: {why}", folder.display(), host.name));
             }
@@ -2083,8 +2094,8 @@ impl Removal {
     pub fn again(&self) -> Removal {
         match &self.on {
             Some(host) if host.is_made() => Removal::start_on_microvm(self.folder.clone(), host.clone()),
-            Some(host) => Removal::start_on_server(self.folder.clone(), host.clone()),
-            None => Removal::start(self.folder.clone()),
+            Some(host) => Removal::start_on_server_reviewed(self.folder.clone(), host.clone(), self.approved.clone()),
+            None => Removal::start_reviewed(self.folder.clone(), self.approved.clone()),
         }
     }
 
@@ -2395,30 +2406,23 @@ fn upstream_of(folder: &Path) -> Option<String> {
 /// Whether this folder can be thrown away at all -- asked before anything is
 /// closed, so a refusal costs nothing.
 pub fn ready_to_discard(folder: &Path) -> Result<()> {
+    ready_to_discard_reviewed(folder, None).map(|_| ())
+}
+
+pub fn ready_to_discard_reviewed(folder: &Path, approved: Option<&str>) -> Result<bool> {
     if !folder.exists() {
-        return Ok(());
+        return Ok(false);
     }
+    if approved.is_some() { return review::check(folder, None, approved); }
     if !crate::repo::is_linked(folder) {
         bail!(crate::i18n::t("err.worktree.not_a_branch"));
     }
-    let mut asking = std::process::Command::new("git");
-    // Every untracked file named on its own, so a link can be told apart from
-    // the folder it stands in; -z because a path may contain anything
-    asking
-        .arg("-C")
-        .arg(folder)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
-    let dirty = crate::detach_console(&mut asking).output()?;
-    if !dirty.status.success() {
-        bail!("{}: {}", crate::i18n::t("err.folders.check"), String::from_utf8_lossy(&dirty.stderr).trim());
-    }
-    let count = unsaved_work(&String::from_utf8_lossy(&dirty.stdout), &|p| {
-        std::fs::symlink_metadata(folder.join(p)).is_ok_and(|m| m.file_type().is_symlink())
-    });
+    crate::git::there(folder, None);
+    let count = review::changes(folder, true)?.len();
     if count > 0 {
         bail!(crate::i18n::tp("err.worktree.dirty", &[("count", &count.to_string())]));
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The same question about a folder on a MicroVM, asked of git there -- and
@@ -2434,6 +2438,13 @@ pub fn ready_to_discard(folder: &Path) -> Result<()> {
 ///
 /// Waits on the machine: for a thread
 pub fn far_ready_to_discard(host: &crate::config::HostSpec, folder: &str) -> Result<()> {
+    far_ready_to_discard_reviewed(host, folder, None)
+}
+
+pub fn far_ready_to_discard_reviewed(host: &crate::config::HostSpec, folder: &str, approved: Option<&str>) -> Result<()> {
+    if approved.is_some() {
+        return review::check(Path::new(folder), Some(host), approved).map(|_| ());
+    }
     const SPLIT: &str = "__SHIKISHA_SPLIT__";
     let dir = for_a_shell(&[folder.to_string()]);
     let line = match host.is_made() {
@@ -2441,14 +2452,14 @@ pub fn far_ready_to_discard(host: &crate::config::HostSpec, folder: &str) -> Res
         // ahead of the branch it pushes to, or, with none, of every remote
         // branch
         true => format!(
-            "cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
+            "cd {dir} || exit 1; git status --porcelain=v1 -z --untracked-files=all || exit 1; echo; echo {SPLIT}; \
 (git rev-list --count @{{u}}..HEAD 2>/dev/null || git rev-list --count HEAD --not --remotes)"
         ),
         // Gone already, and nothing to lose; else what is not committed, then
         // whether it is a worktree -- its own git folder is not the
         // repository's shared one
         false => format!(
-            "[ -e {dir} ] || {{ echo {GONE}; exit 0; }}; cd {dir} && git status --porcelain=v1 -z --untracked-files=all; echo; echo {SPLIT}; \
+            "[ -e {dir} ] || {{ echo {GONE}; exit 0; }}; cd {dir} || exit 1; git status --porcelain=v1 -z --untracked-files=all || exit 1; echo; echo {SPLIT}; \
 [ \"$(cd \"$(git rev-parse --git-dir)\" && pwd -P)\" != \"$(cd \"$(git rev-parse --git-common-dir)\" && pwd -P)\" ] && echo {LINKED}; true"
         ),
     };
@@ -2477,7 +2488,8 @@ fn far_unsaved(out: &str, split: &str) -> Result<()> {
     if dirty > 0 {
         return Err(Refused(crate::i18n::tp("err.worktree.dirty", &[("count", &dirty.to_string())])).into());
     }
-    let ahead: usize = ahead.trim().lines().last().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+    let ahead: usize = ahead.trim().lines().last().and_then(|l| l.trim().parse().ok())
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.folders.check")))?;
     if ahead > 0 {
         return Err(Refused(crate::i18n::tp("err.worktree.unpushed", &[("count", &ahead.to_string())])).into());
     }
@@ -2509,7 +2521,9 @@ fn server_unsaved(out: &str, split: &str) -> Result<()> {
 /// touched -- except an empty one, which holds nothing to lose, as here. Git
 /// refuses a worktree with changes in it, so something written after the
 /// check is not lost either; what git says is the answer
-fn discard_on_server(host: &crate::config::HostSpec, folder: &str) -> Result<()> {
+fn discard_on_server(host: &crate::config::HostSpec, folder: &str, approved: Option<&str>) -> Result<()> {
+    let force = if approved.is_some() { review::check(Path::new(folder), Some(host), approved)? } else { false };
+    let flag = if force { "--force " } else { "" };
     let at = crate::elsewhere::Elsewhere::of(host)?;
     let f = for_a_shell(&[folder.to_string()]);
     let line = format!(
@@ -2517,7 +2531,7 @@ fn discard_on_server(host: &crate::config::HostSpec, folder: &str) -> Result<()>
 own=$(cd \"$(git rev-parse --git-dir 2>/dev/null || echo .)\" && pwd -P); \
 common=$(cd \"$(git rev-parse --git-common-dir 2>/dev/null || echo .)\" && pwd -P); \
 cd /; \
-if [ \"$own\" != \"$common\" ]; then git --git-dir=\"$common\" worktree remove \"$f\" || exit 1; \
+if [ \"$own\" != \"$common\" ]; then git --git-dir=\"$common\" worktree remove {flag}-- \"$f\" || exit 1; \
 git --git-dir=\"$common\" worktree prune; if [ -e \"$f\" ]; then rm -rf -- \"$f\"; fi; exit 0; fi; \
 rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
     );
@@ -2546,21 +2560,9 @@ const NOT_A_WORKTREE: i32 = 73;
 /// `node_modules/` -- does not match a symbolic link, so on anything but
 /// Windows every such folder would be refused for good
 fn unsaved_work(status_z: &str, is_link: &dyn Fn(&str) -> bool) -> usize {
-    let mut fields = status_z.split('\0').filter(|f| !f.is_empty());
-    let mut count = 0;
-    while let Some(record) = fields.next() {
-        let code = record.get(..2).unwrap_or_default();
-        let path = record.get(3..).unwrap_or_default();
-        // A rename or copy is followed by where it came from, as its own field
-        if code.contains(['R', 'C']) {
-            fields.next();
-        }
-        if code == "??" && is_link(path.trim_end_matches('/')) {
-            continue;
-        }
-        count += 1;
-    }
-    count
+    crate::git::read_status(status_z).iter()
+        .filter(|c| !(c.index == '?' && c.work == '?' && is_link(c.path.trim_end_matches('/'))))
+        .count()
 }
 
 /// Where a branch's folder goes, and why there.
@@ -4043,7 +4045,7 @@ origin/master
             instance: Some(id.into()),
             ..Default::default()
         };
-        let on_vm = Removal { folder: PathBuf::from("/home/user/site"), on: Some(vm("m1")), outcome: Default::default(), deleting: Default::default() };
+        let on_vm = Removal { kept_branch: None, folder: PathBuf::from("/home/user/site"), approved: None, on: Some(vm("m1")), outcome: Default::default(), deleting: Default::default() };
         let cloud = |id: &str| crate::elsewhere::Elsewhere::Cloud(vm(id));
         assert!(on_vm.takes(Path::new("/home/user/site"), Some(&cloud("m1"))));
         assert!(on_vm.takes(Path::new("/home/user/other"), Some(&cloud("m1"))), "the rest of the machine stays open");
@@ -4051,7 +4053,7 @@ origin/master
         assert!(!on_vm.takes(Path::new("/home/user/site"), None), "an editor on this PC is closed");
 
         let here = PathBuf::from(crate::local_path("D:/work/site"));
-        let local = Removal { folder: here.clone(), on: None, outcome: Default::default(), deleting: Default::default() };
+        let local = Removal { kept_branch: None, folder: here.clone(), approved: None, on: None, outcome: Default::default(), deleting: Default::default() };
         assert!(local.takes(&here, None));
         assert!(local.takes(&here.join("src"), None));
         assert!(!local.takes(Path::new(&crate::local_path("D:/work/site-2")), None), "a neighbour whose name starts the same goes too");
@@ -4063,7 +4065,7 @@ origin/master
         let srv = server("ssh://ubuntu@203.0.113.5:22");
         let there = crate::elsewhere::Elsewhere::of(&srv).unwrap();
         let other = crate::elsewhere::Elsewhere::of(&server("ssh://ubuntu@203.0.113.6:22")).unwrap();
-        let on_server = Removal { folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default(), deleting: Default::default() };
+        let on_server = Removal { kept_branch: None, approved: None, folder: PathBuf::from("/home/ubuntu/site-x"), on: Some(srv.clone()), outcome: Default::default(), deleting: Default::default() };
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x"), Some(&there)));
         assert!(on_server.takes(Path::new("/home/ubuntu/site-x/src"), Some(&there)));
         assert!(!on_server.takes(Path::new("/home/ubuntu/site-x2"), Some(&there)), "a neighbour whose name starts the same goes too");
@@ -5835,7 +5837,7 @@ tools/conpty.ps1"));
         let held = std::fs::OpenOptions::new().read(true).share_mode(0).open(&held_at).unwrap();
 
         let mut released = false;
-        let said = discard_step(&cut.folder, &mut released).unwrap_err().to_string();
+        let said = discard_step(&cut.folder, &mut released, None).unwrap_err().to_string();
         assert!(said.contains("held.bin"), "it does not say which file stayed: {said}");
         assert!(held_at.exists());
         assert!(!target.join("a").exists() && !target.join("z").exists(), "what could go did not");
@@ -5844,7 +5846,7 @@ tools/conpty.ps1"));
         assert!(!git_lists(&main, &cut.folder), "git still lists a worktree it has deleted .git from");
 
         drop(held);
-        discard_step(&cut.folder, &mut released).unwrap();
+        discard_step(&cut.folder, &mut released, None).unwrap();
         assert!(!cut.folder.exists(), "the rest was not finished once the file was let go");
         let _ = std::fs::remove_dir_all(main.parent().unwrap());
     }

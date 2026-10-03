@@ -170,6 +170,7 @@ pub trait Shell {
     /// What a place pressed on a terminal's screen turned out to be (already
     /// JSON-encoded; see `shikisha_shared::Ev::LinkPress`)
     fn push_link(&self, json: &str);
+    fn push_folder_review(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str);
     /// A line about the run being driven from words, for the strip under
     /// the page it is driving

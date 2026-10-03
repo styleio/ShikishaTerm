@@ -4574,6 +4574,7 @@ let ideasOpen = false;
 {{PUSH_JS}}
 {{QUICK_JS}}
 {{FACE_JS}}
+{{REMOVAL_REVIEW_JS}}
 
 // -- A phone that should be getting notifications, and is not one yet --------
 //
@@ -8268,13 +8269,13 @@ function devRows(t, hard) {
 }
 let folderManager = null;
 const managedFolders = () => S.folder_catalog || S.groups || [];
-function folderAction(action, groups, back) {
+async function folderAction(action, groups, back) {
   const desk = S.desk_uid;
   const keys = [...new Set(groups.map(gkey))];
   if (!keys.length) { toast(T["tui.folders.select"]); return; }
-  const perform = () => {
+  const perform = (reviews = {}) => {
     if (S.desk_uid !== desk) { toast(T["err.folders.changed"], true); return; }
-    send({kind:"foldermanage", desk, act:action, folders:keys});
+    send({kind:"foldermanage", desk, act:action, folders:keys, reviews});
     if (back) back();
   };
   if (action !== "archive" && action !== "delete") { perform(); return; }
@@ -8282,13 +8283,18 @@ function folderAction(action, groups, back) {
   closeAsk(true);
   document.getElementById("sask").classList.remove("managing");
   if (folderManager) folderManager.question = true;
+  if (action === "delete") {
+    const answer = await askFolderRemoval(groups);
+    if (answer) perform(answer.reviews); else if (back) back();
+    return;
+  }
   const marks = groups.filter(g => g.mark && g.mark.careful).map(g => g.mark.name);
   const mark = marks.length ? {careful:true, name:[...new Set(marks)].join(", ")} : null;
   askQuestion({title:T["tui.folders." + action + ".title"], say:T["tui.folders." + action + ".say"],
     rows:groups.map(g => el("div", {class:"brow2 stacked"}, el("span", {class:"nm"}, g.name || leafOf(g.folder)),
       el("span", {class:"nm"}, (g.host ? g.host + ": " : "") + g.folder))),
     what:mark ? mark.name : null, mark, sure:action === "delete",
-    label:T["tui.folders." + action], danger:action === "delete", go:perform,
+    label:T["tui.folders." + action], danger:action === "delete", go:() => perform(),
     back:() => { if (back) back(); }});
 }
 function closeFolderManager() {
@@ -8590,20 +8596,64 @@ function forgetHere(g) {
   });
 }
 
-// A worktree deleted for good, folder and all. Asked first unless the person
-// said not to ask again -- here, or under Basic
-function discardFolder(g) {
-  const go = unasked => send({kind:"folderdiscard", folder:gkey(g), unasked});
-  if (S && S.discard_unasked) { go(false); return; }
-  askQuestion({
-    title: T["tui.discard.title"] || "",
-    say: T["tui.discard.say"] || "",
-    what: g.folder,
-    label: T["tui.menu.discard"] || "",
-    danger: true,
-    never: T["tui.discard.never"] || "",
-    go: (_, unasked) => go(unasked),
+// The same review serves a single folder and the manager's selection.
+const folderReviewReplies = new Map();
+function requestFolderReview(folder) {
+  const ask = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  return new Promise((resolve, reject) => {
+    // Allow the same three minutes as a network Git operation. A disconnected
+    // host must eventually release the question so the person can try again.
+    const timer = setTimeout(() => {
+      folderReviewReplies.delete(ask);
+      reject(new Error(T["settings.group.discard.failed"]));
+    }, 3 * 60 * 1000);
+    folderReviewReplies.set(ask, answer => { clearTimeout(timer); resolve(answer); });
+    send({kind:"folderreview", folder, ask});
   });
+}
+window.__folderReview = answer => {
+  const receive = folderReviewReplies.get(answer.ask);
+  if (!receive) return;
+  folderReviewReplies.delete(answer.ask);
+  receive(answer);
+};
+let checkingRemoval = false;
+async function askFolderRemoval(groups, skip = false) {
+  if (checkingRemoval) return null;
+  checkingRemoval = true;
+  const desk = S.desk_uid;
+  const marks = groups.filter(g => g.mark && g.mark.careful).map(g => g.mark.name);
+  const mark = marks.length ? {careful:true, name:[...new Set(marks)].join(", ")} : null;
+  toast(T["tui.discard.checking"]);
+  try {
+    return await reviewFolderRemoval(groups.map(g => ({...g, key:gkey(g)})), {
+      skip:skip && !mark,
+      request:async (_, body) => {
+        const answer = await requestFolderReview(body.folder);
+        if (S.desk_uid !== desk) throw new Error(T["err.folders.changed"]);
+        return answer;
+      },
+      openFile:(g, file, diff) => {
+        closeAsk();
+        send({kind:"editopen", panel:"folder:" + g.key, path:file.path, diff});
+      },
+      question:spec => new Promise(resolve => {
+        hideToast();
+        askQuestion({title:T["tui.discard.title"], ...spec, danger:true,
+          mark, what:mark ? mark.name : null, sure:true,
+          never:spec.dirty || groups.length > 1 ? null : T["tui.discard.never"],
+          go:(_, unasked) => resolve({unasked}), back:() => resolve(null)});
+      }),
+    });
+  } catch (e) { toast(e.message || T["settings.group.discard.failed"], true); return null; }
+  finally { checkingRemoval = false; }
+}
+async function discardFolder(g) {
+  const desk = S.desk_uid;
+  const answer = await askFolderRemoval([g], !!S.discard_unasked);
+  if (!answer) return;
+  if (S.desk_uid !== desk) { toast(T["err.folders.changed"], true); return; }
+  send({kind:"folderdiscard", folder:gkey(g), unasked:answer.unasked, review:answer.reviews[gkey(g)]});
 }
 let folderMenuAway = null;
 // Whether an open list stands over the placed page (see openList)
@@ -10709,7 +10759,11 @@ function applyCarryLines(b, lines) {
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
     if (typingIME(e)) return;
-    if (e.key === "Enter" && sAskGo) { e.preventDefault(); sAskGo(); }
+    if (e.key === "Enter" && sAskGo) {
+      e.preventDefault();
+      const focused = document.activeElement;
+      if (focused && focused.tagName === "BUTTON") focused.click(); else sAskGo();
+    }
   });
 })();
 
@@ -16830,6 +16884,7 @@ if (REMOTE) {
     if (d.ideas) window.__ideas(d.ideas);
     if (d.sftp) window.__sftp(d.sftp);
     if (d.termlink) window.__linkSaid(d.termlink);
+    if (d.folder_review) window.__folderReview(d.folder_review);
     // A script opening the column on a panel (show_panel)
     if (typeof d.panel === "string") window.__sideReveal(d.panel);
     if ("luadone" in d) window.__luaDone(d.luadone);
@@ -19117,7 +19172,7 @@ window.addEventListener("message", e => {
   // board does it, as its own menu does, and says what came of it
   if (e.data.cfg && typeof e.data.cfg.discard === "string") {
     closeCfgLayer();
-    send({kind:"folderdiscard", folder: e.data.cfg.discard, unasked:false});
+    send({kind:"folderdiscard", folder: e.data.cfg.discard, unasked:false, review:e.data.cfg.review || null});
   }
   // "More settings": the whole of the settings, so the frame is given the whole
   // screen -- the window answers the same press by growing the page it placed.
@@ -20507,6 +20562,10 @@ function gitNext() {
   if (add.length) {
     return {icon:"plus", label: T["git.stage.all"] || "", run:() => gitAsk("stage", {paths: add})};
   }
+  const g = gitGroup();
+  if (b.integrated_into && g && g.linked && !onMicrovm(g)) {
+    return {icon:"folder", label:T["git.cleanup"], run:() => discardFolder(g)};
+  }
   if (b.name && !b.upstream) {
     return {icon:"up", label: T["git.publish"] || "", run:() => gitAsk("push")};
   }
@@ -20540,10 +20599,6 @@ function gitNext() {
   const ready = open.find(p => gitPrAction(p));
   if (ready) return Object.assign({icon:"check", pr: ready.number}, gitPrAction(ready),
     G.armed === ready.number ? {} : {label: (T["git.prs.merge"] || "").replaceAll("{base}", ready.base || "")});
-  const g = gitGroup();
-  if (gitPrsDone() && g && g.linked && !onMicrovm(g)) {
-    return {icon:"folder", label: T["git.cleanup"] || "", run:() => discardFolder(g)};
-  }
   return {icon:"refresh", label: T["git.fetch"] || "", run:() => gitAsk("fetch")};
 }
 // Why a pull request cannot be made from here yet, or nothing
@@ -20876,6 +20931,7 @@ function gitCatchUp() {
 // the list, grey, with what it is waiting for written under it
 function gitMenu(anchor) {
   if (G.busy) return;
+  const b = G.branch || {};
   const staged = (G.rows || []).some(r => r.staged && !r.conflict);
   const worded = !!gitMessage().trim();
   // What cannot be done yet stays in the list, grey, and still answers when
@@ -20906,7 +20962,7 @@ function gitMenu(anchor) {
     item(T["git.commit.push"] || "", () => gitCommit("push"), needStage || needWords),
     item(T["git.commit.amend"] || "", () => gitCommit("", true), needWords),
     sep(),
-    item(T["git.push"] || "", () => gitAsk("push")),
+    item(b.integrated_into && b.ahead ? T["git.push.branch"].replaceAll("{n}", b.ahead) : T["git.push"] || "", () => gitAsk("push")),
     item(T["git.pull"] || "", () => gitAsk("pull")),
     item(T["git.fetch"] || "", () => gitAsk("fetch")),
     sep(),
@@ -20937,7 +20993,8 @@ function drawGitCommit() {
   // a number is a puzzle
   let up = "";
   if (b && b.name) {
-    if (!b.upstream) up = T["git.sync.none"] || "";
+    if (b.integrated_into) up = T["git.integrated"].replaceAll("{base}", b.integrated_into);
+    else if (!b.upstream) up = T["git.sync.none"] || "";
     else if (!b.ahead && !b.behind) up = (T["git.sync.even"] || "{upstream}").replaceAll("{upstream}", b.upstream);
     else up = [b.ahead ? (T["git.sync.ahead"] || "{n}").replaceAll("{n}", b.ahead) : "",
                b.behind ? (T["git.sync.behind"] || "{n}").replaceAll("{n}", b.behind) : ""]
@@ -21605,10 +21662,10 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   again.querySelector("span").textContent = never || "";
   const unasked = again.querySelector("input");
   unasked.checked = false;
-  const cancel = box.querySelector(".quiet");
+  const cancel = box.querySelector(".brow > .quiet");
   cancel.textContent = no ? no.label : (T["common.cancel"] || "");
   cancel.onclick = no ? () => { sAskBack = null; closeAsk(true); no.act(); } : () => closeAsk();
-  const btn = box.querySelector(".go");
+  const btn = box.querySelector(".brow > .go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
   // The server's name, typed, when the server asks for it. Compared without
@@ -21655,7 +21712,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
     go(input.value.trim(), !!never && unasked.checked);
   };
   btn.onclick = sAskGo;
-  setTimeout(() => (field ? input : need ? sureIn : btn).focus(), 0);
+  setTimeout(() => (field ? input : need ? sureIn : danger ? cancel : btn).focus(), 0);
 }
 // `quiet` when the app took the question away itself: there is nobody to tell
 function closeAsk(quiet) {
@@ -23654,6 +23711,7 @@ fn built(sticky: bool, by: Served) -> String {
         "{{MENU_WINDOW_ONLY}}",
         &serde_json::to_string(&WINDOW_ONLY_MENU).unwrap_or_else(|_| "[]".into()),
     )
+    .replace("{{REMOVAL_REVIEW_JS}}", include_str!("removal-review.js"))
     .replace("{{__lang__}}", &crate::i18n::lang())
     .replace("{{FONT}}", &look.font_css())
     .replace("{{FONT_SIZE}}", &look.size_px().to_string())
@@ -25916,10 +25974,10 @@ mod tests {
         // Every folder offers what listens in it, named for where it is
         assert!(PAGE.contains(r#"item(T[onMicrovm(g) ? "tui.menu.urls" : g.host ? "tui.menu.ports" : "tui.menu.ports.here"] || "", () => showPorts(g)),"#),
             "a folder's menu does not offer its ports");
-        assert!(PAGE.contains("if (S && S.discard_unasked) { go(false); return; }"), "turned off, it still asks");
-        assert!(PAGE.contains(r#"never: T["tui.discard.never"] || "","#), "the question has no box to stop it asking");
+        assert!(PAGE.contains("await askFolderRemoval([g], !!S.discard_unasked)"), "the preference must pass through the file review");
+        assert!(PAGE.contains(r#"never:spec.dirty || groups.length > 1 ? null : T["tui.discard.never"]"#), "a destructive approval must not be saved as a preference");
         assert!(PAGE.contains("go(input.value.trim(), !!never && unasked.checked)"), "the box's answer is not handed on");
-        assert!(PAGE.contains(r#"send({kind:"folderdiscard", folder:gkey(g), unasked})"#), "the answer does not reach the app");
+        assert!(PAGE.contains(r#"review:answer.reviews[gkey(g)]"#), "the reviewed changes do not reach the app");
         assert!(PAGE.contains("unasked.checked = false;"), "a box ticked once stays ticked in the next question");
     }
 
@@ -26546,9 +26604,7 @@ mod tests {
         // The same question, which means the same refusal while anything is
         // uncommitted and the same "don't ask again"
         assert!(
-            PAGE.contains(r#"function discardFolder(g) {
-  const go = unasked => send({kind:"folderdiscard", folder:gkey(g), unasked});
-  if (S && S.discard_unasked) { go(false); return; }"#),
+            PAGE.contains("await askFolderRemoval([g], !!S.discard_unasked)"),
             "found worktrees are deleted by some other question than the one on the desk"
         );
         // Drawn always, not on hover: a finger has no hover

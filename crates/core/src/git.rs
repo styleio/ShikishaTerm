@@ -848,6 +848,15 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         dir,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
+    let mut changes = read_status(&out);
+    for change in &mut changes {
+        change.tangled = change.conflicted() && has_markers_in(dir, &change.path);
+    }
+    Ok(changes)
+}
+
+/// Porcelain records have the same shape on this PC and on a remote host.
+pub(crate) fn read_status(out: &str) -> Vec<Change> {
     let mut fields = out.split('\0').filter(|f| !f.is_empty());
     let mut changes = Vec::new();
     while let Some(record) = fields.next() {
@@ -862,13 +871,9 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
         } else {
             None
         };
-        let mut change = Change { index, work, path, from, tangled: false };
-        // Only the conflicted ones are opened, and only up to a size worth
-        // reading: this runs every time the list is drawn
-        change.tangled = change.conflicted() && has_markers_in(dir, &change.path);
-        changes.push(change);
+        changes.push(Change { index, work, path, from, tangled: false });
     }
-    Ok(changes)
+    changes
 }
 
 /// Whether git's conflict markers are still in `rel`, a file of the tree at
@@ -1521,6 +1526,31 @@ pub fn recorded_base(dir: &Path, branch: &str) -> Option<String> {
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+/// The current HEAD is already contained in this base. PR state alone says
+/// nothing about commits made after the PR was merged. A no-op tree merge
+/// also recognizes a squash merge without comparing commit IDs.
+pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
+    let base = recorded_base(dir, branch).or_else(|| {
+        run(dir, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"])
+            .ok().map(|s| s.trim().to_owned())
+    }).or_else(|| {
+        if is_far(dir) { return None; }
+        crate::repo::main_checkout(dir).and_then(|main| crate::repo::branch_of(&main))
+    })?;
+    if base == branch || base.rsplit_once('/').is_some_and(|(remote, name)|
+        name == branch && run(dir, &["remote"]).is_ok_and(|s| s.lines().any(|r| r == remote))) {
+        return None;
+    }
+    let target = run(dir, &["rev-parse", "--verify", &format!("{base}^{{commit}}")]).ok()?;
+    let head = run(dir, &["rev-parse", "--verify", "HEAD"]).ok()?;
+    if run(dir, &["merge-base", "--is-ancestor", head.trim(), target.trim()]).is_ok() {
+        return Some(base);
+    }
+    let tree = run(dir, &["rev-parse", "--verify", &format!("{}^{{tree}}", target.trim())]).ok()?;
+    let merged = run(dir, &["merge-tree", "--write-tree", target.trim(), head.trim()]).ok()?;
+    (merged.lines().next()? == tree.trim()).then_some(base)
 }
 
 /// Write down what a branch was cut from, so it is not asked for again

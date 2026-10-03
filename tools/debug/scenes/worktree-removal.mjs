@@ -52,6 +52,29 @@ const withWhy = (m) => `Object.assign(${JSON.stringify(m)}, {error: ${lang(why, 
 export default {
   settle: 1500,
   scenes: {
+    // The review is drawn by the real shared flow; only the read-only response
+    // is supplied here. No deletion intent is accepted by the photograph.
+    review_changes: `(() => {
+      window.__state(${JSON.stringify(state([]))});
+      requestFolderReview = async () => ({ok:true, branch:'login', keeps_branch:true, review:'scene', blocked:'', files:[
+        {path:'src/settings/save.rs', staged:true, work:true, untracked:false},
+        {path:'docs/設定画面の改善について.txt', staged:false, work:true, untracked:true}
+      ]});
+      void discardFolder(S.groups[1]); return 'ok';
+    })()`,
+    review_clean: `(() => {
+      window.__state(${JSON.stringify(state([]))});
+      requestFolderReview = async () => ({ok:true, branch:'login', keeps_branch:true, review:'scene', blocked:'', files:[]});
+      void discardFolder(S.groups[1]); return 'ok';
+    })()`,
+    integrated: `(() => {
+      const s = JSON.parse(${JSON.stringify(state([]))}); s.active = 2;
+      window.__state(JSON.stringify(s)); setSideWidth(420); sideChoose('git');
+      window.__git({act:'branch', ok:true, data:{name:'login', upstream:'origin/login', ahead:5, behind:0, integrated_into:'main'}});
+      window.__git({act:'branches', ok:true, data:[{name:'login', current:true}, {name:'main', current:false}]});
+      window.__git({act:'status', ok:true, data:[]}); drawSide();
+      return 'ok';
+    })()`,
     // Its row says it is going, and offers nothing that cannot be done
     removing: `window.__state(${JSON.stringify(state([{ ...leaving, stage: 'removing' }]))}); "ok"`,
     // A big folder going: how many of its files are gone, of how many, for

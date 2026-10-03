@@ -2311,7 +2311,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // that would go with it; and the ones that passed, to go on
     // A folder's answer carries whether it is the folder's own (work found
     // there) or the folder could not be asked at all
-    let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Result<(), (String, bool)>)>();
+    let (folder_review_tx, folder_review_rx) = std::sync::mpsc::channel::<serde_json::Value>();
+    let (far_discard_tx, far_discard_rx) = std::sync::mpsc::channel::<(String, Option<String>, Result<(), (String, bool)>)>();
     let mut far_discard_checked: std::collections::HashSet<String> = Default::default();
     // A pull request's draft prompt for a folder on another machine, whose
     // commits and change are read there on a thread: (prompt, shape)
@@ -5934,8 +5935,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderClose { folder }) => {
                         shell.mail().folder_closes.push(folder);
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder, unasked }) => {
-                        shell.mail().folder_discards.push((folder, unasked));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderReview {folder, ask}) => {
+                        shell.mail().folder_reviews.push((folder, ask));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderDiscard { folder, unasked, review }) => {
+                        shell.mail().folder_discards.push((folder, unasked, review));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPorts { folder }) => {
                         shell.mail().far_ports.push(folder);
@@ -5998,8 +6002,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderHide { folder, hide }) => {
                         shell.mail().folder_hides.push((folder, hide));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderManage { desk, act, folders }) => {
-                        shell.mail().folder_manage.push((desk, act, folders));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderManage { desk, act, folders, reviews }) => {
+                        shell.mail().folder_manage.push((desk, act, folders, reviews));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FolderMove { folder, to }) => {
                         shell.mail().folder_moves.push((folder, to));
@@ -8548,14 +8552,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // so nothing has to be set up before pressing a file, and pressing ten
         // files leaves one editor rather than ten
         for (panel, path, diff) in shell.mail().take_edits() {
-            let Some(place) = files_at(&panel, &surfaces, &tabs) else { continue };
+            let folder = panel.strip_prefix("folder:").and_then(|key| {
+                desks.get(desk_index)?.folders.iter().find(|f| f.place().is_some_and(|p|
+                    crate::uistate::same_folder(&p, std::path::Path::new(key))))
+            });
+            let place = folder.and_then(|f| {
+                let dir = f.cwd.as_ref()?;
+                match f.host.as_ref() {
+                    Some(h) => crate::elsewhere::Elsewhere::of(h).ok().map(|at| FilesAt::There {at, root:dir.to_string_lossy().into_owned()}),
+                    None => Some(FilesAt::Here(dir.clone())),
+                }
+            }).or_else(|| files_at(&panel, &surfaces, &tabs));
+            let Some(place) = place else { continue };
             let (dir, machine) = match &place {
                 FilesAt::Here(d) => (d.clone(), None),
                 FilesAt::There { at, root } => (std::path::PathBuf::from(root), Some(at.clone())),
             };
             // The folder's machine by name: a file over there is that
             // machine's folder's, and one here is this PC's
-            let on = machine.as_ref().and_then(|_| panel_machine(&panel, &surfaces, &tabs));
+            let on = folder.and_then(|f| f.host.as_ref().map(|h| h.name.clone()))
+                .or_else(|| machine.as_ref().and_then(|_| panel_machine(&panel, &surfaces, &tabs)));
             let here_key = std::path::PathBuf::from(crate::uistate::place_key(on.as_deref(), &dir));
             // A page's source or DOM is not somewhere a file goes: it shows
             // what it was opened for until it is closed
@@ -9902,7 +9918,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(format!("{e:#}"));
             }
         }
-        for (desk, action, keys) in shell.mail().take_folder_manage() {
+        for (folder, ask) in std::mem::take(&mut shell.mail().folder_reviews) {
+            let tx = folder_review_tx.clone();
+            std::thread::spawn(move || {
+                let mut answer = crate::webui::review_folder(std::path::Path::new(&folder));
+                answer["ask"] = serde_json::json!(ask);
+                answer["board"] = serde_json::json!(true);
+                let _ = tx.send(answer);
+            });
+        }
+        while let Ok(answer) = folder_review_rx.try_recv() {
+            let json = answer.to_string();
+            shell.push_folder_review(&json);
+            if let Some(remote) = remote_ui.as_ref() {
+                remote.push_state(serde_json::json!({"folder_review":answer}).to_string());
+            }
+        }
+        for (desk, action, keys, reviews) in shell.mail().take_folder_manage() {
             let Some(d) = desks.get(desk_index).filter(|d| d.uid == desk) else {
                 flash = Some(i18n::t("err.folders.changed").to_string());
                 continue;
@@ -9930,6 +9962,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if action == "delete" {
                 for f in chosen {
                     let key = f.place().unwrap().to_string_lossy().into_owned();
+                    if let Some(review) = reviews.get(&key) { folder_manager.reviews.insert(key.clone(), review.clone()); }
                     folder_manager.enqueue(&desk, key);
                 }
                 continue;
@@ -9955,21 +9988,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         if let Some(key) = folder_manager.next_removal(desks.get(desk_index).map(|d| d.uid.as_str()).unwrap_or_default()) {
-            shell.mail().folder_discards.push((key, false));
+            let review = folder_manager.reviews.remove(&key);
+            shell.mail().folder_discards.push((key, false, review));
         }
         // Thrown away for good. Refused first, while nothing has happened yet,
-        // so a folder with work in it is never closed on the way to a no.
+        // so a refused removal never closes the folder on the way to a no.
         // Then the tabs are ended by taking the folder out of the settings --
         // git will not remove a folder something is still standing in -- and
         // the removal itself waits for them to actually be gone
         // A folder on a MicroVM or a server checked there: nothing unsaved, and
         // the deleting goes on as it would have; something there, and nothing
         // happens but being told what
-        while let Ok((folder, said)) = far_discard_rx.try_recv() {
+        while let Ok((folder, review, said)) = far_discard_rx.try_recv() {
             match said {
                 Ok(()) => {
                     far_discard_checked.insert(folder.clone());
-                    shell.mail().folder_discards.push((folder, false));
+                    shell.mail().folder_discards.push((folder, false, review));
                 }
                 // Not reached: nothing is known about its work, and the
                 // answer is to try again, not to go and push something
@@ -9980,6 +10014,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 Err((why, true)) => {
                     folder_manager.finish(&folder, why.clone());
+                    if crate::uistate::place_of(std::path::Path::new(&folder)).0.is_none() {
+                        flash = Some(why);
+                        continue;
+                    }
                     // A MicroVM's folder loses what is not pushed too; a
                     // server's keeps its branch, and says only why
                     let key = std::path::PathBuf::from(&folder);
@@ -9995,7 +10033,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
         }
-        for (folder, unasked) in shell.mail().take_folder_discards() {
+        for (folder, unasked, review) in shell.mail().take_folder_discards() {
             // Written before the folder is tried: the person asked not to be
             // asked again, whatever becomes of this one
             if unasked {
@@ -10046,18 +10084,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if !far_discard_checked.remove(&folder) {
                     let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
                     flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
+                    let review = review.clone();
                     std::thread::spawn(move || {
                         // A machine the service no longer has cannot be asked,
                         // and has nothing left on it to lose: the folder goes
                         // -- which is only ever asked when the machine did not
                         // answer: one that answered with work on it keeps it
-                        let said = crate::worktree::far_ready_to_discard(&host, &path).or_else(|e| {
+                        let said = crate::worktree::far_ready_to_discard_reviewed(&host, &path, review.as_deref()).or_else(|e| {
                             match !crate::worktree::is_refusal(&e) && host.instance.as_deref().is_some_and(crate::e2b::check_gone) {
                                 true => Ok(()),
                                 false => Err(e),
                             }
                         });
-                        let _ = tx.send((folder, said.map_err(|e| (format!("{e:#}"), crate::worktree::is_refusal(&e)))));
+                        let _ = tx.send((folder, review, said.map_err(|e| (format!("{e:#}"), crate::worktree::is_refusal(&e)))));
                     });
                     continue;
                 }
@@ -10133,10 +10172,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if !far_discard_checked.remove(&folder) {
                     let (tx, folder, host, path) = (far_discard_tx.clone(), folder.clone(), h.clone(), at.to_string_lossy().to_string());
                     flash = Some(i18n::tp("msg.folder.checking", &[("path", &path)]));
+                    let review = review.clone();
                     std::thread::spawn(move || {
-                        let said = crate::worktree::far_ready_to_discard(&host, &path)
+                        let said = crate::worktree::far_ready_to_discard_reviewed(&host, &path, review.as_deref())
                             .map_err(|e| (format!("{e:#}"), crate::worktree::is_refusal(&e)));
-                        let _ = tx.send((folder, said));
+                        let _ = tx.send((folder, review, said));
                     });
                     continue;
                 }
@@ -10150,7 +10190,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_default();
                 match config::take_folder(&d.uid, &key) {
                     Ok(taken) => {
-                        let removal = crate::worktree::Removal::start_on_server(at.clone(), h);
+                        let removal = crate::worktree::Removal::start_on_server_reviewed(at.clone(), h, review);
                         editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
                         making_seq += 1;
                         leavings.push(Leaving {
@@ -10171,9 +10211,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
-            if let Err(e) = crate::worktree::ready_to_discard(&at) {
-                folder_manager.finish(&folder, format!("{e:#}"));
-                flash = Some(format!("{e:#}"));
+            if !far_discard_checked.remove(&folder) {
+                let (tx, folder, at, review) = (far_discard_tx.clone(), folder.clone(), at.clone(), review.clone());
+                flash = Some(i18n::tp("msg.folder.checking", &[("path", &at.display().to_string())]));
+                std::thread::spawn(move || {
+                    let said = crate::worktree::ready_to_discard_reviewed(&at, review.as_deref())
+                        .map(|_| ()).map_err(|e| (format!("{e:#}"), true));
+                    let _ = tx.send((folder, review, said));
+                });
                 continue;
             }
             let desk = desks.get(desk_index).map(|w| w.uid.clone()).unwrap_or_default();
@@ -10188,7 +10233,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Said once the folder is really gone, not when it was asked
                 // to go: the row says it is going until then
                 Ok(taken) => {
-                    let removal = crate::worktree::Removal::start(at);
+                    let removal = crate::worktree::Removal::start_reviewed(at, review);
                     editors.retain(|e| !(e.scratch && e.dir.as_deref().is_some_and(|d| removal.takes(d, e.at.as_ref()))));
                     making_seq += 1;
                     leavings.push(Leaving {
@@ -10880,7 +10925,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             match l.removal.outcome() {
                 None => {}
                 Some(Ok(())) => {
-                    flash = Some(i18n::tp("msg.folder.discarded", &[("path", &l.removal.folder.display().to_string())]));
+                    flash = Some(match &l.removal.kept_branch {
+                        Some(branch) => i18n::tp("msg.folder.discarded_kept", &[("path", &l.removal.folder.display().to_string()), ("branch", branch)]),
+                        None => i18n::tp("msg.folder.discarded", &[("path", &l.removal.folder.display().to_string())]),
+                    });
                     folder_manager.finish(&l.removal.place().to_string_lossy(), String::new());
                     // The project it was cut from has one worktree fewer. Said
                     // now rather than waited out, so the line offering the
@@ -11219,8 +11267,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // prepared as its saved settings say: one row per machine
         // A far folder's deleting asked from a settings page with no board of
         // its own: the same as a press on the board, asked first
-        for folder in crate::webui::take_folder_discards() {
-            shell.mail().folder_discards.push((folder, false));
+        for action in crate::webui::take_folder_actions() {
+            match action {
+                shikisha_shared::Ev::FolderDiscard {folder, unasked, review} => shell.mail().folder_discards.push((folder, unasked, review)),
+                shikisha_shared::Ev::EditOpen {panel, path, diff} => shell.mail().edits.push((panel, path, diff)),
+                _ => {}
+            }
         }
         for ask in crate::webui::take_prepare_asks() {
             let targets = match crate::microvm::prepare_targets(&ask.desk_id, &ask.project) {
@@ -15978,6 +16030,7 @@ pub fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::
         }
         None => *i = Default::default(),
     }
+    i.board = true;
 }
 /// The root of the portable layout (base for relative paths; where the exe and its folders sit side by side)
 pub fn config_file_dir() -> std::path::PathBuf {

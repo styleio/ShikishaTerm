@@ -19,6 +19,9 @@ use tiny_http::{Header, Response, Server};
 /// Remote UI status passed to the settings screen (updated by the main app)
 #[derive(Default, Clone)]
 pub struct RemoteInfo {
+    /// A runtime can close tabs before deleting a working folder. Settings
+    /// opened on their own have no such runtime.
+    pub board: bool,
     pub running: bool,
     pub url: String,
     /// Explanation for when it can't be enabled, or a note that needs attention
@@ -1616,10 +1619,10 @@ pub fn take_prepare_asks() -> Vec<PrepareAsk> {
 /// no way to the board of its own -- a phone's, opened whole -- by place key.
 /// Handed to the app, which deletes them as a press on the board does: the
 /// machine is asked first, and a row says how it goes
-static FOLDER_DISCARDS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static FOLDER_ACTIONS: std::sync::Mutex<Vec<shikisha_shared::Ev>> = std::sync::Mutex::new(Vec::new());
 
-pub fn take_folder_discards() -> Vec<String> {
-    std::mem::take(&mut *FOLDER_DISCARDS.lock().unwrap_or_else(|e| e.into_inner()))
+pub fn take_folder_actions() -> Vec<shikisha_shared::Ev> {
+    std::mem::take(&mut *FOLDER_ACTIONS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// Deletes a MicroVM machine from the settings' list of machines, and says
@@ -1688,6 +1691,40 @@ fn far_host_of(at: &std::path::Path) -> Option<crate::config::HostSpec> {
             f.cwd.as_deref().filter(|c| crate::uistate::is_place(c, Some(&host.name), at)).map(|_| host)
         })
     })
+}
+
+// Settings opened without a board still honor pinned and shared folders.
+fn settings_removal_guard(config_path: &std::path::Path, at: &std::path::Path) -> Result<()> {
+    let text = std::fs::read_to_string(config_path)?;
+    let cfg: crate::config::Config = serde_json::from_str(crate::config::without_bom(&text))?;
+    let (desks, warnings) = cfg.resolve_desks();
+    if !warnings.is_empty() { anyhow::bail!(crate::i18n::t("err.folders.changed")); }
+    for desk in &desks {
+        if let Some(folder) = desk.folders.iter().find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, at))) {
+            if let Some(why) = crate::foldercare::deletion_guard(folder, desk, &desks) {
+                anyhow::bail!(crate::i18n::t(why));
+            }
+            return Ok(());
+        }
+    }
+    anyhow::bail!(crate::i18n::t("err.folders.changed"))
+}
+
+/// The same read-only review for the window, a phone and settings.
+pub fn review_folder(key: &std::path::Path) -> serde_json::Value {
+    let host = far_host_of(key);
+    let (on, folder) = crate::uistate::place_of(key);
+    if key.as_os_str().is_empty() || (on.is_some() && host.is_none()) {
+        return serde_json::json!({"ok":false, "error":crate::i18n::t("err.folders.changed")});
+    }
+    match crate::worktree::review::inspect(&folder, host.as_ref()) {
+        Ok(review) => {
+            let mut answer = serde_json::to_value(review).unwrap();
+            answer["ok"] = serde_json::json!(true);
+            answer
+        }
+        Err(e) => serde_json::json!({"ok":false, "error":format!("{e:#}")}),
+    }
 }
 
 /// Where the project a folder on another machine belongs to is checked out
@@ -2258,7 +2295,7 @@ fn handle(
             req.respond(json_resp(resp))?;
         }
         // A folder on another machine deleted from a settings page that has no
-        // board of its own to tell (see FOLDER_DISCARDS)
+        // board of its own to tell (see FOLDER_ACTIONS)
         ("POST", "/api/folder/discard-far") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -2270,7 +2307,8 @@ fn handle(
             let resp = match folder.is_empty() {
                 true => serde_json::json!({ "ok": false }),
                 false => {
-                    FOLDER_DISCARDS.lock().unwrap_or_else(|e| e.into_inner()).push(folder);
+                    let review = p.get("review").and_then(|v| v.as_str()).map(str::to_string);
+                    FOLDER_ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).push(shikisha_shared::Ev::FolderDiscard {folder, unasked:false, review});
                     serde_json::json!({ "ok": true })
                 }
             };
@@ -2825,9 +2863,43 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
-        // Throw a branch's folder away for good. Refused while anything in it
-        // is uncommitted -- said before the settings let go of it, so a no
-        // costs nothing. The answer waits for the folder to be gone, on a
+        // Read the contents before asking whether to discard them. No files
+        // or settings are changed by this request.
+        ("POST", "/api/folder/discard-check") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let key = std::path::PathBuf::from(p.get("folder").and_then(|v| v.as_str()).unwrap_or_default());
+            let board = remote.lock().unwrap_or_else(|e| e.into_inner()).board;
+            std::thread::spawn(move || {
+                let mut answer = review_folder(&key);
+                answer["board"] = serde_json::json!(board);
+                let _ = req.respond(json_resp(answer));
+            });
+        }
+        // Opening a reviewed file uses the board's existing editor and diff.
+        ("POST", "/api/folder/review-file") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let p: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let text = |key| p.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            if !remote.lock().unwrap_or_else(|e| e.into_inner()).board {
+                req.respond(json_resp(serde_json::json!({"ok":false, "error":crate::i18n::t("settings.group.discard.board")})))?;
+            } else {
+                FOLDER_ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).push(shikisha_shared::Ev::EditOpen {
+                    panel:format!("folder:{}", text("folder")), path:text("path"), diff:text("diff"),
+                });
+                req.respond(json_resp(serde_json::json!({"ok":true})))?;
+            }
+        }
+        // Throw a branch's folder away for good. Changes need the review the
+        // person explicitly accepted. The answer waits on a
         // thread of its own so the rest of the page is not held up. `left`
         // says the folder is still on disk, which the page asks about
         ("POST", "/api/folder/discard") => {
@@ -2840,12 +2912,18 @@ fn handle(
             let at = std::path::PathBuf::from(
                 p.get("path").and_then(|v| v.as_str()).unwrap_or_default().trim(),
             );
-            if let Err(e) = crate::worktree::ready_to_discard(&at) {
+            let review = p.get("review").and_then(|v| v.as_str()).map(str::to_string);
+            if remote.lock().unwrap_or_else(|e| e.into_inner()).board {
+                FOLDER_ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).push(shikisha_shared::Ev::FolderDiscard {folder:at.to_string_lossy().into_owned(), unasked:false, review});
+                req.respond(json_resp(serde_json::json!({"ok":true, "queued":true})))?;
+                return Ok(());
+            }
+            if let Err(e) = settings_removal_guard(config_path, &at).and_then(|_| crate::worktree::ready_to_discard_reviewed(&at, review.as_deref())) {
                 req.respond(json_resp(serde_json::json!({ "ok": false, "error": format!("{e:#}") })))?;
                 return Ok(());
             }
             std::thread::spawn(move || {
-                let resp = match crate::worktree::discard_waiting(&at) {
+                let resp = match crate::worktree::discard_waiting_reviewed(&at, review.as_deref()) {
                     Ok(()) => serde_json::json!({ "ok": true }),
                     Err(e) => {
                         crate::append_hook_log(&format!("could not remove {}: {e:#}", at.display()));
@@ -5220,6 +5298,7 @@ pub(crate) fn page_parts(html: String) -> String {
     crate::quick::render(crate::push::inject(crate::toast::render(html)))
         .replace("{{I18N_JS}}", crate::i18n::FILL_JS)
         .replace("{{SETTINGS_API_JS}}", include_str!("settings-api.js"))
+        .replace("{{REMOVAL_REVIEW_JS}}", include_str!("removal-review.js"))
         .replace("{{SECRET_URL_JS}}", include_str!("secret-url.js"))
         .replace("{{SECRET_URL_POLICY}}", &crate::config::secret_url_policy_json())
 }
@@ -5980,6 +6059,12 @@ const PAGE: &str = r##"<!doctype html>
    width:min(560px, calc(100% - 2 * var(--s4))); max-height:calc(100% - 2 * var(--s7)); overflow:auto; }
  dialog.confirm-box::backdrop { background:rgba(0,0,0,.6); }
  .confirm-box .mbody { white-space:pre-wrap; overflow-wrap:anywhere; }
+ /* The same enclosed review list as the board's confirmation (style guide 5.5). */
+ .removal-files { border:1px solid var(--line); border-radius:var(--r-ctl); max-height:40vh; overflow:auto; }
+ .removal-files .brow2 { padding:var(--s2) var(--s3); border-top:1px solid var(--line); }
+ .removal-files .brow2:first-child { border-top:0; }
+ .removal-files .nm { display:block; font-family:var(--mono); font-size:11.5px; overflow-wrap:anywhere; }
+ .removal-files .tag { display:block; color:var(--dim); font-size:11px; }
  .confirm-box > .mfoot { justify-content:flex-end; }
  .framed > .mhead { display:flex; align-items:center; gap:var(--s3);
    padding:var(--s4) var(--s5); border-bottom:1px solid var(--line); }
@@ -6336,6 +6421,7 @@ const protectOf = (desk, gi) => {
 // {name} substitution (same rule as tp on the Rust side)
 {{I18N_JS}}
 {{SETTINGS_API_JS}}
+{{REMOVAL_REVIEW_JS}}
 // A moment as a date and a time of day, in the person's own way of writing
 // them: "9/24 03:40". Seconds since the epoch in
 const clock = secs => new Date(secs * 1000).toLocaleString([], {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit"});
@@ -13623,15 +13709,33 @@ function folderPane(desk, g, gi) {
     if (where.branch) box.insertBefore(renameCard(desk, g, where.branch), buttons);
     buttons.append(el("button", {class:"danger", onclick: async () => {
       if (!guard()) return;
-      if (!await confirmAction(fill(T["settings.group.discard.sure"], {name: folderLabel(g, gi)}), T["settings.group.discard"])) return;
-      // On another machine: the board deletes it, as its own menu does
-      if (where.host) { farFolderDiscard(placeKey(g)); return; }
+      let answer;
+      try {
+        answer = await reviewFolderRemoval([{key:placeKey(g), folder:g.cwd}], {
+          request:settingsApi,
+          openFile:async (group, file, diff) => {
+            const dialog = document.querySelector("dialog.confirm-box");
+            if (dialog) dialog.dispatchEvent(new Event("cancel", {cancelable:true}));
+            try {
+              const r = await settingsApi("/api/folder/review-file", {folder:group.key, path:file.path, diff});
+              if (r.ok) closeSettings(); else toast(r.error, true);
+            } catch (e) { toast(e.message, true); }
+          },
+          question:async spec => await confirmAction(el("div", {},
+            el("p", {}, spec.say), el("div", {class:"removal-files"}, ...spec.rows)), spec.label) ? {} : null,
+        });
+      } catch (e) { toast(e.message || T["settings.group.discard.failed"], true); return; }
+      if (!answer) return;
+      const review = answer.reviews[placeKey(g)];
+      // The running board closes its tabs and applies its usage guards.
+      if (where.host || window.ipc || EMBED) { farFolderDiscard(placeKey(g), review); return; }
       toast(T["tui.making.stage.removing"]);
       const r = await settingsFetch("/api/folder/discard",
-        {method:"POST", json:{path: g.cwd}})
+        {method:"POST", json:{path: g.cwd, review}})
         .then(r => r.json()).catch(() => ({ok:false, error:""}));
       // The folder would not go. Asked whether to take it off the list anyway,
       // since the files stay on disk either way
+      if (r.queued) { location.href = "/"; return; }
       if (!r.ok && r.left) {
         if (!await confirmAction(fill(T["worktree.left.say"], {why: r.error || ""}), T["worktree.left.forget"])) return;
         drop();
@@ -17534,15 +17638,15 @@ function goIndex() {
 // A folder on another machine is deleted by the board, the way its own menu
 // deletes it: the machine is asked first whether anything there would be
 // lost, and the board says what came of it -- so the settings step aside
-function farFolderDiscard(folder) {
-  const ask = {kind:"folderdiscard", folder, unasked:false};
+function farFolderDiscard(folder, review) {
+  const ask = {kind:"folderdiscard", folder, unasked:false, review};
   if (window.ipc) {
     try { window.ipc.postMessage(JSON.stringify(ask)); closeSettings(); return; } catch (e) {}
   }
-  if (EMBED) { toBoard({discard: folder}); return; }
+  if (EMBED) { toBoard({discard: folder, review}); return; }
   // A page opened whole (a phone's): the app is told, and the board -- where
   // the check and the row that says how it goes are -- is where this goes
-  settingsApi("/api/folder/discard-far", {folder})
+  settingsApi("/api/folder/discard-far", {folder, review})
     .then(j => { if (j && j.ok) location.href = "/"; else toast(T["settings.group.discard.board"], true); })
     .catch(() => toast(T["settings.group.discard.board"], true));
 }
@@ -18549,6 +18653,24 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn standalone_settings_keep_pinned_and_shared_folders() {
+        let root = std::env::temp_dir().join(format!("shikisha-removal-guard-{}", crate::random_hex(12)));
+        std::fs::create_dir(&root).unwrap();
+        let at = root.join("work"); // Missing on disk: test the config guards themselves.
+        let file = root.join("config.json");
+        let write = |value: serde_json::Value| std::fs::write(&file, value.to_string()).unwrap();
+        write(serde_json::json!({"desks":[{"id":"one", "name":"One", "folders":[{"cwd":at, "keep_first":true}]}]}));
+        assert!(settings_removal_guard(&file, &at).is_err());
+        write(serde_json::json!({"desks":[{"id":"one", "name":"One", "folders":[{"cwd":at}]}, {"id":"two", "name":"Two", "folders":[{"cwd":at}]}]}));
+        assert!(settings_removal_guard(&file, &at).is_err());
+        write(serde_json::json!({"desks":[{"id":"one", "name":"One", "folders":[{"cwd":at}]}]}));
+        settings_removal_guard(&file, &at).unwrap();
+        assert!(settings_removal_guard(&file, &root.join("unknown")).is_err());
+        std::fs::remove_file(file).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
     /// A folder with a settings file and a secret store, for a save to be
     /// tried against
     fn save_place(what: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {

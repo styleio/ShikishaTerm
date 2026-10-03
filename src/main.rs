@@ -633,6 +633,10 @@ impl WinSurface {
     }
 
     /// Say what a place pressed on the terminal turned out to be (already JSON-encoded)
+    fn push_folder_review(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__folderReview && window.__folderReview({json});"));
+    }
+
     fn push_link(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__linkSaid && window.__linkSaid({json});"));
     }
@@ -823,7 +827,8 @@ impl WinSurface {
                 // A tab that was waiting for somewhere to work was given a folder
                 Ev::TabFolder { tab, folder } => self.mail.tab_folders.push((tab, folder)),
                 Ev::FolderClose { folder } => self.mail.folder_closes.push(folder),
-                Ev::FolderDiscard { folder, unasked } => self.mail.folder_discards.push((folder, unasked)),
+                Ev::FolderReview {folder, ask} => self.mail.folder_reviews.push((folder, ask)),
+                Ev::FolderDiscard { folder, unasked, review } => self.mail.folder_discards.push((folder, unasked, review)),
                 Ev::FarPorts { folder } => self.mail.far_ports.push(folder),
                 Ev::HostKey { machine, fingerprint, trust } => self.mail.host_keys.push((machine, fingerprint, trust)),
                 Ev::FarPage { folder, port } => self.mail.far_pages.push((folder, port)),
@@ -833,7 +838,7 @@ impl WinSurface {
                 Ev::AgentHooks { answer, seq } => self.mail.agent_hooks.push((answer, seq)),
                 Ev::Orch { act, job, decision, choice } => self.mail.orch.push((act, job, decision, choice)),
                 Ev::FolderHide { folder, hide } => self.mail.folder_hides.push((folder, hide)),
-                Ev::FolderManage { desk, act, folders } => self.mail.folder_manage.push((desk, act, folders)),
+                Ev::FolderManage { desk, act, folders, reviews } => self.mail.folder_manage.push((desk, act, folders, reviews)),
                 Ev::FolderMove { folder, to } => self.mail.folder_moves.push((folder, to)),
                 Ev::RemoteCut => self.mail.remote_cut = true,
                 Ev::Coach { step } => self.mail.coach_done = Some(step),
@@ -2125,6 +2130,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_vault_where(&self, json: &str) { WinSurface::push_vault_where(self, json) }
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_link(&self, json: &str) { WinSurface::push_link(self, json) }
+    fn push_folder_review(&self, json: &str) { WinSurface::push_folder_review(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_ui(self, ev) }

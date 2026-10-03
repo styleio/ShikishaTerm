@@ -326,10 +326,12 @@ pub enum Ev {
     TabFolder { tab: usize, folder: String },
     /// A folder was closed: its tabs go, the files stay
     FolderClose { folder: String },
-    /// A branch's folder was thrown away for good. Refused while there is
-    /// anything in it that is not committed. `unasked` is the person's
+    /// Removes a branch's folder; `review` approves the changes shown before
+    /// deletion. Without it, dirty folders are refused. `unasked` is the person's
     /// "don't show this again", ticked in the question that came before it
-    FolderDiscard { folder: String, unasked: bool },
+    FolderDiscard { folder: String, unasked: bool, review: Option<String> },
+    /// Read the changes before asking to remove a working folder.
+    FolderReview { folder: String, ask: String },
     /// The addresses a folder on a MicroVM answers on from anywhere: the
     /// ports something listens on in there, each with its public URL. Asked
     /// once when it is asked, since asking starts a paused machine
@@ -369,7 +371,7 @@ pub enum Ev {
     /// it, and the next launch shows it again. `hide` false with an empty
     /// `folder` brings back every folder put away this way
     FolderHide { folder: String, hide: bool },
-    FolderManage { desk: String, act: String, folders: Vec<String> },
+    FolderManage { desk: String, act: String, folders: Vec<String>, reviews: std::collections::BTreeMap<String, String> },
     /// A folder told to work somewhere else. The folder keeps everything it
     /// said about itself -- its name, its colour, its tabs -- and only the
     /// place it works in changes
@@ -1177,7 +1179,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("folderclose") => Ev::FolderClose {
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
+        Some("folderreview") => Ev::FolderReview {
+            folder:v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            ask:v.get("ask").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
         Some("folderdiscard") => Ev::FolderDiscard {
+            review: v.get("review").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(str::to_string),
             folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             unasked: v.get("unasked").and_then(|x| x.as_bool()).unwrap_or(false),
         },
@@ -1219,6 +1226,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             hide: v.get("hide").and_then(|x| x.as_bool()).unwrap_or(false),
         },
         Some("foldermanage") => Ev::FolderManage {
+            reviews: serde_json::from_value(v.get("reviews").cloned().unwrap_or_default()).unwrap_or_default(),
             desk: v.get("desk").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             folders: v.get("folders").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default(),

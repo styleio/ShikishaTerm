@@ -354,6 +354,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::TabName { .. }
         | Ev::TabFolder { .. }
         | Ev::FolderClose { .. }
+        | Ev::FolderReview { .. }
         | Ev::FolderDiscard { .. }
         | Ev::FolderColor { .. } => true,
         // The public addresses of a folder on a MicroVM: read, and handed to
@@ -3669,7 +3670,7 @@ mod tests {
             Ev::FolderName { folder: "a".into(), name: "b".into() },
             Ev::FolderView { folder: "a".into() },
             Ev::FolderClose { folder: "a".into() },
-            Ev::FolderDiscard { folder: "a".into(), unasked: false },
+            Ev::FolderDiscard { folder: "a".into(), unasked: false, review: None },
             Ev::FarPorts { folder: "a".into() },
             Ev::FarPage { folder: "a".into(), port: 3000 },
             Ev::FarServe { folder: "a".into() },
@@ -3711,7 +3712,7 @@ mod tests {
     fn a_worktree_deleted_from_afar_carries_the_answer_to_asking_again() {
         let v = serde_json::json!({"kind": "folderdiscard", "folder": "D:/w", "unasked": true});
         assert!(matches!(shikisha_shared::parse_intent(&v),
-            Some(shikisha_shared::Ev::FolderDiscard { ref folder, unasked: true }) if folder == "D:/w"));
+            Some(shikisha_shared::Ev::FolderDiscard { ref folder, unasked: true, .. }) if folder == "D:/w"));
         let v = serde_json::json!({"kind": "folderdiscard", "folder": "D:/w"});
         assert!(matches!(shikisha_shared::parse_intent(&v), Some(shikisha_shared::Ev::FolderDiscard { unasked: false, .. })));
     }

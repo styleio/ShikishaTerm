@@ -39,6 +39,7 @@ pub struct Manager {
     measuring: Option<(String, mpsc::Receiver<(String, Usage)>, Arc<AtomicBool>)>,
     /// A delayed remote preflight must never act on the next desk.
     pub pending: BTreeMap<String, String>,
+    pub reviews: BTreeMap<String, String>,
     queue: VecDeque<String>,
     active: Option<String>,
 }
@@ -107,6 +108,7 @@ impl Manager {
     }
 
     pub fn finish(&mut self, key: &str, error: String) {
+        self.reviews.remove(key);
         if self.active.as_deref() == Some(key) {
             self.active = None;
         }

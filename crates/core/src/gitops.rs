@@ -178,6 +178,9 @@ pub fn call(
             None => Value::Null,
             Some(n) => {
                 let mut row = json!({ "protected": crate::git::is_protected(&n, protect), "name": n });
+                if let Some(base) = crate::git::integrated_into(dir, &n) {
+                    row["integrated_into"] = json!(base);
+                }
                 // Only when there is a branch on the server to count against
                 if let Some(up) = crate::git::upstream(dir).map_err(e)? {
                     row["upstream"] = json!(up.name);

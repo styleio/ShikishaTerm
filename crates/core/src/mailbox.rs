@@ -284,7 +284,8 @@ pub struct Mailbox {
     pub folder_closes: Vec<String>,
     /// Branch folders thrown away for good: (folder, and whether the person
     /// asked not to be asked about it again)
-    pub folder_discards: Vec<(String, bool)>,
+    pub folder_reviews: Vec<(String, String)>,
+    pub folder_discards: Vec<(String, bool, Option<String>)>,
     /// Folders on a MicroVM whose public addresses were asked for
     pub far_ports: Vec<String>,
     /// Answers about a server whose key changed: (server, the fingerprint
@@ -308,7 +309,7 @@ pub struct Mailbox {
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
-    pub folder_manage: Vec<(String, String, Vec<String>)>,
+    pub folder_manage: Vec<(String, String, Vec<String>, std::collections::BTreeMap<String, String>)>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
 }
@@ -695,7 +696,7 @@ impl Mailbox {
     pub fn take_folder_closes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.folder_closes)
     }
-    pub fn take_folder_discards(&mut self) -> Vec<(String, bool)> {
+    pub fn take_folder_discards(&mut self) -> Vec<(String, bool, Option<String>)> {
         std::mem::take(&mut self.folder_discards)
     }
     pub fn take_far_ports(&mut self) -> Vec<String> {
@@ -725,7 +726,7 @@ impl Mailbox {
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)
     }
-    pub fn take_folder_manage(&mut self) -> Vec<(String, String, Vec<String>)> {
+    pub fn take_folder_manage(&mut self) -> Vec<(String, String, Vec<String>, std::collections::BTreeMap<String, String>)> {
         std::mem::take(&mut self.folder_manage)
     }
     pub fn take_folder_moves(&mut self) -> Vec<(String, String)> {
