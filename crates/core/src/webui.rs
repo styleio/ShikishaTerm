@@ -7255,19 +7255,37 @@ function serverAisAsk() {
 // it has -- and its shell when it has none, or has not said yet: this PC's
 // AI typed there is a `command not found`. Null for any other folder
 const machineStart = (desk, group) => {
+  const found = machineAis(desk, group);
+  if (found === null) return null;
+  if (!found) return "";
+  const chosen = ((current.ai_engine || "").trim().split(/\s+/)[0] || "");
+  return (chosen && found.includes(chosen) ? chosen : null)
+    || FAR_DEFAULTS.ai_order.find(k => found.includes(k)) || found[0] || "";
+};
+// The AIs the machine a folder is on has, by command: what a server said it
+// has (SERVER_AIS), or the one a MicroVM's machine was given. Null for a
+// folder on this PC, undefined while a server has not said yet
+function machineAis(desk, group) {
   const g = (desk.folders || [])[group] || {};
   const h = (current.hosts || []).find(x => (x.name || "").trim() === (g.host || "").trim());
   if (!h) return null;
   if ((h.kind || "").trim().toLowerCase() !== "e2b") {
     const found = SERVER_AIS[(h.name || "").trim()];
-    if (!Array.isArray(found)) return "";
-    const chosen = ((current.ai_engine || "").trim().split(/\s+/)[0] || "");
-    return (chosen && found.includes(chosen) ? chosen : null)
-      || FAR_DEFAULTS.ai_order.find(k => found.includes(k)) || found[0] || "";
+    return Array.isArray(found) ? found : undefined;
   }
   const p = (desk.projects || []).find(x => x.name === g.project);
   const ai = p && machineHas(p, h.name);
-  return ai && ai !== "none" && MACHINE_AIS.some(a => a.key === ai) ? ai : "";
+  return ai && ai !== "none" && MACHINE_AIS.some(a => a.key === ai) ? [ai] : [];
+}
+// What a tab made an AI runs: this PC's choice in a folder here; on another
+// machine an AI that machine has, with Yolo's word as a tab here gets it --
+// or, when it has none or has not said, this PC's choice all the same, which
+// the AI panel then says is not there (aiPanel)
+const aiStartOf = t => {
+  const far = machineStart(desks[sel.desk] || {}, t.group || 0);
+  if (!far) return defaultAiCommand();
+  const flag = current.yolo ? cliFlagOf(far) : "";
+  return flag ? far + " " + flag : far;
 };
 // The AI a project's machines on a MicroVM have: what its checkout there was
 // last prepared with (its first line, "ai: X"), else what the project says --
@@ -15679,7 +15697,7 @@ function launchCard(t, renamed) {
   const rebuild = () => { detailBox.textContent = ""; detailBox.append(kindPanel(t, cmdInput, rebuild, real)); };
   cmdRow.append(el("label", {}, T["settings.tab.kind"]),
     choose({k:catOf(t.command)}, "k", far ? farKinds() : CAT_LIST, v => {
-      setCommand(t, cmdInput, catStart(v));
+      setCommand(t, cmdInput, v === "ai" ? aiStartOf(t) : catStart(v));
       // A tab made a browser starts with every control over its page on;
       // taking some away is the choice, not putting them there
       if (v === "browser" && !(t.nav && Object.values(t.nav).some(Boolean))) {
@@ -15962,8 +15980,12 @@ function aiPanel(t, cmdInput, rebuild, real) {
   const box = el("div");
   const picker = el("select");
   const far = farPlaceOf(t);
+  // Installed where the tab runs: on another machine, what that machine
+  // said it has; nothing is marked while it has not said
+  const has = machineAis(desks[sel.desk] || {}, t.group || 0);
   for (const c of AI_CLIS) {
-    const ok = far || (c.check ? aiEngines.some(e => e.id === c.check) : true);
+    const ok = Array.isArray(has) ? has.includes(c.cmd)
+      : far || (c.check ? aiEngines.some(e => e.id === c.check) : true);
     picker.append(el("option", {value:"cli:" + c.cmd}, c.label + (!ok ? T["settings.tab.common.missing"] : "")));
   }
   const provs = Object.keys(appProviders()).sort();
@@ -15980,7 +16002,18 @@ function aiPanel(t, cmdInput, rebuild, real) {
   // (those talk to an endpoint, so there is no local --help to show).
   const helpBtn = el("button", {class:"quiet"}, T["settings.tab.ai.flags"]);
   helpBtn.onclick = () => showCliHelp(headOf(t.command));
+  // Said where it is chosen: an AI the machine the folder is on does not
+  // have is a command that is not there when the tab starts
+  const missing = el("div", {class:"hint warn"});
+  const sayMissing = () => {
+    const h = headOf(t.command);
+    const cli = AI_CLIS.find(c => c.cmd === h);
+    const gone = !!(far && cli && Array.isArray(has) && !has.includes(h));
+    missing.hidden = !gone;
+    missing.textContent = gone ? fill(T["settings.tab.ai.far_missing"], {host: far.host, ai: cli.label}) : "";
+  };
   const drawDetail = () => {
+    sayMissing();
     detail.textContent = "";
     const m = parseModel(t.command);
     helpBtn.hidden = !!m || !headOf(t.command);
@@ -16088,6 +16121,7 @@ function aiPanel(t, cmdInput, rebuild, real) {
   }
 
   box.append(el("div", {class:"row"}, el("label", {}, T["settings.tab.ai.pick"]), picker, helpBtn));
+  box.append(el("div", {class:"row"}, el("label", {}, ""), missing));
   if (!provs.length)
     box.append(el("div", {class:"row"}, el("label", {}, ""),
       el("span", {class:"hint"}, T["settings.tab.ai.api_hint"])));
@@ -19212,6 +19246,23 @@ mod tests {
         // Projects are a desk's own, and the page asks about them by desk
         assert!(PAGE.contains("projects: Array.isArray(w.projects) ? w.projects : [],"));
         assert!(PAGE.contains("\"&desk=\" + encodeURIComponent(desk.id || \"\")"));
+    }
+
+    /// A tab in a folder on another machine runs an AI that machine has, from
+    /// every door: made new, or made an AI from the Kind picker -- which put
+    /// this PC's `claude` on a server that had none, and the tab said
+    /// "command not found". The picker marks what the machine lacks, and an
+    /// AI it lacks is said where it is chosen
+    #[test]
+    fn a_far_tab_made_an_ai_runs_one_its_machine_has() {
+        assert!(PAGE.contains(r#"setCommand(t, cmdInput, v === "ai" ? aiStartOf(t) : catStart(v));"#),
+            "picking AI as the Kind puts this PC's AI on another machine");
+        assert!(PAGE.contains("const far = machineStart(desks[sel.desk] || {}, t.group || 0);"),
+            "the AI a far tab starts as is not the one its machine has");
+        assert!(PAGE.contains("const ok = Array.isArray(has) ? has.includes(c.cmd)"),
+            "the AI picker does not mark what the machine lacks");
+        assert!(PAGE.contains(r#"fill(T["settings.tab.ai.far_missing"], {host: far.host, ai: cli.label})"#),
+            "an AI the machine lacks is not said where it is chosen");
     }
 
     /// Every trigger this screen offers is a trigger that actually fires.

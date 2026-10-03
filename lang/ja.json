@@ -2097,6 +2097,7 @@
   "settings.tab.cat.cmd.far": "コマンド（そのマシンのシェル）",
   "settings.tab.ai.pick": "使うAI",
   "settings.tab.ai.flags": "引数を見る",
+  "settings.tab.ai.far_missing": "{host} には {ai} が入っていません。{host} に入れるまで、このタブで {ai} は起動しません。{host} にある AI を選んでください。",
   "settings.tab.ai.flags_loading": "--help を実行中…",
   "settings.tab.ai.flags_failed": "--help の出力を取得できませんでした（コマンドは入っていますか？）",
   "settings.tab.ai.add": "＋ AIを追加…",
