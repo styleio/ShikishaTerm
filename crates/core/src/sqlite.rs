@@ -224,9 +224,9 @@ pub fn check_numbering(steps: &[(i64, &str, Step)], dir: &str) {
         .filter(|n| n.ends_with(".sql"))
         .collect();
     files.sort();
-    for (i, f) in files.iter().enumerate() {
-        assert!(f.starts_with(&format!("{:04}_", i + 1)), "{f} is out of order");
+    let sql_steps: Vec<_> = steps.iter().filter(|s| matches!(s.2, Step::Sql(_))).collect();
+    assert_eq!(files.len(), sql_steps.len(), "every file in the migrations folder is a step, and every SQL step a file");
+    for (file, (number, _, _)) in files.iter().zip(sql_steps) {
+        assert!(file.starts_with(&format!("{number:04}_")), "{file} does not belong to step {number}");
     }
-    let sql_steps = steps.iter().filter(|s| matches!(s.2, Step::Sql(_))).count();
-    assert_eq!(files.len(), sql_steps, "every file in the migrations folder is a step, and every SQL step a file");
 }

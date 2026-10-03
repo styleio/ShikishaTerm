@@ -99,13 +99,13 @@ even then prefer the code.
 ```
 crates/core/src/<feature>/migrations/
   0001_first.sql
-  0002_own_words.sql
+  0002_more_tables.sql
 ```
 
 ```rust
 pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
-    (2, "own words", Step::Sql(include_str!("migrations/0002_own_words.sql"))),
+    (2, "more tables", Step::Sql(include_str!("migrations/0002_more_tables.sql"))),
 ];
 ```
 
@@ -126,9 +126,11 @@ pub const STEPS: &[(i64, &str, Step)] = &[
   that file in place.
 - **Refuse a newer file.** A file at a version this build does not know was written by a newer
   app. It is refused, never "fixed": this build cannot know what the newer one meant.
-- **The first layout is a step too.** When a feature's first tables have shipped, they stay
-  step 1 forever, word for word; renaming them later is step 2 carrying the rows across (see
-  `0002_own_words.sql`), not a new step 1.
+- **The first layout is a step too.** While that layout is supported, renaming its tables
+  requires a later step carrying the rows across. A consolidated baseline must preserve
+  supported files and their version numbers, resume interrupted creation, and refuse an
+  unsupported layout without changing its tables. The orchestration record checks these
+  conditions in its tests.
 
 ### What SQLite can and cannot change in place
 
@@ -155,8 +157,8 @@ Table Schema Changes"), written once as `crate::sqlite::rebuild(tx, table, creat
 
 Run it inside a `Step::Code`, where foreign keys are already off and are checked afterwards.
 Never rename the old table out of the way first when others reference it: `RENAME` would
-rewrite their `REFERENCES` to follow it. (`0002_own_words.sql` does rename two tables aside,
-which is safe only because every table referencing them is dropped in the same step.)
+rewrite their `REFERENCES` to follow it. Renaming a table aside is safe only when every table
+referencing it is also replaced in the same transaction.
 
 ## 6. Changing data safely
 

@@ -36,9 +36,10 @@ after this step, the rows written under names are rewritten once from the settin
 (`Store::adopt_uids`): a name only one tab of the settings has goes to that tab, and any other -- a
 closed tab, a name two desks share -- to a uid no tab has.
 
-The steps so far: **1** is the layout the first version shipped with, in the words it used then
-(runs, dispatches, messages, gates); **2** carries a file written by it, rows and all, into the
-words used now; **3** adds `tab_names`. A new file runs them all.
+New files create the current tables directly in step **1**. Step **2** checks that baseline,
+including when creation was interrupted after the first step. Step **3** adds `tab_names`.
+Existing files at versions **2** and **3** retain their rows and version numbers. Earlier table
+layouts are unsupported and are refused without changing their tables.
 
 States (`state`, `held_by`, `afterwards` ...) are plain text. There is no CHECK on them in the
 tables: which state may follow which is decided in one place in the code, `Store::shift`, which
