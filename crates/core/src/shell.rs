@@ -16881,15 +16881,22 @@ if (REMOTE) {
   // Fallback poll — only does anything while the socket is down. It's also the
   // reliable place to notice a revoked token: a WS handshake failure is opaque,
   // but a plain fetch returns the 403 outright.
+  // Hold the whole request, prompt and authentication until it settles. A
+  // timer can fire again while any fetch is pending (including just after a
+  // native prompt closes); that used to ask twice and race the two answers.
+  let pulling = false, pullAfter = 0;
   const pull = async () => {
-    if (wsUp || remoteCut || moving || MOVE_CODE) return;
+    if (pulling || wsUp || remoteCut || moving || MOVE_CODE || Date.now() < pullAfter) return;
+    pulling = true;
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
+      if (wsUp || remoteCut || moving) return;
       if (r.status === 403) {
         // Two different refusals share the status: the optional password
         // gate (body "password") wants the person to unlock this device
         // once; anything else means the PC ended this session.
         const body = await r.text().catch(() => "");
+        if (wsUp || remoteCut || moving) return;
         if (body === "password") {
           const pw = prompt(T["tui.remote.password_prompt"] || "Enter the password for this board");
           if (pw !== null && pw !== "") {
@@ -16898,15 +16905,25 @@ if (REMOTE) {
               method: "POST", cache: "no-store",
               headers: {"Content-Type": "application/json"},
               body: JSON.stringify({password: pw})
-            });
-            if (a.ok) { location.reload(); return; }
-            if (a.status === 429) {
+            }).catch(() => null);
+            if (remoteCut || moving) return;
+            if (a && a.ok) { location.reload(); return; }
+            if (wsUp) return;
+            if (a && a.status === 429) {
               // Too many wrong ones in a row; the door opens again in a moment
-              const n = a.headers.get("Retry-After") || "60";
+              const n = Math.max(1, Number(a.headers.get("Retry-After")) || 60);
+              pullAfter = Date.now() + n * 1000;
               alert((T["tui.remote.password_wait"] || "Too many tries in a row. Wait {n} seconds, then try again").replaceAll("{n}", n));
               return;
             }
-            alert(T["tui.remote.password_wrong"] || "Wrong password");
+            if (a && a.status === 403) {
+              const why = await a.text().catch(() => "");
+              if (wsUp || remoteCut || moving) return;
+              if (why === "wrong") alert(T["tui.remote.password_wrong"] || "Wrong password");
+              else cutNow();
+              return;
+            }
+            alert(T["tui.remote.password_failed"] || "Could not sign in. Check your connection and try again.");
           }
           return;
         }
@@ -16920,6 +16937,8 @@ if (REMOTE) {
       // before crying wolf — a one-frame blip shouldn't flash a scary banner.
       if (!downSince) downSince = Date.now();
       else if (Date.now() - downSince > 3000) showNet("down");
+    } finally {
+      pulling = false;
     }
   };
   pull();

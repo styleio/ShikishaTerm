@@ -951,6 +951,11 @@ pub struct Gate {
     moving: Mutex<Option<String>>,
 }
 
+enum PasswordError {
+    Wrong,
+    Wait(u64),
+}
+
 /// The score of wrong passwords, and what it costs.
 ///
 /// The first two slips cost nothing — that is a person mistyping. The third
@@ -1044,6 +1049,24 @@ impl Gate {
         // The password is asked of a device reaching this PC from elsewhere;
         // this PC's own window has shown something stronger
         self.password.is_empty() || self.pw.has(id) || self.here.has(id)
+    }
+
+    /// Both password doors accept an already unlocked device without issuing
+    /// another cookie or counting another guess. A delayed request can arrive
+    /// after a different request (or browser tab) has already unlocked it.
+    fn unlock(&self, id: &str, given: &str) -> Result<Option<String>, PasswordError> {
+        if self.unlocked(id) {
+            return Ok(None);
+        }
+        if let Some(left) = self.wait() {
+            return Err(PasswordError::Wait(left.as_secs_f64().ceil() as u64));
+        }
+        if !crate::crypto::token_eq(given, &self.password) {
+            self.missed();
+            return Err(PasswordError::Wrong);
+        }
+        self.forgive();
+        Ok(Some(self.pw.keep("")))
     }
 
     /// How much longer no password will be looked at, or `None` if one may be
@@ -2565,33 +2588,26 @@ fn handle(
                     req.respond(Response::from_string("payload too large").with_status_code(413))?;
                     return Ok(());
                 };
-                // The door is shut for a while after wrong passwords: said
-                // before the password is looked at, so a right one offered
-                // during the wait is turned away too (see Misses)
-                if let Some(left) = gate.wait() {
-                    let secs = left.as_secs_f64().ceil() as u64;
-                    req.respond(
-                        json_response(serde_json::json!({"ok": false, "wait": secs}))
-                            .with_status_code(429)
-                            .with_header(retry_after(secs)),
-                    )?;
-                    return Ok(());
-                }
                 let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
-                if !crate::crypto::token_eq(given, &gate.password) {
-                    gate.missed();
-                    req.respond(json_response(serde_json::json!({"ok": false})))?;
-                    return Ok(());
-                }
-                gate.forgive();
-                let id = gate.pw.keep("");
-                req.respond(
-                    json_response(serde_json::json!({"ok": true})).with_header(
-                        Header::from_bytes(&b"Set-Cookie"[..], reply_cookie(&id).as_bytes())
-                            .unwrap(),
-                    ),
-                )?;
+                let response = match gate.unlock(&cookie_value(&req, "rq"), given) {
+                    Ok(cookie) => {
+                        let mut response = json_response(serde_json::json!({"ok": true}));
+                        if let Some(id) = cookie {
+                            response = response.with_header(
+                                Header::from_bytes(&b"Set-Cookie"[..], reply_cookie(&id).as_bytes()).unwrap(),
+                            );
+                        }
+                        response
+                    }
+                    Err(PasswordError::Wrong) => json_response(serde_json::json!({"ok": false})),
+                    Err(PasswordError::Wait(secs)) => {
+                        json_response(serde_json::json!({"ok": false, "wait": secs}))
+                            .with_status_code(429)
+                            .with_header(retry_after(secs))
+                    }
+                };
+                req.respond(response)?;
                 return Ok(());
             }
             // Nothing below here happens until that is settled. The asking
@@ -2673,53 +2689,37 @@ fn handle(
     // guesser cannot alternate doors — with "come back in n seconds" (429)
     // rather than a slept thread, which would have slowed every phone
     let unlocked = gate.unlocked(&cookie_value(&req, "rp"));
+    if method == "POST" && path == "/auth" {
+        let mut req = req;
+        let Some(body) = read_body(&mut req, MAX_BODY)? else {
+            req.respond(Response::from_string("payload too large").with_status_code(413))?;
+            return Ok(());
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
+        let response = match gate.unlock(&cookie_value(&req, "rp"), given) {
+            Ok(cookie) => {
+                let mut response = Response::from_string("ok");
+                if let Some(id) = cookie {
+                    let cookie = format!("rp={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000");
+                    response = response.with_header(
+                        Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap(),
+                    );
+                }
+                response
+            }
+            // Distinguish a bad password from a revoked key or an origin
+            // refusal, which also return 403 before reaching this door.
+            Err(PasswordError::Wrong) => Response::from_string("wrong").with_status_code(403),
+            Err(PasswordError::Wait(secs)) => Response::from_string("wait")
+                .with_status_code(429)
+                .with_header(retry_after(secs)),
+        };
+        return req.respond(response.with_header(
+            Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap(),
+        )).map_err(Into::into);
+    }
     if !unlocked {
-        if method == "POST" && path == "/auth" {
-            if let Some(left) = gate.wait() {
-                let secs = left.as_secs_f64().ceil() as u64;
-                return req
-                    .respond(
-                        Response::from_string("wait")
-                            .with_status_code(429)
-                            .with_header(retry_after(secs))
-                            .with_header(
-                                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..])
-                                    .unwrap(),
-                            ),
-                    )
-                    .map_err(Into::into);
-            }
-            let mut req = req;
-            let Some(body) = read_body(&mut req, MAX_BODY)? else {
-                req.respond(Response::from_string("payload too large").with_status_code(413))?;
-                return Ok(());
-            };
-            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("");
-            if crate::crypto::token_eq(given, &gate.password) {
-                gate.forgive();
-                let id = gate.pw.keep("");
-                let cookie = format!(
-                    "rp={id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000"
-                );
-                return req
-                    .respond(
-                        Response::from_string("ok")
-                            .with_header(
-                                Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap(),
-                            )
-                            .with_header(
-                                Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..])
-                                    .unwrap(),
-                            ),
-                    )
-                    .map_err(Into::into);
-            }
-            gate.missed();
-            return req
-                .respond(Response::from_string("forbidden").with_status_code(403))
-                .map_err(Into::into);
-        }
         return req
             .respond(Response::from_string("password").with_status_code(403))
             .map_err(Into::into);
@@ -4441,6 +4441,10 @@ mod tests {
     #[test]
     #[ignore]
     fn hold_a_reply_page_open() {
+        let _book = crate::clients::tests::OwnBook::new();
+        if let Ok(lang) = std::env::var("SHIKISHA_HOLD_LANG") {
+            crate::i18n::init(Some(&lang), &[crate::repo_root()]);
+        }
         let ui = RemoteUi::start(
             "127.0.0.1".parse().unwrap(),
             0,
@@ -4449,6 +4453,7 @@ mod tests {
             std::env::var("SHIKISHA_HOLD_PW").unwrap_or_default(),
         )
         .unwrap();
+        ui.snapshot.lock().unwrap().ui = Some(crate::uistate::UiState::default());
         let link = ui.reply_link(crate::reply::Ticket::new(
             Some("coder".into()),
             2,
@@ -4600,6 +4605,15 @@ mod tests {
         assert!(set.contains("HttpOnly"), "the page can read it: {set}");
 
         phone.also(set.split(';').next().unwrap_or(""));
+
+        // A second browser tab may have opened this door in the meantime.
+        // A repeated submission keeps the same cookie and remains successful.
+        for password in ["aikotoba", "chigau"] {
+            let mut again = phone.post(&format!("/r/{id}/unlock"), &serde_json::json!({"password": password}).to_string());
+            assert_eq!(again.status().as_u16(), 200);
+            assert!(again.headers().get("set-cookie").is_none(), "a repeated unlock replaces the cookie");
+            assert_eq!(again.body_mut().read_json::<serde_json::Value>().unwrap()["ok"], true);
+        }
 
         // Now the real page, and a reply that lands.
         let body = phone.text(&format!("/r/{id}"));
@@ -5032,6 +5046,11 @@ mod tests {
         assert!(body.contains("\"wait\""), "it does not return the wait time: {body}");
         // The phone that is in was never made to wait
         assert_eq!(inside.state("tok123456789012"), 200, "even the person inside was stopped");
+        assert_eq!(
+            inside.said_post("/auth", r#"{"password":"chigau"}"#),
+            (200, "ok".to_string()),
+            "an already unlocked device is asked to wait for somebody else's guesses"
+        );
         ui.shutdown();
     }
 
@@ -5063,9 +5082,10 @@ mod tests {
         // Wrong password → refused
         assert_eq!(
             phone.said_post("/auth?t=tok123456789012", r#"{"password":"chigau"}"#),
-            (403, "forbidden".to_string()),
+            (403, "wrong".to_string()),
             "a wrong password gets through"
         );
+        assert_eq!(phone.state("tok123456789012"), 403, "a failed password opens the data");
         // The password rides in the body only. In the address — where the old
         // route took it, and where proxies and histories keep it — it is not a
         // password at all, and this is a phone that has not given one
@@ -5091,6 +5111,24 @@ mod tests {
         phone.also(&cookie);
         assert_eq!(phone.state("tok123456789012"), 200, "it does not open even with the cookie");
 
+        // Delayed or repeated submissions are answered on the authentication
+        // this device already holds, without minting another password cookie.
+        for password in ["aikotoba", "chigau", ""] {
+            let mut again = phone.post("/auth", &serde_json::json!({"password": password}).to_string());
+            assert_eq!(again.status().as_u16(), 200, "a repeated unlock is refused");
+            assert!(again.headers().get("set-cookie").is_none(), "a repeated unlock replaces the cookie");
+            assert_eq!(again.body_mut().read_to_string().unwrap(), "ok");
+        }
+        assert_eq!(phone.state("tok123456789012"), 200);
+
+        // Pairing alone still does not replace the password. Nor does a
+        // made-up password cookie, even when another device has unlocked.
+        let mut locked = Phone::new(&base);
+        locked.pair("tok123456789012");
+        locked.also("rp=not-a-password-session");
+        assert_eq!(locked.said_post("/auth", r#"{"password":"chigau"}"#), (403, "wrong".into()));
+        assert_eq!(locked.said("/api/state"), (403, "password".into()));
+
         // No token and no key of its own stays refused, whatever else it holds.
         // (The device's own key is a key: a phone holding it is let in without
         // the token, which is what the key is for)
@@ -5105,16 +5143,20 @@ mod tests {
             .collect::<Vec<_>>()
             .join("; ");
         assert_eq!(keyless.status("/api/state"), 403, "it gets through with neither a token nor a key");
+        assert_eq!(keyless.said_post("/auth", "{}"), (403, "forbidden".into()));
 
         // The disconnect takes the password with it: the device unlocks again
         // only after the person there says so
         ui.cut_sessions();
+        assert_eq!(phone.said_post("/auth", "{}"), (403, "cut".into()), "the old cookie revives a cut session");
         phone.pair("tok123456789012");
         assert_eq!(
             phone.said("/api/state?t=tok123456789012"),
             (403, "password".to_string()),
             "the password still works after disconnecting"
         );
+        assert_eq!(phone.said_post("/auth", r#"{"password":"chigau"}"#), (403, "wrong".into()));
+        assert_eq!(phone.status("/api/state"), 403);
         ui.shutdown();
     }
 

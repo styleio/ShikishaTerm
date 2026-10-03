@@ -41,6 +41,9 @@ jobs:
           node tools/check-conversations.mjs
           node tools/check-settings-save.mjs
 
+      - name: Remote authentication survives delayed replies
+        run: node --test tools/check-remote-auth.mjs
+
       # A dependency added without rerunning tools/notices.ps1 leaves the
       # download crediting the wrong set of authors. Caught here, it is a line
       # in a pull request; caught at the tag, it is a release already downloaded.

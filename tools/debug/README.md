@@ -46,6 +46,7 @@ in a name is there so the folder can be read at a glance.
 
 | Tool | Runs on | What it is for | How to run it |
 |---|---|---|---|
+| `tools/debug/remote-password.mjs` | Node, cargo, Chrome | Password entry against the real isolated server, with state and authentication replies delayed past the polling interval; one prompt, remembered devices, repeated authentication and wrong-password rejection in English/desktop and Japanese/phone | `node tools/debug/remote-password.mjs` |
 | `tools/debug/cli-process.win.mjs --desks` | Windows, Node, Chrome | Conversation UIDs on both screens, STOP across desks, a background close that must finish before success, and refusal to open a tab in an archived folder without changing settings | `cargo build --bin SHIKISHA-TERM`, then `node tools/debug/cli-process.win.mjs --desks` |
 | `tools/debug/scenes/settings-shared.mjs` | anywhere, with Chrome | Every settings form's validation, focus and error recovery; both languages, schemes and widths | `node tools/debug/settings-shoot.mjs tools/debug/scenes/settings-shared.mjs --remote-http` |
 | `tools/debug/scenes/snip-toast.mjs` | anywhere, with Chrome | Shared notifications on the picture tools page, including warning timing and dismissal | `node tools/debug/shoot.mjs tools/debug/scenes/snip-toast.mjs` |
