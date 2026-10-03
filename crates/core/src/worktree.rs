@@ -572,6 +572,9 @@ pub enum Stage {
     /// A MicroVM checkout being made for the project: its machine given the
     /// AI and the machine setup
     Installing = 4,
+    /// A MicroVM checkout just made, waiting for its AI to be signed in to
+    /// before the worktree is copied from it
+    SigningIn = 5,
 }
 
 impl Stage {
@@ -583,6 +586,7 @@ impl Stage {
             Stage::SettingUp => "setting_up",
             Stage::Stopping => "stopping",
             Stage::Installing => "installing",
+            Stage::SigningIn => "signing_in",
         }
     }
     fn of(n: u8) -> Stage {
@@ -591,6 +595,7 @@ impl Stage {
             2 => Stage::SettingUp,
             3 => Stage::Stopping,
             4 => Stage::Installing,
+            5 => Stage::SigningIn,
             _ => Stage::Preparing,
         }
     }
@@ -613,14 +618,17 @@ impl std::error::Error for Stopped {}
 /// back: a folder half made and written down nowhere is one nobody will find
 /// again, and it would stand in the way of trying the same name once more
 fn make(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool) -> Result<()> {
-    make_noting(plan, at_stage, stop, &|_| {})
+    make_noting(plan, at_stage, stop, &|_| {}, &|| true)
 }
 
 /// The same, telling `made` about each machine a MicroVM making makes, the
 /// moment it is made
-fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines)) -> Result<()> {
+///
+/// `signed_in` says whether a MicroVM checkout this making made may be copied
+/// yet: its AI is signed in to on it first (see [`waits_for_sign_in`])
+fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines), signed_in: &dyn Fn() -> bool) -> Result<()> {
     if plan.on_microvm() {
-        return make_on_microvm(plan, at_stage, stop, made);
+        return make_on_microvm(plan, at_stage, stop, made, signed_in);
     }
     at_stage(Stage::Preparing);
     // A folder on another machine is not ours to look at, and git over there
@@ -681,7 +689,16 @@ fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, m
 /// The machine a making made is said the moment it is made, so a making that
 /// fails later still leaves the checkout's machine written down; the copy,
 /// which holds nothing yet, is thrown away with the failure
-fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines)) -> Result<()> {
+/// Whether a MicroVM checkout made for this plan waits for its AI to be signed
+/// in to before a worktree is copied from it. Every worktree is a copy of that
+/// machine, sign-in and all, so one copied first has none. Only an AI whose
+/// profile can tell a sign-in is waited for: the sign-in step asks the machine
+/// with that line, and goes on by itself without one
+pub fn waits_for_sign_in(plan: &Plan) -> bool {
+    plan.preparing.ai.as_deref().and_then(crate::profile::machine_ai).is_some_and(|a| a.signed_in.is_some())
+}
+
+fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, made: &dyn Fn(&Machines), signed_in: &dyn Fn() -> bool) -> Result<()> {
     at_stage(Stage::Preparing);
     let host = plan.host.as_ref().expect("a MicroVM plan names its machine");
     let key = crate::e2b::key().ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.e2b.no_key")))?;
@@ -748,12 +765,25 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                 Ok(box_.id)
             };
             let got = making();
+            if let Ok(id) = &got {
+                noted.checkout = Some(id.clone());
+                noted.prepared = Some(plan.preparing.said());
+                made(&noted);
+                // Signed in to before anything is copied from it: the sign-in
+                // step is on the board once the checkout is written down, and
+                // "next" or "later" there lets this go on. The worktrees
+                // asked for together with this one wait on the slot, so they
+                // are copies of the signed-in machine too
+                if waits_for_sign_in(plan) {
+                    at_stage(Stage::SigningIn);
+                    let _busy = crate::e2b::busy(&host.with_instance(Some(id.as_str())));
+                    while !signed_in() && !stop() {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
             slot.publish(got.as_ref().map(String::clone).map_err(|e| format!("{e:#}")));
-            let id = got?;
-            noted.checkout = Some(id.clone());
-            noted.prepared = Some(plan.preparing.said());
-            made(&noted);
-            id
+            got?
         }
     };
     if stop() {
@@ -945,6 +975,9 @@ pub struct Making {
     machines: std::sync::Arc<std::sync::Mutex<Machines>>,
     /// How far the copying of what comes along has got, while it is going
     copying: std::sync::Arc<std::sync::Mutex<Option<FileProgress>>>,
+    /// Whether a MicroVM checkout this making made may be copied from (see
+    /// [`Making::sign_in_gate`])
+    signed_in: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Making {
@@ -958,9 +991,10 @@ impl Making {
             outcome: Default::default(),
             machines: Default::default(),
             copying: Default::default(),
+            signed_in: Default::default(),
         };
         let (stage, stopping, outcome) = (making.stage.clone(), making.stopping.clone(), making.outcome.clone());
-        let (machines, copying) = (making.machines.clone(), making.copying.clone());
+        let (machines, copying, signed_in) = (making.machines.clone(), making.copying.clone(), making.signed_in.clone());
         std::thread::spawn(move || {
             let at_stage = |s: Stage| {
                 // Once stopping, it says so until it has stopped
@@ -970,7 +1004,8 @@ impl Making {
             };
             let stop = || stopping.load(Ordering::Relaxed);
             let noted = |m: &Machines| *machines.lock().unwrap_or_else(|e| e.into_inner()) = m.clone();
-            let made = make_noting(&plan, &at_stage, &stop, &noted).map(|()| {
+            let gone_on = || signed_in.load(Ordering::Relaxed);
+            let made = make_noting(&plan, &at_stage, &stop, &noted, &gone_on).map(|()| {
                 at_stage(Stage::SettingUp);
                 carry_watched(&plan, &carry, &copying, &stop)
             });
@@ -1013,6 +1048,7 @@ impl Making {
             outcome: Default::default(),
             machines: Default::default(),
             copying: Default::default(),
+            signed_in: Default::default(),
         };
         making.stage.store(Stage::SettingUp as u8, Ordering::Relaxed);
         let (outcome, copying) = (making.outcome.clone(), making.copying.clone());
@@ -1041,6 +1077,12 @@ impl Making {
     pub fn stop(&self) {
         self.stopping.store(true, std::sync::atomic::Ordering::Relaxed);
         self.stage.store(Stage::Stopping as u8, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// What lets a MicroVM checkout this making made be copied from: stored
+    /// `true` once its AI's sign-in step is done with, by "next" or "later"
+    pub fn sign_in_gate(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.signed_in.clone()
     }
 
     pub fn stopped(&self) -> bool {

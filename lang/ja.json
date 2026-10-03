@@ -289,6 +289,7 @@
   "tui.making.retry": "もう一度",
   "tui.making.dismiss": "閉じる",
   "tui.making.stage.installing": "MicroVM に AI とマシンのセットアップを入れています…",
+  "tui.making.stage.signing_in": "MicroVM の AI へのログインを待っています。ログインが済むと、ワークツリーを作ります…",
   "tui.making.stage.vm_making": "MicroVM を作っています…",
   "tui.making.stage.vm_cloning": "MicroVM にリポジトリをクローンしています…",
   "tui.making.stage.ssh_cloning": "サーバーにリポジトリをクローンしています…",

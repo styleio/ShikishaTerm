@@ -289,6 +289,7 @@
   "tui.making.retry": "Try again",
   "tui.making.dismiss": "Dismiss",
   "tui.making.stage.installing": "Installing the AI and the machine setup on the MicroVM…",
+  "tui.making.stage.signing_in": "Waiting for the sign-in to the AI on the MicroVM. The worktree is made once you have signed in…",
   "tui.making.stage.vm_making": "Making the MicroVM…",
   "tui.making.stage.vm_cloning": "Cloning the repository onto the MicroVM…",
   "tui.making.stage.ssh_cloning": "Cloning the repository onto the server…",

@@ -991,7 +991,8 @@ pub struct AiSignInNote {
     pub ai: String,
     /// What it is called
     pub name: String,
-    /// The checkout on that machine, whose tab is where the sign-in is done
+    /// The checkout on that machine, whose tab is where the sign-in is done,
+    /// by its place key (`place_key`): another machine can have the same path
     pub checkout: String,
     /// `asking` until the machine has answered; then `yes`, `no`, or `error`
     pub state: String,
@@ -1052,6 +1053,10 @@ pub struct LoginStepState {
     pub seq: u64,
     /// The checkout on the machine, whose AI tab the step shows
     pub folder: String,
+    /// The same checkout by its place key (`place_key`): what finds its
+    /// folder on the board, since another machine can have the same path
+    #[serde(default)]
+    pub key: String,
     /// The MicroVM's name in the settings
     pub host: String,
     /// The AI, by the command that starts it, and what it is called

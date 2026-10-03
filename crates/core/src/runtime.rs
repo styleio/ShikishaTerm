@@ -287,18 +287,18 @@ impl Pending {
     /// On a MicroVM: the project's checkout machine, once this making has
     /// made one, written down as the project's -- with a folder of its own on
     /// the desk, which is where the machine every later worktree is copied
-    /// from is signed in to and set up
-    fn note_checkout(&mut self) -> anyhow::Result<()> {
+    /// from is signed in to and set up. The record, on the pass that wrote it
+    fn note_checkout(&mut self) -> anyhow::Result<Option<config::ProjectHome>> {
         if self.checkout_noted {
-            return Ok(());
+            return Ok(None);
         }
         let plan = self.making.plan.clone();
-        let (Some(host), Some(id)) = (plan.host.as_ref(), self.making.machines().checkout) else { return Ok(()) };
+        let (Some(host), Some(id)) = (plan.host.as_ref(), self.making.machines().checkout) else { return Ok(None) };
         // Tried again a while later when writing it failed, rather than on
         // every pass -- and never given up on: a checkout that is written
         // nowhere is a machine the next worktree makes a second of
         if self.checkout_tried.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
-            return Ok(());
+            return Ok(None);
         }
         self.checkout_tried = Some(Instant::now());
         let at = plan.main.to_string_lossy().to_string();
@@ -350,7 +350,7 @@ impl Pending {
         config::set_folder_far(&self.desk, &plan.main, &host.name, Some(&self.project_key), Some(&id))?;
         // The settings' from now on: no longer one being made
         crate::e2b::made_settled(&id);
-        Ok(())
+        Ok(Some(home))
     }
 
     /// Writes the made folder into the settings, beside the folder it was
@@ -483,6 +483,10 @@ enum LoginAfter {
     Rules,
     /// The worktree dialog on this checkout
     Dialog(String),
+    /// A worktree being made from the dialog, which made this checkout and
+    /// copies it once the step is done with -- "next" or "later" alike: the
+    /// person was asked, and a sign-in they chose not to do is theirs
+    Copying(std::sync::Arc<std::sync::atomic::AtomicBool>),
     Nothing,
 }
 
@@ -497,7 +501,16 @@ impl LoginPending {
             LoginAfter::Dialog(f) => {
                 crate::webui::ask_branch_next(f, false);
             }
+            LoginAfter::Copying(_) => self.leave(),
             LoginAfter::Nothing => {}
+        }
+    }
+
+    /// Done with, without going on to what comes after it ("later"): only a
+    /// worktree waiting on it still goes on, or it would wait for good
+    fn leave(&self) {
+        if let LoginAfter::Copying(gate) = &self.after {
+            gate.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -10877,9 +10890,37 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         for p in makings.iter_mut().filter(|p| p.error.is_none() && p.written.is_none() && !p.gone) {
             // A checkout a MicroVM making made is the project's the moment it
             // is there, however the rest of the making goes
-            if let Err(e) = p.note_checkout() {
-                append_hook_log(&format!("could not write down the checkout of {}: {e:#}", p.making.plan.project));
-                flash = Some(format!("{e:#}"));
+            match p.note_checkout() {
+                // A checkout made here is signed in to before the worktree
+                // is copied from it, through the same step as a project
+                // cloned onto a MicroVM; the making waits for it
+                Ok(Some(home)) => {
+                    let plan = &p.making.plan;
+                    match (plan.host.as_ref(), plan.preparing.ai.as_deref().and_then(crate::profile::machine_ai)) {
+                        (Some(host), Some(known)) => {
+                            login_seq += 1;
+                            login_queue.push_back(LoginPending {
+                                seq: login_seq,
+                                folder: home.at.clone(),
+                                host: host.clone(),
+                                home,
+                                ai: known.key,
+                                name: known.name,
+                                shown: false,
+                                after: LoginAfter::Copying(p.making.sign_in_gate()),
+                            });
+                        }
+                        _ => p.making.sign_in_gate().store(true, std::sync::atomic::Ordering::Relaxed),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    append_hook_log(&format!("could not write down the checkout of {}: {e:#}", p.making.plan.project));
+                    flash = Some(format!("{e:#}"));
+                    // No step can be put up for a checkout written nowhere:
+                    // the worktree is not kept waiting for one
+                    p.making.sign_in_gate().store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             if !p.made {
                 match p.making.outcome() {
@@ -11586,7 +11627,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     Some(known) => {
                                         // Its tab in the checkout, for the step
                                         // to show and to sign in in
-                                        let has_tab = tabs.iter().any(|t| t.remote_cwd() == Some(at.as_str()) && t.title == known.key);
+                                        let has_tab = tabs.iter().any(|t| t.host() == Some(j.host.name.as_str()) && t.remote_cwd() == Some(at.as_str()) && t.title == known.key);
                                         if !has_tab {
                                             let tab = serde_json::json!({ "name": known.key, "command": known.key });
                                             let key = crate::uistate::place_key(Some(&j.host.name), std::path::Path::new(&at));
@@ -12563,7 +12604,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // folder on that machine draws it now
                     let (screen, url) = tabs
                         .iter()
-                        .find(|t| t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
+                        .find(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
                         .map(|t| {
                             let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                             let s = parser.screen();
@@ -12581,6 +12622,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         seq: p.seq,
                         folder: p.folder.clone(),
                         host: p.host.name.clone(),
+                        key: crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)),
                         ai: p.ai.clone(),
                         name: p.name.clone(),
                         state: state.to_string(),
@@ -12657,12 +12699,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let can = g.access.lock().unwrap_or_else(|e| e.into_inner()).1;
                 let screen = tabs
                     .iter()
-                    .find(|t| t.remote_cwd() == Some(look.parent.as_str()) && t.title == g.host.name)
+                    .find(|t| t.host() == Some(g.host.name.as_str()) && t.remote_cwd() == Some(look.parent.as_str()) && t.title == g.host.name)
                     .map(|t| crate::shell::screen_html(t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen()))
                     .unwrap_or_default();
                 let v = crate::uistate::LoginStepState {
                     seq: g.seq,
                     folder: look.parent.clone(),
+                    key: crate::uistate::place_key(Some(&g.host.name), std::path::Path::new(&look.parent)),
                     host: g.host.name.clone(),
                     name: g.host.name.clone(),
                     state: match can {
@@ -12875,10 +12918,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             if login_pending.as_ref().is_some_and(|p| p.folder == folder) {
-                if act == "next"
-                    && let Some(p) = login_pending.as_ref()
-                {
-                    p.go_on();
+                if let Some(p) = login_pending.as_ref() {
+                    match act == "next" {
+                        true => p.go_on(),
+                        false => p.leave(),
+                    }
                 }
                 login_pending = None;
                 login_view = None;
@@ -19296,6 +19340,29 @@ mod survey_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A worktree waiting on its checkout's sign-in goes on whichever way the
+    /// step is left -- "next" or "later" -- and never waits for good
+    #[test]
+    fn a_worktree_waiting_on_the_sign_in_goes_on_either_way() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pending = |gate: &std::sync::Arc<AtomicBool>| LoginPending {
+            seq: 1,
+            folder: "/home/user/site".into(),
+            host: config::HostSpec::default(),
+            home: config::ProjectHome::default(),
+            ai: "claude".into(),
+            name: "Claude Code".into(),
+            shown: true,
+            after: LoginAfter::Copying(gate.clone()),
+        };
+        let next = std::sync::Arc::new(AtomicBool::new(false));
+        pending(&next).go_on();
+        assert!(next.load(Ordering::Relaxed), "next left the worktree waiting");
+        let later = std::sync::Arc::new(AtomicBool::new(false));
+        pending(&later).leave();
+        assert!(later.load(Ordering::Relaxed), "later left the worktree waiting");
+    }
+
     #[test]
     fn conversation_targets_use_uid_without_adopting_a_namesake() {
         let opts = tab::TabOptions { cwd: Some(std::env::temp_dir()), ..Default::default() };

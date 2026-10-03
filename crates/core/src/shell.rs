@@ -10186,10 +10186,16 @@ function drawAiSignIn(box, note) {
   if (note.state === "yes") { box.append(el("div", {class:"say"}, say("tui.aisignin.yes"))); return; }
   // Signed in, and the AI's first-run questions not finished yet: a copy made
   // now starts the AI over, sign-in included
+  // The tab is looked up again on the press: the box is drawn once for the
+  // same note, and the tabs are numbered afresh as they come and go
   if (note.state === "finishing" || note.state === "no") {
-    const tab = checkoutAiTab(note.checkout, note.ai);
+    const open = () => {
+      const tab = checkoutAiTab(note.checkout, note.ai);
+      closeBranch();
+      if (tab) send({kind:"select", tab: tab.index});
+    };
     box.append(warnBox(say("tui.aisignin." + note.state),
-      tab ? el("button", {type:"button", onclick:() => { closeBranch(); send({kind:"select", tab: tab.index}); }}, say("tui.aisignin.open")) : null));
+      checkoutAiTab(note.checkout, note.ai) ? el("button", {type:"button", onclick:open}, say("tui.aisignin.open")) : null));
     return;
   }
   box.append(warnBox(say("tui.aisignin.error") + (note.error ? " " + note.error : "")));
@@ -10204,8 +10210,10 @@ function warnBox(text, ...acts) {
 // The checkout's tab running this AI, on the board: in the folder that is
 // the checkout, the tab whose AI this is -- or, asked with no AI, the
 // folder's terminal (a server's, put there for its git sign-in)
-function checkoutAiTab(checkout, ai) {
-  const gi = ((S && S.groups) || []).findIndex(g => g.folder === checkout);
+// `key` is the checkout's place key: its machine and its path, since two
+// machines can have a folder at the same path
+function checkoutAiTab(key, ai) {
+  const gi = ((S && S.groups) || []).findIndex(g => g.key === key);
   const tabs = ((S && S.tabs) || []).filter(t => t.group === gi);
   // No tab of that AI there (one given to the machine after the checkout was
   // made): the folder's terminal, where its quick AI button starts it
@@ -10233,7 +10241,7 @@ function drawLogin() {
   }
   // The checkout's AI tab is brought in front once it is there: that is
   // where keys typed here go (the pane behind, or a phone's input bar)
-  const tab = checkoutAiTab(st.folder, st.ai);
+  const tab = checkoutAiTab(st.key, st.ai);
   const mark = st.folder + "\u001f" + st.seq;
   if (tab && loginSelected !== mark) {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
