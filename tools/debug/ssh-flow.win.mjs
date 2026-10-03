@@ -6,11 +6,16 @@
  *
  *   1. the worktree dialog lists the server under "Where it runs", saying the
  *      project has no checkout there yet
- *   2. choosing it opens the add-a-project dialog on that server's folders,
- *      for this project; the folder chosen there is written down as the
- *      project's checkout on that machine
- *   3. the dialog comes back on that server, and the worktree is made there,
- *      beside the checkout as the server's default placement says
+ *   2. choosing it asks, over the worktree dialog, where the project is
+ *      there: a folder already there, or a clone. The folder chosen from the
+ *      server's folders is written down as the project's checkout there
+ *   3. the worktree dialog, never closed and as it was left, goes on on that
+ *      server, and the worktree is made there, beside the checkout as the
+ *      server's default placement says
+ *  3b. on a second server entry, the clone instead: started from the
+ *      project's own remote, written down as the project's checkout there
+ *      once the server's git is done, and the dialog waits for it -- and the
+ *      list draws the project once, a part for each machine
  *   4. the project's rules page lists where worktrees go on that server, and
  *      "beside the checkout" is a press away
  *
@@ -61,6 +66,9 @@ const PASSWORD = dotenv.SSH_TEST_PASSWORD, KEY = dotenv.SSH_TEST_KEY, REPO = (do
 if (!HOST || !USER || !REPO || !(PASSWORD || KEY)) die('SSH_TEST_HOST, SSH_TEST_USER, SSH_TEST_REPO and a password or key are needed in .private/.env');
 const NAME = REPO.split('/').pop();
 const BRANCH = 'check/ssh';
+// What is typed into the worktree dialog before a server is chosen, which
+// saying where the project is there must leave as it was
+const KEPT = 'check/kept';
 const TREE = `${REPO}.branches/check-ssh`;
 // Where clones made from the clone page go on the server, and what is cloned
 const CLONES = `${REPO}.clones`;
@@ -119,6 +127,7 @@ git('init', '-q', '-b', 'main');
 fs.writeFileSync(path.join(HERE, 'README.md'), 'here\n');
 git('add', '-A');
 git('commit', '-q', '-m', 'start');
+git('remote', 'add', 'origin', REPO);
 
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -146,10 +155,12 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'ja',
   remote: { enabled: false },
   hosts: [{ name: 'srv', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) },
-    { name: 'relay', at: `ssh://${USER}@127.0.0.1:${relay.address().port}`, keepalive: 3, ...(KEY ? { key: KEY } : {}) }],
+    { name: 'relay', at: `ssh://${USER}@127.0.0.1:${relay.address().port}`, keepalive: 3, ...(KEY ? { key: KEY } : {}) },
+    // The same server again, for the clone of step 3b
+    { name: 'srv2', at: `ssh://${USER}@${HOST}:${PORT}`, ...(KEY ? { key: KEY } : {}) }],
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: HERE, tabs: [{ name: 'shell', id: 'shell', command: 'cmd.exe' }] }] }],
 }, null, 2));
-fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD, 'ssh/host/relay/password': PASSWORD } : {} }, null, 2));
+fs.writeFileSync(SECRETS, JSON.stringify({ tokens: PASSWORD ? { 'ssh/host/srv/password': PASSWORD, 'ssh/host/relay/password': PASSWORD, 'ssh/host/srv2/password': PASSWORD } : {} }, null, 2));
 
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA|E2B)/i.test(k)));
 env.LOCALAPPDATA = LOCAL;
@@ -187,6 +198,13 @@ try {
   }, 'the window\'s page and its DevTools port', 40000);
 } catch (e) { stopApp(); die(e.message); }
 const board = await connect(boardTarget, 'the board');
+// The isolated app has met no server yet, and asks on the board whether to
+// trust each one the first time. Answered as a person would, trusting the key
+// the board shows -- only for a first meeting: a key that changed is never
+// answered here
+const trustFirst = setInterval(() => board.run(`(() => {
+  for (const c of (S && S.key_changes) || []) if (!c.before) send({kind:"hostkey", machine:c.machine, fingerprint:c.now, trust:true});
+  return true; })()`).catch(() => {}), 1000);
 const saved = () => JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
 const desk = () => saved().desks[0];
 const project = () => (desk().projects || []).find((p) => p.name === NAME) || null;
@@ -209,13 +227,30 @@ try {
   check(await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv")).textContent.includes("プロジェクトの場所を指定する")'),
     'the row says what choosing it will ask');
   await board.shot('0-dest');
+  await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(KEPT)}; q.dispatchEvent(new Event("input")); return true; })()`);
 
   console.log('2. choosing it asks where the project is over there, from its folders');
   await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv")).click(); true');
-  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "remote" && apHost === "srv"'), 'the folders of the server');
+  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "locate" && apHost === "srv"'), 'the question where the project is there');
   check(await board.run(`apFor === ${JSON.stringify(NAME)}`), 'asked for this project');
-  await board.run(`(() => { const i = document.querySelector("#addproj input.apin"); i.value = ${JSON.stringify(REPO)}; i.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter"})); return true; })()`);
-  await until(() => board.run(`!!(S.remote_list && !S.remote_list.busy && S.remote_list.at === ${JSON.stringify(REPO)})`), 'the listing of the repository over there', 60000);
+  check(await board.run('!document.getElementById("branch").hidden'), 'asked over the worktree dialog, which stays open under it');
+  check(await board.run('[...document.querySelectorAll("#addproj [data-ap]")].map(b => b.dataset.ap).join(",")') === 'folder,clone',
+    'two ways: a folder already there, or a clone');
+  await board.shot('1-locate');
+  await board.run('document.querySelector("#addproj [data-ap=folder]").click(); true');
+  await until(() => board.run('apStep === "remote"'), 'the folders of the server');
+  const lookThere = () => board.run(`(() => { const i = document.querySelector("#addproj input.apin"); i.value = ${JSON.stringify(REPO)}; i.dispatchEvent(new KeyboardEvent("keydown", {key:"Enter"})); return true; })()`);
+  await lookThere();
+  // Looked at again once the server's key is trusted: the first look was
+  // refused before anything was sent
+  let lookedAt = Date.now();
+  await until(async () => {
+    if (await board.run(`!!(S.remote_list && !S.remote_list.busy && !S.remote_list.error && S.remote_list.at === ${JSON.stringify(REPO)})`)) return true;
+    if (await board.run('!!(S.remote_list && S.remote_list.error)') && Date.now() - lookedAt > 3000) { lookedAt = Date.now(); await lookThere(); }
+    return false;
+  }, 'the listing of the repository over there', 60000)
+    .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify({step: apStep, host: apHost, list: S.remote_list || null, inputs: [...document.querySelectorAll("#addproj input")].map(i => i.value)})') + ')'); await board.shot('x-remote'); throw e; });
   check(await board.run('S.remote_list.git') === true, 'the folder over there is a repository');
   await board.shot('1-remote');
   await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
@@ -227,6 +262,7 @@ try {
 
   console.log('3. back in the dialog, on that server, and the worktree made there');
   await until(() => board.run('!document.getElementById("branch").hidden && branchHost === "srv"'), 'the worktree dialog, back on the server', 30000);
+  check(await board.run('document.getElementById("bq").value') === KEPT, 'the dialog is as it was left: the name typed before is still there');
   await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
   await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(BRANCH)}; q.dispatchEvent(new Event("input")); return true; })()`);
   await until(() => board.run(`!!(S.branch && S.branch.asked === ${JSON.stringify(BRANCH)} && S.branch.folder && S.branch.host === "srv")`), 'the app\'s answer', 30000);
@@ -268,6 +304,65 @@ try {
   const made = await there(`git -C ${TREE} branch --show-current`);
   check(made === BRANCH, 'git over there is on the branch: ' + made);
   check((desk().folders || []).find((f) => f.cwd === TREE).project === NAME, 'the worktree is in the project');
+
+  console.log('3b. on another server entry, the project cloned there from its own remote');
+  const firstPages = async () => {
+    const p = portOf(path.join('profiles', 'default'));
+    return p ? (await targetsOf(p)).filter((t) => t.type === 'page' && /section=project-first/.test(t.url)).length : 0;
+  };
+  const pagesBefore = await firstPages();
+  const projectsBefore = (desk().projects || []).length;
+  await board.run(`openBranch(${g}); true`);
+  await until(() => board.run('!!(S.branch && (S.branch.hosts || []).some(h => h.name === "srv2"))'), 'the dialog\'s answer');
+  check(await board.run('S.branch.origin') === REPO, 'the dialog knows where the project is fetched from: ' + await board.run('S.branch.origin'));
+  await board.run(`branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true`);
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = ${JSON.stringify(KEPT)}; q.dispatchEvent(new Event("input")); return true; })()`);
+  await board.run('document.getElementById("bdest").click(); true');
+  await until(() => board.run('[...document.querySelectorAll(".fmenu .aphost")].some(r => r.textContent.includes("srv2"))'), 'the list of places');
+  await board.run('[...document.querySelectorAll(".fmenu .aphost")].find(r => r.textContent.includes("srv2")).click(); true');
+  await until(() => board.run('!document.getElementById("addproj").hidden && apStep === "locate" && apHost === "srv2"'), 'the question for the second entry');
+  check((await board.run('document.querySelector("#addproj [data-ap=clone]").textContent')).includes(REPO), 'the clone says what it clones from');
+  await board.run('document.querySelector("#addproj [data-ap=clone]").click(); true');
+  await until(() => board.run('apStep === "sshclone"'), 'the clone page');
+  check(await board.run('document.querySelector("#addproj input.apin").value') === REPO, 'the address starts as the project\'s own remote');
+  check(await board.run('document.querySelector("#addproj .stitle").textContent') === 'プロジェクトの場所を指定する', 'the page is still the question it was opened for');
+  check(await board.run('!document.querySelector("#addproj .aptabs")'), 'no other server and no other way offered on it');
+  await board.run(`(() => { const p = document.querySelector("#addproj .aprow input.apin"); p.value = ${JSON.stringify(CLONES)}; p.dispatchEvent(new Event("input")); return true; })()`);
+  await board.shot('3b-clone');
+  await board.run('document.querySelector("#addproj .apfoot .go").click(); true');
+  await until(() => board.run('document.getElementById("addproj").hidden'), 'the question closed on the press', 20000);
+  check(await board.run('!document.getElementById("branch").hidden && branchHost === "srv2"'), 'the worktree dialog, still open, is on the second entry');
+  check(await board.run('document.getElementById("bq").value') === KEPT, 'and as it was left');
+  const CLONED = `${CLONES}/${NAME}`;
+  // While the server's git clones, the dialog says so rather than that the
+  // server has no checkout, and nothing can be made yet
+  const waiting = await until(() => board.run('/クローンしています/.test(document.querySelector("#branch .berr").textContent)'), 'the dialog saying it waits for the clone', 20000).then(() => true).catch(() => false);
+  if (waiting) {
+    check(await board.run('document.querySelector("#branch .bgo .go").disabled'), 'while it clones, the dialog says so and the button waits: ' + await board.run('document.querySelector("#branch .berr").textContent'));
+    await board.shot('3b-waiting');
+  } else {
+    console.log('    (the clone was done before the dialog was looked at)');
+  }
+  await until(() => (project()?.homes || []).some((h) => h.host === 'srv2' && h.at === CLONED), 'the clone written down as the project\'s checkout there', 180000);
+  check((await there(`git -C ${CLONED} remote get-url origin`)) === REPO, 'cloned on the server from the project\'s remote');
+  check((desk().projects || []).length === projectsBefore, 'no second project was made for it');
+  check(((desk().folders || []).find((f) => f.host === 'srv2' && f.cwd === CLONED) || {}).project === NAME, 'the folder over there is on the desk, in the project');
+  // The dialog asks again by itself once the checkout is there
+  await until(() => board.run(`!!(S.branch && S.branch.host === "srv2" && !S.branch.error && S.branch.folder)`), 'the dialog ready to make a worktree there', 60000)
+    .catch(async (e) => { console.log('    (the dialog has: ' + await board.run('JSON.stringify({host: S.branch && S.branch.host, error: S.branch && S.branch.error})') + ')'); throw e; });
+  check(await board.run('!document.querySelector("#branch .bgo .go").disabled'), 'and the button can be pressed: ' + await board.run('S.branch.line'));
+  check((await board.run('S.branch.line')).includes(`git -C ${CLONED} worktree add`), 'cut from the clone');
+  await sleep(1500);
+  check(await firstPages() === pagesBefore, 'the worktree rules of a new project are not opened: the project already has them');
+  await board.shot('3b-ready');
+  await board.run('closeBranch(); true');
+  // The list: one heading for the project, a part for each machine, this PC first
+  await until(() => board.run('document.querySelectorAll("#tabs .mhead, nav .mhead, .mhead").length >= 3'), 'the parts of the project', 20000)
+    .catch(async (e) => { console.log('    (groups: ' + await board.run('JSON.stringify((S.groups || []).map(g => [g.folder, g.host || "", g.whole || ""]))') + ')'); throw e; });
+  const parts = await board.run('[...document.querySelectorAll(".mhead .nm")].map(n => n.textContent).join(",")');
+  check(parts === 'この PC,srv,srv2', 'the project is drawn once, this PC then each server: ' + parts);
+  check(await board.run(`[...document.querySelectorAll(".phead .nm")].filter(n => n.textContent === ${JSON.stringify(NAME)}).length`) === 1, 'under one heading');
+  await board.shot('3b-list');
 
   console.log('4. the rules page says where worktrees go on the server');
   await board.run(`openSettings("project-rules", true, ${JSON.stringify(HERE)}); true`);
@@ -724,6 +819,7 @@ try {
 } catch (e) {
   check(false, e.message);
 } finally {
+  clearInterval(trustFirst);
   relay.close();
   try { board.ws.close(); } catch {}
   try { cfg && cfg.ws.close(); } catch {}
