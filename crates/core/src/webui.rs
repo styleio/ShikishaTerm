@@ -3059,6 +3059,26 @@ fn handle(
             };
             req.respond(json_resp(resp))?;
         }
+        // Standalone settings have no board to ask about a server's key.
+        // Use the same pending questions and exact-fingerprint answer as it.
+        ("GET", "/api/server/keys") => {
+            req.respond(json_resp(serde_json::json!({"keys": crate::ssh::key_changes()})))?;
+        }
+        ("POST", "/api/server/key") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            let resp = match crate::ssh::answer_key_change(
+                v["machine"].as_str().unwrap_or_default(), v["fingerprint"].as_str().unwrap_or_default(), v["trust"].as_bool().unwrap_or(false),
+            ) {
+                Ok(trusted) => serde_json::json!({"ok":true, "trusted":trusted}),
+                Err(e) => serde_json::json!({"ok":false, "error":format!("{e:#}")}),
+            };
+            req.respond(json_resp(resp))?;
+        }
         // Reach a server with the settings as they stand on screen, before any
         // of it is saved. What comes back is either "it answered and let us
         // in" or the server's own words about why it did not -- which is the
@@ -4763,7 +4783,7 @@ fn handle(
                 .map_err(anyhow::Error::from)
                 .and_then(|p| save_settings(config_path, &secrets_file(config_path), pw.as_deref(), &p))
             {
-                Ok(()) => serde_json::json!({ "ok": true }),
+                Ok(renamed) => serde_json::json!({ "ok": true, "renamed": renamed }),
                 Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
             };
             req.respond(json_resp(resp))?;
@@ -4827,7 +4847,7 @@ fn save_settings(
     secrets: &std::path::Path,
     password: Option<&str>,
     p: &serde_json::Value,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
     use anyhow::Context as _;
     let mut docs: Vec<(std::path::PathBuf, serde_json::Value)> = Vec::new();
     for f in p.get("files").and_then(|v| v.as_array()).into_iter().flatten() {
@@ -4890,7 +4910,7 @@ fn save_settings(
     match written {
         Ok(()) => {
             record.settle();
-            Ok(())
+            Ok(renamed)
         }
         Err(e) => {
             record.put_back();
@@ -7538,16 +7558,36 @@ function openModal(...kids) {
 // automation. Settings decisions must remain on the page until a person acts.
 // A modal dialog also makes an editor underneath inert and traps keyboard focus.
 //
-// Every question asked here is about throwing something away -- a secret, a
-// device's key, a desk, unsaved changes -- so the button that does it wears
-// the colour for breaking things, not the brand's (STYLEGUIDE §5, buttons),
-// and the key that is pressed without looking lands on Cancel: an Enter meant
-// for the field underneath must not be the one that deletes.
-//
-// `other` names a second way through, when throwing it away can be done two
-// ways (a server removed with what this app wrote there taken out first, or
-// left): pressing it answers "other" instead of true
+// The window and embedded settings have the board's question. A whole
+// browser page, including Settings.cmd, must be able to answer for itself.
+let checkingServerKeys = false;
+async function checkServerKeys() {
+  if (window.ipc || EMBED || document.hidden || confirming || checkingServerKeys) return;
+  checkingServerKeys = true;
+  try {
+    const j = await (await settingsFetch("/api/server/keys")).json();
+    const c = (j.keys || [])[0];
+    if (!c || confirming) return;
+    const fingerprint = (label, text) => sfield(label, el("div", {class:"mono asis"}, text));
+    const message = el("div", {},
+      el("p", {}, T[c.before ? "tui.hostkey.title" : "tui.hostkey.first_title"]),
+      el("p", {class:"warn"}, T[c.before ? "tui.hostkey.say" : "tui.hostkey.first_say"]),
+      el("p", {class:"mono"}, c.machine),
+      c.before ? fingerprint(T["tui.hostkey.before"], c.before) : null,
+      fingerprint(T["tui.hostkey.now"], c.now));
+    const trust = await confirmAction(message, T["tui.hostkey.go"]);
+    const answer = await settingsApi("/api/server/key", {machine:c.machine, fingerprint:c.now, trust});
+    if (!answer.ok) result(answer.error || "", true);
+    else if (answer.trusted) result(fill(T["msg.ssh.key_trusted"], {host:c.machine}));
+  } catch (e) { /* The next poll retries a page whose connection went away. */ }
+  finally { checkingServerKeys = false; }
+}
+setInterval(checkServerKeys, 1000);
+
 let confirming = false;
+// Destructive choices and trusting a server both start on Cancel. An Enter
+// meant for the editor underneath must never accept either. `other` offers
+// a second destructive choice, returning "other" instead of true.
 function confirmAction(message, action, other) {
   if (confirming) return Promise.resolve(false);
   confirming = true;
@@ -12694,16 +12734,20 @@ function gitAccountsCard() {
 // The same permission guide wherever a PAT is entered. GitHub's permission
 // names stay intact; each row says which operation needs them.
 function gitTokenPermissions(method = "token") {
-  return foldMore(T["settings.gitacct.permissions"], false,
+  return foldMore(T["settings.gitacct.token_help"], false,
+    el("div", {class:"hint"}, T[method === "gh" ? "settings.gitacct.token_create_classic" : "settings.gitacct.token_create"]),
+    el("a", {href:method === "gh" ? "https://github.com/settings/tokens/new" : "https://github.com/settings/personal-access-tokens/new",
+      target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_create_link"]),
     ...(method === "gh" ? [] : [
-      el("strong", {}, T["settings.gitacct.kind_full.fine"]),
-      el("div", {class:"hint"}, T["settings.gitacct.permissions.repositories"]),
-      el("div", {class:"hint"}, T["settings.gitacct.permissions.push"]),
-      el("div", {class:"hint"}, T["settings.gitacct.permissions.pr"]),
-      el("div", {class:"hint"}, T["settings.gitacct.permissions.workflow"])]),
-    el("strong", {}, T["settings.gitacct.kind_full.classic"]),
-    el("div", {class:"hint"}, T[method === "gh" ? "settings.gitacct.permissions.gh" : "settings.gitacct.permissions.classic"]),
-    el("div", {class:"hint"}, T["settings.gitacct.permissions.workflow_classic"]));
+      el("p", {class:"hint"}, T["settings.gitacct.token_repos"]),
+      el("ul", {class:"hint"}, ...[T["settings.gitacct.token_perm_contents"], T["settings.gitacct.token_perm_pulls"],
+        T["settings.gitacct.token_perm_issues"], T["settings.gitacct.token_perm_actions"], T["settings.gitacct.token_perm_workflows"]]
+        .map(text => el("li", {}, text)))]),
+    el("p", {}, el("strong", {}, T["settings.gitacct.kind_full.classic"])),
+    el("p", {class:"hint"}, T[method === "gh" ? "settings.gitacct.permissions.gh" : "settings.gitacct.token_classic"]),
+    method === "gh" ? el("p", {class:"hint"}, T["settings.gitacct.permissions.workflow_classic"]) : null,
+    el("a", {href:"https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
+      target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_docs"]));
 }
 
 // Adding a git account, or changing one. `name` is null for a new one.
@@ -17286,6 +17330,17 @@ function secretMovesOfNewIds() {
   return moves;
 }
 
+// The store returns the exact reference renames it committed. Change values,
+// once per object: the editable desks share objects with current, and a swap
+// must not be applied again through a second reference to the same object.
+function refileSecretNames(value, renamed, seen = new Set()) {
+  if (typeof value === "string") return Object.hasOwn(renamed, value) ? renamed[value] : value;
+  if (!value || typeof value !== "object" || seen.has(value)) return value;
+  seen.add(value);
+  for (const k of Object.keys(value)) value[k] = refileSecretNames(value[k], renamed, seen);
+  return value;
+}
+
 async function doSave() {
   // Tabs with an empty id get one derived from the name before writing (a safety net against dropped references).
   // Since this is a side effect, it's done only right before saving (never inside payload's unsaved-check)
@@ -17294,14 +17349,18 @@ async function doSave() {
   // One save: the settings, the desk files and the secrets of the ids that
   // changed are all written, or, when any part fails, none of them is
   const { out, files } = payload();
+  const saved = JSON.parse(JSON.stringify({out, files}));
+  const savedIds = idsNow();
   const j = await settingsApi("/api/settings/save", {
     config: out,
     files: files.map(f => ({file: f.file, body: f.body})),
     moves: secretMovesOfNewIds(),
   }).catch(e => ({ok:false, error:String(e && e.message || e)}));
   if (!j || !j.ok) { result(fill(T["settings.save_failed"], {error: (j && j.error) || ""}), true); return false; }
-  idsAtLoad = idsNow();
-  markClean();
+  refileSecretNames([current, desks, saved], j.renamed || {});
+  idsAtLoad = savedIds;
+  savedSnapshot = JSON.stringify(saved);
+  refreshSave();
   result(T["common.saved"]);
   // The language is only read at launch, so a change won't take effect until a restart.
   // Since a toast gets hidden behind the board on returning to it and goes unnoticed, use a reliable alert instead
@@ -18384,12 +18443,19 @@ mod tests {
             "moves": [["a.", "b."], ["ssh/a/", "ssh/b/"], ["b.", "a."], ["ssh/b/", "ssh/a/"]],
         }));
         assert!(saved.is_ok(), "{saved:?}");
+        let renamed = saved.unwrap();
+        assert_eq!(renamed.get("@a.github").map(String::as_str), Some("@b.github"));
+        assert_eq!(renamed.get("@b.github").map(String::as_str), Some("@a.github"));
         let value = |k| crate::config::secret_value(&secrets, None, k);
         assert_eq!(value("b.github").as_deref(), Some("token of a"), "desk A's secret went under its new id");
         assert_eq!(value("a.github").as_deref(), Some("token of b"), "desk B's secret was written over");
         assert_eq!(value("ssh/b/prod/password").as_deref(), Some("pw of a's tab"));
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(doc["desks"][0]["notify"]["slack"]["webhook"], "@b.github", "what named the secret still names it");
+        let again = super::save_settings(&config, &secrets, None, &serde_json::json!({"config":doc,"moves":[]})).unwrap();
+        assert!(again.is_empty());
+        let twice: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(twice["desks"][0]["notify"]["slack"]["webhook"], "@b.github");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

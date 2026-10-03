@@ -95,6 +95,7 @@ struct Sighting {
     record_id: String,
     cli: String,
     is_yolo: bool,
+    cwd: Option<String>,
 }
 
 /// The writer of the record, held by the app's main loop. A record that
@@ -223,15 +224,16 @@ impl Log {
     /// Where a tab is: which conversation its CLI is on, which CLI, and
     /// whether it runs without asking first. Called for every AI tab on every
     /// look; writes only when the tab moved to another conversation
-    pub fn follow(&mut self, tab: &str, cli: &str, record_id: Option<&str>, is_yolo: bool) {
+    pub fn follow(&mut self, tab: &str, cli: &str, record_id: Option<&str>, is_yolo: bool, cwd: Option<&std::path::Path>) {
         let Some(record_id) = record_id.filter(|r| !r.is_empty()) else { return };
-        let now = Sighting { record_id: record_id.to_string(), cli: cli.to_string(), is_yolo };
+        let cwd = cwd.map(|p| p.to_string_lossy().into_owned());
+        let now = Sighting { record_id: record_id.to_string(), cli: cli.to_string(), is_yolo, cwd: cwd.clone() };
         if self.seen.get(tab) == Some(&now) {
             return;
         }
         self.seen.insert(tab.to_string(), now);
         let at = db::now_ms();
-        self.write("a conversation", |s| s.seen(tab, cli, record_id, is_yolo, at));
+        self.write("a conversation", |s| s.seen_in(tab, cli, record_id, is_yolo, at, cwd.as_deref()));
     }
 
     /// The conversation a tab was last seen on
@@ -295,7 +297,7 @@ impl Log {
         }
         // The conversation was still going on now
         if let Some(seen) = self.seen.get(tab).cloned() {
-            self.write("a conversation", |s| s.seen(tab, &seen.cli, &seen.record_id, seen.is_yolo, at));
+            self.write("a conversation", |s| s.seen_in(tab, &seen.cli, &seen.record_id, seen.is_yolo, at, seen.cwd.as_deref()));
         }
     }
 
@@ -473,10 +475,10 @@ mod tests {
     fn a_tab_is_written_down_only_when_it_moves() {
         let mut log = Log::in_memory();
         for _ in 0..5 {
-            log.follow("t", "claude", Some("a"), false);
+            log.follow("t", "claude", Some("a"), false, None);
         }
-        log.follow("t", "claude", None, false);
-        log.follow("t", "claude", Some("b"), true);
+        log.follow("t", "claude", None, false, None);
+        log.follow("t", "claude", Some("b"), true, None);
         let store = log.store.as_ref().unwrap();
         let c = store.conversations("t").unwrap();
         assert_eq!(c.iter().map(|c| c.record_id.as_str()).collect::<Vec<_>>(), vec!["b", "a"]);
@@ -487,7 +489,7 @@ mod tests {
     #[test]
     fn what_was_sent_is_kept_against_the_conversation_and_answers_a_question() {
         let mut log = Log::in_memory();
-        log.follow("t", "claude", Some("a"), false);
+        log.follow("t", "claude", Some("a"), false, None);
         log.state("t", TabState::Question, None);
         log.sent("t", &["<system-reminder>x</system-reminder>yes, go on"], &Origin::person(Device::Phone, "composer"));
         let store = log.store.as_ref().unwrap();

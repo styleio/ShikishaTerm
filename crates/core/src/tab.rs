@@ -2121,6 +2121,36 @@ mod tests {
         t
     }
 
+    #[test]
+    fn emergency_stop_reaches_working_tabs_on_every_desk() {
+        use std::sync::{Arc, Mutex};
+        struct Keys(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Keys {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let make = |state| {
+            let mut t = shell_judged_as("claude", 12, 60);
+            let keys = Arc::new(Mutex::new(Vec::new()));
+            t.writer = Arc::new(Mutex::new(Box::new(Keys(keys.clone()))));
+            t.state = state;
+            (t, keys)
+        };
+        let (front, a) = make(super::TabState::Busy);
+        let (other, b) = make(super::TabState::Busy);
+        let (question, c) = make(super::TabState::Question);
+        let (idle, d) = make(super::TabState::Wait);
+        let front = vec![front];
+        let away = vec![vec![], vec![other, idle], vec![question]];
+        let reached = crate::runtime::interrupt_all_desks(&front, &away);
+        assert_eq!(reached.len(), 3);
+        for keys in [a, b, c] { assert_eq!(&*keys.lock().unwrap(), b"\x1b"); }
+        assert!(d.lock().unwrap().is_empty(), "a resting input must not be cleared or quit");
+    }
+
     /// The screen can change hands; what this tab is allowed to do cannot.
     ///
     /// An AI started by hand in a shell tab makes that tab read as the AI --

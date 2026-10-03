@@ -1,5 +1,5 @@
 -- The record of conversations (conversations.db), as the steps in
--- crates/core/src/convo/migrations/ leave it at version 4.
+-- crates/core/src/convo/migrations/ leave it at version 5.
 --
 -- Written by a test; do not edit. Change the tables by adding a step (see
 -- conversations-db.md), then write this again:
@@ -48,7 +48,8 @@ CREATE TABLE conversations (
   record_id TEXT NOT NULL,            -- the CLI's id for the conversation
   is_yolo INTEGER NOT NULL DEFAULT 0, -- 1 when the tab ran without asking first (no questions to answer)
   first_at INTEGER NOT NULL,
-  last_at INTEGER NOT NULL,
+  last_at INTEGER NOT NULL, observed_cwd TEXT
+    /* NULL: an older sighting, or a tab whose local folder was not known. */,
   UNIQUE (tab, record_id)
 );
 

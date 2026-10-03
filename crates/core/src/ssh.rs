@@ -1916,6 +1916,48 @@ mod tests {
     }
 
     #[test]
+    fn standalone_settings_can_answer_the_first_key_without_a_board() {
+        let (port, attempts) = fake_server_trusted(false);
+        let spec = fake_spec(port, "ssh/ws/settings-first/password");
+        set_secret("ssh/ws/settings-first/password", "hunter2");
+        let dir = std::env::temp_dir().join(format!("ssh-settings-{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let ui = crate::webui::WebUi::start_with(cfg, Default::default(), Default::default()).unwrap();
+        let (base, token) = ui.url.split_once("/?token=").unwrap();
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false).timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build().new_agent();
+        let post = |fingerprint: &str, trust: bool, key: &str| {
+            agent.post(&format!("{base}/api/server/key")).header("X-Token", key)
+                .send(serde_json::json!({"machine":spec.machine(),"fingerprint":fingerprint,"trust":trust}).to_string()).unwrap()
+        };
+        for trust in [false, true] {
+            assert!(exec(&spec, "true", 15_000).is_err());
+            assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 0);
+            let mut r = agent.get(&format!("{base}/api/server/keys")).header("X-Token", token).call().unwrap();
+            let questions: serde_json::Value = serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+            let shown = questions["keys"].as_array().unwrap().iter().find(|q| q["machine"] == spec.machine()).unwrap();
+            assert_eq!(shown["before"], "");
+            let fingerprint = shown["now"].as_str().unwrap();
+            assert_eq!(post(fingerprint, true, "wrong").status(), 403);
+            let mut wrong = post("SHA256:not-shown", true, token);
+            let refused: serde_json::Value = serde_json::from_str(&wrong.body_mut().read_to_string().unwrap()).unwrap();
+            assert_eq!(refused["ok"], false);
+            let mut r = post(fingerprint, trust, token);
+            let answer: serde_json::Value = serde_json::from_str(&r.body_mut().read_to_string().unwrap()).unwrap();
+            assert_eq!(answer["ok"], true);
+            assert_eq!(answer["trusted"], trust);
+            assert_eq!(remembered(&spec).is_some(), trust);
+        }
+        assert!(exec(&spec, "true", 15_000).unwrap().ok());
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        ui.shutdown();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_first_key_requires_explicit_trust_before_signing_in() {
         let (port, attempts) = fake_server_trusted(false);
         let spec = fake_spec(port, "ssh/ws/first/password");
