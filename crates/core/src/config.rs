@@ -4796,17 +4796,15 @@ fn fill_holder_uids(holder: &mut serde_json::Value, hosts: &[HostSpec], scope: &
     else {
         return;
     };
-    // Writing visits archived folders too. Resolve their tabs as well, in
-    // that same order, or the first hidden line consumes a visible tab's uid.
-    let mut all = foldered_with(&folders, &legacy);
-    for folder in &mut all { folder.parked = false; }
-    let (_, tabs, _) = resolve_folders(&all, &[], hosts, scope);
+    // Reading and writing both settle every row before hiding archived tabs.
+    let (_, tabs, _) = resolve_folders(&foldered_with(&folders, &legacy), &[], hosts, scope);
     let mut uids = tabs.into_iter().map(|t| t.cfg.uid.unwrap_or_default());
     visit_tab_lines(holder, &mut |line| {
         let Some(uid) = uids.next() else { return };
         if let Some(o) = line.as_object_mut() {
-            let unsaid = o.get("uid").and_then(|v| v.as_str()).map(str::trim).is_none_or(str::is_empty);
-            if unsaid {
+            // Persist the copies resolved within this desk before the pass
+            // across desks, using the same order of derivation as reading.
+            if o.get("uid").and_then(|v| v.as_str()) != Some(uid.as_str()) {
                 o.insert("uid".into(), serde_json::json!(uid));
             }
         }
@@ -5050,9 +5048,7 @@ fn resolve_folders(
     // so two folders holding a "reviewer" each is the same collision as two in one
     let moved = settle_tab_ids(&mut tabs);
     settle_tab_uids(&mut tabs, scope);
-    // Reserve identities before hiding tabs, so restoring a folder cannot
-    // rename another folder's tabs or change their durable identity.
-    tabs.retain(|t| !folders[t.folder].parked);
+    // Hiding archived tabs comes after the pass across desks too.
     (folders, tabs, moved)
 }
 
@@ -6503,6 +6499,7 @@ impl Config {
                     rename_branch: None,
                 });
             }
+            hide_archived_tabs(&mut out);
             return (out, errors);
         }
         for desk in &self.desks {
@@ -6601,6 +6598,7 @@ impl Config {
         errors.extend(settle_desk_ids(&mut out));
         unique_tab_uids(&mut out);
         unique_desk_uids(&mut out);
+        hide_archived_tabs(&mut out);
         (out, errors)
     }
 }
@@ -6621,6 +6619,12 @@ fn unique_desk_uids(desks: &mut [Desk]) {
 fn unique_tab_uids(desks: &mut [Desk]) {
     let tabs = desks.iter_mut().flat_map(|d| d.tabs.iter_mut().filter_map(|t| t.cfg.uid.as_mut()));
     settle_copies(tabs, &mut Default::default());
+}
+
+fn hide_archived_tabs(desks: &mut [Desk]) {
+    for desk in desks {
+        desk.tabs.retain(|t| !desk.folders[t.folder].parked);
+    }
 }
 
 /// Where each desk that was open stands in the settings as read again.
@@ -9275,6 +9279,28 @@ mod tests {
         let once = doc.clone();
         fill_tab_uids(&mut doc);
         assert_eq!(doc, once, "it changed the second time");
+    }
+
+    #[test]
+    fn copied_uids_are_settled_in_the_same_order_on_read_and_save() {
+        let uid = "11111111-2222-4333-8444-555555555555";
+        for counts in [[1, 2], [2, 1], [2, 2], [1, 3], [3, 2]] {
+            for archived in [false, true] {
+                let desks: Vec<_> = counts.iter().enumerate().map(|(d, n)| {
+                    let tabs: Vec<_> = (0..*n).map(|t| serde_json::json!({"id":format!("t{d}-{t}"),"uid":uid,"command":"sh"})).collect();
+                    serde_json::json!({"name":format!("Desk {d}"),"id":format!("d{d}"),"folders":[{"parked":archived && d==0,"tabs":tabs}]})
+                }).collect();
+                let mut doc = serde_json::json!({"desks":desks});
+                let read = |doc: &serde_json::Value| serde_json::from_value::<Config>(doc.clone()).unwrap().resolve_desks().0
+                    .into_iter().flat_map(|d| d.tabs.into_iter().map(|t| (t.cfg.id.unwrap(), t.cfg.uid.unwrap()))).collect::<Vec<_>>();
+                let before = read(&doc);
+                fill_tab_uids(&mut doc);
+                assert_eq!(read(&doc), before, "{counts:?}, archived={archived}");
+                let once = doc.clone();
+                fill_tab_uids(&mut doc);
+                assert_eq!(doc, once);
+            }
+        }
     }
 
     #[test]

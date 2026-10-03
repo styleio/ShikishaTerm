@@ -231,7 +231,7 @@ Name, automation name, automation folder
 **Desk**
 
 - **Name**
-- **Name used by automation** — Secrets are filed under this, and automation uses it. Renaming the desk on screen changes nothing
+- **Name used by automation** — Use ASCII letters, digits, _ and -. Automation and stored secrets use this name.
 - **Definition file**
 - **Automation**
 
