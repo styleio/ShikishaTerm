@@ -700,8 +700,11 @@ impl Terms {
         // The size first, so the state is taken at the size it is sent with
         let rows = m["rows"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0);
         let cols = m["cols"].as_u64().and_then(|v| u16::try_from(v).ok()).filter(|v| *v > 0);
-        let owner = term.next_owner.fetch_add(1, Ordering::SeqCst) + 1;
         let Ok(mut seen) = term.seen.lock() else { return unknown("the terminal could not be read") };
+        // Drawn under the lock, so the later owner always holds the larger
+        // number: drawn before it, two apps attaching at once could leave the
+        // smaller number owning the terminal
+        let owner = term.next_owner.fetch_add(1, Ordering::SeqCst) + 1;
         if let (Some(rows), Some(cols)) = (rows, cols) {
             if let Ok(master) = term.master.lock()
                 && let Some(master) = master.as_ref()
