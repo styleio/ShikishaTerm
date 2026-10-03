@@ -1461,6 +1461,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     object-fit:contain; object-position:top center; background:#000;
     pointer-events:none; }
   #castv[hidden] { display:none; }
+  /* Clearing the canvas pixels leaves its CSS background in place. Let the
+     video show through while the canvas keeps receiving pointer input. */
+  #castv:not([hidden]) ~ #cast { background:transparent; }
   /* Which way the picture is arriving, said in the corner of the picture
      itself. There are two paths to this screen and they look alike; when one
      quietly gives way to the other, this is the only thing that says so.
@@ -17098,6 +17101,9 @@ async function castFrame(e) {
   if (!cv || !castCtx) return;
   try {
     const bmp = await createImageBitmap(e.data);
+    // A JPEG already being decoded can outlive the switch to video. Painting
+    // it now would cover that video with a still picture indefinitely.
+    if (videoOn) { bmp.close(); return; }
     if (cv.width !== bmp.width || cv.height !== bmp.height) {
       cv.width = bmp.width; cv.height = bmp.height;
       // If a frame changes the canvas dimensions, recompute the cursor

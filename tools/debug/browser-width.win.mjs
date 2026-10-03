@@ -92,6 +92,20 @@ async function fitted(page, what) {
   note(what, {viewer:await shape(), page:measured.get(page)});
 }
 async function shot(name) {
+  if (name === 'portrait' || name === 'landscape') {
+    // The fixture is white at the centre. Receiving frames is not enough:
+    // an opaque input canvas can hide an otherwise healthy video stream.
+    await until(async () => {
+      const clip = await phone.run(`(() => {const r=document.getElementById('cast').getBoundingClientRect();
+        return {x:r.x+r.width/2,y:r.y+r.height/2,width:1,height:1,scale:1};})()`);
+      const {data} = await phone.send('Page.captureScreenshot', {format:'png',clip});
+      return phone.run(`new Promise(resolve => {const im=new Image();im.onload=()=>{
+        const cv=document.createElement('canvas');cv.width=cv.height=1;
+        const ctx=cv.getContext('2d');ctx.drawImage(im,0,0,1,1);
+        resolve([...ctx.getImageData(0,0,1,1).data].slice(0,3).every(n=>n>220));};
+        im.src='data:image/png;base64,${data}';})`);
+    }, 'the received page is visible');
+  }
   const {data} = await phone.send('Page.captureScreenshot', {format:'png'});
   fs.writeFileSync(path.join(shots, `${prefix}-${name}.png`), Buffer.from(data, 'base64'));
 }
