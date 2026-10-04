@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-04
+
 ### Added
 - **The bar's menu (⋯).** The bar over a web page ends in one menu holding
   Find in page, Downloads and the Develop tools, in place of the Develop
@@ -36,6 +38,17 @@ once it reaches its first tagged release.
   back. The server version saves what its pages download too
   (it used to refuse every download), and a script reads the same list with
   `shikisha.downloads()`.
+
+### Fixed
+- **A tab whose terminal ended just before the background process went is
+  told it ended.** A terminal this PC's background process (or the SHIKISHA
+  bridge on a server) kept, ending in the moment before that process itself
+  stopped or was started again, was not written down as ended, so the tab
+  came back saying it was not known whether it still ran. It now reads as
+  ended. A process number that the system has since given to another program
+  is no longer taken for the background process from before. On this PC the
+  tab's messages name the background process that keeps its terminals,
+  instead of a host address, and no longer call every program "the AI".
 
 ## [0.24.1] - 2026-10-04
 
@@ -4749,7 +4762,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...v0.24.0
 [0.23.1]: https://github.com/styleio/ShikishaTerm/compare/v0.23.0...v0.23.1

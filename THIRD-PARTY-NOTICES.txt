@@ -7893,9 +7893,9 @@ MIT License
 ================================================================================
 
 Applies to:
-  * shikisha-core 0.24.1
+  * shikisha-core 0.25.0
     https://github.com/styleio/ShikishaTerm
-  * shikisha-shared 0.24.1
+  * shikisha-shared 0.25.0
   * aws-lc-sys 0.45.0
     https://github.com/aws/aws-lc-rs
   * chrono 0.4.45
