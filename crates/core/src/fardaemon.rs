@@ -474,13 +474,13 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     log(&format!("resident ({}, {})", env!("CARGO_PKG_VERSION"), crate::build_rev()));
 
     let core = Core::new();
-    let tabs_job = Arc::new(TabsJob::default());
+    let tabs_job = Arc::new(TabsJob { home: Some(home.clone()), ..TabsJob::default() });
     let _ = tabs_job.me.set(Arc::downgrade(&tabs_job));
     if let Ok(mut j) = core.jobs.lock() {
         j.push(Arc::new(HostJob));
         j.push(tabs_job.clone());
         j.push(Arc::new(OpsJob::default()));
-        j.push(Arc::new(crate::farterms::Terms::new()));
+        j.push(Arc::new(crate::farterms::Terms::at(Some(home.clone()))));
     }
 
     {
@@ -626,6 +626,8 @@ struct TabsJob {
     me: std::sync::OnceLock<std::sync::Weak<TabsJob>>,
     /// The tabs whose kept calls are being handed over now
     handing: Mutex<std::collections::HashSet<String>>,
+    /// The resident process's own folder, where the calls are written down
+    home: Option<PathBuf>,
 }
 
 struct Conn {
@@ -667,7 +669,7 @@ impl TabsJob {
 
     /// The same, and whether what changed is in the file
     fn with_book_saved<R>(&self, f: impl FnOnce(&mut crate::farmissed::Book) -> R) -> (R, bool) {
-        let path = crate::farops::home().ok().map(|h| h.join(crate::farmissed::FILE));
+        let path = self.home.as_ref().map(|h| h.join(crate::farmissed::FILE));
         let mut held = self.book.lock().unwrap_or_else(|e| e.into_inner());
         let book = held.get_or_insert_with(|| {
             path.as_ref()

@@ -450,12 +450,21 @@ pub struct Terms {
     before: Vec<Before>,
     /// How many of its terminals had ended when they were last written down
     ended_written: AtomicU64,
+    /// The resident process's own folder, where the held list is written
+    home: Option<std::path::PathBuf>,
 }
 
 impl Terms {
     pub fn new() -> Self {
-        let before = crate::farops::home()
-            .ok()
+        Self::at(crate::farops::home().ok().cloned())
+    }
+
+    /// The job of the resident process whose folder is `home`. Told its
+    /// folder rather than reading the process-wide one: tests start several
+    /// resident processes in one process, each with a folder of its own
+    pub fn at(home: Option<std::path::PathBuf>) -> Self {
+        let before = home
+            .as_ref()
             .and_then(|h| std::fs::read_to_string(h.join(HELD_FILE)).ok())
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
@@ -466,6 +475,7 @@ impl Terms {
             before,
             ended_written: AtomicU64::new(0),
             awake: Mutex::default(),
+            home,
         }
     }
 
@@ -502,7 +512,7 @@ impl Terms {
     /// one. The ones the one before wrote down stay until their programs end,
     /// so a resident process started twice in a row still knows them
     fn write_held(&self) {
-        let Ok(home) = crate::farops::home() else { return };
+        let Some(home) = self.home.as_ref() else { return };
         // One writer at a time, from the list as it is when its turn comes,
         // and the file replaced whole: the next resident process reads either
         // the list before or the list after, never an older one over a newer
