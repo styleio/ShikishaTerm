@@ -126,6 +126,18 @@ the browser's DevTools, right-click the page's tab (hold it on a phone) and choo
 the pane, and a phone is shown them and works them like any page. To hand work to another tab, name it
 with @ in the input box.
 
+**Find in page**: press **Ctrl+F** on a web page (or the search button on the bar above
+it, which is how a phone opens it). Type, and every match is lit as you go, with the one
+you are on in orange; **Enter** goes to the next match, **Shift+Enter** to the one before,
+and **Esc** closes the bar. F3 and Shift+F3 move through the matches too. The window and a
+phone watching the same page share one search, and the words stay when the page moves on.
+
+**Downloads**: a file a web page saves goes to your Downloads folder, and the
+**Downloads** list opens in the column on the right -- each file with how far it has got
+and where it went. At the PC, open it or show it in its folder (a program is only ever
+shown in its folder); on a phone, **Save to this device** brings it to the phone. The
+download button on the bar above the page brings the list back.
+
 **The input box** at the bottom is where you type to the tab in view. On a phone
 it is the only way in.
 

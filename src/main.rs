@@ -811,7 +811,12 @@ impl WinSurface {
                 | Ev::VaultWhere { .. }
                 | Ev::Convo { .. }
                 | Ev::PastList { .. }
-                | Ev::PastResume { .. }) => self.mail.queue_ui(ev),
+                | Ev::PastResume { .. }
+                | Ev::SeekAsk { .. }
+                | Ev::DownloadAct { .. }) => self.mail.queue_ui(ev),
+                // What a page's browser said about a search and a download. The
+                // browser's own reports, sorted where every browser's are
+                ev @ (Ev::Seek { .. } | Ev::Download { .. }) => self.mail.page_report(ev),
                 ev @ Ev::Branch { .. } => {
                     self.mail.branches.extend(shikisha_shared::BranchAsk::of(ev));
                 }
@@ -2232,7 +2237,10 @@ fn connect_to(url: &str) -> Result<()> {
             // answer is on that list too -- a page is allowed to answer what
             // it was asked -- but it belongs to whoever asked, who is inside
             // `Browser` waiting for it
-            if shikisha_shared::allowed_from_page(&ev) && !matches!(ev, Ev::Result { .. }) {
+            // What it saved, and Ctrl+F pressed in one of the pages: the
+            // browser's own reports, which the board over there answers
+            let ours = matches!(ev, Ev::Download { .. } | Ev::SeekAsk { from: Some(_), .. });
+            if ours || (shikisha_shared::allowed_from_page(&ev) && !matches!(ev, Ev::Result { .. })) {
                 let _ = reports.send(ev);
             }
         }

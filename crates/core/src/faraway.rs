@@ -49,6 +49,8 @@ pub enum Ask {
     Record { to: Option<String>, on: bool },
     RecordAllOff,
     Trust { url: String },
+    /// Stop a download the browser over there is still saving
+    CancelDownload { id: String },
 }
 
 /// What came back.
@@ -70,6 +72,10 @@ pub enum Said {
 fn worth_hearing(ev: &Ev) -> bool {
     shikisha_shared::allowed_from_page(ev)
         || matches!(ev, Ev::Where { from: Some(_), .. } | Ev::Button { from: Some(_) })
+        // What the browser over there saved, and Ctrl+F pressed in one of its
+        // pages: that browser keeps the key from opening a search of its own,
+        // so the bar that answers it is the board's
+        || matches!(ev, Ev::Download { .. } | Ev::SeekAsk { .. })
 }
 
 /// How long to wait for an answer past the deadline the ask itself carried.
@@ -183,7 +189,12 @@ impl Line {
                     let _ = tx.send((ok, value));
                 }
             }
-            Said::Report { ev } => {
+            Said::Report { mut ev } => {
+                // A file saved over there is on that device, wherever the
+                // report says it is
+                if let Ev::Download { item, .. } = &mut ev {
+                    item.far = true;
+                }
                 if worth_hearing(&ev) {
                     self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()).push(ev);
                 }
@@ -416,6 +427,16 @@ impl BrowserHost for Far {
     fn record_all_off(&self) {
         let _ = self.inner.tell(&Ask::RecordAllOff);
     }
+
+    /// Searched by the script every page is given, over there: the answer
+    /// has to come back here, and an evaluation is a line that brings one
+    fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> anyhow::Result<Option<(u32, u32)>> {
+        crate::pageops::seek(self, to, text, step, 10_000).map(Some)
+    }
+
+    fn cancel_download(&self, id: &str) -> anyhow::Result<()> {
+        self.inner.tell(&Ask::CancelDownload { id: id.to_string() })
+    }
 }
 
 // ── the other end ─────────────────────────────────────────────────────────
@@ -455,6 +476,7 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
             Ok(serde_json::Value::Null)
         }
         Ask::Trust { url } => done(browser.trust(url)),
+        Ask::CancelDownload { id } => done(browser.cancel_download(id)),
     };
     match out {
         Ok(value) => (true, value),

@@ -232,6 +232,11 @@ pub enum Cmd {
     /// Ask where we currently are and whether we can go back/forward.
     /// The answer comes back as `Ev::Where`
     Where { to: Option<String> },
+    /// Search a page for words, or move through what was found. Where the
+    /// search stands comes back as `Ev::Seek`
+    Seek { to: Option<String>, text: String, step: shikisha_shared::Seek },
+    /// Stop a download still being saved (the id its `Ev::Download` carried)
+    CancelDownload { id: String },
     /// Start/stop screencasting (VNC-equivalent).
     /// Once started, `Ev::Frame` arrives on every change. `to` is the target
     /// page (`None` is the main view)
@@ -844,6 +849,16 @@ impl Browser {
         })
     }
 
+    /// Search a page for words (the answer arrives as a report)
+    pub fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> Result<()> {
+        self.send(Cmd::Seek { to: to.map(str::to_string), text: text.to_string(), step })
+    }
+
+    /// Stop a download that is still being saved
+    pub fn cancel_download(&self, id: &str) -> Result<()> {
+        self.send(Cmd::CancelDownload { id: id.to_string() })
+    }
+
     /// Send everything placed pages fetch through this proxy from now on.
     ///
     /// Set once, when this window starts drawing another machine's pages. It
@@ -1342,6 +1357,10 @@ fn adopt_windows(
                 if let Some(ua) = user_agent.as_deref() {
                     cdp::call(&raw, "Emulation.setUserAgentOverride", &ua_override(ua));
                 }
+                // A link that saves a file often opens a window to do it in:
+                // what it saves is the pane's, like everything else it does
+                cdp::arm_downloads(&raw, Some(opener.clone()), ev_tx.clone());
+                cdp::on_find_keys(&v, opener.clone(), ev_tx.clone(), |_| false);
                 {
                     let inbox = std::rc::Rc::clone(&inbox);
                     let proxy = proxy.clone();
@@ -1730,6 +1749,9 @@ fn run_window(
     // go of or the page closes; the lines leave as reports
     let mut consoles: std::collections::HashMap<Option<String>, cdp::ConsoleArm> =
         std::collections::HashMap::new();
+    // The browser's own search, one per page searched, by the name of the view
+    // standing in the seat (a window a page opened stands over the page)
+    let mut finders: std::collections::HashMap<String, cdp::Finder> = std::collections::HashMap::new();
     // DevTools screens connected to pages, and the sessions they speak through
     let mut screens = crate::devtools::Screens::default();
     // The most recent frame's CSS pixel dimensions (used to convert
@@ -2077,6 +2099,17 @@ fn run_window(
                             if let Some(arm) = cdp::arm_dialogs(&wvh) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
+                            // What it saves goes in the list beside it, and its
+                            // Ctrl+F opens the board's search bar
+                            if !cdp::arm_downloads(&wvh, Some(name.clone()), ev_tx.clone()) {
+                                shikisha_core::append_hook_log(&format!(
+                                    "[browser] '{name}': this WebView2 cannot report downloads; its own bubble shows them"
+                                ));
+                            }
+                            {
+                                let own = std::rc::Rc::clone(&own);
+                                cdp::on_find_keys(&v, name.clone(), ev_tx.clone(), move |at| from_ours(&own.borrow(), at));
+                            }
                             shikisha_core::append_hook_log(&format!(
                                 "[browser] placed page '{}' in {} ms (window input is frozen while a page is being created)",
                                 name,
@@ -2149,6 +2182,7 @@ fn run_window(
                         overlays.entry(opener).or_default().push((name, view));
                     }
                     for name in shut {
+                        finders.remove(&name);
                         // Dropping the page is what closes it
                         for stack in overlays.values_mut() {
                             stack.retain(|(n, _)| n != &name);
@@ -2167,6 +2201,7 @@ fn run_window(
                     dialogs.remove(&Some(name.clone()));
                     auths.remove(&Some(name.clone()));
                     consoles.remove(&Some(name.clone()));
+                    finders.retain(|key, _| key != &name && !key.starts_with(&format!("{name}#window")));
                     screens.page_closed(&Some(name.clone()));
                     // If this child was placed in private mode, clean up
                     // its throwaway folder. WebView2 can take a moment to
@@ -2225,6 +2260,30 @@ fn run_window(
                         &[("to", &format!("{to:?}"))],
                     )),
                 },
+                Cmd::Seek { to, text, step } => {
+                    // What the person is looking at in that seat: a window the
+                    // page opened stands over it, and is what gets searched
+                    let seat = to.as_ref().and_then(|name| {
+                        overlays
+                            .get(name)
+                            .and_then(|stack| stack.last())
+                            .map(|(n, v)| (n.clone(), v))
+                            .or_else(|| children.get(name).map(|v| (name.clone(), v)))
+                    });
+                    match seat {
+                        Some((key, v)) => {
+                            let wv = cdp::webview_of(v);
+                            let finder = finders
+                                .entry(key)
+                                .or_insert_with(|| cdp::Finder::of(&wv, to.clone(), ev_tx.clone()));
+                            finder.seek(&wv, &text, step, to, ev_tx.clone());
+                        }
+                        None => {
+                            let _ = ev_tx.send(Ev::Seek { from: to, at: 0, of: 0 });
+                        }
+                    }
+                }
+                Cmd::CancelDownload { id } => cdp::cancel_download(&id),
                 Cmd::Where { to } => {
                     if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = where_tx.send(Ev::Where {
@@ -3321,6 +3380,405 @@ pub(crate) mod cdp {
             call(webview, &format!("{domain}.enable"), "{}");
         }
         Some(ConsoleArm { receivers, webview: webview.clone() })
+    }
+
+    thread_local! {
+        /// The downloads still being saved, by the id their reports carry:
+        /// what Cancel reaches. Kept by the thread that runs the window,
+        /// the only one that may touch them -- and so any page it builds,
+        /// a window a page opened included, adds to the same list
+        static SAVING: std::cell::RefCell<
+            std::collections::HashMap<String, webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation>,
+        > = std::cell::RefCell::new(std::collections::HashMap::new());
+        static NEXT_DOWNLOAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Stop a download still being saved. One already over is left as it is
+    pub fn cancel_download(id: &str) {
+        let op = SAVING.with(|s| s.borrow().get(id).cloned());
+        if let Some(op) = op {
+            let _ = unsafe { op.Cancel() };
+        }
+    }
+
+    /// Save what this page sends to be saved, and report how each file goes.
+    ///
+    /// The browser's own download bubble is kept from opening: it would stand
+    /// over a corner of the window that belongs to something else, and only
+    /// the person at this machine could ever see it. The list in the column
+    /// beside the page is the one every screen -- a phone included -- reads.
+    /// Where the file goes is the browser's own decision (the Downloads
+    /// folder, numbered the way a browser numbers a second file of a name)
+    pub fn arm_downloads(
+        webview: &ICoreWebView2,
+        page: Option<String>,
+        tell: std::sync::mpsc::Sender<shikisha_shared::Ev>,
+    ) -> bool {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+        use windows::core::Interface as _;
+        let Ok(four) = webview.cast::<ICoreWebView2_4>() else {
+            return false;
+        };
+        let handler = webview2_com::DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()) };
+            unsafe {
+                let _ = args.SetHandled(true);
+                let op = args.DownloadOperation()?;
+                let n = NEXT_DOWNLOAD.with(|c| {
+                    c.set(c.get() + 1);
+                    c.get()
+                });
+                let id = format!("w{n}");
+                let mut raw = windows::core::PWSTR::null();
+                let _ = op.Uri(&mut raw);
+                let url = webview2_com::take_pwstr(raw);
+                // One report, whatever moved: the operation is asked for all
+                // of it each time, so no report can contradict another
+                let said = std::rc::Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+                let report = {
+                    let (tell, page, id, url) = (tell.clone(), page.clone(), id.clone(), url.clone());
+                    std::rc::Rc::new(move |op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation| {
+                        let item = download_of(op, &id, &url);
+                        let _ = tell.send(shikisha_shared::Ev::Download { from: page.clone(), item });
+                    })
+                };
+                let moved = {
+                    let (report, said) = (std::rc::Rc::clone(&report), std::rc::Rc::clone(&said));
+                    webview2_com::BytesReceivedChangedEventHandler::create(Box::new(move |sender, _| {
+                        // A large file reports every few kilobytes, and a line
+                        // redrawn that often says nothing more
+                        if let Some(op) = sender
+                            && said.get().elapsed() >= std::time::Duration::from_millis(250)
+                        {
+                            said.set(std::time::Instant::now());
+                            report(&op);
+                        }
+                        Ok(())
+                    }))
+                };
+                let ended = {
+                    let (report, id) = (std::rc::Rc::clone(&report), id.clone());
+                    webview2_com::StateChangedEventHandler::create(Box::new(move |sender, _| {
+                        if let Some(op) = sender {
+                            report(&op);
+                            let now = download_of(&op, &id, "");
+                            if now.state != shikisha_shared::DownloadState::Going {
+                                SAVING.with(|s| s.borrow_mut().remove(&id));
+                                shikisha_core::append_hook_log(&format!(
+                                    "[browser] {id} ended {:?} {}: {}",
+                                    now.state, now.why, now.path
+                                ));
+                            }
+                        }
+                        Ok(())
+                    }))
+                };
+                let mut token = 0i64;
+                let _ = op.add_BytesReceivedChanged(&moved, &mut token);
+                let _ = op.add_StateChanged(&ended, &mut token);
+                SAVING.with(|s| s.borrow_mut().insert(id.clone(), op.clone()));
+                shikisha_core::append_hook_log(&format!(
+                    "[browser] {:?} saving {id}: {url}",
+                    page.as_deref().unwrap_or("?")
+                ));
+                report(&op);
+            }
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe { four.add_DownloadStarting(&handler, &mut token) }.is_ok()
+    }
+
+    /// Everything a download operation says about itself, as one report
+    fn download_of(
+        op: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2DownloadOperation,
+        id: &str,
+        url: &str,
+    ) -> shikisha_shared::Download {
+        use shikisha_shared::DownloadState;
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        let mut raw = windows::core::PWSTR::null();
+        let path = match unsafe { op.ResultFilePath(&mut raw) } {
+            Ok(()) => webview2_com::take_pwstr(raw),
+            Err(_) => String::new(),
+        };
+        let (mut got, mut total) = (0i64, 0i64);
+        let _ = unsafe { op.BytesReceived(&mut got) };
+        let _ = unsafe { op.TotalBytesToReceive(&mut total) };
+        let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
+        let _ = unsafe { op.State(&mut state) };
+        let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON::default();
+        let _ = unsafe { op.InterruptReason(&mut reason) };
+        let (state, why) = if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
+            (DownloadState::Done, "")
+        } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
+            interrupted(reason)
+        } else {
+            (DownloadState::Going, "")
+        };
+        let name = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        shikisha_shared::Download {
+            id: id.to_string(),
+            name,
+            url: url.to_string(),
+            path,
+            got: got.max(0) as u64,
+            total: total.max(0) as u64,
+            state,
+            why: why.to_string(),
+            far: false,
+        }
+    }
+
+    /// Why a download stopped, in the few words a person can act on: try
+    /// again later (the network, the server), make room or pick another
+    /// folder (the disk), or leave it (blocked as dangerous)
+    fn interrupted(
+        reason: webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON,
+    ) -> (shikisha_shared::DownloadState, &'static str) {
+        use shikisha_shared::DownloadState::{Cancelled, Failed, Going};
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        match reason {
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED => (Cancelled, ""),
+            // Paused, which nothing here does: it will go on
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED => (Going, ""),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST => (Failed, "network"),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_BAD_CONTENT
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_UNAUTHORIZED
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CERTIFICATE_PROBLEM
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_UNEXPECTED_RESPONSE
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CONTENT_LENGTH_MISMATCH
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT => (Failed, "server"),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_FAILED
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TRANSIENT_ERROR
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH => (Failed, "disk"),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED => (Failed, "denied"),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG => (Failed, "toolarge"),
+            COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY
+            | COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED => (Failed, "blocked"),
+            _ => (Failed, "unknown"),
+        }
+    }
+
+    /// Ctrl+F, F3 and Shift+F3 pressed in this page open the board's search
+    /// bar and move through it, instead of the browser's own little box.
+    ///
+    /// The browser's box can only be seen at this machine and knows nothing of
+    /// the bar a phone watching the same page draws; one search, one bar.
+    /// Pages of the app's own (the settings) keep the browser's box: they are
+    /// not browser tabs, and the board's bar stands over browser tabs only.
+    /// `ours` answers whether the page is one of those, at the moment of the press
+    pub fn on_find_keys(
+        view: &wry::WebView,
+        page: String,
+        tell: std::sync::mpsc::Sender<shikisha_shared::Ev>,
+        ours: impl Fn(&str) -> bool + 'static,
+    ) {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+        };
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_F3, VK_MENU, VK_SHIFT};
+        use wry::WebViewExtWindows as _;
+        let webview = view.webview();
+        let handler = webview2_com::AcceleratorKeyPressedEventHandler::create(Box::new(move |_sender, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_KEY_EVENT_KIND::default();
+            let mut key = 0u32;
+            unsafe {
+                let _ = args.KeyEventKind(&mut kind);
+                let _ = args.VirtualKey(&mut key);
+            }
+            if kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN {
+                return Ok(());
+            }
+            let held = |vk: u16| unsafe { GetKeyState(i32::from(vk)) } < 0;
+            let (ctrl, shift, alt) = (held(VK_CONTROL), held(VK_SHIFT), held(VK_MENU));
+            let what = match key {
+                0x46 if ctrl && !shift && !alt => "open",
+                k if k == u32::from(VK_F3) && !ctrl && !alt => if shift { "prev" } else { "next" },
+                _ => return Ok(()),
+            };
+            let mut raw = windows::core::PWSTR::null();
+            let at = match unsafe { webview.Source(&mut raw) } {
+                Ok(()) => webview2_com::take_pwstr(raw),
+                Err(_) => String::new(),
+            };
+            if ours(&at) {
+                return Ok(());
+            }
+            unsafe {
+                let _ = args.SetHandled(true);
+            }
+            let _ = tell.send(shikisha_shared::Ev::SeekAsk {
+                from: Some(page.clone()),
+                what: what.to_string(),
+                text: String::new(),
+            });
+            Ok(())
+        }));
+        let mut token = 0i64;
+        unsafe {
+            let _ = view.controller().add_AcceleratorKeyPressed(&handler, &mut token);
+        }
+    }
+
+    /// The browser's own search on one page, kept for as long as the page is.
+    ///
+    /// WebView2 lends the search Edge itself has -- every frame, every kind of
+    /// text, painted by the browser -- with its little box kept shut. A runtime
+    /// too old to lend it is searched by the script every page is given
+    /// instead (`pageops::seek_js`), the same one the server's browser uses
+    pub struct Finder {
+        find: Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Find>,
+    }
+
+    impl Finder {
+        /// The browser's search for this page, with where it stands reported
+        /// each time it moves. `None` when this runtime has none to lend
+        pub fn of(
+            webview: &ICoreWebView2,
+            page: Option<String>,
+            tell: std::sync::mpsc::Sender<shikisha_shared::Ev>,
+        ) -> Self {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_28;
+            use windows::core::Interface as _;
+            let find = webview
+                .cast::<ICoreWebView2_28>()
+                .ok()
+                .and_then(|w| unsafe { w.Find() }.ok());
+            if let Some(f) = &find {
+                let say = {
+                    let (tell, page) = (tell.clone(), page.clone());
+                    std::rc::Rc::new(move |f: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Find| {
+                        let (at, of) = standing(f);
+                        let _ = tell.send(shikisha_shared::Ev::Seek { from: page.clone(), at, of });
+                    })
+                };
+                let (a, b) = (std::rc::Rc::clone(&say), std::rc::Rc::clone(&say));
+                let moved = webview2_com::FindActiveMatchIndexChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(f) = sender {
+                        a(&f);
+                    }
+                    Ok(())
+                }));
+                let counted = webview2_com::FindMatchCountChangedEventHandler::create(Box::new(move |sender, _| {
+                    if let Some(f) = sender {
+                        b(&f);
+                    }
+                    Ok(())
+                }));
+                let mut token = 0i64;
+                unsafe {
+                    let _ = f.add_ActiveMatchIndexChanged(&moved, &mut token);
+                    let _ = f.add_MatchCountChanged(&counted, &mut token);
+                }
+            }
+            Self { find }
+        }
+
+        /// One move of the search. Where it stands comes back as `Ev::Seek`,
+        /// from whichever engine answered
+        pub fn seek(
+            &self,
+            webview: &ICoreWebView2,
+            text: &str,
+            step: shikisha_shared::Seek,
+            page: Option<String>,
+            tell: std::sync::mpsc::Sender<shikisha_shared::Ev>,
+        ) {
+            use shikisha_shared::Seek;
+            let Some(f) = &self.find else {
+                let js = shikisha_core::pageops::seek_js(text, step);
+                let params = serde_json::json!({
+                    "expression": format!("(function () {{ {js} }})()"),
+                    "returnByValue": true,
+                })
+                .to_string();
+                call_result(webview, "Runtime.evaluate", &params, move |ok, json| {
+                    let said = serde_json::from_str::<serde_json::Value>(&json)
+                        .ok()
+                        .and_then(|v| v.pointer("/result/value").cloned())
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    let (at, of) = if ok { shikisha_core::pageops::seek_answer(&said) } else { (0, 0) };
+                    let _ = tell.send(shikisha_shared::Ev::Seek { from: page, at, of });
+                });
+                return;
+            };
+            unsafe {
+                match step {
+                    Seek::New => {
+                        let Some(options) = find_options(webview, text) else { return };
+                        let (f2, tell2, page2) = (f.clone(), tell.clone(), page.clone());
+                        let done = webview2_com::FindStartCompletedHandler::create(Box::new(move |_hr| {
+                            let (at, of) = standing(&f2);
+                            let _ = tell2.send(shikisha_shared::Ev::Seek { from: page2, at, of });
+                            Ok(())
+                        }));
+                        let _ = f.Start(&options, &done);
+                    }
+                    Seek::Next => {
+                        let _ = f.FindNext();
+                    }
+                    Seek::Prev => {
+                        let _ = f.FindPrevious();
+                    }
+                    Seek::Stop => {
+                        let _ = f.Stop();
+                        let _ = tell.send(shikisha_shared::Ev::Seek { from: page, at: 0, of: 0 });
+                    }
+                }
+            }
+        }
+    }
+
+    /// The match stood on (from 1) and how many there are
+    fn standing(f: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Find) -> (u32, u32) {
+        let (mut index, mut count) = (-1i32, 0i32);
+        unsafe {
+            let _ = f.ActiveMatchIndex(&mut index);
+            let _ = f.MatchCount(&mut count);
+        }
+        let of = count.max(0) as u32;
+        // The browser counts the match stood on from 1, as a person does, and
+        // says 0 or -1 for none (measured: the first match of a new search is 1)
+        let at = if index <= 0 || of == 0 { 0 } else { (index as u32).min(of) };
+        (at, of)
+    }
+
+    /// What to search for: the words as typed, any case, every match lit,
+    /// and the browser's own box kept shut
+    fn find_options(
+        webview: &ICoreWebView2,
+        text: &str,
+    ) -> Option<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2FindOptions> {
+        use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_2, ICoreWebView2Environment15};
+        use windows::core::Interface as _;
+        unsafe {
+            let env = webview.cast::<ICoreWebView2_2>().ok()?.Environment().ok()?;
+            let options = env.cast::<ICoreWebView2Environment15>().ok()?.CreateFindOptions().ok()?;
+            let term = HSTRING::from(text);
+            options.SetFindTerm(PCWSTR(term.as_ptr())).ok()?;
+            options.SetIsCaseSensitive(false).ok()?;
+            options.SetShouldMatchWord(false).ok()?;
+            options.SetShouldHighlightAllMatches(true).ok()?;
+            options.SetSuppressDefaultFindDialog(true).ok()?;
+            Some(options)
+        }
     }
 
     /// Force a fresh first frame, even if the page has not changed.
@@ -4810,6 +5268,12 @@ impl BrowserHost for Browser {
     fn go(&self, to: Option<&str>, go: Go) -> Result<()> { Browser::go(self, to, go) }
     fn focus(&self, to: Option<&str>) -> Result<()> { Browser::focus(self, to) }
     fn ask_where(&self, to: Option<&str>) -> Result<()> { Browser::ask_where(self, to) }
+    /// Searched on the window's own thread, which is the only one that may
+    /// touch the page: where it stands is reported when it is known
+    fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> Result<Option<(u32, u32)>> {
+        Browser::seek(self, to, text, step).map(|()| None)
+    }
+    fn cancel_download(&self, id: &str) -> Result<()> { Browser::cancel_download(self, id) }
     fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
         Browser::basic_auth(self, to, user, pass)
     }

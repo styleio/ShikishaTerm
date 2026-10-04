@@ -770,6 +770,196 @@ pub const AUTOMATION: &str = r##"
     pickStop(true);
   }, true);
 
+  // Search the page for words, the way a browser's own Ctrl+F does: every
+  // match lit, one of them the one stood on, and that one scrolled into view.
+  // Used where the browser has no search of its own to lend (a headless
+  // Chromium has none; the window's WebView2 lends its own when it can).
+  //
+  // Nothing is added to the page's DOM: the matches are Ranges painted
+  // through the highlight registry, so the page's own scripts and layout
+  // never see a node that was not theirs. The text is walked as it is laid
+  // out -- an inline tag in the middle of a word is still one word, two
+  // blocks are never one phrase, and what is not shown is not found.
+  // `step` is new / next / prev / stop. Answers {at, of}: the match stood on
+  // (from 1) and how many there are, 0 and 0 when there are none
+  const SEEK_ALL = "shikisha-seek", SEEK_AT = "shikisha-seek-at", SEEK_MOST = 10000;
+  // Between two blocks: a character no search can contain, so no match
+  // runs from the end of one paragraph into the start of the next
+  const SEEK_BREAK = "￿";
+  const seekSkip = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "HEAD", "TITLE", "TEXTAREA",
+    "INPUT", "SELECT", "OPTION", "SVG", "CANVAS", "VIDEO", "AUDIO", "OBJECT", "EMBED"]);
+  const seek = { text: "", at: -1, active: null, regs: new Set(), styled: new WeakSet() };
+  const seekUnpaint = () => {
+    for (const reg of seek.regs) { try { reg.delete(SEEK_ALL); reg.delete(SEEK_AT); } catch (e) {} }
+    seek.regs.clear();
+  };
+  // The colours a browser's own search uses, so a match reads as a match.
+  // A sheet reaches only its own tree, so each shadow root and frame the
+  // walk goes into is given one too
+  const seekStyle = (scope, view) => {
+    if (seek.styled.has(scope)) return;
+    seek.styled.add(scope);
+    try {
+      const sheet = new view.CSSStyleSheet();
+      sheet.replaceSync("::highlight(" + SEEK_ALL + "){background-color:#ffff00;color:#000}" +
+        "::highlight(" + SEEK_AT + "){background-color:#ff9632;color:#000}");
+      scope.adoptedStyleSheets = [...scope.adoptedStyleSheets, sheet];
+    } catch (e) {}
+  };
+  // A run of spaces in what was typed matches any run of white space on the
+  // page, which is how the same words look once laid out. Letters match
+  // whatever their case
+  const seekPattern = (text) => {
+    const parts = text.split(/\s+/).map(p => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(parts.join("[\\s\\u00a0]+"), "giu");
+  };
+  // Every piece of text that is shown, in reading order, as one string with
+  // where each piece sits in it. `realm` is the window a piece's document
+  // belongs to: its ranges are painted through that window's registry
+  const seekCollect = () => {
+    const pieces = [];
+    let flat = "";
+    let lastBlock = null;
+    const blockOf = new Map();
+    const blockFor = (el, view) => {
+      let at = el;
+      while (at && at.nodeType === 1) {
+        if (blockOf.has(at)) { const b = blockOf.get(at); blockOf.set(el, b); return b; }
+        const d = view.getComputedStyle(at).display;
+        if (!(d.startsWith("inline") || d === "contents" || d.startsWith("ruby"))) {
+          blockOf.set(el, at);
+          return at;
+        }
+        at = at.parentElement || (at.parentNode && at.parentNode.host) || null;
+      }
+      return null;
+    };
+    const isShown = (el) => typeof el.checkVisibility === "function"
+      ? el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true })
+      : el.getClientRects().length > 0;
+    const pastIt = (w) => {
+      const s = w.nextSibling();
+      if (s) return s;
+      while (w.parentNode()) { const up = w.nextSibling(); if (up) return up; }
+      return null;
+    };
+    const walk = (root, realm) => {
+      const w = (root.ownerDocument || root).createTreeWalker(root, 1 | 4);
+      let n = w.currentNode;
+      while (n) {
+        if (n.nodeType === 1 && n !== root) {
+          const tag = n.tagName.toUpperCase();
+          if (seekSkip.has(tag) || !isShown(n)) { n = pastIt(w); continue; }
+          if (tag === "BR") { flat += SEEK_BREAK; lastBlock = null; }
+          if (n.shadowRoot) { seekStyle(n.shadowRoot, realm); walk(n.shadowRoot, realm); }
+          if (tag === "IFRAME") {
+            try {
+              const doc = n.contentDocument, win = n.contentWindow;
+              if (doc && doc.body && win && win.CSS && win.CSS.highlights) {
+                seekStyle(doc, win);
+                flat += SEEK_BREAK; lastBlock = null;
+                walk(doc.body, win);
+              }
+            } catch (e) {}
+          }
+        } else if (n.nodeType === 3 && n.data && n.parentElement) {
+          const block = blockFor(n.parentElement, realm);
+          if (block !== lastBlock) { if (flat) flat += SEEK_BREAK; lastBlock = block; }
+          pieces.push({ node: n, start: flat.length, realm });
+          flat += n.data;
+        }
+        n = w.nextNode();
+      }
+    };
+    if (document.body && typeof CSS !== "undefined" && CSS.highlights) {
+      seekStyle(document, window);
+      walk(document.body, window);
+    }
+    return { flat, pieces };
+  };
+  // The piece a place in the string falls in
+  const seekPiece = (pieces, at) => {
+    let lo = 0, hi = pieces.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (pieces[mid].start <= at) lo = mid; else hi = mid - 1;
+    }
+    return pieces[lo];
+  };
+  // Which of two matches comes first on the page: below 0 when a does, 0
+  // when they start at the same place. Matches in two documents cannot be
+  // compared, and keep the order they were found in
+  const seekOrder = (a, b, ia, ib) => {
+    try { return a.compareBoundaryPoints(Range.START_TO_START, b); } catch (e) { return ia - ib; }
+  };
+  const seekShow = (r) => {
+    const el = r.startContainer.parentElement;
+    if (!el) return;
+    const box = r.getBoundingClientRect();
+    const view = el.ownerDocument.defaultView || window;
+    if (box.top < 0 || box.bottom > view.innerHeight || box.left < 0 || box.right > view.innerWidth) {
+      el.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
+    }
+  };
+  window.__shikisha_seek = function (text, step) {
+    seekUnpaint();
+    if (step === "stop" || !text || !text.trim()) {
+      seek.text = ""; seek.at = -1; seek.active = null;
+      return { at: 0, of: 0 };
+    }
+    const was = seek.text === text ? seek.active : null, wasAt = seek.at;
+    const { flat, pieces } = seekCollect();
+    const found = [];
+    if (pieces.length) {
+      const re = seekPattern(text);
+      let m;
+      while (found.length < SEEK_MOST && (m = re.exec(flat))) {
+        const a = seekPiece(pieces, m.index), b = seekPiece(pieces, m.index + m[0].length - 1);
+        // One match is painted in one document: a run of text that only
+        // reads as one across the edge of a frame is not one a person sees
+        if (a.realm !== b.realm) continue;
+        try {
+          const r = a.node.ownerDocument.createRange();
+          r.setStart(a.node, m.index - a.start);
+          r.setEnd(b.node, m.index + m[0].length - b.start);
+          found.push({ r, realm: a.realm });
+        } catch (e) {}
+      }
+    }
+    seek.text = text;
+    if (!found.length) { seek.at = -1; seek.active = null; return { at: 0, of: 0 }; }
+    let at;
+    if (step === "new" || !was) {
+      // From where the person is looking, as a browser does: the first match
+      // that is not already scrolled past
+      at = Math.max(0, found.findIndex(f => f.realm !== window || f.r.getBoundingClientRect().bottom >= 0));
+    } else if (step === "prev") {
+      // Found again by where the one stood on was, not by its number: the
+      // page may have changed between the two presses
+      at = found.length - 1;
+      for (let i = found.length - 1; i >= 0; i--) {
+        if (seekOrder(found[i].r, was, i, wasAt) < 0) { at = i; break; }
+      }
+    } else {
+      at = Math.max(0, found.findIndex((f, i) => seekOrder(f.r, was, i, wasAt) > 0));
+    }
+    const rest = new Map();
+    found.forEach((f, i) => {
+      if (i === at) return;
+      if (!rest.has(f.realm)) rest.set(f.realm, []);
+      rest.get(f.realm).push(f.r);
+    });
+    for (const [realm, list] of rest) {
+      try { realm.CSS.highlights.set(SEEK_ALL, new realm.Highlight(...list)); seek.regs.add(realm.CSS.highlights); } catch (e) {}
+    }
+    const on = found[at];
+    try { on.realm.CSS.highlights.set(SEEK_AT, new on.realm.Highlight(on.r)); seek.regs.add(on.realm.CSS.highlights); } catch (e) {}
+    seek.at = at;
+    seek.active = on.r;
+    seekShow(on.r);
+    return { at: at + 1, of: found.length };
+  };
+
   window.__shikisha = true;
 
   // "Loading finished" waits for `load`. At DOMContentLoaded, images and

@@ -221,6 +221,9 @@ pub const CATALOG: &[Entry] = &[
     // What a page says on its console: the page's own words about itself,
     // with known secrets taken out like every other read of a page
     e("browser_console", Group::Browser, true, true, false),
+    // The files pages saved: names, where they went, how far they got -- what
+    // the list beside the page shows anybody looking at it
+    e("downloads", Group::Browser, true, true, false),
     // A screen for a person: everything the page holds, its cookies included,
     // can be read and changed from it. An AI has its own ways into a page
     e("browser_devtools", Group::Browser, true, false, false),

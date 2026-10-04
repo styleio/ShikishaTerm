@@ -2254,6 +2254,29 @@ pub struct NavState {
     pub loading: bool,
 }
 
+/// The search bar over the page being viewed (Ctrl+F, or the bar's 🔍).
+///
+/// Held by the app, not by the screen: the window and a phone watching the
+/// same page are searching the same page, and a page that navigates is
+/// searched again with the same words
+#[derive(Clone, Serialize, PartialEq, Eq, Debug, Default)]
+pub struct SeekView {
+    /// The page it is over, by key
+    pub page: String,
+    /// The words searched for, as typed
+    pub text: String,
+    /// The match stood on, from 1 (0 when nothing matched)
+    pub at: u32,
+    /// How many matches there are
+    pub of: u32,
+    /// A search was sent and has not been answered yet: the count shown is
+    /// the one before it
+    pub asked: bool,
+    /// Counts up each time the bar is opened (Ctrl+F again included), so the
+    /// screen knows to put the cursor in it and select the words
+    pub opened: u64,
+}
+
 /// One CLI and the skill that teaches it to ask another tab (see `skill`)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SkillView {
@@ -2560,6 +2583,16 @@ pub struct UiState {
     pub qr_kind: Option<String>,
     /// Controls shown above the browser being viewed (None = don't show)
     pub nav: Option<NavState>,
+    /// The search bar over the page being viewed, while it is open
+    #[serde(default)]
+    pub seek: Option<SeekView>,
+    /// Every file a page sent to be saved this run, newest first
+    #[serde(default)]
+    pub downloads: Vec<crate::downloads::View>,
+    /// Counts up each time a download begins. The screen opens the list beside
+    /// the page when the newest one came from the page in front
+    #[serde(default)]
+    pub download_seq: u64,
     /// How many lines back from the current screen we're scrolled (0 = current).
     /// Without knowing we've scrolled back, it looks like output has stopped
     pub scrolled: usize,

@@ -248,6 +248,10 @@ pub struct Capabilities {
     /// down a notch and the app draws in the space that opens up. So this side has
     /// to remember it too, and it doesn't disappear across navigation
     nav: std::cell::RefCell<HashMap<String, crate::config::NavSpec>>,
+    /// Every file a page sent to be saved this run, newest first (see
+    /// `crate::downloads`). Here rather than in the loop so a script reads
+    /// the same list the column beside the page shows
+    downloads: std::cell::RefCell<crate::downloads::List>,
     /// Pages opened because config declared them (name within the window).
     ///
     /// Needs to be distinguished from pages automation opened on its own, and from
@@ -368,6 +372,7 @@ impl Capabilities {
             desk: std::cell::Cell::new(0),
             shown: std::cell::RefCell::new(None),
             nav: std::cell::RefCell::new(HashMap::new()),
+            downloads: std::cell::RefCell::new(crate::downloads::List::default()),
             declared: std::cell::RefCell::new(std::collections::HashSet::new()),
             desk_id: std::cell::RefCell::new(String::new()),
             secret_terms: std::cell::RefCell::new(HashMap::new()),
@@ -1460,6 +1465,56 @@ impl Capabilities {
     /// Ask where it currently is (the answer arrives as a report)
     pub fn browser_where(&self, name: &str) -> Result<()> {
         self.with(name, |b, to| b.ask_where(to))
+    }
+
+    /// Search a page for words, or move through what was found. Where it
+    /// stands, when the browser already knows; otherwise it is reported
+    pub fn browser_seek(&self, name: &str, text: &str, step: shikisha_shared::Seek) -> Result<Option<(u32, u32)>> {
+        self.with(name, |b, to| b.seek(to, text, step))
+    }
+
+    /// Take in what a browser said about a file it saves. `child` is the
+    /// page by its name inside the window, when the browser could say
+    pub fn note_download(&self, child: Option<&str>, item: shikisha_shared::Download) -> crate::downloads::Change {
+        let page = child.and_then(|c| self.name_of_child(c));
+        self.downloads.borrow_mut().note(page, item, crate::sqlite::now_ms())
+    }
+
+    /// The list, as it is drawn and as a script reads it
+    pub fn downloads(&self) -> Vec<crate::downloads::View> {
+        self.downloads.borrow().rows().iter().map(crate::downloads::View::of).collect()
+    }
+
+    /// One line of the list, by id
+    pub fn download(&self, id: &str) -> Option<crate::downloads::Row> {
+        self.downloads.borrow().get(id).cloned()
+    }
+
+    /// The line goes; the file stays
+    pub fn forget_download(&self, id: &str) {
+        self.downloads.borrow_mut().forget(id);
+    }
+
+    /// Every finished line goes
+    pub fn clear_downloads(&self) {
+        self.downloads.borrow_mut().clear_ended();
+    }
+
+    /// Where "open the folder" goes: the newest file's, else this machine's
+    /// downloads folder
+    pub fn downloads_folder(&self) -> PathBuf {
+        self.downloads.borrow().newest_folder().unwrap_or_else(crate::downloads::folder)
+    }
+
+    /// Stop a download still going, through whichever browser is saving it
+    pub fn cancel_download(&self, id: &str) -> Result<()> {
+        let host = self
+            .host
+            .borrow()
+            .as_ref()
+            .map(std::rc::Rc::clone)
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
+        host.cancel_download(id)
     }
 
     /// Move keyboard focus to this page

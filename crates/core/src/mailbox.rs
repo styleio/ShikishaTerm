@@ -106,6 +106,16 @@ pub struct Mailbox {
     /// The name is in "{desk}/{id}" form; converting to the id happens on the loop side
     /// (WinSurface doesn't know about caps). Same convention as `wheres`.
     pub loading: Vec<(String, bool)>,
+    /// The search bar was used: (the page a key was pressed in, if one was;
+    /// what to do; the words). No page means the one in front
+    pub seek_asks: Vec<(Option<String>, String, String)>,
+    /// Where a search stands now (name inside the window, match stood on, how many)
+    pub seeks: Vec<(String, u32, u32)>,
+    /// What browsers reported about the files they save (name inside the
+    /// window, when the browser could say which page asked)
+    pub downloads: Vec<(Option<String>, shikisha_shared::Download)>,
+    /// Something pressed on a line of the download list (id, what)
+    pub download_acts: Vec<(String, String)>,
     /// Relay-screen frames (JPEG byte buffers). The loop delivers these to phones.
     pub frames: Vec<Vec<u8>>,
     /// The settings page's "close settings" button was pressed. The loop closes the settings tab.
@@ -390,6 +400,11 @@ impl Mailbox {
             Ev::Where { from: Some(name), url, can_back, can_forward } => {
                 self.wheres.push((name, url, can_back, can_forward));
             }
+            Ev::Seek { from: Some(name), at, of } => self.seeks.push((name, at, of)),
+            Ev::Download { from, item } => self.downloads.push((from, item)),
+            // Ctrl+F in a page, as the browser drawing it reported it. Never
+            // read off a page: it is the browser that kept the key from it
+            Ev::SeekAsk { from, what, text } => self.seek_asks.push((from, what, text)),
             Ev::Recorded { from: Some(child), act, sel, value, xpath, hint } => {
                 self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint });
             }
@@ -538,6 +553,18 @@ impl Mailbox {
     pub fn take_scrolls(&mut self) -> Vec<(i32, u16, u16)> {
         std::mem::take(&mut self.scrolls)
     }
+    pub fn take_seek_asks(&mut self) -> Vec<(Option<String>, String, String)> {
+        std::mem::take(&mut self.seek_asks)
+    }
+    pub fn take_seeks(&mut self) -> Vec<(String, u32, u32)> {
+        std::mem::take(&mut self.seeks)
+    }
+    pub fn take_downloads(&mut self) -> Vec<(Option<String>, shikisha_shared::Download)> {
+        std::mem::take(&mut self.downloads)
+    }
+    pub fn take_download_acts(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.download_acts)
+    }
     /// Takes ownership of location answers
     pub fn take_wheres(&mut self) -> Vec<(String, String, bool, bool)> {
         std::mem::take(&mut self.wheres)
@@ -648,6 +675,8 @@ impl Mailbox {
             ev @ Ev::Convo { .. } => self.convos.push(ev),
             Ev::PastList { tab, wake } => self.past_lists.push((tab, wake)),
             Ev::PastResume { tab, id } => self.past_resumes.push((tab, id)),
+            Ev::SeekAsk { from, what, text } => self.seek_asks.push((from, what, text)),
+            Ev::DownloadAct { id, act } => self.download_acts.push((id, act)),
             _ => {}
         }
     }

@@ -41,6 +41,7 @@ pub mod conpty;
 pub mod crypto;
 pub mod detect;
 pub mod diff;
+pub mod downloads;
 pub mod digest;
 pub mod discover;
 pub mod exchange;

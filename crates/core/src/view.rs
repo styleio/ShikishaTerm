@@ -794,6 +794,9 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         qr_svg: shown.as_ref().map(|(url, _)| crate::netaddr::qr_svg(url, 6)),
         qr_kind: shown.as_ref().map(|(_, kind)| kind.to_string()),
         nav: ui.nav.clone(),
+        seek: ui.seek.clone(),
+        downloads: ui.downloads.clone(),
+        download_seq: ui.download_seq,
         scrolled: ui.scrolled,
         build: crate::shell::stamp(),
         restartable: ui.restartable,
@@ -1828,6 +1831,12 @@ pub struct Ui {
     pub server_marks: std::collections::HashMap<String, crate::config::ServerMark>,
     /// The controls shown over the browser being viewed (None = don't show)
     pub nav: Option<crate::uistate::NavState>,
+    /// The search bar over the page being viewed, while it is open
+    pub seek: Option<crate::uistate::SeekView>,
+    /// Every file a page sent to be saved this run, newest first
+    pub downloads: Vec<crate::downloads::View>,
+    /// Counts up each time a download begins
+    pub download_seq: u64,
     /// What each page of this desk is asking the person, by the name
     /// automation gives it. Drawn as a bar under that page
     pub asks: Vec<(String, crate::uistate::AskState)>,

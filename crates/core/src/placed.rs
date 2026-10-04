@@ -57,6 +57,9 @@ pub struct Placed {
     prefer: Cell<Draw>,
     /// Where each page already is
     owner: RefCell<HashMap<String, Draw>>,
+    /// Which side is saving each download still going, so Cancel reaches the
+    /// browser that is saving it
+    saving: RefCell<HashMap<String, Draw>>,
 }
 
 impl Default for Placed {
@@ -72,6 +75,7 @@ impl Placed {
             there: Rc::new(crate::faraway::Far::new()),
             prefer: Cell::new(Draw::Here),
             owner: RefCell::new(HashMap::new()),
+            saving: RefCell::new(HashMap::new()),
         }
     }
 
@@ -99,6 +103,19 @@ impl Placed {
     pub fn drain(&self) -> Vec<shikisha_shared::Ev> {
         let mut said = self.here.drain();
         said.extend(self.there.drain());
+        for ev in &said {
+            if let shikisha_shared::Ev::Download { item, .. } = ev {
+                let mut saving = self.saving.borrow_mut();
+                match item.state {
+                    shikisha_shared::DownloadState::Going => {
+                        saving.insert(item.id.clone(), if item.far { Draw::There } else { Draw::Here });
+                    }
+                    _ => {
+                        saving.remove(&item.id);
+                    }
+                }
+            }
+        }
         said
     }
 
@@ -256,6 +273,18 @@ impl BrowserHost for Placed {
     }
     fn source(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.source(to, ms))
+    }
+    fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> anyhow::Result<Option<(u32, u32)>> {
+        self.on(to, |b| b.seek(to, text, step))
+    }
+    fn cancel_download(&self, id: &str) -> anyhow::Result<()> {
+        let side = self.saving.borrow().get(id).copied();
+        match side {
+            Some(Draw::There) => self.there.cancel_download(id),
+            Some(Draw::Here) => self.here.cancel_download(id),
+            // Over already, on whichever side it was
+            None => Ok(()),
+        }
     }
     fn digest(&self, to: Option<&str>, ms: u64) -> anyhow::Result<String> {
         self.on(to, |b| b.digest(to, ms))

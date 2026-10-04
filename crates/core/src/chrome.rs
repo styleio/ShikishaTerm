@@ -864,7 +864,40 @@ struct Seen {
     /// so this is heard anyway, and kept so that listening begins with what
     /// the page in view has already said -- as it does in the window
     early: std::collections::HashMap<String, std::collections::VecDeque<serde_json::Value>>,
+    /// Which page each target is, and the private storage it was opened in
+    /// when it was. A download is reported by the browser itself, naming the
+    /// frame it started in -- and a page's own frame has the id of its target
+    targets: std::collections::HashMap<String, (String, Option<String>)>,
+    /// Downloads still arriving, by the browser's id for them
+    fetching: std::collections::HashMap<String, Fetching>,
 }
+
+/// One download on its way, as this side keeps track of it.
+///
+/// The browser is told to save under its own id for the file (`allowAndName`)
+/// in a folder of its own, and the file is moved to the downloads folder under
+/// its real name once whole. So the downloads folder never holds half a file
+/// with a number for a name, and the name it ends up with is decided here --
+/// numbered the way a browser numbers a second file of the same name
+struct Fetching {
+    page: Option<String>,
+    name: String,
+    url: String,
+    /// The profile's browser it is in, and its private storage if it has one:
+    /// what stopping it has to name
+    browser: String,
+    context: Option<String>,
+    staging: std::path::PathBuf,
+    /// Somebody pressed Cancel. The browser says "canceled" for that and for
+    /// a download the network dropped alike; this is how the two are told apart
+    stopping: bool,
+    /// When progress was last passed on. A large file reports every few
+    /// kilobytes, and a line redrawn that often says nothing more
+    said: Option<std::time::Instant>,
+}
+
+/// How often a download's progress is passed on, at most
+const DOWNLOAD_SAY_MS: u128 = 250;
 
 /// Every page the runtime has open in the browser on this machine.
 ///
@@ -960,16 +993,51 @@ impl Pages {
             return Ok(Rc::clone(c));
         }
         let chrome = Rc::new(Chrome::start_in(self.root.join(&key), self.temporary)?);
-        self.listen(&chrome);
+        let staging = self.staging(&key);
+        self.listen(&chrome, &key, staging);
+        // A browser with no window refuses every download unless it is told
+        // where they go. Told here, once, for the profile's own storage; a
+        // private page's storage is told when it is made
+        self.let_downloads(&chrome, &key, None);
         self.browsers.borrow_mut().insert(key, Rc::clone(&chrome));
         Ok(chrome)
     }
 
+    /// Where this profile's downloads are kept while they arrive
+    fn staging(&self, key: &str) -> std::path::PathBuf {
+        self.root.join(key).join("Downloading")
+    }
+
+    /// Let one storage of this browser save files, into the folder they are
+    /// kept in while they arrive, and say how each one goes
+    fn let_downloads(&self, chrome: &Chrome, key: &str, context: Option<&str>) {
+        let staging = self.staging(key);
+        let _ = std::fs::create_dir_all(&staging);
+        let mut params = serde_json::json!({
+            "behavior": "allowAndName",
+            "downloadPath": staging.display().to_string(),
+            "eventsEnabled": true,
+        });
+        if let Some(c) = context {
+            params["browserContextId"] = serde_json::Value::String(c.to_string());
+        }
+        if let Err(e) = chrome.call("Browser.setDownloadBehavior", params) {
+            crate::append_hook_log(&format!("[chrome] downloads stay refused here: {e:#}"));
+        }
+    }
+
     /// Take in everything this browser says of its own accord.
-    fn listen(&self, chrome: &Rc<Chrome>) {
+    fn listen(&self, chrome: &Rc<Chrome>, key: &str, staging: std::path::PathBuf) {
         let speaker = chrome.speaker();
         let seen = Arc::clone(&self.seen);
+        let key = key.to_string();
         chrome.on_event(move |ev| {
+            // The browser itself, rather than a page in it: downloads are
+            // reported there, whichever page started them
+            if ev.session.is_none() {
+                heard_download(&seen, &key, &staging, &ev.method, &ev.params);
+                return;
+            }
             let Some(session) = ev.session else { return };
             let mut book = seen.lock().unwrap_or_else(|e| e.into_inner());
             let Some(page) = book.named.get(&session).cloned() else { return };
@@ -1137,6 +1205,113 @@ fn from_page(ev: shikisha_shared::Ev, page: &str) -> Option<shikisha_shared::Ev>
         Ev::Result { .. } => return None,
         other => other,
     })
+}
+
+/// One thing the browser said about a download, turned into a report.
+///
+/// Runs on the thread that reads the browser, so nothing here waits for the
+/// browser. Moving a finished file can take a while (a copy, across two disks),
+/// so that goes to a thread of its own and is reported when it is done.
+fn heard_download(
+    seen: &Arc<Mutex<Seen>>,
+    browser: &str,
+    staging: &std::path::Path,
+    method: &str,
+    params: &serde_json::Value,
+) {
+    use shikisha_shared::{Download, DownloadState, Ev};
+    let text = |k: &str| params.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let bytes = |k: &str| params.get(k).and_then(serde_json::Value::as_f64).map_or(0, |n| n.max(0.0) as u64);
+    let guid = text("guid");
+    if guid.is_empty() {
+        return;
+    }
+    let mut book = seen.lock().unwrap_or_else(|e| e.into_inner());
+    match method {
+        "Browser.downloadWillBegin" => {
+            let (page, context) = book.targets.get(&text("frameId")).cloned().map_or((None, None), |(p, c)| (Some(p), c));
+            let name = crate::downloads::safe_name(&text("suggestedFilename"));
+            let url = text("url");
+            book.fetching.insert(guid.clone(), Fetching {
+                page: page.clone(),
+                name: name.clone(),
+                url: url.clone(),
+                browser: browser.to_string(),
+                context,
+                staging: staging.to_path_buf(),
+                stopping: false,
+                said: Some(std::time::Instant::now()),
+            });
+            book.mail.push(Ev::Download {
+                from: page,
+                item: Download { id: guid, name, url, path: String::new(), got: 0, total: 0,
+                    state: DownloadState::Going, why: String::new(), far: false },
+            });
+        }
+        "Browser.downloadProgress" => {
+            let (got, total) = (bytes("receivedBytes"), bytes("totalBytes"));
+            let state = text("state");
+            let Some(f) = book.fetching.get_mut(&guid) else { return };
+            let report = |f: &Fetching, path: String, state: DownloadState, why: &str| Ev::Download {
+                from: f.page.clone(),
+                item: Download { id: guid.clone(), name: f.name.clone(), url: f.url.clone(), path, got, total,
+                    state, why: why.to_string(), far: false },
+            };
+            match state.as_str() {
+                "inProgress" => {
+                    if f.said.is_some_and(|t| t.elapsed().as_millis() < DOWNLOAD_SAY_MS) {
+                        return;
+                    }
+                    f.said = Some(std::time::Instant::now());
+                    let ev = report(f, String::new(), DownloadState::Going, "");
+                    book.mail.push(ev);
+                }
+                "canceled" => {
+                    let Some(f) = book.fetching.remove(&guid) else { return };
+                    let _ = std::fs::remove_file(f.staging.join(&guid));
+                    // Stopped by nobody here: the network or the server dropped it
+                    let ev = match f.stopping {
+                        true => report(&f, String::new(), DownloadState::Cancelled, ""),
+                        false => report(&f, String::new(), DownloadState::Failed, "network"),
+                    };
+                    book.mail.push(ev);
+                }
+                "completed" => {
+                    let Some(f) = book.fetching.remove(&guid) else { return };
+                    drop(book);
+                    // Where the browser says it put it, when it says; under its
+                    // id in the folder it was told otherwise
+                    let from = match text("filePath") {
+                        p if !p.is_empty() => std::path::PathBuf::from(p),
+                        _ => f.staging.join(&guid),
+                    };
+                    let seen = Arc::clone(seen);
+                    std::thread::spawn(move || {
+                        let placed = crate::downloads::take_place(&crate::downloads::folder(), &f.name)
+                            .and_then(|to| crate::downloads::move_into(&from, &to).ok().map(|()| to));
+                        let ev = match placed {
+                            Some(to) => {
+                                let name = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                Ev::Download {
+                                    from: f.page.clone(),
+                                    item: Download { id: guid, name, url: f.url, path: to.display().to_string(),
+                                        got, total, state: DownloadState::Done, why: String::new(), far: false },
+                                }
+                            }
+                            None => Ev::Download {
+                                from: f.page.clone(),
+                                item: Download { id: guid, name: f.name, url: f.url, path: String::new(), got, total,
+                                    state: DownloadState::Failed, why: "disk".into(), far: false },
+                            },
+                        };
+                        seen.lock().unwrap_or_else(|e| e.into_inner()).mail.push(ev);
+                    });
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Where a page is in its own history: where it is now, the earliest place it
@@ -1455,6 +1630,33 @@ impl shikisha_shared::BrowserHost for Pages {
     fn href(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::href(self, to, timeout_ms)
     }
+    /// A headless browser has no search of its own, so the page is searched
+    /// by the script every page is given -- the same one the window falls
+    /// back on
+    fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> anyhow::Result<Option<(u32, u32)>> {
+        crate::pageops::seek(self, to, text, step, CALL_MS).map(Some)
+    }
+
+    fn cancel_download(&self, id: &str) -> anyhow::Result<()> {
+        let (browser, context) = {
+            let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(f) = book.fetching.get_mut(id) else {
+                // Already over: there is nothing left to stop
+                return Ok(());
+            };
+            f.stopping = true;
+            (f.browser.clone(), f.context.clone())
+        };
+        let chrome = self.browsers.borrow().get(&browser).cloned();
+        let Some(chrome) = chrome else { return Ok(()) };
+        let mut params = serde_json::json!({ "guid": id });
+        if let Some(c) = context {
+            params["browserContextId"] = serde_json::Value::String(c);
+        }
+        chrome.call("Browser.cancelDownload", params)?;
+        Ok(())
+    }
+
     fn html(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
         crate::pageops::html(self, to, timeout_ms)
     }
@@ -1514,12 +1716,16 @@ impl shikisha_shared::BrowserHost for Pages {
             true => Some(chrome.new_context()?),
             false => None,
         };
+        if let Some(c) = context.as_deref() {
+            let key = if profile.private { "default".to_string() } else { folder_name(&profile.name) };
+            self.let_downloads(&chrome, &key, Some(c));
+        }
         let (target, session) = chrome.open_blank(context.as_deref())?;
-        self.seen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .named
-            .insert(session.clone(), name.to_string());
+        {
+            let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+            book.named.insert(session.clone(), name.to_string());
+            book.targets.insert(target.clone(), (name.to_string(), context.clone()));
+        }
 
         let dress = || -> anyhow::Result<()> {
             chrome.call_page(&session, "Page.enable", serde_json::json!({}))?;
@@ -1554,7 +1760,11 @@ impl shikisha_shared::BrowserHost for Pages {
             if let Some(c) = context.as_deref() {
                 chrome.close_context(c);
             }
-            self.seen.lock().unwrap_or_else(|x| x.into_inner()).named.remove(&session);
+            {
+                let mut book = self.seen.lock().unwrap_or_else(|x| x.into_inner());
+                book.named.remove(&session);
+                book.targets.remove(&target);
+            }
             return Err(e);
         }
 
@@ -1615,6 +1825,7 @@ impl shikisha_shared::BrowserHost for Pages {
         }
         let mut book = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         book.named.remove(&page.session);
+        book.targets.remove(&page.target);
         book.cast.remove(name);
         book.auth.remove(name);
         self.refs.lock().unwrap_or_else(|e| e.into_inner()).remove(&Some(name.to_string()));
@@ -2135,6 +2346,93 @@ mod tests {
 "#;
 
     const NEXT: &str = "<!doctype html><meta charset=utf-8><title>つぎ</title><body><div id=next>次の画面</div>";
+
+    /// A page searched for words, and a file it saves, on the browser with
+    /// no window: the search is the script every page is given, and the file
+    /// lands in the downloads folder under its own name, numbered like a
+    /// browser numbers a second one.
+    ///
+    ///     cargo test -p shikisha-core --lib chrome:: -- --ignored --nocapture
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_page_here_is_searched_and_saves_what_it_downloads() {
+        use shikisha_shared::{BrowserHost, BrowserProfile, DownloadState, Ev, Seek, Sel};
+        assert!(found().is_some(), "this machine has no browser");
+        let into = std::env::temp_dir().join(format!("shikisha-dl-{}", crate::random_hex(6)));
+        // SAFETY: set before the browser starts, and read only by this test's
+        // own browser; no other test reads it
+        unsafe { std::env::set_var("SHIKISHA_DOWNLOADS", &into) };
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let resp = if req.url().starts_with("/report.txt") {
+                    tiny_http::Response::from_string("いちご\n").with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Disposition"[..], &b"attachment; filename=\"report.txt\""[..]).unwrap(),
+                    )
+                } else {
+                    tiny_http::Response::from_string(SEARCHED).with_header(
+                        tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+                    )
+                };
+                let _ = req.respond(resp);
+            }
+        });
+        let site = format!("http://127.0.0.1:{port}/");
+        let store = std::env::temp_dir().join(format!("shikisha-pages-{}", crate::random_hex(8)));
+        let pages = Pages::under(store, true);
+        pages.open_child("p", &site, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        wait_ready(&pages).expect("the page does not report that loading finished");
+
+        // ── searching ────────────────────────────────────────────────────
+        // Three shown, whatever their case, one of them split by a tag; the
+        // hidden one and the one across two blocks are not matches
+        let seek = |text: &str, step| pages.seek(Some("p"), text, step).unwrap().expect("no answer");
+        assert_eq!(seek("apple pie", Seek::New), (1, 3), "the matches were not counted as a person sees them");
+        assert_eq!(seek("apple pie", Seek::Next), (2, 3));
+        assert_eq!(seek("apple pie", Seek::Next), (3, 3));
+        assert_eq!(seek("apple pie", Seek::Next), (1, 3), "it does not go round after the last");
+        assert_eq!(seek("apple pie", Seek::Prev), (3, 3), "it does not go round before the first");
+        assert_eq!(seek("いちご", Seek::New), (1, 1));
+        assert_eq!(seek("nothing like it", Seek::New), (0, 0));
+        assert_eq!(seek("apple pie", Seek::Stop), (0, 0));
+
+        // ── saving ───────────────────────────────────────────────────────
+        let mut saved = Vec::new();
+        for _ in 0..2 {
+            pages.click(Some("p"), &Sel::Css("#dl".into()), 10_000).expect("the link was not pressed");
+            let done = waited(&pages, |ev| match ev {
+                Ev::Download { from, item } if item.state == DownloadState::Done => Some((from.clone(), item.clone())),
+                Ev::Download { item, .. } if item.state != DownloadState::Going => panic!("the download ended {:?} ({})", item.state, item.why),
+                _ => None,
+            })
+            .expect("the download was never reported done");
+            assert_eq!(done.0.as_deref(), Some("p"), "the page that saved it was not named");
+            saved.push(done.1);
+        }
+        assert_eq!(saved[0].name, "report.txt");
+        assert_eq!(saved[1].name, "report (1).txt", "a second file of the same name replaced the first");
+        for d in &saved {
+            assert_eq!(std::fs::read_to_string(&d.path).unwrap(), "いちご\n");
+            assert!(std::path::Path::new(&d.path).starts_with(&into), "it was saved somewhere else: {}", d.path);
+        }
+        // Nothing is left half-named in the folder it arrives in
+        assert!(
+            std::fs::read_dir(pages.staging("default")).map(|d| d.count()).unwrap_or(0) == 0,
+            "a file was left where downloads wait"
+        );
+        let _ = pages.close_child("p");
+        let _ = std::fs::remove_dir_all(&into);
+    }
+
+    const SEARCHED: &str = r#"<!doctype html><meta charset=utf-8><title>さがす</title><body>
+<p>Apple pie, then APPLE   PIE again.</p>
+<p>And ap<b>ple</b> pie.</p>
+<p style="display:none">apple pie hidden</p>
+<p>apple</p><p>pie</p>
+<p>いちごのケーキ</p>
+<a id=dl href="/report.txt">保存</a>
+"#;
 
     /// The address a browser prints is turned into somewhere to connect
     #[test]

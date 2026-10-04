@@ -2419,6 +2419,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut loading_now: std::collections::HashMap<String, (bool, std::time::Instant)> =
         std::collections::HashMap::new();
     let mut asked_where_ms: u64 = 0;
+    // The search bar over each page that has one open, by page key (see
+    // `Seeking`), and how many times a bar has been opened -- what tells the
+    // screen to put the cursor in it
+    let mut seeks: std::collections::HashMap<String, Seeking> = std::collections::HashMap::new();
+    let mut seek_opened: u64 = 0;
+    // How many downloads have begun this run (`UiState::download_seq`)
+    let mut download_seq: u64 = 0;
 
     let mut auto_enabled = true;
     // How often a still-working tab is mentioned to automation again. None
@@ -5873,7 +5880,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::VaultWhere { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::Convo { .. })
                     | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastList { .. })
-                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastResume { .. }) => {
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::PastResume { .. })
+                    // The search bar over a page and the download list: the
+                    // same queues the window's presses fill
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::SeekAsk { .. })
+                    | remote::RemoteCmd::Ui(ev @ shikisha_shared::Ev::DownloadAct { .. }) => {
                         shell.queue_ui(ev);
                     }
                     // Giving a branch its own folder, and putting a working
@@ -6671,6 +6682,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_devices()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             nav,
+            seek: showing.as_ref().and_then(|key| {
+                let s = seeks.get(key).filter(|s| s.opened > 0)?;
+                Some(crate::uistate::SeekView {
+                    page: key.clone(),
+                    text: s.text.clone(),
+                    at: s.at,
+                    of: s.of,
+                    asked: s.asked,
+                    opened: s.opened,
+                })
+            }),
+            downloads: caps.downloads(),
+            download_seq,
             asks: caps.asks_now(),
             picks: caps.picks_now(),
             away: caps.drawn_away(),
@@ -13458,6 +13482,122 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // The location changes right after navigating. Make the next draw ask again.
             asked_where_ms = 0;
         }
+        // The search bar over a page (Ctrl+F, or the bar's 🔍). Held here, by
+        // page, so the window and a phone watching the same page are one
+        // search, and a page that navigates is searched again for the same words
+        for (from, what, text) in shell.mail().take_seek_asks() {
+            let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
+                continue;
+            };
+            if !searchable(key) {
+                continue;
+            }
+            // A key pressed in a page is about that page. One that is not the
+            // page in front (a window it opened, still answering keys after the
+            // person moved on) is not the one the bar would stand over
+            if let Some(child) = &from
+                && caps.name_of_child(child).as_deref() != Some(key.as_str())
+            {
+                continue;
+            }
+            let key = key.clone();
+            let s = seeks.entry(key.clone()).or_default();
+            let step = match what.as_str() {
+                "open" => {
+                    seek_opened += 1;
+                    s.opened = seek_opened;
+                    None
+                }
+                "find" => {
+                    s.text = text;
+                    Some(if s.text.trim().is_empty() { shikisha_shared::Seek::Stop } else { shikisha_shared::Seek::New })
+                }
+                // F3 with the bar shut opens it on the words it had, the way a
+                // browser does, and searches them again
+                "next" | "prev" => {
+                    if s.opened == 0 {
+                        seek_opened += 1;
+                        s.opened = seek_opened;
+                    }
+                    match (s.text.trim().is_empty(), s.searched, what.as_str()) {
+                        (true, _, _) => None,
+                        (false, false, _) => Some(shikisha_shared::Seek::New),
+                        (false, true, "next") => Some(shikisha_shared::Seek::Next),
+                        (false, true, _) => Some(shikisha_shared::Seek::Prev),
+                    }
+                }
+                _ => Some(shikisha_shared::Seek::Stop),
+            };
+            run_seek(&caps, &mut seeks, &key, step);
+            if what == "close" {
+                seeks.remove(&key);
+            }
+        }
+        // Where a search stands, from a browser that searches on its own time
+        for (child, at, of) in shell.mail().take_seeks() {
+            if let Some(s) = caps.name_of_child(&child).and_then(|name| seeks.get_mut(&name))
+                && s.opened > 0
+            {
+                (s.at, s.of, s.asked) = (at, of, false);
+            }
+        }
+        // What the browsers saved. The list beside the page is opened for the
+        // first line of a download (the screen decides where it can stand),
+        // and its end is said once, on whatever screen the person is at
+        for (child, item) in shell.mail().take_downloads() {
+            let known = caps.download(&item.id).is_some();
+            let (name, why) = (item.name.clone(), item.why.clone());
+            let change = caps.note_download(child.as_deref(), item);
+            if !known && change != crate::downloads::Change::Nothing {
+                download_seq += 1;
+            }
+            match change {
+                crate::downloads::Change::Ended(shikisha_shared::DownloadState::Done) => {
+                    flash = Some(i18n::tp("msg.download.done", &[("name", &name)]));
+                }
+                crate::downloads::Change::Ended(shikisha_shared::DownloadState::Failed) => {
+                    let why = match crate::downloads::WHY.contains(&why.as_str()) {
+                        true => why,
+                        false => "unknown".to_string(),
+                    };
+                    let why = i18n::t(&format!("msg.download.why.{why}"));
+                    flash = Some(i18n::tp("msg.download.failed", &[("name", &name), ("why", &why)]));
+                }
+                _ => {}
+            }
+        }
+        // Something pressed on a line of the list
+        for (id, act) in shell.mail().take_download_acts() {
+            match act.as_str() {
+                "cancel" => {
+                    if let Err(e) = caps.cancel_download(&id) {
+                        flash = Some(format!("{e:#}"));
+                    }
+                }
+                "forget" => caps.forget_download(&id),
+                "clear" => caps.clear_downloads(),
+                "folder" => crate::webui::open_external(&caps.downloads_folder().display().to_string()),
+                "open" | "reveal" => {
+                    // Only a file that is whole, and on this machine
+                    let Some(row) = caps.download(&id) else { continue };
+                    if row.item.far || row.item.state != shikisha_shared::DownloadState::Done {
+                        continue;
+                    }
+                    let path = std::path::PathBuf::from(&row.item.path);
+                    let found = path.is_file();
+                    if !found {
+                        flash = Some(i18n::tp("msg.download.gone", &[("name", &row.item.name)]));
+                    }
+                    // A program is shown in its folder rather than run: the
+                    // same rule a path pressed in a terminal follows
+                    match act == "open" && found && !crate::termlink::runs_when_opened(&path) {
+                        true => crate::webui::open_external(&path.display().to_string()),
+                        false => reveal_in_folder(&path, found, false),
+                    }
+                }
+                _ => {}
+            }
+        }
         // The answer comes back using the name inside the window. Convert it back
         // to the human-facing id before caching it.
         for (child, url, can_back, can_forward) in shell.mail().take_wheres() {
@@ -13488,6 +13628,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(name) = caps.name_of_child(&child) else {
                 continue;
             };
+            // The highlights went with the document they were in. A bar still
+            // open searches the new one for the same words
+            if seeks.get(&name).is_some_and(|s| s.opened > 0 && !s.text.trim().is_empty()) {
+                run_seek(&caps, &mut seeks, &name, Some(shikisha_shared::Seek::New));
+            }
             append_hook_log(&format!(
                 "Loaded {name}: {url} ({})",
                 if complete { "fully" } else { "DOM only" }
@@ -14900,6 +15045,54 @@ fn link_said(
                 }))
             })
         }
+    }
+}
+
+/// The search bar over one page.
+#[derive(Debug, Default)]
+struct Seeking {
+    /// The words, as typed
+    text: String,
+    /// Where it stands: the match stood on (from 1) and how many there are
+    at: u32,
+    of: u32,
+    /// Sent to the browser and not answered yet
+    asked: bool,
+    /// The page has been searched for these words since it last loaded: the
+    /// next press moves through the matches rather than starting over
+    searched: bool,
+    /// Which opening of a bar this is; 0 for a bar that is shut
+    opened: u64,
+}
+
+/// Whether a page is one a person reads and may search: every browser tab,
+/// and not the app's own settings and guide, which stand over the board
+fn searchable(key: &str) -> bool {
+    key != SETTINGS_TAB && key != "guide"
+}
+
+/// One move of the search on a page, and what it changed
+fn run_seek(
+    caps: &hooks::Caps,
+    seeks: &mut std::collections::HashMap<String, Seeking>,
+    key: &str,
+    step: Option<shikisha_shared::Seek>,
+) {
+    let Some(step) = step else { return };
+    let Some(s) = seeks.get_mut(key) else { return };
+    s.searched = step != shikisha_shared::Seek::Stop;
+    match caps.browser_seek(key, &s.text, step) {
+        Ok(Some((at, of))) => (s.at, s.of, s.asked) = (at, of, false),
+        Ok(None) => s.asked = true,
+        // A page that cannot be searched has nothing found in it, which is
+        // what the bar says; why is for the log
+        Err(e) => {
+            (s.at, s.of, s.asked) = (0, 0, false);
+            append_hook_log(&format!("search on {key}: {e:#}"));
+        }
+    }
+    if step == shikisha_shared::Seek::Stop {
+        (s.at, s.of, s.asked) = (0, 0, false);
     }
 }
 

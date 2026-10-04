@@ -308,6 +308,43 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-bottom:1px solid var(--line); cursor:pointer; color:var(--text); font-size:12.5px; }
   #portpanel .pmore:hover { background:var(--hover); }
   #portpanel .pmore .ico { display:flex; color:var(--dim); }
+  /* ── Downloads ─────────────────────────────────
+     A panel called up by the bar's download button, and by a download
+     beginning on the page in front. Built like the ports beside it: a head
+     with what it is and what can be done to all of it, then one row a file --
+     its name, how far it has got (the words, with the bar under them while it
+     is still coming), where it went -- and the ways to use it as line icons at
+     the row's right end. Newest at the top, as a browser's list is */
+  #dlpanel[hidden] { display:none; }
+  #dlpanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; overflow:hidden; font-size:13px; }
+  #dlpanel .chead { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #dlpanel .chead .ttl { flex:1 1 auto; min-width:0; font-size:12px; color:var(--dim); line-height:1.5; }
+  #dlpanel .chead button { height:28px; padding:0 var(--s2); font:inherit; font-size:12px; display:flex;
+    align-items:center; gap:var(--s1); border-radius:var(--r-chip); border:1px solid var(--line); background:none;
+    color:var(--dim); cursor:pointer; }
+  #dlpanel .chead button:hover { color:var(--text); }
+  #dlpanel .chead button.cquiet { border-color:transparent; }
+  #dlpanel .chead button .ico { display:flex; }
+  #dlpanel .dlist { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+  #dlpanel .dl { display:flex; align-items:flex-start; gap:var(--s2); padding:7px 10px; min-height:36px;
+    border-bottom:1px solid var(--line); }
+  #dlpanel .dl > .ico { flex:none; display:flex; color:var(--dim); padding-top:2px; }
+  #dlpanel .dl .dw { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  #dlpanel .dl .dn { font-size:12.5px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #dlpanel .dl.ended .dn { color:var(--dim); }
+  #dlpanel .dl .ds { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #dlpanel .dl .ds.bad { color:var(--stop); white-space:normal; }
+  #dlpanel .dl .dp { font-size:10px; font-family:var(--mono); color:var(--faint);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  #dlpanel .dl .da { flex:none; display:flex; gap:2px; }
+  #dlpanel .dl .pa { flex:none; width:22px; height:22px; padding:0; border:0; border-radius:var(--r-chip);
+    background:transparent; color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center;
+    font:inherit; font-size:12px; text-decoration:none; }
+  #dlpanel .dl .pa:hover { background:var(--raise); color:var(--text); }
+  #dlpanel .dl .pa.stop:hover { color:var(--stop); }
+  #dlpanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--dim); font-size:11.5px; line-height:1.5; }
   /* A port on a tab's row or a folder's card is a way in to the panel */
   .pt.go { cursor:pointer; text-decoration:underline dotted; text-underline-offset:2px; }
   .pt.go:hover { color:var(--text); }
@@ -2562,6 +2599,37 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #nav button.navdev { width:auto; display:inline-flex; align-items:center; gap:var(--s1);
     padding:0 var(--s2); font-size:12px; color:var(--dim); }
   #nav button.navdev:hover { color:var(--text); }
+  /* The download button: its mark, and while something is still coming, how
+     far the newest has got -- the one number a person glances up for */
+  #nav button.navdl { width:auto; min-width:28px; display:inline-flex; align-items:center; justify-content:center;
+    gap:var(--s1); padding:0 6px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #nav button.navdl.going { color:var(--live); border-color:var(--live); }
+  #nav button .ico { display:flex; }
+  /* ── The search bar ──────────────────────────────
+     Ctrl+F, or the bar's search button: one row under the bar above, drawn
+     in the room the page is pushed down by and never inside the page, for the
+     same reasons as the bar. The words, where the search stands (match N of
+     M), and the moves -- the match before, the one after, done. The same row
+     a phone watching the same page draws, since it is the same search */
+  #seek { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--seekat, 0px)); right:var(--fr);
+    height:36px; z-index:5; display:flex; align-items:center; gap:var(--s2); padding:0 8px;
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  #seek[hidden] { display:none; }
+  #seek > .ico { flex:none; display:flex; color:var(--dim); }
+  #seek input { flex:1; min-width:60px; font:inherit; font-size:12px;
+    color:var(--text); background:var(--bg); border:1px solid var(--line);
+    border-radius:var(--r-ctl); padding:3px 8px; outline:none; }
+  #seek input:focus { border-color:var(--brand); }
+  #seek .count { flex:none; min-width:4.5em; text-align:right; font-size:12px; color:var(--dim);
+    font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #seek .count.asked { color:var(--faint); }
+  #seek button { font:inherit; font-size:13px; color:var(--text); cursor:pointer;
+    background:transparent; border:1px solid var(--line); border-radius:var(--r-ctl);
+    width:28px; height:24px; line-height:1; padding:0; flex:none; display:flex; align-items:center; justify-content:center; }
+  #seek button:hover:not(:disabled) { background:var(--raise); border-color:var(--brand); }
+  #seek button:disabled { color:var(--line); cursor:default; }
+  #seek button.quiet { border-color:transparent; color:var(--dim); }
+  #seek button.quiet:hover { color:var(--text); }
   /* The bar that asks the person something about the page in the focused
      pane (shikisha.browser_ask): the words, and one button. Drawn HERE, under
      the page, and never inside it: a page can post anything it likes to the
@@ -3987,6 +4055,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   @media (max-width:700px), (max-aspect-ratio:1/1) {
     /* Never allow horizontal scroll (that mystery strip on the right), no matter what */
     html, body, #app { max-width:100vw; overflow-x:hidden; }
+    /* The bar over a page has no room for words on a phone: Develop keeps its
+       mark (its word is under the pointer), so the address keeps the width it
+       needs to be read */
+    #nav button.navdev { width:28px; padding:0; justify-content:center; }
+    #nav button.navdev > span:not(.ico) { display:none; }
     /* Stack with flex instead of grid, to avoid a grid's "phantom second column" */
     #app { display:flex; flex-direction:column; }
     /* There is no window here to take hold of, minimise or close */
@@ -4126,6 +4199,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="panes"></div>
     <div id="pushbar" hidden></div>
     <div id="nav" hidden></div>
+    <div id="seek" hidden></div>
     <div id="ask" hidden></div>
     <div id="page"></div>
     <div id="board" hidden></div>
@@ -4231,6 +4305,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div id="consolepanel" hidden></div>
       <div id="pickpanel" hidden></div>
       <div id="portpanel" hidden></div>
+      <!-- What pages saved: every browser's, newest first -->
+      <div id="dlpanel" hidden></div>
     </div>
   </aside>
   <!-- The column's edge, as something you can take hold of -->
@@ -8725,6 +8801,105 @@ function drawFarPorts(box, g) {
   if (line) list.prepend(el("div", {class:"fsay" + (st && st.error ? " bad" : "")}, line));
   box.append(list);
 }
+// ── Downloads ───────────────────────────────────────────────
+// Every file a page saved this run, newest first, from whichever browser saved
+// it. What can be done with one depends on where the person is: at the PC it
+// is opened, or shown in its folder; anywhere else it is saved to the device
+// in hand, which is the only place a file can be any use to somebody holding it
+const DL = {drawn: "", seen: null};
+// A size as a person reads one
+function dlSize(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = Number(n) || 0;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return (i === 0 || v >= 100 ? Math.round(v) : v.toFixed(1)) + " " + u[i];
+}
+// How far it has got, in words
+function dlSays(d) {
+  const site = d.site || "";
+  if (d.state === "going") {
+    const got = d.total > 0 ? dlSize(d.got) + " / " + dlSize(d.total) : dlSize(d.got);
+    return {text: site ? got + " · " + site : got, bad: false};
+  }
+  if (d.state === "done") {
+    return {text: (T[d.far ? "tui.dl.done.far" : "tui.dl.done"] || "").replaceAll("{site}", site), bad: false};
+  }
+  if (d.state === "failed") {
+    const why = T["msg.download.why." + (d.why || "unknown")] || T["msg.download.why.unknown"] || "";
+    return {text: (T["tui.dl.failed"] || "").replaceAll("{why}", why), bad: true};
+  }
+  return {text: T["tui.dl.cancelled"] || "", bad: false};
+}
+// The folder a saved file is in, the way this machine writes folders
+function dlFolder(path) {
+  const at = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+  return at > 0 ? path.slice(0, at) : path;
+}
+function drawDownloads() {
+  const box = document.getElementById("dlpanel");
+  if (!box || box.hidden) return;
+  const list = (S && S.downloads) || [];
+  const sig = JSON.stringify([AT_PC, list]);
+  if (DL.drawn === sig && box.firstChild) return;
+  DL.drawn = sig;
+  box.textContent = "";
+  const head = el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.dl.title"] || ""));
+  // The folder opens on the machine it is on, which is only somewhere to go
+  // for a person sitting at it
+  if (AT_PC) head.append(el("button", {type:"button", onclick: () => send({kind:"download", act:"folder", id:""})},
+    pickIcon("folderOpen"), el("span", {}, T["tui.dl.folder"] || "")));
+  if (list.some(d => d.state !== "going")) head.append(el("button", {type:"button", class:"cquiet",
+    onclick: () => send({kind:"download", act:"clear", id:""})}, T["tui.dl.clear"] || ""));
+  box.append(head);
+  const rows = el("div", {class:"dlist"});
+  const act = (d, what) => () => send({kind:"download", act:what, id:d.id});
+  for (const d of list) {
+    const says = dlSays(d);
+    const acts = el("span", {class:"da"});
+    const icon = (mark, word, go, cls) => el("button", {type:"button", class:"pa" + (cls ? " " + cls : ""),
+      title:T[word] || "", onclick: e => { e.stopPropagation(); go(); }}, mark);
+    if (d.state === "going") acts.append(icon("✕", "tui.dl.cancel", act(d, "cancel"), "stop"));
+    if (d.state === "done" && !d.far && AT_PC) {
+      // A program is shown in its folder, not run from here
+      if (!d.runs) acts.append(icon(pickIcon("open"), "tui.dl.open", act(d, "open")));
+      acts.append(icon(pickIcon("folderOpen"), "tui.dl.reveal", act(d, "reveal")));
+    }
+    // Anywhere else, the file comes to the device in hand. The board's own
+    // sign-in goes with the request, so the address carries no key
+    if (d.state === "done" && !d.far && !AT_PC) {
+      acts.append(el("a", {class:"pa", href:"api/download?id=" + encodeURIComponent(d.id), download:d.name || "",
+        title:T["tui.dl.save_here"] || ""}, pickIcon("download")));
+    }
+    if (d.state !== "going") acts.append(icon("✕", "tui.dl.forget", act(d, "forget")));
+    const words = el("span", {class:"dw"},
+      el("span", {class:"dn", title:d.url || ""}, d.name || d.site || ""),
+      el("span", {class:"ds" + (says.bad ? " bad" : "")}, says.text));
+    if (d.state === "going" && d.total > 0) words.append(progressBar(d.got * 100 / d.total).bar);
+    if (d.state === "done" && d.path) words.append(el("span", {class:"dp", title:d.path}, dlFolder(d.path)));
+    rows.append(el("div", {class:"dl" + (d.state === "going" ? "" : " ended")},
+      pickIcon(d.state === "going" ? "download" : "file"), words, acts));
+  }
+  if (!list.length) rows.append(el("div", {class:"fsay"}, T["tui.dl.none"] || ""));
+  box.append(rows);
+}
+// A download began. When it came from the page in front, the list comes up
+// beside it -- the answer to "did that click do anything?" -- except on a
+// phone, where the column is a sheet over the very page being read, and a
+// line at the bottom says it instead. The first state after the page loads
+// only takes note: what began before it was looking is not news
+function downloadArrived() {
+  if (!S) return;
+  const seq = S.download_seq || 0;
+  if (DL.seen === null || seq < DL.seen) { DL.seen = seq; return; }
+  if (seq === DL.seen) return;
+  DL.seen = seq;
+  const d = (S.downloads || [])[0];
+  const t = activeTab();
+  if (!d || !t || d.page !== (t.id || t.name)) return;
+  if (phoneWidth()) { toast((T["tui.dl.started"] || "").replaceAll("{name}", d.name || d.site || "")); return; }
+  sideReveal("downloads");
+}
+
 // A folder taken off the list while it is right here. Nothing on disk is
 // touched -- the folder and everything in it stays where it is -- and the tabs
 // standing in it close with it, which is what the question says before it is
@@ -8862,6 +9037,8 @@ const PICK_ICON = {
   // its corner turned)
   commit: '<circle cx="7" cy="7" r="2.3"/><path d="M1 7h3.7M9.3 7H13"/>',
   file: '<path d="M3.5 1.5h4.5l2.5 2.5v8.5h-7z"/><path d="M8 1.5v2.5h2.5"/>',
+  // A download: an arrow down onto the line it lands on
+  download: '<path d="M7 2v7.5M3.8 6.3 7 9.5l3.2-3.2"/><path d="M2.5 12h9"/>',
 };
 function pickIcon(name) {
   const s = el("span", {class:"ico"});
@@ -12259,6 +12436,16 @@ function drawNav() {
         n.append(go);
       }
     }
+    // The search over the page and the files it saved, after the address the
+    // way a browser keeps them beside its own. Every page a person reads can
+    // be searched; the download button is there once anything was saved
+    if (seekable(activeTab())) {
+      const sb = el("button", {title:T["tui.nav.find"] || ""}, pickIcon("search"));
+      sb.onclick = () => seekOpen();
+      n.append(sb);
+    }
+    const dls = (S && S.downloads) || [];
+    if (dls.length) n.append(downloadButton(dls));
     // After the address: a list of tools rather than a place to go, at the
     // end of the row where a browser keeps its menu
     if (want.develop) {
@@ -12282,6 +12469,136 @@ function drawNav() {
   syncPoint();
   layout();
 }
+
+// The download button on the bar: its mark, and while anything is still
+// coming, how far the newest of those has got. Pressing it brings the list up
+// in the column beside the page
+function downloadButton(dls) {
+  const going = dls.filter(d => d.state === "going");
+  const b = el("button", {class:"navdl" + (going.length ? " going" : ""), title:T["tui.nav.downloads"] || ""},
+    pickIcon("download"));
+  const d = going[0];
+  if (d && d.total > 0) b.append(el("span", {}, Math.floor(d.got * 100 / d.total) + "%"));
+  b.onclick = () => sideReveal("downloads");
+  return b;
+}
+
+// ── The search bar ──────────────────────────────────────────
+// Ctrl+F, F3, or the bar's search button. Where the search stands is the
+// app's (S.seek), so the window and a phone watching the same page show one
+// search; what is being typed is this page's until it is sent. Typing searches
+// after a short pause, so the highlights do not flicker through every letter
+// on the way to a word; Enter sends at once
+let seekTimer = 0;
+let seekShown = 0;
+// A page a person reads: every browser tab but the app's own settings
+const seekable = t => !!(t && t.kind === "browser" && !t.settings);
+function seekOpen() {
+  if (!seekable(activeTab()) || covering()) return false;
+  send({kind:"seek", what:"open"});
+  return true;
+}
+// Send what is waiting to be sent. True when something was
+function seekFlush() {
+  if (!seekTimer) return false;
+  clearTimeout(seekTimer);
+  seekTimer = 0;
+  const inp = document.querySelector("#seek input");
+  if (inp) inp.dataset.sent = inp.value;
+  send({kind:"seek", what:"find", text: inp ? inp.value : ""});
+  return true;
+}
+// The match after, or before. Words still waiting are a new search instead
+function seekMove(back) {
+  if (!seekFlush()) send({kind:"seek", what: back ? "prev" : "next"});
+}
+function seekClose() {
+  clearTimeout(seekTimer);
+  seekTimer = 0;
+  send({kind:"seek", what:"close"});
+}
+function drawSeek() {
+  const bar = document.getElementById("seek");
+  if (!bar) return;
+  const st = S && S.seek;
+  const want = !!(st && seekable(activeTab()) && !covering());
+  if (bar.hidden === want) {
+    bar.hidden = !want;
+    layout();
+  }
+  if (!want) return;
+  if (!bar.firstChild) {
+    // A search box, so nothing is capitalised or corrected on the way in, and
+    // a phone's keyboard offers a search key
+    const inp = el("input", {type:"text", spellcheck:"false", autocapitalize:"off", autocomplete:"off",
+      autocorrect:"off", enterkeyhint:"search", placeholder:T["tui.seek.ph"] || "", title:T["tui.seek.ph"] || ""});
+    inp.oninput = () => {
+      clearTimeout(seekTimer);
+      seekTimer = setTimeout(() => {
+        seekTimer = 0;
+        inp.dataset.sent = inp.value;
+        send({kind:"seek", what:"find", text: inp.value});
+      }, 200);
+    };
+    inp.onkeydown = e => {
+      if (typingIME(e)) { e.stopPropagation(); return; }
+      if (e.key === "Enter" || e.key === "F3") { e.preventDefault(); seekMove(e.shiftKey); }
+      else if (e.key === "Escape") { e.preventDefault(); seekClose(); }
+      // Ctrl+F again picks the words, ready to be typed over
+      else if ((e.ctrlKey || e.metaKey) && e.code === "KeyF") { e.preventDefault(); inp.select(); }
+      // Keys typed here are this box's, never the terminal's or the page's
+      e.stopPropagation();
+    };
+    const btn = (mark, word, cls, go) => {
+      const b = el("button", {class:cls, title:T[word] || ""}, mark);
+      // The focus stays in the box: on a phone, losing it puts the keyboard
+      // away between one press and the next
+      b.addEventListener("pointerdown", e => e.preventDefault());
+      b.onclick = go;
+      return b;
+    };
+    bar.append(pickIcon("search"), inp, el("span", {class:"count"}),
+      btn(pickIcon("up"), "tui.seek.prev", "", () => seekMove(true)),
+      btn(pickIcon("down"), "tui.seek.next", "", () => seekMove(false)),
+      btn("✕", "tui.seek.close", "quiet", seekClose));
+  }
+  const inp = bar.querySelector("input");
+  // The words as the app has them -- but never under the hands of somebody
+  // typing, and never over words still waiting to be sent
+  // The words as the app has them, unless this screen has typed others since
+  // it last sent: a phone searching the same page changes them here too
+  const mine = document.activeElement === inp && inp.value !== (inp.dataset.sent || "");
+  if (!seekTimer && !mine && inp.value !== st.text) { inp.value = st.text; inp.dataset.sent = st.text; }
+  const count = bar.querySelector(".count");
+  const words = (seekTimer ? inp.value : st.text).trim();
+  count.classList.toggle("asked", !!st.asked || !!seekTimer);
+  count.textContent = !words ? ""
+    : st.of ? (T["tui.seek.count"] || "").replaceAll("{at}", st.at).replaceAll("{of}", st.of)
+    : (st.asked || seekTimer) ? "…" : (T["tui.seek.none"] || "");
+  count.title = st.of ? (T["tui.seek.count.hint"] || "").replaceAll("{at}", st.at).replaceAll("{of}", st.of) : "";
+  // Opened again (Ctrl+F once more, or on another page): the cursor goes in
+  // with the words picked, ready to be typed over
+  if (st.opened !== seekShown) {
+    seekShown = st.opened;
+    inp.focus();
+    inp.select();
+  }
+}
+// Ctrl+F and F3 on the board itself. Pressed in the page instead, the browser
+// that draws it keeps the key and says so (Ev::SeekAsk), so either way the
+// same bar opens. A key the person set for something else keeps that meaning
+document.addEventListener("keydown", e => {
+  if (e.isComposing || e.altKey || e.metaKey) return;
+  const find = e.ctrlKey && !e.shiftKey && e.code === "KeyF";
+  const again = e.key === "F3" && !e.ctrlKey;
+  if (!find && !again) return;
+  if (e.target && e.target.closest && e.target.closest("#seek")) return;
+  if (!seekable(activeTab()) || covering() || directKeyOf(e)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (find) seekOpen();
+  else send({kind:"seek", what: e.shiftKey ? "prev" : "next"});
+}, true);
 
 // The bar that asks the person something about a page (shikisha.browser_ask).
 //
@@ -12350,7 +12667,11 @@ function layout() {
   // out from what is left in one place rather than in two that can disagree
   const nbar = document.getElementById("narrowsplit");
   main.style.setProperty("--striph", (striph + ((!nbar || nbar.hidden) ? 0 : 30)) + "px");
-  main.style.setProperty("--navh", n.hidden ? "0px" : "36px");
+  // ...and the search bar, one row under it when both are up
+  const sk = document.getElementById("seek");
+  const navbar = n.hidden ? 0 : 36;
+  main.style.setProperty("--seekat", navbar + "px");
+  main.style.setProperty("--navh", (navbar + (!sk || sk.hidden ? 0 : 36)) + "px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
   report();
@@ -12415,6 +12736,8 @@ window.__state = function (json) {
   drawHookAsk();
   drawStatus();
   drawNav();
+  drawSeek();
+  downloadArrived();
   drawAsks();
   if (quickOpen) drawQuickLauncher(false);
   const board = document.getElementById("board");
@@ -13384,6 +13707,7 @@ const SIDE_PANELS = [
   ["console", () => T["tui.side.console"] || "Console", k => k === "browser"],
   ["picks", () => T["tui.side.picks"] || "Picked elements", null],
   ["ports", () => T["tui.side.ports"] || "Ports", null],
+  ["downloads", () => T["tui.side.downloads"] || "Downloads", null],
 ];
 // Which of the three kinds of tab is in front, as far as the column is
 // concerned. A model pane is a conversation of its own rather than a CLI with
@@ -15339,6 +15663,9 @@ function drawSide() {
   // What listens in the folder the column stands on
   const ports = document.getElementById("portpanel");
   if (ports) ports.hidden = sidePanel !== "ports" || !at;
+  // What pages saved stands on nothing: it is the same list whatever is in front
+  const dl = document.getElementById("dlpanel");
+  if (dl) dl.hidden = sidePanel !== "downloads";
   let note = body.querySelector(".sempty");
   // Nothing to stand on, or nothing for this panel to stand on. Said plainly
   // where the list would have been, rather than an empty list that reads as
@@ -15349,6 +15676,7 @@ function drawSide() {
     : sidePanel === "console" ? (onPage ? "" : (T["tui.console.nopage"] || ""))
     : sidePanel === "picks" ? (onPage ? "" : (T["tui.picks.nopage"] || ""))
     : sidePanel === "convo" ? convoMissing
+    : sidePanel === "downloads" ? ""
     : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
     : "";
@@ -15373,6 +15701,7 @@ function drawSide() {
   if (sidePanel === "console") drawConsole();
   if (sidePanel === "picks") drawPicks();
   if (sidePanel === "ports") drawPorts();
+  if (sidePanel === "downloads") drawDownloads();
 }
 
 // ── The console ─────────────────────────────────────────
@@ -27520,8 +27849,15 @@ mod tests {
         // Reserved out of the focused pane's rectangle rather than written onto
         // each layer: with panes, "the top" is no longer the top of the window
         assert!(
-            PAGE.contains("setProperty(\"--navh\", n.hidden ? \"0px\" : \"36px\")"),
-            "showing the bar does not move the page down"
+            PAGE.contains("const navbar = n.hidden ? 0 : 36;")
+                && PAGE.contains("setProperty(\"--navh\", (navbar + (!sk || sk.hidden ? 0 : 36)) + \"px\")"),
+            "showing the bar, or the search row under it, does not move the page down"
+        );
+        // ...and the search row stands right under the bar, wherever it is
+        assert!(
+            PAGE.contains("main.style.setProperty(\"--seekat\", navbar + \"px\");")
+                && PAGE.contains("top:calc(var(--fy) + var(--seekat, 0px))"),
+            "the search row does not stand under the bar"
         );
         // Everything that stands where the page stands is pushed down by the
         // same amount: the page itself, the relay canvas, and the line said in

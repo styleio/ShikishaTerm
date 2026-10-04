@@ -390,6 +390,44 @@ pub fn source(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Resu
     Ok(body.to_string())
 }
 
+/// The body that searches a page for words (`__shikisha_seek` in
+/// [`crate::pagejs`]) and returns where the search stands, as `{at, of}`.
+///
+/// The one search a host without a search of its own runs. The window runs
+/// the same text when its WebView2 has no search to lend, so the two can only
+/// ever disagree about which engine answered, never about what a match is
+pub fn seek_js(text: &str, step: shikisha_shared::Seek) -> String {
+    use shikisha_shared::Seek;
+    let step = match step {
+        Seek::New => "new",
+        Seek::Next => "next",
+        Seek::Prev => "prev",
+        Seek::Stop => "stop",
+    };
+    call_js("__shikisha_seek", &[serde_json::json!(text), serde_json::json!(step)])
+}
+
+/// What the search said: the match stood on (from 1) and how many there
+/// are. Anything unreadable is nothing found, which is what a person is
+/// shown for a page that could not be searched
+pub fn seek_answer(said: &str) -> (u32, u32) {
+    let v: serde_json::Value = serde_json::from_str(said).unwrap_or_default();
+    let n = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).map_or(0, |n| n.min(u64::from(u32::MAX)) as u32);
+    let (at, of) = (n("at"), n("of"));
+    if at == 0 || at > of { (0, of) } else { (at, of) }
+}
+
+/// Search a page for words, or move through what was found
+pub fn seek(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    text: &str,
+    step: shikisha_shared::Seek,
+    timeout_ms: u64,
+) -> anyhow::Result<(u32, u32)> {
+    Ok(seek_answer(&s.eval(to, &seek_js(text, step), timeout_ms)?))
+}
+
 /// The full parsed HTML
 pub fn html(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<String> {
     let v = call(s, to, "__shikisha_html", &[], timeout_ms)?;
@@ -1080,6 +1118,21 @@ pub fn text_ref(s: &dyn Speaks, to: Option<&str>, r: u32, timeout_ms: u64) -> an
 #[cfg(test)]
 mod tests {
     use super::Speaks;
+
+    /// What the page's search says is read as a place among the matches,
+    /// and nothing it could not have meant: a place past the last match, or
+    /// an answer that is not one, is nothing stood on
+    #[test]
+    fn a_search_answer_is_a_place_among_the_matches() {
+        assert_eq!(super::seek_answer(r#"{"at":2,"of":5}"#), (2, 5));
+        assert_eq!(super::seek_answer(r#"{"at":0,"of":0}"#), (0, 0));
+        assert_eq!(super::seek_answer(r#"{"at":9,"of":5}"#), (0, 5));
+        assert_eq!(super::seek_answer("null"), (0, 0));
+        assert_eq!(super::seek_answer("not json"), (0, 0));
+        // The words reach the page as a value, never as code
+        let js = super::seek_js("\"); alert(1); (\"", shikisha_shared::Seek::New);
+        assert!(js.starts_with("return window.__shikisha_seek(\"\\\"); alert(1); (\\\"\",\"new\")"), "{js}");
+    }
 
     /// A browser that answers the two questions `source` asks, and writes
     /// down what it was asked

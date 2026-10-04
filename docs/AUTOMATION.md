@@ -442,6 +442,15 @@ address or words: an address opens, and anything else is searched for on Google.
 the settings screen for a browser tab, so this works with no Lua at all; a call from Lua
 wins over the setting.
 
+Two buttons come with the row whatever you pick, because they belong to whoever reads
+the page rather than to the script: a search button, and once a page has saved a file,
+a download button. The search is the one Ctrl+F (or F3) opens on any page a person is
+looking at, row or no row, in the window and on a phone alike. The download button
+opens the Downloads panel in the column beside the page: every file a page saved this
+run, newest first, with how far it has got and where it went. A script reads the same
+list with `shikisha.downloads()` -- click the link, then wait for its line to say
+`done` and take the `path`.
+
 The banner works the same way: fill in its words and button text under "Banner" in the
 settings and it is there from the moment the page opens. Then the only file you write is
 
@@ -1118,6 +1127,7 @@ A page is addressed by the id you gave it. See "Driving a browser" above.
 | `shikisha.browser_unask(id)` | Take the banner away |
 | `shikisha.browser_wait(id, {ask=..., selector=..., timeout_ms=...})` | Wait for whichever comes first. Returns `"selector"` / `"button"` / `"timeout"` |
 | `shikisha.browser_devtools(id)` | Open the page's DevTools as a page of its own, and return its name and whether it was opened just now (open already, it is left as it is). `split_pane("right")` divides the pane for it, and `show(name)` puts it there -- from the next turn on, since a page just opened is a tab only then. "Open DevTools beside it" on a page's tab does the same, and a split written down with DevTools in it gets them back, opened afresh, when the app starts again. Closed to an AI by default: everything the page holds, its cookies included, can be read and changed from it |
+| `shikisha.downloads()` | Every file a page saved this run, newest first: a table per file (`id`, `name`, `url`, `site`, `path` -- where it went, `got` / `total` -- bytes so far and in all, 0 when the server did not say --, `state` -- going, done, failed or cancelled --, `why` -- what stopped a failed one --, `page` -- the tab it came from --, `began`). The list the Downloads panel shows; nothing is kept past the run |
 | `shikisha.browser_console(id, since)` | What the page said on its console after line `since` (leave it out for everything kept): a table per line (`seq`, `level` -- error, warn, info, log or debug --, `from` -- the page's code, an uncaught error, or the browser about the page --, `text`, `at`, `ms`), and the number of the newest line to pass as `since` next time. The first call starts listening, and brings what the page has said since it last loaded; what it said on an earlier page is not kept |
 | `shikisha.browser_pick(id, true)` | Arm picking on a page: until it is put away (`false`, or Esc on the page), a person pressing a part of the page picks that element instead of pressing it. The same switch as the Picked elements panel |
 | `shikisha.browser_picks(id, clear)` | What has been picked on a page, oldest first: a table per element (`n`, `note`, `tag`, `role`, `name`, `sel`, `path`, `source`, `box`, `view`, `url`, `style`, `html`), and as a second value the same list written out the way the Picked elements panel hands it to an AI. `clear = true` empties the list as it is read. Values that look like keys, and the secrets the app holds, are already `[hidden]` in all of it |

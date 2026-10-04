@@ -88,6 +88,70 @@ pub enum Go {
     To(String),
 }
 
+/// One move of the search for words on a page (the bar's 🔍, or Ctrl+F).
+///
+/// The words are held by whoever asks, not by the page: a page replaced by
+/// navigation forgets every highlight it had, and the search is asked again
+/// with the same words by the side that still knows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum Seek {
+    /// Search from the top for these words, and stand on the first match
+    New,
+    /// Stand on the next match, going round to the first after the last
+    Next,
+    /// Stand on the match before, going round to the last before the first
+    Prev,
+    /// Take every highlight off the page
+    Stop,
+}
+
+/// How far one download has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum DownloadState {
+    /// Bytes are still arriving
+    Going,
+    /// The whole file is in its place
+    Done,
+    /// It stopped by itself; `why` on the [`Download`] says what stopped it
+    Failed,
+    /// Somebody stopped it
+    Cancelled,
+}
+
+/// One file a page sent to be saved, as the browser that saves it reports it.
+///
+/// Made by the host, never read off a page: a page cannot claim to have saved
+/// a file, and the path is where the browser itself put it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Download {
+    /// Unique among this run's downloads, whichever browser saved them
+    pub id: String,
+    /// The file's name as it is on disk
+    pub name: String,
+    /// The address it came from
+    pub url: String,
+    /// Where it is (or will be, once whole) on the machine whose browser
+    /// saved it. Empty while that is not known yet
+    pub path: String,
+    /// Bytes arrived so far
+    pub got: u64,
+    /// How many there will be. 0 when the server did not say
+    pub total: u64,
+    pub state: DownloadState,
+    /// What stopped a failed one, as a short key of `msg.download.why.*`
+    /// (`network`, `disk`, `server`, `blocked`...). Empty otherwise
+    #[serde(default)]
+    pub why: String,
+    /// Saved by the browser on the device of the person connected, not on
+    /// the machine the runtime is on (a page drawn there; see `placed`). The
+    /// file is already where that person is, and this machine cannot open it
+    #[serde(default)]
+    pub far: bool,
+}
+
 /// One pane as the page measured it.
 ///
 /// Rows and columns are what the terminal in that pane must be resized to;
@@ -780,6 +844,24 @@ pub enum Ev {
         can_back: bool,
         can_forward: bool,
     },
+    /// The search bar over the page being viewed: `open` it, search for
+    /// `text` (`find`), stand on the `next` or `prev` match, or `close` it.
+    /// Like `Go`, it is for whichever page is in front -- the conductor
+    /// decides which. `from` is the page a key was pressed in (Ctrl+F in
+    /// the page itself, reported by the browser that drew it); a press on
+    /// the board names none, and means the page in front
+    SeekAsk { from: Option<String>, what: String, text: String },
+    /// Where the search stands on a page: on match `at` of `of` (both 0 when
+    /// nothing matched). Made by the host that searched, never by a page
+    Seek { from: Option<String>, at: u32, of: u32 },
+    /// A download started, moved on, or ended. Made by the host that saves
+    /// it, never by a page
+    Download { from: Option<String>, item: Download },
+    /// Something pressed on a download in the list: `open` the file,
+    /// `reveal` it in its folder, `cancel` it, `forget` it (the line goes,
+    /// the file stays), `clear` every finished line, or open the `folder`
+    /// downloads go to. `id` is empty for the last two
+    DownloadAct { id: String, act: String },
     /// One frame of the screencast. Base64 JPEG (usable as a data URL as-is).
     /// `from` is the source page. `w`/`h` are the frame's actual pixel dimensions
     Frame {
@@ -1050,6 +1132,20 @@ pub trait BrowserHost {
     /// holds it -- never fetched again. Answering is optional, as above
     fn source(&self, _to: Option<&str>, _timeout_ms: u64) -> anyhow::Result<String> {
         anyhow::bail!("this browser cannot say what the server sent for a page")
+    }
+    /// Search the page for words, or move through what was found.
+    ///
+    /// The answer is where the search stands (match `at` of `of`) when it is
+    /// known by the time this returns. `None` means it comes later, as an
+    /// `Ev::Seek` -- the browser in the window searches on its own thread
+    /// and says when it is done. Answering is optional, as above
+    fn seek(&self, _to: Option<&str>, _text: &str, _step: Seek) -> anyhow::Result<Option<(u32, u32)>> {
+        anyhow::bail!("this browser cannot search a page for words")
+    }
+    /// Stop a download that is still going. `id` is the one its
+    /// `Ev::Download` carried. Answering is optional, as above
+    fn cancel_download(&self, _id: &str) -> anyhow::Result<()> {
+        anyhow::bail!("this browser cannot stop a download")
     }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
@@ -1647,6 +1743,32 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
                 _ => return None,
             },
         },
+        // The search bar. The words are what a person typed: held to a length
+        // a search can mean anything by, and the move to the ones there are
+        Some("seek") => {
+            let what = v.get("what").and_then(|x| x.as_str()).unwrap_or_default();
+            if !matches!(what, "open" | "find" | "next" | "prev" | "close") {
+                return None;
+            }
+            let text: String = v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .chars()
+                .take(SEEK_MAX_CHARS)
+                .collect();
+            Ev::SeekAsk { from: None, what: what.to_string(), text }
+        }
+        Some("download") => {
+            let act = v.get("act").and_then(|x| x.as_str()).unwrap_or_default();
+            if !matches!(act, "open" | "reveal" | "cancel" | "forget" | "clear" | "folder") {
+                return None;
+            }
+            Ev::DownloadAct {
+                id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+                act: act.to_string(),
+            }
+        }
         Some("jserror") => Ev::JsError {
             msg: v
                 .get("msg")
@@ -1892,6 +2014,11 @@ pub fn allowed_from_page(ev: &Ev) -> bool {
     )
 }
 
+/// The longest search for words on a page, in characters. Longer than any
+/// phrase anybody looks for, short enough that a paste of a whole document
+/// is not walked through every text node of the page
+pub const SEEK_MAX_CHARS: usize = 500;
+
 /// The control keys an [`Input::Key`] may name.
 ///
 /// Kept here because it is the agreement itself: a script writes "pageup" and
@@ -1994,5 +2121,49 @@ mod tests {
             ),
             other => panic!("not read as the dialog's choices: {other:?}"),
         }
+    }
+
+    /// The search bar's presses are read as the page sends them: the move,
+    /// and the words held to a length a search can mean anything by. A move
+    /// nobody defined is not guessed at, and a press on the board names no
+    /// page -- only a browser that kept Ctrl+F from its page names one
+    #[test]
+    fn the_search_bar_is_read_as_the_board_sends_it() {
+        let ev = parse_intent(&serde_json::json!({"kind": "seek", "what": "find", "text": "price"}));
+        assert!(matches!(ev, Some(Ev::SeekAsk { from: None, what, text }) if what == "find" && text == "price"));
+        for what in ["open", "next", "prev", "close"] {
+            assert!(parse_intent(&serde_json::json!({"kind": "seek", "what": what})).is_some(), "{what} was refused");
+        }
+        assert!(parse_intent(&serde_json::json!({"kind": "seek", "what": "replace"})).is_none());
+        let long = "あ".repeat(SEEK_MAX_CHARS + 50);
+        match parse_intent(&serde_json::json!({"kind": "seek", "what": "find", "text": long})) {
+            Some(Ev::SeekAsk { text, .. }) => assert_eq!(text.chars().count(), SEEK_MAX_CHARS),
+            other => panic!("not read as a search: {other:?}"),
+        }
+    }
+
+    /// A press on the download list names the line and what to do; anything
+    /// else is not one
+    #[test]
+    fn a_press_on_the_download_list_is_read() {
+        let ev = parse_intent(&serde_json::json!({"kind": "download", "act": "cancel", "id": "w3"}));
+        assert!(matches!(ev, Some(Ev::DownloadAct { id, act }) if id == "w3" && act == "cancel"));
+        for act in ["open", "reveal", "forget", "clear", "folder"] {
+            assert!(parse_intent(&serde_json::json!({"kind": "download", "act": act, "id": ""})).is_some(), "{act} was refused");
+        }
+        assert!(parse_intent(&serde_json::json!({"kind": "download", "act": "delete", "id": "w3"})).is_none());
+    }
+
+    /// A page cannot claim a download, a search answer or a Ctrl+F: those
+    /// are the host's to report, and a page that posts one is not heard
+    #[test]
+    fn a_page_cannot_claim_a_download_or_a_search() {
+        let item = Download {
+            id: "w1".into(), name: "a.pdf".into(), url: "https://x/a.pdf".into(), path: "C:/a.pdf".into(),
+            got: 1, total: 1, state: DownloadState::Done, why: String::new(), far: false,
+        };
+        assert!(!allowed_from_page(&Ev::Download { from: None, item }));
+        assert!(!allowed_from_page(&Ev::Seek { from: None, at: 1, of: 1 }));
+        assert!(!allowed_from_page(&Ev::SeekAsk { from: None, what: "open".into(), text: String::new() }));
     }
 }

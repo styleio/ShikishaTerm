@@ -143,6 +143,14 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the buttons on the top bar need to work too, or it's only half done.
         // It only changes the destination; it doesn't stop the window
         Ev::Go { .. } => true,
+        // The search bar over the page being watched: a phone reads the same
+        // page, so it searches the same page. It moves the highlight and the
+        // scroll, nothing else
+        Ev::SeekAsk { .. } => true,
+        // The download list: cancel, forget a line, and the PC's own open and
+        // show-in-folder, which a phone does not offer but is not refused --
+        // the same press means the same thing from either door
+        Ev::DownloadAct { .. } => true,
         // Copying is not asked of this machine at all. A person reading a
         // screen from somewhere else wants what they selected in *their*
         // clipboard, not in the clipboard of a machine they are not sitting
@@ -465,6 +473,8 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::Recorded { .. }
         | Ev::Picked { .. }
         | Ev::ConsoleLine { .. }
+        | Ev::Seek { .. }
+        | Ev::Download { .. }
         | Ev::Touched { .. }
         | Ev::Compose { .. }
         | Ev::Pen { .. } => false,
@@ -1912,6 +1922,17 @@ impl RemoteUi {
     }
 }
 
+/// How a file is handed over to be saved under its own name: a plain-letters
+/// name for a browser that reads only that, and the real one, in UTF-8, for
+/// every browser that reads both (RFC 6266)
+fn attachment_named(name: &str) -> String {
+    let plain: String = name
+        .chars()
+        .map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' })
+        .collect();
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{}", crate::urlcodec::encode(name))
+}
+
 fn query_value(url: &str, key: &str) -> String {
     url.split_once('?')
         .map(|(_, q)| q)
@@ -2815,6 +2836,35 @@ fn handle(
             }
         }
 
+        // A file a page saved, to the device asking for it: the download
+        // list's "save to this device". Named by its line in the list, never by
+        // a path, and only a line that has finished on this machine -- so what
+        // can be fetched is exactly what the list shows as saved here, and
+        // nothing else on the disk
+        ("GET", "/api/download") => {
+            let id = crate::urlcodec::decode_query(&query_value(req.url(), "id"));
+            let line = snapshot
+                .lock()
+                .unwrap()
+                .ui
+                .as_ref()
+                .and_then(|ui| ui.downloads.iter().find(|d| d.id == id && d.state == "done" && !d.far).cloned());
+            let file = line.as_ref().and_then(|d| std::fs::File::open(&d.path).ok().map(|f| (d.name.clone(), f)));
+            let Some((name, file)) = file else {
+                req.respond(Response::from_string("gone").with_status_code(404))?;
+                return Ok(());
+            };
+            let resp = Response::from_file(file)
+                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]).unwrap())
+                .with_header(Header::from_bytes(&b"Content-Disposition"[..], attachment_named(&name).as_bytes()).unwrap())
+                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
+            // From a thread of its own: this one answers every request from the
+            // phone, keys included, and a large file going out over a slow line
+            // would hold them all until it had
+            std::thread::spawn(move || {
+                let _ = req.respond(resp);
+            });
+        }
         // The quick actions, as the board's page is handed them when it loads.
         // Settings opened from the phone stand in a frame over a board that
         // is not loaded again, so the board asks for these once the frame is
@@ -3378,8 +3428,8 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// once, and the cost was silent: a route added below and not here sent the
 /// phone to the settings proxy for it, and the code that actually served it --
 /// a dozen lines away -- was never once reached.
-const OWN_VERBS: [&str; 9] = [
-    "state", "send", "auto", "intent", "attach", "read", "snip", "video", "actions",
+const OWN_VERBS: [&str; 10] = [
+    "state", "send", "auto", "intent", "attach", "read", "snip", "video", "actions", "download",
 ];
 
 /// Answer a viewer asking to watch as video, and remember it.
@@ -4009,6 +4059,8 @@ mod tests {
             "Paste", "Password",
             // What this PC's own pages report
             "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "ConsoleLine", "Touched", "Compose", "Pen",
+            // ...and what this PC's browser says about a search and a download
+            "Seek", "Download",
             // This PC's window, tray and keys
             "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own
@@ -5321,6 +5373,16 @@ mod tests {
 
     /// `/api/*` routing: the remote UI owns exactly its own verbs; every other
     /// `/api/*`, plus the settings pages, is the config server's.
+    /// A file goes to a phone under its own name, in any language, and a
+    /// name cannot break out of the header it is written in
+    #[test]
+    fn a_saved_file_keeps_its_name_on_the_way_to_a_phone() {
+        let cd = attachment_named("見積 \"v2\".pdf");
+        assert!(cd.starts_with("attachment; filename=\"__ _v2_.pdf\"; filename*=UTF-8''"), "{cd}");
+        assert!(cd.ends_with("%E8%A6%8B%E7%A9%8D%20%22v2%22.pdf"), "{cd}");
+        assert!(!attachment_named("a\r\nSet-Cookie: x").contains(['\r', '\n']));
+    }
+
     #[test]
     fn settings_paths_are_told_apart_from_the_remotes_own() {
         for p in ["/cfg", "/help", "/result", "/api/config", "/api/secrets", "/api/secrets/set"] {
@@ -5328,7 +5390,7 @@ mod tests {
         }
         for p in [
             "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
-            "/api/snip", "/api/actions", "/", "/shell", "/ws-state",
+            "/api/snip", "/api/actions", "/api/download", "/", "/shell", "/ws-state",
         ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");
         }

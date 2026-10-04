@@ -2993,6 +2993,22 @@ impl HookEngine {
                 .map_err(lerr)?;
         }
         {
+            // Every file a page saved this run, newest first: the same lines
+            // the list beside the page shows. A script that clicked a download
+            // link waits here for its line to say "done" and reads the path
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "downloads",
+                    lua.create_function(move |lua_, ()| {
+                        let rows = serde_json::to_value(c.downloads()).unwrap_or_default();
+                        json_to_lua(lua_, &rows)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
             let c = Caps::clone(&caps);
             shikisha
                 .set(

@@ -8,6 +8,25 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Find in page.** Press Ctrl+F on a web page, or the new search button on
+  the bar above it, and a search row opens under the bar. Every match is lit
+  as you type, the one you are on in orange, with "3 / 10" beside the box;
+  Enter and Shift+Enter (or F3 and Shift+F3) move through them, and Esc
+  closes it. Ctrl+F pressed inside the page opens the same row instead of the
+  browser's own little box, so a phone watching the same page sees the same
+  search, and can open it from the bar's button. The words stay when the page
+  moves on, and the new page is searched for them.
+- **Downloads.** A file a web page saves goes to the Downloads folder, and a
+  **Downloads** list opens in the column beside the page: each file with how
+  far it has got, the site it came from and where it went. Cancel one still
+  coming; at the PC, open a finished one or show it in its folder (a program
+  is only ever shown in its folder); from a phone, **Save to this device**
+  brings the file to the phone. A download button on the bar above the page
+  brings the list back. The server version saves what its pages download too
+  (it used to refuse every download), and a script reads the same list with
+  `shikisha.downloads()`.
+
 ## [0.24.1] - 2026-10-04
 
 ### Changed
