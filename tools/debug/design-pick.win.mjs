@@ -134,7 +134,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   desks: [{ name: 'Pick', id: 'pick', folders: [{ cwd: WORK, tabs: [
     { name: 'claude', id: 'ai', command: path.join(WORK, 'claude.cmd') },
-    { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/`, nav: { reload: true, develop: true } },
+    { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/`, nav: { reload: true, develop: true, menu: true } },
   ] }] }],
 }, null, 2));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -188,11 +188,11 @@ try {
   await board.run('if (sideWidth() <= 0) setSideWidth(420)');
   // The Develop list: its button on the bar, and one of its rows by its words
   const develop = async (on, key) => {
-    await until(() => on.run('!!document.querySelector("#nav .navdev")'), 'the Develop button', 10000);
-    await on.run('document.querySelector("#nav .navdev").click()');
-    await until(() => on.run('!!document.querySelector(".fmenu.devlist")'), 'the Develop list', 5000);
-    const said = await on.run(`[...document.querySelectorAll(".fmenu.devlist > div")].map(d => d.textContent)`);
-    await on.run(`[...document.querySelectorAll(".fmenu.devlist > div")].find(d => d.textContent === T[${JSON.stringify(key)}]).click()`);
+    await until(() => on.run('!!document.querySelector("#nav .navmenu")'), 'the menu', 10000);
+    await on.run('document.querySelector("#nav .navmenu").click()');
+    await until(() => on.run('!!document.querySelector(".fmenu.pagemenu")'), 'the menu\'s list', 5000);
+    const said = await on.run(`[...document.querySelectorAll(".fmenu.pagemenu > div")].map(d => d.textContent)`);
+    await on.run(`[...document.querySelectorAll(".fmenu.pagemenu > div")].find(d => d.textContent === T[${JSON.stringify(key)}]).click()`);
     return said;
   };
   const pageTab = await board.run('S.tabs.find(t => t.kind === "browser").index');
@@ -213,16 +213,17 @@ try {
   check((await picks()) === null, 'nothing is listed for the page');
 
   console.log('2. armed from the Develop list, and a press on the button');
-  await until(() => board.run('!!document.querySelector("#nav .navdev")'), 'the Develop button', 10000);
-  await board.run('document.querySelector("#nav .navdev").click()');
-  await until(() => board.run('!!document.querySelector(".fmenu.devlist")'), 'the Develop list', 5000);
-  const rows = await board.run('[...document.querySelectorAll(".fmenu.devlist > div")].map(d => d.textContent)');
-  const wanted = await board.run('["tui.dev.hard", "tui.dev.pick", "tui.dev.devtools", "tui.dev.source", "tui.dev.dom"].map(k => T[k])');
+  await until(() => board.run('!!document.querySelector("#nav .navmenu")'), 'the menu', 10000);
+  await board.run('document.querySelector("#nav .navmenu").click()');
+  await until(() => board.run('!!document.querySelector(".fmenu.pagemenu")'), 'the menu\'s list', 5000);
+  const rows = await board.run('[...document.querySelectorAll(".fmenu.pagemenu > div")].map(d => d.textContent)');
+  // The menu holds the downloads first, then -- under a rule -- the Develop items
+  const wanted = await board.run('[T["tui.nav.downloads"], "", ...["tui.dev.hard", "tui.dev.pick", "tui.dev.devtools", "tui.dev.source", "tui.dev.dom"].map(k => T[k])]');
   check(JSON.stringify(rows) === JSON.stringify(wanted),
     'the list: ' + rows.join(' | '));
   if (!SPLIT_MODE) check(await board.run('listCovers === true'), 'the page steps aside while the list is over it');
   await board.shot('0-develop');
-  await board.run(`[...document.querySelectorAll(".fmenu.devlist > div")].find(d => d.textContent === T["tui.dev.pick"]).click()`);
+  await board.run(`[...document.querySelectorAll(".fmenu.pagemenu > div")].find(d => d.textContent === T["tui.dev.pick"]).click()`);
   check(await board.run('listCovers === false'), 'and comes back when it is gone');
   check(await board.run('sidePanel === "picks" && sideCalled.has("picks") && !document.getElementById("pickpanel").hidden'),
     'Picked elements stands in the column, called up');

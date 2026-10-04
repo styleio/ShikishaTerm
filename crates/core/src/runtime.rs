@@ -6305,6 +6305,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 edit: spec.url,
                 point: spec.point,
                 find: spec.find,
+                menu: spec.menu,
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),
@@ -13457,8 +13458,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Go::Back => spec.back,
                 Go::Forward => spec.forward,
                 Go::Reload => spec.reload,
-                // In the Develop list. Shift on the plain button is a shortcut
-                // for it, so that is allowed wherever either is shown
+                // In the menu's Develop items, or on the page tab's right-click.
+                // Shift on the plain button is a shortcut for it, so that is
+                // allowed wherever either is shown
                 Go::Hard => spec.develop || spec.reload,
                 Go::To(_) => spec.url,
             };

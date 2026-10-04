@@ -2595,16 +2595,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      to press, and because it shares its mark with the forward arrow two
      buttons away -- two grey arrows in one row is one arrow too many */
   #nav button.navgo { color:var(--brand); border-color:var(--brand); }
-  /* Develop: a list, so it names itself as well as wearing its mark -- a mark
-     alone at the end of the row reads as one more arrow */
-  #nav button.navdev { width:auto; display:inline-flex; align-items:center; gap:var(--s1);
-    padding:0 var(--s2); font-size:12px; color:var(--dim); }
-  #nav button.navdev:hover { color:var(--text); }
-  /* The download button: its mark, and while something is still coming, how
-     far the newest has got -- the one number a person glances up for */
-  #nav button.navdl { width:auto; min-width:28px; display:inline-flex; align-items:center; justify-content:center;
+  /* The menu (⋯) at the end of the row: its mark, and while a download is
+     coming how far it has got -- the one number a person glances up for */
+  #nav button.navmenu { width:auto; min-width:28px; display:inline-flex; align-items:center; justify-content:center;
     gap:var(--s1); padding:0 6px; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums; }
-  #nav button.navdl.going { color:var(--live); border-color:var(--live); }
+  #nav button.navmenu:hover { color:var(--text); }
+  #nav button.navmenu.going { color:var(--live); border-color:var(--live); }
   #nav button .ico { display:flex; }
   /* ── The search bar ──────────────────────────────
      Ctrl+F, or the bar's search button: one row under the bar above, drawn
@@ -4056,11 +4052,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   @media (max-width:700px), (max-aspect-ratio:1/1) {
     /* Never allow horizontal scroll (that mystery strip on the right), no matter what */
     html, body, #app { max-width:100vw; overflow-x:hidden; }
-    /* The bar over a page has no room for words on a phone: Develop keeps its
-       mark (its word is under the pointer), so the address keeps the width it
-       needs to be read */
-    #nav button.navdev { width:28px; padding:0; justify-content:center; }
-    #nav button.navdev > span:not(.ico) { display:none; }
     /* Stack with flex instead of grid, to avoid a grid's "phantom second column" */
     #app { display:flex; flex-direction:column; }
     /* There is no window here to take hold of, minimise or close */
@@ -9056,6 +9047,8 @@ const PICK_ICON = {
   // its corner turned)
   commit: '<circle cx="7" cy="7" r="2.3"/><path d="M1 7h3.7M9.3 7H13"/>',
   file: '<path d="M3.5 1.5h4.5l2.5 2.5v8.5h-7z"/><path d="M8 1.5v2.5h2.5"/>',
+  // More: three dots, the mark a menu at the end of a row is known by
+  more: '<circle cx="3" cy="7" r=".9" fill="currentColor"/><circle cx="7" cy="7" r=".9" fill="currentColor"/><circle cx="11" cy="7" r=".9" fill="currentColor"/>',
   // A download: an arrow down onto the line it lands on
   download: '<path d="M7 2v7.5M3.8 6.3 7 9.5l3.2-3.2"/><path d="M2.5 12h9"/>',
 };
@@ -12455,27 +12448,11 @@ function drawNav() {
         n.append(go);
       }
     }
-    // The search over the page and the files it saved, after the address the
-    // way a browser keeps them beside its own. The search where the page's
-    // controls offer it; the download button once anything was saved
-    if (want.find && seekable(activeTab())) {
-      const sb = el("button", {title:T["tui.nav.find"] || ""}, pickIcon("search"));
-      sb.onclick = () => seekOpen();
-      n.append(sb);
-    }
-    const dls = (S && S.downloads) || [];
-    if (dls.length) n.append(downloadButton(dls));
-    // After the address: a list of tools rather than a place to go, at the
-    // end of the row where a browser keeps its menu
-    if (want.develop) {
-      const dev = el("button", {class:"navdev", title:T["tui.nav.develop"] || ""},
-        pickIcon("develop"), el("span", {}, T["tui.nav.develop"] || ""));
-      dev.onclick = () => {
-        const t = activeTab();
-        if (t && t.kind === "browser") openList(dev, devRows(t, true), false, null, "devlist");
-      };
-      n.append(dev);
-    }
+    // After the address, at the end of the row where a browser keeps its own:
+    // the menu, holding the search, the downloads and the tools for somebody
+    // building the page -- one button where three stood, so a phone's bar
+    // keeps its address readable
+    if (want.menu) n.append(menuButton(want));
   } else if (want.edit) {
     // Only fix up the enabled/disabled state of the buttons the user isn't currently typing into
     const bs = n.querySelectorAll("button");
@@ -12489,17 +12466,36 @@ function drawNav() {
   layout();
 }
 
-// The download button on the bar: its mark, and while anything is still
-// coming, how far the newest of those has got. Pressing it brings the list up
-// in the column beside the page
-function downloadButton(dls) {
-  const going = dls.filter(d => d.state === "going");
-  const b = el("button", {class:"navdl" + (going.length ? " going" : ""), title:T["tui.nav.downloads"] || ""},
-    pickIcon("download"));
-  const d = going[0];
-  if (d && d.total > 0) b.append(el("span", {}, Math.floor(d.got * 100 / d.total) + "%"));
-  b.onclick = () => sideReveal("downloads");
+// How far the newest download still coming has got, as the one number a
+// person glances up for. Empty when nothing is coming, or its size is unknown
+function downloadGoing() {
+  const d = ((S && S.downloads) || []).find(x => x.state === "going");
+  return d && d.total > 0 ? Math.floor(d.got * 100 / d.total) + "%" : "";
+}
+// The bar's menu (⋯): its mark, and while a download is coming how far it has
+// got, so a file on its way is seen without opening anything
+function menuButton(want) {
+  const going = downloadGoing();
+  const b = el("button", {class:"navmenu" + (going ? " going" : ""), title:T["tui.nav.menu"] || ""}, pickIcon("more"));
+  if (going) b.append(el("span", {}, going));
+  b.onclick = () => {
+    const t = activeTab();
+    if (t && t.kind === "browser") openList(b, menuRows(t, want), false, null, "pagemenu");
+  };
   return b;
+}
+// What the menu holds: the search where the page's controls offer it, the
+// downloads always, and the tools for building the page where Develop is
+// chosen -- the same rows the page tab's right-click has (devRows)
+function menuRows(t, want) {
+  const item = (label, key, go) => el("div", {class:"sniptool", onclick:() => { closeFolderMenu(); go(); }},
+    el("span", {}, label), key ? el("kbd", {class:"snipkey"}, key) : null);
+  const rows = [];
+  if (want.find && seekable(t)) rows.push(item(T["tui.menu.find"] || "", "Ctrl+F", seekOpen));
+  const going = downloadGoing();
+  rows.push(item(T["tui.nav.downloads"] || "", going, () => sideReveal("downloads")));
+  if (want.develop) rows.push(el("div", {class:"gsep"}), ...devRows(t, true));
+  return rows;
 }
 
 // ── The search bar ──────────────────────────────────────────

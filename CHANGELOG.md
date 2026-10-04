@@ -9,16 +9,21 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
-- **Find in page.** Press Ctrl+F on a web page, or the new search button on
-  the bar above it, and a search row opens under the bar. Every match is lit
+- **The bar's menu (⋯).** The bar over a web page ends in one menu holding
+  Find in page, Downloads and the Develop tools, in place of the Develop
+  button, so a phone's bar keeps its address readable. It is one of the
+  controls a tab chooses (Menu), as Find in page is: a tab saved before them
+  has neither until they are ticked in its settings.
+- **Find in page.** Press Ctrl+F on a web page, or Find in page in the bar's
+  menu, and a search row opens under the bar. Every match is lit
   as you type, the one you are on in orange, with "3 / 10" beside the box;
   Enter and Shift+Enter (or F3 and Shift+F3) move through them, and Esc
   closes it. Ctrl+F pressed inside the page opens the same row instead of the
   browser's own little box, so a phone watching the same page sees the same
-  search, and can open it from the bar's button. The words stay when the page
+  search, and can open it from the menu. The words stay when the page
   moves on, and the new page is searched for them. It is one of the controls
-  a browser tab chooses (Find in page); a tab already saved with an address
-  field has it ticked, and one without it keeps the browser's own small box.
+  a browser tab chooses (Find in page); a tab without it keeps the browser's
+  own small box.
 - **Downloads.** A file a web page saves goes to the Downloads folder, and a
   **Downloads** list opens in the column beside the page: each file with how
   far it has got, the site it came from and where it went. Cancel one still
@@ -27,8 +32,8 @@ once it reaches its first tagged release.
   brings the file to the phone. A page of a folder on an SSH server or a
   MicroVM saves to that machine's `~/Downloads` instead, where the AI working
   in the folder can use it; the list names the machine and the path, and
-  **Save to this PC** brings a copy here. A download button on the bar above the page
-  brings the list back. The server version saves what its pages download too
+  **Save to this PC** brings a copy here. The menu's Downloads brings the list
+  back. The server version saves what its pages download too
   (it used to refuse every download), and a script reads the same list with
   `shikisha.downloads()`.
 

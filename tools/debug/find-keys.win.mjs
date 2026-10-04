@@ -65,7 +65,7 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'ja', remote: { enabled: false }, resident: false,
   agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Keys', id: 'keys', folders: [{ cwd: RUN, tabs: [
-    { name: 'on', id: 'on', command: `browser ${site}`, nav: { back: true, reload: true, url: true, find: true } },
+    { name: 'on', id: 'on', command: `browser ${site}`, nav: { back: true, reload: true, url: true, menu: true, find: true } },
     { name: 'off', id: 'off', command: `browser ${site}off`, nav: { back: true, reload: true, url: true, find: false } },
   ] }] }],
 }, null, 2));

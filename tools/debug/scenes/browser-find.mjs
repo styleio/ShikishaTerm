@@ -48,7 +48,7 @@ const state = (extra) => JSON.stringify(JSON.stringify(Object.assign({
   ball: { holder: 0, from: 0, depth: 0, max: 0, phase: '', progress: 0, awaiting_human: false },
   auto_enabled: true, remote_on: false, restartable: true, build: '',
   help_rows: [], ais: [],
-  nav: { back: true, forward: true, reload: true, develop: true, edit: true, point: true, find: true,
+  nav: { back: true, forward: true, reload: true, develop: true, edit: true, point: true, find: true, menu: true,
     can_back: true, can_forward: false, at: 'https://shop.example.com/cart', loading: false },
   downloads: [], download_seq: 0,
 }, extra)));
@@ -74,7 +74,9 @@ export default {
         if (navh !== "72px") ${fail('the page is not pushed down by both rows')};
         const top = document.getElementById("seek").getBoundingClientRect().top - document.getElementById("nav").getBoundingClientRect().top;
         if (Math.round(top) !== 36) ${fail('the row is not right under the bar')};
-        if (!document.querySelector("#nav button .ico svg")) ${fail('the bar has no search button')};
+        const rows = (() => { document.querySelector("#nav .navmenu").click(); const rows = [...document.querySelectorAll(".fmenu.pagemenu > div")].map(d => d.textContent); closeFolderMenu(); return rows; })();
+        if (!rows.some(t => t.startsWith(T["tui.menu.find"]))) ${fail('the menu has no Find in page')};
+        if (!rows.includes(T["tui.dev.devtools"])) ${fail('the menu has no Develop items')};
       })`,
     // Nothing found: said in words, not as a zero
     none: {
@@ -98,8 +100,8 @@ export default {
         if (rows.length !== 5) ${fail('not every download has a row')};
         if (!rows[0].querySelector(".pbar")) ${fail('a download still coming has no bar')};
         if (!rows[3].querySelector(".ds.bad")) ${fail('why one stopped is not said')};
-        const btn = document.querySelector("#nav .navdl");
-        if (!btn || !btn.textContent.includes("65%")) ${fail('the download button does not say how far the newest has got')};
+        const btn = document.querySelector("#nav .navmenu");
+        if (!btn || !btn.textContent.includes("65%")) ${fail('the menu does not say how far the newest download has got')};
         const doneActs = rows[1].querySelectorAll(".da .pa").length;
         const exeActs = rows[2].querySelectorAll(".da .pa").length;
         if (AT_PC && doneActs !== 3) ${fail('a finished file at the PC is not offered open, folder and remove')};
@@ -110,15 +112,35 @@ export default {
     // A page whose controls leave the search out: no button, and Ctrl+F on
     // the board is not taken (the browser's own box answers it in the page)
     unoffered: {
-      run: `window.__state(${state({ nav: { back: true, forward: true, reload: true, develop: false, edit: true, point: false, find: false,
+      run: `window.__state(${state({ nav: { back: true, forward: true, reload: true, develop: false, edit: true, point: false, find: false, menu: true,
           can_back: false, can_forward: false, at: 'https://shop.example.com/', loading: false } })});
         new Promise(r => setTimeout(r, 300)).then(() => {
-          if ([...document.querySelectorAll("#nav button")].some(b => b.title === T["tui.nav.find"])) ${fail('the search button is there though the page leaves it out')};
+          const rows = (() => { document.querySelector("#nav .navmenu").click(); const rows = [...document.querySelectorAll(".fmenu.pagemenu > div")].map(d => d.textContent); closeFolderMenu(); return rows; })();
+          if (rows.some(t => t.startsWith(T["tui.menu.find"]))) ${fail('Find in page is in the menu though the page leaves it out')};
+          if (rows.length !== 1) throw new Error('the menu holds more than Downloads: ' + rows.join(', '));
           const sent = []; const was = window.send; window.send = o => sent.push(o);
           const e = new KeyboardEvent("keydown", {key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true});
           document.body.dispatchEvent(e);
           window.send = was;
           if (sent.some(o => o.kind === "seek")) ${fail('Ctrl+F opened the search on a page that leaves it out')};
+        })`,
+      looks: ['dark'],
+      sizes: [['window', 1280, 800]],
+    },
+    // The menu opened, with a download on its way: the search with its key,
+    // the downloads with how far, a rule, then the Develop items
+    menu: `window.__state(${state({ downloads, download_seq: 0 })});
+      new Promise(r => setTimeout(r, 300)).then(() => {
+        document.querySelector("#nav .navmenu").click();
+        const rows = [...document.querySelectorAll(".fmenu.pagemenu > div")].map(d => d.textContent);
+        if (!rows[1] || !rows[1].endsWith("65%")) throw new Error("the menu's Downloads does not say how far: " + rows.join(" | "));
+      })`,
+    // A page that leaves the menu out: no ⋯ on its bar
+    nomenu: {
+      run: `window.__state(${state({ nav: { back: true, forward: true, reload: true, develop: true, edit: true, point: false, find: true, menu: false,
+          can_back: false, can_forward: false, at: 'https://shop.example.com/', loading: false } })});
+        new Promise(r => setTimeout(r, 300)).then(() => {
+          if (document.querySelector("#nav .navmenu")) ${fail('the menu is on the bar though the page leaves it out')};
         })`,
       looks: ['dark'],
       sizes: [['window', 1280, 800]],

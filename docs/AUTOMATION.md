@@ -431,7 +431,8 @@ survives navigation and never covers the site's own sticky header.
 ```lua
 shikisha.browser_nav(page.id)                                 -- all of them
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
--- back / forward / reload / url / find (search the page; Ctrl+F) / develop (hard reload, picking, DevTools, source, DOM)
+-- back / forward / reload / url / menu (the ⋯ at the end of the row) / find (search the page; Ctrl+F)
+-- develop (in the menu: hard reload, picking, DevTools, source, DOM)
 -- point (phone only: a tap clicks where the finger is, or moves a pointer)
 shikisha.browser_unnav(page.id)                               -- take it away
 ```
@@ -442,12 +443,13 @@ address or words: an address opens, and anything else is searched for on Google.
 the settings screen for a browser tab, so this works with no Lua at all; a call from Lua
 wins over the setting.
 
-`find` puts a search button on the row, and makes Ctrl+F (or F3) in the page open
-the app's search row under it -- the same search in the window and on a phone. Without
-it, Ctrl+F is the browser's own small search box, at the PC only.
+`menu` puts a ⋯ at the end of the row, holding Find in page (with `find`), Downloads,
+and the Develop tools (with `develop`). `find` makes Ctrl+F (or F3) in the page open the
+app's search row under the bar -- the same search in the window and on a phone. Without
+it, Ctrl+F is the browser's own small search box, at the PC only. Without `menu`, the
+search is Ctrl+F alone and the Develop tools are on the page tab's right-click.
 
-Once a page has saved a file, a download button joins the row whatever you pick: it
-opens the Downloads panel in the column beside the page: every file a page saved this
+The menu's Downloads opens the Downloads panel in the column beside the page: every file a page saved this
 run, newest first, with how far it has got and where it went. A script reads the same
 list with `shikisha.downloads()` -- click the link, then wait for its line to say
 `done` and take the `path`.

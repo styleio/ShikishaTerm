@@ -46,6 +46,9 @@ const JA = process.argv.includes('--ja');
 const TAG = 'sk-find-' + Date.now().toString(36);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The menu's words, from the language the copy speaks
+const L = JSON.parse(fs.readFileSync(path.join(ROOT, 'lang', (process.argv.includes('--ja') ? 'ja' : 'en') + '.json'), 'utf8'));
+const L_FIND = L['tui.menu.find'], L_DOWNLOADS = L['tui.nav.downloads'];
 const die = (why) => { console.error(why); process.exit(2); };
 let failures = 0;
 const check = (ok, what) => { console.log((ok ? '  PASS ' : '  FAIL ') + what); if (!ok) failures += 1; };
@@ -115,10 +118,10 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Find', id: 'find', folders: [{ cwd: WORK, tabs: [
     { name: 'shop', id: 'shop', command: `browser ${site}`,
-      nav: { back: true, forward: true, reload: true, url: true, find: true, develop: true, point: true } },
+      nav: { back: true, forward: true, reload: true, url: true, menu: true, find: true, develop: true, point: true } },
     // The same page with the search left out of its controls
     { name: 'plain', id: 'plain', command: `browser ${site}plain`,
-      nav: { back: true, forward: true, reload: true, url: true, find: false } },
+      nav: { back: true, forward: true, reload: true, url: true, menu: true, find: false } },
   ] }] }],
 }, null, 2));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -173,7 +176,7 @@ try {
   await until(() => page.run('document.readyState === "complete"'), 'the page loaded');
 
   console.log('1. find in page');
-  check(await board.run('[...document.querySelectorAll("#nav button")].some(b => b.title === T["tui.nav.find"])'), 'the bar carries the search button');
+  check((await board.run("(() => { document.querySelector(\"#nav .navmenu\").click(); const rows = [...document.querySelectorAll(\".fmenu.pagemenu > div\")].map(d => d.textContent); closeFolderMenu(); return rows; })()")).some((t) => t.startsWith(L_FIND)), 'the bar\'s menu offers Find in page');
   await board.run('send({kind:"seek", what:"open"})');
   await until(() => board.run('!!S.seek && !document.getElementById("seek").hidden'), 'the search row');
   check(await board.run('document.activeElement === document.querySelector("#seek input")'), 'the cursor is in the box');
@@ -204,7 +207,7 @@ try {
   const plain = await board.run('S.tabs.find(t => (t.id || t.name) === "plain").index');
   await board.run(`send({kind:"select", tab:${plain}})`);
   await until(() => board.run(`S.active === ${plain} && !!S.nav`), 'the plain page in front');
-  check(await board.run('S.nav.find === false && ![...document.querySelectorAll("#nav button")].some(b => b.title === T["tui.nav.find"])'), 'no search button on it');
+  check(await board.run('S.nav.find === false') && !(await board.run("(() => { document.querySelector(\"#nav .navmenu\").click(); const rows = [...document.querySelectorAll(\".fmenu.pagemenu > div\")].map(d => d.textContent); closeFolderMenu(); return rows; })()")).some((t) => t.startsWith(L_FIND)), 'no Find in page in its menu');
   await board.run('send({kind:"seek", what:"open"})');
   await sleep(800);
   check(await board.run('!S.seek && document.getElementById("seek").hidden'), 'and asking for the search there opens nothing');
@@ -223,7 +226,7 @@ try {
   check(lines.every((d) => fs.existsSync(d.path) && fs.readFileSync(d.path, 'utf8') === 'saved by the check\n'), 'the files are where the list says');
   check(lines.every((d) => d.page === 'shop' && d.site.startsWith('127.0.0.1:')), 'each line names the page and the site');
   check(await board.run('!document.getElementById("dlpanel").hidden'), 'the list came up beside the page');
-  check(await board.run('!!document.querySelector("#nav .navdl")'), 'the bar carries the download button');
+  check((await board.run("(() => { document.querySelector(\"#nav .navmenu\").click(); const rows = [...document.querySelectorAll(\".fmenu.pagemenu > div\")].map(d => d.textContent); closeFolderMenu(); return rows; })()")).some((t) => t.startsWith(L_DOWNLOADS)), 'the bar\'s menu offers Downloads');
   await board.shot('2-downloads');
 
   console.log('3. cancel');

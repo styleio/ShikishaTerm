@@ -2235,10 +2235,13 @@ pub struct NavState {
     pub back: bool,
     pub forward: bool,
     pub reload: bool,
-    /// The Develop list: the reload that throws away what is held first,
-    /// picking parts of the page, DevTools, the source and the DOM
+    /// The Develop items of the menu: the reload that throws away what is held
+    /// first, picking parts of the page, DevTools, the source and the DOM
     #[serde(default)]
     pub develop: bool,
+    /// The menu (⋯) at the end of the bar
+    #[serde(default)]
+    pub menu: bool,
     /// URL field (how a person navigates to an arbitrary page)
     pub edit: bool,
     /// The switch for how a press on a relayed page is meant. Only a phone

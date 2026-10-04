@@ -3099,12 +3099,18 @@ pub struct NavSpec {
     pub forward: bool,
     #[serde(default)]
     pub reload: bool,
-    /// The tools for somebody building the page: a list holding the reload
-    /// that fetches it all again, picking parts of the page for an AI,
+    /// The tools for somebody building the page, in the bar's menu (⋯): the
+    /// reload that fetches it all again, picking parts of the page for an AI,
     /// DevTools, and the page's source and DOM as it stands. A setting written
     /// before this, with the old `reload_hard` switch, is read without it
     #[serde(default)]
     pub develop: bool,
+    /// The bar's menu (⋯), at the end of the row: the search and the
+    /// downloads, and the tools above when `develop` is chosen. Without it the
+    /// search is Ctrl+F, the downloads open by themselves, and the tools are on
+    /// the page tab's right-click
+    #[serde(default)]
+    pub menu: bool,
     /// URL bar. Lets a person navigate to any page
     #[serde(default)]
     pub url: bool,
@@ -3129,7 +3135,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true, find: true }
+        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true, find: true, menu: true }
     }
 }
 

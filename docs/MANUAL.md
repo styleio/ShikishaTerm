@@ -107,8 +107,9 @@ instruction to the AI in view (continue, explain, review, fix). The small picker
 its left chooses what the bar holds: the stock replies, your own quick actions, the
 macro recorder, git, or an AI's command suggestion.
 
-**Develop**, over a web page, is a list of tools for somebody building it (tick it under
-the browser tab's Controls in the settings): **Hard reload**; **Pick elements for the
+**The menu (⋯)** at the end of the bar over a web page holds **Find in page**,
+**Downloads**, and the tools for somebody building the page (tick Develop under the
+browser tab's Controls in the settings; the menu itself can be unticked there too): **Hard reload**; **Pick elements for the
 AI**, which opens **Picked elements** in the column on the right -- press **Pick**, press
 the parts of the page an AI should look at, add a note to any of them, and **Hand to an
 AI** puts them in that AI's input as a draft (what each one is, where it sits, its markup
@@ -126,8 +127,8 @@ the browser's DevTools, right-click the page's tab (hold it on a phone) and choo
 the pane, and a phone is shown them and works them like any page. To hand work to another tab, name it
 with @ in the input box.
 
-**Find in page**: press **Ctrl+F** on a web page (or the search button on the bar above
-it, which is how a phone opens it). It is one of the controls a browser tab chooses
+**Find in page**: press **Ctrl+F** on a web page (or **Find in page** in the bar's menu,
+which is how a phone opens it). It is one of the controls a browser tab chooses
 (Find in page, under the tab's Controls in the settings); a page without it keeps the
 browser's own small search box for Ctrl+F. Type, and every match is lit as you go, with the one
 you are on in orange; **Enter** goes to the next match, **Shift+Enter** to the one before,
@@ -141,7 +142,7 @@ shown in its folder); on a phone, **Save to this device** brings it to the phone
 A page of a folder on an SSH server or a MicroVM saves to that machine instead,
 in its `~/Downloads`, where the AI working in the folder can use it; the list
 names the machine and the path, and **Save to this PC** brings a copy here. The
-download button on the bar above the page brings the list back.
+menu's **Downloads** brings the list back.
 
 **The input box** at the bottom is where you type to the tab in view. On a phone
 it is the only way in.
