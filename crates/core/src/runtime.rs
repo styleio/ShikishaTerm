@@ -2426,6 +2426,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut seek_opened: u64 = 0;
     // How many downloads have begun this run (`UiState::download_seq`)
     let mut download_seq: u64 = 0;
+    // Files crossing to and from other machines (see `Crossed`): the work is
+    // done on threads of its own, and its end is heard here
+    let (crossed_tx, crossed_rx) = std::sync::mpsc::channel::<Crossed>();
 
     let mut auto_enabled = true;
     // How often a still-working tab is mentioned to automation again. None
@@ -13546,14 +13549,44 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // and its end is said once, on whatever screen the person is at
         for (child, item) in shell.mail().take_downloads() {
             let known = caps.download(&item.id).is_some();
-            let (name, why) = (item.name.clone(), item.why.clone());
+            let (id, name, why) = (item.id.clone(), item.name.clone(), item.why.clone());
             let change = caps.note_download(child.as_deref(), item);
             if !known && change != crate::downloads::Change::Nothing {
                 download_seq += 1;
             }
             match change {
                 crate::downloads::Change::Ended(shikisha_shared::DownloadState::Done) => {
-                    flash = Some(i18n::tp("msg.download.done", &[("name", &name)]));
+                    // A page of a folder on another machine: the file belongs
+                    // there, with the folder, and is sent on. Said once it is
+                    // The machine is the page's folder's own, worked out the way
+                    // the git panel works out where its git runs: a folder on a
+                    // MicroVM is a machine of its own under the entry's name
+                    let row = caps.download(&id);
+                    let host = row.as_ref().filter(|r| !r.item.far).and_then(|r| {
+                        let d = desks.get(desk_index)?;
+                        d.page_tab(r.page.as_deref()?).and_then(|t| d.folder_of(t)).and_then(|f| f.host.clone())
+                    });
+                    let machine = host.as_ref().map(|h| h.name.clone());
+                    let at = host.as_ref().and_then(|h| crate::elsewhere::Elsewhere::of(h).ok());
+                    match (machine, at, row) {
+                        (Some(machine), Some(at), Some(row)) => {
+                            caps.download_sending(&id, &machine);
+                            let tx = crossed_tx.clone();
+                            let from = std::path::PathBuf::from(&row.item.path);
+                            std::thread::spawn(move || {
+                                let result = crate::downloads::send_away(&at, &from).map_err(|e| format!("{e:#}"));
+                                if result.is_ok() {
+                                    crate::downloads::remember_away(&id, at);
+                                }
+                                let _ = tx.send(Crossed::Sent { id, machine, result });
+                            });
+                        }
+                        (Some(machine), _, _) => {
+                            caps.download_unsent(&id, &machine);
+                            flash = Some(i18n::tp("msg.download.unsent", &[("name", &name), ("machine", &machine)]));
+                        }
+                        _ => flash = Some(i18n::tp("msg.download.done", &[("name", &name)])),
+                    }
                 }
                 crate::downloads::Change::Ended(shikisha_shared::DownloadState::Failed) => {
                     let why = match crate::downloads::WHY.contains(&why.as_str()) {
@@ -13564,6 +13597,29 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     flash = Some(i18n::tp("msg.download.failed", &[("name", &name), ("why", &why)]));
                 }
                 _ => {}
+            }
+        }
+        // A file that crossed to or from another machine
+        while let Ok(crossed) = crossed_rx.try_recv() {
+            match crossed {
+                Crossed::Sent { id, machine, result: Ok(path) } => {
+                    caps.download_sent(&id, &path);
+                    let name = path.rsplit('/').next().unwrap_or_default().to_string();
+                    flash = Some(i18n::tp("msg.download.done.on", &[("name", &name), ("machine", &machine), ("path", &path)]));
+                }
+                Crossed::Sent { id, machine, result: Err(e) } => {
+                    append_hook_log(&format!("download {id}: not sent to {machine}: {e}"));
+                    let name = caps.download(&id).map(|r| r.item.name).unwrap_or_default();
+                    caps.download_unsent(&id, &machine);
+                    flash = Some(i18n::tp("msg.download.unsent", &[("name", &name), ("machine", &machine)]));
+                }
+                Crossed::Fetched { result: Ok(here) } => {
+                    flash = Some(i18n::tp("msg.download.fetched", &[("path", &here.display().to_string())]));
+                    reveal_in_folder(&here, true, false);
+                }
+                Crossed::Fetched { result: Err(e) } => {
+                    flash = Some(i18n::tp("msg.download.not_fetched", &[("why", &e)]));
+                }
             }
         }
         // Something pressed on a line of the list
@@ -13577,10 +13633,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "forget" => caps.forget_download(&id),
                 "clear" => caps.clear_downloads(),
                 "folder" => crate::webui::open_external(&caps.downloads_folder().display().to_string()),
+                // A file on another machine, brought here (into this
+                // machine's Downloads folder) and shown in its folder
+                "fetch" => {
+                    let Some(row) = caps.download(&id) else { continue };
+                    let Some(machine) = row.machine.clone().filter(|_| !row.sending) else { continue };
+                    let Some(at) = crate::downloads::away(&id) else {
+                        flash = Some(i18n::tp("msg.download.not_fetched", &[("why", &machine)]));
+                        continue;
+                    };
+                    let tx = crossed_tx.clone();
+                    let there = row.item.path.clone();
+                    std::thread::spawn(move || {
+                        let result = crate::downloads::fetch_here(&at, &there, &crate::downloads::folder()).map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Crossed::Fetched { result });
+                    });
+                }
                 "open" | "reveal" => {
                     // Only a file that is whole, and on this machine
                     let Some(row) = caps.download(&id) else { continue };
-                    if row.item.far || row.item.state != shikisha_shared::DownloadState::Done {
+                    if row.item.far || row.machine.is_some() || row.item.state != shikisha_shared::DownloadState::Done {
                         continue;
                     }
                     let path = std::path::PathBuf::from(&row.item.path);
@@ -15046,6 +15118,16 @@ fn link_said(
             })
         }
     }
+}
+
+/// A file that crossed between this machine and another, heard back from
+/// the thread that carried it
+enum Crossed {
+    /// A download of a far folder's page, sent to that machine: where it is
+    /// there, or why not
+    Sent { id: String, machine: String, result: std::result::Result<String, String> },
+    /// A file brought here from another machine: where it landed, or why not
+    Fetched { result: std::result::Result<std::path::PathBuf, String> },
 }
 
 /// The search bar over one page.

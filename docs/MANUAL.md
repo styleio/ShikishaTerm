@@ -135,7 +135,10 @@ phone watching the same page share one search, and the words stay when the page 
 **Downloads**: a file a web page saves goes to your Downloads folder, and the
 **Downloads** list opens in the column on the right -- each file with how far it has got
 and where it went. At the PC, open it or show it in its folder (a program is only ever
-shown in its folder); on a phone, **Save to this device** brings it to the phone. The
+shown in its folder); on a phone, **Save to this device** brings it to the phone.
+A page of a folder on an SSH server or a MicroVM saves to that machine instead,
+in its `~/Downloads`, where the AI working in the folder can use it; the list
+names the machine and the path, and **Save to this PC** brings a copy here. The
 download button on the bar above the page brings the list back.
 
 **The input box** at the bottom is where you type to the tab in view. On a phone

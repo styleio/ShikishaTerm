@@ -108,6 +108,77 @@ pub fn move_into(from: &std::path::Path, to: &std::path::Path) -> std::io::Resul
     Ok(())
 }
 
+/// How long one file may take to cross to another machine, or back
+const CROSS_MS: u64 = 10 * 60 * 1000;
+
+/// The machine each download sent away is on, by its id: what bringing it back
+/// asks -- from the window's "Save to this PC" and from a phone's "Save to this
+/// device" alike, the second of which is answered by a thread that has nothing
+/// but the line it was asked for. The machine is the folder's own (a folder on
+/// a MicroVM is a machine of its own), not the entry its name came from
+static AWAY: std::sync::Mutex<Option<std::collections::HashMap<String, crate::elsewhere::Elsewhere>>> =
+    std::sync::Mutex::new(None);
+
+/// Remember where a download was sent
+pub fn remember_away(id: &str, at: crate::elsewhere::Elsewhere) {
+    let mut held = AWAY.lock().unwrap_or_else(|e| e.into_inner());
+    held.get_or_insert_with(Default::default).insert(id.to_string(), at);
+}
+
+/// The machine a download was sent to, when it was
+pub fn away(id: &str) -> Option<crate::elsewhere::Elsewhere> {
+    AWAY.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(id).cloned())
+}
+
+/// Send a whole file to the Downloads folder of another machine, numbered
+/// there the way a browser numbers a second file of a name, and take it off
+/// this one. Answers where it is now, as that machine writes it.
+///
+/// For a page of a folder on an SSH server or a MicroVM: the page is drawn by
+/// this machine's browser, so the file arrives here first -- and it belongs
+/// with the folder, where the AI working in it can use it. The copy here is
+/// removed only once the one there is whole
+pub fn send_away(at: &crate::elsewhere::Elsewhere, from: &std::path::Path) -> anyhow::Result<String> {
+    use crate::ssh::FileJob;
+    let home = crate::elsewhere::exec(at, "printf %s \"$HOME\"", 60_000)?;
+    let home = home.out.trim().trim_end_matches('/').to_string();
+    if !home.starts_with('/') {
+        anyhow::bail!(crate::i18n::t("msg.download.why.denied"));
+    }
+    let dir = format!("{home}/Downloads");
+    let _ = crate::elsewhere::files(at, FileJob::MakeDir { path: dir.clone() }, 60_000);
+    let name = safe_name(&from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name.as_str(), ""),
+    };
+    for n in 0..1000 {
+        let file = if n == 0 { name.clone() } else { format!("{stem} ({n}){ext}") };
+        let to = format!("{dir}/{file}");
+        if crate::elsewhere::files(at, FileJob::Stat { path: to.clone() }, 60_000).is_ok() {
+            continue;
+        }
+        crate::elsewhere::files(at, FileJob::Put { from: from.to_path_buf(), to: to.clone(), overwrite: false }, CROSS_MS)?;
+        let _ = std::fs::remove_file(from);
+        return Ok(to);
+    }
+    anyhow::bail!(crate::i18n::t("msg.download.why.disk"))
+}
+
+/// Bring a file from another machine into `dir` on this one, under its own
+/// name (numbered if that is taken). Answers where it landed
+pub fn fetch_here(at: &crate::elsewhere::Elsewhere, there: &str, dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let leaf = there.rsplit('/').next().unwrap_or("download");
+    let to = take_place(dir, leaf).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("msg.download.why.disk")))?;
+    match crate::elsewhere::files(at, crate::ssh::FileJob::Get { from: there.to_string(), to: to.clone(), overwrite: true }, CROSS_MS) {
+        Ok(_) => Ok(to),
+        Err(e) => {
+            let _ = std::fs::remove_file(&to);
+            Err(e)
+        }
+    }
+}
+
 /// The site an address belongs to, as a person reads it (`example.com`)
 pub fn site_of(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
@@ -125,6 +196,15 @@ pub struct Row {
     pub page: Option<String>,
     /// When it started, in ms since the epoch
     pub began: i64,
+    /// The machine the file is on, by name, when that is not the one the
+    /// browser saved it on: a page of a folder on an SSH server or a MicroVM
+    /// saves there (see [`send_away`]). `None` is where the browser put it
+    pub machine: Option<String>,
+    /// Being sent to that machine right now
+    pub sending: bool,
+    /// The machine it could not be sent to, by name; the file stayed where
+    /// the browser put it. Empty when nothing failed
+    pub unsent: String,
 }
 
 /// What a report changed, for whoever says so to the person.
@@ -171,7 +251,7 @@ impl List {
             };
         }
         let state = item.state;
-        self.rows.insert(0, Row { item, page, began: now_ms });
+        self.rows.insert(0, Row { item, page, began: now_ms, machine: None, sending: false, unsent: String::new() });
         self.trim();
         match state {
             DownloadState::Going => Change::Began,
@@ -209,12 +289,39 @@ impl List {
         &self.rows
     }
 
+    /// The file is on its way to the machine named
+    pub fn sending(&mut self, id: &str, machine: &str) {
+        if let Some(row) = self.rows.iter_mut().find(|r| r.item.id == id) {
+            row.machine = Some(machine.to_string());
+            row.sending = true;
+        }
+    }
+
+    /// It arrived there, at `path` (as that machine writes it)
+    pub fn sent(&mut self, id: &str, path: &str) {
+        if let Some(row) = self.rows.iter_mut().find(|r| r.item.id == id) {
+            row.sending = false;
+            row.item.path = path.to_string();
+            row.item.name = path.rsplit('/').next().unwrap_or(&row.item.name).to_string();
+        }
+    }
+
+    /// It could not be sent to the machine named, and stays where the browser
+    /// put it
+    pub fn unsent(&mut self, id: &str, machine: &str) {
+        if let Some(row) = self.rows.iter_mut().find(|r| r.item.id == id) {
+            row.machine = None;
+            row.sending = false;
+            row.unsent = machine.to_string();
+        }
+    }
+
     /// The folder the newest file is in: where "open the folder" goes, since
     /// that is where the person was just looking for something
     pub fn newest_folder(&self) -> Option<std::path::PathBuf> {
         self.rows
             .iter()
-            .filter(|r| !r.item.far && !r.item.path.is_empty())
+            .filter(|r| !r.item.far && r.machine.is_none() && !r.item.path.is_empty())
             .find_map(|r| std::path::Path::new(&r.item.path).parent().map(std::path::Path::to_path_buf))
     }
 }
@@ -240,8 +347,15 @@ pub struct View {
     pub path: String,
     pub got: u64,
     pub total: u64,
-    /// `going` / `done` / `failed` / `cancelled`
+    /// `going` / `sending` (whole here, on its way to `machine`) / `done` /
+    /// `failed` / `cancelled`
     pub state: String,
+    /// The machine the file is on, by name; empty when it is where the
+    /// browser saved it
+    pub machine: String,
+    /// The machine its folder is on, when it could not be sent there; it
+    /// stayed where the browser saved it
+    pub unsent: String,
     /// What stopped a failed one, as a key of `msg.download.why.*`
     pub why: String,
     /// The tab the page that saved it is in, by key; empty when not known
@@ -266,7 +380,9 @@ impl View {
             path: i.path.clone(),
             got: i.got,
             total: i.total,
-            state: state_word(i.state).to_string(),
+            state: if r.sending { "sending".to_string() } else { state_word(i.state).to_string() },
+            machine: r.machine.clone().unwrap_or_default(),
+            unsent: r.unsent.clone(),
             why: i.why.clone(),
             page: r.page.clone().unwrap_or_default(),
             far: i.far,
@@ -370,12 +486,32 @@ mod tests {
         assert_eq!(site_of("http://localhost:3000/x"), "localhost:3000");
     }
 
+    /// A file of a far folder's page reads as on its way, then as on that
+    /// machine under the name it got there; one that could not be sent stays
+    /// here and says which machine it could not reach
+    #[test]
+    fn a_file_sent_away_says_where_it_is() {
+        let mut l = List::default();
+        l.note(Some("web".into()), item("a", DownloadState::Done, 100), 1);
+        l.sending("a", "srv");
+        assert_eq!(View::of(l.get("a").unwrap()).state, "sending");
+        l.sent("a", "/home/me/Downloads/report (1).pdf");
+        let v = View::of(l.get("a").unwrap());
+        assert_eq!((v.state.as_str(), v.machine.as_str(), v.name.as_str()), ("done", "srv", "report (1).pdf"));
+        assert!(l.newest_folder().is_none(), "the folder of a file on another machine is opened here");
+        l.note(None, item("b", DownloadState::Done, 100), 2);
+        l.sending("b", "srv");
+        l.unsent("b", "srv");
+        let v = View::of(l.get("b").unwrap());
+        assert_eq!((v.machine.as_str(), v.unsent.as_str()), ("", "srv"));
+    }
+
     /// A program is not opened from the list, the same rule a link follows
     #[test]
     fn a_program_is_offered_its_folder_not_opened() {
-        let row = Row { item: Download { name: "setup.exe".into(), ..item("a", DownloadState::Done, 100) }, page: None, began: 0 };
+        let row = Row { item: Download { name: "setup.exe".into(), ..item("a", DownloadState::Done, 100) }, page: None, began: 0, machine: None, sending: false, unsent: String::new() };
         assert!(View::of(&row).runs);
-        let row = Row { item: item("a", DownloadState::Done, 100), page: None, began: 0 };
+        let row = Row { item: item("a", DownloadState::Done, 100), page: None, began: 0, machine: None, sending: false, unsent: String::new() };
         assert!(!View::of(&row).runs);
     }
 }

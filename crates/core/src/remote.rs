@@ -2849,20 +2849,45 @@ fn handle(
                 .ui
                 .as_ref()
                 .and_then(|ui| ui.downloads.iter().find(|d| d.id == id && d.state == "done" && !d.far).cloned());
-            let file = line.as_ref().and_then(|d| std::fs::File::open(&d.path).ok().map(|f| (d.name.clone(), f)));
-            let Some((name, file)) = file else {
+            let Some(line) = line else {
                 req.respond(Response::from_string("gone").with_status_code(404))?;
                 return Ok(());
             };
-            let resp = Response::from_file(file)
-                .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]).unwrap())
-                .with_header(Header::from_bytes(&b"Content-Disposition"[..], attachment_named(&name).as_bytes()).unwrap())
-                .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
             // From a thread of its own: this one answers every request from the
             // phone, keys included, and a large file going out over a slow line
-            // would hold them all until it had
+            // -- or being fetched first from the machine it is kept on -- would
+            // hold them all until it had
             std::thread::spawn(move || {
+                // Kept on another machine (a page of a folder there saved it):
+                // brought here for the moment it takes to hand it over
+                let fetched = (!line.machine.is_empty()).then(|| {
+                    let at = crate::downloads::away(&line.id)?;
+                    let dir = std::env::temp_dir().join(format!("shikisha-handover-{}", crate::random_hex(6)));
+                    crate::downloads::fetch_here(&at, &line.path, &dir).ok()
+                });
+                let path = match &fetched {
+                    Some(Some(here)) => here.clone(),
+                    Some(None) => {
+                        let _ = req.respond(Response::from_string("not fetched").with_status_code(502));
+                        return;
+                    }
+                    None => std::path::PathBuf::from(&line.path),
+                };
+                let Ok(file) = std::fs::File::open(&path) else {
+                    let _ = req.respond(Response::from_string("gone").with_status_code(404));
+                    return;
+                };
+                let resp = Response::from_file(file)
+                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]).unwrap())
+                    .with_header(Header::from_bytes(&b"Content-Disposition"[..], attachment_named(&line.name).as_bytes()).unwrap())
+                    .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
                 let _ = req.respond(resp);
+                if let Some(Some(here)) = fetched {
+                    let _ = std::fs::remove_file(&here);
+                    if let Some(dir) = here.parent() {
+                        let _ = std::fs::remove_dir(dir);
+                    }
+                }
             });
         }
         // The quick actions, as the board's page is handed them when it loads.

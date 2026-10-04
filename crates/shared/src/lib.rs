@@ -858,7 +858,8 @@ pub enum Ev {
     /// it, never by a page
     Download { from: Option<String>, item: Download },
     /// Something pressed on a download in the list: `open` the file,
-    /// `reveal` it in its folder, `cancel` it, `forget` it (the line goes,
+    /// `reveal` it in its folder, `fetch` one kept on another machine into
+    /// this one's Downloads folder, `cancel` it, `forget` it (the line goes,
     /// the file stays), `clear` every finished line, or open the `folder`
     /// downloads go to. `id` is empty for the last two
     DownloadAct { id: String, act: String },
@@ -1761,7 +1762,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         }
         Some("download") => {
             let act = v.get("act").and_then(|x| x.as_str()).unwrap_or_default();
-            if !matches!(act, "open" | "reveal" | "cancel" | "forget" | "clear" | "folder") {
+            if !matches!(act, "open" | "reveal" | "fetch" | "cancel" | "forget" | "clear" | "folder") {
                 return None;
             }
             Ev::DownloadAct {

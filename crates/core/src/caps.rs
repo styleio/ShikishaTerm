@@ -1506,6 +1506,21 @@ impl Capabilities {
         self.downloads.borrow().newest_folder().unwrap_or_else(crate::downloads::folder)
     }
 
+    /// A finished file is on its way to the machine its page's folder is on
+    pub fn download_sending(&self, id: &str, machine: &str) {
+        self.downloads.borrow_mut().sending(id, machine);
+    }
+
+    /// It arrived there
+    pub fn download_sent(&self, id: &str, path: &str) {
+        self.downloads.borrow_mut().sent(id, path);
+    }
+
+    /// It could not be sent to that machine, and stays where the browser saved it
+    pub fn download_unsent(&self, id: &str, machine: &str) {
+        self.downloads.borrow_mut().unsent(id, machine);
+    }
+
     /// Stop a download still going, through whichever browser is saving it
     pub fn cancel_download(&self, id: &str) -> Result<()> {
         let host = self

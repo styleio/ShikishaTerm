@@ -336,6 +336,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #dlpanel .dl .ds { font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #dlpanel .dl .ds.bad { color:var(--stop); white-space:normal; }
+  #dlpanel .dl .ds.warn { color:var(--warn); white-space:normal; }
   #dlpanel .dl .dp { font-size:10px; font-family:var(--mono); color:var(--faint);
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
   #dlpanel .dl .da { flex:none; display:flex; gap:2px; }
@@ -8821,6 +8822,15 @@ function dlSays(d) {
     const got = d.total > 0 ? dlSize(d.got) + " / " + dlSize(d.total) : dlSize(d.got);
     return {text: site ? got + " · " + site : got, bad: false};
   }
+  if (d.state === "sending") {
+    return {text: (T["tui.dl.sending"] || "").replaceAll("{machine}", d.machine), bad: false};
+  }
+  if (d.state === "done" && d.machine) {
+    return {text: (T["tui.dl.done.on"] || "").replaceAll("{machine}", d.machine).replaceAll("{site}", site), bad: false};
+  }
+  if (d.state === "done" && d.unsent) {
+    return {text: (T["tui.dl.unsent"] || "").replaceAll("{machine}", d.unsent), bad: false, warn: true};
+  }
   if (d.state === "done") {
     return {text: (T[d.far ? "tui.dl.done.far" : "tui.dl.done"] || "").replaceAll("{site}", site), bad: false};
   }
@@ -8859,7 +8869,10 @@ function drawDownloads() {
     const icon = (mark, word, go, cls) => el("button", {type:"button", class:"pa" + (cls ? " " + cls : ""),
       title:T[word] || "", onclick: e => { e.stopPropagation(); go(); }}, mark);
     if (d.state === "going") acts.append(icon("✕", "tui.dl.cancel", act(d, "cancel"), "stop"));
-    if (d.state === "done" && !d.far && AT_PC) {
+    // Kept on the machine its page's folder is on: at the PC it is brought
+    // here on a press; anywhere else it is handed to the device in hand below
+    if (d.state === "done" && d.machine && AT_PC) acts.append(icon(pickIcon("download"), "tui.dl.fetch", act(d, "fetch")));
+    if (d.state === "done" && !d.far && !d.machine && AT_PC) {
       // A program is shown in its folder, not run from here
       if (!d.runs) acts.append(icon(pickIcon("open"), "tui.dl.open", act(d, "open")));
       acts.append(icon(pickIcon("folderOpen"), "tui.dl.reveal", act(d, "reveal")));
@@ -8867,17 +8880,23 @@ function drawDownloads() {
     // Anywhere else, the file comes to the device in hand. The board's own
     // sign-in goes with the request, so the address carries no key
     if (d.state === "done" && !d.far && !AT_PC) {
+      // Kept on another machine, it is fetched from there as it is handed over
       acts.append(el("a", {class:"pa", href:"api/download?id=" + encodeURIComponent(d.id), download:d.name || "",
         title:T["tui.dl.save_here"] || ""}, pickIcon("download")));
     }
-    if (d.state !== "going") acts.append(icon("✕", "tui.dl.forget", act(d, "forget")));
+    if (d.state !== "going" && d.state !== "sending") acts.append(icon("✕", "tui.dl.forget", act(d, "forget")));
     const words = el("span", {class:"dw"},
       el("span", {class:"dn", title:d.url || ""}, d.name || d.site || ""),
-      el("span", {class:"ds" + (says.bad ? " bad" : "")}, says.text));
+      el("span", {class:"ds" + (says.bad ? " bad" : says.warn ? " warn" : "")}, says.text));
     if (d.state === "going" && d.total > 0) words.append(progressBar(d.got * 100 / d.total).bar);
-    if (d.state === "done" && d.path) words.append(el("span", {class:"dp", title:d.path}, dlFolder(d.path)));
-    rows.append(el("div", {class:"dl" + (d.state === "going" ? "" : " ended")},
-      pickIcon(d.state === "going" ? "download" : "file"), words, acts));
+    // Where it went, with the machine named when it is not where the list is
+    if (d.state === "done" && d.path) {
+      const where = (d.machine ? d.machine + ": " : "") + dlFolder(d.path);
+      words.append(el("span", {class:"dp", title:(d.machine ? d.machine + ": " : "") + d.path}, where));
+    }
+    const coming = d.state === "going" || d.state === "sending";
+    rows.append(el("div", {class:"dl" + (coming ? "" : " ended")},
+      pickIcon(coming ? "download" : "file"), words, acts));
   }
   if (!list.length) rows.append(el("div", {class:"fsay"}, T["tui.dl.none"] || ""));
   box.append(rows);

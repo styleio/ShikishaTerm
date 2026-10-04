@@ -22,7 +22,10 @@ once it reaches its first tagged release.
   far it has got, the site it came from and where it went. Cancel one still
   coming; at the PC, open a finished one or show it in its folder (a program
   is only ever shown in its folder); from a phone, **Save to this device**
-  brings the file to the phone. A download button on the bar above the page
+  brings the file to the phone. A page of a folder on an SSH server or a
+  MicroVM saves to that machine's `~/Downloads` instead, where the AI working
+  in the folder can use it; the list names the machine and the path, and
+  **Save to this PC** brings a copy here. A download button on the bar above the page
   brings the list back. The server version saves what its pages download too
   (it used to refuse every download), and a script reads the same list with
   `shikisha.downloads()`.
