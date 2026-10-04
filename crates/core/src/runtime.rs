@@ -6304,6 +6304,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 develop: spec.develop,
                 edit: spec.url,
                 point: spec.point,
+                find: spec.find,
                 can_back: w.is_some_and(|w| w.2),
                 can_forward: w.is_some_and(|w| w.3),
                 at: w.map(|w| w.1.clone()).unwrap_or_default(),
@@ -13492,7 +13493,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
-            if !searchable(key) {
+            // Only where the page's controls offer it: off, Ctrl+F is the
+            // browser's own small box, and the bar has no button for it
+            if !searchable(key) || !caps.nav_of(key).is_some_and(|n| n.find) {
                 continue;
             }
             // A key pressed in a page is about that page. One that is not the

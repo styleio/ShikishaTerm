@@ -2089,7 +2089,7 @@
   "tui.nav.url.ph": "Search or enter address",
   "tui.nav.url.go": "Open what is typed",
   "tui.nav.point": "Click mode (phone)",
-  "settings.browser.nav.hint": "Shown in a row above the page. Use it when a person picks the page first and then hands it over with the banner button. Turn them all off if you don't need them — the page gets that space back. Click mode appears only while you are watching from a phone: it switches between a tap that clicks where your finger is and a finger that moves a pointer",
+  "settings.browser.nav.hint": "Shown in a row above the page. Use it when a person picks the page first and then hands it over with the banner button. Turn them all off if you don't need them — the page gets that space back. Click mode appears only while you are watching from a phone: it switches between a tap that clicks where your finger is and a finger that moves a pointer Find in page adds a search button; without it, Ctrl+F opens the browser's own small search box instead.",
   "settings.back": "Back to INDEX",
   "settings.nav.open": "Sections",
   "settings.broken.title": "This settings file can't be read",

@@ -127,7 +127,9 @@ the pane, and a phone is shown them and works them like any page. To hand work t
 with @ in the input box.
 
 **Find in page**: press **Ctrl+F** on a web page (or the search button on the bar above
-it, which is how a phone opens it). Type, and every match is lit as you go, with the one
+it, which is how a phone opens it). It is one of the controls a browser tab chooses
+(Find in page, under the tab's Controls in the settings); a page without it keeps the
+browser's own small search box for Ctrl+F. Type, and every match is lit as you go, with the one
 you are on in orange; **Enter** goes to the next match, **Shift+Enter** to the one before,
 and **Esc** closes the bar. F3 and Shift+F3 move through the matches too. The window and a
 phone watching the same page share one search, and the words stay when the page moves on.

@@ -1434,6 +1434,9 @@ impl Capabilities {
         // Can't show controls on a page that isn't open. Rejected here
         self.with(name, |_, _| Ok(()))?;
         let key = Self::key(self.desk.get(), name);
+        // Ctrl+F in the page goes where the controls say: the board's search
+        // row when it is offered, the browser's own box when it is not
+        let _ = self.with(name, |b, to| b.find_keys(to, spec.find));
         if spec.is_empty() {
             self.nav.borrow_mut().remove(&key);
         } else {
@@ -1444,6 +1447,7 @@ impl Capabilities {
 
     pub fn browser_unnav(&self, name: &str) -> Result<()> {
         self.with(name, |_, _| Ok(()))?;
+        let _ = self.with(name, |b, to| b.find_keys(to, false));
         self.nav.borrow_mut().remove(&Self::key(self.desk.get(), name));
         Ok(())
     }

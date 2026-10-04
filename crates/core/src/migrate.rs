@@ -60,7 +60,41 @@ const STEPS: &[Step] = &[
     Step { to: "0.19.0", apply: to_0_19_0 },
     Step { to: "0.20.0", apply: to_0_20_0 },
     Step { to: "0.24.0", apply: to_0_24_0 },
+    Step { to: "0.24.1", apply: to_0_24_1 },
 ];
+
+/// A browser tab whose controls include the address field is given the
+/// search for words on the page, written down as on.
+///
+/// The search is one of the controls a tab chooses (`NavSpec::find`), and a
+/// tab saved before it existed has nothing written about it -- which reads as
+/// off, and would take Ctrl+F away from every page somebody already browses.
+/// A tab with an address field is one a person browses; it gets the search,
+/// in its file, where the settings show it ticked and it can be unticked. A
+/// tab without one (a page a script shows with a reload button, or none) is
+/// left as it is: its controls were chosen to be few. The settings write the
+/// search either way from now on, so a search turned off stays off
+fn to_0_24_1(doc: &mut serde_json::Value) -> Result<()> {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(nav) = map.get_mut("nav").and_then(|n| n.as_object_mut())
+                    && nav.get("url").and_then(serde_json::Value::as_bool) == Some(true)
+                    && !nav.contains_key("find")
+                {
+                    nav.insert("find".into(), serde_json::Value::Bool(true));
+                }
+                for (_, child) in map.iter_mut() {
+                    walk(child);
+                }
+            }
+            serde_json::Value::Array(list) => list.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    walk(doc);
+    Ok(())
+}
 
 /// Every tab gets a uid of its own, written on its line.
 ///
@@ -884,6 +918,28 @@ mod tests {
         to_0_20_0(&mut doc).unwrap();
         assert_eq!(doc, once);
         let _: crate::config::Config = serde_json::from_value(doc).expect("it cannot be read after migrating");
+    }
+
+    /// A browsed tab is given the search once, written as on; a tab whose
+    /// controls were chosen to be few, or that has none, is left as it was;
+    /// and a search somebody turned off is not given back
+    #[test]
+    fn a_browsed_page_is_given_the_search_once() {
+        let mut doc: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::repo_root().join("tests").join("fixtures").join("config-0.24.0.json")).unwrap(),
+        )
+        .unwrap();
+        to_0_24_1(&mut doc).unwrap();
+        let tabs = doc["desks"][0]["folders"][0]["tabs"].as_array().unwrap();
+        assert_eq!(tabs[0]["nav"]["find"], true, "the browsed page was not given the search");
+        assert!(tabs[1]["nav"].get("find").is_none(), "a page with only a reload button was given the search");
+        assert!(tabs[2].get("nav").is_none(), "a page with no controls was given some");
+        let once = doc.clone();
+        to_0_24_1(&mut doc).unwrap();
+        assert_eq!(doc, once);
+        let mut off = serde_json::json!({"tabs": [{"command": "browser https://x/", "nav": {"url": true, "find": false}}]});
+        to_0_24_1(&mut off).unwrap();
+        assert_eq!(off["tabs"][0]["nav"]["find"], false, "a search turned off was given back");
     }
 
     /// The rename arrives without anybody losing what they had written.

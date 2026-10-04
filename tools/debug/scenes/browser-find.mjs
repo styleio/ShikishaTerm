@@ -48,7 +48,7 @@ const state = (extra) => JSON.stringify(JSON.stringify(Object.assign({
   ball: { holder: 0, from: 0, depth: 0, max: 0, phase: '', progress: 0, awaiting_human: false },
   auto_enabled: true, remote_on: false, restartable: true, build: '',
   help_rows: [], ais: [],
-  nav: { back: true, forward: true, reload: true, develop: true, edit: true, point: true,
+  nav: { back: true, forward: true, reload: true, develop: true, edit: true, point: true, find: true,
     can_back: true, can_forward: false, at: 'https://shop.example.com/cart', loading: false },
   downloads: [], download_seq: 0,
 }, extra)));
@@ -107,6 +107,22 @@ export default {
         if (!AT_PC && !rows[1].querySelector('a[download="prices.csv"]')) ${fail('a finished file is not offered to this device')};
         if (!AT_PC && rows[1].querySelector('a').getAttribute("href").includes("t=")) ${fail('the address of a file carries the key')};
       })`,
+    // A page whose controls leave the search out: no button, and Ctrl+F on
+    // the board is not taken (the browser's own box answers it in the page)
+    unoffered: {
+      run: `window.__state(${state({ nav: { back: true, forward: true, reload: true, develop: false, edit: true, point: false, find: false,
+          can_back: false, can_forward: false, at: 'https://shop.example.com/', loading: false } })});
+        new Promise(r => setTimeout(r, 300)).then(() => {
+          if ([...document.querySelectorAll("#nav button")].some(b => b.title === T["tui.nav.find"])) ${fail('the search button is there though the page leaves it out')};
+          const sent = []; const was = window.send; window.send = o => sent.push(o);
+          const e = new KeyboardEvent("keydown", {key: "f", code: "KeyF", ctrlKey: true, bubbles: true, cancelable: true});
+          document.body.dispatchEvent(e);
+          window.send = was;
+          if (sent.some(o => o.kind === "seek")) ${fail('Ctrl+F opened the search on a page that leaves it out')};
+        })`,
+      looks: ['dark'],
+      sizes: [['window', 1280, 800]],
+    },
     // Every line ended and gone: what appears here is said where the rows would be
     empty: {
       run: `window.__state(${state({ downloads: [], download_seq: 0 })}); sideReveal("downloads");

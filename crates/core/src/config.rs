@@ -3114,6 +3114,11 @@ pub struct NavSpec {
     /// mouse and nothing to choose
     #[serde(default)]
     pub point: bool,
+    /// The search for words on the page: its button on the bar, and Ctrl+F
+    /// and F3 opening the board's search row. Off, the keys are left to the
+    /// browser's own small search box
+    #[serde(default)]
+    pub find: bool,
 }
 
 impl NavSpec {
@@ -3124,7 +3129,7 @@ impl NavSpec {
 
     /// Show all of them. Used when the spec is omitted, as in `browser_nav(id)`
     pub fn all() -> Self {
-        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true }
+        Self { back: true, forward: true, reload: true, develop: true, url: true, point: true, find: true }
     }
 }
 

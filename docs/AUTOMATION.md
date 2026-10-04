@@ -431,7 +431,7 @@ survives navigation and never covers the site's own sticky header.
 ```lua
 shikisha.browser_nav(page.id)                                 -- all of them
 shikisha.browser_nav(page.id, { reload = true, url = true })  -- pick some
--- back / forward / reload / url / develop (hard reload, picking, DevTools, source, DOM)
+-- back / forward / reload / url / find (search the page; Ctrl+F) / develop (hard reload, picking, DevTools, source, DOM)
 -- point (phone only: a tap clicks where the finger is, or moves a pointer)
 shikisha.browser_unnav(page.id)                               -- take it away
 ```
@@ -442,10 +442,11 @@ address or words: an address opens, and anything else is searched for on Google.
 the settings screen for a browser tab, so this works with no Lua at all; a call from Lua
 wins over the setting.
 
-Two buttons come with the row whatever you pick, because they belong to whoever reads
-the page rather than to the script: a search button, and once a page has saved a file,
-a download button. The search is the one Ctrl+F (or F3) opens on any page a person is
-looking at, row or no row, in the window and on a phone alike. The download button
+`find` puts a search button on the row, and makes Ctrl+F (or F3) in the page open
+the app's search row under it -- the same search in the window and on a phone. Without
+it, Ctrl+F is the browser's own small search box, at the PC only.
+
+Once a page has saved a file, a download button joins the row whatever you pick: it
 opens the Downloads panel in the column beside the page: every file a page saved this
 run, newest first, with how far it has got and where it went. A script reads the same
 list with `shikisha.downloads()` -- click the link, then wait for its line to say

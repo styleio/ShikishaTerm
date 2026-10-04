@@ -2969,6 +2969,7 @@ impl HookEngine {
                                     develop: get("develop"),
                                     url: get("url"),
                                     point: get("point"),
+                                    find: get("find"),
                                 }
                             }
                         };

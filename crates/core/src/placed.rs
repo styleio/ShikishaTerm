@@ -277,6 +277,9 @@ impl BrowserHost for Placed {
     fn seek(&self, to: Option<&str>, text: &str, step: shikisha_shared::Seek) -> anyhow::Result<Option<(u32, u32)>> {
         self.on(to, |b| b.seek(to, text, step))
     }
+    fn find_keys(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
+        self.on(to, |b| b.find_keys(to, on))
+    }
     fn cancel_download(&self, id: &str) -> anyhow::Result<()> {
         let side = self.saving.borrow().get(id).copied();
         match side {

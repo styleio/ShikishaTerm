@@ -115,7 +115,10 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Find', id: 'find', folders: [{ cwd: WORK, tabs: [
     { name: 'shop', id: 'shop', command: `browser ${site}`,
-      nav: { back: true, forward: true, reload: true, url: true, develop: true, point: true } },
+      nav: { back: true, forward: true, reload: true, url: true, find: true, develop: true, point: true } },
+    // The same page with the search left out of its controls
+    { name: 'plain', id: 'plain', command: `browser ${site}plain`,
+      nav: { back: true, forward: true, reload: true, url: true, find: false } },
   ] }] }],
 }, null, 2));
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
@@ -196,6 +199,17 @@ try {
   await board.run('send({kind:"seek", what:"close"})');
   await until(() => board.run('!S.seek && document.getElementById("seek").hidden'), 'the row closed', 5000).catch(() => {});
   check(await board.run('!S.seek'), 'close takes the row away');
+
+  console.log('1b. a page that leaves the search out');
+  const plain = await board.run('S.tabs.find(t => (t.id || t.name) === "plain").index');
+  await board.run(`send({kind:"select", tab:${plain}})`);
+  await until(() => board.run(`S.active === ${plain} && !!S.nav`), 'the plain page in front');
+  check(await board.run('S.nav.find === false && ![...document.querySelectorAll("#nav button")].some(b => b.title === T["tui.nav.find"])'), 'no search button on it');
+  await board.run('send({kind:"seek", what:"open"})');
+  await sleep(800);
+  check(await board.run('!S.seek && document.getElementById("seek").hidden'), 'and asking for the search there opens nothing');
+  await board.run(`send({kind:"select", tab:${tab}})`);
+  await until(() => board.run(`S.active === ${tab}`), 'the shop page in front again');
 
   console.log('2. a download');
   for (let i = 0; i < 2; i++) {

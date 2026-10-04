@@ -51,6 +51,8 @@ pub enum Ask {
     Trust { url: String },
     /// Stop a download the browser over there is still saving
     CancelDownload { id: String },
+    /// Whether Ctrl+F in a page over there opens the board's search row
+    FindKeys { to: Option<String>, on: bool },
 }
 
 /// What came back.
@@ -437,6 +439,10 @@ impl BrowserHost for Far {
     fn cancel_download(&self, id: &str) -> anyhow::Result<()> {
         self.inner.tell(&Ask::CancelDownload { id: id.to_string() })
     }
+
+    fn find_keys(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
+        self.inner.tell(&Ask::FindKeys { to: to.map(str::to_string), on })
+    }
 }
 
 // ── the other end ─────────────────────────────────────────────────────────
@@ -477,6 +483,7 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
         }
         Ask::Trust { url } => done(browser.trust(url)),
         Ask::CancelDownload { id } => done(browser.cancel_download(id)),
+        Ask::FindKeys { to, on } => done(browser.find_keys(to.as_deref(), *on)),
     };
     match out {
         Ok(value) => (true, value),

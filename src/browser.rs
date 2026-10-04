@@ -237,6 +237,9 @@ pub enum Cmd {
     Seek { to: Option<String>, text: String, step: shikisha_shared::Seek },
     /// Stop a download still being saved (the id its `Ev::Download` carried)
     CancelDownload { id: String },
+    /// Whether Ctrl+F and F3 in this page open the board's search row (on) or
+    /// are left to the browser's own box (off)
+    FindKeys { to: Option<String>, on: bool },
     /// Start/stop screencasting (VNC-equivalent).
     /// Once started, `Ev::Frame` arrives on every change. `to` is the target
     /// page (`None` is the main view)
@@ -857,6 +860,11 @@ impl Browser {
     /// Stop a download that is still being saved
     pub fn cancel_download(&self, id: &str) -> Result<()> {
         self.send(Cmd::CancelDownload { id: id.to_string() })
+    }
+
+    /// Give Ctrl+F in a page to the board's search row, or back to the browser
+    pub fn find_keys(&self, to: Option<&str>, on: bool) -> Result<()> {
+        self.send(Cmd::FindKeys { to: to.map(str::to_string), on })
     }
 
     /// Send everything placed pages fetch through this proxy from now on.
@@ -2284,6 +2292,8 @@ fn run_window(
                     }
                 }
                 Cmd::CancelDownload { id } => cdp::cancel_download(&id),
+                Cmd::FindKeys { to: Some(name), on } => cdp::find_keys_for(&name, on),
+                Cmd::FindKeys { to: None, .. } => {}
                 Cmd::Where { to } => {
                     if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
                         let _ = where_tx.send(Ev::Where {
@@ -3393,6 +3403,25 @@ pub(crate) mod cdp {
         static NEXT_DOWNLOAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 
+    thread_local! {
+        /// The pages whose Ctrl+F and F3 open the board's search row. Any other
+        /// page keeps the browser's own small search box
+        static FIND_KEYS: std::cell::RefCell<std::collections::HashSet<String>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+    }
+
+    /// Give a page's Ctrl+F to the board (on) or back to the browser (off)
+    pub fn find_keys_for(page: &str, on: bool) {
+        FIND_KEYS.with(|k| {
+            let mut k = k.borrow_mut();
+            if on {
+                k.insert(page.to_string());
+            } else {
+                k.remove(page);
+            }
+        });
+    }
+
     /// Stop a download still being saved. One already over is left as it is
     pub fn cancel_download(id: &str) {
         let op = SAVING.with(|s| s.borrow().get(id).cloned());
@@ -3607,6 +3636,7 @@ pub(crate) mod cdp {
             }
             let held = |vk: u16| unsafe { GetKeyState(i32::from(vk)) } < 0;
             let (ctrl, shift, alt) = (held(VK_CONTROL), held(VK_SHIFT), held(VK_MENU));
+
             let what = match key {
                 0x46 if ctrl && !shift && !alt => "open",
                 k if k == u32::from(VK_F3) && !ctrl && !alt => if shift { "prev" } else { "next" },
@@ -3617,7 +3647,7 @@ pub(crate) mod cdp {
                 Ok(()) => webview2_com::take_pwstr(raw),
                 Err(_) => String::new(),
             };
-            if ours(&at) {
+            if ours(&at) || !FIND_KEYS.with(|k| k.borrow().contains(&page)) {
                 return Ok(());
             }
             unsafe {
@@ -5274,6 +5304,7 @@ impl BrowserHost for Browser {
         Browser::seek(self, to, text, step).map(|()| None)
     }
     fn cancel_download(&self, id: &str) -> Result<()> { Browser::cancel_download(self, id) }
+    fn find_keys(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::find_keys(self, to, on) }
     fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
         Browser::basic_auth(self, to, user, pass)
     }

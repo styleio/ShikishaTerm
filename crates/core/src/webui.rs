@@ -16681,9 +16681,9 @@ function marksCard() {
 // The controls a browser tab can show over its page, in the order they are
 // offered, each with its label. Saving writes the same list, so one offered
 // here cannot be dropped by the next save
-const NAV_PARTS = ["back", "forward", "reload", "url", "develop", "point"];
+const NAV_PARTS = ["back", "forward", "reload", "url", "find", "develop", "point"];
 const NAV_LABEL = {back:"tui.nav.back", forward:"tui.nav.forward", reload:"tui.nav.reload",
-  url:"tui.nav.url", develop:"tui.nav.develop", point:"tui.nav.point"};
+  url:"tui.nav.url", find:"tui.nav.find", develop:"tui.nav.develop", point:"tui.nav.point"};
 
 function kindPanel(t, cmdInput, rebuild, real) {
   if (catOf(t.command) === "ai") return aiPanel(t, cmdInput, rebuild, real);
@@ -17187,6 +17187,10 @@ function nest(flat) {
       node.nav = {};
       for (const k of NAV_PARTS)
         if (f.nav[k]) node.nav[k] = true;
+      // The search is written either way: a tab from before it existed has
+      // none written, and is given it once (migrate::to_0_24_1) -- a tab whose
+      // search was turned off must say so, or it would be given it again
+      node.nav.find = !!f.nav.find;
     }
     // A server connection's own settings, written only when there is
     // something in them -- an empty block would say "this tab is a server"

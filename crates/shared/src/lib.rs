@@ -1143,6 +1143,12 @@ pub trait BrowserHost {
     fn seek(&self, _to: Option<&str>, _text: &str, _step: Seek) -> anyhow::Result<Option<(u32, u32)>> {
         anyhow::bail!("this browser cannot search a page for words")
     }
+    /// Whether Ctrl+F and F3 pressed in this page are the board's (its search
+    /// row) or the browser's own. Only a browser that keeps keys from its
+    /// pages has anything to do; answering is optional
+    fn find_keys(&self, _to: Option<&str>, _on: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Stop a download that is still going. `id` is the one its
     /// `Ev::Download` carried. Answering is optional, as above
     fn cancel_download(&self, _id: &str) -> anyhow::Result<()> {

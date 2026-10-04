@@ -16,7 +16,9 @@ once it reaches its first tagged release.
   closes it. Ctrl+F pressed inside the page opens the same row instead of the
   browser's own little box, so a phone watching the same page sees the same
   search, and can open it from the bar's button. The words stay when the page
-  moves on, and the new page is searched for them.
+  moves on, and the new page is searched for them. It is one of the controls
+  a browser tab chooses (Find in page); a tab already saved with an address
+  field has it ticked, and one without it keeps the browser's own small box.
 - **Downloads.** A file a web page saves goes to the Downloads folder, and a
   **Downloads** list opens in the column beside the page: each file with how
   far it has got, the site it came from and where it went. Cancel one still

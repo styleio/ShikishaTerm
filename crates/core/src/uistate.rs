@@ -2245,6 +2245,9 @@ pub struct NavState {
     /// watching the page draws it; the window has a mouse and nothing to choose
     #[serde(default)]
     pub point: bool,
+    /// The search for words on the page: its button, and Ctrl+F opening the row
+    #[serde(default)]
+    pub find: bool,
     pub can_back: bool,
     pub can_forward: bool,
     /// Where it's currently open

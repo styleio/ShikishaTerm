@@ -12456,9 +12456,9 @@ function drawNav() {
       }
     }
     // The search over the page and the files it saved, after the address the
-    // way a browser keeps them beside its own. Every page a person reads can
-    // be searched; the download button is there once anything was saved
-    if (seekable(activeTab())) {
+    // way a browser keeps them beside its own. The search where the page's
+    // controls offer it; the download button once anything was saved
+    if (want.find && seekable(activeTab())) {
       const sb = el("button", {title:T["tui.nav.find"] || ""}, pickIcon("search"));
       sb.onclick = () => seekOpen();
       n.append(sb);
@@ -12510,8 +12510,9 @@ function downloadButton(dls) {
 // on the way to a word; Enter sends at once
 let seekTimer = 0;
 let seekShown = 0;
-// A page a person reads: every browser tab but the app's own settings
-const seekable = t => !!(t && t.kind === "browser" && !t.settings);
+// A page whose controls offer the search: a browser tab (not the app's own
+// settings) with the search ticked among its controls
+const seekable = t => !!(t && t.kind === "browser" && !t.settings && S && S.nav && S.nav.find);
 function seekOpen() {
   if (!seekable(activeTab()) || covering()) return false;
   send({kind:"seek", what:"open"});
@@ -12605,7 +12606,8 @@ function drawSeek() {
 }
 // Ctrl+F and F3 on the board itself. Pressed in the page instead, the browser
 // that draws it keeps the key and says so (Ev::SeekAsk), so either way the
-// same bar opens. A key the person set for something else keeps that meaning
+// same bar opens -- on a page whose controls offer the search. A key the
+// person set for something else keeps that meaning
 document.addEventListener("keydown", e => {
   if (e.isComposing || e.altKey || e.metaKey) return;
   const find = e.ctrlKey && !e.shiftKey && e.code === "KeyF";
