@@ -422,7 +422,7 @@ settings screen, so it cannot fall behind.
 
 **A project's settings**
 
-- **The project's page** — Worktree creation rules, name and checkout, git account, protected branches, what the AI is told, setup
+- **The project's page** — Worktree creation rules, name and checkout, Git authentication, protected branches, what the AI is told, setup
 
 <!-- /guide -->
 
