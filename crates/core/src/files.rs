@@ -35,6 +35,80 @@ const WALK_DEPTH: usize = 12;
 /// bundle, not something being read here, and the honest answer is to say so
 pub const READ_LIMIT: u64 = 4 * 1024 * 1024;
 
+/// The path of `name` in the folder `rel` is in: what a rename or a copy beside
+/// it is written to. None for a name that is not one name -- empty, a dot or
+/// two, or with a slash that would put it in another folder
+pub fn beside(rel: &str, name: &str) -> Option<String> {
+    let name = name.trim();
+    let one = !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\']) && !name.chars().any(char::is_control);
+    if !one {
+        return None;
+    }
+    let rel = rel.replace('\\', "/");
+    Some(match rel.trim_matches('/').rsplit_once('/') {
+        Some((folder, _)) => format!("{folder}/{name}"),
+        None => name.to_string(),
+    })
+}
+
+/// A copy of a file, or of a folder and everything in it, at `to`, which must
+/// not be there yet. A folder is never copied into itself
+pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(from)?;
+    if !meta.is_dir() {
+        return std::fs::copy(from, to).map(|_| ());
+    }
+    if to.starts_with(from) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "a folder cannot be copied into itself"));
+    }
+    std::fs::create_dir(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+    }
+    Ok(())
+}
+
+/// Into the recycle bin, where it can be taken back from. A drive with no
+/// recycle bin (a network share) has Windows itself ask before it deletes for
+/// good, since the question the page asked promised the bin. A machine with no
+/// recycle bin at all has it deleted
+#[cfg(windows)]
+pub fn to_bin(path: &Path) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{
+        FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW,
+        SHFileOperationW,
+    };
+    use std::os::windows::ffi::OsStrExt;
+    // A list of paths, each ended by a zero and the list by another
+    let from: Vec<u16> = path.as_os_str().encode_wide().chain([0, 0]).collect();
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: std::ptr::null_mut(),
+        wFunc: FO_DELETE,
+        pFrom: from.as_ptr(),
+        pTo: std::ptr::null(),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT | FOF_WANTNUKEWARNING) as u16,
+        fAnyOperationsAborted: 0,
+        hNameMappings: std::ptr::null_mut(),
+        lpszProgressTitle: std::ptr::null(),
+    };
+    if std::fs::symlink_metadata(path).is_err() {
+        return Err(crate::i18n::t("err.files.gone"));
+    }
+    // SAFETY: `from` is a list ended as the call wants, and outlives it
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if code != 0 || op.fAnyOperationsAborted != 0 {
+        return Err(crate::i18n::tp("err.files.not_binned", &[("code", &format!("0x{code:x}"))]));
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn to_bin(path: &Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|_| crate::i18n::t("err.files.gone"))?;
+    if meta.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.map_err(|e| e.to_string())
+}
+
 /// What the disk says about a file without reading it: when it was last
 /// written, and how long it is.
 ///
@@ -288,6 +362,19 @@ pub mod far {
         format!("cd {} && {} | head -c {LIST_BYTES}", sh_quote(root), listing())
     }
 
+    /// The code [`copy_command`] ends with when the name it was to copy to is
+    /// already taken: told apart from a copy that failed, so the person is
+    /// told which
+    pub const TAKEN: i32 = 17;
+
+    /// What to run there to copy a file or a folder to `to`, both whole paths
+    /// already fenced. A name already there is left alone; `-p` keeps when it
+    /// was written, as the original says
+    pub fn copy_command(from: &str, to: &str) -> String {
+        let (from, to) = (sh_quote(from), sh_quote(to));
+        format!("if [ -e {to} ] || [ -L {to} ]; then exit {TAKEN}; fi; cp -R -p -- {from} {to}")
+    }
+
     /// What it printed, as the files whose name has the query in it.
     pub fn names(out: &str, query: &str, limit: usize) -> Found {
         let needle = query.trim().to_lowercase();
@@ -392,6 +479,56 @@ fn read_head(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new name stays in the folder the file is in, and a name that would
+    /// put it somewhere else is not a name
+    #[test]
+    fn a_new_name_is_one_name_in_the_same_folder() {
+        assert_eq!(beside("src/a.rs", "b.rs").as_deref(), Some("src/b.rs"));
+        assert_eq!(beside("a.rs", "b.rs").as_deref(), Some("b.rs"));
+        assert_eq!(beside("src\\deep\\a.rs", " c.rs ").as_deref(), Some("src/deep/c.rs"));
+        for bad in ["", " ", ".", "..", "x/y", "..\\up", "a\nb"] {
+            assert_eq!(beside("src/a.rs", bad), None, "{bad:?} is not one name");
+        }
+    }
+
+    /// A folder is copied whole beside itself, never over a name already there
+    /// and never into itself
+    #[test]
+    fn a_folder_is_copied_whole_and_never_over_or_into_itself() {
+        let dir = std::env::temp_dir().join(format!("shikisha-copy-{}", crate::random_hex(4)));
+        let from = dir.join("a");
+        std::fs::create_dir_all(from.join("in")).unwrap();
+        std::fs::write(from.join("in").join("x.txt"), "x").unwrap();
+        copy_tree(&from, &dir.join("b")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("b").join("in").join("x.txt")).unwrap(), "x");
+        assert!(copy_tree(&from, &dir.join("b")).is_err(), "copied over a folder already there");
+        assert!(copy_tree(&from, &from.join("in").join("again")).is_err(), "copied into itself");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file deleted from the list goes to the recycle bin, and one already
+    /// gone is said as that. Ignored: it puts a file in the person's own
+    /// recycle bin each time it runs
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn a_deleted_file_goes_to_the_recycle_bin() {
+        let file = std::env::temp_dir().join(format!("shikisha-bin-{}.txt", crate::random_hex(4)));
+        std::fs::write(&file, "x").unwrap();
+        to_bin(&file).unwrap();
+        assert!(!file.exists());
+        assert!(to_bin(&file).is_err(), "a file already gone was binned");
+    }
+
+    /// The copy on another machine refuses a name already there with a code
+    /// of its own, and every path goes quoted
+    #[test]
+    fn a_copy_there_names_a_taken_name_and_quotes_its_paths() {
+        let c = far::copy_command("/w/it's", "/w/it's - Copy");
+        assert!(c.contains(&format!("exit {}", far::TAKEN)));
+        assert!(c.contains(r"cp -R -p -- '/w/it'\''s' '/w/it'\''s - Copy'"), "{c}");
+    }
 
     /// A Shift_JIS CSV saved from the editor: back in Shift_JIS, byte for
     /// byte. A character it cannot hold stops the save and is named; written

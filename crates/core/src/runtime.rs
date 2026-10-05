@@ -15482,6 +15482,44 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
             })
             .to_string()
         }
+        // A file or folder given another name in the folder it is in, or a
+        // copy of it put beside it under the name the page chose. Never over
+        // something already there: the page lists what it knows, and what it
+        // does not know is not thrown away for it
+        "rename" | "copy" => {
+            let rel = str_of("path");
+            let Some(to_rel) = crate::files::beside(&rel, &str_of("name")) else {
+                return fail(i18n::t("err.files.bad_name"));
+            };
+            let (Some(from), Some(to)) = (local_under(root, &rel), local_under(root, &to_rel)) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            if from == root.components().collect::<std::path::PathBuf>() {
+                return fail(i18n::t("err.sftp.outside"));
+            }
+            // The same entry under another case is a rename Windows allows,
+            // not a name somebody else is using
+            let same = from.to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy());
+            if std::fs::symlink_metadata(&to).is_ok() && !(act == "rename" && same) {
+                return fail(i18n::tp("err.files.exists", &[("name", &str_of("name"))]));
+            }
+            let done = if act == "rename" { std::fs::rename(&from, &to) } else { crate::files::copy_tree(&from, &to) };
+            match done {
+                Ok(()) => serde_json::json!({"act": act, "panel": panel, "ok": true, "path": rel, "to": to_rel}).to_string(),
+                Err(e) => fail(format!("{e}")),
+            }
+        }
+        // Into the recycle bin, where it can be taken back from
+        "remove" => {
+            let rel = str_of("path");
+            let Some(at) = local_under(root, &rel).filter(|p| *p != root.components().collect::<std::path::PathBuf>()) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            match crate::files::to_bin(&at) {
+                Ok(()) => serde_json::json!({"act": act, "panel": panel, "ok": true, "path": rel}).to_string(),
+                Err(e) => fail(e),
+            }
+        }
         _ => fail(format!("unknown act: {act}")),
     }
 }
@@ -15765,6 +15803,99 @@ fn files_there(
                     }
                     Ok(ran) => failed(&act, &panel, ran.said()),
                     Err(e) => failed(&act, &panel, format!("{e:#}")),
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        // Another name in the same folder. Looked at first, so a name already
+        // there is said rather than written over: what a rename does to an
+        // existing name differs from one server to the next
+        "rename" => {
+            let Some(to_rel) = crate::files::beside(&path, &str_of("name")) else {
+                return fail(i18n::t("err.files.bad_name"));
+            };
+            let (look, rename) = match (
+                ready(ssh::FileJob::Stat { path: to_rel.clone() }),
+                ready(ssh::FileJob::Rename { from: path.clone(), to: to_rel.clone() }),
+            ) {
+                (Ok(l), Ok(r)) => (l, r),
+                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+            };
+            if path.trim_matches('/').is_empty() {
+                return fail(i18n::t("err.sftp.outside"));
+            }
+            let (panel, name) = (panel.clone(), str_of("name"));
+            std::thread::spawn(move || {
+                let js = if crate::elsewhere::files(&at, look, SFTP_WAIT_MS).is_ok() {
+                    failed("rename", &panel, i18n::tp("err.files.exists", &[("name", &name)]))
+                } else {
+                    match crate::elsewhere::files(&at, rename, SFTP_WAIT_MS) {
+                        Ok(_) => serde_json::json!({"act": "rename", "panel": panel, "ok": true, "path": path, "to": to_rel}),
+                        Err(e) => failed("rename", &panel, format!("{e:#}")),
+                    }
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        // A file, or a folder with nothing in it: the far end has no recycle
+        // bin, so a folder is emptied first by whoever means it (`FileJob`)
+        "remove" => {
+            if path.trim_matches('/').is_empty() {
+                return fail(i18n::t("err.sftp.outside"));
+            }
+            let job = match ready(ssh::FileJob::Remove { path: path.clone() }) {
+                Ok(j) => j,
+                Err(e) => return fail(format!("{e}")),
+            };
+            let panel = panel.clone();
+            std::thread::spawn(move || {
+                let js = match crate::elsewhere::files(&at, job, SFTP_WAIT_MS) {
+                    Ok(_) => serde_json::json!({"act": "remove", "panel": panel, "ok": true, "path": path}),
+                    Err(e) => failed("remove", &panel, format!("{e:#}")),
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        // A copy beside it, made by the machine itself: nothing crosses the
+        // network, a folder comes whole, and a name already there is refused
+        // there. Reading it and writing the copy are asked of the same table
+        // a read and a save are
+        "copy" => {
+            for name in ["sftp_read", "sftp_put"] {
+                if !caps.allows(name, grants::Subject::Human) {
+                    return fail(i18n::tp(
+                        "err.hooks.not_permitted",
+                        &[("name", name), ("who", &i18n::t("grant.who.human"))],
+                    ));
+                }
+            }
+            let Some(to_rel) = crate::files::beside(&path, &str_of("name")) else {
+                return fail(i18n::t("err.files.bad_name"));
+            };
+            let (Some(from), Some(to)) = (
+                crate::transfer::under_remote(&root, &path),
+                crate::transfer::under_remote(&root, &to_rel),
+            ) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            if path.trim_matches('/').is_empty() {
+                return fail(i18n::t("err.sftp.outside"));
+            }
+            let command = crate::files::far::copy_command(&from, &to);
+            let (panel, name) = (panel.clone(), str_of("name"));
+            std::thread::spawn(move || {
+                let js = match crate::elsewhere::exec(&at, &command, FAR_SEARCH_WAIT_MS) {
+                    Ok(ran) if ran.ok() => {
+                        serde_json::json!({"act": "copy", "panel": panel, "ok": true, "path": path, "to": to_rel})
+                    }
+                    Ok(ran) if ran.code == crate::files::far::TAKEN => {
+                        failed("copy", &panel, i18n::tp("err.files.exists", &[("name", &name)]))
+                    }
+                    Ok(ran) => failed("copy", &panel, ran.said()),
+                    Err(e) => failed("copy", &panel, format!("{e:#}")),
                 };
                 answer(js, String::new(), None);
             });

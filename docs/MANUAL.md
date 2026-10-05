@@ -89,6 +89,10 @@ What you choose is remembered for each kind of tab, so going from a page back to
 brings back what you were reading beside the AI. Something a button calls up (the search of
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
 
+**Files** is what is in the working folder. Press a file to open it in the editor. Right-click a row (hold it on a phone)
+to edit, rename, duplicate or delete it. What is deleted from a folder on this PC goes to the recycle bin, and can be
+restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
+
 **Chat** reads three ways. **AIConfer** is what the AIs say to each other when one asks
 another (after you name a tab with `@`, or on its own): one short line each, like a chat,
 with a face for every tab and what each is doing along the top. It shows the conversation of

@@ -14379,6 +14379,7 @@ window.__files = function (d) {
   if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
   FS.said = ""; FS.bad = false;
   FS.rev++;
+  if (d.act === "rename" || d.act === "copy" || d.act === "remove") { filesChanged(d); return; }
   if (d.act === "ls") {
     FS.rows[d.at || ""] = d.rows || [];
   } else {
@@ -14389,6 +14390,86 @@ window.__files = function (d) {
   }
   drawFiles();
 };
+// The folder a path is in, as the tree keys it ("" is the root)
+function filesParent(path) {
+  const cut = path.lastIndexOf("/");
+  return cut < 0 ? "" : path.slice(0, cut);
+}
+// A rename, a copy or a deletion went through: the folder it happened in is
+// read again, and what was held about a folder that moved or went is let go,
+// so opening the new name reads it fresh. A search on screen is asked again,
+// since its rows named the old paths
+function filesChanged(d) {
+  const gone = d.act === "copy" ? null : d.path || "";
+  if (gone) {
+    for (const map of [FS.rows, FS.open, FS.asked]) {
+      for (const k of Object.keys(map)) if (k === gone || k.startsWith(gone + "/")) delete map[k];
+    }
+  }
+  const at = filesParent(d.path || "");
+  delete FS.asked[at];
+  filesLoad(at);
+  if (FS.q) filesAsk(FS.mode === "name" ? "find" : "grep", {q: FS.q});
+  drawFiles();
+}
+// The name a copy beside `name` is given: "report - Copy.txt", then
+// "report - Copy (2).txt" while that is taken among what the folder is known
+// to hold
+function filesCopyName(name, dir, taken) {
+  const dot = dir ? -1 : name.lastIndexOf(".");
+  const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  const word = T["files.copy.suffix"] || " - Copy";
+  for (let n = 1; ; n++) {
+    const tried = stem + word + (n > 1 ? " (" + n + ")" : "") + ext;
+    if (!taken.has(tried)) return tried;
+  }
+}
+// What one row can have done to it. A right button on a window, a held press
+// on a phone: the same list either way. Deleting is last and in red, and asks
+// first: it cannot always be taken back (a folder on another machine has no
+// recycle bin)
+function filesRowMenu(anchor, name, path, dir, point) {
+  const t = folderTab();
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
+  const far = !!(g && g.host);
+  const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
+  const rows = [];
+  if (!dir) rows.push(item(T["files.menu.edit"] || "", () => filesOpen(path)));
+  rows.push(item(T["files.menu.rename"] || "", () => askQuestion({
+    title: T["files.rename.title"] || "",
+    say: T["files.rename.say"] || "",
+    what: path,
+    mark: g && g.mark,
+    field: name,
+    label: T["files.menu.rename"] || "",
+    go: to => { if (to && to !== name) filesAsk("rename", {path, name: to}); },
+  })));
+  rows.push(item(T["files.menu.copy"] || "", () => {
+    const taken = new Set((FS.rows[filesParent(path)] || []).map(r => r.name));
+    filesAsk("copy", {path, name: filesCopyName(name, dir, taken)});
+  }));
+  rows.push(el("div", {class:"warn", onclick:() => {
+    closeFolderMenu();
+    askQuestion({
+      title: T["files.remove.title"] || "",
+      say: T[far ? (dir ? "files.remove.far_dir" : "files.remove.far") : "files.remove.bin"] || "",
+      what: path,
+      mark: g && g.mark,
+      sure: far,
+      label: T["files.menu.remove"] || "",
+      danger: true,
+      go: () => filesAsk("remove", {path}),
+    });
+  }}, T["files.menu.remove"] || ""));
+  openList(anchor, rows, false, point);
+}
+// A file opened where there is room to read it
+function filesOpen(path) {
+  const t = folderTab();
+  if (t) send({kind: "editopen", panel: t.id || t.name || "", path});
+  // On a phone the list is covering the very thing it just opened
+  if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+}
 // Start over on a folder: everything held was about the last one
 function filesReset(key) {
   FS.panel = key;
@@ -14450,14 +14531,12 @@ function filesRow(name, path, dir, depth, hit) {
         drawFiles();
         return;
       }
-      // A file is opened where there is room to read it. The path still goes
-      // into the box on a long press -- see the row's own menu
-      const t = folderTab();
-      if (t) send({kind: "editopen", panel: t.id || t.name || "", path});
-      // On a phone the list is covering the very thing it just opened
-      if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+      filesOpen(path);
     }});
   if (!dir) dragFile(row, path);
+  const menu = e => { e.preventDefault(); filesRowMenu(row, name, path, dir, e); };
+  row.addEventListener("contextmenu", menu);
+  holdOpens(row, menu);
   row.append(el("span", {class: "car"}, dir ? (FS.open[path] ? "\u25be" : "\u25b8") : ""));
   // A result is a file from anywhere under here, so it says where. The tree
   // does not: its rows are already standing under the folder they are in
@@ -26682,6 +26761,23 @@ mod tests {
         // And it is marked and readable the way the other question is
         assert!(PAGE.contains(r#"const asking = untrusted || unlinked;"#), "a question with no mark on its row");
         assert!(PAGE.contains(".making.asking .ms { max-height:none;"), "the row cannot show what it is asking about");
+    }
+
+    /// A row of the file list opens its own list on a right button or a held
+    /// press: edit, rename, duplicate, and last and in red, delete -- which
+    /// asks first -- and whatever changed is read again
+    #[test]
+    fn a_file_row_can_be_renamed_duplicated_and_deleted() {
+        assert!(PAGE.contains("const menu = e => { e.preventDefault(); filesRowMenu(row, name, path, dir, e); };"));
+        assert!(PAGE.contains("holdOpens(row, menu);"), "a phone cannot open the row's list");
+        let menu = &PAGE[PAGE.find("function filesRowMenu(").unwrap()..];
+        let menu = &menu[..menu.find("\n}").unwrap()];
+        let at = |k: &str| menu.find(k).unwrap_or_else(|| panic!("the list has no {k}"));
+        assert!(at("files.menu.edit") < at("files.menu.rename") && at("files.menu.rename") < at("files.menu.copy"));
+        assert!(at(r#"el("div", {class:"warn""#) > at("files.menu.copy"), "delete is not last, or not in red");
+        assert!(menu.contains(r#"go: () => filesAsk("remove", {path}),"#), "delete does not ask first");
+        assert!(PAGE.contains(r#"if (d.act === "rename" || d.act === "copy" || d.act === "remove") { filesChanged(d); return; }"#),
+            "a change is not read again");
     }
 
     /// A worktree whose folder would not delete is said and asked about, not
