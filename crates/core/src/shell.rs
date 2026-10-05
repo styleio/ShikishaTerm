@@ -3300,6 +3300,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     margin-bottom:var(--s1); }
   #sask .brow { padding-top:var(--s3); border-top:1px solid var(--line);
     display:flex; gap:var(--s2); justify-content:flex-end; }
+  #sask .brow > [hidden] { display:none; }
   #sask #sq { font:inherit; font-size:13px; background:var(--bg); color:var(--text);
     border:1px solid var(--edge); border-radius:var(--r-ctl); padding:0 12px;
     height:36px; outline:none; }
@@ -4243,7 +4244,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
         <input id="sq" type="text" autocomplete="off" spellcheck="false" hidden>
         <div class="ssure" hidden><label for="ssq"></label><input id="ssq" type="text" autocomplete="off" spellcheck="false"></div>
         <div class="swhy" hidden></div>
-        <div class="brow"><button class="quiet"></button><button class="go"></button></div>
+        <div class="brow"><button class="quiet"></button><button class="quiet also" hidden></button><button class="go"></button></div>
       </div>
     </div>
     <!-- The same file on both machines, held up against each other. A reading
@@ -7740,9 +7741,9 @@ function askAboutUnlinked() {
   });
 }
 // A worktree whose folder would not delete is asked about once, where it is
-// seen. The question is the same as the row's buttons: Cancel leaves the row
-// to answer later. Answered somewhere else -- the phone, the row -- the
-// question here goes too. "Try again" from the row asks again if it fails again
+// seen. The question offers the row's buttons: Cancel leaves the row to answer
+// later. Answered somewhere else -- the phone, the row -- the question here
+// goes too. "Try again", from here or the row, asks again if it fails again
 const leftAsked = new Set();
 let leftAsking = 0;
 function askAboutLeft() {
@@ -7758,6 +7759,8 @@ function askAboutLeft() {
     say: (T["worktree.left.say"] || "").replaceAll("{why}", m.error || ""),
     what: m.folder,
     label: T["worktree.left.forget"] || "",
+    also: {label: T["tui.making.retry"] || "",
+      act: () => { leftAsking = 0; leftAsked.delete(m.id); send({kind:"making", id:m.id, act:"retry"}); }},
     go: () => { leftAsking = 0; send({kind:"making", id:m.id, act:"forget"}); },
     back: () => { leftAsking = 0; },
   });
@@ -22244,7 +22247,9 @@ let sAskGo = null, sAskBack = null;
 // `no` is a second answer beside the button, for a question whose "no" is an
 // answer worth keeping rather than the question put away: {label, act}. Without
 // it the other button is Cancel, which is `back`
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, go, back}) {
+// `also` is a second answer beside the main one, for a question with two ways
+// forward ("try again" beside "take it off the list"): {label, act}
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, also, go, back}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   box.querySelector(".vtitle").textContent = title;
@@ -22276,6 +22281,10 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const cancel = box.querySelector(".brow > .quiet");
   cancel.textContent = no ? no.label : (T["common.cancel"] || "");
   cancel.onclick = no ? () => { sAskBack = null; closeAsk(true); no.act(); } : () => closeAsk();
+  const other = box.querySelector(".brow > .also");
+  other.hidden = !also;
+  other.textContent = also ? also.label : "";
+  other.onclick = also ? () => { sAskBack = null; closeAsk(true); also.act(); } : null;
   const btn = box.querySelector(".brow > .go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
@@ -26687,6 +26696,14 @@ mod tests {
         assert!(PAGE.contains("leftAsked.add(m.id);"), "it asks again on every frame");
         assert!(PAGE.contains(r#"go: () => { leftAsking = 0; send({kind:"making", id:m.id, act:"forget"}); },"#),
             "yes does not reach the app");
+        // The question offers trying again as well, and a try that fails again
+        // is asked about again
+        assert!(
+            PAGE.contains(r#"act: () => { leftAsking = 0; leftAsked.delete(m.id); send({kind:"making", id:m.id, act:"retry"}); }},"#),
+            "the question cannot try again"
+        );
+        assert!(PAGE.contains(r#"<button class="quiet also" hidden></button>"#), "the question has no place for a second answer");
+        assert!(PAGE.contains("other.hidden = !also;"), "a second answer stays from the question before");
         for act in ["retry", "restore", "forget"] {
             assert!(PAGE.contains(&format!(r#"send({{kind:"making", id:m.id, act:"{act}"}})"#)), "the row cannot {act}");
         }
