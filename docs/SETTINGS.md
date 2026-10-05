@@ -290,7 +290,11 @@ Each project answers these for itself: a team's rules are its repository's, and 
 
 ### The project's page
 
-Worktree creation rules, name and checkout, git account, protected branches, what the AI is told, setup
+Worktree creation rules, name and checkout, Git authentication, protected branches, what the AI is told, setup
+
+**Git authentication**
+
+- **Authentication**
 
 **Setup command**
 
@@ -305,9 +309,8 @@ Worktree creation rules, name and checkout, git account, protected branches, wha
 - **On other machines**
 - **Repository**
 
-**Git authentication**
+**Working folders**
 
-- **Authentication**
 - **Delete this project** — The working folders and tabs stay. Only their tie to this project goes
 
 **Worktree Creation Rules**

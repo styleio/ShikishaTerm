@@ -7569,6 +7569,29 @@ function projectSections(p) {
   return list;
 }
 
+// The git account the column beside a project's folders signs in with, and
+// reads pull request numbers with -- and a MicroVM of it signs in to the git
+// server as. Chosen once for every folder of it. None for a project with no
+// repository to sign in to
+function projectGitAcctCard(desk, p) {
+  const homes = (p.entry || {}).homes || [];
+  if (!p.family && !homes.length) return null;
+  const origin = [p.at].concat(p.folders.map(gi => (desk.folders[gi] || {}).cwd))
+    .map(x => (FAMILIES[(x || "").trim()] || {}).origin).find(Boolean);
+  const acctCard = card(T["settings.project.gitacct"],
+    el("div", {class:"hint"}, T["settings.project.gitacct.hint"]),
+    row(T["settings.gitacct.use"],
+      gitAccountSelect((p.entry || {}).git_account, origin, v => {
+        const e = ensureProject(desk, p);
+        if (v) e.git_account = v; else delete e.git_account;
+        sel.proj = "p:" + e.name;
+        refreshSave(); render();
+      })),
+    appGitAccounts().length || PC_ACCOUNTS.length || GH_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
+  acctCard.id = "project-gitacct";
+  return acctCard;
+}
+
 // One of a project's pages on screen
 function goProjectSection(key, id, block) {
   sel = {desk:sel.desk, proj:key, grp:null, tab:null, global:false, psection:id};
@@ -7581,7 +7604,7 @@ function goProjectSection(key, id, block) {
 // still lands on its card
 function projectSectionOf(sec) {
   const s = sec || "";
-  if (["project-gitacct", "project-basic", "project-folders"].includes(s)) return "basic";
+  if (["project-basic", "project-folders"].includes(s)) return "basic";
   if (s.startsWith("project-git")) return "git";
   if (s === "project-setup" || s === "project-env" || s === "project-microvm") return "setup";
   return "rules";
@@ -14558,6 +14581,8 @@ function projectPane(desk, p) {
   // writes for this repository. A project only worked out from git is written
   // down by the first change, and what was typed goes with it
   if (sec.id === "git") {
+    const acct = projectGitAcctCard(desk, p);
+    if (acct) box.append(acct);
     const holder = p.entry || {};
     const wrote = () => {
       if (p.entry) return;
@@ -14632,26 +14657,6 @@ function projectPane(desk, p) {
     p.folders.length ? rows : el("div", {class:"hint"}, T["settings.project.folders.none"]));
   folders.id = "project-folders";
   box.append(folders);
-
-  // The git account the column beside its folders signs in with, and reads
-  // pull request numbers with -- and a MicroVM of it signs in to the git
-  // server as. Chosen here once for every folder of it
-  if (p.family || homes.length) {
-    const origin = [p.at].concat(p.folders.map(gi => (desk.folders[gi] || {}).cwd))
-      .map(x => (FAMILIES[(x || "").trim()] || {}).origin).find(Boolean);
-    const acctCard = card(T["settings.project.gitacct"],
-      el("div", {class:"hint"}, T["settings.project.gitacct.hint"]),
-      row(T["settings.gitacct.use"],
-        gitAccountSelect((p.entry || {}).git_account, origin, v => {
-          const e = ensureProject(desk, p);
-          if (v) e.git_account = v; else delete e.git_account;
-          sel.proj = "p:" + e.name;
-          refreshSave(); render();
-        })),
-      appGitAccounts().length || PC_ACCOUNTS.length || GH_ACCOUNTS.length ? null : el("div", {class:"hint"}, T["settings.gitacct.tab_none"]));
-    acctCard.id = "project-gitacct";
-    box.append(acctCard);
-  }
 
   if (p.entry) {
     box.append(el("div", {class:"row"},
