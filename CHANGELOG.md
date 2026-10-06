@@ -8,7 +8,23 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-06
+
 ### Added
+- **The master password locks the whole app.** With a master password set,
+  the app starts locked: no tab, no settings, no board and no call through
+  the automation pipe until it is given, and no way past it but Quit. It can
+  be unlocked from a phone too, on the board's address, over this machine,
+  Tailscale or HTTPS (not a plain LAN address), so a restart made from afar
+  no longer stops at a question nobody can answer. Terminals that run on
+  their own go on behind the lock.
+- **Files in the right column have a menu of their own.** Right-click a row
+  of the file list (hold it on a phone) to put its path in the message box or
+  copy it, or to rename, duplicate or delete it; a folder's row, and the
+  empty part of the list, also make a new folder there. Renaming keeps the
+  file in its folder; a duplicate is named "- Copy". A file on this PC goes
+  to the recycle bin, where it can be restored; one on another machine is
+  said not to come back, and a folder there is deleted only once empty.
 - **Markdown, three ways.** A Markdown file in the editor is looked at as
   Text, Visual or Preview. Visual edits it as it reads -- headings, lists,
   checklists, tables, code with its language, Mermaid diagrams drawn under
@@ -49,7 +65,7 @@ once it reaches its first tagged release.
   assistant AI, naming the records it used. A new record is written in a
   form, in MADR's sections or a template's kept in the folder, and drafted
   from the latest conversation in the AI tab in front, with that AI added as
-  consulted. It is saved as a proposal, numbered after the last one and named
+  consulted, and a record shows who was consulted on it. It is saved as a proposal, numbered after the last one and named
   after its title in any language, and can be proposed in a pull request in
   one press: that file alone is committed and pushed, on a branch of its own
   when the folder is on a protected one. A proposal is marked accepted or
@@ -57,6 +73,15 @@ once it reaches its first tagged release.
   so. AI tabs with the SHIKISHA-TERM skill follow accepted records and ask
   before going against one; `shikisha adr_list` tells them where the records
   are.
+
+### Changed
+- **A project's Git authentication is on its git page.** In the settings, a
+  project's "Git authentication" moved from its basic page to its "git"
+  page, beside its protected branches and what the AI is told; every message
+  that sends you there says so.
+- **The question about a folder that could not be deleted offers to try
+  again.** Beside taking it off the list, the question now has "Try again",
+  as the folder's row did; a try that fails again is asked about again.
 
 ### Fixed
 - **The question about AI hooks stops coming back at every start.** A second
@@ -74,13 +99,6 @@ once it reaches its first tagged release.
 ## [0.25.0] - 2026-10-04
 
 ### Added
-- **The master password locks the whole app.** With a master password set,
-  the app starts locked: no tab, no settings, no board and no call through
-  the automation pipe until it is given, and no way past it but Quit. It can
-  be unlocked from a phone too, on the board's address, over this machine,
-  Tailscale or HTTPS (not a plain LAN address), so a restart made from afar
-  no longer stops at a question nobody can answer. Terminals that run on
-  their own go on behind the lock.
 - **The bar's menu (⋯).** The bar over a web page ends in one menu holding
   Find in page, Downloads and the Develop tools, in place of the Develop
   button, so a phone's bar keeps its address readable. It is one of the
@@ -4832,7 +4850,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/styleio/ShikishaTerm/compare/v0.23.1...v0.24.0
