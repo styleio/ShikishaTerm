@@ -702,16 +702,7 @@ pub fn today() -> String {
 }
 
 /// The folder a record lives in, on whichever machine
-pub trait Disk {
-    /// The names of the files in a folder, `None` when there is no folder
-    fn files(&self, dir: &str) -> Result<Option<Vec<String>>, String>;
-    /// A file's bytes, `None` when there is no file
-    fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String>;
-    /// Write a file. `fresh` refuses one that is already there
-    fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> Result<(), String>;
-    /// Make a folder and every folder above it
-    fn make_dirs(&self, dir: &str) -> Result<(), String>;
-}
+pub use crate::disk::Disk;
 
 /// A folder a page named, as a path inside the working folder: forward
 /// slashes, no `..`, no leading slash. `None` for one that would leave it
@@ -723,9 +714,7 @@ pub fn clean_dir(dir: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn join(dir: &str, name: &str) -> String {
-    if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") }
-}
+use crate::disk::join;
 
 /// A file name the page gave, as one name in the folder and nothing else
 fn clean_file(name: &str) -> Option<String> {
@@ -992,6 +981,17 @@ mod tests {
                 .filter_map(|k| k.strip_prefix(&pre).filter(|r| !r.contains('/')).map(str::to_string))
                 .collect();
             Ok((!names.is_empty() || map.contains_key(&format!("{dir}/."))).then_some(names))
+        }
+        fn folders(&self, dir: &str) -> Result<Vec<String>, String> {
+            let map = self.0.borrow();
+            let pre = format!("{dir}/");
+            let mut out: Vec<String> = map
+                .keys()
+                .filter_map(|k| k.strip_prefix(&pre).and_then(|r| r.split_once('/')).map(|(d, _)| d.to_string()))
+                .collect();
+            out.sort();
+            out.dedup();
+            Ok(out)
         }
         fn read(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
             Ok(self.0.borrow().get(path).cloned())

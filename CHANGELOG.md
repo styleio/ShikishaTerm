@@ -20,6 +20,16 @@ once it reaches its first tagged release.
   server or MicroVM too), footnotes and the front matter, and never runs a
   script in a document. Both have the contents of the headings beside them,
   a search (with replace in Visual), and links that open where they belong.
+- **A Markdown document to PDF.** The PDF button in the editor saves the
+  drawn document as a PDF where you choose: light on white whatever the
+  screen's colours are, with formulas, diagrams (drawn again light) and
+  pictures, and nothing cut across a page that should stay whole. A phone
+  prints it with its own browser.
+- **New Markdown from a template.** The file list makes a new Markdown file
+  in the folder you right-clicked: you name it and choose a blank document or
+  one of the templates the repository keeps in `.shikisha/templates/`, with
+  `{{title}}`, `{{file}}`, `{{date}}` and `{{time}}` filled in. It opens in the
+  visual editor.
 - **Notes for an AI on a document.** Right-click a paragraph of the preview
   (hold it on a phone) to write a note beside it. The notes stay with the
   lines of the file they are about, and "Hand to an AI" puts them in an AI

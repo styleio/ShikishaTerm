@@ -2160,28 +2160,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Text written on GitHub, drawn the way GitHub draws it -- in this page's
      sizes and colours. A link is the one thing in it that is pressed, so it is
      marked by its underline rather than by a colour kept for states */
-  :is(#issuespanel, #adrpanel, #editpanel) .md { line-height:1.6; overflow-wrap:anywhere; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md > :first-child { margin-top:0; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md > :last-child { margin-bottom:0; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md ul, :is(#issuespanel, #adrpanel, #editpanel) .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md li { margin:0 0 var(--s1); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md li > ul, :is(#issuespanel, #adrpanel, #editpanel) .md li > ol { margin:var(--s1) 0 0; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md li.task { list-style:none; margin-left:-1.2em; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md li.task .box { color:var(--dim); margin-right:var(--s2); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md { line-height:1.6; overflow-wrap:anywhere; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md > :first-child { margin-top:0; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md > :last-child { margin-bottom:0; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md ul, :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md li { margin:0 0 var(--s1); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md li > ul, :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md li > ol { margin:var(--s1) 0 0; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md li.task { list-style:none; margin-left:-1.2em; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md li.task .box { color:var(--dim); margin-right:var(--s2); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
     padding:1px var(--s1); border-radius:var(--r-chip); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
     border:1px solid var(--line); border-radius:var(--r-ctl); overflow-x:auto; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md pre code { background:none; padding:0; white-space:pre; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
-  :is(#issuespanel, #adrpanel, #editpanel) .md table { border-collapse:collapse; font-size:12px; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md th, :is(#issuespanel, #adrpanel, #editpanel) .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
-  :is(#issuespanel, #adrpanel, #editpanel) .md th { background:var(--panel); font-weight:600; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md pre code { background:none; padding:0; white-space:pre; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md table { border-collapse:collapse; font-size:12px; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md th, :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
+  :is(#issuespanel, #adrpanel, #editpanel, #mdprint) .md th { background:var(--panel); font-weight:600; }
   #issuespanel a.mdlink { color:var(--text); text-decoration:underline; text-decoration-color:var(--edge-hi); text-underline-offset:2px; }
   #issuespanel a.mdlink:hover { text-decoration-color:var(--text); }
   #issuespanel .body { margin:0 var(--s3); padding:var(--s3); background:var(--sunk);
@@ -2353,6 +2353,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #editpanel .eview button:hover { background:var(--hover); color:var(--text); }
   #editpanel .ebar button.etoc { display:inline-flex; align-items:center; gap:var(--s1); }
   #editpanel .ebar button.etoc.on { background:var(--raise); color:var(--text); border-color:var(--line); }
+  #editpanel .ebar button.etoc.held { color:var(--faint); cursor:not-allowed; }
+  #editpanel .ebar button.etoc.held:hover { background:none; color:var(--faint); }
+  /* A choice in the new Markdown question: the template a file starts from */
+  #sask .blist .brow2.newmd { cursor:pointer; }
+  #sask .blist .brow2.newmd.on { background:var(--raise); box-shadow:inset 3px 0 0 var(--brand); }
+  #sask .blist .brow2.newmd .tag { flex:0 1 auto; font-family:var(--mono); }
   #editpanel .emd { flex:1 1 auto; min-height:0; display:flex; position:relative; }
   #editpanel .emd[hidden] { display:none; }
   #editpanel .emain { flex:1 1 auto; min-width:0; overflow:auto; overscroll-behavior:contain; position:relative; }
@@ -2404,44 +2410,44 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The words drawn: the page's own .md text, with what a whole document has
      beyond an answer -- every heading level, figures, maths, diagrams */
   #editpanel .md { line-height:1.7; font-size:14px; max-width:none; }
-  :is(#editpanel, #adrpanel) .md h1, :is(#editpanel, #adrpanel) .md h2, :is(#editpanel, #adrpanel) .md h3, :is(#editpanel, #adrpanel) .md h4, :is(#editpanel, #adrpanel) .md h5, :is(#editpanel, #adrpanel) .md h6 {
+  :is(#editpanel, #adrpanel, #mdprint) .md h1, :is(#editpanel, #adrpanel, #mdprint) .md h2, :is(#editpanel, #adrpanel, #mdprint) .md h3, :is(#editpanel, #adrpanel, #mdprint) .md h4, :is(#editpanel, #adrpanel, #mdprint) .md h5, :is(#editpanel, #adrpanel, #mdprint) .md h6 {
     font-weight:600; line-height:1.3; margin:1.4em 0 .5em; scroll-margin-top:var(--s4); }
-  :is(#editpanel, #adrpanel) .md h1 { font-size:1.8em; padding-bottom:.25em; border-bottom:1px solid var(--line); }
-  :is(#editpanel, #adrpanel) .md h2 { font-size:1.4em; padding-bottom:.2em; border-bottom:1px solid var(--line); }
-  :is(#editpanel, #adrpanel) .md h3 { font-size:1.17em; }
-  :is(#editpanel, #adrpanel) .md h4 { font-size:1em; }
-  :is(#editpanel, #adrpanel) .md h5, :is(#editpanel, #adrpanel) .md h6 { font-size:.9em; color:var(--dim); }
-  :is(#editpanel, #adrpanel) .md > :first-child { margin-top:0; }
+  :is(#editpanel, #adrpanel, #mdprint) .md h1 { font-size:1.8em; padding-bottom:.25em; border-bottom:1px solid var(--line); }
+  :is(#editpanel, #adrpanel, #mdprint) .md h2 { font-size:1.4em; padding-bottom:.2em; border-bottom:1px solid var(--line); }
+  :is(#editpanel, #adrpanel, #mdprint) .md h3 { font-size:1.17em; }
+  :is(#editpanel, #adrpanel, #mdprint) .md h4 { font-size:1em; }
+  :is(#editpanel, #adrpanel, #mdprint) .md h5, :is(#editpanel, #adrpanel, #mdprint) .md h6 { font-size:.9em; color:var(--dim); }
+  :is(#editpanel, #adrpanel, #mdprint) .md > :first-child { margin-top:0; }
   /* A line break in the file is already a <br> here (the kit reads it so);
      kept as written as well, every break would be two */
-  :is(#editpanel, #adrpanel) .md p { white-space:normal; }
-  :is(#editpanel, #adrpanel) .md img { max-width:100%; }
-  :is(#editpanel, #adrpanel) .md img.loading { min-width:40px; min-height:24px; background:var(--raise); }
-  :is(#editpanel, #adrpanel) .md table tr:nth-child(2n) td { background:color-mix(in srgb, var(--panel) 60%, transparent); }
-  :is(#editpanel, #adrpanel) .md .footnotes { font-size:.9em; color:var(--dim); border-top:1px solid var(--line); margin-top:var(--s6); }
+  :is(#editpanel, #adrpanel, #mdprint) .md p { white-space:normal; }
+  :is(#editpanel, #adrpanel, #mdprint) .md img { max-width:100%; }
+  :is(#editpanel, #adrpanel, #mdprint) .md img.loading { min-width:40px; min-height:24px; background:var(--raise); }
+  :is(#editpanel, #adrpanel, #mdprint) .md table tr:nth-child(2n) td { background:color-mix(in srgb, var(--panel) 60%, transparent); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .footnotes { font-size:.9em; color:var(--dim); border-top:1px solid var(--line); margin-top:var(--s6); }
   /* Read out, not drawn: the footnotes' heading, as GitHub has it */
-  :is(#editpanel, #adrpanel) .md .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
+  :is(#editpanel, #adrpanel, #mdprint) .md .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
     clip:rect(0 0 0 0); white-space:nowrap; border:0; }
-  :is(#editpanel, #adrpanel) .md .katex-display { overflow-x:auto; overflow-y:hidden; }
-  :is(#editpanel, #adrpanel) .md .mdcodewrap { position:relative; }
-  :is(#editpanel, #adrpanel) .md .mdcodewrap > button { position:absolute; top:var(--s1); right:var(--s1); opacity:0; min-height:0;
+  :is(#editpanel, #adrpanel, #mdprint) .md .katex-display { overflow-x:auto; overflow-y:hidden; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mdcodewrap { position:relative; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mdcodewrap > button { position:absolute; top:var(--s1); right:var(--s1); opacity:0; min-height:0;
     padding:2px 8px; font-size:11px; border-radius:var(--r-chip); border:1px solid var(--line); background:var(--panel);
     color:var(--dim); cursor:pointer; }
-  :is(#editpanel, #adrpanel) .md .mdcodewrap:hover > button, :is(#editpanel, #adrpanel) .md .mdcodewrap > button:focus { opacity:1; }
-  @media (hover:none) { :is(#editpanel, #adrpanel) .md .mdcodewrap > button { opacity:1; } }
-  :is(#editpanel, #adrpanel) .md .mddiagram { margin:0 0 var(--s3); overflow-x:auto; text-align:center; }
-  :is(#editpanel, #adrpanel) .md .mddiagram svg { max-width:100%; height:auto; }
-  :is(#editpanel, #adrpanel) .md .mddiagram.bad { text-align:left; }
-  :is(#editpanel, #adrpanel) .md .mddiagram .mdderr { color:var(--warn); font-size:12px; margin-bottom:var(--s1); }
-  :is(#editpanel, #adrpanel) .md .hljs-comment, :is(#editpanel, #adrpanel) .md .hljs-quote { color:var(--faint); font-style:italic; }
-  :is(#editpanel, #adrpanel) .md .hljs-keyword, :is(#editpanel, #adrpanel) .md .hljs-meta, :is(#editpanel, #adrpanel) .md .hljs-built_in, :is(#editpanel, #adrpanel) .md .hljs-type,
-  :is(#editpanel, #adrpanel) .md .hljs-selector-tag { color:var(--brand); }
-  :is(#editpanel, #adrpanel) .md .hljs-string, :is(#editpanel, #adrpanel) .md .hljs-regexp, :is(#editpanel, #adrpanel) .md .hljs-addition { color:var(--live); }
-  :is(#editpanel, #adrpanel) .md .hljs-number, :is(#editpanel, #adrpanel) .md .hljs-literal, :is(#editpanel, #adrpanel) .md .hljs-symbol { color:var(--warn); }
-  :is(#editpanel, #adrpanel) .md .hljs-deletion { color:var(--stop); }
-  :is(#editpanel, #adrpanel) .md .hljs-title, :is(#editpanel, #adrpanel) .md .hljs-attr, :is(#editpanel, #adrpanel) .md .hljs-variable { color:var(--text); }
-  :is(#editpanel, #adrpanel) .md li > input[type=checkbox] { margin:0 var(--s2) 0 -1.3em; vertical-align:middle; }
-  :is(#editpanel, #adrpanel) .md li:has(> input[type=checkbox]) { list-style:none; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mdcodewrap:hover > button, :is(#editpanel, #adrpanel, #mdprint) .md .mdcodewrap > button:focus { opacity:1; }
+  @media (hover:none) { :is(#editpanel, #adrpanel, #mdprint) .md .mdcodewrap > button { opacity:1; } }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mddiagram { margin:0 0 var(--s3); overflow-x:auto; text-align:center; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mddiagram svg { max-width:100%; height:auto; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mddiagram.bad { text-align:left; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .mddiagram .mdderr { color:var(--warn); font-size:12px; margin-bottom:var(--s1); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-comment, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-quote { color:var(--faint); font-style:italic; }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-keyword, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-meta, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-built_in, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-type,
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-selector-tag { color:var(--brand); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-string, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-regexp, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-addition { color:var(--live); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-number, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-literal, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-symbol { color:var(--warn); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-deletion { color:var(--stop); }
+  :is(#editpanel, #adrpanel, #mdprint) .md .hljs-title, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-attr, :is(#editpanel, #adrpanel, #mdprint) .md .hljs-variable { color:var(--text); }
+  :is(#editpanel, #adrpanel, #mdprint) .md li > input[type=checkbox] { margin:0 var(--s2) 0 -1.3em; vertical-align:middle; }
+  :is(#editpanel, #adrpanel, #mdprint) .md li:has(> input[type=checkbox]) { list-style:none; }
   /* The visual editor: the same text, with a bar of what to make of it */
   #editpanel .mdtools { position:sticky; top:0; z-index:2; display:flex; flex-wrap:wrap; align-items:center; gap:2px;
     padding:var(--s1) var(--s4); background:var(--bg); border-bottom:1px solid var(--line); }
@@ -2472,6 +2478,29 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #editpanel .mdrich td, #editpanel .mdrich th { border:1px solid var(--line); padding:var(--s1) var(--s2); min-width:3em; }
   #editpanel .mdrich .selectedCell { background:color-mix(in srgb, var(--brand) 14%, transparent); }
   #editpanel .mdrich details { border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); margin:0 0 var(--s3); }
+  /* The paper a document is printed on (mdPdf): nothing on the screen, and
+     the only thing on the paper. Light whatever the screen's colours are, in
+     a face made for reading, with what must not be cut across a page kept
+     whole */
+  #mdprint { display:none; }
+  @media print {
+    @page { size:A4; margin:17mm 16mm 19mm; }
+    /* The paper is white to its edges: the screen's dark scheme would colour
+       the margins the page does not draw */
+    :root { color-scheme:light !important; }
+    html, body { background:#fff !important; height:auto !important; min-height:0 !important;
+      overflow:visible !important; }
+    body > *:not(#mdprint) { display:none !important; }
+    #mdprint { display:block; position:static; color:#1b1f24; background:#fff;
+      --bg:#fff; --text:#1b1f24; --dim:#57606a; --faint:#6e7781; --line:#d0d7de; --edge:#d0d7de;
+      --panel:#f6f8fa; --panel2:#f0f2f5; --raise:#eef1f4; --brand:#0a5bc4; --accent:#0a5bc4;
+      --live:#1a7f37; --warn:#8a5a00; --stop:#c62828; }
+    #mdprint .md { font:10.5pt/1.65 system-ui, "Segoe UI", "Yu Gothic UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+    #mdprint .md pre { white-space:pre-wrap; }
+    #mdprint .md pre, #mdprint .md table, #mdprint .md img, #mdprint .md .mddiagram, #mdprint .md blockquote,
+    #mdprint .md .katex-display { break-inside:avoid; }
+    #mdprint .md h1, #mdprint .md h2, #mdprint .md h3, #mdprint .md h4 { break-after:avoid; }
+  }
   /* Notes for an AI, beside the paragraph they are about: the bar of how
      many and where they go, a card under the paragraph, and the box a note
      is written in */
@@ -14993,7 +15022,9 @@ function editBuild(box) {
   }
   const toc = el("button", {class: "quiet etoc", title: T["md.toc.title"] || "", onclick: mdTocToggle},
     pickIcon("sliders"), el("span", {}, T["md.toc"] || ""));
-  bar.append(where, el("span", {class: "emark"}), kind, enc, fenc, views, toc, el("span", {class: "grow"}), toFile, tell, save, shut);
+  const pdf = el("button", {class: "quiet etoc", title: T["md.pdf.title"] || "", onclick: mdPdf},
+    pickIcon("download"), el("span", {}, T["md.pdf"] || ""));
+  bar.append(where, el("span", {class: "emark"}), kind, enc, fenc, views, toc, pdf, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
   const md = el("div", {class: "emd", hidden: ""});
@@ -15007,7 +15038,7 @@ function editBuild(box) {
   const say = el("div", {class: "esay"});
   box.append(bar, host, md, change, say);
   edUi = {where, mark, kind, enc, fenc, toFile, save, tell, host, change, say, changeSig: "",
-    views, toc, md, tocs, main, find};
+    views, toc, pdf, md, tocs, main, find};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
@@ -15031,6 +15062,9 @@ function drawEdit() {
   u.views.style.display = mdOn ? "" : "none";
   for (const b of u.views.children) b.classList.toggle("on", b.dataset.view === view);
   u.toc.style.display = mdOn && view !== "source" ? "" : "none";
+  // Paper is made from the drawing: grey while the text is shown, and saying so
+  u.pdf.style.display = mdOn ? "" : "none";
+  u.pdf.classList.toggle("held", view === "source");
   u.toc.classList.toggle("on", !!MD.toc[ED.path]);
   if (diffing || !mdOn || view === "source") { u.md.hidden = true; mdLeave(); }
   // A page's text was decoded by the browser; there is no file to read again
@@ -15388,6 +15422,69 @@ function mdDecorate(body) {
   mdNotesPaint();
 }
 
+// ── Paper ───────────────────────────────────────────────────────────────────
+// The document drawn for paper, light whatever the screen is, and printed by
+// the window to a PDF where the person chooses (a phone prints it with its
+// own browser). Drawn again from the text with the same kit, so the visual
+// editor and the preview make the same paper; the diagrams drawn light and
+// the pictures read before anything is printed. `@media print` shows only it
+let mdPrinting = false;
+async function mdPdf() {
+  if (!ED.path || mdPrinting) return;
+  if (!mdShown()) { ED.said = T["md.pdf.source"] || ""; ED.bad = false; drawEdit(); return; }
+  if (!window.MdKit) return;
+  mdPrinting = true;
+  ED.said = T["md.pdf.making"] || ""; ED.bad = false; drawEdit();
+  const name = await mdPaper();
+  if (typeof REMOTE !== "undefined" && REMOTE) {
+    const done = () => { window.removeEventListener("afterprint", done); mdPrintDone(); ED.said = ""; drawEdit(); };
+    window.addEventListener("afterprint", done);
+    window.print();
+    return;
+  }
+  // Where the save dialog starts: the document's own folder, on this PC
+  const t = editorTab();
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  const dir = ED.path.includes("/") ? ED.path.slice(0, ED.path.lastIndexOf("/")) : "";
+  const folder = g && !g.host && g.folder ? (dir ? g.folder.replace(/[\\/]+$/, "") + "/" + dir : g.folder) : "";
+  send({kind: "print", name, folder});
+}
+// The paper itself, drawn and waited for: the name the PDF is offered under
+async function mdPaper() {
+  mdRichFlush();
+  let box = document.getElementById("mdprint");
+  if (!box) { box = el("div", {id: "mdprint"}); document.body.append(box); }
+  box.textContent = "";
+  const body = el("div", {class: "md", translate: "no"});
+  body.innerHTML = window.MdKit.render(edText(), {footnotes: T["md.footnotes"] || "", back: T["md.footnotes.back"] || ""}).html;
+  box.append(body);
+  for (const code of body.querySelectorAll("pre > code.language-mermaid")) {
+    const pic = el("div", {class: "mddiagram"});
+    code.parentElement.replaceWith(pic);
+    mdDiagram(pic, code.textContent, true);
+  }
+  for (const img of body.querySelectorAll("img[src]")) mdPicture(img);
+  await mdDiagrams;
+  // The pictures read from the folder, for as long as a slow machine needs
+  for (let i = 0; i < 100 && body.querySelector("img.loading"); i++) await new Promise(r => setTimeout(r, 150));
+  await Promise.all([...body.querySelectorAll("img")].filter(i => i.src).map(i => i.decode().catch(() => {})));
+  const stem = (ED.path.split("/").pop() || "").replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]/g, "_") || "document";
+  return stem + ".pdf";
+}
+function mdPrintDone() {
+  mdPrinting = false;
+  const box = document.getElementById("mdprint");
+  if (box) box.textContent = "";
+}
+window.__mdPdf = function (d) {
+  mdPrintDone();
+  ED.said = !d ? "" : d.ok ? (T["md.pdf.done"] || "").replaceAll("{path}", d.path || "")
+    : d.cancelled ? "" : (T["md.pdf.failed"] || "{error}").replaceAll("{error}", d.error || "");
+  ED.bad = !!d && !d.ok && !d.cancelled;
+  drawEdit();
+  if (d && d.ok) toast(ED.said);
+};
+
 // ── Notes for an AI ─────────────────────────────────────────────────────────
 // Written beside a paragraph of the drawn document, kept with the lines of the
 // file it is about (notes.rs), and handed to an AI tab together, as a draft
@@ -15602,7 +15699,8 @@ function mdPictureHeard(d) {
 // another: the library keeps state between drawings, and two at once spoil
 // each other
 let mdMermaid = null, mdDiagrams = Promise.resolve(), mdDiagramSeq = 0;
-function mdDiagram(box, code) {
+// `light` draws it for paper, whatever the screen's colours are
+function mdDiagram(box, code, light) {
   mdDiagrams = mdDiagrams.then(async () => {
     if (!mdMermaid) {
       mdMermaid = new Promise((ok, no) => {
@@ -15617,7 +15715,7 @@ function mdDiagram(box, code) {
     // Strict, and every label drawn as SVG text: what comes back is cleaned
     // as SVG, and an SVG cleaner takes HTML labels out
     mermaid.initialize({startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true,
-      theme: edDarkNow() ? "dark" : "default", htmlLabels: false, flowchart: {htmlLabels: false}});
+      theme: !light && edDarkNow() ? "dark" : "default", htmlLabels: false, flowchart: {htmlLabels: false}});
     const id = "mdg" + (++mdDiagramSeq);
     try {
       const {svg} = await mermaid.render(id, code);
@@ -16114,6 +16212,7 @@ window.__files = function (d) {
   // The editor asks through the same door as the list, and reads its own post
   if (d.act === "read" || d.act === "write") { editHeard(d); return; }
   if (d.act === "image") { mdPictureHeard(d); return; }
+  if (d.act === "templates" || d.act === "newmd") { filesNewMdHeard(d); return; }
   // A folder on another machine answers later than it was asked, and by then
   // the column may be showing another folder: an answer about the last one is
   // not put into this one
@@ -16187,6 +16286,7 @@ function filesRowMenu(anchor, name, path, dir, point) {
   }));
   rows.push(item(T["tui.link.copy_path"] || "", () => { copyToClipboard(path); toast(T["tui.link.copied"] || ""); }));
   if (dir) rows.push(item(T["files.menu.mkdir"] || "", () => filesNewFolder(path)));
+  if (dir) rows.push(item(T["files.menu.newmd"] || "", () => filesNewMarkdown(path)));
   rows.push(item(T["files.menu.rename"] || "", () => askQuestion({
     title: T["files.rename.title"] || "",
     say: T["files.rename.say"] || "",
@@ -16229,6 +16329,70 @@ function filesNewFolder(at) {
     label: T["files.mkdir.go"] || "",
     go: name => { if (name) filesAsk("mkdir", {at, name}); },
   });
+}
+// A new Markdown file in the folder `at` ("" is the working folder), blank or
+// from one of the folder's templates (mdnew.rs). The templates are asked for
+// first; the question names the file and offers them, the blank one first
+let fsNewMd = null;
+function filesNewMarkdown(at) {
+  fsNewMd = {at, templates: null, pick: "", said: ""};
+  filesAsk("templates");
+  filesNewMdAsk();
+}
+function filesNewMdAsk() {
+  const n = fsNewMd;
+  if (!n) return;
+  const t = folderTab();
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
+  const rows = [];
+  const pickRow = (path, name, sub) => {
+    const on = n.pick === path;
+    return el("div", {class: "brow2 newmd" + (on ? " on" : ""), role: "radio", "aria-checked": on ? "true" : "false",
+      tabindex: "0", onclick: () => { n.pick = path; filesNewMdAsk(); }},
+      el("span", {class: "nm"}, name), sub ? el("span", {class: "tag"}, sub) : null);
+  };
+  rows.push(pickRow("", T["files.newmd.blank"] || "", ""));
+  if (n.templates === null) rows.push(el("div", {class: "brow2"}, el("span", {class: "nm"}, T["files.newmd.reading"] || "")));
+  else for (const tp of n.templates) rows.push(pickRow(tp.path, tp.name, tp.path));
+  const say = n.templates && !n.templates.length
+    ? (T["files.newmd.none"] || "").replaceAll("{dir}", n.dir || ".shikisha/templates")
+    : (T["files.newmd.say"] || "");
+  askQuestion({
+    title: T["files.newmd.title"] || "",
+    say,
+    what: n.at ? n.at + "/" : (T["files.mkdir.root"] || ""),
+    mark: g && g.mark,
+    field: n.name || "untitled.md",
+    rows,
+    label: T["files.newmd.go"] || "",
+    go: name => {
+      if (!name) return;
+      filesAsk("newmd", {at: n.at, name, template: n.pick});
+    },
+    back: () => { fsNewMd = null; },
+  });
+  // Asking again put the last question away, and with it what it was about
+  fsNewMd = n;
+  // The name box keeps what was typed when the list is drawn again
+  const box = document.getElementById("sq");
+  if (box) box.oninput = () => { n.name = box.value; };
+}
+// What the templates and the new file came back as
+function filesNewMdHeard(d) {
+  if (d.act === "templates") {
+    if (!fsNewMd) return;
+    fsNewMd.templates = d.ok ? (d.templates || []) : [];
+    fsNewMd.dir = d.dir || "";
+    if (!d.ok) fsNewMd.said = d.error || "";
+    if (!document.getElementById("sask").hidden) filesNewMdAsk();
+    return;
+  }
+  // Made: the folder is read again and the file opened, drawn
+  if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
+  fsNewMd = null;
+  FS.said = ""; FS.bad = false;
+  filesChanged({act: "mkdir", path: d.path});
+  filesOpen(d.path);
 }
 // A file opened where there is room to read it
 function filesOpen(path) {
@@ -16289,7 +16453,8 @@ function filesBuild(box) {
   const blank = e => {
     if ((e.target || down) !== list) return;
     e.preventDefault();
-    openList(list, [el("div", {onclick:() => { closeFolderMenu(); filesNewFolder(""); }}, T["files.menu.mkdir"] || "")], false, e);
+    openList(list, [el("div", {onclick:() => { closeFolderMenu(); filesNewFolder(""); }}, T["files.menu.mkdir"] || ""),
+      el("div", {onclick:() => { closeFolderMenu(); filesNewMarkdown(""); }}, T["files.menu.newmd"] || "")], false, e);
   };
   list.addEventListener("contextmenu", blank);
   holdOpens(list, blank);

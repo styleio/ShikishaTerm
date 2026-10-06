@@ -5185,7 +5185,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             continue;
                         };
                         let panel = me.id.clone().unwrap_or_else(|| me.called().to_string());
-                        let disk = match adr_disk(&panel, &surfaces, &tabs, &caps, false) {
+                        let disk = match folder_disk(&panel, &surfaces, &tabs, &caps, false) {
                             Ok(d) => d,
                             Err(e) => {
                                 let _ = call.reply.send(Err(e));
@@ -9399,7 +9399,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             let writes = matches!(act.as_str(), "save" | "status");
-            let disk = match adr_disk(&panel, &surfaces, &tabs, &caps, writes) {
+            let disk = match folder_disk(&panel, &surfaces, &tabs, &caps, writes) {
                 Ok(d) => d,
                 Err(why) => {
                     refused(why);
@@ -9559,6 +9559,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // is one folder of this machine or a search that stops itself; a
         // folder on another machine is asked on a thread and answers below
         for (panel, act, args) in shell.mail().take_files() {
+            // A new Markdown file, and the templates it can start from: read
+            // and written through the folder (`crate::mdnew`), on a thread
+            // because the folder may be on another machine
+            if act == "templates" || act == "newmd" {
+                let tx = far_tx.clone();
+                let send = move |js: String| {
+                    let _ = tx.send(FarFiles { key: String::new(), path: String::new(), js: Some(js), stamp: None, asked: Instant::now(), polled: false });
+                };
+                match folder_disk(&panel, &surfaces, &tabs, &caps, act == "newmd") {
+                    Err(e) => send(serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e}).to_string()),
+                    Ok(disk) => {
+                        std::thread::spawn(move || send(crate::mdnew::answer(&*disk, &act, &args, &panel)));
+                    }
+                }
+                continue;
+            }
             // An editor showing held text reads it from here
             let held = views.answer(&panel, &act, &args);
             if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
@@ -15235,19 +15251,20 @@ const ADR_TALK_ROOM: usize = 24_000;
 /// How much of the records a question is answered from, in characters
 const ADR_ASK_ROOM: usize = 60_000;
 
-/// The folder of a panel's tab, as somewhere decision records are read and
-/// written: this PC's disk, or the machine the folder is on, behind the same
-/// fence and the same permissions the file list goes through. Writing on
-/// another machine asks for the permissions a save and a new folder ask for
-fn adr_disk(
+/// The folder of a panel's tab, as somewhere files are read and written
+/// (`crate::disk`): this PC's disk, or the machine the folder is on, behind
+/// the same fence and the same permissions the file list goes through.
+/// Writing on another machine asks for the permissions a save and a new
+/// folder ask for
+fn folder_disk(
     panel: &str,
     surfaces: &[Surface],
     tabs: &[Tab],
     caps: &crate::caps::Capabilities,
     writes: bool,
-) -> std::result::Result<Box<dyn crate::adr::Disk + Send>, String> {
+) -> std::result::Result<Box<dyn crate::disk::Disk + Send>, String> {
     match files_at(panel, surfaces, tabs) {
-        Some(FilesAt::Here(root)) => Ok(Box::new(AdrHere(root))),
+        Some(FilesAt::Here(root)) => Ok(Box::new(FolderHere(root))),
         Some(FilesAt::There { at, root }) => {
             let reads = ["sftp_ls", "sftp_stat", "sftp_read"];
             let more: &[&str] = if writes { &["sftp_put", "sftp_mkdir"] } else { &[] };
@@ -15256,22 +15273,22 @@ fn adr_disk(
                     return Err(i18n::tp("err.hooks.not_permitted", &[("name", name), ("who", &i18n::t("grant.who.human"))]));
                 }
             }
-            Ok(Box::new(AdrThere { at, fences: crate::transfer::Fences { here: None, there: root } }))
+            Ok(Box::new(FolderThere { at, fences: crate::transfer::Fences { here: None, there: root } }))
         }
         None => Err(i18n::t("err.files.no_folder")),
     }
 }
 
-/// A folder of this PC, for decision records
-struct AdrHere(std::path::PathBuf);
+/// A working folder of this PC (`crate::disk`)
+struct FolderHere(std::path::PathBuf);
 
-impl AdrHere {
+impl FolderHere {
     fn at(&self, rel: &str) -> std::result::Result<std::path::PathBuf, String> {
         local_under(&self.0, rel).ok_or_else(|| i18n::t("err.sftp.outside"))
     }
 }
 
-impl crate::adr::Disk for AdrHere {
+impl crate::disk::Disk for FolderHere {
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         match std::fs::read_dir(self.at(dir)?) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -15282,6 +15299,19 @@ impl crate::adr::Disk for AdrHere {
                     .map(|e| e.file_name().to_string_lossy().to_string())
                     .collect(),
             )),
+        }
+    }
+    fn folders(&self, dir: &str) -> std::result::Result<Vec<String>, String> {
+        match std::fs::read_dir(self.at(dir)?) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e.to_string()),
+            // A link to a folder is not followed: it can lead out of the
+            // folder, or round in a circle
+            Ok(rd) => Ok(rd
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()),
         }
     }
     fn read(&self, path: &str) -> std::result::Result<Option<Vec<u8>>, String> {
@@ -15312,14 +15342,14 @@ impl crate::adr::Disk for AdrHere {
     }
 }
 
-/// A folder on another machine, for decision records: each step a file job
+/// A working folder on another machine (`crate::disk`): each step a file job
 /// over the connection that machine already has
-struct AdrThere {
+struct FolderThere {
     at: crate::elsewhere::Elsewhere,
     fences: crate::transfer::Fences,
 }
 
-impl AdrThere {
+impl FolderThere {
     fn run(&self, job: ssh::FileJob) -> std::result::Result<ssh::FileAnswer, String> {
         let job = crate::transfer::inside(job, &self.fences).map_err(|e| format!("{e:#}"))?;
         crate::elsewhere::files(&self.at, job, SFTP_WAIT_MS).map_err(|e| format!("{e:#}"))
@@ -15334,7 +15364,7 @@ impl AdrThere {
     }
 }
 
-impl crate::adr::Disk for AdrThere {
+impl crate::disk::Disk for FolderThere {
     fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
         if self.there(dir).is_none_or(|e| !e.dir) {
             return Ok(None);
@@ -15342,6 +15372,15 @@ impl crate::adr::Disk for AdrThere {
         match self.run(ssh::FileJob::List { path: dir.to_string() })? {
             ssh::FileAnswer::Listing(rows) => Ok(Some(rows.into_iter().filter(|r| !r.dir).map(|r| r.name).collect())),
             _ => Ok(Some(Vec::new())),
+        }
+    }
+    fn folders(&self, dir: &str) -> std::result::Result<Vec<String>, String> {
+        if self.there(dir).is_none_or(|e| !e.dir) {
+            return Ok(Vec::new());
+        }
+        match self.run(ssh::FileJob::List { path: dir.to_string() })? {
+            ssh::FileAnswer::Listing(rows) => Ok(rows.into_iter().filter(|r| r.dir && r.name != "." && r.name != "..").map(|r| r.name).collect()),
+            _ => Ok(Vec::new()),
         }
     }
     fn read(&self, path: &str) -> std::result::Result<Option<Vec<u8>>, String> {
@@ -15435,7 +15474,7 @@ fn adr_draft_words(
 
 /// The prompt a question about the records is asked with: the question, and
 /// the records themselves, standing decisions first
-fn adr_question_words(disk: &dyn crate::adr::Disk, args: &serde_json::Value) -> std::result::Result<(String, Option<String>), String> {
+fn adr_question_words(disk: &dyn crate::disk::Disk, args: &serde_json::Value) -> std::result::Result<(String, Option<String>), String> {
     let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
     let question = str_of("q");
     if question.trim().is_empty() {

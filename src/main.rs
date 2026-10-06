@@ -518,6 +518,8 @@ struct WinSurface {
     /// What a key from another program asked the board to open, kept until
     /// the page is up and has its state
     summoned: Option<String>,
+    /// A PDF waiting on the save dialog: where it goes, once chosen
+    printing: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
 }
 
 impl WinSurface {
@@ -607,6 +609,32 @@ impl WinSurface {
     fn push_adr(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__adr && window.__adr({json});"));
     }
+    /// The place for a PDF, once the save dialog has answered: the page
+    /// printed there, and the page told how it went. Nothing chosen is the
+    /// page put back as it was
+    fn print_when_told(&mut self) {
+        let Some(rx) = self.printing.as_ref() else { return };
+        let chosen = match rx.try_recv() {
+            Ok(c) => c,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.printing = None;
+        let said = match chosen {
+            None => serde_json::json!({"ok": false, "cancelled": true}),
+            Some(mut path) => {
+                if path.extension().is_none() {
+                    path.set_extension("pdf");
+                }
+                match self.win.print_pdf().and_then(|bytes| std::fs::write(&path, bytes).map_err(Into::into)) {
+                    Ok(()) => serde_json::json!({"ok": true, "path": path.display().to_string()}),
+                    Err(e) => serde_json::json!({"ok": false, "error": format!("{e:#}")}),
+                }
+            }
+        };
+        let _ = self.win.eval(&format!("window.__mdPdf && window.__mdPdf({said});"));
+    }
+
     /// Hand one answer back to the notes on a drawn document (already JSON-encoded)
     fn push_notes(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__notes && window.__notes({json});"));
@@ -763,6 +791,7 @@ impl WinSurface {
 
     fn take_events(&mut self, active_tab: Option<&Tab>) {
         use shikisha_shared::Ev;
+        self.print_when_told();
         for ev in self.win.drain() {
             match ev {
                 Ev::Resize { rows, cols, area, full, panes } => {
@@ -926,6 +955,20 @@ impl WinSurface {
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
                 Ev::Adr { panel, act, args } => self.mail.adr.push((panel, act, args)),
                 Ev::Notes { act, args } => self.mail.notes.push((act, args)),
+                // Where the PDF goes is asked on a thread: the dialog holds
+                // whoever asks until it is answered, and this loop draws the
+                // terminals. The page is printed once the answer is back here,
+                // where the window can be asked
+                Ev::Print { name, folder } => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let title = shikisha_core::i18n::t("md.pdf.save_title");
+                    std::thread::spawn(move || {
+                        use shikisha_shared::FilePicker as _;
+                        let start = Some(std::path::PathBuf::from(&folder)).filter(|p| !folder.is_empty() && p.is_dir());
+                        let _ = tx.send(picker::DesktopPicker.save(&title, start.as_deref(), &name, ("PDF", "pdf")));
+                    });
+                    self.printing = Some(rx);
+                }
                 Ev::Issues { act, args } => self.mail.issues.push((act, args)),
                 Ev::OpenIssues => self.mail.open_issues = true,
                 Ev::EditOpen { panel, path, diff } => self.mail.edits.push((panel, path, diff)),
@@ -1227,6 +1270,7 @@ fn run_in_window() -> Result<()> {
         hotkeys: None,
         page_up: false,
         summoned: None,
+        printing: None,
     };
     // The keys that work from any program. The scissors' own key frames first
     // and chooses after; a tool's key opens that tool; the rest open something

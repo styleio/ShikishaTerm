@@ -91,7 +91,12 @@ brings back what you were reading beside the AI. Something a button calls up (th
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
 
 **Files** is what is in the working folder. Press a file to open it in the editor. Right-click a row (hold it on a phone)
-to edit it, put its path in the message box, copy its path, rename, duplicate or delete it. A folder's row, and the empty part of the list, also make a new folder. What is deleted from a folder on this PC goes to the recycle bin, and can be
+to edit it, put its path in the message box, copy its path, rename, duplicate or delete it. A folder's row, and the empty part of the list, also make a new folder, or a **new Markdown** file:
+name it and choose what it starts from, a blank document or one of the folder's templates. The
+templates are Markdown files in `.shikisha/templates/` of the working folder (folders inside it
+too), so a team keeps them in its repository; one is listed by the `title:` of its front matter,
+else by its file name. `{{title}}`, `{{file}}`, `{{date}}` and `{{time}}` in a template are filled
+in for the new file; anything else in braces is left as written. What is deleted from a folder on this PC goes to the recycle bin, and can be
 restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
 
 **A Markdown file** opens in the editor three ways, chosen at the top: **Text** (the file as it
@@ -104,7 +109,9 @@ Text and says why; a very large one too, with a button to open it visually anywa
 lists the headings beside the document; Ctrl+F finds words in the drawn document, and in Visual
 replaces them too. Links open where they belong: a heading in the document, another file of
 the folder in this editor, a web page in a browser tab of the folder (with Ctrl, in this PC's
-browser). Right-click a paragraph of the preview (hold it on a phone) to **write a note for the
+browser). **PDF** saves the drawn document as a PDF where you choose, light on white whatever
+the screen's colours are, with its formulas, diagrams and pictures; on a phone it opens the
+phone's own printing, where "Save as PDF" is one of the printers. Right-click a paragraph of the preview (hold it on a phone) to **write a note for the
 AI** on it; the notes stay under their paragraphs, and **Hand to an AI** puts them all in an
 AI tab's input as `path:line` lines, for you to read and send. Handed notes are taken off.
 

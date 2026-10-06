@@ -768,6 +768,11 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// The document drawn for paper, written to a PDF this PC keeps: `name`
+    /// is the file name offered, `folder` where the save dialog starts (the
+    /// document's own folder on this PC, or empty). The window's own: a
+    /// phone prints with its own browser
+    Print { name: String, folder: String },
     /// Notes written beside a drawn Markdown document: listed, added,
     /// changed, dropped, or handed to an AI tab (see `notes::answer`)
     Notes {
@@ -1663,6 +1668,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // A drawn document to a PDF (see `Ev::Print`)
+        Some("print") => Ev::Print {
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            folder: v.get("folder").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // Notes on a drawn document (see `Ev::Notes`)
         Some("notes") => Ev::Notes {

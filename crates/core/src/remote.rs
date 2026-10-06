@@ -220,6 +220,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         Ev::Files { .. } => true,
         Ev::Adr { .. } => true,
         Ev::Notes { .. } => true,
+        // A save dialog on this PC's screen and a file this PC keeps. A phone
+        // prints the same drawing with its own browser, to its own files
+        Ev::Print { .. } => false,
         // The Issue tab. What it can ask for is what the same person can do on
         // this PC by opening it, through the same permission table
         Ev::Issues { .. } | Ev::OpenIssues => true,
@@ -4429,6 +4432,8 @@ mod tests {
             "Copy", "Covered", "PageToast", "Window", "Snip", "SnipAsk",
             // A page's bar pressed with no page named
             "Button",
+            // This PC's save dialog and this PC's file: a phone prints with its own browser
+            "Print",
         ];
         written.sort();
         assert_eq!(refused, written, "what a phone may not do changed: say why beside it in the gate, and here");
