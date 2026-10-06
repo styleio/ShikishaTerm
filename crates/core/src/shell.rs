@@ -9189,6 +9189,7 @@ function adrDrawRead(box) {
   page.append(el("div", {class:"ao"}, el("span", {class:"ast s-" + (r.status || "none")}, adrStatusWord(r.status)),
     r.date ? el("span", {}, r.date) : null, el("span", {class:"afile"}, d.file)));
   if (r.makers) page.append(el("div", {class:"ao"}, (T["adr.makers"] || "") + ": " + r.makers));
+  if (r.consulted) page.append(el("div", {class:"ao"}, (T["adr.front.consulted"] || "") + ": " + r.consulted));
   if (r.status === "superseded" && r.by) {
     const to = (AD.records || []).find(x => x.file === r.by);
     page.append(el("div", {class:"aby"}, (T["adr.superseded_by"] || "") + " ",

@@ -194,6 +194,10 @@ pub struct Record {
     pub date: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub makers: String,
+    /// Who was asked before it was decided -- people, and the AI the
+    /// decision was talked through with (`Claude Code (AI)`)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub consulted: String,
     /// Whether the file is written in the form's sections, so the form can
     /// open it. A record in another format is edited in the editor
     pub fits: bool,
@@ -227,6 +231,7 @@ pub fn parse(file: &str, text: &str, fields: &[Field]) -> Record {
         by,
         date: doc.front_value("date").unwrap_or_default(),
         makers: doc.front_value("decision-makers").or_else(|| doc.front_value("deciders")).unwrap_or_default(),
+        consulted: doc.front_value("consulted").unwrap_or_default(),
         fits,
         text: cut_chars(text, SEARCH_ROOM),
     }
@@ -1029,6 +1034,7 @@ mod tests {
         assert_eq!(r.status, "accepted");
         assert_eq!(r.date, "2026-01-02");
         assert_eq!(r.makers, "Aiko, Ben");
+        assert_eq!(r.consulted, "", "nobody consulted is nothing written");
         assert!(r.fits);
         let p = parts(MADR_RECORD, &madr());
         assert_eq!(p["sections"][0]["body"], "We need a database.");
@@ -1103,6 +1109,7 @@ mod tests {
         let list = answer(&disk, "list", &json!({"dir": "docs/decisions"}));
         assert_eq!(list["records"][0]["status"], "proposed");
         assert_eq!(list["records"][0]["title"], "キャッシュに Redis を使う");
+        assert_eq!(list["records"][0]["consulted"], "Claude Code (AI)", "the AI asked is read back");
     }
 
     #[test]
