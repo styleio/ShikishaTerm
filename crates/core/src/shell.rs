@@ -14379,7 +14379,7 @@ window.__files = function (d) {
   if (!d.ok) { FS.said = d.error || ""; FS.bad = true; drawFiles(); return; }
   FS.said = ""; FS.bad = false;
   FS.rev++;
-  if (d.act === "rename" || d.act === "copy" || d.act === "remove") { filesChanged(d); return; }
+  if (["rename", "copy", "remove", "mkdir"].includes(d.act)) { filesChanged(d); return; }
   if (d.act === "ls") {
     FS.rows[d.at || ""] = d.rows || [];
   } else {
@@ -14395,18 +14395,20 @@ function filesParent(path) {
   const cut = path.lastIndexOf("/");
   return cut < 0 ? "" : path.slice(0, cut);
 }
-// A rename, a copy or a deletion went through: the folder it happened in is
-// read again, and what was held about a folder that moved or went is let go,
-// so opening the new name reads it fresh. A search on screen is asked again,
-// since its rows named the old paths
+// A rename, a copy, a deletion or a new folder went through: the folder it
+// happened in is read again (and opened, for a new folder, so it is seen), and
+// what was held about a folder that moved or went is let go, so opening the
+// new name reads it fresh. A search on screen is asked again, since its rows
+// named the old paths
 function filesChanged(d) {
-  const gone = d.act === "copy" ? null : d.path || "";
+  const gone = d.act === "copy" || d.act === "mkdir" ? null : d.path || "";
   if (gone) {
     for (const map of [FS.rows, FS.open, FS.asked]) {
       for (const k of Object.keys(map)) if (k === gone || k.startsWith(gone + "/")) delete map[k];
     }
   }
   const at = filesParent(d.path || "");
+  if (d.act === "mkdir" && at) FS.open[at] = true;
   delete FS.asked[at];
   filesLoad(at);
   if (FS.q) filesAsk(FS.mode === "name" ? "find" : "grep", {q: FS.q});
@@ -14435,6 +14437,14 @@ function filesRowMenu(anchor, name, path, dir, point) {
   const item = (label, go) => el("div", {onclick:() => { closeFolderMenu(); go(); }}, label);
   const rows = [];
   if (!dir) rows.push(item(T["files.menu.edit"] || "", () => filesOpen(path)));
+  // The path as the folder's AI reads it: from the folder it works in
+  rows.push(item(T["files.menu.insert"] || "", () => {
+    insertIntoComposer(path);
+    // On a phone the list is covering the box it just wrote into
+    if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+  }));
+  rows.push(item(T["tui.link.copy_path"] || "", () => { copyToClipboard(path); toast(T["tui.link.copied"] || ""); }));
+  if (dir) rows.push(item(T["files.menu.mkdir"] || "", () => filesNewFolder(path)));
   rows.push(item(T["files.menu.rename"] || "", () => askQuestion({
     title: T["files.rename.title"] || "",
     say: T["files.rename.say"] || "",
@@ -14462,6 +14472,21 @@ function filesRowMenu(anchor, name, path, dir, point) {
     });
   }}, T["files.menu.remove"] || ""));
   openList(anchor, rows, false, point);
+}
+// A new folder in the folder `at` ("" is the working folder itself), named
+// in the question
+function filesNewFolder(at) {
+  const t = folderTab();
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
+  askQuestion({
+    title: T["files.mkdir.title"] || "",
+    say: T["files.mkdir.say"] || "",
+    what: at || (T["files.mkdir.root"] || ""),
+    mark: g && g.mark,
+    field: T["files.mkdir.name"] || "",
+    label: T["files.mkdir.go"] || "",
+    go: name => { if (name) filesAsk("mkdir", {at, name}); },
+  });
 }
 // A file opened where there is room to read it
 function filesOpen(path) {
@@ -14514,6 +14539,18 @@ function filesBuild(box) {
   }
   search.append(mode);
   const list = el("div", {class: "flist"});
+  // Below the rows, where no row is: what can be made in the working folder
+  // itself, which has no row of its own to open a list on. A held press says
+  // only where the list is, so where the finger went down is kept for it
+  let down = null;
+  list.addEventListener("pointerdown", e => { down = e.target; });
+  const blank = e => {
+    if ((e.target || down) !== list) return;
+    e.preventDefault();
+    openList(list, [el("div", {onclick:() => { closeFolderMenu(); filesNewFolder(""); }}, T["files.menu.mkdir"] || "")], false, e);
+  };
+  list.addEventListener("contextmenu", blank);
+  holdOpens(list, blank);
   const say = el("div", {class: "fsay"});
   box.append(search, list, say);
   fsUi = {q, modes, list, say};
@@ -26776,7 +26813,10 @@ mod tests {
         assert!(at("files.menu.edit") < at("files.menu.rename") && at("files.menu.rename") < at("files.menu.copy"));
         assert!(at(r#"el("div", {class:"warn""#) > at("files.menu.copy"), "delete is not last, or not in red");
         assert!(menu.contains(r#"go: () => filesAsk("remove", {path}),"#), "delete does not ask first");
-        assert!(PAGE.contains(r#"if (d.act === "rename" || d.act === "copy" || d.act === "remove") { filesChanged(d); return; }"#),
+        assert!(menu.contains(r#"if (dir) rows.push(item(T["files.menu.mkdir"] || "", () => filesNewFolder(path)));"#),
+            "a folder cannot have a folder made in it");
+        assert!(PAGE.contains(r#"filesNewFolder(""); }}"#), "the working folder itself cannot have a folder made in it");
+        assert!(PAGE.contains(r#"if (["rename", "copy", "remove", "mkdir"].includes(d.act)) { filesChanged(d); return; }"#),
             "a change is not read again");
     }
 

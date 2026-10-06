@@ -117,7 +117,7 @@ try {
   // A file's list: edit, rename, duplicate, and delete last and in red
   let r = await run(menu('a.txt', 'files.menu.rename', 'c.txt', true));
   console.log('  ' + JSON.stringify(r));
-  check(r.items && r.items.length === 4, 'a file offers four entries');
+  check(r.items && r.items.length === 6, 'a file offers six entries');
   check(r.last_red, 'delete is last, in red');
   check(!here('a.txt') && here('c.txt'), 'the file is renamed on the disk');
   check(r.rows && r.rows.includes('c.txt') && !r.rows.includes('a.txt'), 'the list shows the new name');
@@ -129,6 +129,12 @@ try {
   check(fs.readFileSync(path.join(WORK, 'd.txt'), 'utf8') === 'kept\n' && here('c.txt'), 'a rename over a name already there is refused');
   check(!!r.after, 'the refusal is said');
 
+  // The path, put in the message box as the folder's AI reads it
+  r = await run(menu('c.txt', 'files.menu.insert', null, false));
+  const box = await run('castInput ? castInput.value : null');
+  check(typeof box === 'string' && box.includes('c.txt'), 'the path is in the message box: ' + JSON.stringify(box));
+  await run('castInput && (castInput.value = "")');
+
   // Duplicated beside itself, twice: the second copy takes the next name
   r = await run(menu('c.txt', 'files.menu.copy', null, false));
   console.log('  ' + JSON.stringify(r));
@@ -138,10 +144,34 @@ try {
   const again = fs.readdirSync(WORK).filter((n) => n.startsWith('c') && n !== 'c.txt');
   check(again.length === 2, 'a second copy takes another name: ' + again.join(', '));
 
+  // A new folder inside a folder, named in the question
+  r = await run(menu('sub', 'files.menu.mkdir', 'made', true));
+  console.log('  ' + JSON.stringify(r));
+  check(fs.existsSync(path.join(WORK, 'sub', 'made')), 'a new folder is made inside the folder');
+  check(r.rows && r.rows.includes('sub/made'), 'the folder is opened to show it');
+
+  // ...and one at the top, from the empty part of the list
+  const top = await run(`(async () => {
+    const list = document.querySelector("#filepanel .flist");
+    const b = list.getBoundingClientRect();
+    list.dispatchEvent(new MouseEvent("contextmenu", {bubbles:true, cancelable:true, clientX: Math.round(b.left + 40), clientY: Math.round(b.bottom - 10)}));
+    await new Promise(r => setTimeout(r, 200));
+    const items = [...document.querySelectorAll(".fmenu > div")];
+    if (items.length !== 1) return {items: items.map(e => e.textContent)};
+    items[0].click();
+    await new Promise(r => setTimeout(r, 300));
+    document.querySelector("#sask #sq").value = "topdir";
+    document.querySelector("#sask .go").click();
+    await new Promise(r => setTimeout(r, 1500));
+    return {items: [items[0].textContent]};
+  })()`);
+  console.log('  ' + JSON.stringify(top));
+  check(fs.existsSync(path.join(WORK, 'topdir')), 'a new folder is made at the top from the empty part of the list');
+
   // A folder: duplicated whole, then deleted -- the question asks first
   r = await run(menu('sub', 'files.menu.copy', null, false));
   console.log('  ' + JSON.stringify(r));
-  check(r.items && r.items.length === 3, 'a folder offers no "edit"');
+  check(r.items && r.items.length === 6 && !r.items.includes(r.items[0] === 'Edit' ? 'x' : 'Edit'), 'a folder offers no "edit", and offers a new folder');
   const subs = fs.readdirSync(WORK).filter((n) => n.startsWith('sub') && n !== 'sub');
   check(subs.length === 1 && fs.existsSync(path.join(WORK, subs[0], 'b.txt')), 'the folder is copied whole: ' + subs.join(', '));
   r = await run(menu('sub', 'files.menu.remove', null, false));

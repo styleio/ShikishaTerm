@@ -90,7 +90,7 @@ brings back what you were reading beside the AI. Something a button calls up (th
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
 
 **Files** is what is in the working folder. Press a file to open it in the editor. Right-click a row (hold it on a phone)
-to edit, rename, duplicate or delete it. What is deleted from a folder on this PC goes to the recycle bin, and can be
+to edit it, put its path in the message box, copy its path, rename, duplicate or delete it. A folder's row, and the empty part of the list, also make a new folder. What is deleted from a folder on this PC goes to the recycle bin, and can be
 restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
 
 **Chat** reads three ways. **AIConfer** is what the AIs say to each other when one asks

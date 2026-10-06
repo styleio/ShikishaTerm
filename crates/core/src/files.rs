@@ -51,6 +51,14 @@ pub fn beside(rel: &str, name: &str) -> Option<String> {
     })
 }
 
+/// The path of `name` inside the folder `at` ("" is the root): where a new
+/// folder is made. None for a name that is not one name, as [`beside`]
+pub fn inside(at: &str, name: &str) -> Option<String> {
+    let at = at.replace('\\', "/");
+    let at = at.trim_matches('/');
+    beside(&if at.is_empty() { "x".to_string() } else { format!("{at}/x") }, name)
+}
+
 /// A copy of a file, or of a folder and everything in it, at `to`, which must
 /// not be there yet. A folder is never copied into itself
 pub fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -489,7 +497,10 @@ mod tests {
         assert_eq!(beside("src\\deep\\a.rs", " c.rs ").as_deref(), Some("src/deep/c.rs"));
         for bad in ["", " ", ".", "..", "x/y", "..\\up", "a\nb"] {
             assert_eq!(beside("src/a.rs", bad), None, "{bad:?} is not one name");
+            assert_eq!(inside("src", bad), None, "{bad:?} is not one name");
         }
+        assert_eq!(inside("", "new").as_deref(), Some("new"), "a new folder at the root");
+        assert_eq!(inside("src/deep/", "new").as_deref(), Some("src/deep/new"));
     }
 
     /// A folder is copied whole beside itself, never over a name already there

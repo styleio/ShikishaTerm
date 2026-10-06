@@ -15509,6 +15509,24 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
                 Err(e) => fail(format!("{e}")),
             }
         }
+        // A new folder in the folder named (the root itself when none is),
+        // never over a name already there
+        "mkdir" => {
+            let at = str_of("at");
+            let Some(rel) = crate::files::inside(&at, &str_of("name")) else {
+                return fail(i18n::t("err.files.bad_name"));
+            };
+            let Some(path) = local_under(root, &rel) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            if std::fs::symlink_metadata(&path).is_ok() {
+                return fail(i18n::tp("err.files.exists", &[("name", &str_of("name"))]));
+            }
+            match std::fs::create_dir(&path) {
+                Ok(()) => serde_json::json!({"act": act, "panel": panel, "ok": true, "path": rel}).to_string(),
+                Err(e) => fail(format!("{e}")),
+            }
+        }
         // Into the recycle bin, where it can be taken back from
         "remove" => {
             let rel = str_of("path");
@@ -15833,6 +15851,33 @@ fn files_there(
                     match crate::elsewhere::files(&at, rename, SFTP_WAIT_MS) {
                         Ok(_) => serde_json::json!({"act": "rename", "panel": panel, "ok": true, "path": path, "to": to_rel}),
                         Err(e) => failed("rename", &panel, format!("{e:#}")),
+                    }
+                };
+                answer(js, String::new(), None);
+            });
+            None
+        }
+        // A new folder there. Looked at first, as a rename is, so a name
+        // already there is said in the same words
+        "mkdir" => {
+            let Some(rel) = crate::files::inside(&str_of("at"), &str_of("name")) else {
+                return fail(i18n::t("err.files.bad_name"));
+            };
+            let (look, make) = match (
+                ready(ssh::FileJob::Stat { path: rel.clone() }),
+                ready(ssh::FileJob::MakeDir { path: rel.clone() }),
+            ) {
+                (Ok(l), Ok(m)) => (l, m),
+                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+            };
+            let (panel, name) = (panel.clone(), str_of("name"));
+            std::thread::spawn(move || {
+                let js = if crate::elsewhere::files(&at, look, SFTP_WAIT_MS).is_ok() {
+                    failed("mkdir", &panel, i18n::tp("err.files.exists", &[("name", &name)]))
+                } else {
+                    match crate::elsewhere::files(&at, make, SFTP_WAIT_MS) {
+                        Ok(_) => serde_json::json!({"act": "mkdir", "panel": panel, "ok": true, "path": rel}),
+                        Err(e) => failed("mkdir", &panel, format!("{e:#}")),
                     }
                 };
                 answer(js, String::new(), None);
