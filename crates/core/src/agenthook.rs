@@ -550,8 +550,34 @@ pub fn install_as(t: &Target, program: &Path) -> Result<()> {
 
 /// Take our entry out, leaving everything else alone.
 pub fn uninstall(t: &Target) -> Result<()> {
-    edit(t, false, &me())
+    uninstall_as(t, &me())
 }
+
+/// [`uninstall`], for the copy of this app at `program`.
+///
+/// Entries that run another copy still on this machine are that copy's, and
+/// are left where they are: "do not set up" in a copy started to try
+/// something -- a check, a sandbox, a second install -- shares the person's
+/// home with the copy they use, and was taking that copy's hooks out from
+/// under it, so it asked again at every start. The same test [`keep_right`]
+/// leaves such a hook by: complete for a copy that is still there. Entries
+/// naming a program that is no longer there belong to nobody and come out
+pub fn uninstall_as(t: &Target, program: &Path) -> Result<()> {
+    let others = |p: &PathBuf| {
+        status_of(t, program) == Status::Stale && p.is_file() && status_of(t, p) == Status::Installed
+    };
+    if let Some(other) = program_named_in(t).filter(others) {
+        crate::append_hook_log(&format!(
+            "{} hook left in {}: it runs {}, another copy of this app",
+            t.name,
+            t.file.display(),
+            other.display()
+        ));
+        return Ok(());
+    }
+    edit(t, false, program)
+}
+
 
 /// The program the first entry of ours in `t`'s file runs, as written there
 fn program_named_in(t: &Target) -> Option<PathBuf> {
@@ -2653,6 +2679,34 @@ mod tests {
             std::fs::remove_file(&other).unwrap();
             assert!(keep_right(&t).unwrap().written, "{format:?}: a hook naming a copy that is gone was left");
             assert_eq!(status(&t), Status::Installed, "{format:?}");
+        }
+    }
+
+    /// "Do not set up" in one copy does not take out another copy's hook.
+    /// A copy started to check something shares the person's home with the
+    /// copy they use; answering its question took the hooks of the one in use
+    /// out, and that one asked again at every start. A hook naming a copy that
+    /// is gone is nobody's and comes out
+    #[test]
+    fn do_not_set_up_leaves_another_copys_hook() {
+        for format in [HookFormat::Bare, HookFormat::Args, HookFormat::Shell] {
+            let dir = tmp(&format!("leave-{format:?}"));
+            let other = dir.join("other").join("SHIKISHA-TERM.exe");
+            std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+            std::fs::write(&other, b"").unwrap();
+            let t = target(&dir, format);
+            install_as(&t, &other).unwrap();
+            uninstall(&t).unwrap();
+            assert_eq!(status_of(&t, &other), Status::Installed, "{format:?}: the other copy's hook was taken out");
+            // That copy's own "do not set up" takes it out
+            uninstall_as(&t, &other).unwrap();
+            assert_eq!(status_of(&t, &other), Status::Absent, "{format:?}: its own answer left it in");
+            // A hook naming a copy that is gone
+            install_as(&t, &other).unwrap();
+            std::fs::remove_file(&other).unwrap();
+            uninstall(&t).unwrap();
+            assert_eq!(status(&t), Status::Absent, "{format:?}: a hook naming a copy that is gone was left");
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

@@ -58,6 +58,18 @@ once it reaches its first tagged release.
   before going against one; `shikisha adr_list` tells them where the records
   are.
 
+### Fixed
+- **The question about AI hooks stops coming back at every start.** A second
+  copy of the app on the same PC (one started to try something) shares your
+  home folder, and answering its question with "Do not set up" took out the
+  hooks of the copy you use, so that copy asked again the next time it
+  started. A copy now leaves alone a hook that runs another copy still on
+  this PC. If the question keeps coming, answer it once more.
+- **The git panel's columns can no longer be dragged too narrow to use.** The
+  middle column (the commit box and its buttons) keeps at least 300px and the
+  branch list 120px, so a width once dragged down to a sliver, and kept, is
+  drawn wide enough again. A double press on a column's edge puts it back to
+  the width it ships with.
 
 ## [0.25.0] - 2026-10-04
 
@@ -98,11 +110,6 @@ once it reaches its first tagged release.
   `shikisha.downloads()`.
 
 ### Fixed
-- **The git panel's columns can no longer be dragged too narrow to use.** The
-  middle column (the commit box and its buttons) keeps at least 300px and the
-  branch list 120px, so a width once dragged down to a sliver, and kept, is
-  drawn wide enough again. A double press on a column's edge puts it back to
-  the width it ships with.
 - **A tab whose terminal ended just before the background process went is
   told it ended.** A terminal this PC's background process (or the SHIKISHA
   bridge on a server) kept, ending in the moment before that process itself

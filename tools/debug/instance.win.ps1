@@ -174,6 +174,10 @@ if (-not (Test-Path (Join-Path $app 'SHIKISHA-TERM.exe'))) { throw "staging $app
 $settings = [ordered]@{
     language      = 'en'
     external_api  = [ordered]@{ access = 'user' }
+    # The copy shares the person's home (their AI CLIs' sign-ins live there), so
+    # it neither asks about nor writes the hooks in those CLIs' settings: they
+    # belong to the copy the person uses
+    agent_hooks   = [ordered]@{ 'Claude Code' = 'off'; 'Codex CLI' = 'off'; 'Gemini CLI' = 'off' }
     remote        = [ordered]@{ enabled = ($Port -gt 0); bind = '127.0.0.1'; port = $Port }
     desks         = @([ordered]@{
         name    = 'Check'
