@@ -305,6 +305,19 @@ try {
 
     $out = [System.Text.StringBuilder]::new()
     [void]$out.AppendLine($header)
+    # The Markdown kit's packages, written by the build that made the kit
+    # (tools/mdkit/build.mjs), so they cannot fall behind what is carried
+    $kit = Join-Path $root 'vendor/mdkit/NOTICES.txt'
+    if (-not (Test-Path $kit)) { throw "vendor/mdkit/NOTICES.txt is missing: run node tools/mdkit/build.mjs" }
+    [void]$out.AppendLine('================================================================================')
+    [void]$out.AppendLine('The Markdown reader and editor (crates/core/src/mdkit.rs)')
+    [void]$out.AppendLine('================================================================================')
+    [void]$out.AppendLine('')
+    [void]$out.AppendLine('Carried inside the executable as vendor/mdkit/, built from these packages by')
+    [void]$out.AppendLine('tools/mdkit/build.mjs. Each one''s licence follows, as the package ships it.')
+    [void]$out.AppendLine('')
+    [void]$out.AppendLine(([System.IO.File]::ReadAllText($kit, $utf8) -replace "`r", "").TrimEnd())
+    [void]$out.AppendLine('')
     [void]$out.AppendLine($bundled)
     foreach ($s in (Sort-Ordinal $ordered { param($x) $x.Key })) {
         if ($s.Text -match '(?m)^@@') {

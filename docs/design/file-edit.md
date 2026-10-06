@@ -122,9 +122,26 @@ read a file and fix a line in, not a language service with diagnostics — so th
 core of a smaller one is enough.
 
 ### A visual Markdown editor
-**No.** Round-tripping always breaks some spelling of the syntax, and then the
-screen has to say "this file can only be edited as text" — a caveat built by
-hand. Markdown is edited as text.
+**Turned down on 2026-09-12, taken up on 2026-10-06.** The objection was that
+reading a document in and writing it out breaks some spellings, so the screen
+would need a hand-made "this file can only be edited as text". What answers it:
+
+- **The text stays the truth.** A Markdown file is looked at three ways --
+  Text (the editor above), Visual, Preview -- and the visual editor writes
+  into the text, so saving, drafts and a file changed outside work as they
+  do for any file
+- **Nothing the person did not edit is rewritten.** The visual editor's words
+  are put back over the file as read: what changed between the editor's
+  reading of the file and its words now is applied to the file itself, so a
+  `*` list, blank lines and CRLF stay as they were. If the result would not
+  read the same as the editor's words, the editor's words are used
+- **A document the editor would change is not opened in it.** Read in and
+  written out once before it is shown, then both read: if they do not read the
+  same (HTML, footnotes), it is shown as text, with why. Not a list of syntax
+  kept by hand -- the check is the document itself
+- The libraries are built once into one file (`tools/mdkit`, `vendor/mdkit`,
+  carried by `crates/core/src/mdkit.rs`), fetched the first time a Markdown file
+  is drawn. The board still has no bundler
 
 ### More kinds of viewer on day one (PDF, notebooks, CSV, images)
 **No.** What opens from the list is **text**. Everything else says it cannot be

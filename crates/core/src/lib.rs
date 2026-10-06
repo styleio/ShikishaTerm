@@ -67,6 +67,8 @@ pub mod guide;
 pub mod hooks;
 pub mod adr;
 pub mod ideas;
+pub mod mdkit;
+pub mod notes;
 pub mod host;
 pub mod i18n;
 mod http;

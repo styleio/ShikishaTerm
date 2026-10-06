@@ -9,6 +9,21 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Markdown, three ways.** A Markdown file in the editor is looked at as
+  Text, Visual or Preview. Visual edits it as it reads -- headings, lists,
+  checklists, tables, code with its language, Mermaid diagrams drawn under
+  their code, formulas -- with a bar of buttons and `/` for the rest, and
+  writes back only what was edited: the file's other spellings, blank lines
+  and line ends stay as they were. A file it would rewrite (HTML, footnotes)
+  opens as Text and says why. Preview draws GitHub-style Markdown with code in
+  colour, KaTeX formulas, Mermaid diagrams, pictures from the folder (on a
+  server or MicroVM too), footnotes and the front matter, and never runs a
+  script in a document. Both have the contents of the headings beside them,
+  a search (with replace in Visual), and links that open where they belong.
+- **Notes for an AI on a document.** Right-click a paragraph of the preview
+  (hold it on a phone) to write a note beside it. The notes stay with the
+  lines of the file they are about, and "Hand to an AI" puts them in an AI
+  tab's input as `path:line` lines, to read and send.
 - **Decision records (ADR).** A project can keep its decisions as records:
   short Markdown files in its repository, in the MADR format, saying what was
   decided and why. Turn them on in the project's settings, on its new ADR

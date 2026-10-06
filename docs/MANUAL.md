@@ -94,6 +94,20 @@ every conversation, for one) stays in the column over other tabs until its ✕ i
 to edit it, put its path in the message box, copy its path, rename, duplicate or delete it. A folder's row, and the empty part of the list, also make a new folder. What is deleted from a folder on this PC goes to the recycle bin, and can be
 restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
 
+**A Markdown file** opens in the editor three ways, chosen at the top: **Text** (the file as it
+is written), **Visual** (edited as it reads, with a bar for headings, lists and links, and `/`
+for tables, code, diagrams and formulas) and **Preview** (read as it is drawn: tables, task
+lists, code in colour, Mermaid diagrams, KaTeX formulas, pictures from the folder, footnotes).
+Visual editing changes only what you edit: the rest of the file keeps its spelling, blank
+lines and line ends. A file that visual editing would rewrite (HTML in it, footnotes) opens as
+Text and says why; a very large one too, with a button to open it visually anyway. **Contents**
+lists the headings beside the document; Ctrl+F finds words in the drawn document, and in Visual
+replaces them too. Links open where they belong: a heading in the document, another file of
+the folder in this editor, a web page in a browser tab of the folder (with Ctrl, in this PC's
+browser). Right-click a paragraph of the preview (hold it on a phone) to **write a note for the
+AI** on it; the notes stay under their paragraphs, and **Hand to an AI** puts them all in an
+AI tab's input as `path:line` lines, for you to read and send. Handed notes are taken off.
+
 **ADR** lists the project's decision records: short Markdown files, kept in the repository in
 the MADR format, that say what was decided and why. It is there for a project whose settings
 turn it on (the project's ADR page, which also says the folder; `docs/decisions` unless you

@@ -38,6 +38,16 @@ const FILES: &[(&str, &[u8])] = &[
 /// `/vendor/ace/ace.js`; nothing else under that name is answered.
 pub const PREFIX: &str = "/vendor/ace/";
 
+/// Any library the page is handed from inside the program -- the editor's
+/// (here) and the Markdown kit's (`crate::mdkit`) -- with the kind of file it
+/// is. The one door both the window's server and the phone's go through, so
+/// a library added to one is never missing from the other
+pub fn carried(path: &str) -> Option<(&'static [u8], &'static str)> {
+    asset(path)
+        .map(|b| (b, "application/javascript; charset=utf-8"))
+        .or_else(|| crate::mdkit::asset(path))
+}
+
 /// The bytes for one of them, if the path names one.
 ///
 /// The name is matched whole against the list -- no path is assembled, so

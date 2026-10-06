@@ -60,3 +60,6 @@ Window.cmd
 /packaging/**/*.msix
 # Built bridges for other machines, placed here to be carried beside the exe (dist.list)
 /bridge/
+
+# The Markdown kit is built from these; only what it builds is kept (vendor/mdkit)
+/tools/mdkit/node_modules/

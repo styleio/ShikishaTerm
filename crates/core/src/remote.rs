@@ -219,6 +219,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // already shows the contents of, listed instead of diffed
         Ev::Files { .. } => true,
         Ev::Adr { .. } => true,
+        Ev::Notes { .. } => true,
         // The Issue tab. What it can ask for is what the same person can do on
         // this PC by opening it, through the same permission table
         Ev::Issues { .. } | Ev::OpenIssues => true,
@@ -2745,20 +2746,15 @@ fn handle(
             .map_err(Into::into);
     }
     if method == "GET" {
-        // The editor's library. No token: it is a library, the same one anyone
-        // can download, and holding it back would only mean the editor cannot
-        // draw until after a token check that the page has already passed
-        if let Some(bytes) = crate::ace::asset(&path) {
+        // The editor's library and the Markdown kit. No token: they are
+        // libraries, the same ones anyone can download, and holding them back
+        // would only mean the editor cannot draw until after a token check
+        // that the page has already passed
+        if let Some((bytes, kind)) = crate::ace::carried(&path) {
             return req
                 .respond(
                     Response::from_data(bytes)
-                        .with_header(
-                            Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"application/javascript; charset=utf-8"[..],
-                            )
-                            .unwrap(),
-                        )
+                        .with_header(Header::from_bytes(&b"Content-Type"[..], kind.as_bytes()).unwrap())
                         .with_header(
                             Header::from_bytes(
                                 &b"Cache-Control"[..],

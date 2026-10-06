@@ -768,6 +768,12 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// Notes written beside a drawn Markdown document: listed, added,
+    /// changed, dropped, or handed to an AI tab (see `notes::answer`)
+    Notes {
+        act: String,
+        args: serde_json::Value,
+    },
     /// The column's conversation panel asking for what was said: a page of
     /// the conversation in `panel` (a tab's id), a search of it, one stretch
     /// of the AI's work opened, a pin or a note. A conversation found by the
@@ -1655,6 +1661,11 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // The file panel asking for a listing or a search (see `Ev::Files`).
         Some("files") => Ev::Files {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // Notes on a drawn document (see `Ev::Notes`)
+        Some("notes") => Ev::Notes {
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
         },

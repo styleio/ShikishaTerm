@@ -2160,28 +2160,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Text written on GitHub, drawn the way GitHub draws it -- in this page's
      sizes and colours. A link is the one thing in it that is pressed, so it is
      marked by its underline rather than by a colour kept for states */
-  :is(#issuespanel, #adrpanel) .md { line-height:1.6; overflow-wrap:anywhere; }
-  :is(#issuespanel, #adrpanel) .md > :first-child { margin-top:0; }
-  :is(#issuespanel, #adrpanel) .md > :last-child { margin-bottom:0; }
-  :is(#issuespanel, #adrpanel) .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
-  :is(#issuespanel, #adrpanel) .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
-  :is(#issuespanel, #adrpanel) .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
-  :is(#issuespanel, #adrpanel) .md ul, :is(#issuespanel, #adrpanel) .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
-  :is(#issuespanel, #adrpanel) .md li { margin:0 0 var(--s1); }
-  :is(#issuespanel, #adrpanel) .md li > ul, :is(#issuespanel, #adrpanel) .md li > ol { margin:var(--s1) 0 0; }
-  :is(#issuespanel, #adrpanel) .md li.task { list-style:none; margin-left:-1.2em; }
-  :is(#issuespanel, #adrpanel) .md li.task .box { color:var(--dim); margin-right:var(--s2); }
-  :is(#issuespanel, #adrpanel) .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
+  :is(#issuespanel, #adrpanel, #editpanel) .md { line-height:1.6; overflow-wrap:anywhere; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md > :first-child { margin-top:0; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md > :last-child { margin-bottom:0; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md ul, :is(#issuespanel, #adrpanel, #editpanel) .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md li { margin:0 0 var(--s1); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md li > ul, :is(#issuespanel, #adrpanel, #editpanel) .md li > ol { margin:var(--s1) 0 0; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md li.task { list-style:none; margin-left:-1.2em; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md li.task .box { color:var(--dim); margin-right:var(--s2); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
     padding:1px var(--s1); border-radius:var(--r-chip); }
-  :is(#issuespanel, #adrpanel) .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
+  :is(#issuespanel, #adrpanel, #editpanel) .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
     border:1px solid var(--line); border-radius:var(--r-ctl); overflow-x:auto; }
-  :is(#issuespanel, #adrpanel) .md pre code { background:none; padding:0; white-space:pre; }
-  :is(#issuespanel, #adrpanel) .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
-  :is(#issuespanel, #adrpanel) .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
-  :is(#issuespanel, #adrpanel) .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
-  :is(#issuespanel, #adrpanel) .md table { border-collapse:collapse; font-size:12px; }
-  :is(#issuespanel, #adrpanel) .md th, :is(#issuespanel, #adrpanel) .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
-  :is(#issuespanel, #adrpanel) .md th { background:var(--panel); font-weight:600; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md pre code { background:none; padding:0; white-space:pre; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
+  :is(#issuespanel, #adrpanel, #editpanel) .md table { border-collapse:collapse; font-size:12px; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md th, :is(#issuespanel, #adrpanel, #editpanel) .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
+  :is(#issuespanel, #adrpanel, #editpanel) .md th { background:var(--panel); font-weight:600; }
   #issuespanel a.mdlink { color:var(--text); text-decoration:underline; text-decoration-color:var(--edge-hi); text-underline-offset:2px; }
   #issuespanel a.mdlink:hover { text-decoration-color:var(--text); }
   #issuespanel .body { margin:0 var(--s3); padding:var(--s3); background:var(--sunk);
@@ -2342,6 +2342,160 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #editpanel .esay button.quiet:hover { color:var(--text); background:var(--hover); }
   #editpanel .esay.bad { color:var(--stop); }
   #editpanel .ehost { flex:1 1 auto; min-height:0; position:relative; }
+  /* ── Markdown: the source, the words drawn, or edited as drawn ──────────
+     Three ways to look at one file, chosen at the left of the bar with the
+     file's name; the contents and the search are the drawn ones' own */
+  #editpanel .eview { flex:0 0 auto; display:inline-flex; border:1px solid var(--line); border-radius:var(--r-ctl);
+    overflow:hidden; }
+  #editpanel .eview button { border:0; border-radius:0; padding:4px 10px; background:none; color:var(--dim); }
+  #editpanel .eview button + button { border-left:1px solid var(--line); }
+  #editpanel .eview button.on { background:var(--raise); color:var(--text); }
+  #editpanel .eview button:hover { background:var(--hover); color:var(--text); }
+  #editpanel .ebar button.etoc { display:inline-flex; align-items:center; gap:var(--s1); }
+  #editpanel .ebar button.etoc.on { background:var(--raise); color:var(--text); border-color:var(--line); }
+  #editpanel .emd { flex:1 1 auto; min-height:0; display:flex; position:relative; }
+  #editpanel .emd[hidden] { display:none; }
+  #editpanel .emain { flex:1 1 auto; min-width:0; overflow:auto; overscroll-behavior:contain; position:relative; }
+  #editpanel .mdpage { padding:var(--s5) var(--s6) var(--s6); }
+  /* The contents: the headings as a tree, at the left of the words. Over the
+     words when the pane is too narrow for both */
+  #editpanel .etocs { flex:0 0 232px; min-width:0; border-right:1px solid var(--line); overflow:auto;
+    padding:var(--s2) 0; background:var(--panel); font-size:12.5px; }
+  #editpanel .etocs[hidden] { display:none; }
+  @container (max-width:600px) { #editpanel .etocs { position:absolute; left:0; top:0; bottom:0; z-index:3;
+    box-shadow:0 8px 24px #0007; } }
+  #editpanel .etochead { display:flex; align-items:center; gap:var(--s2); padding:var(--s1) var(--s3) var(--s2);
+    color:var(--dim); font-size:11.5px; }
+  #editpanel .etochead select { font:inherit; font-size:11.5px; background:var(--bg); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--r-chip); padding:1px 4px; }
+  #editpanel .etocrow { display:flex; align-items:center; gap:var(--s1); min-height:28px; padding-right:var(--s2);
+    cursor:pointer; color:var(--dim); }
+  #editpanel .etocrow:hover { background:var(--hover); color:var(--text); }
+  #editpanel .etocrow.now { color:var(--text); box-shadow:inset 2px 0 0 var(--brand); }
+  #editpanel .etocrow .fold { flex:none; width:18px; text-align:center; color:var(--faint); font-size:10px; }
+  #editpanel .etocrow .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #editpanel .etocnone { padding:var(--s2) var(--s3); color:var(--faint); font-size:11.5px; }
+  #editpanel .emd { container-type:inline-size; }
+  /* The quiet buttons inside the drawing: the contents' close, the front
+     matter's hide, the search's steps */
+  #editpanel .emd button.quiet { min-height:24px; padding:0 var(--s2); border:1px solid transparent; border-radius:var(--r-chip);
+    background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+  #editpanel .emd button.quiet:hover { color:var(--text); background:var(--hover); }
+  /* The search over the drawn words: a box at the top right, over the page */
+  #editpanel .efind { position:absolute; top:var(--s2); right:var(--s4); z-index:4; display:flex; flex-wrap:wrap;
+    align-items:center; gap:var(--s1); padding:var(--s1) var(--s2); max-width:calc(100% - 32px);
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--r-ctl); box-shadow:0 8px 24px #0007; }
+  #editpanel .efind[hidden] { display:none; }
+  #editpanel .efind input { font:inherit; font-size:12.5px; height:28px; min-width:0; width:200px; padding:0 var(--s2);
+    background:var(--bg); color:var(--text); border:1px solid var(--edge); border-radius:var(--r-chip); outline:none; }
+  #editpanel .efind input:focus { border-color:var(--brand); }
+  #editpanel .efind .n { font-size:11.5px; color:var(--dim); font-variant-numeric:tabular-nums; min-width:56px; }
+  #editpanel .efind button { min-width:26px; height:26px; padding:0 var(--s2); }
+  #editpanel .efind .rep { display:flex; gap:var(--s1); flex-basis:100%; }
+  #editpanel .efind .rep[hidden] { display:none; }
+  ::highlight(mdfind) { background-color:color-mix(in srgb, var(--warn) 38%, transparent); }
+  ::highlight(mdfindnow) { background-color:color-mix(in srgb, var(--brand) 55%, transparent); }
+  /* The front matter, read as it is written, over the words */
+  #editpanel .mdfront { margin:0 0 var(--s5); border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--panel); }
+  #editpanel .mdfront .h { display:flex; align-items:center; gap:var(--s2); padding:var(--s1) var(--s3); font-size:11px;
+    color:var(--dim); border-bottom:1px solid var(--line); }
+  #editpanel .mdfront pre { margin:0; padding:var(--s2) var(--s3); max-height:180px; overflow:auto;
+    font:12px/1.5 var(--mono); color:var(--text); white-space:pre-wrap; }
+  /* The words drawn: the page's own .md text, with what a whole document has
+     beyond an answer -- every heading level, figures, maths, diagrams */
+  #editpanel .md { line-height:1.7; font-size:14px; max-width:none; }
+  :is(#editpanel, #adrpanel) .md h1, :is(#editpanel, #adrpanel) .md h2, :is(#editpanel, #adrpanel) .md h3, :is(#editpanel, #adrpanel) .md h4, :is(#editpanel, #adrpanel) .md h5, :is(#editpanel, #adrpanel) .md h6 {
+    font-weight:600; line-height:1.3; margin:1.4em 0 .5em; scroll-margin-top:var(--s4); }
+  :is(#editpanel, #adrpanel) .md h1 { font-size:1.8em; padding-bottom:.25em; border-bottom:1px solid var(--line); }
+  :is(#editpanel, #adrpanel) .md h2 { font-size:1.4em; padding-bottom:.2em; border-bottom:1px solid var(--line); }
+  :is(#editpanel, #adrpanel) .md h3 { font-size:1.17em; }
+  :is(#editpanel, #adrpanel) .md h4 { font-size:1em; }
+  :is(#editpanel, #adrpanel) .md h5, :is(#editpanel, #adrpanel) .md h6 { font-size:.9em; color:var(--dim); }
+  :is(#editpanel, #adrpanel) .md > :first-child { margin-top:0; }
+  /* A line break in the file is already a <br> here (the kit reads it so);
+     kept as written as well, every break would be two */
+  :is(#editpanel, #adrpanel) .md p { white-space:normal; }
+  :is(#editpanel, #adrpanel) .md img { max-width:100%; }
+  :is(#editpanel, #adrpanel) .md img.loading { min-width:40px; min-height:24px; background:var(--raise); }
+  :is(#editpanel, #adrpanel) .md table tr:nth-child(2n) td { background:color-mix(in srgb, var(--panel) 60%, transparent); }
+  :is(#editpanel, #adrpanel) .md .footnotes { font-size:.9em; color:var(--dim); border-top:1px solid var(--line); margin-top:var(--s6); }
+  /* Read out, not drawn: the footnotes' heading, as GitHub has it */
+  :is(#editpanel, #adrpanel) .md .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden;
+    clip:rect(0 0 0 0); white-space:nowrap; border:0; }
+  :is(#editpanel, #adrpanel) .md .katex-display { overflow-x:auto; overflow-y:hidden; }
+  :is(#editpanel, #adrpanel) .md .mdcodewrap { position:relative; }
+  :is(#editpanel, #adrpanel) .md .mdcodewrap > button { position:absolute; top:var(--s1); right:var(--s1); opacity:0; min-height:0;
+    padding:2px 8px; font-size:11px; border-radius:var(--r-chip); border:1px solid var(--line); background:var(--panel);
+    color:var(--dim); cursor:pointer; }
+  :is(#editpanel, #adrpanel) .md .mdcodewrap:hover > button, :is(#editpanel, #adrpanel) .md .mdcodewrap > button:focus { opacity:1; }
+  @media (hover:none) { :is(#editpanel, #adrpanel) .md .mdcodewrap > button { opacity:1; } }
+  :is(#editpanel, #adrpanel) .md .mddiagram { margin:0 0 var(--s3); overflow-x:auto; text-align:center; }
+  :is(#editpanel, #adrpanel) .md .mddiagram svg { max-width:100%; height:auto; }
+  :is(#editpanel, #adrpanel) .md .mddiagram.bad { text-align:left; }
+  :is(#editpanel, #adrpanel) .md .mddiagram .mdderr { color:var(--warn); font-size:12px; margin-bottom:var(--s1); }
+  :is(#editpanel, #adrpanel) .md .hljs-comment, :is(#editpanel, #adrpanel) .md .hljs-quote { color:var(--faint); font-style:italic; }
+  :is(#editpanel, #adrpanel) .md .hljs-keyword, :is(#editpanel, #adrpanel) .md .hljs-meta, :is(#editpanel, #adrpanel) .md .hljs-built_in, :is(#editpanel, #adrpanel) .md .hljs-type,
+  :is(#editpanel, #adrpanel) .md .hljs-selector-tag { color:var(--brand); }
+  :is(#editpanel, #adrpanel) .md .hljs-string, :is(#editpanel, #adrpanel) .md .hljs-regexp, :is(#editpanel, #adrpanel) .md .hljs-addition { color:var(--live); }
+  :is(#editpanel, #adrpanel) .md .hljs-number, :is(#editpanel, #adrpanel) .md .hljs-literal, :is(#editpanel, #adrpanel) .md .hljs-symbol { color:var(--warn); }
+  :is(#editpanel, #adrpanel) .md .hljs-deletion { color:var(--stop); }
+  :is(#editpanel, #adrpanel) .md .hljs-title, :is(#editpanel, #adrpanel) .md .hljs-attr, :is(#editpanel, #adrpanel) .md .hljs-variable { color:var(--text); }
+  :is(#editpanel, #adrpanel) .md li > input[type=checkbox] { margin:0 var(--s2) 0 -1.3em; vertical-align:middle; }
+  :is(#editpanel, #adrpanel) .md li:has(> input[type=checkbox]) { list-style:none; }
+  /* The visual editor: the same text, with a bar of what to make of it */
+  #editpanel .mdtools { position:sticky; top:0; z-index:2; display:flex; flex-wrap:wrap; align-items:center; gap:2px;
+    padding:var(--s1) var(--s4); background:var(--bg); border-bottom:1px solid var(--line); }
+  #editpanel .mdtools button { min-width:28px; height:28px; padding:0 var(--s2); border:1px solid transparent; border-radius:var(--r-chip);
+    background:none; color:var(--dim); font:inherit; font-size:12.5px; cursor:pointer; }
+  #editpanel .mdtools button:hover { background:var(--hover); color:var(--text); }
+  #editpanel .mdtools button.on { background:var(--raise); color:var(--text); }
+  #editpanel .mdtools .sep { width:1px; height:18px; background:var(--line); margin:0 var(--s1); }
+  #editpanel .mdrich .ProseMirror { outline:none; min-height:50vh; }
+  /* The editor keeps a paragraph inside every list item; drawn, a list reads
+     as the same list it is in the preview */
+  #editpanel .mdrich li > p { margin:0; }
+  #editpanel .mdrich .ProseMirror p.is-editor-empty:first-child::before { content:attr(data-placeholder); color:var(--faint);
+    float:left; height:0; pointer-events:none; }
+  #editpanel .mdrich ul[data-type=taskList] { list-style:none; padding-left:.2em; }
+  #editpanel .mdrich ul[data-type=taskList] li { display:flex; gap:var(--s2); }
+  #editpanel .mdrich ul[data-type=taskList] li > label { flex:none; margin-top:.25em; }
+  #editpanel .mdrich .mdcode { margin:0 0 var(--s3); border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #editpanel .mdrich .mdcode pre { margin:0; border:0; border-radius:0; }
+  #editpanel .mdrich .mdcodebar { display:flex; justify-content:space-between; gap:var(--s2); padding:2px var(--s2);
+    border-bottom:1px solid var(--line); background:var(--panel); }
+  #editpanel .mdrich .mdcodebar select, #editpanel .mdrich .mdcodebar button { font:inherit; font-size:11px; color:var(--dim);
+    background:none; border:1px solid transparent; border-radius:var(--r-chip); padding:1px 6px; cursor:pointer; }
+  #editpanel .mdrich .mdcodebar button:hover, #editpanel .mdrich .mdcodebar select:hover { color:var(--text); border-color:var(--line); }
+  #editpanel .mdrich .mdcode .mddiagram { padding:var(--s2); border-top:1px solid var(--line); }
+  #editpanel .mdrich .mdcode .mddiagram[hidden] { display:none; }
+  #editpanel .mdrich table { border-collapse:collapse; }
+  #editpanel .mdrich td, #editpanel .mdrich th { border:1px solid var(--line); padding:var(--s1) var(--s2); min-width:3em; }
+  #editpanel .mdrich .selectedCell { background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #editpanel .mdrich details { border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); margin:0 0 var(--s3); }
+  /* Notes for an AI, beside the paragraph they are about: the bar of how
+     many and where they go, a card under the paragraph, and the box a note
+     is written in */
+  #editpanel .mdnotes { position:sticky; top:0; z-index:2; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2);
+    padding:var(--s1) var(--s4); background:var(--bg); border-bottom:1px solid var(--line); font-size:12px; color:var(--dim); }
+  #editpanel .mdnotes .grow { flex:1 1 auto; }
+  #editpanel .mdnotes button { min-height:28px; padding:0 var(--s3); font:inherit; font-size:12px; border-radius:var(--r-ctl);
+    border:1px solid var(--brand); background:none; color:var(--brand); cursor:pointer; }
+  #editpanel .mdnotes button.quiet { border-color:transparent; color:var(--dim); }
+  #editpanel .md .mdnote, #editpanel .md .mdnotenew { margin:var(--s1) 0 var(--s4); padding:var(--s2) var(--s3);
+    border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:var(--r-ctl); background:var(--panel);
+    font-size:12.5px; line-height:1.5; }
+  #editpanel .md .mdnote .q { color:var(--faint); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #editpanel .md .mdnote .t { white-space:pre-wrap; color:var(--text); }
+  #editpanel .md .mdnote .a, #editpanel .md .mdnotenew .a { display:flex; justify-content:flex-end; gap:var(--s1); margin-top:var(--s1); }
+  #editpanel .md .mdnotenew textarea { width:100%; min-height:64px; resize:vertical; font:inherit; font-size:13px; padding:var(--s2);
+    background:var(--bg); color:var(--text); border:1px solid var(--edge); border-radius:var(--r-chip); outline:none; box-sizing:border-box; }
+  #editpanel .md .mdnotenew textarea:focus { border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
+  #editpanel .md .mdnotenew .q { color:var(--faint); font-size:11.5px; margin-bottom:var(--s1); }
+  #editpanel .md .mdnotenew .a button.go { border-color:var(--brand); background:var(--brand); color:var(--bg); }
+  #editpanel .md [data-noted] { box-shadow:inset 3px 0 0 color-mix(in srgb, var(--warn) 55%, transparent); padding-left:var(--s2); }
+  #editpanel .mdband { margin:0 0 var(--s4); padding:var(--s2) var(--s3); font-size:11.5px; color:var(--dim);
+    border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--panel); }
+  #editpanel .mdband pre { margin:var(--s1) 0 0; font:11.5px/1.5 var(--mono); color:var(--faint); white-space:pre-wrap; max-height:96px; overflow:auto; }
   #editpanel .eempty { flex:1 1 auto; padding:var(--s4) var(--s3); color:var(--faint);
     font-size:11.5px; line-height:1.6; }
 
@@ -3808,6 +3962,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div { padding:var(--s2) var(--s3); border-radius:var(--r-ctl); cursor:pointer;
     font-size:12.5px; color:var(--text); }
   .fmenu div:hover, .fmenu div:focus { background:var(--raise); outline:none; }
+  /* The one the keys are on, in a list chosen from the keyboard (the "/" list) */
+  .fmenu > div.on { background:var(--raise); }
   /* A project in the worktree dialog's list: its colour, its name, and where
      it is, the way the picker itself says it */
   .fmenu .projrow, .fmenu .projadd { display:flex; align-items:center; gap:var(--s2); min-width:280px; }
@@ -9019,8 +9175,19 @@ function adrDrawRead(box) {
   const said = adrSaid();
   if (said) acts.append(said);
   page.append(acts);
+  // Drawn the way the editor's preview draws a document: the same kit
   const md = el("div", {class:"md"});
-  md.append(rdMarkup(adrBody(d.text), {}));
+  if (window.MdKit) {
+    md.innerHTML = window.MdKit.render(adrBody(d.text), {footnotes: T["md.footnotes"] || "", back: T["md.footnotes.back"] || ""}).html;
+    for (const code of md.querySelectorAll("pre > code.language-mermaid")) {
+      const pic = el("div", {class:"mddiagram"});
+      code.parentElement.replaceWith(pic);
+      mdDiagram(pic, code.textContent);
+    }
+  } else {
+    md.append(rdMarkup(adrBody(d.text), {}));
+    mdLoad(() => { AD.rev++; drawAdr(); });
+  }
   adrLinkify(md);
   page.append(md);
   box.append(page);
@@ -14580,6 +14747,8 @@ const edDrafts = new Map();
 // Which editor tab and which file: two editor tabs can each have a draft of one file
 const edDraftKey = path => JSON.stringify([ED.key, path]);
 function edStash() {
+  // What the visual editor has, into the text first: the draft is the text
+  mdRichFlush();
   if (!ED.path || !ED.dirty || !edAce) return;
   edDrafts.set(edDraftKey(ED.path),
     {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
@@ -14732,6 +14901,9 @@ function editSave() { if (!(editorTab() && editorTab().read_only)) editWrite({})
 // writes ? for what the encoding cannot hold, and `encoding` changes it
 function editWrite(opts) {
   if (!ED.path || ED.loading) return;
+  // The visual editor's words are what is saved: written into the text now,
+  // not a moment later
+  mdRichFlush();
   // Read in an encoding that lost characters: saving writes the loss into the
   // file, so it is asked before anything is sent
   if (!ED.exact && !opts.lossy) {
@@ -14776,6 +14948,15 @@ function editReload() {
 // understands, and the form a person can read back
 function editTell() {
   if (!ED.path || !edAce) return;
+  // Drawn, the lines are the ones the block under the selection was written on
+  if (mdShown() === "preview") {
+    const at = mdSelectedLines();
+    if (!at) { ED.said = T["md.tell.pick"] || ""; ED.bad = false; drawEdit(); return; }
+    insertIntoComposer(at.from === at.to ? ED.path + ":" + at.from : ED.path + ":" + at.from + "-" + at.to);
+    ED.said = T["tui.edit.told"] || ""; ED.bad = false;
+    drawEdit();
+    return;
+  }
   const r = edAce.getSelectionRange();
   const one = r.start.row === r.end.row && r.start.column === r.end.column;
   const from = r.start.row + 1, to = r.end.row + 1;
@@ -14804,13 +14985,29 @@ function editBuild(box) {
       const t = editorTab();
       if (t) send({kind: "editopen", panel: t.id || t.name || "", path: ""});
     }}, "\u2715");
-  bar.append(where, el("span", {class: "emark"}), kind, enc, fenc, el("span", {class: "grow"}), toFile, tell, save, shut);
+  // A Markdown file's three ways to be looked at, and its contents
+  const views = el("div", {class: "eview", role: "group"});
+  for (const v of MD_VIEWS) {
+    views.append(el("button", {type: "button", "data-view": v, title: T["md.view." + v + ".title"] || "",
+      onclick: () => mdChoose(v)}, T["md.view." + v] || v));
+  }
+  const toc = el("button", {class: "quiet etoc", title: T["md.toc.title"] || "", onclick: mdTocToggle},
+    pickIcon("sliders"), el("span", {}, T["md.toc"] || ""));
+  bar.append(where, el("span", {class: "emark"}), kind, enc, fenc, views, toc, el("span", {class: "grow"}), toFile, tell, save, shut);
   bar.replaceChild(mark, bar.children[1]);
   const host = el("div", {class: "ehost"});
+  const md = el("div", {class: "emd", hidden: ""});
+  const tocs = el("aside", {class: "etocs", hidden: ""});
+  const main = el("div", {class: "emain"});
+  const find = el("div", {class: "efind", hidden: ""});
+  md.append(tocs, main, find);
+  md.addEventListener("keydown", mdKeys, true);
+  main.addEventListener("scroll", () => mdTocNow(), {passive: true});
   const change = el("div", {class: "ediff"});
   const say = el("div", {class: "esay"});
-  box.append(bar, host, change, say);
-  edUi = {where, mark, kind, enc, fenc, toFile, save, tell, host, change, say, changeSig: ""};
+  box.append(bar, host, md, change, say);
+  edUi = {where, mark, kind, enc, fenc, toFile, save, tell, host, change, say, changeSig: "",
+    views, toc, md, tocs, main, find};
 }
 function drawEdit() {
   const box = document.getElementById("editpanel");
@@ -14828,6 +15025,14 @@ function drawEdit() {
   }
   u.kind.style.display = diffing ? "" : "none";
   u.enc.style.display = diffing ? "" : "none";
+  // A Markdown file of a folder: its three ways, and its contents when drawn
+  const mdOn = !diffing && !!ED.path && mdFile(ED.path) && !(editorTab() && editorTab().read_only);
+  const view = mdOn ? mdView() : "source";
+  u.views.style.display = mdOn ? "" : "none";
+  for (const b of u.views.children) b.classList.toggle("on", b.dataset.view === view);
+  u.toc.style.display = mdOn && view !== "source" ? "" : "none";
+  u.toc.classList.toggle("on", !!MD.toc[ED.path]);
+  if (diffing || !mdOn || view === "source") { u.md.hidden = true; mdLeave(); }
   // A page's text was decoded by the browser; there is no file to read again
   // in another encoding
   u.fenc.style.display = !diffing && ED.path && !(editorTab() && editorTab().read_only) ? "" : "none";
@@ -14871,7 +15076,8 @@ function drawEdit() {
   u.mark.style.color = ro ? "var(--dim)" : "";
   const shown = !!ED.path;
   u.save.style.display = shown && !ro ? "" : "none";
-  u.tell.style.display = shown && !ro ? "" : "none";
+  // In the visual editor there is no line under the cursor to name
+  u.tell.style.display = shown && !ro && view !== "rich" ? "" : "none";
   if (shown) {
     const all = ENCODINGS.includes(ED.encoding) ? ENCODINGS : ENCODINGS.concat([ED.encoding]);
     encPickerFill(u.fenc, all.map(e => [e, e]), ED.encoding);
@@ -14918,11 +15124,23 @@ function drawEdit() {
     u.say.append(document.createTextNode((T["tui.edit.lossy"] || "{enc}").replaceAll("{enc}", ED.encoding)));
   } else {
     u.say.style.color = "";
-    u.say.append(document.createTextNode(ED.said || ""));
+    // Shown as text although it was asked for visually: why, said for as
+    // long as it is so -- not a message that goes when the next one comes
+    const why = mdOn && view === "source" && MD.why[ED.path];
+    const whyText = why ? (T[why.kind === "big" ? "md.rich.big" : "md.rich.changes"] || "") : "";
+    u.say.append(document.createTextNode(ED.said || whyText));
+    // Not edited visually only for its size: the way past it, beside why
+    if (why && why.kind === "big") {
+      u.say.append(el("button", {class: "quiet", onclick: () => { MD.force[ED.path] = true; ED.said = ""; mdChoose("rich"); }},
+        T["md.rich.anyway"] || ""));
+    }
   }
   // The text itself, once the library is here
   if (!shown) { u.host.style.display = "none"; return; }
-  u.host.style.display = "";
+  // Drawn rather than as text: the text is still there underneath, hidden,
+  // and is still what is saved
+  u.host.style.display = view === "source" ? "" : "none";
+  u.md.hidden = view === "source";
   editLoadAce(() => {
     if (!edAce) {
       edAce = window.ace.edit(u.host, {
@@ -14945,6 +15163,9 @@ function drawEdit() {
         const now = edAce.getValue();
         const was = ED.dirty;
         ED.dirty = now !== ED.text;
+        // The drawn words follow the text: the AI next door writing the
+        // file, a reload, a draft coming back
+        mdTextChanged();
         // What stopped the last save may be what was just typed away; the
         // next save asks again if it is still there
         const stopped = !!ED.stop;
@@ -14965,7 +15186,895 @@ function drawEdit() {
     const ro = !!(editorTab() && editorTab().read_only);
     if (edAce.getReadOnly() !== ro) edAce.setReadOnly(ro);
     edAce.resize();
+    if (view !== "source") mdDraw(view);
   });
+}
+
+// ── Markdown, drawn ─────────────────────────────────────────────────────────
+// A Markdown file is looked at three ways: as its text (the editor above),
+// drawn as it reads, or edited as it reads. The text is the one truth
+// underneath all three -- the visual editor writes into it, the drawing reads
+// it, and saving, drafts and a file changed outside go on working exactly as
+// they do for any file. What draws it is a kit carried inside the program
+// (mdkit.rs), fetched the first time a Markdown file is drawn.
+const MD_VIEWS = ["source", "rich", "preview"];
+const MD = {
+  view: {},          // path -> the way it is looked at, for this session
+  toc: {},           // path -> whether its contents are open
+  depth: 6,          // how deep the contents go
+  front: true,       // whether the front matter is drawn over the words
+  asked: false, waiting: [],
+  rich: null,        // the visual editor: {r, path, base, was, front, wrote}
+  why: {},           // path -> why it is not edited visually ({kind, text})
+  force: {},         // path -> opened visually although it is large
+  drawn: "",         // what the drawing last drew, so it is not drawn again for nothing
+  timer: 0, held: 0, flushTimer: 0,
+  images: new Map(), // picture path -> object URL, or a list of waiting <img>s
+  imageQueue: [], imageBusy: 0,
+  find: null,        // {q, matches, at}
+  jump: null,        // {path, id}: a heading a link asked for, once its file is drawn
+};
+// The visual editor holds every part of a document as an object. Past what a
+// person writes by hand -- a long design document is tens of kilobytes --
+// a file is generated text, read better and faster as text. Opened visually
+// anyway when somebody asks
+const MD_RICH_ROOM = 400 * 1024;
+// A selection in the drawing is somebody reading: a redraw waits for it to go,
+// for up to this long, then draws -- the AI writing the file does not stop
+const MD_HOLD_MS = 2000;
+// How long the visual editor waits after a key before writing its words into
+// the text: long enough not to write a document out on every key
+const MD_FLUSH_MS = 350;
+function mdFile(path) { return /\.(md|markdown|mdown|mkd)$/i.test(path || ""); }
+function mdView() { return MD.view[ED.path] || "rich"; }
+// The way this file is actually drawn right now, "" when it is not drawn
+function mdShown() {
+  const u = edUi;
+  return u && !u.md.hidden && ED.path && mdFile(ED.path) ? mdView() : "";
+}
+function edText() { return edAce ? edAce.getValue() : ED.text; }
+function mdChoose(v) {
+  if (!ED.path) return;
+  mdRichFlush();
+  MD.view[ED.path] = v;
+  // A choice made again is a choice made: asking for the visual editor again
+  // reads the file again rather than remembering why it said no
+  delete MD.why[ED.path];
+  // What was said about the last way of looking at it is not about this one
+  ED.said = ""; ED.bad = false;
+  MD.drawn = "";
+  drawEdit();
+}
+function mdTocToggle() {
+  if (!ED.path) return;
+  MD.toc[ED.path] = !MD.toc[ED.path];
+  MD.drawn = "";
+  drawEdit();
+}
+// Leaving the drawing: what the visual editor has goes into the text, and it
+// is put away
+function mdLeave() {
+  if (MD.rich) {
+    mdRichFlush();
+    MD.rich.r.destroy();
+    MD.rich = null;
+  }
+  mdFindClose();
+  MD.drawn = "";
+}
+
+// The kit, fetched the first time somebody draws a Markdown file
+function mdLoad(then) {
+  if (window.MdKit) { then(); return; }
+  MD.waiting.push(then);
+  if (MD.asked) return;
+  MD.asked = true;
+  const css = document.createElement("link");
+  css.rel = "stylesheet";
+  css.href = "vendor/mdkit/katex.css";
+  document.head.append(css);
+  const tag = document.createElement("script");
+  tag.src = "vendor/mdkit/mdkit.js";
+  tag.onload = () => {
+    window.MdKit.hooks.diagram = mdDiagram;
+    Object.assign(window.MdKit.hooks.words, {copy: T["md.copy"] || "Copy", copied: T["md.copied"] || "Copied",
+      language: T["md.language"] || "", plain: T["md.plain"] || ""});
+    const go = MD.waiting;
+    MD.waiting = [];
+    go.forEach(f => f());
+  };
+  tag.onerror = () => { MD.asked = false; MD.waiting = []; ED.said = T["md.kit_failed"] || ""; ED.bad = true; drawEdit(); };
+  document.head.append(tag);
+}
+
+function mdDraw(view) {
+  const u = edUi;
+  // Not while a file's text is on its way in: what the editor holds then is
+  // still the last file's
+  if (!u || !ED.path || ED.loading || ED.reading) return;
+  mdLoad(() => {
+    if (!edUi || mdShown() !== view) return;
+    mdTocDraw();
+    if (view === "preview") { if (MD.rich) mdLeave(); mdPreview(); }
+    else mdRich();
+  });
+}
+
+// Something changed the text: the drawing is drawn again a moment later, and
+// the visual editor takes it in when it did not write it itself
+function mdTextChanged() {
+  const shown = mdShown();
+  if (!shown) return;
+  clearTimeout(MD.timer);
+  MD.timer = setTimeout(() => {
+    if (shown === "preview") mdPreview();
+    else if (MD.rich && MD.rich.wrote !== edText()) mdRichTakeIn();
+    mdTocDraw();
+  }, 120);
+}
+
+// ── The drawing ──
+function mdSelecting(root) {
+  const s = window.getSelection();
+  return !!(s && !s.isCollapsed && s.rangeCount && root.contains(s.getRangeAt(0).commonAncestorContainer));
+}
+function mdPreview() {
+  const box = edUi.main;
+  const text = edText();
+  const key = [ED.path, edDarkNow() ? 1 : 0, MD.front ? 1 : 0, text].join("\u0000");
+  if (MD.drawn === key && box.querySelector(".mdpage")) return;
+  if (mdSelecting(box) && MD.held < MD_HOLD_MS / 250) {
+    MD.held++;
+    clearTimeout(MD.timer);
+    MD.timer = setTimeout(mdPreview, 250);
+    return;
+  }
+  MD.held = 0;
+  MD.drawn = key;
+  const top = box.scrollTop;
+  let out;
+  try { out = window.MdKit.render(text, {footnotes: T["md.footnotes"] || "Footnotes", back: T["md.footnotes.back"] || ""}); } catch (e) {
+    box.textContent = "";
+    box.append(el("div", {class: "mdpage"}, el("pre", {}, text)));
+    return;
+  }
+  const page = el("div", {class: "mdpage"});
+  if (out.front != null && MD.front) {
+    page.append(el("div", {class: "mdfront"},
+      el("div", {class: "h"}, el("span", {class: "grow"}, T["md.front"] || ""),
+        el("button", {type: "button", class: "quiet", onclick: () => { MD.front = false; MD.drawn = ""; mdPreview(); }}, T["md.front.hide"] || "")),
+      el("pre", {}, out.front)));
+  } else if (out.front != null) {
+    page.append(el("div", {class: "mdband"}, el("button", {type: "button", class: "quiet",
+      onclick: () => { MD.front = true; MD.drawn = ""; mdPreview(); }}, T["md.front.show"] || "")));
+  }
+  const body = el("div", {class: "md", translate: "no"});
+  body.innerHTML = out.html;
+  page.append(body);
+  box.textContent = "";
+  box.append(page);
+  mdDecorate(body);
+  box.scrollTop = top;
+  if (MD.jump && MD.jump.path === ED.path) { const j = MD.jump; MD.jump = null; mdJump(j.id); }
+  if (MD.find) mdFindRun(false);
+}
+
+// What the cleaned HTML cannot do by itself: a copy button on code, a
+// diagram drawn from its text, links that open where they belong, pictures
+// from the folder
+function mdDecorate(body) {
+  for (const code of body.querySelectorAll("pre > code")) {
+    const pre = code.parentElement;
+    if (code.classList.contains("language-mermaid")) {
+      const pic = el("div", {class: "mddiagram"});
+      pre.replaceWith(pic);
+      mdDiagram(pic, code.textContent);
+      continue;
+    }
+    const wrap = el("div", {class: "mdcodewrap"});
+    pre.replaceWith(wrap);
+    wrap.append(pre, el("button", {type: "button", onclick: e => {
+      copyToClipboard(code.textContent);
+      e.currentTarget.textContent = T["md.copied"] || "";
+      const b = e.currentTarget;
+      setTimeout(() => { b.textContent = T["md.copy"] || ""; }, 1200);
+    }}, T["md.copy"] || ""));
+  }
+  for (const a of body.querySelectorAll("a[href]")) a.addEventListener("click", e => mdLinkPress(e, a));
+  for (const img of body.querySelectorAll("img[src]")) mdPicture(img);
+  // A note is written from the paragraph's own menu: the right button on a
+  // window, a held press on a phone
+  body.addEventListener("contextmenu", e => mdNoteMenu(e));
+  mdNotesPaint();
+}
+
+// ── Notes for an AI ─────────────────────────────────────────────────────────
+// Written beside a paragraph of the drawn document, kept with the lines of the
+// file it is about (notes.rs), and handed to an AI tab together, as a draft
+// in its input -- the person reads it there and sends it. Handed notes go
+const NT = {place: "", notes: [], asked: "", writing: null, said: "", bad: false};
+// The folder the editor is in, by the key the notes are kept under
+function mdPlace() {
+  const t = editorTab();
+  const g = t && t.group != null ? ((S && S.groups) || [])[t.group] : null;
+  return (g && g.key) || "";
+}
+function notesAsk(act, args) { send({kind: "notes", act, args: Object.assign({place: mdPlace()}, args || {})}); }
+window.__notes = function (d) {
+  if (!d || d.place !== mdPlace()) return;
+  if (d.ok) { NT.notes = d.notes || []; NT.said = d.said || d.warn || ""; NT.bad = !!d.warn; }
+  else { NT.said = d.error || ""; NT.bad = true; }
+  if (d.act === "send" && d.ok) toast(NT.said);
+  mdNotesPaint();
+};
+function mdNotesHere() { return NT.notes.filter(n => n.path === ED.path); }
+// The menu of a paragraph: a note on it (on the words selected, when some are)
+function mdNoteMenu(e) {
+  const at = e.target.closest && e.target.closest("[data-from]");
+  if (!at || !edUi.main.contains(at)) return;
+  e.preventDefault();
+  const sel = String(window.getSelection() || "").trim();
+  const lines = sel ? mdSelectedLines() : null;
+  const from = lines ? lines.from : Number(at.dataset.from), to = lines ? lines.to : Number(at.dataset.to);
+  const quote = sel || at.textContent.trim();
+  openList(e.target, [
+    el("div", {onclick: () => { closeFolderMenu(); mdNoteWrite(at, {from, to, quote}); }}, T["md.notes.write"] || ""),
+    el("div", {onclick: () => { closeFolderMenu();
+      insertIntoComposer(from === to ? ED.path + ":" + from : ED.path + ":" + from + "-" + to);
+      ED.said = T["tui.edit.told"] || ""; ED.bad = false; drawEdit(); }}, T["tui.edit.tell"] || ""),
+  ], false, e);
+}
+// The box a note is written in, under its paragraph. Enter keeps it,
+// Shift+Enter is a new line, Esc puts it away
+function mdNoteWrite(block, where, note) {
+  for (const old of edUi.main.querySelectorAll(".mdnotenew")) old.remove();
+  const box = el("div", {class: "mdnotenew"});
+  const area = el("textarea", {placeholder: T["md.notes.ph"] || ""});
+  area.value = note ? note.text : "";
+  const done = () => {
+    const text = area.value.trim();
+    box.remove();
+    if (note) notesAsk("edit", {id: note.id, text});
+    else if (text) notesAsk("add", {path: ED.path, from: where.from, to: where.to, quote: where.quote, text});
+  };
+  area.addEventListener("keydown", e => {
+    if (typingIME(e)) return;
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); done(); }
+    if (e.key === "Escape") { e.preventDefault(); box.remove(); }
+  });
+  if (where && where.quote) box.append(el("div", {class: "q"}, "「" + where.quote.slice(0, 120) + "」"));
+  box.append(area, el("div", {class: "a"},
+    el("button", {type: "button", class: "quiet", onclick: () => box.remove()}, T["common.cancel"] || ""),
+    el("button", {type: "button", class: "go", onclick: done}, T["md.notes.keep"] || "")));
+  (block.closest("li") || block).after(box);
+  setTimeout(() => area.focus(), 0);
+}
+// The notes drawn: each card under the paragraph it is about, and the bar
+// that hands them to an AI. Drawn again whenever the notes or the drawing change
+function mdNotesPaint() {
+  const u = edUi;
+  const shown = mdShown();
+  if (!u || (shown !== "preview" && shown !== "rich")) return;
+  const place = mdPlace();
+  if (NT.place !== place) { NT.place = place; NT.notes = []; notesAsk("list"); }
+  const page = u.main.querySelector(".mdpage");
+  const body = page && page.querySelector(".md");
+  if (!body) return;
+  for (const old of page.querySelectorAll(".mdnote, .mdnotes")) old.remove();
+  for (const b of body.querySelectorAll("[data-noted]")) b.removeAttribute("data-noted");
+  const mine = mdNotesHere();
+  // In the visual editor the document is the editor's: nothing is drawn
+  // into it, and the notes are counted and handed from the bar
+  const blocks = shown === "preview" ? [...body.querySelectorAll("[data-from]")] : [];
+  for (const n of shown === "preview" ? mine : []) {
+    // The innermost block that holds the note's first line
+    const at = blocks.filter(b => Number(b.dataset.from) <= n.from && Number(b.dataset.to) >= n.from)
+      .sort((a, b) => (a.dataset.to - a.dataset.from) - (b.dataset.to - b.dataset.from))[0] || body.lastElementChild;
+    if (!at) continue;
+    const host = at.closest("li") || at;
+    host.setAttribute("data-noted", "1");
+    const card = el("div", {class: "mdnote"},
+      n.quote ? el("div", {class: "q", title: n.quote}, "「" + n.quote + "」") : null,
+      el("div", {class: "t"}, n.text),
+      el("div", {class: "a"},
+        el("button", {type: "button", class: "quiet", onclick: () => mdNoteWrite(host, null, n)}, T["md.notes.edit"] || ""),
+        el("button", {type: "button", class: "quiet", onclick: () => notesAsk("drop", {id: n.id})}, T["md.notes.drop"] || "")));
+    host.after(card);
+  }
+  if (!mine.length && !NT.said) return;
+  const bar = el("div", {class: "mdnotes"},
+    el("span", {class: "grow" + (NT.bad ? " bad" : "")}, mine.length
+      ? (T["md.notes.count"] || "{n}").replaceAll("{n}", mine.length) : NT.said));
+  if (mine.length) {
+    const go = el("button", {type: "button"}, (T["md.notes.send"] || "") + " ▾");
+    go.onclick = () => {
+      const ais = mentionCandidates().filter(x => x.ai);
+      openList(go, ais.length ? ais.map(x => el("div", {class: "mrow", onclick: () => {
+        closeFolderMenu();
+        notesAsk("send", {path: ED.path, to: x.id});
+      }}, markFor(x) || el("span", {class: "aim"}, "•"), el("span", {class: "nm"}, x.name || x.id)))
+        : [el("div", {class: "mnone"}, T["tui.pick.no_ai"] || "")], false, null, "picksend");
+    };
+    // Written by a person and not to be had back: asked first
+    bar.append(go, el("button", {type: "button", class: "quiet", onclick: () => askQuestion({
+      title: T["md.notes.clear.title"] || "", say: (T["md.notes.clear.say"] || "").replaceAll("{n}", mine.length),
+      what: ED.path, label: T["md.notes.clear"] || "", danger: true, go: () => notesAsk("clear", {path: ED.path})})},
+      T["md.notes.clear"] || ""));
+  }
+  page.prepend(bar);
+}
+
+// A path written in the document, as a path in the folder: from the folder
+// the document is in. Null for an address, or one that leaves the folder
+function mdResolve(rel) {
+  if (!rel || /^[a-z][a-z0-9+.-]*:/i.test(rel) || rel.startsWith("//")) return null;
+  const parts = rel.startsWith("/") ? [] : (ED.path || "").split("/").slice(0, -1);
+  for (const p of rel.split("/")) {
+    if (!p || p === ".") continue;
+    if (p === "..") { if (!parts.length) return null; parts.pop(); } else parts.push(p);
+  }
+  return parts.join("/");
+}
+
+// A link pressed: a place in this document, a web page (a browser tab of the
+// folder; with Ctrl, this PC's browser), or another file of the folder,
+// opened here -- drawn, when it is Markdown, the way this one is
+function mdLinkPress(e, a) {
+  const href = a.getAttribute("href") || "";
+  e.preventDefault();
+  if (href.startsWith("#")) { mdJump(decodeURIComponent(href.slice(1))); return; }
+  if (/^(https?:|mailto:)/i.test(href)) {
+    // A phone opens it in its own browser: the PC's is not in its hand
+    if (typeof REMOTE !== "undefined" && REMOTE) { window.open(href, "_blank", "noopener"); return; }
+    const t = editorTab();
+    const beside = t && ((S && S.tabs) || []).find(x => x.group === t.group && x.kind === "pty");
+    if (beside && !(e.ctrlKey || e.metaKey)) send({kind: "linkpress", tab: beside.id || beside.name || "", target: href, lk: "web", act: "page", ask: ""});
+    else send({kind: "issues", act: "link", args: {url: href}});
+    return;
+  }
+  const [file, hash] = href.split("#");
+  const rel = mdResolve(decodeURIComponent(file));
+  const t = editorTab();
+  if (rel == null || !t) { ED.said = T["md.link.outside"] || ""; ED.bad = true; drawEdit(); return; }
+  const line = /^L(\d+)/.exec(hash || "");
+  if (line) { MD.view[rel] = "source"; ED.goto = {path: rel, line: Number(line[1]), col: 1}; }
+  else if (mdFile(rel)) {
+    if (!MD.view[rel]) MD.view[rel] = mdView();
+    if (hash) MD.jump = {path: rel, id: decodeURIComponent(hash)};
+  }
+  if (rel === ED.path) { if (hash) mdJump(decodeURIComponent(hash)); return; }
+  send({kind: "editopen", panel: t.id || t.name || "", path: rel});
+}
+
+// A heading of the document drawn, brought into view
+function mdJump(id) {
+  const box = edUi && edUi.main;
+  if (!box) return;
+  const at = [...box.querySelectorAll("[id]")].find(n => n.id === id || n.id === "user-content-" + id);
+  if (at) { at.scrollIntoView({block: "start"}); at.setAttribute("tabindex", "-1"); at.focus({preventScroll: true}); }
+}
+
+// A picture: one on the web as it is; one in the folder read through the
+// file list's door (this PC or another machine) and drawn from its bytes.
+// Asked two at a time, so a document of a hundred screenshots on a server
+// does not ask for all of them at once
+function mdPicture(img) {
+  const src = img.getAttribute("src") || "";
+  if (/^(https?:|data:|blob:)/i.test(src)) return;
+  const rel = mdResolve(decodeURIComponent(src.split("#")[0].split("?")[0]));
+  img.removeAttribute("src");
+  if (rel == null) return;
+  const have = MD.images.get(rel);
+  if (typeof have === "string") { img.src = have; return; }
+  img.classList.add("loading");
+  if (Array.isArray(have)) { have.push(img); return; }
+  MD.images.set(rel, [img]);
+  MD.imageQueue.push(rel);
+  mdPicturesNext();
+}
+function mdPicturesNext() {
+  while (MD.imageBusy < 2 && MD.imageQueue.length) {
+    MD.imageBusy++;
+    editAsk("image", {path: MD.imageQueue.shift()});
+  }
+}
+function mdPictureHeard(d) {
+  MD.imageBusy = Math.max(0, MD.imageBusy - 1);
+  const waiting = MD.images.get(d.path);
+  let url = "";
+  if (d.ok) {
+    const bin = atob(d.data || "");
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    url = URL.createObjectURL(new Blob([bytes], {type: d.kind || "application/octet-stream"}));
+  }
+  MD.images.set(d.path, url);
+  for (const img of Array.isArray(waiting) ? waiting : []) {
+    img.classList.remove("loading");
+    if (url) img.src = url; else img.title = d.error || "";
+  }
+  mdPicturesNext();
+}
+
+// ── Diagrams ──
+// The library is the largest thing the page can ask for, so it is asked for
+// the first time a document has a diagram. Diagrams are drawn one after
+// another: the library keeps state between drawings, and two at once spoil
+// each other
+let mdMermaid = null, mdDiagrams = Promise.resolve(), mdDiagramSeq = 0;
+function mdDiagram(box, code) {
+  mdDiagrams = mdDiagrams.then(async () => {
+    if (!mdMermaid) {
+      mdMermaid = new Promise((ok, no) => {
+        const s = document.createElement("script");
+        s.src = "vendor/mdkit/mermaid.js";
+        s.onload = () => ok(window.mermaid);
+        s.onerror = () => { mdMermaid = null; no(new Error(T["md.diagram.load"] || "")); };
+        document.head.append(s);
+      });
+    }
+    const mermaid = await mdMermaid;
+    // Strict, and every label drawn as SVG text: what comes back is cleaned
+    // as SVG, and an SVG cleaner takes HTML labels out
+    mermaid.initialize({startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true,
+      theme: edDarkNow() ? "dark" : "default", htmlLabels: false, flowchart: {htmlLabels: false}});
+    const id = "mdg" + (++mdDiagramSeq);
+    try {
+      const {svg} = await mermaid.render(id, code);
+      box.classList.remove("bad");
+      box.innerHTML = window.MdKit.cleanSvg(svg);
+    } catch (e) {
+      box.classList.add("bad");
+      box.textContent = "";
+      box.append(el("div", {class: "mdderr"}, (T["md.diagram.bad"] || "{error}")
+        .replaceAll("{error}", String((e && e.message) || e).split("\n")[0])), el("pre", {}, code));
+      for (const left of [document.getElementById(id), document.getElementById("d" + id)]) if (left) left.remove();
+    }
+  }).catch(e => { box.classList.add("bad"); box.textContent = String((e && e.message) || e); });
+}
+
+// ── The contents ──
+function mdTocDraw() {
+  const u = edUi;
+  if (!u) return;
+  const open = !!MD.toc[ED.path] && !!mdShown() && !!window.MdKit;
+  u.tocs.hidden = !open;
+  // Read only while it is open: a long document is not taken apart for a
+  // list nobody is looking at
+  if (!open) return;
+  const text = edText();
+  const key = ED.path + "\u0000" + MD.depth + "\u0000" + text;
+  if (u.tocs.dataset.key === key) return;
+  u.tocs.dataset.key = key;
+  const {body, lines} = window.MdKit.splitFront(text);
+  const all = window.MdKit.headings(body, lines).filter(h => h.depth <= MD.depth);
+  u.tocs.textContent = "";
+  const depth = el("select", {"aria-label": T["md.toc.depth"] || "", onchange: e => { MD.depth = Number(e.target.value); mdTocDraw(); }},
+    ...[1, 2, 3, 4, 5, 6].map(n => el("option", {value: String(n)}, (T["md.toc.level"] || "H{n}").replaceAll("{n}", n))));
+  depth.value = String(MD.depth);
+  u.tocs.append(el("div", {class: "etochead"}, el("span", {class: "grow"}, T["md.toc"] || ""), depth,
+    el("button", {type: "button", class: "quiet", title: T["md.toc.close"] || "", onclick: mdTocToggle}, "✕")));
+  if (!all.length) { u.tocs.append(el("div", {class: "etocnone"}, T["md.toc.none"] || "")); return; }
+  const top = Math.min(...all.map(h => h.depth));
+  const folded = new Set();
+  const rows = all.map((h, i) => {
+    const kids = i + 1 < all.length && all[i + 1].depth > h.depth;
+    const fold = el("span", {class: "fold"}, kids ? "▾" : "");
+    const row = el("div", {class: "etocrow", title: h.text, "data-i": String(i),
+      onclick: e => {
+        if (e.target === fold && kids) {
+          const shut = !folded.has(i);
+          if (shut) folded.add(i); else folded.delete(i);
+          fold.textContent = shut ? "▸" : "▾";
+          // A heading is hidden while any heading it is under is folded
+          rows.forEach((r, j) => { r.hidden = [...folded].some(f => f < j && mdUnder(all, f, j)); });
+          return;
+        }
+        mdTocGo(h, all.indexOf(h));
+      }}, fold, el("span", {class: "t"}, h.text));
+    row.style.paddingLeft = (6 + (h.depth - top) * 14) + "px";
+    return row;
+  });
+  u.tocs.append(...rows);
+  mdTocNow();
+}
+// Whether heading `j` is under heading `f`
+function mdUnder(all, f, j) {
+  for (let k = f + 1; k <= j; k++) if (all[k].depth <= all[f].depth) return false;
+  return true;
+}
+function mdTocGo(h, i) {
+  if (mdShown() === "preview") { mdJump(h.id); return; }
+  // In the visual editor the headings are found by their order
+  const hs = edUi.main.querySelectorAll(".ProseMirror h1, .ProseMirror h2, .ProseMirror h3, .ProseMirror h4, .ProseMirror h5, .ProseMirror h6");
+  const all = window.MdKit.headings(window.MdKit.splitFront(edText()).body);
+  const n = all.findIndex(x => x.line === h.line - window.MdKit.splitFront(edText()).lines);
+  const at = hs[n >= 0 ? n : i];
+  if (at) at.scrollIntoView({block: "center"});
+}
+// The heading being read, marked in the contents as the words scroll
+function mdTocNow() {
+  const u = edUi;
+  if (!u || u.tocs.hidden) return;
+  const hs = [...u.main.querySelectorAll(".md h1, .md h2, .md h3, .md h4, .md h5, .md h6")];
+  const top = u.main.getBoundingClientRect().top + 8;
+  let now = -1;
+  hs.forEach((h, i) => { if (h.getBoundingClientRect().top <= top + 40) now = i; });
+  const rows = [...u.tocs.querySelectorAll(".etocrow")];
+  rows.forEach((r, i) => r.classList.toggle("now", i === now));
+}
+
+// ── The visual editor ──
+// Why a document is not edited visually, said under it: a reason, and when
+// it is only its size, the way past it
+function mdRichWhy(text) {
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes > MD_RICH_ROOM && !MD.force[ED.path]) return {kind: "big"};
+  const check = window.MdKit.richCheck(text);
+  return check ? {kind: "changes"} : null;
+}
+function mdRich() {
+  const u = edUi;
+  const text = edText();
+  if (MD.rich && MD.rich.path === ED.path) {
+    if (MD.rich.wrote !== text) mdRichTakeIn();
+    return;
+  }
+  if (MD.rich) mdLeave();
+  const why = MD.why[ED.path] || mdRichWhy(text);
+  if (why) {
+    // Not openable as it reads: the text, and why, with the way past a size
+    MD.why[ED.path] = why;
+    MD.view[ED.path] = "source";
+    drawEdit();
+    return;
+  }
+  const {raw, front, body} = window.MdKit.splitFront(text);
+  u.main.textContent = "";
+  const page = el("div", {class: "mdpage"});
+  if (front != null) {
+    page.append(el("div", {class: "mdband"}, T["md.rich.front"] || "", el("pre", {}, front)));
+  }
+  const tools = mdRichTools();
+  const host = el("div", {class: "md mdrich", translate: "no"});
+  page.append(host);
+  u.main.append(tools, page);
+  const r = window.MdKit.rich(host, {markdown: body, placeholder: T["md.rich.placeholder"] || "",
+    onChange: mdRichChanged, onSelect: () => mdRichToolsNow(tools)});
+  MD.rich = {r, path: ED.path, base: body, was: r.markdown(), front: raw || "", wrote: text, tools};
+  r.editor.view.dom.addEventListener("keydown", mdSlashKeys, true);
+  r.editor.on("update", mdSlashLook);
+  host.addEventListener("contextmenu", mdRichNoteMenu);
+  mdRichToolsNow(tools);
+  MD.drawn = "";
+  if (MD.find) mdFindRun(false);
+  mdNotesPaint();
+}
+// A note from the visual editor: on the part of the document under the
+// pointer, at the lines the same part is drawn from in the preview -- the
+// editor's parts and the preview's are the same parts, one for one
+function mdRichNoteMenu(e) {
+  const m = MD.rich;
+  if (!m) return;
+  e.preventDefault();
+  const ed = m.r.editor;
+  const at = ed.view.posAtCoords({left: e.clientX, top: e.clientY});
+  if (!at) return;
+  const index = ed.state.doc.resolve(at.pos).index(0);
+  mdRichFlush();
+  const tpl = document.createElement("template");
+  tpl.innerHTML = window.MdKit.render(edText()).html;
+  const block = [...tpl.content.children].filter(x => x.dataset && x.dataset.from)[index];
+  if (!block) return;
+  const sel = String(window.getSelection() || "").trim();
+  const quote = sel || (ed.state.doc.child(index) ? ed.state.doc.child(index).textContent : "");
+  const where = {from: Number(block.dataset.from), to: Number(block.dataset.to), quote};
+  openList(e.target, [el("div", {onclick: () => {
+    closeFolderMenu();
+    askQuestion({title: T["md.notes.write"] || "", say: "「" + quote.slice(0, 120) + "」", field: "",
+      label: T["md.notes.keep"] || "",
+      go: text => { if (text) notesAsk("add", {path: ED.path, from: where.from, to: where.to, quote: where.quote, text}); }});
+  }}, T["md.notes.write"] || "")], false, e);
+}
+// Typed: the file is changed from this moment, and the words go into the
+// text once the typing pauses
+function mdRichChanged() {
+  if (!ED.dirty) { ED.dirty = true; drawEdit(); }
+  clearTimeout(MD.flushTimer);
+  MD.flushTimer = setTimeout(mdRichFlush, MD_FLUSH_MS);
+  if (MD.rich) mdRichToolsNow(MD.rich.tools);
+}
+// What the visual editor has, written into the text, keeping the spelling of
+// whatever was not edited (MdKit.keep)
+function mdRichFlush() {
+  clearTimeout(MD.flushTimer);
+  const m = MD.rich;
+  if (!m || !edAce || m.path !== ED.path) return;
+  const now = m.r.markdown();
+  const text = m.front + window.MdKit.keep(m.base, m.was, now);
+  m.wrote = text;
+  if (text !== edAce.getValue()) edAce.session.doc.setValue(text);
+  ED.dirty = edAce.getValue() !== ED.text;
+}
+// The text changed under the visual editor (a reload, the AI writing the
+// file): taken in, with the cursor kept where it was as nearly as it can be
+function mdRichTakeIn() {
+  const m = MD.rich;
+  if (!m) return;
+  const text = edText();
+  // What came in may be something the visual editor would rewrite: then it
+  // is put away without writing anything back, and the text is shown
+  const why = mdRichWhy(text);
+  if (why) {
+    m.r.destroy();
+    MD.rich = null;
+    MD.why[ED.path] = why;
+    MD.view[ED.path] = "source";
+    drawEdit();
+    return;
+  }
+  const {raw, body} = window.MdKit.splitFront(text);
+  const sel = m.r.editor.state.selection.from;
+  m.r.set(body);
+  m.base = body;
+  m.was = m.r.markdown();
+  m.front = raw || "";
+  m.wrote = text;
+  try { m.r.editor.commands.setTextSelection(Math.min(sel, m.r.editor.state.doc.content.size)); } catch (e) {}
+}
+
+// The bar over the visual editor: what a line is, what a word looks like,
+// lists, and the things put in
+function mdRichTools() {
+  const c = () => MD.rich && MD.rich.r.editor.chain().focus();
+  const b = (label, title, run, key) => el("button", {type: "button", title, "data-k": key || "", onclick: run}, label);
+  const tools = el("div", {class: "mdtools"},
+    b(T["md.rich.text"] || "", T["md.rich.text.title"] || "", () => c().setParagraph().run(), "paragraph"),
+    b("H1", T["md.rich.h"] || "", () => c().toggleHeading({level: 1}).run(), "h1"),
+    b("H2", T["md.rich.h"] || "", () => c().toggleHeading({level: 2}).run(), "h2"),
+    b("H3", T["md.rich.h"] || "", () => c().toggleHeading({level: 3}).run(), "h3"),
+    el("span", {class: "sep"}),
+    b(el("b", {}, "B"), T["md.rich.bold"] || "", () => c().toggleBold().run(), "bold"),
+    b(el("i", {}, "I"), T["md.rich.italic"] || "", () => c().toggleItalic().run(), "italic"),
+    b(el("s", {}, "S"), T["md.rich.strike"] || "", () => c().toggleStrike().run(), "strike"),
+    b("</>", T["md.rich.code"] || "", () => c().toggleCode().run(), "code"),
+    el("span", {class: "sep"}),
+    b("•", T["md.rich.bullets"] || "", () => c().toggleBulletList().run(), "bulletList"),
+    b("1.", T["md.rich.numbers"] || "", () => c().toggleOrderedList().run(), "orderedList"),
+    b("☑", T["md.rich.tasks"] || "", () => c().toggleTaskList().run(), "taskList"),
+    b("“", T["md.rich.quote"] || "", () => c().toggleBlockquote().run(), "blockquote"),
+    el("span", {class: "sep"}),
+    b(T["md.rich.link"] || "", T["md.rich.link.title"] || "", mdRichLink, "link"),
+    b(T["md.rich.image"] || "", T["md.rich.image.title"] || "", mdRichImage),
+    b("⋯", T["md.rich.more"] || "", e => openList(e.currentTarget, mdSlashItems().map(it =>
+      el("div", {onclick: () => { closeFolderMenu(); it.run(); }}, it.label)))));
+  return tools;
+}
+// The buttons for what the cursor is in, lit
+function mdRichToolsNow(tools) {
+  const ed = MD.rich && MD.rich.r.editor;
+  if (!ed || !tools) return;
+  for (const b of tools.querySelectorAll("button[data-k]")) {
+    const k = b.dataset.k;
+    const on = !k ? false : /^h\d$/.test(k) ? ed.isActive("heading", {level: Number(k[1])}) : ed.isActive(k);
+    b.classList.toggle("on", on);
+  }
+}
+function mdRichLink() {
+  const ed = MD.rich && MD.rich.r.editor;
+  if (!ed) return;
+  askQuestion({title: T["md.rich.link.title"] || "", say: T["md.rich.link.say"] || "",
+    field: ed.getAttributes("link").href || "https://", label: T["md.rich.link.go"] || "",
+    go: url => {
+      const c = ed.chain().focus().extendMarkRange("link");
+      if (!url) c.unsetLink().run(); else c.setLink({href: url}).run();
+    }});
+}
+function mdRichImage() {
+  const ed = MD.rich && MD.rich.r.editor;
+  if (!ed) return;
+  askQuestion({title: T["md.rich.image.title"] || "", say: T["md.rich.image.say"] || "", field: "",
+    label: T["md.rich.image.go"] || "",
+    go: src => { if (src) ed.chain().focus().setImage({src}).run(); }});
+}
+
+// "/" at the start of a word: a list of what to make here, narrowed by what
+// is typed after it
+function mdSlashItems() {
+  const ed = MD.rich && MD.rich.r.editor;
+  if (!ed) return [];
+  const c = () => ed.chain().focus();
+  const it = (key, words, run) => ({key, label: T["md.slash." + key] || key, words, run});
+  return [
+    it("text", "text paragraph", () => c().setParagraph().run()),
+    ...[1, 2, 3, 4, 5, 6].map(n => ({key: "h" + n, label: (T["md.slash.h"] || "H{n}").replaceAll("{n}", n),
+      words: "h" + n + " heading title", run: () => c().setHeading({level: n}).run()})),
+    it("bullets", "bullet list ul", () => c().toggleBulletList().run()),
+    it("numbers", "numbered ordered list ol", () => c().toggleOrderedList().run()),
+    it("tasks", "task todo checklist check", () => c().toggleTaskList().run()),
+    it("quote", "quote blockquote", () => c().toggleBlockquote().run()),
+    it("code", "code block pre", () => c().toggleCodeBlock().run()),
+    it("diagram", "mermaid diagram chart flow", () => c().setCodeBlock({language: "mermaid"}).run()),
+    it("table", "table grid", () => c().insertTable({rows: 3, cols: 3, withHeaderRow: true}).run()),
+    it("rule", "divider rule hr line", () => c().setHorizontalRule().run()),
+    it("math", "math block latex katex formula", () => c().insertBlockMath({latex: "E = mc^2"}).run()),
+    it("inlinemath", "inline math latex katex", () => c().insertInlineMath({latex: "x^2"}).run()),
+    it("image", "image picture img", mdRichImage),
+  ];
+}
+let mdSlash = null;
+function mdSlashLook() {
+  const ed = MD.rich && MD.rich.r.editor;
+  if (!ed) return;
+  const {$from, empty} = ed.state.selection;
+  if (!empty) { mdSlashClose(); return; }
+  const before = $from.parent.textBetween(0, $from.parentOffset, "\n", "\n");
+  const m = /(?:^|\s)\/([^\s/]{0,24})$/u.exec(before);
+  if (!m) { mdSlashClose(); return; }
+  const q = m[1].toLowerCase();
+  const found = mdSlashItems().filter(i => !q || i.label.toLowerCase().includes(q) || i.words.includes(q));
+  if (!found.length) { mdSlashClose(); return; }
+  const from = $from.pos - m[1].length - 1;
+  mdSlash = {from, to: $from.pos, found, at: 0};
+  const at = ed.view.coordsAtPos($from.pos);
+  const anchor = el("div");
+  anchor.style.cssText = "position:fixed;left:" + at.left + "px;top:" + at.bottom + "px;width:1px;height:1px";
+  document.body.append(anchor);
+  openList(anchor, found.map((i, n) => el("div", {class: n === 0 ? "on" : "", onmousedown: e => { e.preventDefault(); mdSlashPick(i); }}, i.label)));
+  anchor.remove();
+}
+function mdSlashClose() { if (mdSlash) { mdSlash = null; closeFolderMenu(); } }
+function mdSlashPick(item) {
+  const ed = MD.rich && MD.rich.r.editor;
+  const s = mdSlash;
+  mdSlashClose();
+  if (!ed || !s) return;
+  ed.chain().focus().deleteRange({from: s.from, to: s.to}).run();
+  item.run();
+}
+function mdSlashKeys(e) {
+  if (!mdSlash) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); mdSlashClose(); return; }
+  if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); mdSlashPick(mdSlash.found[mdSlash.at]); return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault(); e.stopPropagation();
+    const n = mdSlash.found.length;
+    mdSlash.at = (mdSlash.at + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+    const rows = document.querySelectorAll(".fmenu > div");
+    rows.forEach((r, i) => r.classList.toggle("on", i === mdSlash.at));
+  }
+}
+
+// ── Finding words in the drawing ──
+// Ctrl+F over the drawn words opens a box of its own (the text has the
+// editor's); the words found are lit without the page being rewritten
+function mdKeys(e) {
+  if (typingIME(e)) return;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "f" || e.key === "F" || e.key === "h" || e.key === "H")) {
+    e.preventDefault(); e.stopPropagation();
+    mdFindOpen(e.key.toLowerCase() === "h");
+  } else if (e.key === "Escape" && MD.find) { e.preventDefault(); mdFindClose(); }
+  else if (e.key === "F3" && MD.find) { e.preventDefault(); mdFindStep(e.shiftKey ? -1 : 1); }
+}
+function mdFindOpen(replace) {
+  const u = edUi;
+  if (!u) return;
+  const sel = String(window.getSelection() || "").trim();
+  if (!MD.find) MD.find = {q: "", matches: [], at: 0, replace: false};
+  if (sel && sel.length < 200 && !sel.includes("\n")) MD.find.q = sel;
+  MD.find.replace = !!replace && mdShown() === "rich";
+  u.find.hidden = false;
+  u.find.textContent = "";
+  const q = el("input", {type: "search", placeholder: T["md.find.ph"] || "", "aria-label": T["md.find.ph"] || "",
+    oninput: () => { MD.find.q = q.value; mdFindRun(true); },
+    onkeydown: e => {
+      if (typingIME(e)) return;
+      if (e.key === "Enter") { e.preventDefault(); mdFindStep(e.shiftKey ? -1 : 1); }
+      if (e.key === "Escape") { e.preventDefault(); mdFindClose(); }
+    }});
+  q.value = MD.find.q;
+  const n = el("span", {class: "n"});
+  const step = (d, label, title) => el("button", {type: "button", class: "quiet", title, onmousedown: e => e.preventDefault(),
+    onclick: () => mdFindStep(d)}, label);
+  const rep = el("div", {class: "rep", hidden: MD.find.replace ? null : ""});
+  const with_ = el("input", {type: "text", placeholder: T["md.find.with"] || "", "aria-label": T["md.find.with"] || ""});
+  rep.append(with_,
+    el("button", {type: "button", class: "quiet", onclick: () => mdReplace(with_.value, false)}, T["md.find.replace"] || ""),
+    el("button", {type: "button", class: "quiet", onclick: () => mdReplace(with_.value, true)}, T["md.find.all"] || ""));
+  u.find.append(q, n, step(-1, "↑", T["md.find.prev"] || ""), step(1, "↓", T["md.find.next"] || ""),
+    el("button", {type: "button", class: "quiet", title: T["common.close"] || "", onclick: mdFindClose}, "✕"), rep);
+  MD.find.n = n;
+  mdFindRun(true);
+  setTimeout(() => { q.focus(); q.select(); }, 0);
+}
+function mdFindClose() {
+  if (window.CSS && CSS.highlights) { CSS.highlights.delete("mdfind"); CSS.highlights.delete("mdfindnow"); }
+  MD.find = null;
+  if (edUi) { edUi.find.hidden = true; edUi.find.textContent = ""; }
+}
+// Every place the words are, in the order they are read. Within one run of
+// text: words broken across a link or a bold word are not found, which is
+// what the text's own search is for
+function mdFindRun(fromTop) {
+  const f = MD.find, u = edUi;
+  if (!f || !u) return;
+  const root = u.main.querySelector(".mdrich .ProseMirror") || u.main.querySelector(".md");
+  f.matches = [];
+  const q = f.q.toLocaleLowerCase();
+  if (q && root) {
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+      // Only the document's own words that are on the screen: not the
+      // controls and notes drawn over it, nor what is there for a screen reader
+      if (t.parentElement && t.parentElement.closest(".mdcodebar, .mdcodewrap > button, .katex-mathml, .sr-only, .mdnote, .mdnotenew, .mdnotes")) continue;
+      const hay = t.data.toLocaleLowerCase();
+      if (hay.length !== t.data.length) continue;
+      for (let i = hay.indexOf(q); i >= 0; i = hay.indexOf(q, i + q.length)) {
+        const r = new Range();
+        r.setStart(t, i); r.setEnd(t, i + q.length);
+        f.matches.push(r);
+      }
+    }
+  }
+  if (fromTop || f.at >= f.matches.length) f.at = 0;
+  mdFindPaint(true);
+}
+function mdFindPaint(scroll) {
+  const f = MD.find;
+  if (!f) return;
+  if (window.CSS && CSS.highlights && window.Highlight) {
+    CSS.highlights.set("mdfind", new Highlight(...f.matches));
+    if (f.matches[f.at]) CSS.highlights.set("mdfindnow", new Highlight(f.matches[f.at]));
+    else CSS.highlights.delete("mdfindnow");
+  }
+  if (f.n) f.n.textContent = !f.q ? "" : f.matches.length
+    ? (T["md.find.of"] || "{at} / {of}").replaceAll("{at}", f.at + 1).replaceAll("{of}", f.matches.length)
+    : (T["md.find.none"] || "");
+  const now = f.matches[f.at];
+  if (scroll && now) {
+    const box = now.startContainer.parentElement;
+    if (box) box.scrollIntoView({block: "center"});
+  }
+}
+function mdFindStep(d) {
+  const f = MD.find;
+  if (!f || !f.matches.length) return;
+  f.at = (f.at + d + f.matches.length) % f.matches.length;
+  mdFindPaint(true);
+}
+// In the visual editor, the words found replaced: the one in hand, or all of
+// them, last first so the places before them do not move
+function mdReplace(to, all) {
+  const f = MD.find, m = MD.rich;
+  if (!f || !m || !f.matches.length) return;
+  const view = m.r.editor.view;
+  const pick = all ? f.matches.slice() : [f.matches[f.at]];
+  let tr = view.state.tr;
+  for (const r of pick.reverse()) {
+    try {
+      const from = view.posAtDOM(r.startContainer, r.startOffset);
+      const end = view.posAtDOM(r.endContainer, r.endOffset);
+      tr = tr.insertText(to, from, end);
+    } catch (e) {}
+  }
+  view.dispatch(tr);
+  setTimeout(() => mdFindRun(false), 0);
+}
+
+// The lines of the block the selection (or the cursor) is in, in the drawing
+function mdSelectedLines() {
+  const s = window.getSelection();
+  if (!s || !s.rangeCount || !edUi) return null;
+  const pick = n => {
+    const e = n && (n.nodeType === 1 ? n : n.parentElement);
+    const b = e && e.closest("[data-from]");
+    return b && edUi.main.contains(b) ? b : null;
+  };
+  const a = pick(s.anchorNode), b = pick(s.focusNode) || a;
+  if (!a) return null;
+  const from = Math.min(Number(a.dataset.from), Number(b.dataset.from));
+  const to = Math.max(Number(a.dataset.to), Number(b.dataset.to));
+  return {from, to};
 }
 
 // ── The file list ───────────────────────────────────────
@@ -15004,6 +16113,7 @@ window.__files = function (d) {
   if (!d || !d.act) return;
   // The editor asks through the same door as the list, and reads its own post
   if (d.act === "read" || d.act === "write") { editHeard(d); return; }
+  if (d.act === "image") { mdPictureHeard(d); return; }
   // A folder on another machine answers later than it was asked, and by then
   // the column may be showing another folder: an answer about the last one is
   // not put into this one
@@ -18223,6 +19333,7 @@ if (REMOTE) {
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
     if (d.adr) window.__adr(d.adr);
+    if (d.notes) window.__notes(d.notes);
     if (d.console) window.__console(d.console);
     if (d.convo) window.__convo(d.convo);
     if (d.issues) window.__issues(d.issues);

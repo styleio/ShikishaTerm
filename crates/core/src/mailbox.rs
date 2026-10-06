@@ -229,6 +229,8 @@ pub struct Mailbox {
     pub files: Vec<(String, String, serde_json::Value)>,
     /// The same, for the column's decision records: (panel, act, args)
     pub adr: Vec<(String, String, serde_json::Value)>,
+    /// What the notes on a drawn document asked for: (act, args)
+    pub notes: Vec<(String, serde_json::Value)>,
     /// What the Issue tab has asked for since the last drain: (act, args)
     pub issues: Vec<(String, serde_json::Value)>,
     /// The Issue row in the list was pressed
@@ -646,6 +648,9 @@ impl Mailbox {
     }
     pub fn take_adr(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.adr)
+    }
+    pub fn take_notes(&mut self) -> Vec<(String, serde_json::Value)> {
+        std::mem::take(&mut self.notes)
     }
     pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)

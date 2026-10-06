@@ -5925,6 +5925,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Adr { panel, act, args }) => {
                         shell.mail().adr.push((panel, act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Notes { act, args }) => {
+                        shell.mail().notes.push((act, args));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
@@ -9441,6 +9444,54 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = tx.send(js.to_string());
                     });
                 }
+            }
+        }
+        // The notes written beside a drawn document. One small file on this
+        // machine, answered on the spot; handing them to an AI tab puts them
+        // in its input as a draft, the way picked elements and console lines
+        // are, and takes them off the list once they are there
+        for (act, args) in shell.mail().take_notes() {
+            let file = crate::notes::path();
+            let js = if act == "send" {
+                let place = args.get("place").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let to = args.get("to").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                match crate::notes::of_place(&file, &place) {
+                    Err(e) => serde_json::json!({"act": act, "ok": false, "place": place, "error": e}),
+                    Ok(all) => {
+                        let mine: Vec<crate::notes::Note> = all.into_iter().filter(|n| path.is_empty() || n.path == path).collect();
+                        if mine.is_empty() {
+                            serde_json::json!({"act": act, "ok": false, "place": place, "error": i18n::t("err.notes.none")})
+                        } else {
+                            let now_ms = start.elapsed().as_millis() as u64;
+                            let full = crate::notes::describe(&mine);
+                            let n = mine.len();
+                            match draft_into(&tabs, &surfaces, &to, full, "notes",
+                                |p| i18n::tp("md.notes.in_file", &[("path", p), ("n", &n.to_string())]), now_ms, &mut pending_send) {
+                                Ok(title) => {
+                                    reveal = Some((to.clone(), Instant::now() + Duration::from_secs(10)));
+                                    let ids: Vec<u64> = mine.iter().map(|n| n.id).collect();
+                                    let kept = crate::notes::forget(&file, &ids);
+                                    let mut js = crate::notes::answer(&file, "list", &serde_json::json!({"place": place}));
+                                    js["act"] = serde_json::json!("send");
+                                    js["said"] = serde_json::json!(i18n::tp("md.notes.handed_to", &[("tab", &title), ("n", &n.to_string())]));
+                                    if let Err(e) = kept {
+                                        js["warn"] = serde_json::json!(e);
+                                    }
+                                    js
+                                }
+                                Err(why) => serde_json::json!({"act": act, "ok": false, "place": place, "error": why}),
+                            }
+                        }
+                    }
+                }
+            } else {
+                crate::notes::answer(&file, &act, &args)
+            };
+            let js = js.to_string();
+            shell.push_notes(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"notes\":{js}}}"));
             }
         }
         // Words gathered for the AI: started where every other draft starts
@@ -16017,6 +16068,28 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
                 Err(e) => fail(format!("{e}")),
             }
         }
+        // A picture a document shows, by its path in the folder: what the
+        // Markdown preview draws a picture written beside the document from
+        "image" => {
+            let path = str_of("path");
+            let Some(at) = local_under(root, &path) else {
+                return fail(i18n::t("err.sftp.outside"));
+            };
+            let Some(kind) = picture_kind(&path) else {
+                return fail(i18n::t("err.files.not_picture"));
+            };
+            match std::fs::metadata(&at).map(|m| m.len()) {
+                Ok(size) if size > PICTURE_LIMIT => {
+                    return fail(i18n::tp("err.files.too_big", &[("mb", &(PICTURE_LIMIT / (1024 * 1024)).to_string())]));
+                }
+                Err(e) => return fail(format!("{e}")),
+                Ok(_) => {}
+            }
+            match std::fs::read(&at) {
+                Ok(bytes) => picture_reply(panel, &path, kind, &bytes),
+                Err(e) => fail(format!("{e}")),
+            }
+        }
         // By name, or by what is inside. Both stop themselves and say so
         "find" | "grep" => {
             let q = str_of("q");
@@ -16093,6 +16166,39 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
         }
         _ => fail(format!("unknown act: {act}")),
     }
+}
+
+/// The largest picture a document's preview is handed. A screenshot is a few
+/// hundred kilobytes; this is room for a photograph at full size, and it goes
+/// to a phone over the network as text a third bigger
+const PICTURE_LIMIT: u64 = 12 * 1024 * 1024;
+
+/// What kind of picture a path names, by its ending, as a page names it. Only
+/// pictures: anything else is not something a preview draws
+fn picture_kind(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => return None,
+    })
+}
+
+/// The page's answer to a picture that was read: its bytes as base64 and its
+/// kind, the same whichever machine it came from
+fn picture_reply(panel: &str, path: &str, kind: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    serde_json::json!({
+        "act": "image", "panel": panel, "ok": true, "path": path, "kind": kind,
+        "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+    .to_string()
 }
 
 /// The page's answer to a file that was read, from its bytes -- the same
@@ -16289,6 +16395,39 @@ fn files_there(
                     Ok(_) => answer(failed("read", &panel, i18n::t("err.files.binary")), path, None),
                     Err(e) => answer(failed("read", &panel, format!("{e:#}")), path, None),
                 }
+            });
+            None
+        }
+        // A picture a document shows. Looked at first, so one too big is said
+        // as that without it crossing the network
+        "image" => {
+            let Some(kind) = picture_kind(&path) else {
+                return fail(i18n::t("err.files.not_picture"));
+            };
+            let (look, read) = match (
+                ready(ssh::FileJob::Stat { path: path.clone() }),
+                ready(ssh::FileJob::Read { path: path.clone() }),
+            ) {
+                (Ok(l), Ok(r)) => (l, r),
+                (Err(e), _) | (_, Err(e)) => return fail(format!("{e}")),
+            };
+            let panel = panel.clone();
+            std::thread::spawn(move || {
+                let js = match crate::elsewhere::files(&at, look, SFTP_WAIT_MS) {
+                    Ok(ssh::FileAnswer::One(e)) if e.size > PICTURE_LIMIT => {
+                        let mb = (PICTURE_LIMIT / (1024 * 1024)).to_string();
+                        failed("image", &panel, i18n::tp("err.files.too_big", &[("mb", &mb)]))
+                    }
+                    Ok(_) => match crate::elsewhere::files(&at, read, SFTP_WAIT_MS) {
+                        Ok(ssh::FileAnswer::Bytes(bytes)) => {
+                            serde_json::from_str(&picture_reply(&panel, &path, kind, &bytes)).unwrap_or_default()
+                        }
+                        Ok(_) => failed("image", &panel, i18n::t("err.files.not_picture")),
+                        Err(e) => failed("image", &panel, format!("{e:#}")),
+                    },
+                    Err(e) => failed("image", &panel, format!("{e:#}")),
+                };
+                answer(js, String::new(), None);
             });
             None
         }
