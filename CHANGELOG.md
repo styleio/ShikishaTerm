@@ -8,6 +8,13 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **A decision record drafted from a conversation reads the way MADR writes
+  it.** The chosen option begins `Chosen option: "...", because ...`, each
+  consequence is a line of its own beginning `Good, because` or `Bad, because`,
+  and each option of the pros and cons has a heading of its own -- in MADR's
+  English words, whatever language the rest is written in.
+
 ## [0.26.0] - 2026-10-06
 
 ### Added
