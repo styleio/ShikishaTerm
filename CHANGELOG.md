@@ -11,6 +11,13 @@ once it reaches its first tagged release.
 ## [0.25.0] - 2026-10-04
 
 ### Added
+- **The master password locks the whole app.** With a master password set,
+  the app starts locked: no tab, no settings, no board and no call through
+  the automation pipe until it is given, and no way past it but Quit. It can
+  be unlocked from a phone too, on the board's address, over this machine,
+  Tailscale or HTTPS (not a plain LAN address), so a restart made from afar
+  no longer stops at a question nobody can answer. Terminals that run on
+  their own go on behind the lock.
 - **The bar's menu (⋯).** The bar over a web page ends in one menu holding
   Find in page, Downloads and the Develop tools, in place of the Develop
   button, so a phone's bar keeps its address readable. It is one of the

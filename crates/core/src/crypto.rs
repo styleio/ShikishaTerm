@@ -270,4 +270,15 @@ mod tests {
         env.data = B64.encode(raw);
         assert!(decrypt(&env, "pw").is_err());
     }
+
+    /// Not a test: seals the file SHIKISHA_SEAL_FILE with the password
+    /// SHIKISHA_SEAL_PW, for a check of the app's master password lock
+    /// (tools/debug/master-lock.win.mjs) that needs a sealed store to start on
+    #[test]
+    #[ignore]
+    fn seal_a_file_for_a_check() {
+        let file = std::env::var("SHIKISHA_SEAL_FILE").expect("SHIKISHA_SEAL_FILE");
+        let pw = std::env::var("SHIKISHA_SEAL_PW").expect("SHIKISHA_SEAL_PW");
+        encrypt_file(std::path::Path::new(&file), &pw).unwrap();
+    }
 }

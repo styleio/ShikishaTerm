@@ -14,20 +14,21 @@
 //! 2. **A person at the terminal.** Started by hand over SSH, the runtime asks,
 //!    with the echo turned off. This is the gesture somebody expects when they
 //!    run a program that needs a password.
-//! 3. **Nothing.** No credential, no terminal: the runtime comes up with the
-//!    secrets still locked and says so plainly, naming what to do about it. It
-//!    does not guess, and it does not read the password out of the
-//!    environment -- an environment block is readable by every other process
-//!    that user owns, which is exactly the property a master password must not
-//!    have.
+//! 3. **Nothing.** No credential, no terminal: the runtime stays locked and
+//!    says so plainly, naming what to do about it -- the board, opened over a
+//!    line nobody between can read, is where it is unlocked then
+//!    (`remote::lock_page`). It does not guess, and it does not read the
+//!    password out of the environment -- an environment block is readable by
+//!    every other process that user owns, which is exactly the property a
+//!    master password must not have.
 
 use std::io::BufRead as _;
 use std::io::Write as _;
 
 /// The password, if this machine can supply one without being asked twice.
 ///
-/// `None` means "there is no way to get it here", which the caller turns into a
-/// runtime that runs with its secrets locked. It never means "wrong password" --
+/// `None` means "there is no way to get it here", which leaves the lock to be
+/// opened from the board. It never means "wrong password" --
 /// that judgement belongs to whoever can try to decrypt with it.
 pub fn master(title: &str, note: &str) -> Option<String> {
     if let Some(pw) = from_service_credential() {

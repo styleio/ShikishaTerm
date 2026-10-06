@@ -459,6 +459,16 @@ fn note_refused(said: &std::cell::Cell<u8>, who: Option<&str>, at: &str, body: &
 
 
 
+/// What the password prompt was answered (`Browser::poll_password`)
+pub enum Typed {
+    /// The prompt's own answer: the words, or none (its cancel)
+    Answer(Option<String>),
+    /// The window is going: its ✕, or Quit on the tray
+    Quit,
+    /// Nothing within the time asked
+    Nothing,
+}
+
 /// A handle to one running browser
 pub struct Browser {
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
@@ -1014,19 +1024,33 @@ impl Browser {
     /// Wait until a password is entered.
     /// Any other signal that arrives while waiting is kept aside (discarding it loses it forever)
     pub fn wait_password(&self, timeout: std::time::Duration) -> Result<Option<String>> {
+        match self.poll_password(timeout)? {
+            Typed::Answer(text) => Ok(text),
+            Typed::Quit => Err(anyhow!(shikisha_core::i18n::t("err.browser.window_closed"))),
+            Typed::Nothing => Err(anyhow!(shikisha_core::i18n::t("err.browser.no_input"))),
+        }
+    }
+
+    /// What the password prompt was answered within `timeout`, without making
+    /// a missing answer an error: the lock asks this over and over while it
+    /// also listens to the phone's door. The window's ✕ and the tray's Quit
+    /// are an answer too -- the one way past the lock that is not a password.
+    /// Any other signal is kept aside, as above
+    pub fn poll_password(&self, timeout: std::time::Duration) -> Result<Typed> {
         let until = std::time::Instant::now() + timeout;
         loop {
-            let left = until
-                .checked_duration_since(std::time::Instant::now())
-                .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_input")))?;
+            let Some(left) = until.checked_duration_since(std::time::Instant::now()) else {
+                return Ok(Typed::Nothing);
+            };
             match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left) {
-                Ok(Ev::Password { text }) => return Ok(text),
-                Ok(Ev::Closed) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.window_closed"))),
+                Ok(Ev::Password { text }) => return Ok(Typed::Answer(text)),
+                Ok(Ev::Closed | Ev::CloseRequested | Ev::TrayQuit) => return Ok(Typed::Quit),
                 Ok(other) => {
                     self.spare.lock().unwrap().push(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_input"))),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(Typed::Nothing),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(Typed::Quit),
             }
         }
     }

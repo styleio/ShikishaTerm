@@ -111,6 +111,16 @@ static TOKENS: OnceLock<Tokens> = OnceLock::new();
 /// is also how `child_env` knows to hand a new tab nothing at all
 static PIPE: Mutex<Option<String>> = Mutex::new(None);
 
+/// The app is locked with its master password. Nothing is carried out
+/// through this door until it is unlocked: a call is answered at once that
+/// the app is locked, rather than left waiting on a loop that is not running
+static LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Lock or unlock this door with the app's master password
+pub fn set_locked(on: bool) {
+    LOCKED.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 fn tokens() -> &'static Tokens {
     TOKENS.get_or_init(Tokens::default)
 }
@@ -660,6 +670,9 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     let Some(method) = req.get("method").and_then(|m| m.as_str()) else {
         return error_line(&id, "a call needs a method");
     };
+    if LOCKED.load(std::sync::atomic::Ordering::SeqCst) {
+        return error_line(&id, "the app is locked with its master password; unlock it on its screen first");
+    }
     let params = match req.get("params") {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(serde_json::Value::Array(a)) => a.clone(),

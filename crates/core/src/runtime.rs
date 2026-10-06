@@ -2042,56 +2042,102 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         ));
     }
-    // If secrets are encrypted, ask for the master password -- before anything
-    // that needs one is started. A tab is handed its git account's token as it
-    // is born and cannot be handed one afterwards, so a store still locked at
-    // that moment is a terminal that spends its whole life signing in as
-    // nobody. The same goes for the model connections below
+    // Locked with the master password -- the whole app, not only its
+    // secrets: until the password is given, no tab is started, nothing on
+    // the board is drawn, the automation door turns every call away and the
+    // phone's door answers only the lock. The terminals the resident process
+    // holds go on running behind it; nothing is shown of them or typed into
+    // them until it is opened. There is no cancel: the way past the lock that
+    // is not the password is to quit.
+    //
+    // Asked here, before anything that needs a secret is started: a tab is
+    // handed its git account's token as it is born and cannot be handed one
+    // afterwards. The phone's door is opened first, locked, so a restart made
+    // from a phone can be unlocked from it -- over a line nobody between can
+    // read (`remote::sealed_line`)
     let mut password: Option<String> = None;
+    // The door opened for the lock, handed to the loop below once it is open
+    let mut locked_remote: Option<(Option<remote::RemoteUi>, Vec<String>)> = None;
+    // The window of a program split in two was told where the board is, and
+    // has opened on it: it is not to be told twice (it would open twice)
+    let mut board_told: Option<String> = None;
     if let Some(path) = cfg.as_ref().and_then(|c| c.secrets_path())
         && std::fs::read_to_string(&path)
             .map(|t| crypto::is_encrypted(&t))
             .unwrap_or(false)
-        {
-            let mut refused = false;
-            for attempt in 1..=3 {
-                let note = if attempt == 1 {
-                    i18n::t("prompt.password.note")
-                } else {
-                    i18n::t("prompt.password.retry")
-                };
-                match shell.ask_password(&i18n::t("prompt.password.title"), &note)? {
-                    Some(pw) => {
-                        let ok = std::fs::read_to_string(&path)
-                            .ok()
-                            .and_then(|t| serde_json::from_str::<crypto::Envelope>(&t).ok())
-                            .map(|env| crypto::decrypt(&env, &pw).is_ok())
-                            .unwrap_or(false);
-                        if ok {
-                            password = Some(pw);
-                            refused = false;
-                            break;
-                        }
-                        refused = true;
-                    }
-                    // On cancel, continue without secrets (only notifications become
-                    // unusable). A shell that had nowhere to ask says where to
-                    // type it instead of reporting a cancel nobody made
-                    None => {
-                        startup_errors
-                            .push(shell.why_no_password().unwrap_or_else(|| i18n::t("prompt.password.skipped")));
-                        break;
+    {
+        let opens = |pw: &str| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<crypto::Envelope>(&t).ok())
+                .is_some_and(|env| crypto::decrypt(&env, pw).is_ok())
+        };
+        crate::api::set_locked(true);
+        let mut locked_remote_rx = start_remote_bg(cfg.as_ref(), None);
+        let title = i18n::t("prompt.password.title");
+        shell.lock_show(&title, &i18n::t("prompt.password.note"));
+        append_hook_log("locked with the master password until it is given");
+        loop {
+            // The phone's door, the moment it is listening: locked, and the
+            // split window opened on it
+            if let Some(rx) = &locked_remote_rx
+                && let Ok((ui, errs)) = rx.try_recv()
+            {
+                locked_remote_rx = None;
+                if let Some(r) = &ui {
+                    r.lock();
+                    shell.board_is_at(&r.url, &r.here_key());
+                    board_told = Some(r.url.clone());
+                }
+                locked_remote = Some((ui, errs));
+            }
+            // Tries made on a phone
+            if let Some((Some(r), _)) = &locked_remote {
+                for (given, answer) in r.take_unlock_tries() {
+                    let ok = password.is_none() && opens(&given);
+                    let _ = answer.send(ok);
+                    if ok {
+                        append_hook_log("unlocked from the phone's door");
+                        password = Some(given);
                     }
                 }
             }
-            // A password was given and it was not the one. Said as that: a
-            // service handed a wrong credential otherwise came up saying only
-            // that "a master password is required", which reads as though none
-            // had arrived and sends somebody to check the wrong thing
-            if refused {
-                startup_errors.push(i18n::t("prompt.password.wrong"));
+            if password.is_some() {
+                break;
+            }
+            match shell.lock_poll(Duration::from_millis(200)) {
+                crate::host::LockAnswer::Password(given) if opens(&given) => {
+                    append_hook_log("unlocked on this machine");
+                    password = Some(given);
+                    break;
+                }
+                crate::host::LockAnswer::Password(_) => {
+                    shell.lock_show(&title, &i18n::t("prompt.password.retry"));
+                }
+                crate::host::LockAnswer::Quit => {
+                    append_hook_log("quit at the master password lock");
+                    if let Some((Some(r), _)) = &locked_remote {
+                        r.shutdown();
+                    }
+                    crate::api::set_locked(false);
+                    return Ok(());
+                }
+                crate::host::LockAnswer::Nothing => {}
             }
         }
+        shell.lock_hide();
+        // A door still binding when the lock opened is waited for (a moment
+        // at most) so that it is taken the one way below
+        if let Some(rx) = locked_remote_rx.take()
+            && let Ok(landed) = rx.recv_timeout(Duration::from_secs(5))
+        {
+            locked_remote = Some(landed);
+        }
+        if let Some((Some(r), _)) = &locked_remote {
+            r.unlock();
+        }
+        crate::api::set_locked(false);
+    }
 
     // What was on screen when the app last closed. Two things are taken from
     // it, and they are taken at different moments. The conversations are needed
@@ -2403,7 +2449,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // a background thread; the loop installs the server when it lands, and
     // every click in between gets answered instead of waiting on a socket.
     let mut remote_ui: Option<remote::RemoteUi> = None;
-    let mut remote_rx = start_remote_bg(cfg.as_ref(), password.as_deref());
+    // The door the lock opened, if it did, taken the way every door is (as
+    // if it had just landed). Opened before the password was known, it is
+    // given the key the password names, should that be another -- the one
+    // case where the devices on it are cut and open the link again
+    let mut remote_rx = match locked_remote.take() {
+        Some((mut ui, errs)) => {
+            if let (Some(r), Some(c)) = (ui.as_mut(), cfg.as_ref()) {
+                let named = remote_token(c, password.as_deref());
+                if !r.token_is(&named) {
+                    r.rotate_token(named);
+                }
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send((ui, errs));
+            Some(rx)
+        }
+        None => start_remote_bg(cfg.as_ref(), password.as_deref()),
+    };
     publish_remote(&remote_info, &remote_ui);
 
 
@@ -2998,7 +3061,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let (Some(r), Some(line)) = (remote_ui.as_ref(), shell.far_pages()) {
                     r.set_page_line(line);
                 }
-                if let Some(r) = remote_ui.as_ref() {
+                if let Some(r) = remote_ui.as_ref()
+                    && board_told.take().as_deref() != Some(r.url.as_str())
+                {
                     shell.board_is_at(&r.url, &r.here_key());
                 }
                 publish_remote(&remote_info, &remote_ui);

@@ -1519,6 +1519,31 @@ impl WinSurface {
         Some((std::rc::Rc::clone(&self.win) as std::rc::Rc<dyn shikisha_shared::BrowserHost>, self.area))
     }
 
+    /// The master password lock on this window: the board's prompt with no
+    /// way to put it away, only to quit. Shown again with another note after
+    /// a wrong password
+    fn lock_show(&mut self, title: &str, note: &str) {
+        let _ = self.win.eval(&format!(
+            "return window.__password({},{},true);",
+            serde_json::to_string(title).unwrap_or_default(),
+            serde_json::to_string(note).unwrap_or_default()
+        ));
+    }
+
+    fn lock_poll(&mut self, wait: Duration) -> shikisha_core::host::LockAnswer {
+        use shikisha_core::host::LockAnswer;
+        match self.win.poll_password(wait) {
+            Ok(browser::Typed::Answer(Some(text))) => LockAnswer::Password(text),
+            // The prompt's quit, the window's ✕ and the tray's Quit
+            Ok(browser::Typed::Answer(None) | browser::Typed::Quit) | Err(_) => LockAnswer::Quit,
+            Ok(browser::Typed::Nothing) => LockAnswer::Nothing,
+        }
+    }
+
+    fn lock_hide(&mut self) {
+        let _ = self.win.eval("return window.__passwordDone && window.__passwordDone();");
+    }
+
     /// Asks for a password. Not shown on the phone (the page side doesn't show it there either).
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> {
         let _ = self.win.eval(&format!(
@@ -2157,6 +2182,9 @@ impl shikisha_core::host::Shell for WinSurface {
     fn poll(&mut self, timeout: Duration, active_tab: Option<&Tab>) -> Result<Option<Event>> { WinSurface::poll(self, timeout, active_tab) }
     fn host(&self) -> Option<shikisha_shared::Seat> { WinSurface::host(self) }
     fn ask_password(&mut self, title: &str, note: &str) -> Result<Option<String>> { WinSurface::ask_password(self, title, note) }
+    fn lock_show(&mut self, title: &str, note: &str) { WinSurface::lock_show(self, title, note) }
+    fn lock_poll(&mut self, wait: Duration) -> shikisha_core::host::LockAnswer { WinSurface::lock_poll(self, wait) }
+    fn lock_hide(&mut self) { WinSurface::lock_hide(self) }
     fn draw(&mut self, tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> Result<()> { WinSurface::draw(self, tabs, ui, flash) }
 }
 

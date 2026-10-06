@@ -3895,6 +3895,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     letter-spacing:1px; text-transform:uppercase; }
   #veil .row { display:flex; gap:var(--s3); align-items:center; padding:5px 0;
     font-size:13px; }
+  /* The master password lock: Quit, quiet on the left; Unlock, the one
+     primary button, on the right */
+  #veil .lockfoot { display:flex; justify-content:space-between; gap:var(--s3); margin-top:var(--s5); }
+  #veil .lockfoot button { height:32px; padding:0 16px; font:inherit; font-size:12.5px; border-radius:var(--r-ctl); cursor:pointer; }
+  #veil .lockfoot button.quiet { border:0; background:none; color:var(--dim); }
+  #veil .lockfoot button.quiet:hover { color:var(--text); }
+  #veil .lockfoot button.primary { border:0; background:var(--brand); color:#fff; }
   #veil .pick { cursor:pointer; padding:7px 10px; border-radius:var(--r-ctl); }
   #veil .pick:hover { background:var(--raise); }
   #veil .qr { background:#fff; padding:12px; border-radius:var(--r-ctl); }
@@ -12325,34 +12332,59 @@ function copyLink() {
 
 // Prompt for a password. Never shown on the phone.
 // There's no use case for it there, and since it's the same page being
-// served, showing it would also expose it to anyone who opened the public settings
-window.__password = function (title, note) {
-  if (REMOTE) { send({kind:"password"}); return; }
+// served, showing it would also expose it to anyone who opened the public settings.
+//
+// `locked`: the app is locked with its master password. Nothing puts the
+// prompt away -- not Esc, not a press beside it -- and it stays up through a
+// wrong password, which asks again with another note. The one other way out
+// is Quit, which ends the app. The phone has a lock page of its own
+window.__password = function (title, note, locked) {
+  if (REMOTE) { if (!locked) send({kind:"password"}); return; }
   const v = document.getElementById("veil");
   v.hidden = false;
   v.textContent = "";
-  const box = el("div", {class:"box"});
+  const box = el("div", {class:"box" + (locked ? " lockbox" : "")});
   const inp = el("input", {type:"password", autocomplete:"off"});
   inp.style.cssText = "font:inherit;background:var(--bg);color:var(--text);" +
     "border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:320px";
-  const done = t => { v.hidden = true; v.onmousedown = null; send({kind:"password", text:t}); };
+  // Locked, the field runs the width of the box, edge to edge with its buttons
+  if (locked) { inp.style.width = "100%"; inp.style.boxSizing = "border-box"; }
+  const done = t => {
+    // Locked: an empty Enter is not an answer (an empty answer is Quit), and
+    // the prompt stays until the app says it opened
+    if (locked && t !== null && !t) { inp.focus(); return; }
+    if (!locked || t === null) { v.hidden = true; v.onmousedown = null; }
+    send({kind:"password", text:t});
+  };
   inp.onkeydown = e => {
     if (typingIME(e)) return;
     if (e.key === "Enter") { e.preventDefault(); done(inp.value); }
-    if (e.key === "Escape") { e.preventDefault(); done(null); }
+    if (e.key === "Escape") { e.preventDefault(); if (!locked) done(null); }
   };
   // Append the note only when there is one. Passing null to Element.append()
   // would stringify it and render the literal text "null".
   box.append(el("h3", {}, title));
   if (note) box.append(el("div", {class:"row"}, note));
   box.append(inp);
+  if (locked) {
+    box.append(el("div", {class:"lockfoot"},
+      el("button", {class:"quiet", onclick:() => done(null)}, T["tui.lock.quit"] || ""),
+      el("button", {class:"primary", onclick:() => done(inp.value)}, T["tui.lock.go"] || "")));
+  }
   // On the press, not the click -- see the vault and the palette below, and the
   // settings form's modal. A click is attributed to the ancestor shared by the
   // press and the release, so a selection dragged out of the box and released
   // over the backdrop reads as a click on the backdrop and takes the box away
-  v.onmousedown = e => { if (e.target === v) done(null); };
+  v.onmousedown = locked ? null : e => { if (e.target === v) done(null); };
   v.append(box);
   inp.focus();
+};
+// The lock was opened -- here, or from a phone
+window.__passwordDone = function () {
+  const v = document.getElementById("veil");
+  v.hidden = true;
+  v.textContent = "";
+  v.onmousedown = null;
 };
 
 // The top bar. Where a click goes is decided by Rust (only one bar is ever
@@ -17648,6 +17680,9 @@ if (REMOTE) {
     try {
       const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
       if (wsUp || remoteCut || moving) return;
+      // The app was locked with its master password: loaded again, this
+      // address is the page that unlocks it
+      if (r.status === 423) { location.reload(); return; }
       if (r.status === 403) {
         // Two different refusals share the status: the optional password
         // gate (body "password") wants the person to unlock this device

@@ -210,10 +210,19 @@ The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is IN
 On INDEX the menu is single letters: `e` settings, `p` the palette, `f` find,
 `i` the QR code for a phone, `r` restart stopped tabs, `w` switch desk,
 `t` send a test notification, `k` the master password, `?` help.
-The master password is typed only in the program's own window. While the
-screen runs as a program of its own (Settings > Basic > Screen and work), and
-from a phone, it is not asked for: turn that off and start the program again
-to type it.
+With a master password set, the app starts **locked**: nothing is shown and
+nothing can be done in it -- no tab, no settings, and no call through the
+automation pipe -- until the password is given. There is no cancel; the one
+other way out is Quit. Terminals that keep running on their own go on behind
+the lock, and are shown again once it is open. It can be opened from a phone
+too: the board's address shows the lock in the board's place, and the
+password is taken there only over a line nobody between can read (this
+machine itself, Tailscale, or HTTPS). Over a plain LAN address the page says
+so instead of asking. Opened on either, it is open on both.
+The master password is set or changed only in the program's own window. While
+the screen runs as a program of its own (Settings > Basic > Screen and work),
+and from a phone, `k` does not ask for it: turn that off and start the
+program again to change it.
 
 The mouse works too: wheel to scroll, Ctrl+wheel to change the terminal's text
 size, drag to copy, right click to paste, click a tab name to switch. Drag the

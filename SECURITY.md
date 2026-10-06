@@ -53,8 +53,12 @@ immediately.
 
 **Secrets at rest.** `secrets.json` can be encrypted with a master password
 (Argon2id → AES-256-GCM), written atomically. Set or change it from the INDEX screen with
-`k` ("Master password" in the menu); it is asked for again at startup while encrypted, and
-never travels to the settings web page or over the network. Running without a password is
+`k` ("Master password" in the menu). While encrypted, the app starts locked -- no tab, no
+settings, no call through the automation pipe, and the remote board answers only its lock
+page -- until the password is given. It never travels to the settings web page, and over the
+network only to unlock, only on a sealed line: the remote board takes it from this machine
+itself, Tailscale's tunnel (100.64.0.0/10, fd7a:115c:a1e0::/48) or HTTPS, refuses a plain
+LAN address, and throttles wrong guesses. Running without a password is
 allowed and is your call; the file is then plain text on disk, and the app nudges you once
 at startup if a plaintext secret is sitting there without one.
 

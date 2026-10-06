@@ -50,6 +50,17 @@ pub struct KeepUp {
     pub minutes: u32,
 }
 
+/// What the lock (`Shell::lock_poll`) was answered
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockAnswer {
+    /// Nothing yet
+    Nothing,
+    /// A password to try
+    Password(String),
+    /// Quit instead: the one way past the lock that is not the password
+    Quit,
+}
+
 /// What the person answered
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quit {
@@ -218,6 +229,22 @@ pub trait Shell {
     }
 
     fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>>;
+
+    /// Put up the lock: the app is locked with its master password, and this
+    /// screen shows only the question until it is answered. Shown again with
+    /// another note after a wrong one. Nothing is shown by default
+    fn lock_show(&mut self, title: &str, note: &str) {
+        let _ = (title, note);
+    }
+    /// What the person answered the lock since it was shown, waiting at most
+    /// `wait`. A screen with nobody to answer only waits: the phone's door
+    /// answers the lock there
+    fn lock_poll(&mut self, wait: Duration) -> LockAnswer {
+        std::thread::sleep(wait);
+        LockAnswer::Nothing
+    }
+    /// Take the lock down: it was opened, here or on another screen
+    fn lock_hide(&mut self) {}
     /// Why `ask_password` came back with nothing when nobody pressed cancel:
     /// this shell had no way to ask, and the person is owed where the password
     /// can be typed instead. `None` when a `None` meant the person said no.
@@ -296,6 +323,10 @@ pub struct Headless {
     /// Somebody keeping a window over this runtime, when this runtime is half
     /// of a pair. None on a server, where there is nobody to draw for
     minder: Option<Box<dyn Minder>>,
+    /// The lock: `None` until it is put up (`lock_show`); then the question
+    /// for the ways this machine has of being handed the master password
+    /// (`askpass`), until they have been asked once (`Some(None)`)
+    lock_ask: Option<Option<(String, String)>>,
 }
 
 /// How big a page is, with no window to fit it into.
@@ -322,6 +353,7 @@ impl Headless {
             pages,
             typed: std::collections::VecDeque::new(),
             minder: None,
+            lock_ask: None,
         }
     }
 
@@ -511,6 +543,30 @@ impl Shell for Headless {
     /// over, or a person at the terminal, and nothing invented in between
     fn ask_password(&mut self, title: &str, note: &str) -> anyhow::Result<Option<String>> {
         Ok(crate::askpass::master(title, note))
+    }
+    /// The lock on a runtime with no window: the ways this machine has of
+    /// being handed the master password (`askpass`: a credential the service
+    /// manager hands over, or a person at the terminal) are asked once; past
+    /// that, the lock is answered from the phone's door
+    ///
+    /// Half of a split pair, nothing is asked: the window is right there, and
+    /// it is handed the door's lock page (`remote::lock_page`)
+    fn lock_show(&mut self, title: &str, note: &str) {
+        if self.lock_ask.is_none() {
+            let ask = self.minder.is_none().then(|| (title.to_string(), note.to_string()));
+            self.lock_ask = Some(ask);
+        }
+    }
+    fn lock_poll(&mut self, wait: Duration) -> LockAnswer {
+        // Asked once only: a credential that does not open the store is not
+        // asked again, and the phone's door answers from here on
+        if let Some(Some((title, note))) = self.lock_ask.as_mut().map(Option::take)
+            && let Some(pw) = crate::askpass::master(&title, &note)
+        {
+            return LockAnswer::Password(pw);
+        }
+        std::thread::sleep(wait);
+        LockAnswer::Nothing
     }
     /// Nothing here puts up a prompt, so a `None` is never a person's no.
     ///
