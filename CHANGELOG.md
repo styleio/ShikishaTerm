@@ -25,6 +25,11 @@ once it reaches its first tagged release.
   screen's colours are, with formulas, diagrams (drawn again light) and
   pictures, and nothing cut across a page that should stay whole. A phone
   prints it with its own browser.
+- **A web page to PDF.** Save as PDF, in the page's menu and on its tab's
+  right-click, saves the page as it would print, named after its title, into
+  the Downloads folder and onto the downloads list -- so a phone takes it too.
+  Works for every browser tab, on this PC or far away; the app's own messages
+  over the page are left off.
 - **New Markdown from a template.** The file list makes a new Markdown file
   in the folder you right-clicked: you name it and choose a blank document or
   one of the templates the repository keeps in `.shikisha/templates/`, with

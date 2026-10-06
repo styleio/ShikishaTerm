@@ -298,6 +298,9 @@ impl BrowserHost for Placed {
     fn snapshot(&self, to: Option<&str>, ms: u64) -> anyhow::Result<Vec<u8>> {
         self.on(to, |b| b.snapshot(to, ms))
     }
+    fn pdf(&self, to: Option<&str>, ms: u64) -> anyhow::Result<(Vec<u8>, String)> {
+        self.on(to, |b| b.pdf(to, ms))
+    }
     fn cookies_out(&self, to: Option<&str>, ms: u64) -> anyhow::Result<serde_json::Value> {
         self.on(to, |b| b.cookies_out(to, ms))
     }

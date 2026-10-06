@@ -1484,6 +1484,17 @@ impl Capabilities {
         self.downloads.borrow_mut().note(page, item, crate::sqlite::now_ms())
     }
 
+    /// The page `name` as a PDF, and its title
+    pub fn browser_pdf(&self, name: &str) -> Result<(Vec<u8>, String)> {
+        self.with(name, |b, to| b.pdf(to, crate::pageops::PRINT_WAIT_MS))
+    }
+
+    /// A file the app made of the page `name` (its PDF), on the list beside
+    /// what the page saved itself: found, opened and sent on the same way
+    pub fn note_made(&self, name: &str, item: shikisha_shared::Download) {
+        self.downloads.borrow_mut().note(Some(name.to_string()), item, crate::sqlite::now_ms());
+    }
+
     /// The list, as it is drawn and as a script reads it
     pub fn downloads(&self) -> Vec<crate::downloads::View> {
         self.downloads.borrow().rows().iter().map(crate::downloads::View::of).collect()

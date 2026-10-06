@@ -185,6 +185,13 @@ in its `~/Downloads`, where the AI working in the folder can use it; the list
 names the machine and the path, and **Save to this PC** brings a copy here. The
 menu's **Downloads** brings the list back.
 
+**Save as PDF**, in the bar's menu and on the page tab's right-click, saves the
+page as it would print -- A4 unless the page names its own paper, with its
+backgrounds -- named after the page's title, in this PC's Downloads folder. It
+appears on the **Downloads** list like a file the page saved, so a phone takes it
+with **Save to this device**. What the app lays over the page (its messages, the
+pen) is left off the paper.
+
 **The input box** at the bottom is where you type to the tab in view. On a phone
 it is the only way in.
 

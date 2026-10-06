@@ -690,6 +690,9 @@ pub const AUTOMATION: &str = r##"
   function pickBuild() {
     if (pickHost) return;
     pickHost = document.createElement("div");
+    // Named, so what the app lays over a page can be found and left off its
+    // paper (pageops::pdf)
+    pickHost.id = "__shikisha_pick";
     // Nothing of ours takes a press: the page underneath has to be found
     // by the pointer, and the wheel has to reach it
     pickHost.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none";

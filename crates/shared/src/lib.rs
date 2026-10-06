@@ -768,6 +768,10 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// A page shown in a browser tab, saved as a PDF beside what the page
+    /// downloads (`page` is the tab's key). From a phone too: the file is on
+    /// the downloads list, where a phone takes it
+    PagePdf { page: String },
     /// The document drawn for paper, written to a PDF this PC keeps: `name`
     /// is the file name offered, `folder` where the save dialog starts (the
     /// document's own folder on this PC, or empty). The window's own: a
@@ -1195,6 +1199,11 @@ pub trait BrowserHost {
     /// The same reading as `digest`, as data rather than as lines
     fn elements(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value>;
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>>;
+    /// The page as a PDF, and its title. Answering is optional: a browser
+    /// that cannot print says so, and the person is told
+    fn pdf(&self, _to: Option<&str>, _timeout_ms: u64) -> anyhow::Result<(Vec<u8>, String)> {
+        anyhow::bail!("this browser cannot print a page")
+    }
 
     fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value>;
     fn cookies_in(&self, to: Option<&str>, cookies: &serde_json::Value, timeout_ms: u64) -> anyhow::Result<()>;
@@ -1668,6 +1677,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // A page to a PDF (see `Ev::PagePdf`)
+        Some("pagepdf") => Ev::PagePdf {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         // A drawn document to a PDF (see `Ev::Print`)
         Some("print") => Ev::Print {

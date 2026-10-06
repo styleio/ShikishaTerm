@@ -5928,6 +5928,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Notes { act, args }) => {
                         shell.mail().notes.push((act, args));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::PagePdf { page }) => {
+                        shell.mail().page_pdfs.push(page);
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
                     }
@@ -9444,6 +9447,35 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = tx.send(js.to_string());
                     });
                 }
+            }
+        }
+        // A page saved as a PDF: printed by the browser that draws it, put in
+        // the Downloads folder the page's own downloads go to, and on the
+        // downloads list beside them -- opened, shown in its folder, or taken
+        // to a phone the same way. The page is asked on this loop, as every
+        // other browser command is; printing takes a moment, not more
+        for page in shell.mail().take_page_pdfs() {
+            let made = caps.browser_pdf(&page).and_then(|(bytes, title)| {
+                let title = title.trim();
+                let name = format!("{}.pdf", if title.is_empty() { page.as_str() } else { title });
+                let path = crate::downloads::take_place(&crate::downloads::folder(), &name)
+                    .ok_or_else(|| anyhow::anyhow!(i18n::t("err.page_pdf.no_place")))?;
+                std::fs::write(&path, &bytes)?;
+                Ok((path, bytes.len() as u64))
+            });
+            match made {
+                Ok((path, size)) => {
+                    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let url = caps.browser_spec(&page).map(|(u, _)| u).unwrap_or_default();
+                    caps.note_made(&page, shikisha_shared::Download {
+                        id: format!("pdf-{}", crate::sqlite::now_ms()),
+                        name: name.clone(), url, path: path.display().to_string(),
+                        got: size, total: size, state: shikisha_shared::DownloadState::Done,
+                        why: String::new(), far: false,
+                    });
+                    flash = Some(i18n::tp("msg.page_pdf.done", &[("name", &name)]));
+                }
+                Err(e) => flash = Some(i18n::tp("msg.page_pdf.failed", &[("error", &format!("{e:#}"))])),
             }
         }
         // The notes written beside a drawn document. One small file on this

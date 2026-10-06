@@ -1114,13 +1114,7 @@ impl Browser {
     /// bytes of a PDF. The page sets the paper's size and margins itself
     /// (`@page`), so what is drawn for paper is decided in one place
     pub fn print_pdf(&self) -> Result<Vec<u8>> {
-        use base64::Engine as _;
-        let params = serde_json::json!({"printBackground": true, "preferCSSPageSize": true, "displayHeaderFooter": false});
-        // A long document with diagrams takes a few seconds; this is room for
-        // a slow machine, not a wait anybody should meet
-        let v = self.cdp_call(None, "Page.printToPDF", params, 45_000)?;
-        let data = v.get("data").and_then(|d| d.as_str()).ok_or_else(|| anyhow!("Page.printToPDF answered no data"))?;
-        Ok(base64::engine::general_purpose::STANDARD.decode(data)?)
+        pageops::pdf(self, None, pageops::PRINT_WAIT_MS).map(|(bytes, _)| bytes)
     }
 
     /// Call one CDP method on a page and wait for its result (parsed JSON)
@@ -5404,6 +5398,9 @@ impl BrowserHost for Browser {
     }
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> Result<Vec<u8>> {
         pageops::snapshot(self, to, timeout_ms)
+    }
+    fn pdf(&self, to: Option<&str>, timeout_ms: u64) -> Result<(Vec<u8>, String)> {
+        pageops::pdf(self, to, timeout_ms)
     }
 
     fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> Result<serde_json::Value> {

@@ -955,6 +955,7 @@ impl WinSurface {
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
                 Ev::Adr { panel, act, args } => self.mail.adr.push((panel, act, args)),
                 Ev::Notes { act, args } => self.mail.notes.push((act, args)),
+                Ev::PagePdf { page } => self.mail.page_pdfs.push(page),
                 // Where the PDF goes is asked on a thread: the dialog holds
                 // whoever asks until it is answered, and this loop draws the
                 // terminals. The page is printed once the answer is back here,

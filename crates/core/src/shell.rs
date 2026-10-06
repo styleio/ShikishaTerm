@@ -8716,9 +8716,19 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // The page as paper: here too, for a tab whose bar has no menu
+    t.kind === "browser" ? item(T["tui.menu.pdf"] || "", () => pagePdf(t)) : null,
     // The Develop list's own rows, the page's tools, the same as over the page
     ...(t.kind === "browser" ? devRows(t, false) : []),
   ], false, e);
+}
+// A page saved as a PDF, beside what it downloads. The list opens where the
+// file will appear; a phone's list would cover the page, so a phone is told
+// when it is there instead
+function pagePdf(t) {
+  send({kind: "pagepdf", page: t.id || t.name || ""});
+  if (!phoneWidth()) sideReveal("downloads");
+  toast(T["tui.menu.pdf.making"] || "");
 }
 // The Develop list: the tools for somebody building the page. The same rows
 // wherever the list opens -- the browser bar's Develop button, a page tab's
@@ -13324,6 +13334,7 @@ function menuRows(t, want) {
   if (want.find && seekable(t)) rows.push(item(T["tui.menu.find"] || "", "Ctrl+F", seekOpen));
   const going = downloadGoing();
   rows.push(item(T["tui.nav.downloads"] || "", going, () => sideReveal("downloads")));
+  rows.push(item(T["tui.menu.pdf"] || "", "", () => pagePdf(t)));
   if (want.develop) rows.push(el("div", {class:"gsep"}), ...devRows(t, true));
   return rows;
 }

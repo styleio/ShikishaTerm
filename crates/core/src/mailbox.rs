@@ -231,6 +231,8 @@ pub struct Mailbox {
     pub adr: Vec<(String, String, serde_json::Value)>,
     /// What the notes on a drawn document asked for: (act, args)
     pub notes: Vec<(String, serde_json::Value)>,
+    /// The pages asked to be saved as a PDF, by their keys
+    pub page_pdfs: Vec<String>,
     /// What the Issue tab has asked for since the last drain: (act, args)
     pub issues: Vec<(String, serde_json::Value)>,
     /// The Issue row in the list was pressed
@@ -651,6 +653,9 @@ impl Mailbox {
     }
     pub fn take_notes(&mut self) -> Vec<(String, serde_json::Value)> {
         std::mem::take(&mut self.notes)
+    }
+    pub fn take_page_pdfs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.page_pdfs)
     }
     pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)

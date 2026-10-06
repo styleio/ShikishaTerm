@@ -220,6 +220,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         Ev::Files { .. } => true,
         Ev::Adr { .. } => true,
         Ev::Notes { .. } => true,
+        // A page saved as a PDF: made on the machine the page is drawn on,
+        // and put on the downloads list, which a phone takes files from
+        Ev::PagePdf { .. } => true,
         // A save dialog on this PC's screen and a file this PC keeps. A phone
         // prints the same drawing with its own browser, to its own files
         Ev::Print { .. } => false,

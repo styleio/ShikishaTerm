@@ -470,6 +470,62 @@ pub fn snapshot(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Re
         .map_err(|e| anyhow::anyhow!(crate::i18n::tp("err.browser.no_snapshot_decode", &[("e", &e.to_string())])))
 }
 
+/// What the app lays over a page, by the ids it is given: the messages
+/// (`__shikisha_toast`), the pen, the frame of what is being picked
+const OVER_PAGE: [&str; 3] = ["__shikisha_toast", "__shikisha_pen", "__shikisha_pick"];
+
+/// How long a page is given to be printed. A long page with many pictures
+/// takes a few seconds; this is room for a slow machine, not a wait anybody
+/// should meet
+pub const PRINT_WAIT_MS: u64 = 45_000;
+
+/// A page as paper: the bytes of a PDF of it, and its title, which the file
+/// is named after. Printed the way the browser prints it -- the page's own
+/// print styles, its backgrounds -- on A4 unless the page names its own paper
+/// (`@page`), which the board's documents do
+pub fn pdf(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<(Vec<u8>, String)> {
+    use base64::Engine as _;
+    let title = s
+        .cdp(to, "Runtime.evaluate", serde_json::json!({ "expression": "document.title", "returnByValue": true }), timeout_ms)
+        .ok()
+        .and_then(|v| v.pointer("/result/value").and_then(|t| t.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    // What the app lays over the page -- its messages, the pen, the frame of
+    // what is being picked -- is the app's, not the page's: off the paper,
+    // and back the way it was afterwards
+    let hide = |on: bool| {
+        let js = format!(
+            "for (const id of {OVER_PAGE:?}) {{ const e = document.getElementById(id); if (!e) continue; \
+             if ({on}) {{ e.dataset.shikishaPrint = e.style.display; e.style.display = 'none'; }} \
+             else if ('shikishaPrint' in e.dataset) {{ e.style.display = e.dataset.shikishaPrint; delete e.dataset.shikishaPrint; }} }}"
+        );
+        let _ = s.cdp(to, "Runtime.evaluate", serde_json::json!({ "expression": js }), timeout_ms);
+    };
+    hide(true);
+    // A4 in inches, with a margin of about a centimetre: what most of the
+    // world prints on, for a page that does not say
+    let printed = s.cdp(
+        to,
+        "Page.printToPDF",
+        serde_json::json!({
+            "printBackground": true, "preferCSSPageSize": true, "displayHeaderFooter": false,
+            "paperWidth": 8.27, "paperHeight": 11.69,
+            "marginTop": 0.4, "marginBottom": 0.4, "marginLeft": 0.4, "marginRight": 0.4,
+        }),
+        timeout_ms,
+    );
+    hide(false);
+    let v = printed?;
+    let data = v
+        .get("data")
+        .and_then(|d| d.as_str())
+        .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.browser.no_pdf")))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.as_bytes())
+        .map_err(|e| anyhow::anyhow!(crate::i18n::tp("err.browser.no_snapshot_decode", &[("e", &e.to_string())])))?;
+    Ok((bytes, title))
+}
+
 /// Put a set of cookies back into this page's profile.
 ///
 /// The same shape that came out. Set against the live profile, so a page

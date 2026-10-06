@@ -379,6 +379,9 @@ impl BrowserHost for Far {
     fn snapshot(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<Vec<u8>> {
         crate::pageops::snapshot(self, to, timeout_ms)
     }
+    fn pdf(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<(Vec<u8>, String)> {
+        crate::pageops::pdf(self, to, timeout_ms)
+    }
     fn cookies_out(&self, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<serde_json::Value> {
         crate::pageops::cookies_out(self, to, timeout_ms)
     }
