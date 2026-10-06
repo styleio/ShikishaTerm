@@ -118,6 +118,35 @@ pub struct ProjectSpec {
     /// answer to every one of them
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitSpec>,
+    /// Whether the project keeps decision records (ADR), and where: the
+    /// column beside its folders has an ADR panel only when it does. Absent
+    /// is "does not" -- turning it on is somebody's choice, never a guess
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adr: Option<AdrSpec>,
+}
+
+/// A project's decision records: whether it keeps them, and the folder inside
+/// the repository they are in. The records themselves are files in that
+/// folder (see `crate::adr`); nothing about them is kept here
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct AdrSpec {
+    #[serde(default)]
+    pub on: bool,
+    /// The folder, inside the repository, with forward slashes. Absent is
+    /// [`crate::adr::DEFAULT_DIR`], which the settings show as it is written
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+}
+
+impl AdrSpec {
+    /// The folder, when the project keeps records: what the panel reads
+    pub fn folder(&self) -> Option<String> {
+        if !self.on {
+            return None;
+        }
+        let dir = self.dir.as_deref().map(str::trim).filter(|d| !d.is_empty()).unwrap_or(crate::adr::DEFAULT_DIR);
+        crate::adr::clean_dir(dir).filter(|d| !d.is_empty())
+    }
 }
 
 /// A project's own checkout on a machine that is not this one.

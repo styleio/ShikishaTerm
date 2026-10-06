@@ -227,6 +227,8 @@ pub struct Mailbox {
     pub sftps: Vec<(String, String, serde_json::Value)>,
     /// The same, for the column's file list (one machine, one folder)
     pub files: Vec<(String, String, serde_json::Value)>,
+    /// The same, for the column's decision records: (panel, act, args)
+    pub adr: Vec<(String, String, serde_json::Value)>,
     /// What the Issue tab has asked for since the last drain: (act, args)
     pub issues: Vec<(String, serde_json::Value)>,
     /// The Issue row in the list was pressed
@@ -641,6 +643,9 @@ impl Mailbox {
     }
     pub fn take_files(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.files)
+    }
+    pub fn take_adr(&mut self) -> Vec<(String, String, serde_json::Value)> {
+        std::mem::take(&mut self.adr)
     }
     pub fn take_edits(&mut self) -> Vec<(String, String, String)> {
         std::mem::take(&mut self.edits)

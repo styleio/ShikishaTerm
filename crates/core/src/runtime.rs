@@ -2421,6 +2421,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The same, for the column's file list and the editor when their folder is
     // on another machine
     let (far_tx, far_rx) = std::sync::mpsc::channel::<FarFiles>();
+    // The decision-record panel: answers from the threads that read and write
+    // the records, and the AI's work on them once its words are gathered --
+    // which is reading a conversation or a folder, so it is a thread's too
+    let (adr_tx, adr_rx) = std::sync::mpsc::channel::<String>();
+    let (adr_ai_tx, adr_ai_rx) = std::sync::mpsc::channel::<AdrAi>();
+    // The AI work started for it, by the tag its answer comes back under
+    let mut adr_jobs: std::collections::HashMap<String, AdrAi> = std::collections::HashMap::new();
+    let mut adr_seq: u64 = 0;
     // What each editor showing a file on another machine last heard about it,
     // and when each last asked. The disk here is asked every pass; a machine
     // over there is a round trip, so it is asked on a clock of its own
@@ -5152,6 +5160,52 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = call.reply.send(answer);
                         continue;
                     }
+                    // The decision records of the caller's project: where they
+                    // are, and each one's title and status. Read from the files
+                    // on a thread, here or on the machine the folder is on
+                    if call.method == "adr_list" {
+                        let Some(eng) = engine.as_ref() else { continue };
+                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "adr_list", &[]) {
+                            let _ = call.reply.send(Err(e));
+                            continue;
+                        }
+                        let me = call.caller.as_deref().and_then(|c| tabs.iter().find(|t| t.called() == c));
+                        let Some(me) = me else {
+                            let _ = call.reply.send(Err("adr_list is asked by a tab, about the project its folder is in".to_string()));
+                            continue;
+                        };
+                        let dir = desks.get(desk_index).and_then(|d| adr_folder_of(d, me));
+                        let Some(dir) = dir else {
+                            let _ = call.reply.send(Ok(serde_json::json!({
+                                "dir": null, "records": [],
+                                "note": "this project does not keep decision records in SHIKISHA-TERM (Settings > the project > ADR); look for docs/decisions or docs/adr in the repository",
+                            })));
+                            continue;
+                        };
+                        let panel = me.id.clone().unwrap_or_else(|| me.called().to_string());
+                        let disk = match adr_disk(&panel, &surfaces, &tabs, &caps, false) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                let _ = call.reply.send(Err(e));
+                                continue;
+                            }
+                        };
+                        let reply = call.reply;
+                        std::thread::spawn(move || {
+                            let fields = crate::adr::madr();
+                            let _ = reply.send(match crate::adr::records(&*disk, &dir, &fields) {
+                                Ok(found) => Ok(serde_json::json!({
+                                    "dir": dir,
+                                    "records": crate::adr::summary(&found.unwrap_or_default()),
+                                    "note": "accepted records stand and are to be followed; proposed ones are not decided yet; superseded and deprecated ones are history",
+                                })),
+                                Err(e) => Err(format!("the decision records in {dir} could not be read: {e}")),
+                            });
+                        });
+                        continue;
+                    }
                     // The tabs of this desk, as another tab's AI can address them
                     if call.method == "tab_list" {
                         let granted = call
@@ -5867,6 +5921,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Ideas { act, args }) => {
                         shell.mail().ideas.push((act, args));
+                    }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::Adr { panel, act, args }) => {
+                        shell.mail().adr.push((panel, act, args));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Files { panel, act, args }) => {
                         shell.mail().files.push((panel, act, args));
@@ -6631,6 +6688,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             });
                             (p.name.clone(), here.chain(far).collect())
                         })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            project_adr: desks
+                .get(desk_index)
+                .map(|w| {
+                    w.projects
+                        .iter()
+                        .filter_map(|p| Some(p.name.clone()).zip(p.adr.as_ref().and_then(config::AdrSpec::folder)))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -8548,6 +8614,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Answers from the Lua that was left running (the commit message)
         if let Some(eng) = engine.as_mut() {
             for (tag, said) in eng.take_snippets() {
+                // The decision-record panel's AI work: the draft, the answer,
+                // the pull request -- handed back as the panel asked
+                if let Some(job) = adr_jobs.remove(&tag) {
+                    let js = match said {
+                        Ok(text) => serde_json::json!({"act": job.act, "panel": job.panel, "ok": true,
+                            "data": text, "consulted": job.consulted}),
+                        Err(why) => serde_json::json!({"act": job.act, "panel": job.panel, "ok": false, "error": why}),
+                    };
+                    let _ = adr_tx.send(js.to_string());
+                    continue;
+                }
                 // A folder's name and summary go into the settings, and only
                 // into a folder that still wants them written
                 if tag.starts_with(LABEL_TAG) {
@@ -9267,6 +9344,141 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             shell.push_ideas(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"ideas\":{js}}}"));
+            }
+        }
+        // What the decision-record panel asked for. Every one of them reads
+        // or writes files, which on another machine is a round trip, so each
+        // goes to a thread and answers below. A draft and a question gather
+        // their words there and come back to start the AI here, where the
+        // engine is
+        for (panel, act, args) in shell.mail().take_adr() {
+            let refused = |why: String| {
+                let _ = adr_tx.send(serde_json::json!({"act": act, "panel": panel, "ok": false, "error": why}).to_string());
+            };
+            if act == "propose" {
+                let desk = desks.get(desk_index);
+                let dir = panel_place_dir(&surfaces, &tabs, &panel);
+                let prefix = desk
+                    .zip(dir.as_deref())
+                    .and_then(|(d, at)| d.project_of(at))
+                    .and_then(|p| p.branch_prefix.clone())
+                    .unwrap_or_default();
+                match adr_proposal(&panel, &args, &prefix) {
+                    Err(why) => refused(why),
+                    // What will run, worked out by the same code that will run
+                    // it, for the question asked before anything is done
+                    Ok(vars) if args.get("plan").and_then(|v| v.as_bool()).unwrap_or(false) => {
+                        let of = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone()).unwrap_or_default();
+                        let _ = adr_tx.send(serde_json::json!({
+                            "act": "plan", "panel": panel, "ok": true,
+                            "file": args.get("file").cloned().unwrap_or_default(),
+                            "title": args.get("title").cloned().unwrap_or_default(),
+                            "path": of("adr_file"), "branch": of("adr_branch"),
+                            "message": of("adr_message"), "pr": of("adr_title"),
+                        }).to_string());
+                    }
+                    Ok(vars) => {
+                        if engine.is_none() {
+                            engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                        }
+                        let Some(eng) = engine.as_mut() else { continue };
+                        brief_engine(eng, desk, &surfaces, &tabs);
+                        for (name, value) in vars {
+                            let _ = eng.call_primitive_as(None, grants::Subject::Human, "set_var",
+                                &[serde_json::json!(name), serde_json::json!(value)]);
+                        }
+                        adr_seq += 1;
+                        let tag = format!("{ADR_TAG}{adr_seq}");
+                        adr_jobs.insert(tag.clone(), AdrAi { panel: panel.clone(), act: act.clone(), ready: Ok((String::new(), None)), consulted: None });
+                        eng.start_snippet(&tag, crate::hooks::ADR_PROPOSE_LUA);
+                    }
+                }
+                continue;
+            }
+            let writes = matches!(act.as_str(), "save" | "status");
+            let disk = match adr_disk(&panel, &surfaces, &tabs, &caps, writes) {
+                Ok(d) => d,
+                Err(why) => {
+                    refused(why);
+                    continue;
+                }
+            };
+            match act.as_str() {
+                // The conversation of the AI tab in front, read from its CLI's
+                // own record, and the sections the form asks for
+                "draft" => {
+                    let source = args.get("tab").and_then(|v| v.as_str()).unwrap_or_default();
+                    let Some(tab) = tabs.iter().find(|t| t.key().matches(source)) else {
+                        refused(i18n::t("err.adr.no_ai"));
+                        continue;
+                    };
+                    let Some(record) = tab.record_at() else {
+                        refused(i18n::t("err.adr.no_record"));
+                        continue;
+                    };
+                    let name = tab.profile_name().trim().to_string();
+                    let ai = if name.is_empty() { tab.ai_kind().unwrap_or_default() } else { name };
+                    let consulted = (!ai.is_empty()).then(|| format!("{ai} (AI)"));
+                    let (tx, panel, args) = (adr_ai_tx.clone(), panel.clone(), args.clone());
+                    std::thread::spawn(move || {
+                        let ready = adr_draft_words(&record, &ai, &args);
+                        let _ = tx.send(AdrAi { panel, act: "draft".into(), ready, consulted });
+                    });
+                }
+                // The folder's records, read, for the AI to answer from
+                "ask" => {
+                    let (tx, panel, args) = (adr_ai_tx.clone(), panel.clone(), args.clone());
+                    std::thread::spawn(move || {
+                        let ready = adr_question_words(&*disk, &args);
+                        let _ = tx.send(AdrAi { panel, act: "ask".into(), ready, consulted: None });
+                    });
+                }
+                _ => {
+                    let (tx, panel, act, args) = (adr_tx.clone(), panel.clone(), act.clone(), args.clone());
+                    std::thread::spawn(move || {
+                        let mut js = crate::adr::answer(&*disk, &act, &args);
+                        js["panel"] = serde_json::json!(panel);
+                        let _ = tx.send(js.to_string());
+                    });
+                }
+            }
+        }
+        // Words gathered for the AI: started where every other draft starts
+        while let Ok(job) = adr_ai_rx.try_recv() {
+            let (prompt, shape) = match &job.ready {
+                Ok(words) => words.clone(),
+                Err(why) => {
+                    let _ = adr_tx.send(serde_json::json!({"act": job.act, "panel": job.panel, "ok": false, "error": why}).to_string());
+                    continue;
+                }
+            };
+            if engine.is_none() {
+                engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+            }
+            let Some(eng) = engine.as_mut() else { continue };
+            let code = match &shape {
+                Some(shape) => {
+                    for (name, value) in [("draft_prompt", prompt.clone()), ("draft_shape", shape.clone())] {
+                        let _ = eng.call_primitive_as(None, grants::Subject::Human, "set_var",
+                            &[serde_json::json!(name), serde_json::json!(value)]);
+                    }
+                    crate::hooks::DRAFT_LUA
+                }
+                None => {
+                    let _ = eng.call_primitive_as(None, grants::Subject::Human, "set_var",
+                        &[serde_json::json!("ask_prompt"), serde_json::json!(prompt)]);
+                    crate::hooks::ASK_LUA
+                }
+            };
+            adr_seq += 1;
+            let tag = format!("{ADR_TAG}{adr_seq}");
+            adr_jobs.insert(tag.clone(), job);
+            eng.start_snippet(&tag, code);
+        }
+        while let Ok(js) = adr_rx.try_recv() {
+            shell.push_adr(&js);
+            if let Some(r) = remote_ui.as_ref() {
+                r.push_state(format!("{{\"adr\":{js}}}"));
             }
         }
         // A pull request's draft read on another machine, back: started the
@@ -14946,6 +15158,282 @@ pub fn diff_encodings(there: (&crate::charset::Reading, &[u8]), here: (&crate::c
         _ => unreachable!(),
     }
 }
+/// The tag the decision-record panel's AI work comes back under
+const ADR_TAG: &str = "adr:";
+
+/// AI work for the decision-record panel: which panel and act it answers,
+/// and the words it is started with -- the prompt and, for a draft, the
+/// shape of its answer -- or why there are none
+struct AdrAi {
+    panel: String,
+    act: String,
+    ready: std::result::Result<(String, Option<String>), String>,
+    /// Who was consulted, for the record's front matter: the AI the
+    /// conversation was had with
+    consulted: Option<String>,
+}
+
+/// How many things said a draft is written from: the last stretch of the
+/// conversation, which is where a decision is reached
+const ADR_TURNS: usize = 16;
+
+/// How much of the conversation a draft is given, in characters, kept from
+/// the end: a long tool output early on is not where the decision is
+const ADR_TALK_ROOM: usize = 24_000;
+
+/// How much of the records a question is answered from, in characters
+const ADR_ASK_ROOM: usize = 60_000;
+
+/// The folder of a panel's tab, as somewhere decision records are read and
+/// written: this PC's disk, or the machine the folder is on, behind the same
+/// fence and the same permissions the file list goes through. Writing on
+/// another machine asks for the permissions a save and a new folder ask for
+fn adr_disk(
+    panel: &str,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    caps: &crate::caps::Capabilities,
+    writes: bool,
+) -> std::result::Result<Box<dyn crate::adr::Disk + Send>, String> {
+    match files_at(panel, surfaces, tabs) {
+        Some(FilesAt::Here(root)) => Ok(Box::new(AdrHere(root))),
+        Some(FilesAt::There { at, root }) => {
+            let reads = ["sftp_ls", "sftp_stat", "sftp_read"];
+            let more: &[&str] = if writes { &["sftp_put", "sftp_mkdir"] } else { &[] };
+            for name in reads.iter().chain(more) {
+                if !caps.allows(name, grants::Subject::Human) {
+                    return Err(i18n::tp("err.hooks.not_permitted", &[("name", name), ("who", &i18n::t("grant.who.human"))]));
+                }
+            }
+            Ok(Box::new(AdrThere { at, fences: crate::transfer::Fences { here: None, there: root } }))
+        }
+        None => Err(i18n::t("err.files.no_folder")),
+    }
+}
+
+/// A folder of this PC, for decision records
+struct AdrHere(std::path::PathBuf);
+
+impl AdrHere {
+    fn at(&self, rel: &str) -> std::result::Result<std::path::PathBuf, String> {
+        local_under(&self.0, rel).ok_or_else(|| i18n::t("err.sftp.outside"))
+    }
+}
+
+impl crate::adr::Disk for AdrHere {
+    fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
+        match std::fs::read_dir(self.at(dir)?) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+            Ok(rd) => Ok(Some(
+                rd.flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect(),
+            )),
+        }
+    }
+    fn read(&self, path: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+        match std::fs::read(self.at(path)?) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+            Ok(b) => Ok(Some(b)),
+        }
+    }
+    fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
+        use std::io::Write as _;
+        let at = self.at(path)?;
+        if !fresh {
+            return std::fs::write(&at, bytes).map_err(|e| e.to_string());
+        }
+        let name = at.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&at).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                i18n::tp("err.files.exists", &[("name", &name)])
+            } else {
+                e.to_string()
+            }
+        })?;
+        f.write_all(bytes).map_err(|e| e.to_string())
+    }
+    fn make_dirs(&self, dir: &str) -> std::result::Result<(), String> {
+        std::fs::create_dir_all(self.at(dir)?).map_err(|e| e.to_string())
+    }
+}
+
+/// A folder on another machine, for decision records: each step a file job
+/// over the connection that machine already has
+struct AdrThere {
+    at: crate::elsewhere::Elsewhere,
+    fences: crate::transfer::Fences,
+}
+
+impl AdrThere {
+    fn run(&self, job: ssh::FileJob) -> std::result::Result<ssh::FileAnswer, String> {
+        let job = crate::transfer::inside(job, &self.fences).map_err(|e| format!("{e:#}"))?;
+        crate::elsewhere::files(&self.at, job, SFTP_WAIT_MS).map_err(|e| format!("{e:#}"))
+    }
+    /// Whether something is there. Not reached is said as not there: what
+    /// comes next (a read, a listing) says the real reason if it is one
+    fn there(&self, path: &str) -> Option<ssh::Entry> {
+        match self.run(ssh::FileJob::Stat { path: path.to_string() }) {
+            Ok(ssh::FileAnswer::One(e)) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl crate::adr::Disk for AdrThere {
+    fn files(&self, dir: &str) -> std::result::Result<Option<Vec<String>>, String> {
+        if self.there(dir).is_none_or(|e| !e.dir) {
+            return Ok(None);
+        }
+        match self.run(ssh::FileJob::List { path: dir.to_string() })? {
+            ssh::FileAnswer::Listing(rows) => Ok(Some(rows.into_iter().filter(|r| !r.dir).map(|r| r.name).collect())),
+            _ => Ok(Some(Vec::new())),
+        }
+    }
+    fn read(&self, path: &str) -> std::result::Result<Option<Vec<u8>>, String> {
+        match self.there(path) {
+            None => Ok(None),
+            Some(e) if e.dir => Ok(None),
+            Some(_) => match self.run(ssh::FileJob::Read { path: path.to_string() })? {
+                ssh::FileAnswer::Bytes(b) => Ok(Some(b)),
+                _ => Ok(None),
+            },
+        }
+    }
+    fn write(&self, path: &str, bytes: &[u8], fresh: bool) -> std::result::Result<(), String> {
+        if fresh && self.there(path).is_some() {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            return Err(i18n::tp("err.files.exists", &[("name", name)]));
+        }
+        self.run(ssh::FileJob::Write { to: path.to_string(), bytes: bytes.to_vec() }).map(|_| ())
+    }
+    fn make_dirs(&self, dir: &str) -> std::result::Result<(), String> {
+        let mut at = String::new();
+        for part in dir.split('/').filter(|p| !p.is_empty()) {
+            at = if at.is_empty() { part.to_string() } else { format!("{at}/{part}") };
+            if self.there(&at).is_none() {
+                self.run(ssh::FileJob::MakeDir { path: at.clone() })?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The folder a tab's project keeps its decision records in, when it keeps
+/// them: the project its folder names in the settings, else the one its
+/// checkout is in
+fn adr_folder_of(desk: &config::Desk, tab: &Tab) -> Option<String> {
+    let cwd = tab.cwd()?;
+    let key = std::path::PathBuf::from(crate::uistate::place_key(tab.host(), cwd));
+    let named = desk
+        .folders
+        .iter()
+        .find(|f| f.place().is_some_and(|p| crate::uistate::same_folder(&p, &key)))
+        .and_then(|f| f.project.clone());
+    let project = match named {
+        Some(name) => desk.projects.iter().find(|p| p.name == name),
+        None => desk.project_of(cwd),
+    };
+    project?.adr.as_ref()?.folder()
+}
+
+/// The prompt and the shape a draft is asked with: the last stretch of the
+/// conversation, the form's sections, and what the person already wrote
+fn adr_draft_words(
+    record: &crate::reader::Record,
+    ai: &str,
+    args: &serde_json::Value,
+) -> std::result::Result<(String, Option<String>), String> {
+    let page = match record.page(u64::MAX, ADR_TURNS) {
+        None => return Err(i18n::t("err.adr.nothing_said")),
+        Some(Err(e)) => return Err(format!("{e}")),
+        Some(Ok(page)) => page,
+    };
+    if page.turns.is_empty() {
+        return Err(i18n::t("err.adr.nothing_said"));
+    }
+    let mut talk = String::new();
+    for turn in &page.turns {
+        let who = match turn.who {
+            crate::reader::Who::You => "Person",
+            crate::reader::Who::Ai => "AI",
+        };
+        talk.push_str(&format!("{who}:\n{}\n\n", turn.text.trim()));
+    }
+    let count = talk.chars().count();
+    if count > ADR_TALK_ROOM {
+        talk = format!("...\n{}", talk.chars().skip(count - ADR_TALK_ROOM).collect::<String>());
+    }
+    let headings: Vec<String> = args
+        .get("headings")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|h| h.as_str().map(|s| format!("- {s}"))).collect())
+        .unwrap_or_default();
+    let note = args.get("note").and_then(|v| v.as_str()).map(str::trim).unwrap_or_default();
+    let note = if note.is_empty() { String::new() } else { i18n::tp("ai.adr.draft_note", &[("note", note)]) + "\n\n" };
+    let prompt = i18n::tp(
+        "ai.adr.draft_prompt",
+        &[("ai", if ai.is_empty() { "an AI" } else { ai }), ("language", &i18n::t("lang.self")), ("note", &note), ("conversation", talk.trim())],
+    );
+    let shape = i18n::tp("ai.adr.draft_shape", &[("headings", &headings.join("\n"))]);
+    Ok((prompt, Some(shape)))
+}
+
+/// The prompt a question about the records is asked with: the question, and
+/// the records themselves, standing decisions first
+fn adr_question_words(disk: &dyn crate::adr::Disk, args: &serde_json::Value) -> std::result::Result<(String, Option<String>), String> {
+    let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let question = str_of("q");
+    if question.trim().is_empty() {
+        return Err(i18n::t("err.adr.no_question"));
+    }
+    let dir = crate::adr::clean_dir(&str_of("dir")).ok_or_else(|| i18n::t("err.sftp.outside"))?;
+    let fields = crate::adr::madr();
+    let records = crate::adr::records(disk, &dir, &fields)?.unwrap_or_default();
+    if records.is_empty() {
+        return Err(i18n::t("err.adr.none_yet"));
+    }
+    let prompt = i18n::tp(
+        "ai.adr.ask_prompt",
+        &[("language", &i18n::t("lang.self")), ("question", question.trim()),
+          ("records", &crate::adr::for_question(&records, ADR_ASK_ROOM))],
+    );
+    Ok((prompt, None))
+}
+
+/// What a record proposed in a pull request is done with: the tab whose
+/// folder it is in, the file, the branch made for it when the folder is on
+/// a protected branch, and the words of the commit and the pull request
+fn adr_proposal(panel: &str, args: &serde_json::Value, prefix: &str) -> std::result::Result<Vec<(&'static str, String)>, String> {
+    let str_of = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+    let dir = crate::adr::clean_dir(&str_of("dir")).ok_or_else(|| i18n::t("err.sftp.outside"))?;
+    let file = str_of("file");
+    if file.is_empty() || file.contains(['/', '\\']) {
+        return Err(i18n::t("err.sftp.outside"));
+    }
+    let title = str_of("title");
+    let path = if dir.is_empty() { file.clone() } else { format!("{dir}/{file}") };
+    let name = match crate::adr::number_of(&file) {
+        Some(n) => format!("ADR-{n:04}"),
+        None => file.trim_end_matches(".md").to_string(),
+    };
+    let branch = match crate::adr::number_of(&file) {
+        Some(n) => format!("{prefix}adr-{n:04}"),
+        None => format!("{prefix}adr-{}", crate::adr::slug(&title)),
+    };
+    Ok(vec![
+        ("adr_tab", panel.to_string()),
+        ("adr_file", path.clone()),
+        ("adr_branch", branch),
+        ("adr_title", i18n::tp("adr.pr.title", &[("name", &name), ("title", &title)])),
+        ("adr_message", i18n::tp("adr.pr.commit", &[("name", &name), ("title", &title)])),
+        ("adr_body", i18n::tp("adr.pr.body", &[("link", &format!("[{name}]({path})")), ("title", &title)])),
+    ])
+}
+
 /// What the column's file list, or the editor, asked for.
 ///
 /// Returns the answer when there is one to give at once, and `None` when the

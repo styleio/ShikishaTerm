@@ -758,6 +758,16 @@ pub enum Ev {
         act: String,
         args: serde_json::Value,
     },
+    /// The column's decision-record panel: the records of the folder of the
+    /// tab `panel`, one of them read or written, a draft from an AI tab's
+    /// conversation, a question about them, a record proposed in a pull
+    /// request. `act` is one of a short list (see `adr::answer` and the
+    /// loop's `adr_asked`)
+    Adr {
+        panel: String,
+        act: String,
+        args: serde_json::Value,
+    },
     /// The column's conversation panel asking for what was said: a page of
     /// the conversation in `panel` (a tab's id), a search of it, one stretch
     /// of the AI's work opened, a pin or a note. A conversation found by the
@@ -1644,6 +1654,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         // The file panel asking for a listing or a search (see `Ev::Files`).
         Some("files") => Ev::Files {
+            panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),
+        },
+        // The decision-record panel (see `Ev::Adr`)
+        Some("adr") => Ev::Adr {
             panel: v.get("panel").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             args: v.get("args").cloned().unwrap_or(serde_json::Value::Null),

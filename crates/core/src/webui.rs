@@ -2181,6 +2181,9 @@ fn handle(
                     "main": crate::repo::main_checkout(at).map(|m| m.display().to_string()),
                     "cut": crate::repo::is_linked(at),
                     "origin": crate::repo::origin_of(at),
+                    // A folder of decision records the repository already
+                    // has, offered when the project turns them on
+                    "adr": crate::adr::KNOWN_DIRS.iter().find(|d| at.join(d).is_dir()),
                 }));
             }
             req.respond(json_resp(serde_json::json!({ "families": out })))?;
@@ -5301,6 +5304,7 @@ pub(crate) fn page_parts(html: String) -> String {
         .replace("{{REMOVAL_REVIEW_JS}}", include_str!("removal-review.js"))
         .replace("{{SECRET_URL_JS}}", include_str!("secret-url.js"))
         .replace("{{SECRET_URL_POLICY}}", &crate::config::secret_url_policy_json())
+        .replace("{{ADR_DEFAULT_DIR}}", &serde_json::to_string(crate::adr::DEFAULT_DIR).unwrap_or_else(|_| "\"\"".into()))
 }
 
 pub(crate) fn themed(html: String) -> String {
@@ -7563,10 +7567,57 @@ function navProject(desk, projects, loose) {
 // are made first, since that is what is set up once and used every day
 function projectSections(p) {
   const s = id => ({id, label:T["settings.psec." + id], sub:T["settings.psec." + id + ".sub"]});
-  const list = [s("rules"), s("basic"), s("git")];
+  const list = [s("rules"), s("basic"), s("git"), s("adr")];
   // Read from the checkout, so only where there is one to read
   if ((p.at || "").trim()) list.push(s("setup"));
   return list;
+}
+
+// Where decision records go when nobody has said (adr::DEFAULT_DIR)
+const ADR_DEFAULT_DIR = {{ADR_DEFAULT_DIR}};
+// A folder inside the repository, as the records' folder can be written:
+// forward slashes, nothing that climbs out of it, no drive
+function adrDirOk(dir) {
+  const parts = (dir || "").replace(/\\/g, "/").split("/").filter(x => x && x !== ".");
+  return parts.length > 0 && !parts.some(x => x === ".." || x.includes(":"));
+}
+// Whether the project keeps decision records, and the folder they are in.
+// The folder is written as a value the moment records are turned on, so
+// what the settings say is what is used. A folder the repository already
+// keeps them in is offered, and taken only when somebody presses for it
+function adrCard(desk, p) {
+  const e = p.entry || {};
+  const spec = e.adr || {};
+  const write = change => {
+    const en = ensureProject(desk, p);
+    en.adr = Object.assign({}, en.adr || {}, change);
+    sel.proj = "p:" + en.name;
+    refreshSave(); render();
+  };
+  const found = (FAMILIES[(p.at || "").trim()] || {}).adr || null;
+  const dir = (spec.dir || "").trim();
+  const on = el("input", {type:"checkbox", id:"adr-on"});
+  on.checked = !!spec.on;
+  on.addEventListener("change", () => write({on: on.checked, dir: dir || found || ADR_DEFAULT_DIR}));
+  const where = el("input", {type:"text", class:"mono grow", value: dir || ADR_DEFAULT_DIR, placeholder: ADR_DEFAULT_DIR});
+  where.addEventListener("change", () => {
+    const to = where.value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!adrDirOk(to)) { msg(T["settings.adr.dir.bad"], true); where.value = dir || ADR_DEFAULT_DIR; return; }
+    write({dir: to});
+  });
+  const c = card(T["settings.adr.title"],
+    el("div", {class:"hint"}, T["settings.adr.hint"]),
+    el("label", {class:"check"}, on, document.createTextNode(T["settings.adr.on"])),
+    row(T["settings.adr.dir"], where),
+    el("div", {class:"hint"}, T["settings.adr.dir.hint"]),
+    // A folder the repository already has, when it is not the one written
+    found && found !== (dir || ADR_DEFAULT_DIR) ? el("div", {class:"row"},
+      el("span", {class:"hint"}, fill(T["settings.adr.found"], {dir: found})),
+      el("button", {onclick: () => write({dir: found})}, T["settings.adr.found.use"])) : null,
+    el("div", {class:"hint"}, T["settings.adr.ai"]));
+  c.id = "project-adr";
+  if ((p.at || "").trim()) askFamilies([p.at]);
+  return c;
 }
 
 // The git account the column beside a project's folders signs in with, and
@@ -7607,6 +7658,7 @@ function projectSectionOf(sec) {
   if (["project-basic", "project-folders"].includes(s)) return "basic";
   if (s.startsWith("project-git")) return "git";
   if (s === "project-setup" || s === "project-env" || s === "project-microvm") return "setup";
+  if (s === "project-adr") return "adr";
   return "rules";
 }
 
@@ -14591,6 +14643,12 @@ function projectPane(desk, p) {
       sel.proj = "p:" + e.name;
     };
     box.append(...projectGitCards(holder, wrote));
+    return box;
+  }
+
+  // Whether it keeps decision records, and where
+  if (sec.id === "adr") {
+    box.append(adrCard(desk, p));
     return box;
   }
 

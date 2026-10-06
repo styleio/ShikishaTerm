@@ -102,6 +102,7 @@ fn usage() -> &'static str {
     shikisha share commit|pr|file|url WHAT [TITLE]  -- show the others a commit, a pull request, a file or a page
     shikisha tab_list                               -- the tabs of this desk
     shikisha tab_conversation ID '{\"want\":3}'      -- the last things said in <@ID>'s conversation
+    shikisha adr_list                               -- where this project keeps its decision records, and each one's status
     shikisha list                                   -- every command this tab may call
     shikisha skill                                  -- print the skill that explains this to an AI
     shikisha skill orchestration                    -- the guide for handing a job out to other AI tabs"

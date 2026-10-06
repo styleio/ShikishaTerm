@@ -292,6 +292,10 @@ Each project answers these for itself: a team's rules are its repository's, and 
 
 Worktree creation rules, name and checkout, Git authentication, protected branches, what the AI is told, setup
 
+**Decision records (ADR)**
+
+- **Folder** — A folder inside the repository. A template in it (adr-template.md) decides the sections of the form; without one, the sections of MADR are used.
+
 **Git authentication**
 
 - **Authentication**

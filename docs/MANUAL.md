@@ -85,6 +85,7 @@ What was on its screen does not.
 **The column on the right** (◨ in the title bar brings it out and puts it away) holds only what
 the tab in view is used with: Files, Git and Chat beside an AI tab, Files and Git beside a
 terminal or an editor, and Console beside a web page. A folder git does not hold has no Git.
+A folder of a project that keeps decision records has ADR as well.
 What you choose is remembered for each kind of tab, so going from a page back to an AI tab
 brings back what you were reading beside the AI. Something a button calls up (the search of
 every conversation, for one) stays in the column over other tabs until its ✕ is pressed.
@@ -92,6 +93,21 @@ every conversation, for one) stays in the column over other tabs until its ✕ i
 **Files** is what is in the working folder. Press a file to open it in the editor. Right-click a row (hold it on a phone)
 to edit it, put its path in the message box, copy its path, rename, duplicate or delete it. A folder's row, and the empty part of the list, also make a new folder. What is deleted from a folder on this PC goes to the recycle bin, and can be
 restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
+
+**ADR** lists the project's decision records: short Markdown files, kept in the repository in
+the MADR format, that say what was decided and why. It is there for a project whose settings
+turn it on (the project's ADR page, which also says the folder; `docs/decisions` unless you
+write another). Search the list, or write a question and press **Ask AI**: the assistant AI
+answers from the records and names the ones it used. **New ADR** opens a form in the sections
+MADR gives a record, or in those of a template kept in the same folder (`adr-template.md`).
+**Draft from the conversation** fills it from the latest conversation in the AI tab in front,
+and adds that AI as somebody consulted. A new record is saved as a proposal, numbered after
+the last one, and named after its title in any language. **Propose in a pull request** commits
+that file alone, pushes it and opens a pull request for the team to discuss; on a protected
+branch it makes a branch for it first. A proposal is decided with **Mark accepted** or
+**Mark rejected**. An accepted record is not rewritten: **Replace with a new ADR** writes the
+one that replaces it and marks the old one as replaced; only a typo is fixed in the editor.
+AI tabs with the SHIKISHA-TERM skill follow accepted records and ask before going against one.
 
 **Chat** reads three ways. **AIConfer** is what the AIs say to each other when one asks
 another (after you name a tab with `@`, or on its own): one short line each, like a chat,

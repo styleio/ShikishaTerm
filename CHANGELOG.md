@@ -8,6 +8,27 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Decision records (ADR).** A project can keep its decisions as records:
+  short Markdown files in its repository, in the MADR format, saying what was
+  decided and why. Turn them on in the project's settings, on its new ADR
+  page (the folder is `docs/decisions` unless you write another; a folder the
+  repository already keeps them in is offered). The ADR panel beside the
+  project's folders lists them with their status, searches them (full-width
+  and half-width letters alike), and answers a question about them with the
+  assistant AI, naming the records it used. A new record is written in a
+  form, in MADR's sections or a template's kept in the folder, and drafted
+  from the latest conversation in the AI tab in front, with that AI added as
+  consulted. It is saved as a proposal, numbered after the last one and named
+  after its title in any language, and can be proposed in a pull request in
+  one press: that file alone is committed and pushed, on a branch of its own
+  when the folder is on a protected one. A proposal is marked accepted or
+  rejected; an accepted record is replaced by a new one, and both files say
+  so. AI tabs with the SHIKISHA-TERM skill follow accepted records and ask
+  before going against one; `shikisha adr_list` tells them where the records
+  are.
+
+
 ## [0.25.0] - 2026-10-04
 
 ### Added

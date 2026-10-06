@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -42,7 +42,7 @@ pub fn text() -> String {
     format!(
         r#"---
 name: {NAME}
-description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>").
+description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>"). Also use before making or changing a design or architecture choice in a project, and when asked why something was chosen: it says how to find and follow the project's decision records (ADR).
 ---
 
 # Working with other SHIKISHA-TERM tabs
@@ -112,6 +112,22 @@ answer in full, or further back -- use
 `shikisha tab_conversation ID '{{"want":3}}'`. Every word after `shikisha` is a
 SHIKISHA-TERM command and its arguments (`shikisha list` shows the ones this
 tab may use); an argument written as JSON is passed as that value.
+
+# Decision records (ADR)
+
+A project may keep its decisions as records: short Markdown files that say
+what was decided and why, usually in docs/decisions or docs/adr. When the work
+touches a design or architecture choice, or the person asks why something is
+the way it is, read them first. `shikisha adr_list` says where this tab's
+project keeps them and lists each one with its status.
+
+- An accepted record is a decision that stands: follow it.
+- A proposed one is not decided yet: read it as context.
+- A superseded or deprecated one is history: follow the record that replaced it.
+- If what you are asked to do goes against an accepted record, say which one
+  and ask the person before doing it. Do not work around it.
+- When the work changes a decision, tell the person that a new record should
+  replace the old one. They write it from the ADR panel, or ask you to.
 
 Talk to the person in their own language.
 

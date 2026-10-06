@@ -65,6 +65,7 @@ pub mod grants;
 pub mod guest;
 pub mod guide;
 pub mod hooks;
+pub mod adr;
 pub mod ideas;
 pub mod host;
 pub mod i18n;

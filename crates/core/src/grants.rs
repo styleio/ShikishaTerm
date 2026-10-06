@@ -140,6 +140,9 @@ pub const CATALOG: &[Entry] = &[
     e("tab_run", Group::Tabs, true, true, false),
     e("browser_do", Group::Tabs, true, true, false),
     e("tab_list", Group::Tabs, true, true, false),
+    // Only what the records are and where: their words are files the AI's
+    // own folder already lets it read
+    e("adr_list", Group::Tabs, true, true, false),
     // The conference: a line, a mark, a card. Words to the other tabs, shown
     // on the conversation panel; nothing is typed into any of them
     e("say", Group::Tabs, true, true, false),

@@ -308,6 +308,75 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-bottom:1px solid var(--line); cursor:pointer; color:var(--text); font-size:12.5px; }
   #portpanel .pmore:hover { background:var(--hover); }
   #portpanel .pmore .ico { display:flex; color:var(--dim); }
+  /* ── Decision records (ADR) ────────────────────
+     The project's records beside its folder. The list is the panel: a head
+     with the one button that makes a record and the status it is narrowed
+     to, the search box with the AI's question beside it, then one row a
+     record -- its number, its title, its status and date -- opening it.
+     A record read is its words drawn the way GitHub draws them, under what
+     can be done with it now. The status is said in words; only a record
+     waiting on a decision wears the colour of "a person is needed" */
+  #adrpanel[hidden] { display:none; }
+  #adrpanel { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; overflow:hidden; font-size:13px; }
+  #adrpanel .chead { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2);
+    padding:var(--s2); border-bottom:1px solid var(--line); }
+  #adrpanel .chead .ttl { flex:1 1 auto; min-width:0; font-family:var(--mono); font-size:12px; color:var(--dim); }
+  #adrpanel .grow { flex:1 1 auto; min-width:0; }
+  #adrpanel .afind { flex:0 0 auto; display:flex; gap:var(--s2); padding:var(--s2); border-bottom:1px solid var(--line); }
+  #adrpanel .afind input { flex:1 1 auto; }
+  #adrpanel .alist, #adrpanel .aread { flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+  #adrpanel .arow { display:flex; align-items:center; gap:var(--s2); padding:7px 10px; min-height:44px;
+    border-bottom:1px solid var(--line); cursor:pointer; }
+  #adrpanel .arow:hover { background:var(--hover); }
+  #adrpanel .anum { flex:none; font-family:var(--mono); font-size:11.5px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  #adrpanel .aw { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+  #adrpanel .at { font-size:12.5px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #adrpanel .ao { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); font-size:11px; color:var(--dim);
+    font-variant-numeric:tabular-nums; }
+  #adrpanel .ao .amk, #adrpanel .ao .afile { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  #adrpanel .ao .afile { font-family:var(--mono); }
+  #adrpanel .chev { flex:none; color:var(--faint); }
+  #adrpanel .ast { color:var(--text); }
+  #adrpanel .s-proposed .ast, #adrpanel .ast.s-proposed { color:var(--warn); }
+  #adrpanel .s-rejected .at, #adrpanel .s-deprecated .at, #adrpanel .s-superseded .at { color:var(--dim); }
+  #adrpanel .s-rejected .ast, #adrpanel .s-deprecated .ast, #adrpanel .s-superseded .ast,
+  #adrpanel .ast.s-rejected, #adrpanel .ast.s-deprecated, #adrpanel .ast.s-superseded { color:var(--faint); }
+  #adrpanel .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--dim); font-size:11.5px; line-height:1.5; }
+  #adrpanel .fsay.bad { color:var(--warn); }
+  #adrpanel .aanswer { flex:0 0 auto; max-height:45%; overflow-y:auto; margin:var(--s2); padding:var(--s2) var(--s3);
+    border:1px solid var(--line); border-radius:var(--r-ctl); background:var(--raise); }
+  #adrpanel .aanswer .aq { display:flex; align-items:center; gap:var(--s2); font-size:12px; color:var(--dim); }
+  #adrpanel .aread { padding:var(--s3) 10px var(--s5); display:flex; flex-direction:column; gap:var(--s2); }
+  #adrpanel .ahead { font-size:14px; font-weight:600; color:var(--text); line-height:1.4; }
+  #adrpanel .aby { font-size:12px; color:var(--dim); }
+  #adrpanel .aacts { display:flex; flex-wrap:wrap; gap:var(--s2); padding:var(--s2) 0; border-bottom:1px solid var(--line); }
+  #adrpanel .aacts .fsay { padding:0; flex-basis:100%; }
+  #adrpanel button.held { background:var(--panel2); border-color:var(--line); color:var(--faint); cursor:not-allowed; }
+  #adrpanel button.held:hover { background:var(--panel2); color:var(--faint); }
+  #adrpanel button.aref { min-height:0; padding:0 2px; border:0; background:none; color:var(--accent);
+    text-decoration:underline; font:inherit; display:inline; cursor:pointer; }
+  #adrpanel .md { line-height:1.6; overflow-wrap:anywhere; padding-top:var(--s2); }
+  /* The form a record is written in: the dialog of 5.2, a step wider for
+     its boxes of prose. The ✨ band first, since the draft is where most
+     records start; the sections a record must have, then the ones it may */
+  #sask.adrform .vbox { width:min(760px,92vw); overflow:hidden; }
+  /* Only the boxes scroll: the title and the buttons stay where they are */
+  #sask.adrform .blist { display:flex; flex-direction:column; gap:var(--s5); border:0; max-height:none;
+    flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:2px 4px 2px 0; }
+  #sask.adrform .adrtop { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); }
+  #sask.adrform .adrtop .hint { flex:1 1 200px; font-size:11.5px; color:var(--dim); }
+  #sask.adrform .adrtop button { min-height:32px; padding:0 var(--s3); font:inherit; font-size:12.5px; display:inline-flex;
+    align-items:center; gap:var(--s2); border-radius:var(--r-ctl); border:1px solid var(--brand); background:transparent;
+    color:var(--brand); cursor:pointer; }
+  #sask.adrform .adrtop button.quiet { border-color:transparent; color:var(--dim); }
+  #sask.adrform .adrtop button.held { border-color:var(--line); background:var(--panel2); color:var(--faint); cursor:not-allowed; }
+  #sask.adrform .field > .name .en { font-family:var(--mono); font-size:11px; font-weight:400; color:var(--faint); margin-left:var(--s2); }
+  #sask.adrform .adrnote { font-size:12px; color:var(--text); padding:var(--s2) var(--s3); border-radius:var(--r-ctl);
+    background:color-mix(in srgb, var(--warn) 9%, transparent); border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+  #sask.adrform details.adropt > summary { cursor:pointer; font-size:12px; color:var(--accent); }
+  #sask.adrform details.adropt[open] > summary { margin-bottom:var(--s5); }
+  #sask.adrform details.adropt > .fields { display:flex; flex-direction:column; gap:var(--s5); }
+  #sask.adrform .swhy { color:var(--warn); font-size:11.5px; }
   /* ── Downloads ─────────────────────────────────
      A panel called up by the bar's download button, and by a download
      beginning on the page in front. Built like the ports beside it: a head
@@ -1987,26 +2056,26 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     display:flex; flex-direction:column; padding-bottom:72px; box-sizing:border-box;
     container-type:inline-size; background:var(--bg); }
   /* Controls: 32px buttons and 36px fields, and nothing lower (4) */
-  #issuespanel button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3);
+  :is(#issuespanel, #adrpanel) button { font:inherit; font-size:12.5px; min-height:32px; padding:0 var(--s3);
     border-radius:var(--r-ctl); border:1px solid var(--edge); background:var(--panel);
     color:var(--text); cursor:pointer; display:inline-flex; align-items:center;
     gap:var(--s2); white-space:nowrap; flex:0 0 auto; }
-  #issuespanel button:hover { border-color:var(--edge-hi); background:var(--panel2); }
-  #issuespanel button.go { border-color:var(--brand); background:var(--brand); color:var(--bg); }
-  #issuespanel button.go:hover { filter:brightness(1.1); }
-  #issuespanel button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
-  #issuespanel button.quiet:hover { color:var(--text); background:var(--panel2); }
-  #issuespanel button.bad { border-color:transparent; background:transparent; color:var(--stop); }
-  #issuespanel button.bad:hover { background:var(--panel2); }
-  #issuespanel button.armed { border-color:var(--warn); color:var(--warn); }
-  #issuespanel select, #issuespanel input, #issuespanel textarea { font:inherit; font-size:13px;
+  :is(#issuespanel, #adrpanel) button:hover { border-color:var(--edge-hi); background:var(--panel2); }
+  :is(#issuespanel, #adrpanel) button.go { border-color:var(--brand); background:var(--brand); color:var(--bg); }
+  :is(#issuespanel, #adrpanel) button.go:hover { filter:brightness(1.1); }
+  :is(#issuespanel, #adrpanel) button.quiet { border-color:transparent; background:transparent; color:var(--dim); }
+  :is(#issuespanel, #adrpanel) button.quiet:hover { color:var(--text); background:var(--panel2); }
+  :is(#issuespanel, #adrpanel) button.bad { border-color:transparent; background:transparent; color:var(--stop); }
+  :is(#issuespanel, #adrpanel) button.bad:hover { background:var(--panel2); }
+  :is(#issuespanel, #adrpanel) button.armed { border-color:var(--warn); color:var(--warn); }
+  :is(#issuespanel, #adrpanel, #sask.adrform) select, :is(#issuespanel, #adrpanel, #sask.adrform) input, :is(#issuespanel, #adrpanel, #sask.adrform) textarea { font:inherit; font-size:13px;
     min-height:36px; padding:0 var(--s3); border-radius:var(--r-ctl); border:1px solid var(--edge);
     background:var(--bg); color:var(--text); box-sizing:border-box; min-width:0; }
-  #issuespanel textarea { padding:var(--s2) var(--s3); resize:vertical; width:100%; line-height:1.5; }
-  #issuespanel select:hover, #issuespanel input:hover, #issuespanel textarea:hover { border-color:var(--edge-hi); }
-  #issuespanel select:focus, #issuespanel input:focus, #issuespanel textarea:focus { outline:none;
+  :is(#issuespanel, #adrpanel, #sask.adrform) textarea { padding:var(--s2) var(--s3); resize:vertical; width:100%; line-height:1.5; }
+  :is(#issuespanel, #adrpanel, #sask.adrform) select:hover, :is(#issuespanel, #adrpanel, #sask.adrform) input:hover, :is(#issuespanel, #adrpanel, #sask.adrform) textarea:hover { border-color:var(--edge-hi); }
+  :is(#issuespanel, #adrpanel, #sask.adrform) select:focus, :is(#issuespanel, #adrpanel, #sask.adrform) input:focus, :is(#issuespanel, #adrpanel, #sask.adrform) textarea:focus { outline:none;
     border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
-  #issuespanel input::placeholder, #issuespanel textarea::placeholder { color:var(--faint); }
+  :is(#issuespanel, #adrpanel, #sask.adrform) input::placeholder, :is(#issuespanel, #adrpanel, #sask.adrform) textarea::placeholder { color:var(--faint); }
   #issuespanel .grow { flex:1 1 auto; min-width:0; }
   #issuespanel .dim { color:var(--dim); }
   /* The bar: what is listed on the first line, how it is narrowed on the second.
@@ -2091,28 +2160,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* Text written on GitHub, drawn the way GitHub draws it -- in this page's
      sizes and colours. A link is the one thing in it that is pressed, so it is
      marked by its underline rather than by a colour kept for states */
-  #issuespanel .md { line-height:1.6; overflow-wrap:anywhere; }
-  #issuespanel .md > :first-child { margin-top:0; }
-  #issuespanel .md > :last-child { margin-bottom:0; }
-  #issuespanel .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
-  #issuespanel .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
-  #issuespanel .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
-  #issuespanel .md ul, #issuespanel .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
-  #issuespanel .md li { margin:0 0 var(--s1); }
-  #issuespanel .md li > ul, #issuespanel .md li > ol { margin:var(--s1) 0 0; }
-  #issuespanel .md li.task { list-style:none; margin-left:-1.2em; }
-  #issuespanel .md li.task .box { color:var(--dim); margin-right:var(--s2); }
-  #issuespanel .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
+  :is(#issuespanel, #adrpanel) .md { line-height:1.6; overflow-wrap:anywhere; }
+  :is(#issuespanel, #adrpanel) .md > :first-child { margin-top:0; }
+  :is(#issuespanel, #adrpanel) .md > :last-child { margin-bottom:0; }
+  :is(#issuespanel, #adrpanel) .md p { margin:0 0 var(--s3); white-space:pre-wrap; }
+  :is(#issuespanel, #adrpanel) .md h3 { font-size:14px; font-weight:600; margin:var(--s5) 0 var(--s2); }
+  :is(#issuespanel, #adrpanel) .md h4 { font-size:13px; font-weight:600; margin:var(--s4) 0 var(--s2); color:var(--text); }
+  :is(#issuespanel, #adrpanel) .md ul, :is(#issuespanel, #adrpanel) .md ol { margin:0 0 var(--s3); padding-left:1.4em; }
+  :is(#issuespanel, #adrpanel) .md li { margin:0 0 var(--s1); }
+  :is(#issuespanel, #adrpanel) .md li > ul, :is(#issuespanel, #adrpanel) .md li > ol { margin:var(--s1) 0 0; }
+  :is(#issuespanel, #adrpanel) .md li.task { list-style:none; margin-left:-1.2em; }
+  :is(#issuespanel, #adrpanel) .md li.task .box { color:var(--dim); margin-right:var(--s2); }
+  :is(#issuespanel, #adrpanel) .md code { font-family:var(--mono); font-size:12px; background:var(--raise);
     padding:1px var(--s1); border-radius:var(--r-chip); }
-  #issuespanel .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
+  :is(#issuespanel, #adrpanel) .md pre { margin:0 0 var(--s3); padding:var(--s2) var(--s3); background:var(--bg);
     border:1px solid var(--line); border-radius:var(--r-ctl); overflow-x:auto; }
-  #issuespanel .md pre code { background:none; padding:0; white-space:pre; }
-  #issuespanel .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
-  #issuespanel .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
-  #issuespanel .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
-  #issuespanel .md table { border-collapse:collapse; font-size:12px; }
-  #issuespanel .md th, #issuespanel .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
-  #issuespanel .md th { background:var(--panel); font-weight:600; }
+  :is(#issuespanel, #adrpanel) .md pre code { background:none; padding:0; white-space:pre; }
+  :is(#issuespanel, #adrpanel) .md blockquote { margin:0 0 var(--s3); padding:0 var(--s3); border-left:3px solid var(--line); color:var(--dim); }
+  :is(#issuespanel, #adrpanel) .md hr { border:0; border-top:1px solid var(--line); margin:var(--s4) 0; }
+  :is(#issuespanel, #adrpanel) .md .rtable { overflow-x:auto; margin:0 0 var(--s3); }
+  :is(#issuespanel, #adrpanel) .md table { border-collapse:collapse; font-size:12px; }
+  :is(#issuespanel, #adrpanel) .md th, :is(#issuespanel, #adrpanel) .md td { border:1px solid var(--line); padding:var(--s1) var(--s2); text-align:left; vertical-align:top; }
+  :is(#issuespanel, #adrpanel) .md th { background:var(--panel); font-weight:600; }
   #issuespanel a.mdlink { color:var(--text); text-decoration:underline; text-decoration-color:var(--edge-hi); text-underline-offset:2px; }
   #issuespanel a.mdlink:hover { text-decoration-color:var(--text); }
   #issuespanel .body { margin:0 var(--s3); padding:var(--s3); background:var(--sunk);
@@ -2126,9 +2195,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .comment .who { color:var(--dim); font-size:11.5px; margin-bottom:var(--s1); }
   /* Fields (5.1): name above, control, what happens below */
   #issuespanel .form { display:flex; flex-direction:column; gap:var(--s5); padding:var(--s5) var(--s3); max-width:760px; }
-  #issuespanel .field { display:flex; flex-direction:column; gap:var(--s2); }
-  #issuespanel .field > .name { font-size:12px; font-weight:500; color:var(--text); }
-  #issuespanel .field > .hint { font-size:11.5px; color:var(--faint); }
+  :is(#issuespanel, #sask.adrform) .field { display:flex; flex-direction:column; gap:var(--s2); }
+  :is(#issuespanel, #sask.adrform) .field > .name { font-size:12px; font-weight:500; color:var(--text); }
+  :is(#issuespanel, #sask.adrform) .field > .hint { font-size:11.5px; color:var(--faint); }
   /* The description's name, with its AI button at the right end of the same line */
   #issuespanel .namerow { display:flex; align-items:center; justify-content:space-between; gap:var(--s2); }
   #issuespanel .namerow .name { font-size:12px; font-weight:500; color:var(--text); }
@@ -4305,6 +4374,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       <div id="consolepanel" hidden></div>
       <div id="pickpanel" hidden></div>
       <div id="portpanel" hidden></div>
+      <!-- The project's decision records, when it keeps them -->
+      <div id="adrpanel" hidden></div>
       <!-- What pages saved: every browser's, newest first -->
       <div id="dlpanel" hidden></div>
     </div>
@@ -8695,6 +8766,533 @@ function portsAsk(folder) {
   PT.drawn = "";
   send({kind:"farports", folder});
 }
+// ── Decision records (ADR) ──────────────────────────────────────────────────
+// The records a project keeps in its repository (see adr.rs): listed beside
+// its folders, read, written from a form, drafted from the AI tab in front.
+// The files are the record; this is a view of them, asked for again after
+// anything is written
+const AD = {key:"", panel:"", dir:"", records:null, fields:[], template:null, exists:true, error:"",
+  q:"", status:"all", view:"list", read:null, busy:"", said:"", bad:false, prUrl:"",
+  answer:null, form:null, drawn:"", rev:0, listEl:null, footEl:null};
+const ADR_STATUSES = ["proposed", "accepted", "rejected", "deprecated", "superseded"];
+// MADR's sections, by the words the screen calls them
+const ADR_SECTIONS = {"context and problem statement":"context", "decision drivers":"drivers",
+  "considered options":"options", "decision outcome":"outcome", "consequences":"consequences",
+  "confirmation":"confirmation", "pros and cons of the options":"proscons", "more information":"more"};
+// The tab the panel stands on: the one in front, when its project keeps records
+function adrTab() {
+  const t = folderTab();
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
+  return g && g.adr ? t : null;
+}
+function adrAsk(act, args) {
+  if (AD.panel) send({kind:"adr", panel: AD.panel, act, args: Object.assign({dir: AD.dir}, args || {})});
+}
+// Start over on a folder: everything held was about the last one
+function adrReset(t, dir) {
+  AD.key = (t.id || t.name || "") + "|" + dir;
+  AD.panel = t.id || t.name || "";
+  AD.dir = dir;
+  Object.assign(AD, {records:null, fields:[], template:null, exists:true, error:"", view:"list", read:null,
+    busy:"", said:"", bad:false, prUrl:"", answer:null, drawn:""});
+  AD.rev++;
+  adrAsk("list");
+  drawAdr();
+}
+function adrStatusWord(s) { return s ? (T["adr.status." + s] || s) : (T["adr.status.none"] || ""); }
+function adrName(r) { return r.number != null ? "ADR-" + String(r.number).padStart(4, "0") : r.file.replace(/\.md$/i, ""); }
+// Words compared the way a person means them: full-width and half-width
+// letters the same, and case not counted
+function adrFold(s) { return String(s || "").normalize("NFKC").toLocaleLowerCase(); }
+function adrToday() {
+  const d = new Date();
+  const two = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
+}
+
+window.__adr = function (d) {
+  if (!d || d.panel !== AD.panel) return;
+  const parsed = () => { try { return JSON.parse(d.data || ""); } catch (e) { return null; } };
+  if (d.act === "list") {
+    if (d.ok) Object.assign(AD, {records: d.records || [], fields: d.fields || [], template: d.template || null,
+      exists: !!d.exists, error: ""});
+    else Object.assign(AD, {records: AD.records || [], error: d.error || ""});
+    // The record being read, read again: what was written may have changed it
+    if (d.ok && AD.view === "read" && AD.read) adrAsk("read", {file: AD.read.file});
+  } else if (d.act === "read") {
+    if (d.ok) { AD.read = d; AD.view = "read"; }
+    else { AD.said = d.error || ""; AD.bad = true; }
+  } else if (d.act === "save") {
+    AD.busy = "";
+    if (!d.ok) {
+      // Nothing was written: the form comes back with what was typed and why
+      if (AD.form) adrForm(AD.form, d.error || "");
+      else { AD.said = d.error || ""; AD.bad = true; }
+    } else {
+      const f = AD.form;
+      AD.form = null;
+      AD.said = d.warn || (T["adr.saved"] || "").replaceAll("{file}", d.file);
+      AD.bad = !!d.warn;
+      AD.prUrl = "";
+      AD.read = {file: d.file};
+      AD.view = "read";
+      adrAsk("list");
+      if (f && f.then === "propose") adrPropose(d.file, f.title);
+    }
+  } else if (d.act === "status") {
+    if (d.ok) {
+      AD.said = (T["adr.status.set"] || "").replaceAll("{status}", adrStatusWord(d.status));
+      AD.bad = false;
+      adrAsk("list");
+    } else { AD.said = d.error || ""; AD.bad = true; }
+  } else if (d.act === "draft") {
+    AD.busy = "";
+    const f = AD.form;
+    if (!f) return;
+    const got = d.ok ? parsed() : null;
+    if (!got || typeof got.title !== "string") { adrForm(f, d.ok ? (T["err.draft.failed"] || "") : (d.error || "")); return; }
+    f.title = got.title.normalize("NFC");
+    const sections = got.sections && typeof got.sections === "object" ? got.sections : {};
+    for (const h of Object.keys(sections)) {
+      const field = (f.fields || []).find(x => x.heading.toLowerCase() === h.trim().toLowerCase());
+      if (field && typeof sections[h] === "string") f.sections[field.heading] = sections[h].normalize("NFC");
+    }
+    // The AI the decision was talked through with, as somebody consulted
+    if (d.consulted) {
+      const had = (f.front.consulted || "").split(",").map(s => s.trim()).filter(Boolean);
+      if (!had.includes(d.consulted)) f.front.consulted = had.concat(d.consulted).join(", ");
+    }
+    f.drafted = true;
+    adrForm(f, "");
+    return;
+  } else if (d.act === "ask") {
+    AD.busy = "";
+    if (AD.answer) Object.assign(AD.answer, d.ok ? {text: d.data || ""} : {error: d.error || ""});
+  } else if (d.act === "plan") {
+    if (d.ok) adrProposeAsk(d);
+    else { AD.said = d.error || ""; AD.bad = true; }
+  } else if (d.act === "propose") {
+    AD.busy = "";
+    const got = d.ok ? parsed() : null;
+    if (got && got.number) {
+      AD.said = (T["adr.propose.done"] || "").replaceAll("{number}", got.number).replaceAll("{branch}", got.branch || "");
+      AD.bad = false;
+      AD.prUrl = got.url || "";
+      toast(AD.said);
+    } else {
+      AD.said = d.error || (T["err.draft.failed"] || "");
+      AD.bad = true;
+      AD.prUrl = "";
+    }
+  }
+  AD.rev++;
+  drawAdr();
+};
+
+function drawAdr() {
+  const box = document.getElementById("adrpanel");
+  if (!box || box.hidden) return;
+  // Rebuilt only when something it says changed: the column is drawn several
+  // times a second, and the search box is under the person's fingers
+  const sig = AD.key + "|" + AD.rev;
+  if (AD.drawn === sig && box.firstChild) return;
+  AD.drawn = sig;
+  box.textContent = "";
+  if (AD.view === "read" && AD.read && AD.read.record) adrDrawRead(box);
+  else adrDrawList(box);
+}
+
+function adrSaid() {
+  if (!AD.said) return null;
+  return el("div", {class:"fsay" + (AD.bad ? " bad" : "")}, AD.said,
+    AD.prUrl ? el("span", {}, " ", mdLink(AD.prUrl, T["adr.propose.open"] || "")) : null);
+}
+
+function adrDrawList(box) {
+  const statuses = el("select", {"aria-label": T["adr.filter"] || "",
+    onchange: e => { AD.status = e.target.value; adrFill(); }},
+    el("option", {value:"all"}, T["adr.filter.all"] || ""),
+    ...ADR_STATUSES.map(s => el("option", {value:s}, adrStatusWord(s))));
+  statuses.value = AD.status;
+  box.append(el("div", {class:"chead"},
+    el("button", {type:"button", class:"go", onclick:() => adrNew(null)}, pickIcon("plus"), el("span", {}, T["adr.new"] || "")),
+    el("span", {class:"grow"}), statuses));
+  const q = el("input", {type:"search", placeholder: T["adr.search.ph"] || "", "aria-label": T["adr.search.ph"] || "",
+    oninput: e => { AD.q = e.target.value; adrFill(); },
+    onkeydown: e => { if (typingIME(e)) return; if (e.key === "Enter") { e.preventDefault(); adrAskAi(q.value); } }});
+  q.value = AD.q;
+  box.append(el("div", {class:"afind"}, q,
+    el("button", {type:"button", title: T["adr.ask.title"] || "", onclick:() => adrAskAi(q.value)},
+      pickIcon("sparkles"), el("span", {}, T["adr.ask"] || ""))));
+  const said = adrSaid();
+  if (said) box.append(said);
+  // The AI's answer to the question asked, over the list it answers from
+  if (AD.answer) {
+    const a = AD.answer;
+    const card = el("div", {class:"aanswer"},
+      el("div", {class:"aq"}, el("span", {class:"grow"}, a.q),
+        el("button", {type:"button", class:"quiet", title: T["adr.ask.close"] || "",
+          onclick:() => { AD.answer = null; AD.rev++; drawAdr(); }}, "✕")));
+    if (a.text) {
+      const md = el("div", {class:"md"});
+      md.append(rdMarkup(a.text, {}));
+      adrLinkify(md);
+      card.append(md);
+    } else card.append(el("div", {class:"fsay" + (a.error ? " bad" : "")}, a.error || (T["adr.ask.busy"] || "")));
+    box.append(card);
+  }
+  AD.listEl = el("div", {class:"alist"});
+  AD.footEl = el("div", {class:"fsay"});
+  box.append(AD.listEl, AD.footEl);
+  adrFill();
+}
+
+// The rows, narrowed by the status and the words in the search box
+function adrFill() {
+  const list = AD.listEl, foot = AD.footEl;
+  if (!list || !foot) return;
+  list.textContent = "";
+  if (AD.records === null) {
+    list.append(el("div", {class:"fsay"}, T["adr.loading"] || ""));
+    foot.textContent = "";
+    return;
+  }
+  if (AD.error) list.append(el("div", {class:"fsay bad"}, AD.error));
+  const q = adrFold(AD.q.trim());
+  const shown = AD.records.filter(r => (AD.status === "all" || r.status === AD.status)
+    && (!q || adrFold([r.title, r.file, adrName(r), r.makers, r.text].join("\n")).includes(q)));
+  // Newest first: the decision being talked about is the one written last
+  shown.sort((a, b) => (b.number ?? -1) - (a.number ?? -1) || a.file.localeCompare(b.file));
+  for (const r of shown) list.append(adrRow(r));
+  if (!AD.records.length && !AD.error) list.append(el("div", {class:"fsay"}, (T["adr.empty"] || "").replaceAll("{dir}", AD.dir)));
+  else if (!shown.length && AD.records.length) list.append(el("div", {class:"fsay"}, T["adr.none_found"] || ""));
+  foot.textContent = (T["adr.count"] || "").replaceAll("{n}", AD.records.length).replaceAll("{dir}", AD.dir)
+    + " · " + (AD.template ? (T["adr.form.template"] || "").replaceAll("{file}", AD.template) : (T["adr.form.madr"] || ""));
+}
+
+function adrRow(r) {
+  return el("div", {class:"arow s-" + (r.status || "none"), title: r.file,
+      onclick:() => { AD.said = ""; AD.prUrl = ""; adrAsk("read", {file: r.file}); }},
+    el("span", {class:"anum"}, r.number != null ? String(r.number).padStart(4, "0") : "—"),
+    el("span", {class:"aw"},
+      el("span", {class:"at"}, r.title),
+      el("span", {class:"ao"}, el("span", {class:"ast"}, adrStatusWord(r.status)),
+        r.date ? el("span", {}, r.date) : null,
+        r.makers ? el("span", {class:"amk"}, r.makers) : null)),
+    el("span", {class:"chev"}, "›"));
+}
+
+function adrDrawRead(box) {
+  const d = AD.read, r = d.record;
+  box.append(el("div", {class:"chead"},
+    el("button", {type:"button", class:"quiet",
+      onclick:() => { AD.view = "list"; AD.read = null; AD.said = ""; AD.prUrl = ""; AD.rev++; drawAdr(); }},
+      "‹ " + (T["adr.back"] || "")),
+    el("span", {class:"ttl"}, adrName(r))));
+  const page = el("div", {class:"aread"});
+  page.append(el("div", {class:"ahead"}, r.title));
+  page.append(el("div", {class:"ao"}, el("span", {class:"ast s-" + (r.status || "none")}, adrStatusWord(r.status)),
+    r.date ? el("span", {}, r.date) : null, el("span", {class:"afile"}, d.file)));
+  if (r.makers) page.append(el("div", {class:"ao"}, (T["adr.makers"] || "") + ": " + r.makers));
+  if (r.status === "superseded" && r.by) {
+    const to = (AD.records || []).find(x => x.file === r.by);
+    page.append(el("div", {class:"aby"}, (T["adr.superseded_by"] || "") + " ",
+      to ? el("button", {type:"button", class:"aref", onclick:() => adrAsk("read", {file: to.file})}, adrName(to) + " " + to.title)
+         : el("span", {}, r.by)));
+  }
+  // What can be done with it, by what it is now
+  const acts = el("div", {class:"aacts"});
+  if (r.status === "proposed" || !r.status) {
+    acts.append(el("button", {type:"button", onclick:() => adrEdit(d)}, T["adr.edit"] || ""));
+    acts.append(el("button", {type:"button", class:"go", onclick:() => adrSetStatus(d, "accepted")}, T["adr.accept"] || ""));
+    acts.append(el("button", {type:"button", onclick:() => adrSetStatus(d, "rejected")}, T["adr.reject"] || ""));
+    acts.append(el("button", {type:"button", onclick:() => adrPropose(d.file, r.title)},
+      pickIcon("pr"), el("span", {}, T["adr.propose"] || "")));
+  } else if (r.status === "accepted") {
+    // Grey, and answering: a decision that stands is changed by a new record
+    acts.append(el("button", {type:"button", class:"held", onclick:() => adrEditAccepted(d)}, T["adr.edit"] || ""));
+    acts.append(el("button", {type:"button", onclick:() => adrReplace(d)}, T["adr.replace"] || ""));
+    acts.append(el("button", {type:"button", onclick:() => adrSetStatus(d, "deprecated")}, T["adr.deprecate"] || ""));
+  }
+  acts.append(el("button", {type:"button", class:"quiet", onclick:() => adrOpenEditor(d.file)},
+    pickIcon("file"), el("span", {}, T["adr.editor"] || "")));
+  const said = adrSaid();
+  if (said) acts.append(said);
+  page.append(acts);
+  const md = el("div", {class:"md"});
+  md.append(rdMarkup(adrBody(d.text), {}));
+  adrLinkify(md);
+  page.append(md);
+  box.append(page);
+}
+
+// A record's words without its front matter and its title, which the page
+// draws itself
+function adrBody(text) {
+  let t = String(text || "").replace(/\r\n/g, "\n");
+  const front = /^---\n[\s\S]*?\n---\n/.exec(t);
+  if (front) t = t.slice(front[0].length);
+  return t.replace(/^\s*# .*\n/, "");
+}
+
+// "ADR-0005" in words, made the press that opens that record, when the
+// folder has one by that number
+function adrLinkify(root) {
+  const nums = new Map((AD.records || []).filter(r => r.number != null).map(r => [r.number, r]));
+  if (!nums.size) return;
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const found = [];
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (/ADR-\d+/i.test(n.nodeValue) && !n.parentElement.closest("pre, code, button")) found.push(n);
+  }
+  for (const n of found) {
+    const text = n.nodeValue;
+    const out = document.createDocumentFragment();
+    let last = 0;
+    for (const m of text.matchAll(/ADR-(\d+)/gi)) {
+      const r = nums.get(Number(m[1]));
+      if (!r) continue;
+      out.append(text.slice(last, m.index), el("button", {type:"button", class:"aref", title: r.title,
+        onclick: e => { e.stopPropagation(); AD.said = ""; adrAsk("read", {file: r.file}); }}, m[0]));
+      last = m.index + m[0].length;
+    }
+    if (!last) continue;
+    out.append(text.slice(last));
+    n.replaceWith(out);
+  }
+}
+
+function adrOpenEditor(file) {
+  send({kind:"editopen", panel: AD.panel, path: (AD.dir ? AD.dir + "/" : "") + file});
+  // On a phone the column is covering the very thing it just opened
+  if (phoneWidth()) { sideStoodAside = true; drawSide(); }
+}
+
+function adrSetStatus(d, status) {
+  AD.said = "";
+  AD.prUrl = "";
+  adrAsk("status", {file: d.file, status, mark: d.mark || ""});
+}
+
+// A question to the AI about the records, answered over the list
+function adrAskAi(q) {
+  if (!String(q || "").trim()) {
+    AD.said = T["err.adr.no_question"] || "";
+    AD.bad = true;
+    AD.rev++;
+    drawAdr();
+    return;
+  }
+  AD.said = "";
+  AD.answer = {q: q.trim()};
+  AD.busy = "ask";
+  AD.rev++;
+  drawAdr();
+  adrAsk("ask", {q: q.trim().normalize("NFC")});
+}
+
+// A record waiting in a form: what each box holds, where it is written, and
+// what the save does after
+function adrBlank() {
+  return {file:"", mark:"", supersedes:"", status:"", fields: AD.fields || [], title:"",
+    front:{"decision-makers":"", consulted:"", informed:""}, sections:{}, kept:null, drafted:false, then:""};
+}
+// What a record already says, as the form's boxes
+function adrFromParts(d) {
+  const p = d.parts || {};
+  const front = {};
+  for (const f of p.front || []) front[f.key] = f.value;
+  const sections = {};
+  for (const s of p.sections || []) if (s.body) sections[s.heading] = s.body;
+  return {title: p.title || (d.record || {}).title || "", sections,
+    front:{"decision-makers": front["decision-makers"] || "", consulted: front.consulted || "", informed: front.informed || ""}};
+}
+
+function adrNew(base) {
+  if (AD.records === null) { AD.said = T["adr.loading"] || ""; AD.bad = false; AD.rev++; drawAdr(); return; }
+  adrForm(Object.assign(adrBlank(), base || {}), "");
+}
+
+function adrEdit(d) {
+  // A record in another format has no boxes to put it in: its file is it
+  if (!d.record.fits) { adrOpenEditor(d.file); return; }
+  adrForm(Object.assign(adrBlank(), adrFromParts(d), {file: d.file, mark: d.mark, fields: d.fields || AD.fields,
+    status: d.record.status}), "");
+}
+
+// A standing decision is not rewritten: it is replaced by a new record, or
+// its spelling is put right where it is
+function adrEditAccepted(d) {
+  askQuestion({title: T["adr.accepted.title"] || "", say: T["adr.accepted.say"] || "",
+    label: T["adr.replace"] || "", go: () => adrReplace(d),
+    also: {label: T["adr.fix_typos"] || "", act: () => adrOpenEditor(d.file)}});
+}
+
+function adrReplace(d) {
+  adrNew(Object.assign(d.record.fits ? adrFromParts(d) : {title: d.record.title}, {supersedes: d.file}));
+}
+
+// Before anything is committed, what will be: worked out by the app, which
+// runs it, and shown in the question
+function adrPropose(file, title) {
+  AD.said = "";
+  AD.prUrl = "";
+  adrAsk("propose", {file, title, plan: true});
+}
+function adrProposeAsk(d) {
+  const lines = (T["adr.propose.steps"] || "").replaceAll("{branch}", d.branch).replaceAll("{path}", d.path)
+    .replaceAll("{message}", d.message).replaceAll("{pr}", d.pr).split("\n");
+  askQuestion({title: T["adr.propose.title"] || "", say: T["adr.propose.say"] || "",
+    what: el("div", {}, ...lines.map(l => el("span", {class:"line"}, l))),
+    label: T["adr.propose.go"] || "",
+    go: () => {
+      AD.busy = "propose";
+      AD.said = T["adr.propose.busy"] || "";
+      AD.bad = false;
+      AD.rev++;
+      drawAdr();
+      adrAsk("propose", {file: d.file, title: d.title});
+    }});
+}
+
+// The words of the form's ✨ and save, said above its buttons
+function adrFormWhy(text) {
+  const why = document.querySelector("#sask .swhy");
+  if (!why) return;
+  why.textContent = text || "";
+  why.hidden = !text;
+}
+
+function adrForm(f, why) {
+  const fields = f.fields || [];
+  const rows = [];
+  // ✨: the AI tab in front, its latest stretch of conversation
+  const ai = activeTab();
+  const aiOk = !!(ai && ai.kind === "pty" && ai.ai && !ai.model);
+  const drafting = AD.busy === "draft";
+  const spark = el("button", {type:"button", class: aiOk && !drafting ? "" : "held", onclick:() => {
+    if (drafting) return;
+    if (!aiOk) { adrFormWhy(T["adr.draft.no_ai"] || ""); return; }
+    f.kept = JSON.stringify({title: f.title, sections: f.sections, front: f.front});
+    AD.busy = "draft";
+    const note = [f.title.trim()].concat(fields.map(x => (f.sections[x.heading] || "").trim()
+      ? x.heading + ":\n" + f.sections[x.heading].trim() : "")).filter(Boolean).join("\n\n");
+    adrAsk("draft", {tab: ai.id || ai.name || "", headings: fields.map(x => x.heading), note});
+    adrForm(f, "");
+  }}, pickIcon("sparkles"), el("span", {}, drafting ? (T["adr.draft.busy"] || "") : (T["adr.draft"] || "")));
+  const top = el("div", {class:"adrtop"}, spark, el("span", {class:"hint"},
+    aiOk ? (T["adr.draft.from"] || "").replaceAll("{tab}", ai.name || "") : (T["adr.draft.no_ai"] || "")));
+  if (f.kept && !drafting) top.append(el("button", {type:"button", class:"quiet", onclick:() => {
+    const k = JSON.parse(f.kept);
+    Object.assign(f, {title: k.title, sections: k.sections, front: k.front, kept: null, drafted: false});
+    adrForm(f, "");
+  }}, T["adr.draft.undo"] || ""));
+  rows.push(top);
+  if (f.supersedes) {
+    const old = (AD.records || []).find(r => r.file === f.supersedes);
+    rows.push(el("div", {class:"adrnote"}, (T["adr.replaces"] || "").replaceAll("{name}", old ? adrName(old) + " " + old.title : f.supersedes)));
+  }
+  const field = (label, en, control, hint) => el("div", {class:"field"},
+    el("span", {class:"name"}, label, en ? el("span", {class:"en"}, en) : null), control,
+    hint ? el("span", {class:"hint"}, hint) : null);
+  const input = (value, set, ph, id) => {
+    const i = el("input", {type:"text", placeholder: ph || "", id: id || null});
+    i.value = value || "";
+    i.oninput = () => set(i.value);
+    return i;
+  };
+  rows.push(field(T["adr.title"] || "", "", input(f.title, v => { f.title = v; }, T["adr.title.ph"] || "", "adrtitle"),
+    T["adr.title.hint"] || ""));
+  const section = x => {
+    const key = ADR_SECTIONS[x.heading.toLowerCase()];
+    const a = el("textarea", {rows: x.level === 3 ? "3" : "4", placeholder: key ? (T["adr.sec." + key + ".ph"] || "") : "",
+      "data-heading": x.heading});
+    a.value = f.sections[x.heading] || "";
+    a.oninput = () => { f.sections[x.heading] = a.value; };
+    return field(key ? (T["adr.sec." + key] || x.heading) : x.heading, key ? x.heading : "", a,
+      key ? (T["adr.sec." + key + ".hint"] || "") : x.hint);
+  };
+  for (const x of fields.filter(x => !x.optional)) rows.push(section(x));
+  const people = (k, hint) => field(T["adr.front." + k] || k, k, input(f.front[k], v => { f.front[k] = v; }, "", null), hint);
+  rows.push(people("decision-makers", T["adr.front.decision-makers.hint"] || ""));
+  rows.push(people("consulted", T["adr.front.consulted.hint"] || ""));
+  // What a record may have: folded until somebody writes in it
+  const optional = fields.filter(x => x.optional);
+  const filled = optional.filter(x => (f.sections[x.heading] || "").trim()).length + ((f.front.informed || "").trim() ? 1 : 0);
+  const more = el("details", {class:"adropt"},
+    el("summary", {}, (T["adr.optional"] || "").replaceAll("{n}", optional.length + 1)),
+    el("div", {class:"fields"}, ...optional.map(section), people("informed", T["adr.front.informed.hint"] || "")));
+  if (filled || f.drafted) more.open = true;
+  rows.push(more);
+  const fresh = !f.file;
+  askQuestion({
+    title: fresh ? (f.supersedes ? (T["adr.form.replace"] || "") : (T["adr.form.new"] || "")) : (T["adr.form.edit"] || ""),
+    say: (fresh ? (T["adr.form.say.new"] || "") : (T["adr.form.say.edit"] || "")).replaceAll("{dir}", AD.dir).replaceAll("{file}", f.file),
+    rows,
+    label: T["adr.save"] || "",
+    also: fresh || f.status === "proposed" || !f.status ? {label: T["adr.save.propose"] || "", act: () => adrSave(f, "propose")} : null,
+    check: () => adrCheck(f),
+    go: () => adrSave(f, ""),
+    // Put away without saving: a draft still on its way has nowhere to go
+    back: () => { if (AD.form === f) AD.form = null; },
+  });
+  // Held only once the question is up: asking it again puts the last one away
+  AD.form = f;
+  document.getElementById("sask").classList.add("adrform");
+  if (why) adrFormWhy(why);
+  // Opened at its top, where the title and the draft are, whatever has focus
+  setTimeout(() => {
+    const t = document.getElementById("adrtitle");
+    if (t && !f.title) t.focus();
+    const list = document.querySelector("#sask .blist");
+    if (list) list.scrollTop = 0;
+  }, 0);
+}
+
+// What stops a save: a record has a title and says what it is about. The
+// box to fill is pointed at, as well as named (style guide 5.4)
+function adrCheck(f) {
+  const point = box => {
+    if (!box) return;
+    box.scrollIntoView({block: "nearest"});
+    box.classList.remove("lookhere");
+    void box.offsetWidth;
+    box.classList.add("lookhere");
+    box.focus();
+  };
+  if (AD.busy === "draft") return T["adr.draft.wait"] || "";
+  if (!f.title.trim()) {
+    point(document.getElementById("adrtitle"));
+    return T["err.adr.no_title"] || "";
+  }
+  const first = (f.fields || []).find(x => !x.optional);
+  if (first && !(f.sections[first.heading] || "").trim()) {
+    point([...document.querySelectorAll("#sask textarea[data-heading]")].find(t => t.dataset.heading === first.heading));
+    const key = ADR_SECTIONS[first.heading.toLowerCase()];
+    return (T["adr.need"] || "").replaceAll("{section}", key ? (T["adr.sec." + key] || first.heading) : first.heading);
+  }
+  return "";
+}
+
+function adrSave(f, then) {
+  f.then = then;
+  AD.form = f;
+  AD.busy = "save";
+  // One spelling for every character, the one the file system and git agree on
+  const N = s => String(s || "").normalize("NFC");
+  const front = [];
+  // A new record is a proposal, written today: it is decided afterwards
+  if (!f.file) front.push({key:"status", value:"proposed"}, {key:"date", value: adrToday()});
+  for (const k of ["decision-makers", "consulted", "informed"]) front.push({key: k, value: N(f.front[k]).trim()});
+  adrAsk("save", {file: f.file || "", mark: f.mark || "", supersedes: f.supersedes || "", title: N(f.title).trim(),
+    front, sections: (f.fields || []).map(x => ({heading: x.heading, body: N(f.sections[x.heading])}))});
+  AD.said = T["adr.saving"] || "";
+  AD.bad = false;
+  AD.prUrl = "";
+  AD.rev++;
+  drawAdr();
+}
+
 function drawPorts() {
   const box = document.getElementById("portpanel");
   if (!box || box.hidden) return;
@@ -11191,7 +11789,8 @@ function applyCarryLines(b, lines) {
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
     if (typingIME(e)) return;
-    if (e.key === "Enter" && sAskGo) {
+    // A box of prose takes Enter as a new line, not as the answer
+    if (e.key === "Enter" && sAskGo && !(e.target && e.target.tagName === "TEXTAREA")) {
       e.preventDefault();
       const focused = document.activeElement;
       if (focused && focused.tagName === "BUTTON") focused.click(); else sAskGo();
@@ -13755,6 +14354,7 @@ function phoneWidth() {
 const SIDE_PANELS = [
   ["files", () => T["tui.side.files"] || "Files", k => k !== "browser" && !!folderTab()],
   ["git", () => T["tui.side.git"] || "Git", k => k !== "browser" && !!repoTab()],
+  ["adr", () => T["tui.side.adr"] || "ADR", k => k !== "browser" && !!adrTab()],
   ["convo", () => T["tui.side.convo"] || "Chat", k => k === "ai"],
   ["console", () => T["tui.side.console"] || "Console", k => k === "browser"],
   ["picks", () => T["tui.side.picks"] || "Picked elements", null],
@@ -15831,6 +16431,10 @@ function drawSide() {
   // What listens in the folder the column stands on
   const ports = document.getElementById("portpanel");
   if (ports) ports.hidden = sidePanel !== "ports" || !at;
+  // The decision records of the project the folder is part of
+  const adrAt = adrTab();
+  const adrBox = document.getElementById("adrpanel");
+  if (adrBox) adrBox.hidden = sidePanel !== "adr" || !adrAt;
   // What pages saved stands on nothing: it is the same list whatever is in front
   const dl = document.getElementById("dlpanel");
   if (dl) dl.hidden = sidePanel !== "downloads";
@@ -15847,6 +16451,7 @@ function drawSide() {
     : sidePanel === "downloads" ? ""
     : !at ? (T["tui.side.notab"] || "")
     : (sidePanel === "git" && !repo) ? (T["tui.side.norepo"] || "")
+    : (sidePanel === "adr" && !adrAt) ? (T["adr.off"] || "")
     : "";
   if (missing) {
     if (!note) { note = el("div", {class:"sempty"}); body.append(note); }
@@ -15869,6 +16474,11 @@ function drawSide() {
   if (sidePanel === "console") drawConsole();
   if (sidePanel === "picks") drawPicks();
   if (sidePanel === "ports") drawPorts();
+  if (sidePanel === "adr" && adrAt) {
+    const g = ((S && S.groups) || [])[adrAt.group];
+    if (AD.key !== (adrAt.id || adrAt.name || "") + "|" + g.adr) adrReset(adrAt, g.adr);
+    else drawAdr();
+  }
   if (sidePanel === "downloads") drawDownloads();
 }
 
@@ -17612,6 +18222,7 @@ if (REMOTE) {
     // waits for ever -- which is what both of them did
     if (d.git) window.__git(d.git);
     if (d.files) window.__files(d.files);
+    if (d.adr) window.__adr(d.adr);
     if (d.console) window.__console(d.console);
     if (d.convo) window.__convo(d.convo);
     if (d.issues) window.__issues(d.issues);
@@ -22413,9 +23024,23 @@ let sAskGo = null, sAskBack = null;
 // it the other button is Cancel, which is `back`
 // `also` is a second answer beside the main one, for a question with two ways
 // forward ("try again" beside "take it off the list"): {label, act}
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, also, go, back}) {
+//
+// `check` is asked before either answer is acted on, for a question with
+// something to fill in: the reason nothing can be done yet, or "". A reason
+// keeps the question up and is written above the buttons (style guide 5.4)
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, also, go, back, check}) {
   const box = document.getElementById("sask");
   box.hidden = false;
+  // Whatever a form put on the frame last time is its own, not this question's
+  box.classList.remove("adrform");
+  const refused = () => {
+    const why = check ? check() : "";
+    if (!why) return false;
+    const say = box.querySelector(".swhy");
+    say.textContent = why;
+    say.hidden = false;
+    return true;
+  };
   box.querySelector(".vtitle").textContent = title;
   box.querySelector(".vsay").textContent = say;
   const where = box.querySelector(".bwhere");
@@ -22448,7 +23073,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const other = box.querySelector(".brow > .also");
   other.hidden = !also;
   other.textContent = also ? also.label : "";
-  other.onclick = also ? () => { sAskBack = null; closeAsk(true); also.act(); } : null;
+  other.onclick = also ? () => { if (refused()) return; sAskBack = null; closeAsk(true); also.act(); } : null;
   const btn = box.querySelector(".brow > .go");
   btn.textContent = label;
   btn.classList.toggle("stop", !!danger);
@@ -22491,6 +23116,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
       sureIn.focus();
       return;
     }
+    if (refused()) return;
     sAskBack = null;
     closeAsk();
     go(input.value.trim(), !!never && unasked.checked);

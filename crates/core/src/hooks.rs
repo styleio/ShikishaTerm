@@ -1703,6 +1703,12 @@ end
 function shikisha.tab_conversation(tab, opts)
   return { accepted = true, state = shikisha.state(tab) }
 end
+-- The decision records of the caller's project. Answered by the app loop
+-- when it comes through the pipe or MCP (the records may be on another
+-- machine); what runs here is only the check that the call may be made
+function shikisha.adr_list()
+  return { accepted = true }
+end
 -- The tabs of this desk, as another tab's AI addresses them
 function shikisha.tab_list()
   error("tab_list is answered by the app through the pipe or MCP")
@@ -1984,6 +1990,57 @@ end
 local said, why = shikisha.ai_ask(prompt)
 if not said then error(why) end
 return said
+"#;
+
+/// A question put to the assistant AI, its answer handed back as it was
+/// written. The prompt comes whole: what it is asked from (the decision
+/// records, for the panel that asks) is put in before it gets here
+pub const ASK_LUA: &str = r#"
+local said, why = shikisha.ai_ask(shikisha.get_var("ask_prompt") or "")
+if not said then error(why) end
+return said
+"#;
+
+/// A decision record proposed in a pull request: the record's file alone
+/// committed, pushed, and a pull request opened for it, with the same
+/// commands a person's own automation has. On a protected branch the record
+/// gets a branch of its own first, into the branch it was standing on;
+/// anywhere else it goes on the branch in front, into the one that branch
+/// was cut from. Returns the pull request as JSON
+pub const ADR_PROPOSE_LUA: &str = r#"
+local tab    = shikisha.get_var("adr_tab")
+local file   = shikisha.get_var("adr_file")
+local branch = shikisha.get_var("adr_branch")
+-- Only the record goes into the commit: something else already staged is
+-- somebody's other work, and a proposal must not carry it along
+for _, row in ipairs(shikisha.git_status(tab)) do
+  if row.staged and row.path ~= file then
+    error(shikisha.tf("err.adr.other_staged", { path = row.path }))
+  end
+end
+local here = shikisha.git_branch(tab)
+if not here then error(shikisha.t("err.adr.detached")) end
+local head, base = here.name, nil
+if here.protected then
+  base = here.name
+  shikisha.git_branch_create(tab, branch)
+  head = branch
+else
+  if here.base and here.base ~= "" then
+    base = here.base:gsub("^origin/", "")
+  end
+  if not base or base == "" then error(shikisha.t("err.adr.no_base")) end
+end
+shikisha.git_stage(tab, file)
+shikisha.git_commit(tab, shikisha.get_var("adr_message"))
+shikisha.git_push(tab)
+local pr = shikisha.github_pr_create(tab, {
+  title = shikisha.get_var("adr_title"),
+  body  = shikisha.get_var("adr_body"),
+  head  = head,
+  base  = base,
+})
+return shikisha.json_encode({ number = pr.number, url = pr.url, branch = head, base = base })
 "#;
 
 /// The instruction allowance of the entry into Lua that is currently running.
@@ -6305,6 +6362,8 @@ mod tests {
         for (what, code) in [
             ("commit message", super::COMMIT_MESSAGE_LUA),
             ("draft", super::DRAFT_LUA),
+            ("question", super::ASK_LUA),
+            ("decision record proposal", super::ADR_PROPOSE_LUA),
             ("folder label", super::LABEL_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {

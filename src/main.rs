@@ -603,6 +603,10 @@ impl WinSurface {
     fn push_files(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__files && window.__files({json});"));
     }
+    /// Hand one answer back to the column's decision records (already JSON-encoded)
+    fn push_adr(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__adr && window.__adr({json});"));
+    }
     fn push_console(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__console && window.__console({json});"));
     }
@@ -916,6 +920,7 @@ impl WinSurface {
                 Ev::Git { panel, act, args } => self.mail.gits.push((panel, act, args)),
                 Ev::GitAccount { panel, account } => self.mail.git_accounts.push((panel, account)),
                 Ev::Files { panel, act, args } => self.mail.files.push((panel, act, args)),
+                Ev::Adr { panel, act, args } => self.mail.adr.push((panel, act, args)),
                 Ev::Issues { act, args } => self.mail.issues.push((act, args)),
                 Ev::OpenIssues => self.mail.open_issues = true,
                 Ev::EditOpen { panel, path, diff } => self.mail.edits.push((panel, path, diff)),
@@ -2154,6 +2159,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn open_ideas(&self) { WinSurface::open_ideas(self) }
     fn push_git(&self, json: &str) { WinSurface::push_git(self, json) }
     fn push_files(&self, json: &str) { WinSurface::push_files(self, json) }
+    fn push_adr(&self, json: &str) { WinSurface::push_adr(self, json) }
     fn push_console(&self, json: &str) { WinSurface::push_console(self, json) }
     fn push_convo(&self, json: &str) { WinSurface::push_convo(self, json) }
     fn push_issues(&self, json: &str) { WinSurface::push_issues(self, json) }

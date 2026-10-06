@@ -544,6 +544,11 @@ pub struct GroupState {
     /// heading, a machine to each part, rather than as projects side by side
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whole: Option<String>,
+    /// Where the project this folder is part of keeps its decision records,
+    /// inside the folder, when it keeps them: what puts the ADR panel in the
+    /// column beside it. Absent for every other folder
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adr: Option<String>,
     /// The branch this folder is on. Worn by the checkout's heading when it
     /// has branches under it, so the row that is the project says which
     /// branch the project itself is standing on
@@ -644,6 +649,7 @@ impl GroupState {
                     linked: t.place.linked,
                     family: t.place.family.as_ref().map(|f| f.display().to_string()),
                     whole: None,
+                    adr: None,
                     branch: t.place.branch.clone(),
                     // Filled in by whoever is drawing: whether a folder is
                     // here, and how far it has drifted, are questions for the
@@ -693,6 +699,7 @@ impl GroupState {
                     linked: family.is_some(),
                     family,
                     whole: None,
+                    adr: None,
                     branch: None,
                     health: Default::default(),
                     drift: Default::default(),
