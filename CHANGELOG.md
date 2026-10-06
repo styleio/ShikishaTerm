@@ -47,6 +47,11 @@ once it reaches its first tagged release.
   `shikisha.downloads()`.
 
 ### Fixed
+- **The git panel's columns can no longer be dragged too narrow to use.** The
+  middle column (the commit box and its buttons) keeps at least 300px and the
+  branch list 120px, so a width once dragged down to a sliver, and kept, is
+  drawn wide enough again. A double press on a column's edge puts it back to
+  the width it ships with.
 - **A tab whose terminal ended just before the background process went is
   told it ended.** A terminal this PC's background process (or the SHIKISHA
   bridge on a server) kept, ending in the moment before that process itself

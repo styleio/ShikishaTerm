@@ -20885,7 +20885,15 @@ function gitBuild(box) {
 // How wide each pane is, in pixels or percent as the person left it. Kept in
 // the browser rather than in the settings file: it is where somebody dragged a
 // line on this screen, not a decision about the app
-let gitSize = {branches:170, mid:38, log:55, about:42};
+const GIT_SIZE_DEF = {branches:170, mid:38, log:55, about:42};
+let gitSize = Object.assign({}, GIT_SIZE_DEF);
+// The narrowest each pane may be dragged, in pixels, and the room it leaves
+// the pane after it. The middle holds the commit box and its buttons, the
+// branches their names: at 60px neither can be read or pressed, and a width
+// dragged that far was kept for good. Held here at drawing time too, so a
+// width saved before these floors existed draws as the floor
+const GIT_MIN = {branches:120, mid:300};
+const GIT_ROOM = {branches:300, mid:200};
 try {
   const saved = JSON.parse(localStorage.getItem("shikishaGitPanes") || "null");
   if (saved && typeof saved === "object") gitSize = Object.assign(gitSize, saved);
@@ -20897,6 +20905,9 @@ function saveGitSize() {
 // whether that number is pixels or a percentage of what is around it
 function grip(vertical, key, unit, target) {
   const g = el("div", {class:"grip " + (vertical ? "v" : "h")});
+  // A double press puts it back to the width it ships with, as the tab bar's
+  // and the right column's edges do
+  g.ondblclick = e => { e.preventDefault(); gitSize[key] = GIT_SIZE_DEF[key]; applyGitSize(); saveGitSize(); };
   g.addEventListener("pointerdown", e => {
     e.preventDefault();
     const box = target();
@@ -20909,7 +20920,7 @@ function grip(vertical, key, unit, target) {
     g.setPointerCapture(e.pointerId);
     const move = ev => {
       const now = (vertical ? ev.clientX : ev.clientY) - at + from;
-      const px = Math.max(60, Math.min(now, whole - 60));
+      const px = Math.max(GIT_MIN[key] || 60, Math.min(now, whole - (GIT_ROOM[key] || 60)));
       gitSize[key] = unit === "%" ? (px / Math.max(whole, 1)) * 100 : px;
       applyGitSize();
     };
@@ -20950,6 +20961,8 @@ function applyGitSize() {
   const narrow = document.getElementById("gitpanel").classList.contains("narrow");
   u.branchCol.style.flex = narrow ? "" : "0 0 " + gitSize.branches + "px";
   u.mid.style.flex = narrow ? "" : "0 0 " + gitSize.mid + "%";
+  u.branchCol.style.minWidth = narrow ? "" : GIT_MIN.branches + "px";
+  u.mid.style.minWidth = narrow ? "" : GIT_MIN.mid + "px";
   u.log.style.flex = narrow ? "" : "0 0 " + gitSize.log + "%";
   u.about.style.flex = narrow ? "" : "0 0 " + gitSize.about + "%";
 }
