@@ -1177,6 +1177,8 @@
   "page.lock.say": "使うには、マスターパスワードを入力してください。ここで解除すると、PC の画面のロックも解除されます。",
   "page.lock.field": "マスターパスワード",
   "page.lock.board_password": "このボードのパスワード",
+  "page.lock.board_wrong": "このボードのパスワードが違います。もう一度入力してください。",
+  "page.lock.board_first": "このボードのパスワードも入力してください。",
   "page.lock.go": "ロックを解除",
   "page.lock.wrong": "パスワードが違います。もう一度入力してください。",
   "page.lock.wait": "続けて間違えたため、{n}秒待ってからもう一度お試しください。",

@@ -1175,6 +1175,8 @@
   "page.lock.say": "Enter the master password to use it. Unlocking here unlocks the PC's screen too.",
   "page.lock.field": "Master password",
   "page.lock.board_password": "This board's password",
+  "page.lock.board_wrong": "This board's password is wrong. Please try again.",
+  "page.lock.board_first": "Enter this board's password as well.",
   "page.lock.go": "Unlock",
   "page.lock.wrong": "Wrong password. Please try again.",
   "page.lock.wait": "Too many tries in a row. Wait {n} seconds, then try again.",

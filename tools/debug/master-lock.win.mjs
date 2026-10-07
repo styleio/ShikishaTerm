@@ -111,6 +111,9 @@ async function connect(target, name) {
 // Start the copy with these settings; the window's page once it is up
 // One port for every start: a phone's saved key lives with the address
 const PORT = await freePort();
+// Where the door listens: this machine (default), or --bind <address> -- a
+// Tailscale address reaches it the way a phone on the tailnet does
+const BIND = process.argv.includes('--bind') ? process.argv[process.argv.indexOf('--bind') + 1] : '127.0.0.1';
 async function start({ split = false, boardPassword = '' } = {}) {
   stopApp();
   // The resident process can outlive one round of taskkill (it is started apart)
@@ -119,7 +122,7 @@ async function start({ split = false, boardPassword = '' } = {}) {
   const port = PORT;
   fs.writeFileSync(CONFIG, JSON.stringify({
     language: JA ? 'ja' : 'en',
-    remote: split ? { enabled: false } : { enabled: true, bind: '127.0.0.1', port, sticky_token: true, fixed_token: PHONE_KEY, password: boardPassword },
+    remote: split ? { enabled: false } : { enabled: true, bind: BIND, port, sticky_token: true, fixed_token: PHONE_KEY, password: boardPassword },
     split,
     external_api: { access: "user" },
     agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
@@ -195,7 +198,7 @@ try {
   check(s.up && s.note === L['prompt.password.retry'], 'a wrong password asks again with another note: ' + s.note);
 
   console.log('2. the phone opens it');
-  const base = `http://127.0.0.1:${port}`;
+  const base = `http://${BIND}:${port}`;
   const r0 = await fetch(`${base}/?t=${PHONE_KEY}`, { redirect: 'manual' });
   const cookies = r0.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
   const get = (p) => fetch(base + p, { headers: { Cookie: cookies }, redirect: 'manual' });
@@ -239,25 +242,29 @@ try {
 
   console.log('2b. after a restart, the phone already paired opens it');
   // The app starts again: every session it gave is gone, and the board has a
-  // password of its own as well. The phone comes back on the bare address
+  // password of its own as well. The phone comes back on the bare address,
+  // the way a person reopens a tab, and types as a person would
   ({ board } = await start({ boardPassword: 'aikotoba' }));
   await until(async () => (await lockState(board)).up, 'the lock on the window', 30000);
   await phone.send('Page.navigate', { url: `${base}/` });
-  await until(() => phone.run('!!document.getElementById("pw") && location.search.includes("t=")'), 'the link opened again on its own', 20000).catch(() => {});
-  check(await phone.run('location.search.includes("t=")'), 'with no session, the lock page opens the link of the board again by itself');
-  await sleep(1500);
-  check(await phone.run('document.getElementById("said").textContent === "" && !document.getElementById("pw").disabled'), 'and is ready to be typed in: ' + await phone.run('document.getElementById("said").textContent'));
-  const lbl = () => phone.run('document.getElementById("lbl").textContent');
-  await press(PASSWORD);
-  await until(async () => (await lbl()) === L['page.lock.board_password'], 'asked for the password of the board', 15000).catch(() => {});
-  check((await lbl()) === L['page.lock.board_password'], 'the password of the board itself is asked first: ' + await lbl());
-  await press('aikotoba');
-  await until(async () => (await lbl()) === L['page.lock.field'], 'back to the master password', 15000).catch(() => {});
-  await press(PASSWORD);
+  await until(() => phone.run('!!document.getElementById("pw") && !document.getElementById("bbox").hidden'), 'both fields', 20000).catch(() => {});
+  check(await phone.run('!document.getElementById("bbox").hidden'), 'the password of the board is asked beside the master password, before anything is typed');
+  check(await phone.run('document.getElementById("said").textContent === "" && !document.getElementById("pw").disabled'), 'nothing says the device is cut: ' + await phone.run('document.getElementById("said").textContent'));
+  await phone.shot('2b-locked');
+  const fill = (b, m) => phone.run(`(() => { document.getElementById("bpw").value = ${JSON.stringify(b)}; document.getElementById("pw").value = ${JSON.stringify(m)}; document.getElementById("go").click(); return true; })()`);
+  const saidNow = () => phone.run('document.getElementById("said").textContent');
+  await fill('nope', PASSWORD);
+  await until(async () => (await saidNow()) !== '', 'told', 15000).catch(() => {});
+  check((await saidNow()) === L['page.lock.board_wrong'], 'a wrong board password is told as that: ' + await saidNow());
+  await fill('aikotoba', 'not it');
+  await until(async () => (await saidNow()) === L['page.lock.wrong'], 'told wrong', 15000).catch(() => {});
+  check((await saidNow()) === L['page.lock.wrong'], 'then a wrong master password is told as that: ' + await saidNow());
+  check(await phone.run('document.getElementById("bbox").hidden'), 'the board password, once taken, is not asked again');
+  await phone.run(`(() => { document.getElementById("pw").value = ${JSON.stringify(PASSWORD)}; document.getElementById("go").click(); return true; })()`);
   await until(async () => !(await lockState(board)).up, 'the window opened', 20000).catch(() => {});
-  check(!(await lockState(board)).up, 'then the master password opens the app');
+  check(!(await lockState(board)).up, 'the master password opens the app');
   await until(() => phone.run('typeof S !== "undefined" && !!S && S.tabs.length > 0'), 'the board on the phone', 20000).catch(() => {});
-  check(await phone.run('typeof S !== "undefined" && !!S && S.tabs.length > 0').catch(() => false), 'and the board comes back on the phone');
+  check(await phone.run('typeof S !== "undefined" && !!S && S.tabs.length > 0').catch(() => false), 'and the board comes back on the phone, without opening the link again');
   await phone.shot('2b-opened');
 
   console.log('3. the window opens it');

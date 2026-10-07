@@ -18,11 +18,13 @@ once it reaches its first tagged release.
 ### Fixed
 - **A phone unlocks the master password lock after the PC has started
   again.** A phone already paired that came back to the lock page was told
-  it was disconnected, since the sessions the PC gave ended with the program;
-  the lock page now opens the board's link again by itself, as the board's own
-  Reconnect does, and then asks for the board's password and the master
-  password. The door is also locked from its very first request, so a phone
-  reloading the page as the app starts is not handed the board.
+  it was disconnected, since the sessions the PC gave ended with the program.
+  Its own key now lets it open the lock (and nothing else), and opening it
+  lets it back on the board. When the board has a password of its own, the
+  lock page asks for it beside the master password from the start, rather
+  than one field that changed what it asked for. The door is also locked from
+  its very first request, so a phone reloading the page as the app starts is
+  not handed the board.
 
 ## [0.26.0] - 2026-10-06
 

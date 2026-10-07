@@ -1735,8 +1735,13 @@ impl RemoteUi {
     /// Lock this door with the app's master password: from now until
     /// `unlock`, it answers the lock page and the unlock and nothing else --
     /// the board, its state, the settings and the reply links included
+    ///
+    /// Locking a door already locked changes nothing: a door started locked
+    /// ([`start_locked`](Self::start_locked)) is locked again by the loop
+    /// that holds the lock, and a try made in between is still waiting for
+    /// its answer -- replaced, it was told "nobody answered"
     pub fn lock(&self) {
-        *self.gate.master.lock().unwrap_or_else(|e| e.into_inner()) = Some(MasterLock::default());
+        self.gate.master.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(MasterLock::default);
     }
 
     /// The lock is gone. A try still waiting is told it did not open anything,
@@ -2198,7 +2203,14 @@ fn sealed_peer(ip: &std::net::IpAddr) -> bool {
 ///   POST /api/unlock   {password}        a try: "ok", 403 "wrong" or "plain"
 ///                                         (a line others can read), 429 "wait"
 ///   anything else      423 "locked"
-fn locked_door(req: tiny_http::Request, gate: &Arc<Gate>, method: &str, path: &str) -> Result<()> {
+fn locked_door(
+    req: tiny_http::Request,
+    gate: &Arc<Gate>,
+    method: &str,
+    path: &str,
+    session: &str,
+    owner: Option<String>,
+) -> Result<()> {
     let sealed = sealed_line(&req);
     let plain = |s: &str, code: u16| {
         Response::from_string(s.to_string())
@@ -2211,6 +2223,7 @@ fn locked_door(req: tiny_http::Request, gate: &Arc<Gate>, method: &str, path: &s
         }
         ("POST", "/api/unlock") => {
             if !sealed {
+                crate::append_hook_log("remote: locked door: a try over a line others can read, refused");
                 return req.respond(plain("plain", 403)).map_err(Into::into);
             }
             let waiting = gate.master_misses.lock().unwrap_or_else(|e| e.into_inner()).wait_at(Instant::now());
@@ -2226,17 +2239,29 @@ fn locked_door(req: tiny_http::Request, gate: &Arc<Gate>, method: &str, path: &s
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             let given = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_string();
             match gate.try_master(&given) {
+                // Opened: the device that opened it is handed a session, if
+                // it came without one, so the board it loads next lets it in
                 Some(true) => {
                     gate.master_misses.lock().unwrap_or_else(|e| e.into_inner()).forgive();
-                    req.respond(plain("ok", 200))?;
+                    crate::append_hook_log("remote: locked door: opened with the master password");
+                    let mut resp = plain("ok", 200);
+                    if !gate.granted(session) {
+                        let id = gate.grants.keep_for(session, owner);
+                        resp = resp.with_header(Header::from_bytes(&b"Set-Cookie"[..], session_cookie(&id).as_bytes()).unwrap());
+                    }
+                    req.respond(resp)?;
                 }
                 Some(false) => {
                     gate.master_misses.lock().unwrap_or_else(|e| e.into_inner()).missed_at(Instant::now());
+                    crate::append_hook_log("remote: locked door: a wrong master password");
                     req.respond(plain("wrong", 403))?;
                 }
                 // Unlocked meanwhile on another screen, or nobody answered:
                 // the page asks whether the lock is still there
-                None => req.respond(plain("again", 503))?,
+                None => {
+                    crate::append_hook_log("remote: locked door: a try nobody answered");
+                    req.respond(plain("again", 503))?
+                }
             }
         }
         _ => {
@@ -2260,13 +2285,18 @@ fn lock_page(sealed: bool) -> String {
         "board": crate::i18n::t("page.lock.board_password"),
         "master": crate::i18n::t("page.lock.field"),
         "cut": crate::i18n::t("page.lock.cut"),
+        "board_wrong": crate::i18n::t("page.lock.board_wrong"),
+        "board_first": crate::i18n::t("page.lock.board_first"),
     });
     let body = match sealed {
         true => format!(
-            r#"<label for="pw" id="lbl">{field}</label>
+            r#"<div id="bbox" hidden><label for="bpw">{board}</label>
+<input id="bpw" type="password" autocomplete="off"></div>
+<label for="pw">{field}</label>
 <input id="pw" type="password" autocomplete="current-password" autofocus>
 <div id="said" role="status"></div>
 <div class="foot"><button id="go" class="primary">{go}</button></div>"#,
+            board = t("page.lock.board_password"),
             field = t("page.lock.field"),
             go = t("page.lock.go"),
         ),
@@ -2293,6 +2323,8 @@ label {{ display:block; font-size:12px; margin-bottom:var(--s2); }}
 input {{ box-sizing:border-box; width:100%; height:36px; padding:0 var(--s3); font:inherit; color:var(--text);
   background:var(--bg); border:1px solid var(--line); border-radius:var(--r-ctl); outline:none; }}
 input:focus {{ border-color:var(--brand); }}
+#bbox {{ margin-bottom:var(--s3); }}
+#bbox[hidden] {{ display:none; }}
 #said {{ min-height:1.6em; margin-top:var(--s2); font-size:11.5px; color:var(--stop); }}
 .warn {{ padding:var(--s3); border:1px solid var(--warn); border-radius:var(--r-ctl); color:var(--text); }}
 .foot {{ display:flex; justify-content:flex-end; margin-top:var(--s3); }}
@@ -2306,15 +2338,17 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
 (function () {{
   const W = {words};
   const pw = document.getElementById("pw"), go = document.getElementById("go"), said = document.getElementById("said");
+  // The board's own password, when it has one: asked beside the master's,
+  // both in view at once, rather than one field that changes what it asks for
+  const bbox = document.getElementById("bbox"), bpw = document.getElementById("bpw");
   // The board's key, where the board keeps it (its link, or what the board
   // put away from it): a screen that holds no device key of its own -- this
   // PC's window, when the program is split in two -- is let in on it alone
   const KEY = (() => {{ try {{ return new URLSearchParams(location.search).get("t")
     || sessionStorage.getItem("shikisha_token") || localStorage.getItem("shikisha_token") || ""; }} catch (e) {{ return ""; }} }})();
   const at = p => KEY ? p + "?t=" + encodeURIComponent(KEY) : p;
-  // This device holds its key but no session -- the PC started again, and a
-  // session lives only as long as the program that gave it -- so the board's
-  // link is opened again, as the board's own "Reconnect" does. Once: a key the
+  // A key the door does not take: the board's link is opened again with the
+  // key the board keeps, as the board's own "Reconnect" does. Once: a key the
   // door no longer takes would only come back here, and is told so instead
   const REOPENED = "shikisha_lock_reopened";
   const reopen = () => {{
@@ -2329,15 +2363,22 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
     if (reopen()) return;
     if (said) said.textContent = W.cut;
     if (pw) pw.disabled = true;
+    if (bpw) bpw.disabled = true;
     if (go) go.disabled = true;
   }};
+  const askBoard = () => {{
+    if (!bbox || !bbox.hidden) return;
+    bbox.hidden = false;
+    bpw.focus();
+  }};
   // Unlocked on another screen: the board comes back here too. Asked as the
-  // page opens as well, so a device that has to open the link again does so
-  // before anybody types
+  // page opens as well, so what this device has to give is known before
+  // anybody types
   const watch = () => fetch(at("api/locked"), {{cache:"no-store"}})
     .then(async r => {{
       if (r.ok) {{ try {{ sessionStorage.removeItem(REOPENED); }} catch (e) {{}} return r.json(); }}
       const why = await r.text().catch(() => "");
+      if (r.status === 403 && why === "password") askBoard();
       if (r.status === 403 && (why === "cut" || why === "forbidden")) cut();
       return null;
     }})
@@ -2345,22 +2386,37 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
   watch();
   setInterval(watch, 2000);
   if (!go) return;
-  // The board's own password comes first when it has one, then the master's
-  let board = false;
+  const post = (path, password) => fetch(at(path), {{method:"POST", cache:"no-store",
+    headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{password}})}});
+  // Said in words; true when the answer was one of these
+  const told = (r, why) => {{
+    if (why === "cut" || why === "forbidden") {{ cut(); return true; }}
+    if (r.status === 429) {{ said.textContent = W.wait.replaceAll("{{n}}", r.headers.get("Retry-After") || "60"); return true; }}
+    return false;
+  }};
   const ask = async () => {{
-    const text = pw.value;
-    if (!text) {{ pw.focus(); return; }}
+    const board = bbox && !bbox.hidden;
+    if (board && !bpw.value) {{ bpw.focus(); return; }}
+    if (!pw.value) {{ pw.focus(); return; }}
     go.disabled = true; said.textContent = "";
     try {{
-      const r = await fetch(at(board ? "auth" : "api/unlock"), {{method:"POST", cache:"no-store",
-        headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{password: text}})}});
+      // The board's password first, when it asks for one
+      if (board) {{
+        const r = await post("auth", bpw.value);
+        const why = await r.text().catch(() => "");
+        if (!r.ok) {{
+          if (told(r, why)) return;
+          said.textContent = why === "wrong" ? W.board_wrong : W.again;
+          bpw.select();
+          return;
+        }}
+        bbox.hidden = true;
+      }}
+      const r = await post("api/unlock", pw.value);
       const why = await r.text().catch(() => "");
-      if (r.ok && board) {{ board = false; pw.value = ""; document.getElementById("lbl").textContent = W.master; return; }}
       if (r.ok) {{ location.reload(); return; }}
-      if (why === "password") {{ board = true; pw.value = ""; document.getElementById("lbl").textContent = W.board; return; }}
-      // Cut, or a key the door no longer takes: the link has to be opened again
-      if (why === "cut" || why === "forbidden") {{ cut(); return; }}
-      if (r.status === 429) {{ said.textContent = W.wait.replaceAll("{{n}}", r.headers.get("Retry-After") || "60"); return; }}
+      if (why === "password") {{ askBoard(); said.textContent = W.board_first; return; }}
+      if (told(r, why)) return;
       if (why === "again") {{ said.textContent = W.again; watch(); return; }}
       said.textContent = W.wrong;
       pw.select();
@@ -2368,7 +2424,9 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
     finally {{ go.disabled = false; }}
   }};
   go.onclick = ask;
-  pw.addEventListener("keydown", e => {{ if (e.key === "Enter" && !e.isComposing) {{ e.preventDefault(); ask(); }} }});
+  for (const f of [pw, bpw]) {{
+    if (f) f.addEventListener("keydown", e => {{ if (e.key === "Enter" && !e.isComposing) {{ e.preventDefault(); ask(); }} }});
+  }}
 }})();
 </script></body></html>"#,
         lang = esc(&crate::i18n::lang()),
@@ -3015,7 +3073,19 @@ fn handle(
     // to be the runtime's token, which is what a device presents exactly once
     let device_key = cookie_value(&req, "rk");
     let by = opened_by(&device_key, &token).or_else(|| opened_by(&supplied, &token));
+    // The routes that open the master password lock; while it is up, what
+    // happens to them is written down, so a device that cannot open it can
+    // be asked about afterwards. Nothing else is: a locked board is polled
+    let lock_route = gate.locked()
+        && matches!((method.as_str(), path.as_str()), ("GET", "/api/locked") | ("POST", "/api/unlock") | ("POST", "/auth"));
     let Some(by) = by else {
+        if lock_route {
+            crate::append_hook_log(&format!(
+                "remote: locked door: {method} {path} refused, no key it knows (device key {}, link key {})",
+                if device_key.is_empty() { "none" } else { "unknown" },
+                if supplied.is_empty() { "none" } else { "not this board's" }
+            ));
+        }
         return req
             .respond(Response::from_string("forbidden").with_status_code(403))
             .map_err(Into::into);
@@ -3028,11 +3098,22 @@ fn handle(
     // caller holding the right token but no live session was cut (or never
     // opened the link): the body says so, and the phone puts up its ⛔ screen
     // rather than sitting in front of a picture that stopped being true.
-    if !gate.granted(&session) {
+    //
+    // Locked with the master password, the lock's own routes are the
+    // exception: a session lives only as long as the program that gave it,
+    // so every device coming back after the PC started again has a key and
+    // no session -- and the PC, locked, is not there to open the link from.
+    // The key still has to be good; the session is handed over when the lock
+    // opens (`locked_door`)
+    if !gate.granted(&session) && !lock_route {
         return req
             .respond(Response::from_string("cut").with_status_code(403))
             .map_err(Into::into);
     }
+    let owner = match &by {
+        Opener::Paired(who) => Some(who.id.clone()),
+        Opener::Pairing => None,
+    };
 
     // Then the optional password. A phone that has the token and a session but
     // hasn't presented the password yet may do exactly one thing: trade the
@@ -3086,7 +3167,7 @@ fn handle(
     // everything else "locked", which a board already open reads as "load
     // the page again" -- and is handed the lock page
     if gate.locked() {
-        return locked_door(req, gate, &method, &path);
+        return locked_door(req, gate, &method, &path, &session, owner);
     }
 
     // The settings screen, reverse-proxied to the loopback config server. The
@@ -4332,6 +4413,57 @@ mod tests {
         assert_eq!(right, (200, "ok".to_string()));
         assert_eq!(phone.status("/api/state"), 200, "the board stayed shut after the lock was opened");
         assert!(phone.text("/").contains("const AT_PC"), "the board did not come back");
+        ui.shutdown();
+    }
+
+    /// A phone paired before the PC started again comes back with its key and
+    /// no session -- a session lives as long as the program that gave it --
+    /// and the PC, locked, is not there to open the link from. Its key lets it
+    /// ask about the lock and open it, nothing else; opening it hands over the
+    /// session the board then needs
+    #[test]
+    fn a_paired_phone_opens_the_lock_after_the_pc_started_again() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let tok = "tok123456789012";
+        let first = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, tok.into(), String::new()).unwrap();
+        let base = first.url.split("/?").next().unwrap().to_string();
+        let port: u16 = base.rsplit(':').next().unwrap().parse().unwrap();
+        let mut phone = Phone::new(&base);
+        phone.pair(tok);
+        first.shutdown();
+        // Started again, locked: the key is kept, the session is not
+        let ui = RemoteUi::start_locked("127.0.0.1".parse().unwrap(), port, tok.into(), String::new(), false).unwrap();
+        phone.cookie = phone.cookie.split("; ").filter(|c| !c.starts_with("rs=")).collect::<Vec<_>>().join("; ");
+        assert_eq!(phone.status("/api/locked"), 200, "the key alone did not let the phone ask about the lock");
+        assert_eq!(phone.said("/api/state"), (403, "cut".to_string()), "the key alone let the phone at the board");
+        let base_again = base.clone();
+        let cookie = phone.cookie.clone();
+        let trying = std::thread::spawn(move || {
+            let mut p = Phone::new(&base_again);
+            p.cookie = cookie;
+            let mut r = p.post("/api/unlock", r#"{"password":"open sesame"}"#);
+            let set: Vec<String> = r.headers().get_all("set-cookie").iter().filter_map(|v| v.to_str().ok()).map(|v| v.split(';').next().unwrap().to_string()).collect();
+            (r.status().as_u16(), r.body_mut().read_to_string().unwrap_or_default(), set)
+        });
+        // The loop that holds the lock locks the door again as it takes it
+        // over, with the try already waiting: the try is still answered
+        std::thread::sleep(Duration::from_millis(300));
+        ui.lock();
+        while !trying.is_finished() {
+            for (given, answer) in ui.take_unlock_tries() {
+                let ok = given == "open sesame";
+                let _ = answer.send(ok);
+                if ok {
+                    ui.unlock();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let (status, body, set) = trying.join().unwrap();
+        assert_eq!((status, body.as_str()), (200, "ok"), "the right password from a paired phone did not open it");
+        let session = set.iter().find(|c| c.starts_with("rs=")).expect("no session handed over with the opening");
+        phone.also(session);
+        assert_eq!(phone.status("/api/state"), 200, "the board did not let the phone in after it opened the lock");
         ui.shutdown();
     }
 
