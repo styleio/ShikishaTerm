@@ -22,7 +22,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
+#[cfg(windows)]
+use std::sync::mpsc::Sender;
 
 use shikisha_core::ws::{self, Op};
 
@@ -187,7 +189,9 @@ fn serve(stream: TcpStream, key: &str, tell: tao::event_loop::EventLoopProxy<Cmd
 }
 
 /// The window's half: which session each screen speaks through, and the
-/// messages it said before that session existed
+/// messages it said before that session existed. Spoken through the page's
+/// own DevTools protocol, which is the engine's (WebView2 on Windows)
+#[cfg(windows)]
 #[derive(Default)]
 pub struct Screens {
     open: std::collections::HashMap<u64, Screen>,
@@ -197,12 +201,14 @@ pub struct Screens {
 /// attach answer later, on the window's thread, and the screen can be closed
 /// in between: a session that arrives for a screen already gone must be let
 /// go at once, or it stays attached to the page with nobody to detach it
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Default)]
 struct Attach {
     session: Option<String>,
     closed: bool,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl Attach {
     /// The page answered with a session. `Some` is a session to let go of
     /// straight away: its screen closed while it was on its way
@@ -222,6 +228,7 @@ impl Attach {
     }
 }
 
+#[cfg(windows)]
 struct Screen {
     to: Option<String>,
     /// The session attached for this screen, once the page has said which
@@ -232,6 +239,7 @@ struct Screen {
     webview: webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2,
 }
 
+#[cfg(windows)]
 impl Screens {
     /// A screen connected for a page: attach a session of its own, and send
     /// it everything that session says
@@ -320,6 +328,7 @@ impl Screens {
     }
 }
 
+#[cfg(windows)]
 impl Screen {
     fn let_go(self) {
         let sid = self.session.borrow_mut().close();
@@ -332,10 +341,12 @@ impl Screen {
     }
 }
 
+#[cfg(windows)]
 fn detach(webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, sid: &str) {
     crate::browser::cdp::call(webview, "Target.detachFromTarget", &serde_json::json!({"sessionId": sid}).to_string());
 }
 
+#[cfg(windows)]
 fn say(webview: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2, sid: &str, text: &str) {
     let params = serde_json::json!({"sessionId": sid, "message": text}).to_string();
     crate::browser::cdp::call(webview, "Target.sendMessageToTarget", &params);

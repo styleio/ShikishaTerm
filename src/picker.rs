@@ -80,6 +80,10 @@ fn raise_own_dialog() {
     });
 }
 
+/// Elsewhere a dialog the program opens comes to the front of its own accord
+#[cfg(not(windows))]
+fn raise_own_dialog() {}
+
 /// This desktop, seen as somewhere a person can point at a file.
 pub struct DesktopPicker;
 

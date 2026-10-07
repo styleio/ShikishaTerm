@@ -72,6 +72,15 @@ pub enum Quit {
     StopAll,
 }
 
+/// Which button of the quit question was pressed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pressed {
+    Yes,
+    No,
+    /// Cancel, or the dialog closed without an answer
+    Neither,
+}
+
 impl QuitAsk {
     /// Whether there is anything to ask about
     pub fn worth_asking(&self) -> bool {
@@ -82,6 +91,22 @@ impl QuitAsk {
     /// question a three-way one (go and leave it running, stop it all, stay)
     pub fn goes_on(&self) -> bool {
         !self.kept.is_empty() || self.here > 0
+    }
+
+    /// What the button pressed means, on whichever system asked: Yes and No,
+    /// and a third (Cancel) when something goes on running. The question's
+    /// words say the same of each button (`msg.quit.kept_buttons`)
+    pub fn answered(&self, pressed: Pressed) -> Quit {
+        let quit = match (pressed, self.goes_on()) {
+            (Pressed::Yes, _) => Quit::Yes,
+            (Pressed::No, true) => Quit::StopAll,
+            _ => Quit::No,
+        };
+        crate::append_hook_log(&format!(
+            "quit asked ({} at work, kept {:?}, {} on this PC): {quit:?}",
+            self.busy, self.kept, self.here
+        ));
+        quit
     }
 
     /// The question, in the words of the language on screen
