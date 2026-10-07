@@ -1225,7 +1225,7 @@ pub mod store {
     pub fn waiting() -> Result<bool> {
         use windows::Services::Store::StoreContext;
         let ctx = StoreContext::GetDefault().context("reach the Store")?;
-        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync().and_then(|op| op.get()).context("ask the Store for updates")?;
+        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync().and_then(|op| op.join()).context("ask the Store for updates")?;
         Ok(updates.Size()? > 0)
     }
 
@@ -1269,7 +1269,7 @@ pub mod store {
         let ctx = StoreContext::GetDefault()?;
         let init: IInitializeWithWindow = ctx.cast()?;
         unsafe { init.Initialize(windows::Win32::Foundation::HWND(hwnd as *mut _))? };
-        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync()?.get()?;
+        let updates = ctx.GetAppAndOptionalStorePackageUpdatesAsync()?.join()?;
         if updates.Size()? == 0 {
             bail!("the Store holds no update now");
         }
@@ -1280,7 +1280,7 @@ pub mod store {
             set_phase(Phase::Applying { version: None, done, total: 100 });
             Ok(())
         }))?;
-        let result = op.get()?;
+        let result = op.join()?;
         match result.OverallState()? {
             StorePackageUpdateState::Completed => Ok(()),
             StorePackageUpdateState::Canceled => bail!("cancelled"),

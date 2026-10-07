@@ -30,6 +30,21 @@ public static class ShotWindow {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+  public delegate bool EachWindow(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EachWindow f, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  // The largest window of the process that is showing. Not the one the system
+  // calls its main window: the window library keeps a visible 16x16 window of
+  // its own for its messages, and which of the two is "main" changes with the
+  // order they were last brought forward in
+  public static IntPtr Largest(uint pid) {
+    IntPtr best = IntPtr.Zero; long area = 0;
+    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); RECT r;
+      if (p == pid && IsWindowVisible(h) && GetWindowRect(h, out r)) { long a = (long)(r.R - r.L) * (r.B - r.T); if (a > area) { area = a; best = h; } }
+      return true; }, IntPtr.Zero);
+    return best;
+  }
 }
 "@
 if ($ProcessId) {
@@ -48,12 +63,14 @@ if ($ProcessId) {
          Select-Object -First 1
     if (-not $p) { throw "no window for a copy of the app under $Under" }
 }
+$hwnd = [ShotWindow]::Largest([uint32]$p.Id)
+if ($hwnd -eq [IntPtr]::Zero) { throw "process $($p.Id) shows no window" }
 $r = New-Object ShotWindow+RECT
-[void][ShotWindow]::GetWindowRect($p.MainWindowHandle, [ref]$r)
+[void][ShotWindow]::GetWindowRect($hwnd, [ref]$r)
 $bmp = New-Object System.Drawing.Bitmap ($r.R - $r.L), ($r.B - $r.T)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
-[void][ShotWindow]::PrintWindow($p.MainWindowHandle, $hdc, 2)
+[void][ShotWindow]::PrintWindow($hwnd, $hdc, 2)
 $g.ReleaseHdc($hdc); $g.Dispose()
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
