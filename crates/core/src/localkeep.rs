@@ -45,8 +45,8 @@ fn mark() -> String {
 
 /// The resident process's folder
 pub fn home() -> Result<PathBuf> {
-    let base = std::env::var_os("LOCALAPPDATA").ok_or_else(|| anyhow!("LOCALAPPDATA is not set"))?;
-    Ok(PathBuf::from(base).join("ShikishaTerm").join("keeper").join(mark()))
+    let base = crate::machine_data_dir().ok_or_else(|| anyhow!("this system names no folder for a program's own things"))?;
+    Ok(base.join("ShikishaTerm").join("keeper").join(mark()))
 }
 
 fn keep_door() -> Result<PathBuf> {

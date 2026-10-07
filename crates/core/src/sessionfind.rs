@@ -85,35 +85,7 @@ pub fn folders_seen(spec: &RecordSpec, since: SystemTime, most: usize) -> Vec<St
     out
 }
 
-/// Whether two paths name the same folder.
-///
-/// Spelled out rather than left to `==`, because Windows hands the same folder
-/// back in whatever spelling it likes and none of the differences mean
-/// anything: a config says `D:/Simic2`, the CLI writes down `D:\Simic2`, and
-/// the disk itself may hold `D:\simic2` — Windows will open all three. Compared
-/// as written, they are three folders, and a tab whose folder was spelled with
-/// the wrong case simply never found its conversation, silently, forever.
-///
-/// On Windows the case and the direction of the separators decide nothing, so
-/// both are folded away. On every other system they decide everything: two
-/// names differing in case are two folders, and a backslash is an ordinary
-/// character in a name. Folding there would quietly hand one conversation to a
-/// tab working somewhere else.
-pub fn same_folder(a: &Path, b: &Path) -> bool {
-    let key = |p: &Path| -> Vec<String> {
-        p.components()
-            .map(|c| {
-                let part = c.as_os_str().to_string_lossy().to_string();
-                match cfg!(windows) {
-                    true => part.replace('\\', "/").to_lowercase(),
-                    false => part,
-                }
-            })
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
-    key(a) == key(b)
-}
+pub use crate::same_folder;
 
 /// Whether the record of one conversation is still there.
 ///
@@ -316,12 +288,7 @@ fn walk(dir: &Path, depth: usize, since: SystemTime) -> Vec<PathBuf> {
     out
 }
 
-fn expand(path: &str) -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    PathBuf::from(path.replace("{home}", &home))
-}
+use crate::with_home as expand;
 
 #[cfg(test)]
 mod tests {
@@ -374,7 +341,9 @@ mod tests {
         let same = |a: &str, b: &str| same_folder(Path::new(a), Path::new(b));
         assert!(same("/home/dev/simic2/", "/home/dev/simic2"), "a trailing separator does not matter");
         assert!(same("/home/dev/./simic2", "/home/dev/simic2"), "putting 'here' in between is the same");
-        assert!(!same("/home/dev/Simic2", "/home/dev/simic2"), "a different case is a different folder");
+        // Case is the one thing the system decides: a Mac opens either spelling
+        assert_eq!(same("/home/dev/Simic2", "/home/dev/simic2"), cfg!(target_os = "macos"), "case");
+        assert!(!same(r"/home/dev\simic2", "/home/dev/simic2"), "a backslash is part of a name here");
         assert!(!same("/home/dev/simic2", "/home/dev/simic"), "a different folder is a different folder");
         assert!(!same("/home/dev/a/simic2", "/home/dev/simic2"), "a different depth means different");
     }

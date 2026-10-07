@@ -9,12 +9,18 @@
 
 use super::{Allowance, Limits, Span, Window};
 
-/// Where Cursor keeps its things on Windows
+/// Where Cursor keeps its things: the folder an editor of its kind keeps its
+/// settings in on each system
 fn cursor_dir() -> Option<std::path::PathBuf> {
-    match std::env::var_os("APPDATA") {
-        Some(d) if !d.is_empty() => Some(std::path::PathBuf::from(d).join("Cursor")),
-        _ => Some(super::home()?.join("AppData").join("Roaming").join("Cursor")),
-    }
+    let set = |k: &str| std::env::var_os(k).filter(|d| !d.is_empty()).map(std::path::PathBuf::from);
+    let base = if cfg!(windows) {
+        set("APPDATA").or_else(|| Some(super::home()?.join("AppData").join("Roaming")))
+    } else if cfg!(target_os = "macos") {
+        crate::machine_data_dir()
+    } else {
+        set("XDG_CONFIG_HOME").or_else(|| Some(super::home()?.join(".config")))
+    };
+    Some(base?.join("Cursor"))
 }
 
 fn token_in_agent_file(dir: &std::path::Path) -> Option<String> {

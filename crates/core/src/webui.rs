@@ -184,10 +184,11 @@ pub fn install_page(prog: &str) -> Option<String> {
 /// and falls back to opening a file window instead).
 #[cfg(not(windows))]
 pub fn open_external(url: &str) {
-    // `xdg-open` is the agreement on Linux desktops; on a server there is
-    // nothing to open with, and the failure is quiet on purpose -- nobody is
-    // sitting there to be told
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    // `open` on a Mac. `xdg-open` is the agreement on Linux desktops; on a
+    // server there is nothing to open with, and the failure is quiet on
+    // purpose -- nobody is sitting there to be told
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(opener).arg(url).spawn();
 }
 
 #[cfg(windows)]
@@ -208,8 +209,9 @@ pub fn open_external(url: &str) {
     }
 }
 
-/// Best-effort Windows version string for a bug report (the field is optional).
-fn windows_version() -> String {
+/// Best-effort version of the system for a bug report (the field is optional).
+#[cfg(windows)]
+fn os_version() -> String {
     std::process::Command::new("cmd")
         .args(["/C", "ver"])
         .output()
@@ -217,6 +219,13 @@ fn windows_version() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The same away from Windows: the system's own name and version
+/// (`macOS 15.4 Sequoia`, `Linux 24.04 Ubuntu`)
+#[cfg(not(windows))]
+fn os_version() -> String {
+    sysinfo::System::long_os_version().unwrap_or_default()
 }
 
 /// The GitHub "new bug report" URL, pre-filled with the build and OS so the
@@ -231,7 +240,7 @@ fn bug_report_url() -> String {
     format!(
         "https://github.com/styleio/ShikishaTerm/issues/new?template=bug_report.yml&version={}&windows={}",
         pct(&version),
-        pct(&windows_version())
+        pct(&os_version())
     )
 }
 
@@ -458,12 +467,12 @@ fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String
 /// The place to open first. ~/.ssh for a key, the config's location for a folder
 fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
     if kind == "key"
-        && let Some(home) = std::env::var_os("USERPROFILE") {
-            let ssh = std::path::PathBuf::from(&home).join(".ssh");
+        && let Some(home) = crate::home_dir() {
+            let ssh = home.join(".ssh");
             if ssh.is_dir() {
                 return Some(ssh);
             }
-            return Some(std::path::PathBuf::from(home));
+            return Some(home);
         }
     config_path.parent().map(std::path::Path::to_path_buf)
 }

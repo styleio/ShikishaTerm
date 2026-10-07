@@ -370,7 +370,7 @@ fn now_ms() -> i64 {
 
 /// The home folder, as every CLI here finds its own under it
 fn home() -> Option<std::path::PathBuf> {
-    std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()).map(std::path::PathBuf::from)
+    crate::home_dir()
 }
 
 /// A folder a CLI lets its own variable move, or where it keeps it otherwise

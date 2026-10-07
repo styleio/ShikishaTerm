@@ -195,9 +195,15 @@ fn still_running(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(not(windows))]
+/// Asked of the system with the signal that sends nothing: it answers
+/// whether the process is there, on Linux and on a Mac alike. One that is
+/// there but belongs to another account refuses, and is still there
+#[cfg(unix)]
 fn still_running(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    let Ok(pid) = i32::try_from(pid) else { return false };
+    // SAFETY: signal 0 is only a question; nothing is sent
+    let there = unsafe { libc::kill(pid, 0) } == 0;
+    there || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Ask the machine what happened to that run.
@@ -491,6 +497,19 @@ fn written_by<'a>(log: &'a str, mark: &Mark) -> Vec<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This very process runs; one that has ended does not
+    #[test]
+    fn a_process_is_running_while_it_is_there_and_not_after() {
+        assert!(still_running(std::process::id()));
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd.exe" } else { "true" })
+            .args(if cfg!(windows) { &["/c", "exit"][..] } else { &[][..] })
+            .spawn()
+            .expect("it cannot start");
+        let gone = child.id();
+        child.wait().unwrap();
+        assert!(!still_running(gone), "a process that ended is taken to run");
+    }
 
     fn crashed(when: &str, pid: u32, code: &str, message: &str) -> serde_json::Value {
         serde_json::json!({ "when": when, "pid": pid, "code": code, "message": message })

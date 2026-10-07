@@ -40,9 +40,7 @@ pub fn root() -> PathBuf {
 
 /// Beside everything else this program keeps for itself.
 fn real_root() -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = crate::machine_data_dir().unwrap_or_else(std::env::temp_dir);
     base.join("ShikishaTerm").join("exchange")
 }
 

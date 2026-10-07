@@ -610,7 +610,7 @@ impl Terms {
         let mut cmd = command_of(m)?;
         if let Some(cwd) = m["cwd"].as_str().filter(|c| !c.is_empty()) {
             cmd.cwd(cwd);
-        } else if let Ok(home) = std::env::var("HOME") {
+        } else if let Some(home) = crate::home_dir() {
             cmd.cwd(home);
         }
         if let Some(env) = m["env"].as_object() {

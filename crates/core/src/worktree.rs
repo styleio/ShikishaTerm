@@ -2851,11 +2851,7 @@ fn tidy_posix(path: &str) -> String {
 /// there would be a worktree inside the project it is a worktree of: git
 /// takes it, and every tool that walks the checkout walks into it
 pub fn inside_checkout(main: &Path, folder: &Path) -> bool {
-    let key = |p: &Path| {
-        let s = crate::repo::tidy(p.to_path_buf()).to_string_lossy().replace('\\', "/");
-        let s = s.trim_end_matches('/').to_string();
-        if cfg!(windows) { s.to_lowercase() } else { s }
-    };
+    let key = |p: &Path| crate::folder_key(&crate::repo::tidy(p.to_path_buf()));
     let (m, f) = (key(main), key(folder));
     f == m || f.starts_with(&format!("{m}/"))
 }
@@ -3411,23 +3407,13 @@ fn real_branches_root() -> PathBuf {
 
 /// The person's own folder, as this system spells it.
 fn home_dir() -> Option<PathBuf> {
-    for key in ["USERPROFILE", "HOME"] {
-        let Ok(said) = std::env::var(key) else { continue };
-        let at = PathBuf::from(said.trim());
-        if at.is_dir() {
-            return Some(at);
-        }
-    }
-    None
+    crate::home_dir().filter(|at| at.is_dir())
 }
 
 /// The place for branches that cannot sit in the person's own folder. Ours,
 /// per machine, and never synced anywhere
 fn away_from_home() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = crate::machine_data_dir().unwrap_or_else(std::env::temp_dir);
     base.join("SHIKISHA-TERM").join("worktrees")
 }
 

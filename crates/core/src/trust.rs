@@ -186,10 +186,7 @@ fn unwrapped(said: &str) -> String {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_default()
+    crate::home_dir().unwrap_or_default()
 }
 
 /// Whether this exact folder is already written down, so that saying yes twice

@@ -88,6 +88,7 @@ pub mod lastsession;
 pub mod layout;
 pub mod limits;
 pub mod localpage;
+pub mod loginpath;
 pub mod mailbox;
 pub mod mcp;
 pub mod migrate;
@@ -404,6 +405,110 @@ pub fn local_path(win: &str) -> String {
     }
 }
 
+/// The person's own folder, as this system names it: `USERPROFILE` on
+/// Windows, `HOME` everywhere else. Every place that needs it asks here, so
+/// a system where one of them is missing is answered the same way throughout
+/// (reading only `USERPROFILE` once left Linux with no home at all)
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    home_in(|k| std::env::var_os(k))
+}
+
+/// The same, given the environment, so a test can ask what it would answer
+pub(crate) fn home_in(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let keys: &[&str] = if cfg!(windows) { &["USERPROFILE", "HOME"] } else { &["HOME"] };
+    keys.iter().filter_map(|k| env(k)).find(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// A path a profile wrote with `{home}` in it, with the home folder put in.
+/// `{home}` is the only thing a profile may stand in for: a profile that
+/// could name any path would be naming a file to overwrite
+pub fn with_home(path: &str) -> std::path::PathBuf {
+    let home = home_dir().unwrap_or_default();
+    std::path::PathBuf::from(path.replace("{home}", &home.to_string_lossy()))
+}
+
+/// Whether this system's folder names ignore the case of their letters:
+/// Windows, and a Mac, whose disks are made that way unless somebody chose
+/// otherwise. On Linux `Work` and `work` are two folders
+pub const FOLDERS_IGNORE_CASE: bool = cfg!(any(windows, target_os = "macos"));
+
+/// A path as the folder it names is known here, for comparing: the parts it
+/// is made of, `.` left out and a trailing separator with it; on Windows the
+/// direction of the slashes folded away, and where names ignore case, the
+/// case. Everywhere else a backslash is an ordinary character in a name
+pub fn folder_key(p: &std::path::Path) -> String {
+    let parts: Vec<String> = p
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .map(|c| {
+            let part = c.as_os_str().to_string_lossy();
+            match cfg!(windows) {
+                true => part.replace('\\', "/"),
+                false => part.into_owned(),
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    let key = parts.join("/");
+    match FOLDERS_IGNORE_CASE {
+        true => key.to_lowercase(),
+        false => key,
+    }
+}
+
+/// Whether two paths name the same folder.
+///
+/// Spelled out rather than left to `==`, because a system hands the same
+/// folder back in whatever spelling it likes: a config says `D:/Simic2`, the
+/// CLI writes down `D:\Simic2`, and the disk itself may hold `D:\simic2` --
+/// Windows opens all three, and a Mac opens `~/Work` as `~/work`. Compared as
+/// written they are three folders, and a tab whose folder was spelled with
+/// the wrong case never found its conversation, silently, forever. Where the
+/// case does decide (Linux), folding it would hand one folder's things to
+/// another
+pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    folder_key(a) == folder_key(b)
+}
+
+/// Where this system keeps a program's own things for one person on one
+/// machine, never synced: `%LOCALAPPDATA%` on Windows, `~/Library/Application
+/// Support` on a Mac, `$XDG_DATA_HOME` (or `~/.local/share`) on Linux. Each
+/// caller names its own folder inside
+pub fn machine_data_dir() -> Option<std::path::PathBuf> {
+    data_home(|k| std::env::var_os(k))
+}
+
+/// The same, given the environment, so a test can ask what it would answer
+pub(crate) fn data_home(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    if cfg!(windows) {
+        set("LOCALAPPDATA")
+    } else if cfg!(target_os = "macos") {
+        Some(home_in(&env)?.join("Library").join("Application Support"))
+    } else {
+        set("XDG_DATA_HOME").or_else(|| Some(home_in(&env)?.join(".local").join("share")))
+    }
+}
+
+/// The same folder written another way this system accepts, for a test that
+/// checks a folder is known however it is spelled: a separator on the end,
+/// and where names ignore case, every letter's case turned over. On Linux the
+/// case is the name, so it is left as it is
+#[cfg(test)]
+pub fn respelled(path: &str) -> String {
+    let turned: String = match FOLDERS_IGNORE_CASE {
+        true => path
+            .chars()
+            .map(|c| match c.is_uppercase() {
+                true => c.to_lowercase().next().unwrap_or(c),
+                false => c.to_uppercase().next().unwrap_or(c),
+            })
+            .collect(),
+        false => path.to_string(),
+    };
+    format!("{turned}{}", std::path::MAIN_SEPARATOR)
+}
+
 /// The commit this was built from, as the board's footer shows it.
 ///
 /// Stamped by this crate's build script, so a runtime with no window anywhere
@@ -529,6 +634,32 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// The home folder and the folder for a program's own things, as each
+    /// system names them, asked of a made-up environment
+    #[test]
+    fn each_system_names_its_own_home_and_its_own_place_for_programs() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
+        };
+        let both = env(&[("USERPROFILE", "/u/win"), ("HOME", "/u/unix"), ("LOCALAPPDATA", "/u/win/local"), ("XDG_DATA_HOME", "/u/xdg")]);
+        let home = super::home_in(&both).unwrap();
+        let data = super::data_home(&both).unwrap();
+        if cfg!(windows) {
+            assert_eq!(home, std::path::PathBuf::from("/u/win"));
+            assert_eq!(data, std::path::PathBuf::from("/u/win/local"));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(home, std::path::PathBuf::from("/u/unix"));
+            assert_eq!(data, std::path::PathBuf::from("/u/unix/Library/Application Support"));
+        } else {
+            assert_eq!(home, std::path::PathBuf::from("/u/unix"));
+            assert_eq!(data, std::path::PathBuf::from("/u/xdg"));
+            assert_eq!(super::data_home(env(&[("HOME", "/u/unix")])).unwrap(), std::path::PathBuf::from("/u/unix/.local/share"));
+        }
+        // An empty variable is no answer, and neither is none at all
+        assert_eq!(super::home_in(env(&[("HOME", ""), ("USERPROFILE", "")])), None);
+        assert_eq!(super::home_in(|_: &str| None), None);
+    }
+
     #[test]
     #[should_panic(expected = "refusing to create a token")]
     fn token_generation_has_no_predictable_fallback() {

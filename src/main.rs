@@ -153,6 +153,9 @@ fn say_fatally_with_page(text: &str, url: &str) {
 static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
 
 fn main() -> Result<()> {
+    // Started from the Finder on a Mac, it would otherwise know only the
+    // system's own programs. First, while no other thread is running
+    shikisha_core::loginpath::adopt();
     // This process owns a desktop, so it is the one that can put a banner on it.
     // Told once, before anything has cause to send one
     notify::use_local_banners(Box::new(wintoast::WindowsBanners));

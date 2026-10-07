@@ -83,6 +83,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // Started by launchd on a Mac, it would otherwise know only the
+    // system's own programs
+    shikisha_core::loginpath::adopt();
     // A device is let in here by a code from `shikisha-server pair`, never
     // for bringing the board's key in its link (far-keep plan §6.2)
     shikisha_core::pairing::let_in_by_code_only();

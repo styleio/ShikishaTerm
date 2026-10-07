@@ -470,8 +470,10 @@ pub fn daemon(home: PathBuf) -> Result<()> {
     std::fs::create_dir_all(&run)?;
     #[cfg(unix)]
     std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700))?;
-    let keep = run.join(KEEP_SOCK);
-    let tabs = run.join(TABS_SOCK);
+    // Where the doors really are: a folder too deep for a socket's name has
+    // them elsewhere, and what is looked for, removed and tidied is that
+    let keep = crate::keepipe::door(&run.join(KEEP_SOCK));
+    let tabs = crate::keepipe::door(&run.join(TABS_SOCK));
 
     // Who becomes resident. On a unix machine: whoever, under the lock, finds
     // nobody on the socket and binds it. On Windows the pipe's name is the

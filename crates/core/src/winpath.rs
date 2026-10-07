@@ -38,7 +38,7 @@ pub fn from_osc7(payload: &str) -> Option<Said> {
     }
     // A bare path (ConEmu's spelling, and some shells' idea of OSC 7)
     let Some(rest) = payload.strip_prefix("file://") else {
-        return here(payload);
+        return here(payload).or_else(|| posix_here(payload));
     };
     // file://<host>/<path>. The host is the machine the path belongs to -- and
     // under WSL it is the distribution's name, which is exactly what is needed
@@ -49,9 +49,7 @@ pub fn from_osc7(payload: &str) -> Option<Said> {
     };
     let host = percent_decode(host);
     let path = percent_decode(path);
-    let local = host.is_empty()
-        || host.eq_ignore_ascii_case("localhost")
-        || host.eq_ignore_ascii_case(&hostname());
+    let local = host.is_empty() || host.eq_ignore_ascii_case("localhost") || same_machine(&host, &hostname());
     if let Some(said) = here(&path) {
         // A drive letter reads the same from anywhere and means something
         // different: another machine's D: is not this one's, and there is no
@@ -59,7 +57,7 @@ pub fn from_osc7(payload: &str) -> Option<Said> {
         return local.then_some(said);
     }
     if local || !path.starts_with('/') {
-        return None;
+        return local.then(|| posix_here(&path)).flatten();
     }
     Some(Said::Somewhere { host, path })
 }
@@ -78,6 +76,21 @@ fn here(path: &str) -> Option<Said> {
         return Some(Said::Here(path.to_string()));
     }
     None
+}
+
+/// A POSIX path a shell on this machine said, away from Windows: a path
+/// here as it stands. On Windows it is never one -- `/home/me` there is a
+/// folder inside some distribution, and only the name it came with says which
+fn posix_here(path: &str) -> Option<Said> {
+    (!cfg!(windows) && path.starts_with('/')).then(|| Said::Here(path.to_string()))
+}
+
+/// Whether the name a shell gave is this machine's. A Mac's shell says the
+/// name with its `.local` on (`Mac-mini.local`) and the system may answer
+/// without it, so the first part of each is enough when the whole is not
+fn same_machine(said: &str, mine: &str) -> bool {
+    let first = |n: &str| n.split('.').next().unwrap_or_default().to_ascii_lowercase();
+    !mine.is_empty() && (said.eq_ignore_ascii_case(mine) || first(said) == first(mine))
 }
 
 /// The Windows path for a directory inside one of this machine's WSL
@@ -113,8 +126,14 @@ fn drive_at(s: &str) -> bool {
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
+#[cfg(windows)]
 fn hostname() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn hostname() -> String {
+    sysinfo::System::host_name().unwrap_or_default()
 }
 
 /// %XX back into bytes, then read as UTF-8.
@@ -182,10 +201,33 @@ mod tests {
         );
         // A drive letter announced by another machine is that machine's drive
         assert_eq!(from_osc7("file://build-server/D:/proj"), None);
-        // Without a name there is nothing to resolve against: "/home/me" is a
-        // folder on every Linux there has ever been
-        assert_eq!(from_osc7("file:///home/me/src"), None);
-        assert_eq!(from_osc7("/home/me/src"), None);
+        if cfg!(windows) {
+            // Without a name there is nothing to resolve against: "/home/me" is a
+            // folder on every Linux there has ever been
+            assert_eq!(from_osc7("file:///home/me/src"), None);
+            assert_eq!(from_osc7("/home/me/src"), None);
+        }
+    }
+
+    /// Away from Windows a shell's own POSIX path is a path here, however its
+    /// name for this machine is spelled
+    #[cfg(not(windows))]
+    #[test]
+    fn a_shell_here_says_where_it_is_in_its_own_terms() {
+        let at = |p: &str| Some(Said::Here(p.to_string()));
+        assert_eq!(from_osc7("file:///Users/me/My%20Work"), at("/Users/me/My Work"));
+        assert_eq!(from_osc7("file://localhost/tmp"), at("/tmp"));
+        assert_eq!(from_osc7(&format!("file://{}/srv/app", hostname())), at("/srv/app"));
+        assert_eq!(from_osc7("/home/me/src"), at("/home/me/src"));
+    }
+
+    #[test]
+    fn this_machines_name_is_known_with_or_without_its_domain() {
+        assert!(same_machine("Mac-mini.local", "Mac-mini"));
+        assert!(same_machine("mac-mini", "Mac-mini.local"));
+        assert!(same_machine("BUILD", "build"));
+        assert!(!same_machine("build-server", "Mac-mini"));
+        assert!(!same_machine("anything", ""), "a machine that knows no name of its own matches nothing");
     }
 
     #[test]

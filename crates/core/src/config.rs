@@ -5257,11 +5257,34 @@ pub fn append_folder_starting(
     append_folder_at(&config_file_path(), desk_name, like, cwd, name, start, host)
 }
 
+/// The shell a terminal on this machine opens with when nothing else is
+/// said, as (the name shown, the command). PowerShell on Windows. Elsewhere
+/// the person's own shell, the one `$SHELL` names (zsh on a Mac unless they
+/// changed it), and the system's own when that is not set
+pub fn machine_shell() -> (String, String) {
+    if cfg!(windows) {
+        return ("PowerShell".into(), "powershell.exe".into());
+    }
+    let command = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.into());
+    let name = command.rsplit('/').next().unwrap_or(&command).to_string();
+    (name, command)
+}
+
 /// The tab a folder opens with when nothing else is said: the shell chosen
 /// under Basic > Default command. Git Bash is looked for where Git for Windows
-/// puts it; a PC without it gets PowerShell rather than a tab that cannot start
+/// puts it; a PC without it gets PowerShell rather than a tab that cannot start.
+/// The choices are Windows' own; elsewhere it is this machine's shell
 pub fn default_shell_start(which: Option<&str>) -> Start {
-    let powershell = || Start::One { name: "PowerShell".into(), command: "powershell.exe".into() };
+    let powershell = || {
+        let (name, command) = machine_shell();
+        Start::One { name, command }
+    };
+    if !cfg!(windows) {
+        return powershell();
+    }
     match which.map(str::trim).unwrap_or_default() {
         "cmd" => Start::One { name: crate::i18n::t("shell.cmd"), command: "cmd.exe".into() },
         "gitbash" => match git_bash() {
@@ -6844,15 +6867,17 @@ pub fn root_dir() -> std::path::PathBuf {
     .clone()
 }
 
-/// The same question on Linux, where "beside the program" is often nowhere to
-/// write.
+/// The same question on Linux and on a Mac, where "beside the program" is
+/// often nowhere to write.
 ///
 /// A folder someone unpacked and runs out of keeps the portable promise: its
 /// settings are the ones sitting beside it. A copy installed by `install.sh`
 /// is at `/usr/local/bin/shikisha-server`, which belongs to root, so its things
 /// go where a person's things go on this system -- `XDG_DATA_HOME`, and
-/// `~/.local/share` when that is not set. `SHIKISHA_HOME` overrides both, for
-/// running several boxes on one machine.
+/// `~/.local/share` when that is not set. On a Mac the program sits inside
+/// its signed `.app`, where writing would break the signature, and a person's
+/// things go in `~/Library/Application Support`. `SHIKISHA_HOME` overrides
+/// all of these, for running several boxes on one machine.
 ///
 /// Taking the environment as an argument so this can be asked what it would
 /// answer, rather than only what it answers here.
@@ -6867,12 +6892,11 @@ fn unpacked_root(
     if beside.join("config").is_dir() || beside.join("config.json").is_file() {
         return beside.to_path_buf();
     }
-    let data = env("XDG_DATA_HOME")
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| env("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("share")));
-    match data {
-        Some(d) => d.join("shikisha"),
+    // The name each system's own programs go by there: lower case among the
+    // dot-folders of Linux, the product's own name among a Mac's
+    let name = if cfg!(target_os = "macos") { "SHIKISHA-TERM" } else { "shikisha" };
+    match crate::data_home(env) {
+        Some(d) => d.join(name),
         // No home to speak of. Beside the program is where it has always been,
         // and a failure to write there is at least a failure in one place
         None => beside.to_path_buf(),
@@ -8861,13 +8885,15 @@ mod tests {
 
         // Installed: the program is root's and the person's things are not
         let bin = std::path::Path::new("/usr/local/bin");
-        assert_eq!(
-            unpacked_root(bin, env(&[("HOME", "/home/dev")])),
-            std::path::PathBuf::from("/home/dev/.local/share/shikisha")
-        );
+        let (installed, conventional) = match cfg!(target_os = "macos") {
+            // A Mac has one place for them, and no variable that moves it
+            true => ("/home/dev/Library/Application Support/SHIKISHA-TERM", "/home/dev/Library/Application Support/SHIKISHA-TERM"),
+            false => ("/home/dev/.local/share/shikisha", "/srv/things/shikisha"),
+        };
+        assert_eq!(unpacked_root(bin, env(&[("HOME", "/home/dev")])), std::path::PathBuf::from(installed));
         assert_eq!(
             unpacked_root(bin, env(&[("HOME", "/home/dev"), ("XDG_DATA_HOME", "/srv/things")])),
-            std::path::PathBuf::from("/srv/things/shikisha"),
+            std::path::PathBuf::from(conventional),
             "it ignored this machine's convention"
         );
 
@@ -9244,7 +9270,7 @@ mod tests {
         let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&elsewhere)), None, NewFolder::Refused)
             .expect_err("a folder the desk does not have");
         assert!(said.contains("else"), "{said}");
-        let respelled = format!("{}{}", proj.to_uppercase(), std::path::MAIN_SEPARATOR);
+        let respelled = crate::respelled(&proj);
         add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&respelled)), None, NewFolder::Refused)
             .expect("the same folder, spelled another way");
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
@@ -10966,11 +10992,19 @@ mod browser_kind_tests {
     #[test]
     fn a_folder_opens_with_the_default_command() {
         use crate::config::{Start, command_value, default_shell_start};
-        assert_eq!(default_shell_start(None), Start::One { name: "PowerShell".into(), command: "powershell.exe".into() });
-        assert!(matches!(default_shell_start(Some("cmd")), Start::One { command, .. } if command == "cmd.exe"));
-        match default_shell_start(Some("gitbash")) {
-            Start::One { name, command } => assert!(name == "Git Bash" && command.ends_with("--login -i") || command == "powershell.exe"),
-            other => panic!("{other:?}"),
+        let (name, command) = crate::config::machine_shell();
+        assert_eq!(default_shell_start(None), Start::One { name: name.clone(), command: command.clone() });
+        if cfg!(windows) {
+            assert_eq!((name.as_str(), command.as_str()), ("PowerShell", "powershell.exe"));
+            assert!(matches!(default_shell_start(Some("cmd")), Start::One { command, .. } if command == "cmd.exe"));
+            match default_shell_start(Some("gitbash")) {
+                Start::One { name, command } => assert!(name == "Git Bash" && command.ends_with("--login -i") || command == "powershell.exe"),
+                other => panic!("{other:?}"),
+            }
+        } else {
+            // Windows' own choices name nothing here: this machine's shell
+            assert!(command.starts_with('/') && command.ends_with(&name), "{name} {command}");
+            assert_eq!(default_shell_start(Some("cmd")), Start::One { name, command });
         }
         assert_eq!(command_value(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#),
             serde_json::json!([r"C:\Program Files\Git\bin\bash.exe", "--login", "-i"]));

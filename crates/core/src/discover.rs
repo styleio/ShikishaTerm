@@ -142,11 +142,7 @@ pub fn legacy_console_encoding() -> Option<(&'static str, u32)> {
         .map(|(n, label)| (*label, *n))
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-}
+use crate::home_dir;
 
 fn read_ssh_config(path: &std::path::Path, home: &std::path::Path, depth: usize, out: &mut Vec<String>) {
     if depth > SSH_INCLUDE_DEPTH {

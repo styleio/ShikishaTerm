@@ -368,13 +368,23 @@ pub fn resolve_here(path: &str, base: Option<&std::path::Path>, home: Option<&st
     Some(out)
 }
 
-/// Whether Windows would run this file rather than show it. "Open with the
+/// Whether the system would run this file rather than show it. "Open with the
 /// program for it" is offered on a file somebody clicked in a terminal; for
 /// these that program is the file itself, and a press on a name should never
-/// be what starts a script. The PC's own list (`PATHEXT`) and the kinds that
-/// run without being on it
+/// be what starts a script. On Windows: the PC's own list (`PATHEXT`) and the
+/// kinds that run without being on it. Elsewhere also a file anyone may run,
+/// and the kinds a Mac or a Linux desktop starts when they are opened --
+/// a Mac's `.app` among them, which is a folder
 pub fn runs_when_opened(path: &std::path::Path) -> bool {
-    let Some(kind) = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase) else {
+    let kind = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    #[cfg(not(windows))]
+    if runs_here(path, kind.as_deref()) {
+        return true;
+    }
+    if path.is_dir() {
+        return false;
+    }
+    let Some(kind) = kind else {
         return false;
     };
     let listed = std::env::var("PATHEXT").unwrap_or_else(|_| ".com;.exe;.bat;.cmd".to_string());
@@ -387,6 +397,25 @@ pub fn runs_when_opened(path: &std::path::Path) -> bool {
             | "msp" | "msc" | "lnk" | "url" | "reg" | "hta" | "scr" | "cpl" | "pif" | "jar" | "appref-ms"
             | "application" | "inf" | "sct" | "settingcontent-ms"
     )
+}
+
+/// What runs when it is opened away from Windows: a file with the permission
+/// to run (a Mac opens one in a terminal and runs it), and the kinds each
+/// system starts rather than shows
+#[cfg(not(windows))]
+fn runs_here(path: &std::path::Path, kind: Option<&str>) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    if std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+        return true;
+    }
+    let starts: &[&str] = match cfg!(target_os = "macos") {
+        // Programs and their pieces, scripts a terminal or Automator runs,
+        // installers, and shortcuts that open whatever they point at
+        true => &["app", "command", "tool", "terminal", "workflow", "action", "pkg", "mpkg", "prefpane", "fileloc", "webloc", "inetloc", "jar"],
+        // Launchers, self-running programs and installers
+        false => &["desktop", "appimage", "run", "jar"],
+    };
+    kind.is_some_and(|k| starts.contains(&k))
 }
 
 /// A path from a screen on another machine, made whole against where the
@@ -645,6 +674,28 @@ mod tests {
         for f in ["main.rs", "README.md", "photo.png", "Makefile"] {
             assert!(!runs_when_opened(std::path::Path::new(f)), "{f}");
         }
+    }
+
+    /// Away from Windows a file anyone may run is a program whatever its
+    /// name, and so is what each system starts when it is opened: a Mac's
+    /// `.app`, which is a folder, and its `.command`
+    #[cfg(unix)]
+    #[test]
+    fn a_program_away_from_windows_is_never_opened_by_pressing_its_name() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = crate::test_temp("termlink-runs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("deploy");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert!(!runs_when_opened(&script), "a file nobody may run was taken to run");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(runs_when_opened(&script), "a file anyone may run was offered to be opened");
+        assert!(!runs_when_opened(&dir), "a plain folder was taken to run");
+        let bundle = dir.join("Thing.app");
+        std::fs::create_dir_all(&bundle).unwrap();
+        assert_eq!(runs_when_opened(&bundle), cfg!(target_os = "macos"), "a Mac program");
+        assert_eq!(runs_when_opened(std::path::Path::new("go.command")), cfg!(target_os = "macos"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
