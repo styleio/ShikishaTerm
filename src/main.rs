@@ -408,55 +408,56 @@ fn cast_test(url: &str) -> Result<()> {
     let b64 = base64::engine::general_purpose::STANDARD;
 
     println!("{}", shikisha_core::i18n::tp("cli.cast_test.opening", &[("url", url)]));
-    let browser = browser::Browser::spawn(url, "cast-test")?;
-    browser.screencast(None, true)?;
-    println!("{}", shikisha_core::i18n::t("cli.cast_test.relaying"));
+    browser::Browser::host(url, "cast-test", false, move |browser| {
+        browser.screencast(None, true)?;
+        println!("{}", shikisha_core::i18n::t("cli.cast_test.relaying"));
 
-    let status = config::logs_dir().join("cast-test.txt");
-    // The very first frame tends to be blank white, before anything's drawn.
-    // Collect for a few seconds and save the "last one" instead.
-    let settle = Instant::now() + Duration::from_secs(5);
-    let mut last: Option<(Vec<u8>, u32, u32)> = None;
-    let mut count = 0u32;
-    loop {
-        for ev in browser.drain() {
-            if let shikisha_shared::Ev::Frame { data, w, h, .. } = ev {
-                let bytes = b64.decode(data.as_bytes()).map_err(|e| {
-                    anyhow::anyhow!(shikisha_core::i18n::tp(
-                        "cli.cast_test.bad_base64",
-                        &[("e", &e.to_string())]
-                    ))
-                })?;
-                last = Some((bytes, w, h));
-                count += 1;
+        let status = config::logs_dir().join("cast-test.txt");
+        // The very first frame tends to be blank white, before anything's drawn.
+        // Collect for a few seconds and save the "last one" instead.
+        let settle = Instant::now() + Duration::from_secs(5);
+        let mut last: Option<(Vec<u8>, u32, u32)> = None;
+        let mut count = 0u32;
+        loop {
+            for ev in browser.drain() {
+                if let shikisha_shared::Ev::Frame { data, w, h, .. } = ev {
+                    let bytes = b64.decode(data.as_bytes()).map_err(|e| {
+                        anyhow::anyhow!(shikisha_core::i18n::tp(
+                            "cli.cast_test.bad_base64",
+                            &[("e", &e.to_string())]
+                        ))
+                    })?;
+                    last = Some((bytes, w, h));
+                    count += 1;
+                }
+            }
+            if Instant::now() >= settle {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        match last {
+            Some((bytes, w, h)) => {
+                let path = config::logs_dir().join("cast-test.jpg");
+                std::fs::write(&path, &bytes)?;
+                let msg = format!(
+                    "OK: {} ({}x{}, {} bytes, {} frames)\n",
+                    path.display(),
+                    w,
+                    h,
+                    bytes.len(),
+                    count
+                );
+                let _ = std::fs::write(&status, &msg);
+                print!("{}", shikisha_core::i18n::tp("cli.cast_test.saved", &[("msg", &msg)]));
+            }
+            None => {
+                let _ = std::fs::write(&status, "TIMEOUT: no frame in 5s\n");
+                println!("{}", shikisha_core::i18n::t("cli.cast_test.no_frame"));
             }
         }
-        if Instant::now() >= settle {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    match last {
-        Some((bytes, w, h)) => {
-            let path = config::logs_dir().join("cast-test.jpg");
-            std::fs::write(&path, &bytes)?;
-            let msg = format!(
-                "OK: {} ({}x{}, {} bytes, {} frames)\n",
-                path.display(),
-                w,
-                h,
-                bytes.len(),
-                count
-            );
-            let _ = std::fs::write(&status, &msg);
-            print!("{}", shikisha_core::i18n::tp("cli.cast_test.saved", &[("msg", &msg)]));
-        }
-        None => {
-            let _ = std::fs::write(&status, "TIMEOUT: no frame in 5s\n");
-            println!("{}", shikisha_core::i18n::t("cli.cast_test.no_frame"));
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The set of things needed to draw into our own window
@@ -1248,64 +1249,65 @@ fn run_in_window() -> Result<()> {
         );
         std::process::exit(1);
     }
-    let win = std::rc::Rc::new(browser::Browser::spawn_resident(
-        &format!("http://127.0.0.1:{port}/"),
-        "SHIKISHA-TERM",
-    )?);
-    let mut surface = WinSurface {
-        mail: Default::default(),
-        win,
-        rows: 40,
-        cols: 120,
-        phone: None,
-        last: None,
-        last_screen_rows: Vec::new(),
-        last_screen_key: None,
-        last_cursor: None,
-        area: (0, 0, 0, 0),
-        pane_geom: Vec::new(),
-        phone_panes: Vec::new(),
-        full: (0, 0, 0, 0),
-        last_layout: String::new(),
-        last_pane_screens: std::collections::HashMap::new(),
-        pending: std::collections::VecDeque::new(),
-        polled_afar: false,
-        hidden: false,
-        hotkeys: None,
-        page_up: false,
-        summoned: None,
-        printing: None,
-    };
-    // The keys that work from any program. The scissors' own key frames first
-    // and chooses after; a tool's key opens that tool; the rest open something
-    // on the board, which comes to the front for it
-    let opener = surface.win.snip_opener();
-    surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
-        if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {
-            opener.summon(action);
-        } else {
-            opener.open(if action == "snip" { "" } else { action });
-        }
-    });
-    // What the run before this one left behind, looked at before this one
-    // claims the mark. Asking the machine *why* is slow, so it happens on a
-    // thread of its own and the answer catches up with the window
-    if let Some(mark) = shikisha_core::lastexit::left_behind() {
-        shikisha_core::append_hook_log(&format!(
-            "the run before this one (pid {}) did not close properly",
-            mark.pid
-        ));
-        std::thread::spawn(move || {
-            let ended = lastexit::why(&mark);
-            shikisha_core::lastexit::remember(mark, ended);
+    // The window takes this thread, the program's first; the tabs and
+    // everything that drives them run beside it (see `Browser::host`)
+    browser::Browser::host(&format!("http://127.0.0.1:{port}/"), "SHIKISHA-TERM", true, move |opened| {
+        let win = std::rc::Rc::new(opened);
+        let mut surface = WinSurface {
+            mail: Default::default(),
+            win,
+            rows: 40,
+            cols: 120,
+            phone: None,
+            last: None,
+            last_screen_rows: Vec::new(),
+            last_screen_key: None,
+            last_cursor: None,
+            area: (0, 0, 0, 0),
+            pane_geom: Vec::new(),
+            phone_panes: Vec::new(),
+            full: (0, 0, 0, 0),
+            last_layout: String::new(),
+            last_pane_screens: std::collections::HashMap::new(),
+            pending: std::collections::VecDeque::new(),
+            polled_afar: false,
+            hidden: false,
+            hotkeys: None,
+            page_up: false,
+            summoned: None,
+            printing: None,
+        };
+        // The keys that work from any program. The scissors' own key frames first
+        // and chooses after; a tool's key opens that tool; the rest open something
+        // on the board, which comes to the front for it
+        let opener = surface.win.snip_opener();
+        surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
+            if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {
+                opener.summon(action);
+            } else {
+                opener.open(if action == "snip" { "" } else { action });
+            }
         });
-    }
-    shikisha_core::lastexit::mark_running();
-    let out = run(&mut surface);
-    // Only a run that got here finished. Anything else -- a crash, a power
-    // cut, being stopped from outside -- leaves the mark for the next start
-    shikisha_core::lastexit::mark_closed();
-    out
+        // What the run before this one left behind, looked at before this one
+        // claims the mark. Asking the machine *why* is slow, so it happens on a
+        // thread of its own and the answer catches up with the window
+        if let Some(mark) = shikisha_core::lastexit::left_behind() {
+            shikisha_core::append_hook_log(&format!(
+                "the run before this one (pid {}) did not close properly",
+                mark.pid
+            ));
+            std::thread::spawn(move || {
+                let ended = lastexit::why(&mark);
+                shikisha_core::lastexit::remember(mark, ended);
+            });
+        }
+        shikisha_core::lastexit::mark_running();
+        let out = run(&mut surface);
+        // Only a run that got here finished. Anything else -- a crash, a power
+        // cut, being stopped from outside -- leaves the mark for the next start
+        shikisha_core::lastexit::mark_closed();
+        out
+    })
 }
 
 /// What a newly split pane should show.
@@ -2284,50 +2286,54 @@ fn connect_to(url: &str) -> Result<()> {
         ("", t) => format!("{url}{}ticket={t}", if url.contains('?') { "&" } else { "?" }),
         (key, _) => format!("{url}{}here={key}", if url.contains('?') { "&" } else { "?" }),
     };
-    let win = std::sync::Arc::new(browser::Browser::spawn(&opened, "SHIKISHA-TERM")?);
-    // Named without its query, because the query is the key to the board and
-    // this line goes to a console somebody may well be sharing a screen of
-    let host = url.split('?').next().unwrap_or(url);
-    if told {
-        println!("{}", i18n::tp("msg.connected", &[("url", host)]));
-    }
-
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // One place reads what the window says, because there is one queue and
-    // whoever reads it takes what they read. Reports about pages are passed
-    // on to the line that is drawing them
-    let (reports, arriving) = std::sync::mpsc::channel::<Ev>();
-    draw_for_server(url, here.trim(), &win, &stop, arriving);
-
-    // The window runs its own event loop on its own thread. This only waits for
-    // it to be closed, because a `main` that returned would take it along
-    loop {
-        for ev in win.drain() {
-            // Both endings, and both are simply an ending. The ✕ asks rather
-            // than closing (`CloseRequested`) because at a window with the
-            // runtime behind it the answer is the runtime's to give -- put
-            // away, or quit, as the setting says. Here there is no runtime to
-            // ask: this process is a window and nothing else, and the way it
-            // answers is by leaving. The runtime it was drawing for reads that
-            // leaving as the ✕ it was (see `keeper::Parting`), and the setting
-            // is applied there, once, where it always was
-            if matches!(ev, Ev::Closed | Ev::CloseRequested) {
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                return Ok(());
-            }
-            // What happened to a page, and nothing else. An evaluation's
-            // answer is on that list too -- a page is allowed to answer what
-            // it was asked -- but it belongs to whoever asked, who is inside
-            // `Browser` waiting for it
-            // What it saved, and Ctrl+F pressed in one of the pages: the
-            // browser's own reports, which the board over there answers
-            let ours = matches!(ev, Ev::Download { .. } | Ev::SeekAsk { from: Some(_), .. });
-            if ours || (shikisha_shared::allowed_from_page(&ev) && !matches!(ev, Ev::Result { .. })) {
-                let _ = reports.send(ev);
-            }
+    let url = url.to_string();
+    browser::Browser::host(&opened, "SHIKISHA-TERM", false, move |shown| {
+        let url = url.as_str();
+        let win = std::sync::Arc::new(shown);
+        // Named without its query, because the query is the key to the board and
+        // this line goes to a console somebody may well be sharing a screen of
+        let host = url.split('?').next().unwrap_or(url);
+        if told {
+            println!("{}", i18n::tp("msg.connected", &[("url", host)]));
         }
-        std::thread::sleep(std::time::Duration::from_millis(120));
-    }
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // One place reads what the window says, because there is one queue and
+        // whoever reads it takes what they read. Reports about pages are passed
+        // on to the line that is drawing them
+        let (reports, arriving) = std::sync::mpsc::channel::<Ev>();
+        draw_for_server(url, here.trim(), &win, &stop, arriving);
+
+        // The window's loop has the program's first thread. This only waits
+        // for the window to be closed, and returning is what closes it
+        loop {
+            for ev in win.drain() {
+                // Both endings, and both are simply an ending. The ✕ asks rather
+                // than closing (`CloseRequested`) because at a window with the
+                // runtime behind it the answer is the runtime's to give -- put
+                // away, or quit, as the setting says. Here there is no runtime to
+                // ask: this process is a window and nothing else, and the way it
+                // answers is by leaving. The runtime it was drawing for reads that
+                // leaving as the ✕ it was (see `keeper::Parting`), and the setting
+                // is applied there, once, where it always was
+                if matches!(ev, Ev::Closed | Ev::CloseRequested) {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return Ok(());
+                }
+                // What happened to a page, and nothing else. An evaluation's
+                // answer is on that list too -- a page is allowed to answer what
+                // it was asked -- but it belongs to whoever asked, who is inside
+                // `Browser` waiting for it
+                // What it saved, and Ctrl+F pressed in one of the pages: the
+                // browser's own reports, which the board over there answers
+                let ours = matches!(ev, Ev::Download { .. } | Ev::SeekAsk { from: Some(_), .. });
+                if ours || (shikisha_shared::allowed_from_page(&ev) && !matches!(ev, Ev::Result { .. })) {
+                    let _ = reports.send(ev);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+    })
 }
 
 /// Offer this window's browser to the board it is connected to.

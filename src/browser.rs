@@ -637,52 +637,95 @@ pub fn runtime_version() -> Option<String> {
 }
 
 impl Browser {
-    /// Open the window and get it ready to accept instructions
-    /// A window, and nothing beside it. What a client, a probe and a
-    /// self-check want: the window is the whole of the program's presence,
-    /// and when it closes the program is finished
-    pub fn spawn(url: &str, title: &str) -> Result<Self> {
-        Self::opened(url, title, false)
-    }
-
-    /// The same, wearing the program's icon in the notification area.
+    /// Open the window on this thread, and run `work` beside it on a thread of
+    /// its own, handed the window once its first page is ready.
     ///
-    /// For the one window whose process outlives it. The icon's promise is
-    /// "the work is still going with nothing on screen", and a window that
-    /// takes its process with it has no such promise to make -- a second icon
-    /// from a client or a probe would only be a second thing to press that
-    /// answers for the wrong copy
-    pub fn spawn_resident(url: &str, title: &str) -> Result<Self> {
-        Self::opened(url, title, true)
-    }
-
-    fn opened(url: &str, title: &str, tray: bool) -> Result<Self> {
+    /// The window takes the thread it is called on because a Mac lets only the
+    /// program's first thread draw windows: the loop that runs the window has
+    /// to be the one `main` started on, and everything else -- the tabs, the
+    /// automation, the board's server -- runs beside it. Windows allows either
+    /// way round, and is given the same way, so there is one shape to reason
+    /// about rather than one per system.
+    ///
+    /// `resident`: whether the window wears the program's icon in the
+    /// notification area. The one window whose process outlives it does; a
+    /// client, a probe and a self-check do not -- a second icon would only be
+    /// a second thing to press that answers for the wrong copy.
+    ///
+    /// Returns what `work` returned, once both have finished: the window is
+    /// closed when `work` is done with it, and `work` hears the window close
+    /// the way it always has (`Ev::Closed`)
+    pub fn host<R: Send + 'static>(
+        url: &str,
+        title: &str,
+        resident: bool,
+        work: impl FnOnce(Browser) -> Result<R> + Send + 'static,
+    ) -> Result<R> {
         if !is_openable(url) {
             return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
         }
-        Self::start(url, title, tray)
-    }
-
-    fn start(url: &str, title: &str, tray: bool) -> Result<Self> {
         let (proxy_tx, proxy_rx) = channel();
         let (ev_tx, ev_rx) = channel();
-        let url = url.to_string();
-        let title = title.to_string();
         let sound_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let its_sound_pid = std::sync::Arc::clone(&sound_pid);
+        let beside = std::thread::Builder::new().name("shikisha-work".into()).spawn(move || -> Result<R> {
+            let me = Self::once_open(proxy_rx, ev_rx, sound_pid)?;
+            let closer = me.proxy.clone();
+            let out = work(me);
+            // Whatever `work` still holds of the window, the window is done
+            let _ = closer.send_event(Cmd::Close);
+            out
+        })?;
+        Self::run_here(url, title, resident, proxy_tx, ev_tx, its_sound_pid);
+        beside.join().map_err(|_| anyhow!("the work beside the window stopped unexpectedly"))?
+    }
 
+    /// The same window on a thread of its own, held from the caller's thread.
+    /// For the probes, which hold a window from the test's own thread: a test
+    /// is not the program's first thread, and only Windows allows a window there
+    #[cfg(all(windows, test))]
+    pub fn spawn(url: &str, title: &str) -> Result<Self> {
+        if !is_openable(url) {
+            return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
+        }
+        let (proxy_tx, proxy_rx) = channel();
+        let (ev_tx, ev_rx) = channel();
+        let (url, title) = (url.to_string(), title.to_string());
+        let sound_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let its_sound_pid = std::sync::Arc::clone(&sound_pid);
         std::thread::Builder::new()
             .name("shikisha-browser".into())
-            .spawn(move || {
-                if let Err(e) = run_window(&url, &title, tray, proxy_tx, ev_tx.clone(), its_sound_pid) {
-                    shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
-                        "err.browser.log_open_failed",
-                        &[("e", &format!("{e}"))],
-                    ));
-                    let _ = ev_tx.send(Ev::Closed);
-                }
-            })?;
+            .spawn(move || Self::run_here(&url, &title, false, proxy_tx, ev_tx, its_sound_pid))?;
+        Self::once_open(proxy_rx, ev_rx, sound_pid)
+    }
 
+    /// The window's loop, on the calling thread, until the window closes. A
+    /// window that could not be made says so in the log, and its user hears
+    /// it closed
+    fn run_here(
+        url: &str,
+        title: &str,
+        resident: bool,
+        proxy_tx: Sender<tao::event_loop::EventLoopProxy<Cmd>>,
+        ev_tx: Sender<Ev>,
+        sound_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        if let Err(e) = run_window(url, title, resident, proxy_tx, ev_tx.clone(), sound_pid) {
+            shikisha_core::append_hook_log(&shikisha_core::i18n::tp(
+                "err.browser.log_open_failed",
+                &[("e", &format!("{e}"))],
+            ));
+            let _ = ev_tx.send(Ev::Closed);
+        }
+    }
+
+    /// The handle on a window whose loop has been started, once its first
+    /// page is ready
+    fn once_open(
+        proxy_rx: Receiver<tao::event_loop::EventLoopProxy<Cmd>>,
+        ev_rx: Receiver<Ev>,
+        sound_pid: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> Result<Self> {
         // Wait until the window exists (if it can't be created, the proxy never arrives)
         let proxy = proxy_rx
             .recv_timeout(std::time::Duration::from_secs(20))
@@ -1524,14 +1567,15 @@ fn run_window(
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::platform::run_return::EventLoopExtRunReturn;
-    use tao::platform::windows::EventLoopBuilderExtWindows;
     use tao::window::WindowBuilder;
     use wry::{WebContext, WebViewBuilder};
 
-    // Runs on a separate thread from the TUI's render loop, so lift the main-thread restriction
-    let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event()
-        .with_any_thread(true)
-        .build();
+    // The program's first thread when it is the program's window (`Browser::host`).
+    // A probe holds one from a test's own thread, which only Windows allows
+    let mut ev_loop = EventLoopBuilder::<Cmd>::with_user_event();
+    #[cfg(windows)]
+    tao::platform::windows::EventLoopBuilderExtWindows::with_any_thread(&mut ev_loop, true);
+    let mut ev_loop = ev_loop.build();
     proxy_tx
         .send(ev_loop.create_proxy())
         .map_err(|_| anyhow!(shikisha_core::i18n::t("err.browser.proxy_connect_failed")))?;
