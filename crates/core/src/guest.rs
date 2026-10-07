@@ -289,9 +289,14 @@ pub(crate) fn image_of(pid: u32) -> Option<String> {
     (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-#[cfg(not(windows))]
-pub(crate) fn image_of(_pid: u32) -> Option<String> {
-    None
+/// Where a running process's program lives on disk, as the system says. A
+/// process of another account, or one that ended, has no answer
+#[cfg(unix)]
+pub(crate) fn image_of(pid: u32) -> Option<String> {
+    use sysinfo::{ProcessRefreshKind, UpdateKind};
+    let table = crate::repo::process_table(Some(&[pid]), ProcessRefreshKind::nothing().with_exe(UpdateKind::Always));
+    let exe = table.process(sysinfo::Pid::from_u32(pid))?.exe()?;
+    Some(exe.to_string_lossy().into_owned())
 }
 
 #[cfg(windows)]
@@ -372,9 +377,29 @@ fn command_line_of(pid: u32) -> Option<String> {
     answer
 }
 
-#[cfg(not(windows))]
-fn command_line_of(_pid: u32) -> Option<String> {
-    None
+/// The words a running process was started with, put back into one line the
+/// way [`split`] reads it: a word with a space or a quote in it is quoted
+#[cfg(unix)]
+fn command_line_of(pid: u32) -> Option<String> {
+    use sysinfo::{ProcessRefreshKind, UpdateKind};
+    let table = crate::repo::process_table(Some(&[pid]), ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    let words = table.process(sysinfo::Pid::from_u32(pid))?.cmd();
+    if words.is_empty() {
+        return None;
+    }
+    let line = words
+        .iter()
+        .map(|w| {
+            let w = w.to_string_lossy();
+            match w.contains([' ', '\t', '"']) {
+                true if !w.contains('"') => format!("\"{w}\""),
+                true => format!("'{w}'"),
+                false => w.into_owned(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(line)
 }
 
 /// One tab's standing question: who is in there now.
@@ -433,6 +458,26 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Away from Windows a running program's file and the words it was
+    /// started with are read back, a word with a space in it as one word
+    #[cfg(unix)]
+    #[test]
+    fn a_running_program_is_read_back_by_its_file_and_its_words() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30", "two words"])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("sh cannot start");
+        let image = image_of(child.id()).expect("no file for a running program");
+        assert_eq!(leaf_of(&image), "sh", "{image}");
+        let line = command_line_of(child.id()).expect("no words for a running program");
+        let words = split(&line);
+        assert!(words.ends_with(&["-c".to_string(), "sleep 30".to_string(), "two words".to_string()]), "{words:?}");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(image_of(child.id()), None, "a program that ended still answers");
+    }
 
     /// The names of the same program, written every way a process table and a
     /// command line write them

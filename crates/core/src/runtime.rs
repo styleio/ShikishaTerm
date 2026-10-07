@@ -15764,7 +15764,7 @@ fn link_said(
             };
             let said = std::path::PathBuf::from(&reported);
             let base = if said.is_absolute() { Some(said) } else { root.clone() };
-            let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from);
+            let home = crate::home_dir();
             let Some(full) = crate::termlink::resolve_here(&spot.path, base.as_deref(), home.as_deref()) else {
                 return (press.act == "look").then(|| answer(serde_json::json!({ "ok": false, "why": "nowhere" })));
             };

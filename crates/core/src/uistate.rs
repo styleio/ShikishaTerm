@@ -2036,8 +2036,7 @@ fn desktop_dir() -> Option<String> {
 }
 #[cfg(not(windows))]
 fn desktop_dir() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let d = std::path::Path::new(&home).join("Desktop");
+    let d = crate::home_dir()?.join("Desktop");
     d.is_dir().then(|| d.display().to_string())
 }
 

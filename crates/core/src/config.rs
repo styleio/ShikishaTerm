@@ -6844,15 +6844,17 @@ pub fn root_dir() -> std::path::PathBuf {
     .clone()
 }
 
-/// The same question on Linux, where "beside the program" is often nowhere to
-/// write.
+/// The same question on Linux and on a Mac, where "beside the program" is
+/// often nowhere to write.
 ///
 /// A folder someone unpacked and runs out of keeps the portable promise: its
 /// settings are the ones sitting beside it. A copy installed by `install.sh`
 /// is at `/usr/local/bin/shikisha-server`, which belongs to root, so its things
 /// go where a person's things go on this system -- `XDG_DATA_HOME`, and
-/// `~/.local/share` when that is not set. `SHIKISHA_HOME` overrides both, for
-/// running several boxes on one machine.
+/// `~/.local/share` when that is not set. On a Mac the program sits inside
+/// its signed `.app`, where writing would break the signature, and a person's
+/// things go in `~/Library/Application Support`. `SHIKISHA_HOME` overrides
+/// all of these, for running several boxes on one machine.
 ///
 /// Taking the environment as an argument so this can be asked what it would
 /// answer, rather than only what it answers here.
@@ -6867,12 +6869,11 @@ fn unpacked_root(
     if beside.join("config").is_dir() || beside.join("config.json").is_file() {
         return beside.to_path_buf();
     }
-    let data = env("XDG_DATA_HOME")
-        .filter(|s| !s.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| env("HOME").map(|h| std::path::PathBuf::from(h).join(".local").join("share")));
-    match data {
-        Some(d) => d.join("shikisha"),
+    // The name each system's own programs go by there: lower case among the
+    // dot-folders of Linux, the product's own name among a Mac's
+    let name = if cfg!(target_os = "macos") { "SHIKISHA-TERM" } else { "shikisha" };
+    match crate::data_home(env) {
+        Some(d) => d.join(name),
         // No home to speak of. Beside the program is where it has always been,
         // and a failure to write there is at least a failure in one place
         None => beside.to_path_buf(),
@@ -8861,13 +8862,15 @@ mod tests {
 
         // Installed: the program is root's and the person's things are not
         let bin = std::path::Path::new("/usr/local/bin");
-        assert_eq!(
-            unpacked_root(bin, env(&[("HOME", "/home/dev")])),
-            std::path::PathBuf::from("/home/dev/.local/share/shikisha")
-        );
+        let (installed, conventional) = match cfg!(target_os = "macos") {
+            // A Mac has one place for them, and no variable that moves it
+            true => ("/home/dev/Library/Application Support/SHIKISHA-TERM", "/home/dev/Library/Application Support/SHIKISHA-TERM"),
+            false => ("/home/dev/.local/share/shikisha", "/srv/things/shikisha"),
+        };
+        assert_eq!(unpacked_root(bin, env(&[("HOME", "/home/dev")])), std::path::PathBuf::from(installed));
         assert_eq!(
             unpacked_root(bin, env(&[("HOME", "/home/dev"), ("XDG_DATA_HOME", "/srv/things")])),
-            std::path::PathBuf::from("/srv/things/shikisha"),
+            std::path::PathBuf::from(conventional),
             "it ignored this machine's convention"
         );
 

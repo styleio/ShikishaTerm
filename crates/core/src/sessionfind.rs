@@ -316,12 +316,7 @@ fn walk(dir: &Path, depth: usize, since: SystemTime) -> Vec<PathBuf> {
     out
 }
 
-fn expand(path: &str) -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    PathBuf::from(path.replace("{home}", &home))
-}
+use crate::with_home as expand;
 
 #[cfg(test)]
 mod tests {

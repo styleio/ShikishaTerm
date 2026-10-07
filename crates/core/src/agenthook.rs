@@ -151,10 +151,8 @@ pub fn targets() -> Vec<Target> {
 /// `{home}` is the only thing a profile may stand in for. A profile that could
 /// name any path would be naming a file to overwrite
 fn expand(path: &str) -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    expand_at(path, &home)
+    let home = crate::home_dir().unwrap_or_default();
+    expand_at(path, &home.to_string_lossy())
 }
 
 fn expand_at(path: &str, home: &str) -> PathBuf {

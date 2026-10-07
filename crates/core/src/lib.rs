@@ -404,6 +404,48 @@ pub fn local_path(win: &str) -> String {
     }
 }
 
+/// The person's own folder, as this system names it: `USERPROFILE` on
+/// Windows, `HOME` everywhere else. Every place that needs it asks here, so
+/// a system where one of them is missing is answered the same way throughout
+/// (reading only `USERPROFILE` once left Linux with no home at all)
+pub fn home_dir() -> Option<std::path::PathBuf> {
+    home_in(|k| std::env::var_os(k))
+}
+
+/// The same, given the environment, so a test can ask what it would answer
+pub(crate) fn home_in(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let keys: &[&str] = if cfg!(windows) { &["USERPROFILE", "HOME"] } else { &["HOME"] };
+    keys.iter().filter_map(|k| env(k)).find(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// A path a profile wrote with `{home}` in it, with the home folder put in.
+/// `{home}` is the only thing a profile may stand in for: a profile that
+/// could name any path would be naming a file to overwrite
+pub fn with_home(path: &str) -> std::path::PathBuf {
+    let home = home_dir().unwrap_or_default();
+    std::path::PathBuf::from(path.replace("{home}", &home.to_string_lossy()))
+}
+
+/// Where this system keeps a program's own things for one person on one
+/// machine, never synced: `%LOCALAPPDATA%` on Windows, `~/Library/Application
+/// Support` on a Mac, `$XDG_DATA_HOME` (or `~/.local/share`) on Linux. Each
+/// caller names its own folder inside
+pub fn machine_data_dir() -> Option<std::path::PathBuf> {
+    data_home(|k| std::env::var_os(k))
+}
+
+/// The same, given the environment, so a test can ask what it would answer
+pub(crate) fn data_home(env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+    let set = |k: &str| env(k).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+    if cfg!(windows) {
+        set("LOCALAPPDATA")
+    } else if cfg!(target_os = "macos") {
+        Some(home_in(&env)?.join("Library").join("Application Support"))
+    } else {
+        set("XDG_DATA_HOME").or_else(|| Some(home_in(&env)?.join(".local").join("share")))
+    }
+}
+
 /// The commit this was built from, as the board's footer shows it.
 ///
 /// Stamped by this crate's build script, so a runtime with no window anywhere
@@ -529,6 +571,32 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// The home folder and the folder for a program's own things, as each
+    /// system names them, asked of a made-up environment
+    #[test]
+    fn each_system_names_its_own_home_and_its_own_place_for_programs() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
+        };
+        let both = env(&[("USERPROFILE", "/u/win"), ("HOME", "/u/unix"), ("LOCALAPPDATA", "/u/win/local"), ("XDG_DATA_HOME", "/u/xdg")]);
+        let home = super::home_in(&both).unwrap();
+        let data = super::data_home(&both).unwrap();
+        if cfg!(windows) {
+            assert_eq!(home, std::path::PathBuf::from("/u/win"));
+            assert_eq!(data, std::path::PathBuf::from("/u/win/local"));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(home, std::path::PathBuf::from("/u/unix"));
+            assert_eq!(data, std::path::PathBuf::from("/u/unix/Library/Application Support"));
+        } else {
+            assert_eq!(home, std::path::PathBuf::from("/u/unix"));
+            assert_eq!(data, std::path::PathBuf::from("/u/xdg"));
+            assert_eq!(super::data_home(env(&[("HOME", "/u/unix")])).unwrap(), std::path::PathBuf::from("/u/unix/.local/share"));
+        }
+        // An empty variable is no answer, and neither is none at all
+        assert_eq!(super::home_in(env(&[("HOME", ""), ("USERPROFILE", "")])), None);
+        assert_eq!(super::home_in(|_: &str| None), None);
+    }
+
     #[test]
     #[should_panic(expected = "refusing to create a token")]
     fn token_generation_has_no_predictable_fallback() {

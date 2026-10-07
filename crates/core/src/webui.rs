@@ -458,12 +458,12 @@ fn display_path(path: &std::path::Path, config_path: &std::path::Path) -> String
 /// The place to open first. ~/.ssh for a key, the config's location for a folder
 fn default_pick_dir(kind: &str, config_path: &std::path::Path) -> Option<std::path::PathBuf> {
     if kind == "key"
-        && let Some(home) = std::env::var_os("USERPROFILE") {
-            let ssh = std::path::PathBuf::from(&home).join(".ssh");
+        && let Some(home) = crate::home_dir() {
+            let ssh = home.join(".ssh");
             if ssh.is_dir() {
                 return Some(ssh);
             }
-            return Some(std::path::PathBuf::from(home));
+            return Some(home);
         }
     config_path.parent().map(std::path::Path::to_path_buf)
 }

@@ -3411,23 +3411,13 @@ fn real_branches_root() -> PathBuf {
 
 /// The person's own folder, as this system spells it.
 fn home_dir() -> Option<PathBuf> {
-    for key in ["USERPROFILE", "HOME"] {
-        let Ok(said) = std::env::var(key) else { continue };
-        let at = PathBuf::from(said.trim());
-        if at.is_dir() {
-            return Some(at);
-        }
-    }
-    None
+    crate::home_dir().filter(|at| at.is_dir())
 }
 
 /// The place for branches that cannot sit in the person's own folder. Ours,
 /// per machine, and never synced anywhere
 fn away_from_home() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base = crate::machine_data_dir().unwrap_or_else(std::env::temp_dir);
     base.join("SHIKISHA-TERM").join("worktrees")
 }
 

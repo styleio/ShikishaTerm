@@ -491,8 +491,8 @@ impl Chrome {
 /// unless it is told to.
 #[cfg(unix)]
 fn as_root() -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-    std::fs::metadata("/proc/self").map(|m| m.uid() == 0).unwrap_or(false)
+    // SAFETY: only reads this process's own user id
+    unsafe { libc::geteuid() == 0 }
 }
 
 #[cfg(not(unix))]

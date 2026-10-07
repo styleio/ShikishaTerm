@@ -52,23 +52,27 @@ impl Job {
         }
     }
 
-    /// How many processes the group holds right now.
-    ///
-    /// `None` where the answer cannot be had, which on unix is always: there
-    /// is no cheap call that counts a process group, and the caller is
-    /// expected to treat "don't know" as "nothing to report" rather than
-    /// inventing a number. The state it feeds simply never appears here
+    /// How many processes the group holds right now. A group nothing has
+    /// been put in yet holds none, as an empty job does
     pub fn active(&self) -> Option<u32> {
-        None
+        Some(self.pids().len() as u32)
     }
 
     /// Which processes the group holds right now, by id.
     ///
-    /// Empty here for the same reason `active` says nothing: there is no cheap
-    /// call that lists a process group, and a caller reads an empty answer as
-    /// "nothing to say about this tab" rather than as "the tab is empty".
+    /// No call lists a process group, so every process is asked which group
+    /// it is in. That is one look at the machine; it is only taken when the
+    /// count is going to be read (see the tab's population)
     pub fn pids(&self) -> Vec<u32> {
-        Vec::new()
+        let Some(group) = *self.group.lock().unwrap_or_else(|e| e.into_inner()) else { return Vec::new() };
+        crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing())
+            .processes()
+            .keys()
+            .map(|pid| pid.as_u32())
+            // SAFETY: a plain number in, a plain number out; a process that
+            // ended in between answers -1, which is no group of ours
+            .filter(|pid| unsafe { libc::getpgid(*pid as i32) } == group)
+            .collect()
     }
 
     /// Put a process, and everything it goes on to start, into this group.
@@ -484,5 +488,51 @@ mod tests {
         let _ = other.kill();
         let _ = other.wait();
         assert!(!is_this_program(0xFFFF_FFF0), "a process that does not exist answered");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+
+    /// A program started the way a terminal starts its shell: leading a
+    /// session, and so a process group, of its own
+    fn alone(program: &str, args: &[&str]) -> std::process::Child {
+        use std::os::unix::process::CommandExt as _;
+        let mut c = std::process::Command::new(program);
+        c.args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: setsid is safe to call between fork and exec
+        unsafe {
+            c.pre_exec(|| match libc::setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
+        c.spawn().expect("it cannot start")
+    }
+
+    /// The count the BACKGROUND state is built on, checked against a real
+    /// group holding real processes: a shell, then the shell and the child it
+    /// keeps, then nothing once the group is ended
+    #[test]
+    fn the_group_counts_what_is_actually_alive_in_it() {
+        let job = Job::new().expect("a group cannot be made");
+        assert_eq!(job.active(), Some(0), "a group nothing was put in holds nothing");
+        let mut shell = alone("sh", &["-c", "sleep 60 & wait"]);
+        assert!(job.take(shell.id()), "it cannot be taken");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !job.active().is_some_and(|n| n >= 2) {
+            assert!(std::time::Instant::now() < deadline, "the child it holds is not counted: {:?}", job.pids());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(job.pids().contains(&shell.id()), "the shell itself is not listed: {:?}", job.pids());
+
+        job.terminate();
+        let _ = shell.wait();
+        assert_eq!(job.active(), Some(0), "an ended group still counts");
     }
 }

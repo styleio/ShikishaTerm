@@ -1220,12 +1220,7 @@ fn glob_seg(pattern: &str, name: &str) -> bool {
     at <= name.len() - last.len()
 }
 
-fn expand(path: &str) -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    PathBuf::from(path.replace("{home}", &home))
-}
+use crate::with_home as expand;
 
 #[cfg(test)]
 mod tests {

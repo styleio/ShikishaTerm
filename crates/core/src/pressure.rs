@@ -165,9 +165,18 @@ pub fn heaviest() -> Option<(String, u64)> {
     best
 }
 
-#[cfg(not(windows))]
+/// The same away from Windows, counted by what each program holds in memory
+/// now (its resident set): the systems there keep no count of what a
+/// program has committed
+#[cfg(unix)]
 pub fn heaviest() -> Option<(String, u64)> {
-    None
+    let me = std::process::id();
+    crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing().with_memory())
+        .processes()
+        .iter()
+        .filter(|(pid, _)| pid.as_u32() != me && pid.as_u32() != 0)
+        .max_by_key(|(_, p)| p.memory())
+        .map(|(_, p)| (p.name().to_string_lossy().into_owned(), p.memory()))
 }
 
 /// An amount of memory the way a person reads it: `17.5 GB`, `640 MB`
@@ -248,6 +257,13 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The program holding the most memory is named, and is not this one
+    #[test]
+    fn the_heaviest_program_is_named_and_is_not_this_one() {
+        let (name, held) = heaviest().expect("no program was found holding memory");
+        assert!(!name.is_empty() && held > 0, "{name:?} {held}");
+    }
 
     /// Said once on the way down and once on the way back, however many
     /// times the room is looked at in between

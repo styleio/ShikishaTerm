@@ -144,13 +144,7 @@ pub fn folder_of(ai: &str) -> Option<PathBuf> {
     Some(expand(dir))
 }
 
-/// `{home}` is the only thing a profile may stand in for (see `agenthook`)
-fn expand(path: &str) -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_default();
-    PathBuf::from(path.replace("{home}", &home))
-}
+use crate::with_home as expand;
 
 /// The file this app writes for a CLI, whether or not it is there
 pub fn file_of(ai: &str) -> Option<PathBuf> {
