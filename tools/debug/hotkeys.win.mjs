@@ -54,7 +54,9 @@ Add-Type -Namespace SkCheck -Name U -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
 [DllImport("user32.dll")] public static extern bool PostMessageW(System.IntPtr h, uint msg, System.IntPtr w, System.IntPtr l);
 '@
-$app = Get-Process -Name 'SHIKISHA-TERM' | Where-Object { $_.Path -like '${RUN}\\*' } | Select-Object -First 1
+# The app runs as two processes (the window, and the part that runs the tabs);
+# the one with a window is the one these keys bring forward
+$app = Get-Process -Name 'SHIKISHA-TERM' | Where-Object { $_.Path -like '${RUN}\\*' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 `;
 const win32 = (body) => {
   const r = ps('-Command', WIN32 + body);
@@ -70,9 +72,12 @@ $k = [byte][char]'${letter.toUpperCase()}'
 [SkCheck.U]::keybd_event(0x10, 0, 2, [UIntPtr]::Zero)
 [SkCheck.U]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
 `);
+// Asked of the window taken below rather than of the process: while the
+// window is put away the system names no main window, and no process
 const inFront = () => win32(`
-$pid2 = 0; [void][SkCheck.U]::GetWindowThreadProcessId([SkCheck.U]::GetForegroundWindow(), [ref]$pid2)
-if ($pid2 -eq $app.Id) { 'yes' } else { 'no' }`) === 'yes';
+$front = 0; [void][SkCheck.U]::GetWindowThreadProcessId([SkCheck.U]::GetForegroundWindow(), [ref]$front)
+$ours = 0; [void][SkCheck.U]::GetWindowThreadProcessId([IntPtr]${hwnd}, [ref]$ours)
+if ($front -ne 0 -and $front -eq $ours) { 'yes' } else { 'no' }`) === 'yes';
 // The window itself, taken once while it is showing: a window put away is
 // no longer the one the system calls the program's main window
 let hwnd = '0';

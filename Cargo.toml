@@ -29,7 +29,7 @@ rustls = { version = "0.23.45", default-features = false }
 webpki-roots = "1.0.9"
 vt100 = "0.16"
 windows-sys = "0.61.2"
-windows = "0.61.3"
+windows = "0.62.2"
 zeroize = "1.9.0"
 zip = { version = "5", default-features = false }
 russh = { version = "0.63.2", default-features = false }
@@ -99,7 +99,7 @@ rfd = { version = "0.17.2", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tao = "0.36.0"
+tao = "0.37.1"
 tiny_http = { workspace = true }
 unicode-width = { workspace = true }
 ureq = { workspace = true, default-features = false, features = ["rustls", "json"] }
@@ -110,7 +110,7 @@ ureq = { workspace = true, default-features = false, features = ["rustls", "json
 rustls = { workspace = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { workspace = true }
 vt100 = { workspace = true }
-wry = "0.56.0"
+wry = "0.57.0"
 zeroize = { workspace = true }
 # Unpacking a downloaded update beside the program's data (src/update.rs).
 # Deflate only: that is what the release workflow's Compress-Archive writes
@@ -124,7 +124,7 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
 # Kept at the same version as wry (CDP cannot be called unless the ICoreWebView2 types match)
-webview2-com = "0.38.2"
+webview2-com = "0.39.1"
 windows = { workspace = true, features = [
   "Win32_Foundation",
   # A real Windows notification, and what an unpackaged program needs before it

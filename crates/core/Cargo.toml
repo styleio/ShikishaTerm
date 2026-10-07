@@ -156,7 +156,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globali
 # The macro that makes a Rust type into a COM callback writes `windows_core`
 # paths, so the crate has to be here under that name as well (vaudio.rs: the
 # only way Windows reports that a process's sound is ready to be taken)
-windows-core = "0.61.2"
+windows-core = "0.62.2"
 # Pasting this PC's clipboard into a tab (paste.rs). The same versions the
 # window's crate already uses, so nothing new is built: the runtime of a
 # program split in two has no window to do it for it
@@ -194,4 +194,4 @@ windows = { workspace = true, features = [
 ] }
 # The Store's download and install says how far it is through a handler of
 # this crate's type (update.rs). The same version the windows crate brings in
-windows-future = "0.2.1"
+windows-future = "0.3.2"
