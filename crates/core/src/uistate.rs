@@ -1723,17 +1723,7 @@ pub(crate) fn by_family(list: Vec<(std::path::PathBuf, GroupState)>) -> Vec<(std
     out
 }
 
-/// Whether two spellings name one folder. On Windows the case of the letters
-/// and the direction of the slashes do not make a different folder: git writes
-/// its notes with forward slashes, the settings keep whatever was typed, and a
-/// worktree compared only by case read as a stranger to itself
-pub fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
-    let key = |p: &std::path::Path| {
-        let s = p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
-        if cfg!(windows) { s.replace('/', "\\") } else { s }
-    };
-    key(a) == key(b)
-}
+pub use crate::same_folder;
 
 /// What marks a place on another machine: a folder is its machine and its
 /// path, and two machines can have the same path (`/home/ubuntu/app` on
@@ -3074,7 +3064,7 @@ mod tests {
         let mut tabs = vec![in_folder("Work", None)];
         let work = tabs[0].cwd().unwrap().to_path_buf();
         let fresh = std::env::temp_dir().join("shikisha-group-fresh");
-        let spelled = std::path::PathBuf::from(work.display().to_string().to_lowercase() + "\\");
+        let spelled = std::path::PathBuf::from(crate::respelled(&work.display().to_string()));
         let found = GroupState::all(
             &tabs,
             &Default::default(),
@@ -3189,7 +3179,7 @@ mod tests {
         assert_eq!(names, ["proj", "a", "b", "other", "x"], "not in the order original, branches, others");
         // Spelled differently, still one family
         let list = vec![
-            g(r"D:\proj.worktrees\a", Some(r"d:\PROJ\.git\"), true),
+            g(r"D:\proj.worktrees\a", Some(&crate::respelled(r"D:\proj\.git")), true),
             g(r"D:\proj", f, false),
         ];
         let out = by_family(list);

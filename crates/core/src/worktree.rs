@@ -2851,11 +2851,7 @@ fn tidy_posix(path: &str) -> String {
 /// there would be a worktree inside the project it is a worktree of: git
 /// takes it, and every tool that walks the checkout walks into it
 pub fn inside_checkout(main: &Path, folder: &Path) -> bool {
-    let key = |p: &Path| {
-        let s = crate::repo::tidy(p.to_path_buf()).to_string_lossy().replace('\\', "/");
-        let s = s.trim_end_matches('/').to_string();
-        if cfg!(windows) { s.to_lowercase() } else { s }
-    };
+    let key = |p: &Path| crate::folder_key(&crate::repo::tidy(p.to_path_buf()));
     let (m, f) = (key(main), key(folder));
     f == m || f.starts_with(&format!("{m}/"))
 }

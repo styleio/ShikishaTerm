@@ -9270,7 +9270,7 @@ mod tests {
         let said = add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&elsewhere)), None, NewFolder::Refused)
             .expect_err("a folder the desk does not have");
         assert!(said.contains("else"), "{said}");
-        let respelled = format!("{}{}", proj.to_uppercase(), std::path::MAIN_SEPARATOR);
+        let respelled = crate::respelled(&proj);
         add_tab_at(&file, "Demo", serde_json::json!({"command": "codex"}), Some(Path::new(&respelled)), None, NewFolder::Refused)
             .expect("the same folder, spelled another way");
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();

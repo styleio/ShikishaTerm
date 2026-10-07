@@ -421,9 +421,9 @@ mod tests {
     fn a_card_is_in_the_file_as_soon_as_it_is_written() {
         let f = temp("write");
         let ps = [project("D:\\app")];
-        // Another case and a trailing separator: different on every system
-        // this runs on in spelling only
-        let a = answer(&f, "add", &json!({"project": "d:\\APP\\", "text": "first", "ref": "r1"}), &known(&ps));
+        // Another case and a trailing separator, as far as this system lets
+        // the spelling of one folder differ
+        let a = answer(&f, "add", &json!({"project": crate::respelled("D:\\app"), "text": "first", "ref": "r1"}), &known(&ps));
         assert_eq!(a["ok"], true);
         assert_eq!(a["ref"], "r1", "the screen cannot tell which card it asked for");
         let id = a["made"].as_u64().unwrap();
@@ -545,7 +545,7 @@ mod tests {
         let id = old["made"].as_u64().unwrap();
         // Written by an earlier version, which named the worktree's folder
         let mut store: Store = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
-        store.items[0].project = Some("e:\\WT\\fix\\".into());
+        store.items[0].project = Some(crate::respelled("E:\\wt\\fix"));
         std::fs::write(&f, serde_json::to_string(&store).unwrap()).unwrap();
         let v = answer(&f, "list", &json!({}), &known(&[app]));
         assert_eq!(v["items"][0]["id"], id);
