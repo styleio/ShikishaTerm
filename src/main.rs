@@ -24,11 +24,9 @@ use shikisha_core::view::{
 };
 use shikisha_core::{
     append_hook_log,
-    detach_console,
     api,
     bridge,
     config,
-    conpty,
     crypto,
     discover,
     exchange,
@@ -44,6 +42,7 @@ use shikisha_core::{
     webui,
 };
 mod browser;
+mod dialog;
 mod devtools;
 mod picker;
 mod hotkeys;
@@ -81,10 +80,6 @@ fn install_crash_log() {
     }));
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// Say something where it can be seen when there is no window yet.
 ///
 /// This is a GUI subsystem binary, so it has no console: an error returned
@@ -93,55 +88,15 @@ fn wide(s: &str) -> Vec<u16> {
 /// borrow the shell's own dialog or it says nothing at all -- which is what a
 /// person who double-clicks the exe and gets no answer is looking at.
 fn say_fatally(text: &str) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
-    let body = wide(text);
-    let title = wide(&i18n::t("err.fatal.title"));
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            body.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONERROR,
-        )
-    };
+    dialog::warn(&i18n::t("err.fatal.title"), text);
 }
 
-
 fn say_fatally_with_page(text: &str, url: &str) {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        IDOK, MB_ICONERROR, MB_OKCANCEL, MessageBoxW, SW_SHOWNORMAL,
-    };
-    let body = wide(text);
-    let title = wide(&i18n::t("err.fatal.title"));
-    let answer = unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            body.as_ptr(),
-            title.as_ptr(),
-            MB_OKCANCEL | MB_ICONERROR,
-        )
-    };
-    if answer == IDOK {
-        let open = wide("open");
-        let wurl = wide(url);
-        let ok = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                open.as_ptr(),
-                wurl.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        // Anything at or below 32 is a failure, and a machine with nothing
-        // registered to open http with is a real one -- Windows Sandbox is
-        // exactly that. Having promised a page, hand over the address rather
-        // than doing nothing where a button was pressed.
-        if (ok as isize) <= 32 {
-            say_fatally(&shikisha_core::i18n::tp("err.webview2.address", &[("url", url)]));
-        }
+    let pressed = dialog::ask(&i18n::t("err.fatal.title"), text, rfd::MessageLevel::Error, rfd::MessageButtons::OkCancel);
+    // Having promised a page, hand over the address rather than doing nothing
+    // where a button was pressed, on a machine with nothing to open it with
+    if pressed == rfd::MessageDialogResult::Ok && !shikisha_core::webui::opened_external(url) {
+        say_fatally(&shikisha_core::i18n::tp("err.webview2.address", &[("url", url)]));
     }
 }
 
@@ -149,10 +104,13 @@ fn say_fatally_with_page(text: &str, url: &str) {
 /// has none (see `shikisha_core::reserve`). Without it, a build that uses up
 /// the machine's commit for a second ends this program -- and every AI at
 /// work in it -- over whatever few bytes it asked for next
+#[cfg(windows)]
 #[global_allocator]
 static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
 
 fn main() -> Result<()> {
+    // Before anything else: which thread may show a dialog on a Mac
+    dialog::note_first_thread();
     // Started from the Finder on a Mac, it would otherwise know only the
     // system's own programs. First, while no other thread is running
     shikisha_core::loginpath::adopt();
@@ -194,6 +152,7 @@ fn boot() -> Result<()> {
     // closed, updated or gone (local-keeper plan): the same program, started
     // by the app in a role with no window. It ends by itself once it holds
     // nothing and no app is connected
+    #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--keeper-launch") {
         let home = std::env::args().nth(2).map(std::path::PathBuf::from).ok_or_else(|| anyhow::anyhow!("--keeper-launch needs its folder"))?;
         return shikisha_core::fardaemon::start_resident(&home, &["--keeper".into(), home.to_string_lossy().into_owned()]);
@@ -344,7 +303,8 @@ fn boot() -> Result<()> {
     // opens. Both ways of ending up on the older one are silent -- a download
     // that arrived without the file, and the file arriving without the program
     // it starts -- so this line is where that silence gets a sentence.
-    append_hook_log(&conpty::report().line());
+    #[cfg(windows)]
+    append_hook_log(&shikisha_core::conpty::report().line());
 
     // Ask what WSL distributions are installed, once, on a thread of its own.
     // A shell inside one announces its folder by the distribution's name, and
@@ -368,6 +328,7 @@ fn boot() -> Result<()> {
     // and not in the short-lived ones above: a hook that runs for a moment
     // has nothing to ride out, and would only take commit from a machine
     // that may be short of it
+    #[cfg(windows)]
     if !shikisha_core::reserve::arm() {
         shikisha_core::append_hook_log("memory: no reserve could be set aside");
     }
@@ -1756,21 +1717,11 @@ impl WinSurface {
 }
 
 fn open_browser(url: &str) {
-    // cmd's `start` splits on `&` inside the URL, so pass it after an empty title argument
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.args(["/c", "start", "", url])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    let _ = detach_console(&mut cmd).spawn();
+    shikisha_core::webui::open_external(url);
 }
 
-/// Sets up a place to talk in text.
-///
-/// This executable is a windowed app, so Windows doesn't attach a console for
-/// it. If the caller is a terminal, borrow that one. Otherwise, open one of
-/// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
 /// Whether the window in front of the person is one of this program's
+#[cfg(windows)]
 fn window_in_front() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
     let hwnd = unsafe { GetForegroundWindow() };
@@ -1782,12 +1733,30 @@ fn window_in_front() -> bool {
     pid == std::process::id()
 }
 
+/// Elsewhere the keys that ask this come with the window drawn there, and
+/// until then nothing asks: taken as not in front, which only ever opens
+#[cfg(not(windows))]
+fn window_in_front() -> bool {
+    false
+}
+
+/// Sets up a place to talk in text.
+///
+/// This executable is a windowed app, so Windows doesn't attach a console for
+/// it. If the caller is a terminal, borrow that one. Otherwise, open one of
+/// our own. If already attached, do nothing (both calls simply fail harmlessly in that case).
+#[cfg(windows)]
 fn open_console() {
     use windows_sys::Win32::System::Console::AllocConsole;
     if !borrow_console() {
         unsafe { AllocConsole() };
     }
 }
+
+/// Elsewhere a program started from a terminal is already talking to it,
+/// and one started any other way has nowhere to open one
+#[cfg(not(windows))]
+fn open_console() {}
 
 /// Borrow the terminal this was started from, if it was started from one.
 ///
@@ -1797,9 +1766,18 @@ fn open_console() {
 /// right answer is silence -- opening a console of its own would put a black
 /// rectangle on the desktop beside the board, saying nothing, for as long as
 /// the program ran
+#[cfg(windows)]
 fn borrow_console() -> bool {
     use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
     unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
+}
+
+/// Elsewhere there is nothing to borrow: a terminal it was started from is
+/// already its output
+#[cfg(not(windows))]
+fn borrow_console() -> bool {
+    use std::io::IsTerminal as _;
+    std::io::stdout().is_terminal()
 }
 
 /// How to show the name. Shrink it if it doesn't fit the screen; if even that
@@ -1853,7 +1831,7 @@ pub fn wordmark_lines(width: u16, height: u16) -> Vec<String> {
 ///   cargo test -- --ignored a_burst_of_japanese --nocapture
 ///
 /// Both runs print which console they used, so the pair cannot be mixed up.
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod frame_bench {
     use super::*;
     use shikisha_core::tab::{Tab, TabOptions};
@@ -2168,8 +2146,26 @@ impl shikisha_core::host::Shell for WinSurface {
         &mut self.mail
     }
 
+    #[cfg(windows)]
     fn confirm_quit(&mut self, ask: &shikisha_core::host::QuitAsk) -> shikisha_core::host::Quit {
         shikisha_core::resident::ask_quit(ask)
+    }
+
+    /// The same question in the system's own dialog, with its own Yes, No and
+    /// Cancel, which the question's words name
+    #[cfg(not(windows))]
+    fn confirm_quit(&mut self, ask: &shikisha_core::host::QuitAsk) -> shikisha_core::host::Quit {
+        use rfd::{MessageButtons, MessageDialogResult, MessageLevel};
+        use shikisha_core::host::{Pressed, Quit};
+        if !ask.worth_asking() {
+            return Quit::Yes;
+        }
+        let buttons = if ask.goes_on() { MessageButtons::YesNoCancel } else { MessageButtons::YesNo };
+        ask.answered(match dialog::ask("SHIKISHA-TERM", &ask.words(), MessageLevel::Info, buttons) {
+            MessageDialogResult::Yes => Pressed::Yes,
+            MessageDialogResult::No => Pressed::No,
+            _ => Pressed::Neither,
+        })
     }
 
     fn install_store_update(&mut self) -> Result<()> {
@@ -2272,10 +2268,16 @@ fn connect_to(url: &str) -> Result<()> {
     // Started by the runtime of a program split in two, this window is that
     // PC's own screen, and it was handed the key that says so. Read once and
     // taken out of the environment, so nothing this window starts inherits it
+    #[cfg(windows)]
     let here = std::env::var(shikisha_core::split::HERE_KEY_ENV).unwrap_or_default();
     // SAFETY: nothing else is running yet -- the window and its threads are
     // started below -- so nobody is reading the environment while it changes
+    #[cfg(windows)]
     unsafe { std::env::remove_var(shikisha_core::split::HERE_KEY_ENV) };
+    // Only Windows runs the program split in two, so only there is a window
+    // handed that key
+    #[cfg(not(windows))]
+    let here = String::new();
     // A server version's board, opened by this PC that was paired with it:
     // the ticket it was handed for this window, used once (far-keep plan §6.2)
     let ticket = std::env::var(shikisha_core::pairing::TICKET_ENV).unwrap_or_default();

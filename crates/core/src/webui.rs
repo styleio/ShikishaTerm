@@ -184,20 +184,34 @@ pub fn install_page(prog: &str) -> Option<String> {
 /// and falls back to opening a file window instead).
 #[cfg(not(windows))]
 pub fn open_external(url: &str) {
-    // `open` on a Mac. `xdg-open` is the agreement on Linux desktops; on a
-    // server there is nothing to open with, and the failure is quiet on
+    // On a server there is nothing to open with, and the failure is quiet on
     // purpose -- nobody is sitting there to be told
+    let _ = opened_external(url);
+}
+
+/// The same, saying whether the system took it: `open` on a Mac, and
+/// `xdg-open`, the agreement on Linux desktops
+#[cfg(not(windows))]
+pub fn opened_external(url: &str) -> bool {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let _ = std::process::Command::new(opener).arg(url).spawn();
+    std::process::Command::new(opener).arg(url).spawn().is_ok()
 }
 
 #[cfg(windows)]
 pub fn open_external(url: &str) {
+    let _ = opened_external(url);
+}
+
+/// The same, saying whether the system took it. Anything at or below 32 from
+/// the shell is a failure, and a machine with nothing registered to open http
+/// with is a real one -- Windows Sandbox is exactly that
+#[cfg(windows)]
+pub fn opened_external(url: &str) -> bool {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let op: Vec<u16> = "open\0".encode_utf16().collect();
     let file: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
+    let said = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
             op.as_ptr(),
@@ -205,8 +219,9 @@ pub fn open_external(url: &str) {
             std::ptr::null(),
             std::ptr::null(),
             SW_SHOWNORMAL,
-        );
-    }
+        )
+    };
+    (said as isize) > 32
 }
 
 /// Best-effort version of the system for a bug report (the field is optional).

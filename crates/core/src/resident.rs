@@ -202,13 +202,12 @@ pub fn ask_quit(ask: &crate::host::QuitAsk) -> crate::host::Quit {
             if three { MB_YESNOCANCEL } else { MB_YESNO } | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
         )
     };
-    let quit = match (answered, three) {
-        (IDYES, _) => Quit::Yes,
-        (IDNO, true) => Quit::StopAll,
-        _ => Quit::No,
-    };
-    crate::append_hook_log(&format!("quit asked ({} at work, kept {:?}, {} on this PC): {quit:?}", ask.busy, ask.kept, ask.here));
-    quit
+    use crate::host::Pressed;
+    ask.answered(match answered {
+        IDYES => Pressed::Yes,
+        IDNO => Pressed::No,
+        _ => Pressed::Neither,
+    })
 }
 
 pub fn ask_yes_no(title: &str, body: &str) -> bool {

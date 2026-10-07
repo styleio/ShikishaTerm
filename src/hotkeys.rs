@@ -6,22 +6,29 @@
 //! be waiting for messages -- the window's loop belongs to the browser, and
 //! the conductor's loop reads no system messages at all.
 
+#[cfg(windows)]
 use shikisha_core::hotkeys::{self, Row, Wanted};
+#[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT};
+#[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetMessageW, PeekMessageW, PostThreadMessageW, MSG, PM_NOREMOVE, WM_APP, WM_HOTKEY,
 };
 
+#[cfg(windows)]
 /// Asks the thread to read the settings and register again
 const RELOAD: u32 = WM_APP + 1;
 
+#[cfg(windows)]
 /// The keys' thread. Dropped with the process; the system lets go of a
 /// thread's keys when the thread ends
 pub struct Hotkeys {
     thread: u32,
 }
 
+#[cfg(windows)]
 impl Hotkeys {
     /// Start registering, and call `fire` with the action whenever one of the
     /// keys is pressed
@@ -63,6 +70,7 @@ impl Hotkeys {
     }
 }
 
+#[cfg(windows)]
 /// Let go of the keys held (`held[i]` is registered under id `i`), register the
 /// ones the settings ask for, and say how each went. Returns what is held now,
 /// indexed the same way
@@ -96,4 +104,20 @@ fn register(held: &[&'static str]) -> Vec<&'static str> {
     }
     hotkeys::set_registered(rows);
     now
+}
+
+/// Away from Windows the keys are not registered yet: a Mac takes them
+/// through its own event system, which comes with the window drawn there
+#[cfg(not(windows))]
+pub struct Hotkeys;
+
+#[cfg(not(windows))]
+impl Hotkeys {
+    /// Nothing is registered, so nothing is held
+    pub fn start(_fire: impl Fn(&'static str) + Send + 'static) -> Option<Hotkeys> {
+        None
+    }
+
+    /// Nothing to register again
+    pub fn reload(&self) {}
 }
