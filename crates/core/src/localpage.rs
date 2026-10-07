@@ -235,10 +235,27 @@ fn opened_at(file: &std::fs::File) -> Option<PathBuf> {
     }
 }
 
+/// On a Mac the system is asked for the path of the open descriptor, which
+/// is where the file really is (`/private/var/...` for what `/var` points
+/// to, the same spelling `canonicalize` gives the shared folder)
+#[cfg(target_os = "macos")]
+fn opened_at(file: &std::fs::File) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::io::AsRawFd as _;
+    let mut buf = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: F_GETPATH writes at most PATH_MAX bytes, the end NUL included,
+    // into a buffer that long, for a descriptor `file` keeps open
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr()) } == -1 {
+        return None;
+    }
+    let end = buf.iter().position(|b| *b == 0)?;
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(&buf[..end])))
+}
+
 /// On Linux the open descriptor names its file under /proc. A system without
 /// that has no answer here, and a file whose place cannot be told is not
 /// served: refusing is the safe side of not knowing
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn opened_at(file: &std::fs::File) -> Option<PathBuf> {
     use std::os::unix::io::AsRawFd;
     std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()

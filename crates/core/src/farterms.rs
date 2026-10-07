@@ -345,10 +345,14 @@ fn run_mark(session: u32) -> Option<String> {
 }
 
 /// This start of the machine: a session of an earlier one does not run,
-/// whatever now leads one with the same id
+/// whatever now leads one with the same id. Linux names each start; a Mac
+/// has no such name, and the moment it started serves the same way
 #[cfg(unix)]
 fn run_mark(_session: u32) -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .or_else(|| Some(format!("started {}", sysinfo::System::boot_time())))
 }
 
 /// Whether the program a terminal started still runs. On Windows every
@@ -376,16 +380,12 @@ fn session_runs(session: u32) -> bool {
 /// the AI in it, and whatever that started, are in it unless they left it
 #[cfg(unix)]
 fn session_runs(session: u32) -> bool {
-    let Ok(dir) = std::fs::read_dir("/proc") else { return true };
-    dir.flatten().any(|e| {
-        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
-            && std::fs::read_to_string(e.path().join("stat")).ok().is_some_and(|stat| {
-                // pid (comm) state ppid pgrp session ...: after the last ')'
-                stat.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().nth(3)?.parse::<u32>().ok())
-                    == Some(session)
-            })
-    })
+    let table = crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    // Not one process could be read: not known, so taken to run
+    if table.processes().is_empty() {
+        return true;
+    }
+    table.processes().values().any(|p| p.session_id().is_some_and(|s| s.as_u32() == session))
 }
 
 /// What is answered about a terminal of an earlier resident process: ended
@@ -1268,7 +1268,17 @@ mod tests {
         // SAFETY: getsid only reads
         let mine = unsafe { libc::getsid(0) } as u32;
         assert!(session_runs(mine));
-        let mut child = std::process::Command::new("setsid").arg("true").spawn().unwrap();
+        // Its own session, made by the child itself: a Mac has no `setsid` program
+        use std::os::unix::process::CommandExt as _;
+        let mut started = std::process::Command::new("true");
+        // SAFETY: setsid is safe to call between fork and exec
+        unsafe {
+            started.pre_exec(|| match libc::setsid() {
+                -1 => Err(std::io::Error::last_os_error()),
+                _ => Ok(()),
+            });
+        }
+        let mut child = started.spawn().unwrap();
         let gone = child.id();
         child.wait().unwrap();
         assert!(!session_runs(gone), "a session nothing runs in");

@@ -371,12 +371,10 @@ pub fn listeners() -> HashMap<u32, std::collections::BTreeMap<u16, Vec<std::net:
     // Both families. A dev server that binds ::1 and one that binds 127.0.0.1
     // are the same thing to the person looking at the row; which addresses a
     // port was bound on is kept, because it decides how the port is reached
-    for family in [AF_INET, AF_INET6] {
-        for (pid, port, addr) in listening_on(family) {
-            let at = out.entry(pid).or_default().entry(port).or_default();
-            if !at.contains(&addr) {
-                at.push(addr);
-            }
+    for (pid, port, addr) in listening() {
+        let at = out.entry(pid).or_default().entry(port).or_default();
+        if !at.contains(&addr) {
+            at.push(addr);
         }
     }
     out
@@ -494,9 +492,10 @@ pub fn program_of(pid: u32) -> Option<String> {
 /// The name of the program a process runs, as the kernel keeps it
 #[cfg(unix)]
 pub fn program_of(pid: u32) -> Option<String> {
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    let comm = comm.trim();
-    (!comm.is_empty()).then(|| comm.to_string())
+    let table = process_table(Some(&[pid]), sysinfo::ProcessRefreshKind::nothing());
+    let name = table.process(sysinfo::Pid::from_u32(pid))?.name().to_string_lossy();
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// The last part of a path, whichever way its slashes lean
@@ -527,131 +526,71 @@ pub(crate) fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u
 
 // ── The two things only the operating system knows ────────────────
 
-// Linux keeps both in /proc. The process tree is one line per process, and the
-// listening sockets are one table per family, tying a port to the inode of the
-// socket -- which is what turns up again in the file descriptors of whoever
-// holds it. So the port is found by matching inodes, which is the same walk
-// `ss -ltnp` does.
+// Away from Windows, the process tree and the listening sockets are read
+// through two libraries rather than by hand. Linux keeps both in /proc (a
+// port is tied to its process by the inode of the socket); macOS keeps them
+// behind its own process calls and each process's file descriptors. Reading
+// /proc directly answered only the first, and on a Mac every one of these
+// came back empty without a word.
+
+/// A look at the machine's processes, with only what `kind` asks for filled
+/// in -- all of them, or just `only`.
+///
+/// Threads are left out. Linux lists each thread as a process of its own, and
+/// a thread is not something a tab started: counted, it would put the same
+/// program into the tree many times over
+#[cfg(unix)]
+pub(crate) fn process_table(only: Option<&[u32]>, kind: sysinfo::ProcessRefreshKind) -> sysinfo::System {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let mut table = System::new();
+    let picked: Vec<Pid> = only.unwrap_or_default().iter().map(|p| Pid::from_u32(*p)).collect();
+    let which = match only {
+        Some(_) => ProcessesToUpdate::Some(&picked),
+        None => ProcessesToUpdate::All,
+    };
+    table.refresh_processes_specifics(which, true, kind.without_tasks());
+    table
+}
 
 /// Parent to children, for every process on the machine.
 #[cfg(unix)]
 pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
+    let table = process_table(None, sysinfo::ProcessRefreshKind::nothing());
     let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
-    for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        // `PPid:` in the status file, rather than `stat`, because a program's
-        // own name can contain anything at all -- including the spaces and
-        // brackets that make `stat` ambiguous
-        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
-            continue;
-        };
-        let parent = status
-            .lines()
-            .find_map(|l| l.strip_prefix("PPid:"))
-            .and_then(|v| v.trim().parse::<u32>().ok());
-        if let Some(parent) = parent {
-            out.entry(parent).or_default().push(pid);
+    for (pid, p) in table.processes() {
+        if let Some(parent) = p.parent() {
+            out.entry(parent.as_u32()).or_default().push(pid.as_u32());
         }
     }
     out
 }
 
-/// Which inode each process holds a socket for.
-#[cfg(unix)]
-fn socket_inodes() -> HashMap<u64, u32> {
-    let mut out = HashMap::new();
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
-    for e in rd.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        // A process owned by somebody else refuses this, which is the same
-        // answer Windows gives for a process it will not open: nothing
-        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
-        for fd in fds.flatten() {
-            let Ok(target) = std::fs::read_link(fd.path()) else { continue };
-            let Some(inode) = target
-                .to_str()
-                .and_then(|t| t.strip_prefix("socket:["))
-                .and_then(|t| t.strip_suffix(']'))
-                .and_then(|t| t.parse::<u64>().ok())
-            else {
-                continue;
-            };
-            out.insert(inode, pid);
-        }
-    }
-    out
-}
-
-/// The listening sockets of one address family, as (process, port).
+/// Every listening TCP socket, as (process, port, address bound).
 ///
-/// `family` is the same constant the Windows call takes, so the caller does not
-/// have to know which system it is on: 2 is IPv4 and 23 is IPv6.
+/// A socket owned by another account is not listed, which is the same answer
+/// Windows gives for a process it will not open: nothing
 #[cfg(unix)]
-fn listening_on(family: u16) -> Vec<(u32, u16, std::net::IpAddr)> {
-    // 0A is TCP_LISTEN. Anything else in that column is a connection, not
-    // something waiting to be connected to
-    const LISTEN: &str = "0A";
-    let path = match family {
-        23 => "/proc/net/tcp6",
-        _ => "/proc/net/tcp",
-    };
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    let owners = socket_inodes();
-    let mut out = Vec::new();
-    for line in text.lines().skip(1) {
-        let f: Vec<&str> = line.split_whitespace().collect();
-        // The first column is the row's own number, not an address: the local
-        // address is the one after it
-        let (Some(local), Some(state), Some(inode)) = (f.get(1), f.get(3), f.get(9)) else {
-            continue;
-        };
-        if *state != LISTEN {
-            continue;
-        }
-        let Some((host, port)) = local.split_once(':') else { continue };
-        let (Ok(port), Some(addr)) = (u16::from_str_radix(port, 16), proc_net_addr(host)) else {
-            continue;
-        };
-        let Some(pid) = inode.parse::<u64>().ok().and_then(|i| owners.get(&i)) else {
-            continue;
-        };
-        out.push((*pid, port, addr));
-    }
-    out
-}
-
-/// An address as `/proc/net/tcp` and `tcp6` write it: hexadecimal, in 32-bit
-/// words each laid out the way the machine keeps a number (low byte first on
-/// the machines this runs on). `0100007F` is 127.0.0.1
-#[cfg(any(unix, test))]
-fn proc_net_addr(hex: &str) -> Option<std::net::IpAddr> {
-    let word = |i: usize| u32::from_str_radix(hex.get(i * 8..i * 8 + 8)?, 16).ok().map(u32::to_le_bytes);
-    match hex.len() {
-        8 => Some(std::net::IpAddr::from(word(0)?)),
-        32 => {
-            let mut b = [0u8; 16];
-            for i in 0..4 {
-                b[i * 4..i * 4 + 4].copy_from_slice(&word(i)?);
-            }
-            Some(std::net::IpAddr::from(b))
-        }
-        _ => None,
-    }
+fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
+    use ::listeners::{Protocol, SocketState};
+    let Ok(all) = ::listeners::get_all() else { return Vec::new() };
+    all.into_iter()
+        .filter(|l| l.protocol == Protocol::TCP && l.state == SocketState::Listen && l.socket.port() != 0)
+        .map(|l| (l.process.pid, l.socket.port(), l.socket.ip()))
+        .collect()
 }
 
 #[cfg(windows)]
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
-/// The two families the ports are asked for, named the same on both systems.
-#[cfg(unix)]
-const AF_INET: u16 = 2;
-#[cfg(unix)]
-const AF_INET6: u16 = 23;
+/// Every listening TCP socket, as (process, port, address bound). Both
+/// families: a dev server that binds ::1 and one that binds 127.0.0.1 are the
+/// same thing to the person looking at the row
+#[cfg(windows)]
+fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
+    let mut out = listening_on(AF_INET);
+    out.extend(listening_on(AF_INET6));
+    out
+}
 
 /// Parent to children, for every process on the machine.
 #[cfg(windows)]
@@ -1150,19 +1089,6 @@ mod tests {
         assert_eq!(open_host(&[v6]).as_deref(), Some("[2001:db8::5]"));
         assert_eq!(open_host(&[link, v6]).as_deref(), Some("[2001:db8::5]"));
         assert_eq!(open_host(&[]), None);
-    }
-
-    #[test]
-    fn an_address_is_read_the_way_proc_net_writes_it() {
-        use std::net::IpAddr;
-        assert_eq!(proc_net_addr("0100007F"), Some(IpAddr::from([127, 0, 0, 1])));
-        assert_eq!(proc_net_addr("1401A8C0"), Some(IpAddr::from([192, 168, 1, 20])));
-        assert_eq!(proc_net_addr("00000000"), Some(IpAddr::from([0, 0, 0, 0])));
-        assert_eq!(
-            proc_net_addr("00000000000000000000000001000000"),
-            Some("::1".parse().unwrap())
-        );
-        assert_eq!(proc_net_addr("zz"), None);
     }
 
     #[test]

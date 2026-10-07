@@ -78,6 +78,26 @@ const GRACE: Duration = Duration::from_secs(10);
 /// the sign
 const SILENCE: Duration = Duration::from_secs(60);
 
+/// How much may wait unread for one app before its line is cut. Far more than
+/// a terminal's whole state (a screen and its 2000 rows of scrollback) and a
+/// burst of output on top: an app that leaves this much unread is not
+/// reading, and holding on for it would only grow without end
+const UNREAD_MOST: usize = 64 * 1024 * 1024;
+
+/// The writer of one line: says what is queued for the app, in order, until
+/// the line ends. A write that fails shuts the socket, so the line's reader
+/// sees it end and lets the app go
+fn carry(mut out: UnixStream, said: std::sync::mpsc::Receiver<String>, unread: Arc<std::sync::atomic::AtomicUsize>) {
+    for text in said {
+        let ok = out.write_all(text.as_bytes()).is_ok() && out.flush().is_ok();
+        unread.fetch_sub(text.len(), Ordering::SeqCst);
+        if !ok {
+            let _ = out.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+    }
+}
+
 // ── What a job is ─────────────────────────────────────────────────────────
 
 /// One job the resident process holds. The process routes the app's frames
@@ -112,7 +132,17 @@ const ANSWERS_WAIT: Duration = Duration::from_secs(120);
 
 /// One app, connected through a door
 struct Line {
-    out: Mutex<UnixStream>,
+    /// What is to be said to the app, in order. Its own writer says it, so
+    /// whoever has something to say never waits on this app reading: a
+    /// terminal says what it has while it holds its state, and an app slow to
+    /// read would otherwise hold that terminal for every other app as well.
+    /// The wait stays hidden where a socket takes a lot before it is full
+    /// (Linux) and shows soon where it takes little (a Mac)
+    queue: std::sync::mpsc::Sender<String>,
+    /// How many bytes wait in the queue, not yet written
+    unread: Arc<std::sync::atomic::AtomicUsize>,
+    /// The socket itself, to shut when the line ends
+    stream: UnixStream,
     heard: Mutex<Instant>,
     /// It said it is going (`Frame::Bye`): nothing new is carried to it,
     /// while what it asked before is still answered
@@ -143,8 +173,14 @@ impl Core {
         let Some(l) = self.lines.lock().ok().and_then(|m| m.get(&line).cloned()) else { return false };
         let mut text = serde_json::to_string(frame).unwrap_or_default();
         text.push('\n');
-        let mut out = l.out.lock().unwrap_or_else(|e| e.into_inner());
-        out.write_all(text.as_bytes()).is_ok() && out.flush().is_ok()
+        let size = text.len();
+        if l.unread.fetch_add(size, Ordering::SeqCst) + size > UNREAD_MOST {
+            l.unread.fetch_sub(size, Ordering::SeqCst);
+            log(&format!("the app on line {line} is not reading what it is sent: its line is cut"));
+            let _ = l.stream.shutdown(std::net::Shutdown::Both);
+            return false;
+        }
+        l.queue.send(text).is_ok()
     }
 
     /// The apps connected now, those that said they are going left out:
@@ -176,10 +212,19 @@ impl Core {
         self.jobs.lock().map(|j| j.clone()).unwrap_or_default()
     }
 
-    fn add(self: &Arc<Self>, out: UnixStream) -> u64 {
+    /// A line for the app on `out`, with the writer that says things to it.
+    /// `None` when the socket cannot be held twice (to read and to write)
+    fn add(self: &Arc<Self>, out: UnixStream) -> Option<u64> {
+        let writer = out.try_clone().ok()?;
+        let (queue, said) = std::sync::mpsc::channel::<String>();
+        let unread = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let left = unread.clone();
+        std::thread::spawn(move || carry(writer, said, left));
         let id = self.next_line.fetch_add(1, Ordering::SeqCst) + 1;
         let line = Arc::new(Line {
-            out: Mutex::new(out),
+            queue,
+            unread,
+            stream: out,
             heard: Mutex::new(Instant::now()),
             leaving: std::sync::atomic::AtomicBool::new(false),
         });
@@ -189,7 +234,7 @@ impl Core {
         if let Ok(mut a) = self.alone_since.lock() {
             *a = None;
         }
-        id
+        Some(id)
     }
 
     fn heard(&self, line: u64) {
@@ -212,7 +257,7 @@ impl Core {
             l
         });
         let Some(gone) = gone else { return };
-        let _ = gone.out.lock().map(|o| o.shutdown(std::net::Shutdown::Both));
+        let _ = gone.stream.shutdown(std::net::Shutdown::Both);
         for job in self.jobs() {
             job.line_gone(self, line);
         }
@@ -574,7 +619,10 @@ fn door(core: &Arc<Core>, conn: UnixStream, key: &str) {
         log("a door came with the wrong key");
         return;
     }
-    let line = core.add(conn);
+    let Some(line) = core.add(conn) else {
+        log("an app came, and its line could not be held");
+        return;
+    };
     log(&format!("an app came (line {line})"));
     for text in lines {
         let Ok(text) = text else { break };

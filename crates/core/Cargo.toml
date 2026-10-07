@@ -134,6 +134,14 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# The process tree, each process's name, processor time and memory (repo.rs,
+# usage.rs). Linux keeps these in /proc and macOS behind its own process
+# calls; this reads both the same way. Only the process part is built
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# Which process listens on which port (repo.rs). Linux ties a port to a
+# process through socket inodes in /proc, macOS through each process's file
+# descriptors; this answers both
+listeners = "0.6.1"
 
 
 # What only exists on Windows. Everything above this line builds anywhere,
