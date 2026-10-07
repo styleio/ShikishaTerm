@@ -6064,15 +6064,21 @@ mod turns_probe {
     fn the_instruction_is_not_sent_back_as_part_of_the_answer() {
         // Not `crate::test_shell()`: what is pasted below is wrapped in the
         // bracketed-paste markers, and dash has never heard of them -- it
-        // would try to run `ESC[200~echo` as a command. cmd.exe and bash both
-        // take a paste, which is the behaviour under test
-        let shell = match cfg!(windows) {
-            true => "cmd.exe",
-            false => "bash",
+        // would try to run `ESC[200~echo` as a command. cmd.exe, bash and zsh
+        // take a paste, which is the behaviour under test. On a Mac it is
+        // zsh, the shell a Mac opens: the bash there is 3.2, which predates
+        // bracketed paste just as dash does. `-f` leaves out the account's
+        // own startup files, so the prompt is the same on every machine
+        let shell: &[&str] = if cfg!(windows) {
+            &["cmd.exe"]
+        } else if cfg!(target_os = "macos") {
+            &["zsh", "-f"]
+        } else {
+            &["bash"]
         };
         let mut tab = Tab::spawn(
             "cmd".into(),
-            &[shell.to_string()],
+            &shell.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             None,
             24,
             100,

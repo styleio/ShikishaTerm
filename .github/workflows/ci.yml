@@ -54,6 +54,26 @@ jobs:
         shell: pwsh
         run: ./tools/notices.ps1 -Check
 
+  # The same runtime on a Mac. The window does not build there yet; this is what
+  # keeps the parts that already do from sliding back. A Windows-only call added
+  # without its other half stops the build here, and one that compiles but
+  # answers nothing on a Mac (reading /proc, which a Mac does not have) stops
+  # the tests. `latest` is an Apple Silicon machine, which is what a Mac is now
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build -p shikisha-core -p shikisha-shared -p shikisha-server -p shikisha-bridge --locked --verbose
+
+      - name: Test
+        run: cargo test -p shikisha-core -p shikisha-shared -p shikisha-server -p shikisha-bridge --locked --verbose
+
   # The runtime with no window. If this stops passing, the Linux build rots quietly --
   # the crates with a window cannot build on Linux, so this covers core / shared / serve.
   # Named, not `ubuntu-latest`: this is the release a server is recommended to run, so the

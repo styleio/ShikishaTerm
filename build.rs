@@ -25,7 +25,10 @@ fn main() {
         .unwrap_or(false);
 
     // The first thing someone who downloads this sees is its icon in Explorer.
-    // Left as the generic console icon, it looks like something picked up off the street
+    // Left as the generic console icon, it looks like something picked up off the street.
+    // The library that writes it is only there when this script itself is
+    // built on Windows, so a build elsewhere does not reach for it
+    #[cfg(windows)]
     if std::env::var("CARGO_CFG_WINDOWS").is_ok() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/icon.ico");

@@ -95,15 +95,24 @@ impl Meter {
 
         // Read each live process once, even a subtree that shares one. A pid
         // that appears under two tabs (it should not, but ids get reused) is
-        // read once and counted where it is found
-        let mut cost: HashMap<u32, (u64, u64)> = HashMap::new();
+        // read once and counted where it is found. Asked for all of them in
+        // one go, because away from Windows one look at the machine answers
+        // every process at once
+        let trees: Vec<(usize, Vec<u32>)> = roots
+            .iter()
+            .map(|(key, root)| (*key, crate::repo::descendants(*root, &children)))
+            .collect();
+        let mut wanted: Vec<u32> = trees.iter().flat_map(|(_, tree)| tree.iter().copied()).collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let cost = read(&wanted);
         let mut fresh: HashMap<u32, u64> = HashMap::new();
 
-        for (key, root) in roots {
+        for (key, tree) in &trees {
             let mut cpu_delta: u64 = 0;
             let mut mem: u64 = 0;
-            for pid in crate::repo::descendants(*root, &children) {
-                let (ctime, m) = *cost.entry(pid).or_insert_with(|| read(pid));
+            for &pid in tree {
+                let (ctime, m) = cost.get(&pid).copied().unwrap_or_default();
                 mem += m;
                 fresh.insert(pid, ctime);
                 // The rate is the change since last time. A process we have
@@ -131,49 +140,33 @@ impl Meter {
 
 // ── The one thing only the operating system knows ─────────────────
 
-/// One process's total processor time (100ns units) and resident memory.
+/// Each process's total processor time (100ns units) and resident memory.
 ///
-/// A process we cannot open — one that ended between listing and asking, or
-/// one owned by another account — reads as nothing rather than as an error:
+/// A process we cannot open -- one that ended between listing and asking, or
+/// one owned by another account -- reads as nothing rather than as an error:
 /// the tree it belonged to still has an honest total from the rest
-/// The same two numbers, read where Linux keeps them.
+#[cfg(windows)]
+fn read(pids: &[u32]) -> HashMap<u32, (u64, u64)> {
+    pids.iter().map(|pid| (*pid, read_one(*pid))).collect()
+}
+
+/// The same two numbers away from Windows, from one look at the machine.
 ///
-/// `/proc/<pid>/stat` counts processor time in clock ticks and
-/// `/proc/<pid>/statm` counts resident memory in pages, so both are converted
-/// to the units the Windows call answers in: 100ns, and bytes. A process that
-/// ended between listing and asking leaves no file, and reads as nothing.
-#[cfg(not(windows))]
-fn read(pid: u32) -> (u64, u64) {
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
-    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
-
-    // `stat` is space-separated, but the second field is the program's own name
-    // in brackets and may contain spaces of its own -- so the fields are counted
-    // from the closing bracket, not from the start
-    let cpu = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|s| {
-            let rest = &s[s.rfind(')')? + 1..];
-            let f: Vec<&str> = rest.split_whitespace().collect();
-            // utime and stime are fields 14 and 15 of the whole line, which is
-            // 12 and 13 of what follows the name
-            let user: u64 = f.get(11)?.parse().ok()?;
-            let sys: u64 = f.get(12)?.parse().ok()?;
-            Some((user + sys) * 10_000_000 / hz)
-        })
-        .unwrap_or(0);
-
-    let mem = std::fs::read_to_string(format!("/proc/{pid}/statm"))
-        .ok()
-        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-        .map(|pages| pages * page)
-        .unwrap_or(0);
-
-    (cpu, mem)
+/// The library counts processor time in milliseconds, turned here into the
+/// 100ns the Windows call answers in; memory is the resident set, in bytes
+#[cfg(unix)]
+fn read(pids: &[u32]) -> HashMap<u32, (u64, u64)> {
+    let kind = sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory();
+    let table = crate::repo::process_table(Some(pids), kind);
+    table
+        .processes()
+        .iter()
+        .map(|(pid, p)| (pid.as_u32(), (p.accumulated_cpu_time().saturating_mul(10_000), p.memory())))
+        .collect()
 }
 
 #[cfg(windows)]
-fn read(pid: u32) -> (u64, u64) {
+fn read_one(pid: u32) -> (u64, u64) {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
     use windows_sys::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
