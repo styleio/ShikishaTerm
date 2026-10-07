@@ -17,6 +17,9 @@
  *            nothing else (the board's state and the settings answer 423); a
  *            wrong password is told so, the right one opens the app on the PC
  *            as well, and the board comes back on the phone
+ *   again    after a restart, with a password on the board too, the phone
+ *            already paired comes back on the bare address: the lock page opens
+ *            the link again by itself, asks the board password, then the master
  *   pc       the right password typed on the window opens it; the pipe answers
  *   quit     Quit at the lock ends the app
  *   split    with the screen as a program of its own, the window is handed the
@@ -106,15 +109,17 @@ async function connect(target, name) {
 }
 
 // Start the copy with these settings; the window's page once it is up
-async function start({ split = false } = {}) {
+// One port for every start: a phone's saved key lives with the address
+const PORT = await freePort();
+async function start({ split = false, boardPassword = '' } = {}) {
   stopApp();
   // The resident process can outlive one round of taskkill (it is started apart)
   await until(() => { stopApp(); return pidsOfCopy().length === 0; }, 'the last copy gone', 20000);
   fs.rmSync(path.join(LOCAL, 'ShikishaTerm', 'webview2', 'shell', 'EBWebView', 'DevToolsActivePort'), { force: true });
-  const port = await freePort();
+  const port = PORT;
   fs.writeFileSync(CONFIG, JSON.stringify({
     language: JA ? 'ja' : 'en',
-    remote: split ? { enabled: false } : { enabled: true, bind: '127.0.0.1', port, sticky_token: true, fixed_token: PHONE_KEY },
+    remote: split ? { enabled: false } : { enabled: true, bind: '127.0.0.1', port, sticky_token: true, fixed_token: PHONE_KEY, password: boardPassword },
     split,
     external_api: { access: "user" },
     agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
@@ -231,6 +236,29 @@ try {
   check((await get('/api/state')).status === 200, 'the board\'s state is handed out again');
   a = await pipeCall('state', 'sh');
   check(a.ok, 'the pipe answers again: ' + JSON.stringify(a).slice(0, 120));
+
+  console.log('2b. after a restart, the phone already paired opens it');
+  // The app starts again: every session it gave is gone, and the board has a
+  // password of its own as well. The phone comes back on the bare address
+  ({ board } = await start({ boardPassword: 'aikotoba' }));
+  await until(async () => (await lockState(board)).up, 'the lock on the window', 30000);
+  await phone.send('Page.navigate', { url: `${base}/` });
+  await until(() => phone.run('!!document.getElementById("pw") && location.search.includes("t=")'), 'the link opened again on its own', 20000).catch(() => {});
+  check(await phone.run('location.search.includes("t=")'), 'with no session, the lock page opens the link of the board again by itself');
+  await sleep(1500);
+  check(await phone.run('document.getElementById("said").textContent === "" && !document.getElementById("pw").disabled'), 'and is ready to be typed in: ' + await phone.run('document.getElementById("said").textContent'));
+  const lbl = () => phone.run('document.getElementById("lbl").textContent');
+  await press(PASSWORD);
+  await until(async () => (await lbl()) === L['page.lock.board_password'], 'asked for the password of the board', 15000).catch(() => {});
+  check((await lbl()) === L['page.lock.board_password'], 'the password of the board itself is asked first: ' + await lbl());
+  await press('aikotoba');
+  await until(async () => (await lbl()) === L['page.lock.field'], 'back to the master password', 15000).catch(() => {});
+  await press(PASSWORD);
+  await until(async () => !(await lockState(board)).up, 'the window opened', 20000).catch(() => {});
+  check(!(await lockState(board)).up, 'then the master password opens the app');
+  await until(() => phone.run('typeof S !== "undefined" && !!S && S.tabs.length > 0'), 'the board on the phone', 20000).catch(() => {});
+  check(await phone.run('typeof S !== "undefined" && !!S && S.tabs.length > 0').catch(() => false), 'and the board comes back on the phone');
+  await phone.shot('2b-opened');
 
   console.log('3. the window opens it');
   ({ port, board } = await start());

@@ -1384,6 +1384,31 @@ impl RemoteUi {
         password: String,
         sticky: bool,
     ) -> Result<Self> {
+        Self::open(bind, port, token, password, sticky, false)
+    }
+
+    /// [`start_with`](Self::start_with), locked with the app's master
+    /// password from its first request ([`lock`](Self::lock)). Locked once
+    /// it is listening would leave a moment in which the board is handed to
+    /// whoever asks first -- a phone reloading the page as the app starts
+    pub fn start_locked(
+        bind: std::net::Ipv4Addr,
+        port: u16,
+        token: String,
+        password: String,
+        sticky: bool,
+    ) -> Result<Self> {
+        Self::open(bind, port, token, password, sticky, true)
+    }
+
+    fn open(
+        bind: std::net::Ipv4Addr,
+        port: u16,
+        token: String,
+        password: String,
+        sticky: bool,
+        locked: bool,
+    ) -> Result<Self> {
         let addr = format!("{bind}:{port}");
         let in_use = |e: &(dyn std::error::Error + Send + Sync + 'static)| {
             e.downcast_ref::<std::io::Error>()
@@ -1457,7 +1482,7 @@ impl RemoteUi {
             here_key: crate::random_hex(24),
             here: Ids::new(),
             moving: Mutex::new(None),
-            master: Mutex::new(None),
+            master: Mutex::new(locked.then(MasterLock::default)),
             master_misses: Mutex::new(Misses::new(Instant::now())),
         });
         let book = Arc::new(crate::reply::Book::new());
@@ -2287,9 +2312,37 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
   const KEY = (() => {{ try {{ return new URLSearchParams(location.search).get("t")
     || sessionStorage.getItem("shikisha_token") || localStorage.getItem("shikisha_token") || ""; }} catch (e) {{ return ""; }} }})();
   const at = p => KEY ? p + "?t=" + encodeURIComponent(KEY) : p;
-  // Unlocked on another screen: the board comes back here too
-  const watch = () => fetch(at("api/locked"), {{cache:"no-store"}}).then(r => r.ok ? r.json() : null)
+  // This device holds its key but no session -- the PC started again, and a
+  // session lives only as long as the program that gave it -- so the board's
+  // link is opened again, as the board's own "Reconnect" does. Once: a key the
+  // door no longer takes would only come back here, and is told so instead
+  const REOPENED = "shikisha_lock_reopened";
+  const reopen = () => {{
+    try {{
+      if (!KEY || sessionStorage.getItem(REOPENED)) return false;
+      sessionStorage.setItem(REOPENED, "1");
+      location.replace("/?t=" + encodeURIComponent(KEY));
+      return true;
+    }} catch (e) {{ return false; }}
+  }};
+  const cut = () => {{
+    if (reopen()) return;
+    if (said) said.textContent = W.cut;
+    if (pw) pw.disabled = true;
+    if (go) go.disabled = true;
+  }};
+  // Unlocked on another screen: the board comes back here too. Asked as the
+  // page opens as well, so a device that has to open the link again does so
+  // before anybody types
+  const watch = () => fetch(at("api/locked"), {{cache:"no-store"}})
+    .then(async r => {{
+      if (r.ok) {{ try {{ sessionStorage.removeItem(REOPENED); }} catch (e) {{}} return r.json(); }}
+      const why = await r.text().catch(() => "");
+      if (r.status === 403 && (why === "cut" || why === "forbidden")) cut();
+      return null;
+    }})
     .then(v => {{ if (v && !v.locked) location.reload(); }}).catch(() => {{}});
+  watch();
   setInterval(watch, 2000);
   if (!go) return;
   // The board's own password comes first when it has one, then the master's
@@ -2306,7 +2359,7 @@ button:disabled {{ background:var(--line); color:var(--dim); cursor:default; }}
       if (r.ok) {{ location.reload(); return; }}
       if (why === "password") {{ board = true; pw.value = ""; document.getElementById("lbl").textContent = W.board; return; }}
       // Cut, or a key the door no longer takes: the link has to be opened again
-      if (why === "cut" || why === "forbidden") {{ said.textContent = W.cut; return; }}
+      if (why === "cut" || why === "forbidden") {{ cut(); return; }}
       if (r.status === 429) {{ said.textContent = W.wait.replaceAll("{{n}}", r.headers.get("Retry-After") || "60"); return; }}
       if (why === "again") {{ said.textContent = W.again; watch(); return; }}
       said.textContent = W.wrong;
@@ -4245,9 +4298,10 @@ mod tests {
     #[test]
     fn a_locked_door_opens_only_with_the_master_password() {
         let _book = crate::clients::tests::OwnBook::new();
-        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        // Locked from its first request: there is no moment in which the
+        // board is handed out before the lock is put on
+        let ui = RemoteUi::start_locked("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new(), false).unwrap();
         let base = ui.url.split("/?").next().unwrap().to_string();
-        ui.lock();
         let mut phone = Phone::new(&base);
         phone.pair("tok123456789012");
         let page = phone.text("/");

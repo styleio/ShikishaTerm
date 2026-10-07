@@ -2073,7 +2073,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .is_some_and(|env| crypto::decrypt(&env, pw).is_ok())
         };
         crate::api::set_locked(true);
-        let mut locked_remote_rx = start_remote_bg(cfg.as_ref(), None);
+        let mut locked_remote_rx = start_remote_bg_locked(cfg.as_ref());
         let title = i18n::t("prompt.password.title");
         shell.lock_show(&title, &i18n::t("prompt.password.note"));
         append_hook_log("locked with the master password until it is given");
@@ -17307,6 +17307,22 @@ pub fn start_remote_bg(
     cfg: Option<&config::Config>,
     password: Option<&str>,
 ) -> Option<std::sync::mpsc::Receiver<(Option<remote::RemoteUi>, Vec<String>)>> {
+    start_remote(cfg, password, false)
+}
+
+/// [`start_remote_bg`], the door locked with the master password from its
+/// first request (`remote::RemoteUi::start_locked`)
+pub fn start_remote_bg_locked(
+    cfg: Option<&config::Config>,
+) -> Option<std::sync::mpsc::Receiver<(Option<remote::RemoteUi>, Vec<String>)>> {
+    start_remote(cfg, None, true)
+}
+
+fn start_remote(
+    cfg: Option<&config::Config>,
+    password: Option<&str>,
+    locked: bool,
+) -> Option<std::sync::mpsc::Receiver<(Option<remote::RemoteUi>, Vec<String>)>> {
     let c = cfg?;
     // A board this machine's own window needs, where the settings alone would
     // have served none
@@ -17343,7 +17359,11 @@ pub fn start_remote_bg(
             let sticky = c.remote.sticky_token;
             std::thread::spawn(move || {
                 let mut errors = Vec::new();
-                let ui = match remote::RemoteUi::start_with(ip, port, token, remote_password, sticky) {
+                let started = match locked {
+                    true => remote::RemoteUi::start_locked(ip, port, token, remote_password, sticky),
+                    false => remote::RemoteUi::start_with(ip, port, token, remote_password, sticky),
+                };
+                let ui = match started {
                     Ok(mut r) => {
                         r.local_only = local_only;
                         if let Some(n) = &note {

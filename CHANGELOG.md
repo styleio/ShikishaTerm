@@ -15,6 +15,15 @@ once it reaches its first tagged release.
   and each option of the pros and cons has a heading of its own -- in MADR's
   English words, whatever language the rest is written in.
 
+### Fixed
+- **A phone unlocks the master password lock after the PC has started
+  again.** A phone already paired that came back to the lock page was told
+  it was disconnected, since the sessions the PC gave ended with the program;
+  the lock page now opens the board's link again by itself, as the board's own
+  Reconnect does, and then asks for the board's password and the master
+  password. The door is also locked from its very first request, so a phone
+  reloading the page as the app starts is not handed the board.
+
 ## [0.26.0] - 2026-10-06
 
 ### Added
