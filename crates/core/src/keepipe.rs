@@ -33,7 +33,46 @@ pub use std::os::unix::net::UnixStream as Conn;
 /// Connect to the door at `at`
 #[cfg(unix)]
 pub fn connect(at: &Path) -> io::Result<Conn> {
-    Conn::connect(at)
+    Conn::connect(door(at))
+}
+
+/// Where a door named `at` really is.
+///
+/// A socket's name is held in a field of fixed size -- 104 bytes on a Mac
+/// and 108 on Linux, the end mark included -- and a folder deep enough does
+/// not fit: a long account name under `~/Library/Application Support`, a
+/// portable copy several folders down. Such a door is opened instead in a
+/// folder of this account's own under `/tmp`, under a name made from the
+/// whole path, so the same path always comes to the same door. That folder is
+/// used only when it is this account's and nobody else may enter it; a
+/// folder of that name someone else made leaves the long name as it is, and
+/// the door is refused rather than opened where another account could reach it
+#[cfg(unix)]
+pub fn door(at: &Path) -> std::path::PathBuf {
+    use sha2::Digest as _;
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    const FITS: usize = if cfg!(target_os = "linux") { 107 } else { 103 };
+    let long = at.as_os_str().as_bytes();
+    if long.len() <= FITS {
+        return at.to_path_buf();
+    }
+    // SAFETY: only reads this process's own user id
+    let me = unsafe { libc::getuid() };
+    let dir = std::path::PathBuf::from(format!("/tmp/shikisha-{me}"));
+    let _ = std::fs::create_dir(&dir);
+    let ours = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.is_dir() && m.uid() == me);
+    if !ours || std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).is_err() {
+        return at.to_path_buf();
+    }
+    let name: String = sha2::Sha256::digest(long).iter().take(12).map(|b| format!("{b:02x}")).collect();
+    dir.join(format!("{name}.sock"))
+}
+
+/// A pipe's name is made from the whole path, whatever its length
+#[cfg(windows)]
+pub fn door(at: &Path) -> std::path::PathBuf {
+    at.to_path_buf()
 }
 
 /// The door at `at`, for one process to answer
@@ -43,7 +82,7 @@ pub struct Listener(std::os::unix::net::UnixListener);
 #[cfg(unix)]
 impl Listener {
     pub fn bind(at: &Path) -> io::Result<Self> {
-        std::os::unix::net::UnixListener::bind(at).map(Self)
+        std::os::unix::net::UnixListener::bind(door(at)).map(Self)
     }
 
     /// Every caller, as it comes
@@ -512,4 +551,39 @@ mod tests {
     }
 
     use std::io::Read as _;
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::io::{BufRead as _, BufReader, Write as _};
+
+    /// A door in a folder too deep for a socket's name still opens, and is
+    /// found again by the same long name; a short name is left as it is
+    #[test]
+    fn a_door_too_deep_for_its_name_still_opens() {
+        let base = crate::test_temp("keepipe-deep");
+        let deep = base.join("a-folder-name-long-enough".repeat(5)).join("run");
+        std::fs::create_dir_all(&deep).unwrap();
+        let at = deep.join("keep.sock");
+        assert!(at.as_os_str().len() > 108, "the test's folder is not deep enough: {}", at.display());
+        let short = base.join("s.sock");
+        assert_eq!(door(&short), short, "a name that fits was moved");
+        assert_eq!(door(&at), door(&at), "one path came to two doors");
+        assert!(door(&at).as_os_str().len() <= 103, "{}", door(&at).display());
+
+        let _ = std::fs::remove_file(door(&at));
+        let listener = Listener::bind(&at).expect("the deep door did not open");
+        let answering = std::thread::spawn(move || {
+            let mut conn = listener.incoming().next().unwrap().unwrap();
+            conn.write_all(b"here\n").unwrap();
+        });
+        let conn = connect(&at).expect("the deep door was not found by its long name");
+        let mut said = String::new();
+        BufReader::new(conn).read_line(&mut said).unwrap();
+        assert_eq!(said, "here\n");
+        answering.join().unwrap();
+        let _ = std::fs::remove_file(door(&at));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

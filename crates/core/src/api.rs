@@ -358,7 +358,7 @@ fn door_path() -> String {
     }
     #[cfg(unix)]
     {
-        crate::config::state_path(&format!("api-{}.sock", std::process::id()))
+        crate::keepipe::door(&crate::config::state_path(&format!("api-{}.sock", std::process::id())))
             .display()
             .to_string()
     }
