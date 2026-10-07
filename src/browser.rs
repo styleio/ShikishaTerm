@@ -1855,6 +1855,8 @@ mod tests {
     /// no page loads.
     ///
     ///   cargo test --bin SHIKISHA-TERM through_the_proxy -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn a_placed_page_reaches_the_network_through_the_proxy() {
@@ -1937,6 +1939,7 @@ mod tests {
 
     /// Serve a test page on 127.0.0.1.
     /// `file:///` crashes on wry's IPC, so use http, same as production
+    #[cfg(windows)]
     fn serve(body: &'static str) -> String {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let port = server.server_addr().to_ip().unwrap().port();
@@ -1973,6 +1976,8 @@ mod tests {
     /// Find it, click it, fill it, read it.
     ///
     ///   cargo test browser_page_ops -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn browser_page_ops() {
@@ -2066,6 +2071,8 @@ mod tests {
     ///
     /// With a separate window, ownership, position tracking, and even
     /// exposure during Windows Terminal tab switching all became our own problem
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn a_page_can_sit_inside_the_window() {
@@ -2117,6 +2124,8 @@ mod tests {
     ///
     /// That last point is the crux. tao's `run` calls `process::exit`
     /// internally, so a naive implementation would take down the whole TUI just by closing the window
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn browser_round_trip() {
@@ -2165,6 +2174,8 @@ mod tests {
     /// text as real key events.
     ///
     ///   cargo test digest_round_trip -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn digest_round_trip() {
@@ -2280,6 +2291,8 @@ mod tests {
     /// choosing costs no extra look.
     ///
     ///   cargo test choose_scroll_settle -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn choose_scroll_and_settle_on_a_real_page() {
@@ -2415,6 +2428,8 @@ mod tests {
     /// digest must work hidden as-is.
     ///
     ///   cargo test hidden_page_ref_click -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn hidden_page_ref_click_falls_back() {
@@ -2511,6 +2526,8 @@ mod tests {
     /// re-enters the new document.
     ///
     ///   cargo test auto_wait_round_trip -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn auto_wait_round_trip() {
@@ -2604,6 +2621,8 @@ mod tests {
     /// (digest quality included) is sound and only the AI's judgment remains.
     ///
     ///   cargo test haiku_task_probe -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn haiku_task_probe() {
@@ -2677,6 +2696,8 @@ mod tests {
     /// failing CDP call names itself.
     ///
     ///   cargo test google_probe -- --ignored --nocapture
+    // A real window, which only Windows can open yet
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn google_probe() {

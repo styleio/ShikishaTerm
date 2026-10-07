@@ -2406,5 +2406,6 @@ fn draw_for_server(
 }
 
 
-#[cfg(test)]
+// Pressed on the real window, which only Windows can open yet
+#[cfg(all(test, windows))]
 mod settings_confirm_tests;
