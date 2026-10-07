@@ -10,6 +10,10 @@
 //! screen -- their mail, their passwords, whatever was up -- so it is dropped
 //! the moment the tool is closed rather than kept for the next time.
 
+// The picture and its tools are opened from the window, which only Windows
+// draws yet; elsewhere this is built all the same
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use std::sync::{Arc, Mutex};
 
 /// A screen, where it is on the desktop and how large, in physical pixels.

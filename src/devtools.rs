@@ -22,7 +22,9 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::channel;
+#[cfg(windows)]
+use std::sync::mpsc::Sender;
 
 use shikisha_core::ws::{self, Op};
 

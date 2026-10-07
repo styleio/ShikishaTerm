@@ -4,12 +4,19 @@
 //! and Microsoft keeps it updated. So we don't bundle our own. We borrow it.
 //! That keeps the "no-install single exe" promise intact.
 //!
-//! The window runs on its own thread. The TUI's render loop and the
-//! message loop both want to run on their own terms, so they must not mix.
+//! The window's loop has the program's first thread, and the work that
+//! drives it runs beside it (`Browser::host`): a Mac lets only the first
+//! thread draw a window, and the two loops want to run on their own terms.
+//!
+//! What draws the window is the engine (`browser/webview2.rs` on Windows).
+//! Where there is none yet, most of what is here has nothing to drive, and
+//! is built all the same so it stays the same on every system.
 //!
 //! Use `run_return`, not `run`. `run` is `-> !` and calls
 //! `process::exit` internally. Just closing the browser window would
 //! take down the whole app.
+
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use shikisha_core::pageops::{self, Speaks};
 use shikisha_shared::{BrowserHost, BrowserProfile, allowed_from_page, is_openable, Ev, Found, Go, Input, OpReport, Sel, parse_intent};
