@@ -88,6 +88,7 @@ pub mod lastsession;
 pub mod layout;
 pub mod limits;
 pub mod localpage;
+pub mod loginpath;
 pub mod mailbox;
 pub mod mcp;
 pub mod migrate;

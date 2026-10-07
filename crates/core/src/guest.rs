@@ -464,19 +464,28 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_running_program_is_read_back_by_its_file_and_its_words() {
+        // sleep is its own file everywhere; sh is often a link to another shell
+        let mut child = std::process::Command::new("sleep")
+            .args(["30"])
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("sleep cannot start");
+        let image = image_of(child.id()).expect("no file for a running program");
+        assert_eq!(leaf_of(&image), "sleep", "{image}");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(image_of(child.id()), None, "a program that ended still answers");
+
         let mut child = std::process::Command::new("sh")
             .args(["-c", "sleep 30", "two words"])
             .stdin(std::process::Stdio::null())
             .spawn()
             .expect("sh cannot start");
-        let image = image_of(child.id()).expect("no file for a running program");
-        assert_eq!(leaf_of(&image), "sh", "{image}");
         let line = command_line_of(child.id()).expect("no words for a running program");
         let words = split(&line);
         assert!(words.ends_with(&["-c".to_string(), "sleep 30".to_string(), "two words".to_string()]), "{words:?}");
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(image_of(child.id()), None, "a program that ended still answers");
     }
 
     /// The names of the same program, written every way a process table and a

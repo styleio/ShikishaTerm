@@ -5257,11 +5257,34 @@ pub fn append_folder_starting(
     append_folder_at(&config_file_path(), desk_name, like, cwd, name, start, host)
 }
 
+/// The shell a terminal on this machine opens with when nothing else is
+/// said, as (the name shown, the command). PowerShell on Windows. Elsewhere
+/// the person's own shell, the one `$SHELL` names (zsh on a Mac unless they
+/// changed it), and the system's own when that is not set
+pub fn machine_shell() -> (String, String) {
+    if cfg!(windows) {
+        return ("PowerShell".into(), "powershell.exe".into());
+    }
+    let command = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.into());
+    let name = command.rsplit('/').next().unwrap_or(&command).to_string();
+    (name, command)
+}
+
 /// The tab a folder opens with when nothing else is said: the shell chosen
 /// under Basic > Default command. Git Bash is looked for where Git for Windows
-/// puts it; a PC without it gets PowerShell rather than a tab that cannot start
+/// puts it; a PC without it gets PowerShell rather than a tab that cannot start.
+/// The choices are Windows' own; elsewhere it is this machine's shell
 pub fn default_shell_start(which: Option<&str>) -> Start {
-    let powershell = || Start::One { name: "PowerShell".into(), command: "powershell.exe".into() };
+    let powershell = || {
+        let (name, command) = machine_shell();
+        Start::One { name, command }
+    };
+    if !cfg!(windows) {
+        return powershell();
+    }
     match which.map(str::trim).unwrap_or_default() {
         "cmd" => Start::One { name: crate::i18n::t("shell.cmd"), command: "cmd.exe".into() },
         "gitbash" => match git_bash() {
@@ -10969,11 +10992,19 @@ mod browser_kind_tests {
     #[test]
     fn a_folder_opens_with_the_default_command() {
         use crate::config::{Start, command_value, default_shell_start};
-        assert_eq!(default_shell_start(None), Start::One { name: "PowerShell".into(), command: "powershell.exe".into() });
-        assert!(matches!(default_shell_start(Some("cmd")), Start::One { command, .. } if command == "cmd.exe"));
-        match default_shell_start(Some("gitbash")) {
-            Start::One { name, command } => assert!(name == "Git Bash" && command.ends_with("--login -i") || command == "powershell.exe"),
-            other => panic!("{other:?}"),
+        let (name, command) = crate::config::machine_shell();
+        assert_eq!(default_shell_start(None), Start::One { name: name.clone(), command: command.clone() });
+        if cfg!(windows) {
+            assert_eq!((name.as_str(), command.as_str()), ("PowerShell", "powershell.exe"));
+            assert!(matches!(default_shell_start(Some("cmd")), Start::One { command, .. } if command == "cmd.exe"));
+            match default_shell_start(Some("gitbash")) {
+                Start::One { name, command } => assert!(name == "Git Bash" && command.ends_with("--login -i") || command == "powershell.exe"),
+                other => panic!("{other:?}"),
+            }
+        } else {
+            // Windows' own choices name nothing here: this machine's shell
+            assert!(command.starts_with('/') && command.ends_with(&name), "{name} {command}");
+            assert_eq!(default_shell_start(Some("cmd")), Start::One { name, command });
         }
         assert_eq!(command_value(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#),
             serde_json::json!([r"C:\Program Files\Git\bin\bash.exe", "--login", "-i"]));

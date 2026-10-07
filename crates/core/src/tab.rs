@@ -1049,16 +1049,16 @@ fn held_card(held: &Held, cols: u16) -> String {
 /// through cmd.exe /c
 pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     let Some(prog) = cmd_args.first() else {
-        return CommandBuilder::new("powershell.exe");
+        return CommandBuilder::new(crate::config::machine_shell().1);
     };
     let rest = &cmd_args[1..];
-    match resolve_windows_command(prog) {
+    match resolve_command(prog) {
         Some(path) => {
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase());
-            if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+            if cfg!(windows) && matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
                 let mut c = CommandBuilder::new("cmd.exe");
                 c.arg("/c");
                 c.arg(path);
@@ -1085,11 +1085,35 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     }
 }
 
-/// Resolve a command to an actual file via PATH and executable extensions (.exe/.com/.cmd/.bat)
+/// Resolve a command to an actual file via PATH: on Windows by the executable
+/// extensions (.exe/.com/.cmd/.bat), elsewhere by the permission to run it
 pub fn resolve_command(prog: &str) -> Option<std::path::PathBuf> {
-    resolve_windows_command(prog)
+    #[cfg(windows)]
+    return resolve_windows_command(prog);
+    #[cfg(not(windows))]
+    return resolve_unix_command(prog);
 }
 
+/// A program away from Windows is a file anyone may run (the execute bit),
+/// looked for in PATH the way a shell looks; a name with a slash in it is
+/// taken as it is written. A file without that bit is not a program however
+/// it is named, and a folder is not one either
+#[cfg(not(windows))]
+fn resolve_unix_command(prog: &str) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::{Path, PathBuf};
+    let runs = |p: &Path| p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    if prog.is_empty() {
+        return None;
+    }
+    if prog.contains('/') {
+        return runs(Path::new(prog)).then(|| PathBuf::from(prog));
+    }
+    let here = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&here).map(|dir| dir.join(prog)).find(|p| runs(p))
+}
+
+#[cfg(windows)]
 fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     const EXTS: [&str; 4] = ["exe", "com", "cmd", "bat"];
@@ -1121,12 +1145,6 @@ fn resolve_windows_command(prog: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&here)
         .chain(std::env::split_paths(&registry_path()))
         .find_map(|dir| try_base(dir.join(prog)))
-}
-
-/// Elsewhere there is no registry, and this process's PATH is the whole answer
-#[cfg(not(windows))]
-fn registry_path() -> std::ffi::OsString {
-    std::ffi::OsString::new()
 }
 
 /// The PATH a new terminal gets on Windows: the machine's and then the user's, as the
@@ -7161,5 +7179,33 @@ mod far_hook_tests {
         // A kind this app never writes is not a report
         p.process(format!("\x1b]7727;shikisha-hook;rm -rf;0;{body}\x07").as_bytes());
         assert_eq!(far.lock().unwrap().len(), 1);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod unix_command_tests {
+    use super::resolve_command;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// Away from Windows a program is a file that may be run: found in PATH
+    /// by its name, taken as written when it has a slash, and a file without
+    /// the bit -- or a folder -- is not one
+    #[test]
+    fn a_program_is_a_file_that_may_be_run() {
+        let sh = resolve_command("sh").expect("sh was not found in PATH");
+        assert!(sh.is_absolute() && sh.ends_with("sh"), "{}", sh.display());
+        assert_eq!(resolve_command("no-such-program-anywhere"), None);
+        assert_eq!(resolve_command(""), None);
+
+        let dir = crate::test_temp("resolve-unix");
+        std::fs::create_dir_all(&dir).unwrap();
+        let tool = dir.join("tool");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let path = tool.display().to_string();
+        assert_eq!(resolve_command(&path), None, "a file nobody may run was taken for a program");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(resolve_command(&path), Some(tool.clone()));
+        assert_eq!(resolve_command(&dir.display().to_string()), None, "a folder was taken for a program");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

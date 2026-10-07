@@ -202,7 +202,8 @@ fn still_running(pid: u32) -> bool {
 fn still_running(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else { return false };
     // SAFETY: signal 0 is only a question; nothing is sent
-    unsafe { libc::kill(pid, 0) == 0 } || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let there = unsafe { libc::kill(pid, 0) } == 0;
+    there || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Ask the machine what happened to that run.

@@ -2190,7 +2190,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // "a single shell opens and nothing else happens", leaving them unsure what to do.
     let first_run = cmd_args.is_empty() && cfg.is_none();
     if tabs.is_empty() && desks.is_empty() {
-        let argv = vec!["powershell.exe".to_string()];
+        let argv = vec![config::machine_shell().1];
         tabs.push(Tab::spawn(
             "SHELL".into(),
             &argv,
@@ -15770,7 +15770,7 @@ fn link_said(
             };
             let meta = std::fs::metadata(&full).ok();
             let dir = meta.as_ref().is_some_and(|m| m.is_dir());
-            let runs = !dir && crate::termlink::runs_when_opened(&full);
+            let runs = crate::termlink::runs_when_opened(&full);
             // A file a page can show: a page, a picture, a PDF
             let shows = meta.is_some() && !dir && crate::localpage::shows_in_page(&full);
             match press.act.as_str() {
@@ -18039,11 +18039,10 @@ pub fn quick_go(
                 command: String::new(),
                 program: far_folder(desk, at).unwrap_or_default(),
             },
-            Some(at) => QuickGo::Open {
-                at: at.to_path_buf(),
-                command: "powershell.exe".into(),
-                program: "PowerShell".into(),
-            },
+            Some(at) => {
+                let (program, command) = config::machine_shell();
+                QuickGo::Open { at: at.to_path_buf(), command, program }
+            }
             None => QuickGo::Refuse("msg.quick.no_home"),
         },
         _ => {
@@ -21031,7 +21030,10 @@ mod tests {
         );
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&path), Some(&desk)),
-            QuickGo::Open { at: path.clone(), command: "powershell.exe".into(), program: "PowerShell".into() },
+            {
+                let (program, command) = config::machine_shell();
+                QuickGo::Open { at: path.clone(), command, program }
+            },
             "a terminal in the folder here was opened on the machine"
         );
     }
@@ -21134,7 +21136,10 @@ mod tests {
         );
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, Some(&dir), None),
-            QuickGo::Open { at: dir.clone(), command: "powershell.exe".into(), program: "PowerShell".into() }
+            {
+                let (program, command) = config::machine_shell();
+                QuickGo::Open { at: dir.clone(), command, program }
+            }
         );
         assert_eq!(
             quick_go(crate::quick::Kind::Terminal, "", &[], &[], 0, true, &ais, None, None),
