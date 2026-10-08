@@ -99,6 +99,10 @@ serde_json = { workspace = true }
 # so it costs the build nothing
 similar = "2.7.0"
 sha2 = { workspace = true }
+# The language the system is set to, each system asked its own way: Windows' user
+# locale, a Mac's list of preferred languages (what a program started from the
+# Finder has instead of LANG), the environment elsewhere
+sys-locale = "0.3.2"
 tiny_http = { workspace = true }
 unicode-width = { workspace = true }
 ureq = { workspace = true, default-features = false, features = ["rustls", "json"] }

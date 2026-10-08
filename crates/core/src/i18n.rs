@@ -218,17 +218,11 @@ fn system_language() -> String {
         .to_ascii_lowercase()
 }
 
-#[cfg(windows)]
+/// The language the system says the person reads, when LANG does not. A Mac
+/// program started from the Finder or the Dock has no LANG at all, and a
+/// Japanese Mac would otherwise start in English
 fn os_language() -> Option<String> {
-    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
-    let mut buf = [0u16; 85];
-    let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
-    (n > 1).then(|| String::from_utf16_lossy(&buf[..(n - 1) as usize]))
-}
-
-#[cfg(not(windows))]
-fn os_language() -> Option<String> {
-    None
+    sys_locale::get_locale().filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
