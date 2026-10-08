@@ -4677,6 +4677,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shikisha-chromium-helper"
+version = "0.26.0"
+dependencies = [
+ "cef",
+]
+
+[[package]]
 name = "shikisha-core"
 version = "0.26.0"
 dependencies = [

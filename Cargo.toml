@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/shared", "crates/core", "crates/server", "crates/bridge"]
+members = ["crates/shared", "crates/core", "crates/server", "crates/bridge", "crates/chromium-helper"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"

@@ -4,7 +4,8 @@
 //! there is no automation, no screen relay and no real input -- so the window
 //! is drawn by Chromium here as on Windows, carried in the `.app` as the
 //! Chromium Embedded Framework. What is here is only what CEF alone does: start
-//! Chromium in this process and in its helpers, make a page as a view inside
+//! Chromium in this process (its helpers are a program of their own,
+//! crates/chromium-helper), make a page as a view inside
 //! the window and move it, carry its DevTools protocol, and the few things the
 //! protocol does not cover -- downloads, the browser's own search, the keys a
 //! page hears first, a page's processes dying and a page asking to close.
@@ -38,16 +39,14 @@ const IPC_SHIM: &str =
 /// carried: inside the `.app`, beside the program. Asked before the window
 /// opens, so a copy that is not whole says so instead of failing to draw
 pub fn runtime_version() -> Option<String> {
-    framework_beside(&std::env::current_exe().ok()?, false)?;
+    framework_beside(&std::env::current_exe().ok()?)?;
     let version = ::cef::sys::CEF_VERSION;
     Some(String::from_utf8_lossy(version.strip_suffix(&[0]).unwrap_or(version)).into_owned())
 }
 
-/// The framework, from the program (`helper`: from one of the helper apps,
-/// three folders further in), if it is there
-fn framework_beside(exe: &std::path::Path, helper: bool) -> Option<std::path::PathBuf> {
-    let up = if helper { "../../.." } else { "../Frameworks" };
-    let path = exe.parent()?.join(up).join(FRAMEWORK);
+/// The framework, from the program, if it is there
+fn framework_beside(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = exe.parent()?.join("../Frameworks").join(FRAMEWORK);
     path.exists().then_some(path)
 }
 
@@ -62,45 +61,6 @@ thread_local! {
 /// One more browser, or one fewer
 fn count_live(more: bool) {
     LIVE.with(|l| l.set(if more { l.get() + 1 } else { l.get().saturating_sub(1) }));
-}
-
-// ── The helpers: the same program, in the role CEF starts it in ───────────
-
-/// Run as one of CEF's helper processes, when this process is one.
-///
-/// CEF draws pages in processes of their own (a renderer, the GPU, the
-/// network), started from the helper apps inside the `.app` -- which are this
-/// same program, under the names a Mac's code signing wants for them. Such a
-/// process is told its role on its command line (`--type=`); it runs CEF's
-/// part and ends, and does nothing of the program's own. `None` for the
-/// program's own process
-pub fn run_helper_if_asked() -> Option<i32> {
-    if !std::env::args().any(|a| a.starts_with("--type=")) {
-        return None;
-    }
-    let exe = std::env::current_exe().ok()?;
-    if framework_beside(&exe, true).is_none() {
-        eprintln!("SHIKISHA-TERM: run as a Chromium helper outside its .app; nothing to run");
-        return Some(1);
-    }
-    let args = ::cef::args::Args::new();
-    // The renderer is put in the system's sandbox before anything of a page
-    // reaches it
-    let sandbox_lib = exe
-        .parent()?
-        .join("../../../Chromium Embedded Framework.framework/Libraries/libcef_sandbox.dylib");
-    let _sandbox = sandbox_lib.exists().then(|| {
-        let mut sandbox = ::cef::sandbox::Sandbox::new();
-        sandbox.initialize(args.as_main_args());
-        sandbox
-    });
-    let loader = ::cef::library_loader::LibraryLoader::new(&exe, true);
-    if !loader.load() {
-        return Some(1);
-    }
-    let _ = ::cef::api_hash(::cef::sys::CEF_API_VERSION_LAST, 0);
-    let code = ::cef::execute_process(Some(args.as_main_args()), None::<&mut ::cef::App>, std::ptr::null_mut());
-    Some(code)
 }
 
 /// Where the framework is, from the program inside `Contents/MacOS`
@@ -673,7 +633,7 @@ fn start(wake: &tao::event_loop::EventLoopProxy<Cmd>) -> Result<()> {
         return Ok(());
     }
     let exe = std::env::current_exe()?;
-    if framework_beside(&exe, false).is_none() {
+    if framework_beside(&exe).is_none() {
         bail_out()?;
     }
     // Kept for the life of the process: the framework is never unloaded

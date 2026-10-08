@@ -39,7 +39,7 @@ mod cef_engine;
 #[cfg(target_os = "macos")]
 use cef_engine as engine;
 #[cfg(target_os = "macos")]
-pub use cef_engine::{run_helper_if_asked, runtime_version};
+pub use cef_engine::runtime_version;
 #[cfg(not(any(windows, target_os = "macos")))]
 mod unready;
 #[cfg(not(any(windows, target_os = "macos")))]
