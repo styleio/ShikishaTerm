@@ -380,10 +380,14 @@ mod tests {
         record(&day, "old.jsonl", "yesterday", &work.display().to_string());
         // Make every folder in the tree look untouched for a while
         let long_ago = SystemTime::now() + Duration::from_secs(3600);
+        // A tab that started between the two records -- taken as a moment of
+        // its own, not counted back from the end: a slow machine can take
+        // longer than any guess to write the record
+        std::thread::sleep(Duration::from_millis(20));
+        let since = SystemTime::now();
         std::thread::sleep(Duration::from_millis(20));
         record(&day, "new.jsonl", "todays", &work.display().to_string());
-        // A tab that started a moment ago finds the new one...
-        let since = SystemTime::now() - Duration::from_millis(15);
+        // ...finds the new one...
         assert_eq!(find(&spec(&root), Some(&work), since).as_deref(), Some("todays"));
         // ...and one that starts in an hour finds neither
         assert_eq!(find(&spec(&root), Some(&work), long_ago), None);
