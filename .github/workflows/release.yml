@@ -3,8 +3,9 @@ name: Release
 # Pushing a tag builds what ships and attaches it to a draft on Releases.
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# Three ways out: the Windows zip, the Microsoft Store msix, and the static Linux binary.
-# All three come from the same source at the same tag, in this one workflow.
+# Four ways out: the Windows zip, the Microsoft Store msix, the static Linux binary, and
+# the Mac app (a .dmg and a .zip, one each for Apple silicon and Intel). All four come
+# from the same source at the same tag, in this one workflow.
 #
 # Running it by hand (workflow_dispatch) is a dry run. It only leaves the builds as artifacts
 # and makes no release, so packaging can be checked safely before the real thing
@@ -319,6 +320,147 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # The Mac app, one for each processor. Built where it runs: Apple silicon on an
+  # Apple-silicon runner, Intel on an Intel one, so each is tested on what it is for.
+  #
+  # A Mac opens only an app that is signed with a Developer ID and notarized by Apple;
+  # anything else, downloaded, is "damaged and can't be opened". So without the
+  # signing certificate and the notary key in the secrets, no Mac download is made at
+  # all -- the release goes out with Windows and Linux, and says so -- rather than a
+  # download that cannot be opened. packaging/mac/mkapp.sh refuses on its own as well
+  # (MAC_RELEASE=1)
+  mac:
+    needs: linux
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CEF_PATH: /Users/runner/cef
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: /Users/runner/cef
+          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cef-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Are the Apple credentials here?
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 }}
+        run: |
+          if [ -z "${MAC_CERT_P12:-}" ] || [ -z "${MAC_NOTARY_KEY_P8:-}" ]; then
+            echo "::warning::No Apple signing certificate or notary key in the secrets: this release has no Mac download"
+            echo "skipped=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        if: env.skipped != 'true'
+        run: cargo build --release --locked -p shikisha-term -p shikisha-chromium-helper
+
+      # The bridge a person may put on another machine, built by the Linux jobs and
+      # carried inside the app (Contents/Resources/bridge), as the Windows zip carries it
+      - uses: actions/download-artifact@v4
+        if: env.skipped != 'true'
+        with:
+          pattern: bridge-*
+          path: bridge
+          merge-multiple: true
+
+      # The certificate goes into a keychain made for this run and thrown away
+      # with the runner; the key Apple's notary service is asked with, into a file
+      # that goes the same way
+      - name: The signing certificate and the notary key
+        if: env.skipped != 'true'
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          MAC_NOTARY_KEY_P8: ${{ secrets.MAC_NOTARY_KEY_P8 }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          pass=$(openssl rand -hex 24)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          printf '%s' "$MAC_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          echo "MAC_NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+
+      - name: The app, signed and notarized
+        if: env.skipped != 'true'
+        env:
+          MAC_RELEASE: "1"
+          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+          MAC_NOTARY_KEY_ID: ${{ secrets.MAC_NOTARY_KEY_ID }}
+          MAC_NOTARY_ISSUER: ${{ secrets.MAC_NOTARY_ISSUER }}
+        run: |
+          CEF=$(find "$CEF_PATH" -maxdepth 2 -type d -name 'cef_macos_*' | head -1)
+          sh packaging/mac/mkapp.sh target/release/SHIKISHA-TERM target/release/shikisha-chromium-helper \
+             "$CEF" "${GITHUB_REF_NAME}" "${{ matrix.arch }}" out
+          # Optional to mkapp.sh, required here: an app without them cannot put
+          # the bridge anywhere, and says so only when asked to
+          for a in x86_64 aarch64; do
+            test -f "out/SHIKISHA-TERM.app/Contents/Resources/bridge/shikisha-bridge-$a-linux" ||
+              { echo "the $a bridge did not reach the app"; exit 1; }
+          done
+          rm -rf out/SHIKISHA-TERM.app
+
+      # Opened the way a person opens it: the notarized app, checked by the same
+      # assessment Gatekeeper makes on a Mac that downloaded it
+      - name: A Mac would open it
+        if: env.skipped != 'true'
+        run: |
+          mount=$(hdiutil attach -nobrowse -readonly out/*.dmg | tail -1 | cut -f3)
+          spctl --assess --type execute --verbose "$mount/SHIKISHA-TERM.app"
+          xcrun stapler validate "$mount/SHIKISHA-TERM.app"
+          hdiutil detach "$mount"
+
+      # The checksum a person can compare, and the signature the installed copy
+      # checks before it replaces itself (update.rs) -- the same as the Windows zip's
+      - name: Checksum and sign
+        if: env.skipped != 'true'
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          cd out
+          for f in *.zip *.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
+          cd ..
+          if [ -z "${UPDATE_SIGNING_KEY:-}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set: the Mac app goes out unsigned for updates and self-update will refuse it"
+            exit 0
+          fi
+          PUB=$(sed -n 's/.*PUBLIC_KEY_HEX: &str = "\([0-9a-f]\{64\}\)".*/\1/p' crates/core/src/update.rs)
+          for f in out/*.zip; do
+            cargo run --release --locked -p shikisha-core --bin sign -- sign "$f"
+            cargo run --release --locked -p shikisha-core --bin sign -- verify "$f" "$PUB"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: env.skipped != 'true'
+        with:
+          name: mac-${{ matrix.arch }}
+          path: out/*
+          retention-days: 7
+          if-no-files-found: error
+
   # The apt and dnf repositories. The URL stays written in users' sources.list, so
   # it lives on our own domain (pkg.shikisha-term.com), and the storage behind it
   # can be changed at any time
@@ -410,7 +552,7 @@ jobs:
           echo "published to $REPO_BASE_URL"
 
   publish:
-    needs: [windows, linux-pack]
+    needs: [windows, linux-pack, mac]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -422,6 +564,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: linux-*
+          path: out
+          merge-multiple: true
+
+      # None when the Mac job had no Apple credentials to sign with
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mac-*
           path: out
           merge-multiple: true
 
@@ -457,6 +606,13 @@ jobs:
             No installer, no admin rights, no API keys. Windows 10/11.
 
             Verify the download with `SHIKISHA-TERM.zip.sha256` if you like.
+
+            ## Mac
+
+            `SHIKISHA-TERM-mac-arm64.dmg` for Apple silicon (M1 and later),
+            `SHIKISHA-TERM-mac-x64.dmg` for Intel. Open it and drag SHIKISHA-TERM to
+            Applications. Signed and notarized by Apple; macOS 12 or later. It updates
+            itself from the same page.
 
             ## Linux
 
