@@ -91,6 +91,7 @@ fn say_fatally(text: &str) {
     dialog::warn(&i18n::t("err.fatal.title"), text);
 }
 
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn say_fatally_with_page(text: &str, url: &str) {
     let pressed = dialog::ask(&i18n::t("err.fatal.title"), text, rfd::MessageLevel::Error, rfd::MessageButtons::OkCancel);
     // Having promised a page, hand over the address rather than doing nothing
@@ -109,6 +110,13 @@ fn say_fatally_with_page(text: &str, url: &str) {
 static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
 
 fn main() -> Result<()> {
+    // On a Mac this same program is also each of Chromium's helpers, told so
+    // on its command line. Such a process does Chromium's part and nothing of
+    // the program's own -- not even what is done first
+    #[cfg(target_os = "macos")]
+    if let Some(code) = browser::run_helper_if_asked() {
+        std::process::exit(code);
+    }
     // Before anything else: which thread may show a dialog on a Mac
     dialog::note_first_thread();
     // Started from the Finder on a Mac, it would otherwise know only the
@@ -1204,10 +1212,20 @@ fn run_in_window() -> Result<()> {
         // Said here rather than returned, because this is the one failure whose
         // answer is known: the generic path can only repeat an error, and this
         // one can hand over the page that fixes it.
+        #[cfg(windows)]
         say_fatally_with_page(
             &shikisha_core::i18n::t("err.webview2.missing"),
             "https://developer.microsoft.com/microsoft-edge/webview2/",
         );
+        // A Mac's Chromium comes inside the .app: without it, the copy is not
+        // whole, and a whole one is where the program is handed out
+        #[cfg(target_os = "macos")]
+        say_fatally_with_page(
+            &shikisha_core::i18n::t("err.cef.missing"),
+            "https://github.com/styleio/ShikishaTerm/releases/latest",
+        );
+        #[cfg(not(any(windows, target_os = "macos")))]
+        say_fatally(&shikisha_core::i18n::t("err.window.none"));
         std::process::exit(1);
     }
     // The window takes this thread, the program's first; the tabs and

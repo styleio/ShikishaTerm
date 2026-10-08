@@ -2848,6 +2848,8 @@
   "err.browser.startup_timeout": "The browser did not finish starting (WebView2 may be missing)",
   "err.fatal.title": "SHIKISHA-TERM cannot start",
   "err.webview2.missing": "SHIKISHA-TERM needs the Microsoft Edge WebView2 Runtime, a free component from Microsoft, and this computer does not have it yet.\n\nChoose OK to open the page it comes from. Install it there, then start SHIKISHA-TERM again.",
+  "err.cef.missing": "This copy of SHIKISHA-TERM is missing the part that draws its window (the Chromium Embedded Framework inside SHIKISHA-TERM.app).\n\nChoose OK to open the download page. Download SHIKISHA-TERM again there, replace the app in Applications with it, then start SHIKISHA-TERM again.",
+  "err.window.none": "SHIKISHA-TERM cannot open its window on this system. Run the server edition here and open it from a web browser instead.",
   "err.webview2.address": "This computer could not open the page by itself. Open this address in a web browser:\n\n{url}",
   "err.browser.page_not_ready": "The page is not ready",
   "err.browser.closed": "The browser has closed",

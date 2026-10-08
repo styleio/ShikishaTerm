@@ -454,14 +454,17 @@ pub(super) fn run_window(
     // being asked is the system ending the session (see `Event::LoopDestroyed`)
     let mut asked_to_end = false;
     ev_loop.run_return(move |event, elwt, control| {
-        // The engine may want its own turn at a time it names
+        // The engine is given its turn when it is due, whatever woke the
+        // loop, and may want its next one at a time it names
+        pages.turn();
         *control = match pages.next_turn() {
             Some(at) => ControlFlow::WaitUntil(at),
             None => ControlFlow::Wait,
         };
         match event {
             Event::UserEvent(cmd) => match cmd {
-                Cmd::EngineTurn => pages.turn(),
+                // Only to wake the loop: the turn was given above
+                Cmd::EngineTurn => {}
                 Cmd::Trust { origin } => {
                     let mut list = own.borrow_mut();
                     if !list.iter().any(|o| same_origin(o, &origin)) {
@@ -1238,6 +1241,8 @@ pub(super) fn run_window(
             _ => {}
         }
     });
+    // The pages went with the loop; the engine is let go after them
+    super::engine::wind_down();
 
     if let Some(tray) = &tray {
         tray.remove();

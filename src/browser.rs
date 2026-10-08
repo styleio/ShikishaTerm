@@ -25,20 +25,26 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Result, anyhow};
 
-// The window's engine: WebView2 on Windows, reached through the few names
-// `window` and `cdp` take from it. Elsewhere there is none yet, and the
-// window says so
+// The window's engine, reached through the few names `window` and `cdp`
+// take from it: WebView2 on Windows, the Chromium carried in the .app (CEF) on
+// a Mac. Elsewhere there is none yet, and the window says so
 #[cfg(windows)]
 mod webview2;
 #[cfg(windows)]
 use webview2 as engine;
 #[cfg(windows)]
 pub use webview2::runtime_version;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod cef_engine;
+#[cfg(target_os = "macos")]
+use cef_engine as engine;
+#[cfg(target_os = "macos")]
+pub use cef_engine::{run_helper_if_asked, runtime_version};
+#[cfg(not(any(windows, target_os = "macos")))]
 mod unready;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use unready as engine;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use unready::runtime_version;
 // What is done through a page's DevTools protocol, the window's loop, and the
 // window as the system dresses it: the same on every system

@@ -147,6 +147,15 @@ windows = { workspace = true, features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+# A Mac's window is drawn by Chromium carried in the .app (CEF): a Mac's own
+# web view has no DevTools protocol, and the program is built on it
+# (src/browser/cef_engine.rs). Its pages are views in the window, placed by
+# AppKit's own calls
+[target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "154.5.0", default-features = false, features = ["sandbox"] }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+
 # The icon and the version details Explorer shows for the exe
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"

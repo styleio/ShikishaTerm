@@ -132,3 +132,5 @@ impl Pages {
 pub(super) fn cancel_download(_id: &str) {}
 
 pub(super) fn find_keys_for(_page: &str, _on: bool) {}
+
+pub(super) fn wind_down() {}

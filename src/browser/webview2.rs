@@ -520,6 +520,10 @@ pub(super) fn find_keys_for(page: &str, on: bool) {
     });
 }
 
+/// Nothing is left to let go once the loop has ended: WebView2 is the
+/// system's, and each page let go of its own as it was dropped
+pub(super) fn wind_down() {}
+
 /// Stop a download still being saved. One already over is left as it is
 pub(super) fn cancel_download(id: &str) {
     let op = SAVING.with(|s| s.borrow().get(id).cloned());
