@@ -208,7 +208,9 @@ since every one of them can be changed in the settings.
 
 Two keys need no prefix and work from any program: `Alt+Shift+K` opens the
 quick commands and `Alt+Shift+M` the ideas, bringing SHIKISHA-TERM to the front
-if another program is there. Change them under Settings > Shortcuts, in
+if another program is there. On a Mac they are `Ctrl+Alt+K` and `Ctrl+Alt+M`
+(Control and Option), because Option and Shift with a letter is how a Mac types
+letters such as ˛ and Œ. Change them under Settings > Shortcuts, in
 "Keys that work from any program". For the other actions, choose the box beside
 an action in "Keys inside SHIKISHA-TERM" on the same screen and press the
 combination you want (`Ctrl+Shift+D`, `Alt+F4`, `F5`) to give it one of its own.
@@ -246,8 +248,8 @@ The digits are the tabs themselves: `Ctrl+B 0`–`9` goes to that tab (`0` is IN
 | `Ctrl+B b` | Send the prefix key itself to the program |
 | `Ctrl+B ?` | This list |
 | `Ctrl+B :` | Command palette |
-| `Ctrl+B k` / `Alt+Shift+K` | Quick commands |
-| `Ctrl+B m` / `Alt+Shift+M` | Ideas |
+| `Ctrl+B k` / `Alt+Shift+K (Mac: Ctrl+Alt+K)` | Quick commands |
+| `Ctrl+B m` / `Alt+Shift+M (Mac: Ctrl+Alt+M)` | Ideas |
 
 <!-- /guide -->
 

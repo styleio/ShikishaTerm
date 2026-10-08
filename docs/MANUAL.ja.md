@@ -179,7 +179,9 @@ SSH サーバーや MicroVM のフォルダのページで保存したファイ�
 
 接頭キーが要らず、どのアプリからでも使えるキーが2つあります。`Alt+Shift+K` で
 クイックコマンド、`Alt+Shift+M` でアイデアが開きます。ほかのアプリを使っているときは、
-SHIKISHA-TERM が手前に出てから開きます。この2つのキーは、設定 > ショートカット の
+SHIKISHA-TERM が手前に出てから開きます。Mac では `Ctrl+Alt+K` と `Ctrl+Alt+M`
+（Control と Option）です。Mac では Option と Shift と文字のキーで ˛ や Œ などの文字を
+入力するので、その組み合わせを避けています。この2つのキーは、設定 > ショートカット の
 「どのアプリからでも使えるキー」で変えられます。ほかの操作は、同じ画面の
 「SHIKISHA-TERM の中のキー」で操作の横の欄を選び、使いたい組み合わせ（`Ctrl+Shift+D`、
 `Alt+F4`、`F5`）を押すと、その操作に自分のキーを付けられます。
@@ -217,8 +219,8 @@ SHIKISHA-TERM が手前に出てから開きます。この2つのキーは、�
 | `Ctrl+B b` | 接頭キーそのものをプログラムに送る |
 | `Ctrl+B ?` | この一覧 |
 | `Ctrl+B :` | コマンドパレット |
-| `Ctrl+B k` / `Alt+Shift+K` | クイックコマンド |
-| `Ctrl+B m` / `Alt+Shift+M` | アイデア |
+| `Ctrl+B k` / `Alt+Shift+K (Mac: Ctrl+Alt+K)` | クイックコマンド |
+| `Ctrl+B m` / `Alt+Shift+M (Mac: Ctrl+Alt+M)` | アイデア |
 
 <!-- /guide -->
 

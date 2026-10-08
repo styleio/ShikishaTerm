@@ -540,9 +540,14 @@ pub fn shipped_in(word: &dyn Fn(&str) -> String) -> Vec<(String, String)> {
                     .filter(|(name, _)| *name == a.name)
                     .filter_map(|(_, combo)| Trigger::parse(combo).map(|t| t.show())),
             );
-            let anywhere = crate::hotkeys::default_of(a.name);
-            if !anywhere.is_empty() {
-                ways.push(anywhere.to_string());
+            // What ships is the same on every machine, so it is said of both:
+            // Windows' key, and a Mac's where it is another
+            let (windows, mac) = (crate::hotkeys::default_on(a.name, false), crate::hotkeys::default_on(a.name, true));
+            match (windows.is_empty(), mac.is_empty() || mac == windows) {
+                (false, true) => ways.push(windows.to_string()),
+                (false, false) => ways.push(format!("{windows} (Mac: {mac})")),
+                (true, false) => ways.push(format!("Mac: {mac}")),
+                (true, true) => {}
             }
             (ways.join(" / "), word(a.desc))
         })
@@ -634,7 +639,7 @@ mod tests {
         assert!(rows.iter().any(|(k, d)| *d == "keys.quick_commands" && k == "Ctrl+B k"), "{rows:?}");
         let shipped = shipped_in(&|k: &str| k.to_string());
         assert!(
-            shipped.contains(&("Ctrl+B k / Alt+Shift+K".to_string(), "keys.quick_commands".to_string())),
+            shipped.contains(&("Ctrl+B k / Alt+Shift+K (Mac: Ctrl+Alt+K)".to_string(), "keys.quick_commands".to_string())),
             "{shipped:?}"
         );
     }

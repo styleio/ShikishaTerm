@@ -41,12 +41,23 @@ pub const DEFAULTS_MAC: &[(&str, &str)] =
 
 /// The keys out of the box on the machine this runs on
 pub fn defaults() -> &'static [(&'static str, &'static str)] {
-    if cfg!(target_os = "macos") { DEFAULTS_MAC } else { DEFAULTS }
+    defaults_on(cfg!(target_os = "macos"))
+}
+
+/// The keys out of the box on a Mac (`mac`) or on Windows, whichever this
+/// runs on: what the manual says is said of both
+pub fn defaults_on(mac: bool) -> &'static [(&'static str, &'static str)] {
+    if mac { DEFAULTS_MAC } else { DEFAULTS }
 }
 
 /// The combination an action has out of the box, or "" for none
 pub fn default_of(action: &str) -> &'static str {
-    defaults().iter().find(|(a, _)| *a == action).map(|(_, k)| *k).unwrap_or("")
+    default_on(action, cfg!(target_os = "macos"))
+}
+
+/// The same on a Mac (`mac`) or on Windows
+pub fn default_on(action: &str, mac: bool) -> &'static str {
+    defaults_on(mac).iter().find(|(a, _)| *a == action).map(|(_, k)| *k).unwrap_or("")
 }
 
 /// The actions and their keys out of the box, for the settings page, and the
