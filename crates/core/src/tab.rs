@@ -1045,7 +1045,8 @@ fn held_card(held: &Held, cols: u16) -> String {
 
 /// Build the launch command.
 /// CreateProcess cannot launch extension-less scripts directly (e.g. npm
-/// shims) (os error 193), so we search PATH+PATHEXT and route .cmd/.bat
+/// shims) (os error 193), so we search PATH+PATHEXT. A shim npm wrote is
+/// read and the program it names started directly; any other .cmd/.bat goes
 /// through cmd.exe /c
 pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     let Some(prog) = cmd_args.first() else {
@@ -1059,6 +1060,18 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase());
             if cfg!(windows) && matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
+                // cmd.exe cannot stand in a folder on a network share: it
+                // starts in C:\Windows instead and says so only on a line the
+                // program it runs clears, so an AI in such a folder works on
+                // whatever it finds from there. It also reads `^ & %` in the
+                // arguments as its own. What npm installed needs none of it
+                if let Some(direct) = shim_target(&path) {
+                    let mut c = CommandBuilder::new(&direct[0]);
+                    for a in direct[1..].iter().chain(rest) {
+                        c.arg(a);
+                    }
+                    return c;
+                }
                 let mut c = CommandBuilder::new("cmd.exe");
                 c.arg("/c");
                 c.arg(path);
@@ -1082,6 +1095,175 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
             }
             c
         }
+    }
+}
+
+/// The words `build_command` starts, for a process started another way than a
+/// tab's terminal: one way of starting an installed program, wherever it is
+/// started from
+pub fn launch_argv(cmd_args: &[String]) -> Vec<String> {
+    build_command(cmd_args).get_argv().iter().map(|a| a.to_string_lossy().into_owned()).collect()
+}
+
+/// The program a shim npm wrote starts, and the words it puts in front of the
+/// arguments: `[claude.exe]`, or `[node.exe, codex.js]`. None for anything
+/// else -- a shim another tool wrote, or one somebody changed -- which is
+/// left to cmd.exe as it is
+fn shim_target(shim: &std::path::Path) -> Option<Vec<String>> {
+    // npm writes a few hundred bytes; a file much larger is not one of those
+    let text = std::fs::read(shim).ok().filter(|b| b.len() <= 4096)?;
+    let dir = shim.parent()?.to_str()?;
+    let node = || {
+        let beside = std::path::Path::new(dir).join("node.exe");
+        let node = match beside.is_file() {
+            true => beside,
+            false => resolve_command("node")?,
+        };
+        let exe = node.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+        exe.then(|| node.to_string_lossy().into_owned())
+    };
+    let words = read_shim(std::str::from_utf8(&text).ok()?, dir, node)?;
+    std::path::Path::new(&words[0]).is_file().then_some(words)
+}
+
+/// What a shim npm wrote runs, with its folder `dir` filled in.
+///
+/// Every line has to be one npm writes, so a shim that does anything more
+/// than find its own folder and node is not started in a way that skips what
+/// it does. The one line that runs is `<program> [words] %*`, where the
+/// program is the shim's own `node` (`"%_prog%"`, asked of `node`) or a
+/// program in its folder
+fn read_shim(text: &str, dir: &str, node: impl FnOnce() -> Option<String>) -> Option<Vec<String>> {
+    const NPM_LINES: [&str; 17] = [
+        "@echo off",
+        "goto start",
+        ":find_dp0",
+        "set dp0=%~dp0",
+        "exit /b",
+        ":start",
+        "setlocal",
+        "call :find_dp0",
+        r#"if exist "%dp0%\node.exe" ("#,
+        r#"set "_prog=%dp0%\node.exe""#,
+        ") else (",
+        r#"set "_prog=node""#,
+        "set pathext=%pathext:;.js;=;%",
+        ")",
+        "endlocal",
+        "exit /b %errorlevel%",
+        "",
+    ];
+    let mut runs = None;
+    for line in text.lines().map(str::trim) {
+        if line.contains("%*") {
+            if runs.replace(line).is_some() {
+                return None;
+            }
+        } else if !NPM_LINES.contains(&line.to_ascii_lowercase().as_str()) {
+            return None;
+        }
+    }
+    // What comes after the last `&` is the program: npm puts `endLocal &
+    // ... & ` in front of a node one
+    let mut quoted = false;
+    let last = runs?.char_indices().filter(|&(_, c)| {
+        quoted ^= c == '"';
+        c == '&' && !quoted
+    }).last();
+    let runs = &runs?[last.map_or(0, |(i, _)| i + 1)..];
+    let mut words: Vec<String> = Vec::new();
+    let mut rest = runs.trim_start();
+    while !rest.is_empty() {
+        let (word, after) = match rest.strip_prefix('"') {
+            Some(inner) => inner.split_once('"')?,
+            None => rest.split_once(char::is_whitespace).unwrap_or((rest, "")),
+        };
+        words.push(word.to_string());
+        rest = after.trim_start();
+    }
+    if words.pop()? != "%*" || words.is_empty() {
+        return None;
+    }
+    let here = format!(r"{}\", dir.trim_end_matches('\\'));
+    let fill = |w: &str| -> Option<String> {
+        let w = w.replace(r"%dp0%\", &here).replace("%dp0%", &here).replace(r"%~dp0\", &here).replace("%~dp0", &here);
+        (!w.contains('%')).then_some(w)
+    };
+    let program = match words[0].as_str() {
+        "%_prog%" => node()?,
+        w => fill(w).filter(|p| p.to_ascii_lowercase().ends_with(".exe"))?,
+    };
+    std::iter::once(Some(program)).chain(words[1..].iter().map(|w| fill(w))).collect()
+}
+
+/// Whether a command `build_command` put together is started by cmd.exe
+fn through_cmd(cmd: &CommandBuilder) -> bool {
+    cfg!(windows)
+        && cmd.get_argv().first().and_then(|p| std::path::Path::new(p).file_stem().map(|s| s.to_ascii_lowercase()))
+            .is_some_and(|s| s == "cmd")
+}
+
+/// The folder cmd.exe is started in, for a tab whose folder is `cwd`: the
+/// folder itself, or for a folder on a network share the same folder through
+/// the drive letter this PC gave the share. None when cmd.exe cannot be
+/// started there -- a share no letter leads to
+fn folder_for_cmd(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    match crate::folders::unc_of(cwd) {
+        None => Some(cwd.to_path_buf()),
+        Some(_) => crate::folders::by_letter(cwd),
+    }
+}
+
+#[cfg(test)]
+mod shim_tests {
+    use super::read_shim;
+
+    const DIR: &str = r"C:\Users\me\AppData\Roaming\npm";
+
+    /// A program npm installed as one: the shim starts it and nothing else
+    #[test]
+    fn a_shim_for_a_program_starts_the_program() {
+        let shim = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\
+                    \"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe\"   %*\r\n";
+        assert_eq!(
+            read_shim(shim, DIR, || panic!("node was asked for a program that is not node's")),
+            Some(vec![format!(r"{DIR}\node_modules\@anthropic-ai\claude-code\bin\claude.exe")]),
+        );
+    }
+
+    /// A script: started by the node the shim would have picked, with the
+    /// words npm put in front of the arguments kept in their place
+    #[test]
+    fn a_shim_for_a_script_starts_node_with_it() {
+        let shim = "@ECHO off\nGOTO start\n:find_dp0\nSET dp0=%~dp0\nEXIT /b\n:start\nSETLOCAL\nCALL :find_dp0\n\n\
+                    IF EXIST \"%dp0%\\node.exe\" (\n  SET \"_prog=%dp0%\\node.exe\"\n) ELSE (\n  SET \"_prog=node\"\n  SET PATHEXT=%PATHEXT:;.JS;=;%\n)\n\n\
+                    endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" --no-warnings \"%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js\" %*\n";
+        assert_eq!(
+            read_shim(shim, DIR, || Some(r"C:\node\node.exe".into())),
+            Some(vec![
+                r"C:\node\node.exe".to_string(),
+                "--no-warnings".into(),
+                format!(r"{DIR}\node_modules\@openai\codex\bin\codex.js"),
+            ]),
+        );
+        assert_eq!(read_shim(shim, DIR, || None), None, "a script went ahead with no node to run it");
+    }
+
+    /// A shim that does one thing more than npm's is run as it is, by cmd.exe
+    #[test]
+    fn anything_but_npm_s_shim_is_left_to_cmd() {
+        let npm = "@ECHO off\nSETLOCAL\n\"%dp0%\\tool.exe\" %*\n";
+        assert!(read_shim(npm, DIR, || None).is_some());
+        let extra = "@ECHO off\nSETLOCAL\nSET TOOL_HOME=%~dp0\n\"%dp0%\\tool.exe\" %*\n";
+        assert_eq!(read_shim(extra, DIR, || None), None, "a variable the shim sets was skipped");
+        let unknown = "@ECHO off\n\"%TOOL_HOME%\\tool.exe\" %*\n";
+        assert_eq!(read_shim(unknown, DIR, || None), None, "a variable nobody filled in was run");
+        let twice = "@ECHO off\n\"%dp0%\\a.exe\" %*\n\"%dp0%\\b.exe\" %*\n";
+        assert_eq!(read_shim(twice, DIR, || None), None, "two programs were read as one");
+        let script = "@ECHO off\n\"%dp0%\\tool.js\" %*\n";
+        assert_eq!(read_shim(script, DIR, || None), None, "a file that is not a program was started");
+        let no_args = "@ECHO off\n\"%dp0%\\tool.exe\" %* --last\n";
+        assert_eq!(read_shim(no_args, DIR, || None), None, "words after the arguments were dropped");
     }
 }
 
@@ -1221,6 +1403,18 @@ pub fn launch_problem(
                 &[("name", name), ("path", &dir.display().to_string())],
             );
         }
+    // The folder is there, on a network share, and the command needs cmd.exe,
+    // which cannot start in it until the share has a drive letter
+    if let Some(dir) = cwd
+        && !prog.is_empty()
+        && folder_for_cmd(dir).is_none()
+        && through_cmd(&build_command(&[prog.to_string()]))
+    {
+        return crate::i18n::tp(
+            "msg.start.network_folder",
+            &[("name", name), ("cmd", prog), ("path", &dir.display().to_string())],
+        );
+    }
     // A remote tab's command line is an address, not a program, so "install it"
     // would be the wrong advice: what went wrong is on the wire, and the error
     // itself already says so
@@ -3954,7 +4148,15 @@ impl Tab {
                 {
                     anyhow::bail!("the working folder {} is not on this PC", p.display());
                 }
-                p.clone()
+                // cmd.exe in a folder on a network share does not refuse
+                // either: it starts in C:\Windows. Through the share's drive
+                // letter it can stand there; with none, the tab says so
+                match through_cmd(&cmd) {
+                    true => folder_for_cmd(p).ok_or_else(|| {
+                        anyhow::anyhow!("cmd.exe cannot start in the network folder {}", p.display())
+                    })?,
+                    false => p.clone(),
+                }
             }
             // The placeholder, which is what a held tab, a model conversation
             // and a terminal on another machine all show. Nothing of the

@@ -174,8 +174,11 @@ impl Plan {
             .map(|line| match self.host.is_none() && cfg!(windows) {
                 // This machine, and this machine is Windows. A line written
                 // for a container will not always survive that; it is on
-                // screen before it runs, and git's own refusal follows if not
-                true => vec!["cmd".into(), "/c".into(), format!("cd /d {at} && {line}")],
+                // screen before it runs, and git's own refusal follows if not.
+                // `pushd` rather than `cd`: cmd.exe cannot `cd` into a folder
+                // on a network share, and `pushd` gives the share a drive
+                // letter for as long as the line runs
+                true => vec!["cmd".into(), "/c".into(), format!("pushd {at} && {line}")],
                 false => vec!["sh".into(), "-lc".into(), format!("cd {at} && {line}")],
             })
             .collect()

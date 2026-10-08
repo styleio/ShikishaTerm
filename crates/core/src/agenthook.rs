@@ -807,18 +807,9 @@ impl AppServer {
     fn start(codex_home: &Path) -> Result<Self> {
         use std::process::{Command, Stdio};
         let path = crate::tab::resolve_command("codex").unwrap_or_else(|| PathBuf::from("codex"));
-        let script = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"));
-        let mut cmd = if script {
-            let mut c = Command::new("cmd.exe");
-            c.arg("/c").arg(&path);
-            c
-        } else {
-            Command::new(&path)
-        };
-        cmd.arg("app-server")
+        let argv = crate::tab::launch_argv(&[path.to_string_lossy().into_owned(), "app-server".into()]);
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..])
             .env("CODEX_HOME", codex_home)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

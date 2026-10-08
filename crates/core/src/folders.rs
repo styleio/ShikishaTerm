@@ -99,6 +99,75 @@ pub fn drive_of(p: &Path) -> Option<String> {
     Some(format!("{}:", letter.to_ascii_uppercase()))
 }
 
+/// The folder on a network share a path names, as `\\server\share\rest`
+/// with the long-path prefix taken off; none for a path on a drive letter.
+pub fn unc_of(p: &Path) -> Option<String> {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{rest}"));
+    }
+    // `\\?\C:\` and `\\.\pipe` start the same way and are not shares
+    (s.starts_with(r"\\") && !s.starts_with(r"\\?\") && !s.starts_with(r"\\.\")).then(|| s.into_owned())
+}
+
+/// The same folder on a network share, reached through a drive letter this
+/// PC has given that share (`\\server\projects\a` -> `P:\a`), for a program
+/// that cannot start in a folder named the network's way. None when the path
+/// is not on a share, or no drive letter here leads to it.
+pub fn by_letter(p: &Path) -> Option<PathBuf> {
+    let unc = unc_of(p)?;
+    letter_for(&unc, &mapped_drives())
+}
+
+/// Which of `drives` (a letter and the share it leads to) reaches `unc`. The
+/// share a letter leads to may sit deeper than the share itself
+/// (`\\server\projects\php7`), so the longest one that holds the folder wins
+fn letter_for(unc: &str, drives: &[(char, String)]) -> Option<PathBuf> {
+    let holds = |remote: &str| -> Option<usize> {
+        let remote = remote.trim_end_matches('\\');
+        let head = unc.get(..remote.len())?;
+        let at_boundary = matches!(unc.as_bytes().get(remote.len()), None | Some(b'\\'));
+        (head.eq_ignore_ascii_case(remote) && at_boundary).then_some(remote.len())
+    };
+    let (letter, cut) = drives
+        .iter()
+        .filter_map(|(l, r)| holds(r).map(|n| (*l, n)))
+        .max_by_key(|(_, n)| *n)?;
+    let rest = unc[cut..].trim_start_matches('\\');
+    Some(PathBuf::from(format!(r"{letter}:\{rest}")))
+}
+
+/// The drive letters on this PC that lead to a network share, and the share
+/// each one leads to.
+#[cfg(windows)]
+fn mapped_drives() -> Vec<(char, String)> {
+    use windows_sys::Win32::NetworkManagement::WNet::WNetGetConnectionW;
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_REMOTE: u32 = 4;
+    let present = unsafe { GetLogicalDrives() };
+    ('A'..='Z')
+        .enumerate()
+        .filter(|(i, _)| present & (1 << i) != 0)
+        .filter_map(|(_, letter)| {
+            let root: Vec<u16> = format!(r"{letter}:\").encode_utf16().chain([0]).collect();
+            if unsafe { GetDriveTypeW(root.as_ptr()) } != DRIVE_REMOTE {
+                return None;
+            }
+            let local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
+            let mut buf = vec![0u16; 1024];
+            let mut len = buf.len() as u32;
+            let ok = unsafe { WNetGetConnectionW(local.as_ptr(), buf.as_mut_ptr(), &mut len) } == 0;
+            let end = buf.iter().position(|&c| c == 0).unwrap_or(0);
+            ok.then(|| (letter, String::from_utf16_lossy(&buf[..end])))
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn mapped_drives() -> Vec<(char, String)> {
+    Vec::new()
+}
+
 /// One folder's last answer, and whether a new one is on its way.
 struct Entry {
     health: Health,
@@ -889,6 +958,35 @@ mod tests {
     fn a_share_has_no_drive_letter() {
         assert_eq!(drive_of(Path::new(r"\\192.168.0.35\projects\x")), None);
         assert_eq!(drive_of(Path::new("/home/me/x")), None);
+    }
+
+    /// A share named either way is one; a long-path drive or a pipe is not.
+    #[test]
+    fn a_share_is_told_from_a_drive() {
+        let unc = r"\\192.168.0.35\projects\php7\x";
+        assert_eq!(unc_of(Path::new(unc)).as_deref(), Some(unc));
+        assert_eq!(unc_of(Path::new(r"\\?\UNC\192.168.0.35\projects\php7\x")).as_deref(), Some(unc));
+        assert_eq!(unc_of(Path::new(r"\\?\C:\x")), None);
+        assert_eq!(unc_of(Path::new(r"\\.\pipe\x")), None);
+        assert_eq!(unc_of(Path::new(r"D:\x")), None);
+    }
+
+    /// The letter that leads furthest into the share is the one taken, and a
+    /// share whose name only starts the same is not the same share.
+    #[test]
+    fn a_share_is_reached_through_its_letter() {
+        let drives = vec![
+            ('P', r"\\192.168.0.35\projects".to_string()),
+            ('Q', r"\\192.168.0.35\PROJECTS\php7\".to_string()),
+            ('R', r"\\192.168.0.35\projects2".to_string()),
+        ];
+        let at = |unc: &str| letter_for(unc, &drives).map(|p| p.display().to_string());
+        assert_eq!(at(r"\\192.168.0.35\projects\php7\te0_main").as_deref(), Some(r"Q:\te0_main"));
+        assert_eq!(at(r"\\192.168.0.35\projects\node\a").as_deref(), Some(r"P:\node\a"));
+        assert_eq!(at(r"\\192.168.0.35\projects").as_deref(), Some(r"P:\"));
+        assert_eq!(at(r"\\192.168.0.35\projects2\a").as_deref(), Some(r"R:\a"));
+        assert_eq!(at(r"\\192.168.0.35\projects3\a"), None);
+        assert_eq!(at(r"\\other\projects\a"), None);
     }
 
     /// The folder this test is running in is there, whatever machine it is.

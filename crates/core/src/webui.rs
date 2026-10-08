@@ -270,30 +270,16 @@ fn cli_help(prog: &str) -> Result<String, String> {
     if prog.trim().is_empty() {
         return Err(String::new());
     }
-    // Resolve exactly like a tab launch: search PATH + .exe/.cmd/.bat and route
-    // a .cmd/.bat shim (how npm installs claude/gemini/…) through cmd.exe. A bare
+    // Started exactly like a tab launch: PATH + .exe/.cmd/.bat, and a shim
+    // (how npm installs claude/gemini/…) the way a tab starts it. A bare
     // Command::new("claude") only looks for claude.exe and reports "not found".
     // An empty error string tells the page to show its own "is it installed?" note.
-    let Some(path) = crate::tab::resolve_command(prog) else {
+    if crate::tab::resolve_command(prog).is_none() {
         return Err(String::new());
-    };
-    let is_script = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| {
-            let e = e.to_ascii_lowercase();
-            e == "cmd" || e == "bat"
-        })
-        .unwrap_or(false);
-    let mut cmd = if is_script {
-        let mut c = Command::new("cmd.exe");
-        c.arg("/c").arg(&path).arg("--help");
-        c
-    } else {
-        let mut c = Command::new(&path);
-        c.arg("--help");
-        c
-    };
+    }
+    let argv = crate::tab::launch_argv(&[prog.to_string(), "--help".into()]);
+    let mut cmd = Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -763,22 +749,12 @@ pub fn local_ai_label(want: Option<&str>) -> Option<&'static str> {
         .map(|(_, _, label)| *label)
 }
 
-/// How to start an installed AI program with `args`: the program itself, or
-/// cmd.exe in front of it for a .cmd/.bat, which cannot be started any other way
+/// How to start an installed AI program with `args`, the way a tab starts it
 fn launcher(name: &str, args: Vec<String>) -> Option<(String, Vec<String>)> {
-    let path = crate::tab::resolve_command(name)?;
-    let p = path.to_string_lossy().to_string();
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase());
-    Some(if matches!(ext.as_deref(), Some("cmd") | Some("bat")) {
-        let mut a = vec!["/c".to_string(), p];
-        a.extend(args);
-        ("cmd.exe".to_string(), a)
-    } else {
-        (p, args)
-    })
+    crate::tab::resolve_command(name)?;
+    let mut argv = crate::tab::launch_argv(&[vec![name.to_string()], args].concat());
+    let program = argv.remove(0);
+    Some((program, argv))
 }
 
 /// The assistant AI that answers when one is asked for: the one chosen under

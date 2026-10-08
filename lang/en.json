@@ -1106,6 +1106,7 @@
   "msg.folder.branch_taken": "{branch} is already open in \"{path}\". One PC keeps one folder per branch. Use that folder, or move it to another branch first.",
   "msg.folder.unknown": "Nothing here says which project this folder holds. Choose it below and it will be remembered on every PC.",
   "msg.start.no_folder": "{name} isn't set up on this PC yet — the folder \"{path}\" doesn't exist here. Open Settings and set {name}'s working folder to one that exists on this PC.",
+  "msg.start.network_folder": "{name} can't start in the network folder \"{path}\" — \"{cmd}\" runs through Command Prompt, which can't open a network folder by its \\\\server name. In File Explorer, use \"Map network drive\" to give this share a drive letter, then open {name} again.",
   "msg.start.other": "{name} couldn't start: {error}",
   "msg.failed.started": "{name} has started.",
   "msg.restart_none": ">> No stopped tabs",
