@@ -2898,11 +2898,16 @@ mod tests {
     #[test]
     fn a_network_share_is_named_by_its_share() {
         use std::path::Path;
-        assert_eq!(leaf_name(Path::new(r"\\nas\home")).as_deref(), Some("home"));
-        assert_eq!(leaf_name(Path::new(r"\\nas\home\")).as_deref(), Some("home"));
-        assert_eq!(leaf_name(Path::new(r"\\nas\home\work")).as_deref(), Some("work"));
         assert_eq!(leaf_name(Path::new("/srv/app")).as_deref(), Some("app"));
-        assert_eq!(leaf_name(Path::new(r"C:\")), None);
+        // A share and a drive are Windows' own: elsewhere a backslash is
+        // part of a name, and these are one name each
+        #[cfg(windows)]
+        {
+            assert_eq!(leaf_name(Path::new(r"\\nas\home")).as_deref(), Some("home"));
+            assert_eq!(leaf_name(Path::new(r"\\nas\home\")).as_deref(), Some("home"));
+            assert_eq!(leaf_name(Path::new(r"\\nas\home\work")).as_deref(), Some("work"));
+            assert_eq!(leaf_name(Path::new(r"C:\")), None);
+        }
     }
 
     /// A folder is its machine and its path: the same path on two machines is
