@@ -441,13 +441,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_running_program_is_read_back_by_its_file_and_its_words() {
+        // Just after it is started, a child is still this test's own program
+        // until its exec is done: read it until it has become what was started
+        fn once_started<T>(read: impl Fn() -> Option<T>, done: impl Fn(&T) -> bool) -> Option<T> {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let seen = read();
+                if seen.as_ref().is_some_and(&done) || std::time::Instant::now() > until {
+                    return seen;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         // sleep is its own file everywhere; sh is often a link to another shell
         let mut child = std::process::Command::new("sleep")
             .args(["30"])
             .stdin(std::process::Stdio::null())
             .spawn()
             .expect("sleep cannot start");
-        let image = image_of(child.id()).expect("no file for a running program");
+        let image = once_started(|| image_of(child.id()), |i| leaf_of(i) == "sleep").expect("no file for a running program");
         assert_eq!(leaf_of(&image), "sleep", "{image}");
         let _ = child.kill();
         let _ = child.wait();
@@ -458,7 +470,7 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .spawn()
             .expect("sh cannot start");
-        let line = command_line_of(child.id()).expect("no words for a running program");
+        let line = once_started(|| command_line_of(child.id()), |l| l.contains("two words")).expect("no words for a running program");
         let words = split(&line);
         assert!(words.ends_with(&["-c".to_string(), "sleep 30".to_string(), "two words".to_string()]), "{words:?}");
         let _ = child.kill();
