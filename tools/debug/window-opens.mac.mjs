@@ -130,10 +130,18 @@ try {
     step('the page can talk to the program (window.ipc)', ipc === true)
     const size = await evaluate('JSON.stringify([innerWidth, innerHeight])')
     step('the page has a size', !!size && size !== '[0,0]', size)
+    // The bar is in the page from the start but empty: it is drawn on the first
+    // state the program sends, which may come after the page has loaded. Read it
+    // once it has been drawn (drawTitle marks it with what it drew from)
+    let drawn = false
+    for (let i = 0; i < 60 && !drawn; i++) {
+      drawn = (await evaluate('(() => { const b = document.getElementById("titlebar"); return !!b && !!b.dataset.key; })()')) === true
+      if (!drawn) await sleep(250)
+    }
     const frame = await evaluate(
       '(() => { const b = document.getElementById("titlebar"); return !!b && b.classList.contains("macframe") && !b.querySelector(".wbtn"); })()',
     )
-    step("the bar leaves room for the Mac's own buttons and draws none", frame === true)
+    step("the bar leaves room for the Mac's own buttons and draws none", drawn && frame === true, drawn ? '' : 'the bar was not drawn in 15 s')
     // Typing reaches the program in the terminal, and what it prints comes
     // back: the whole way round, through the page, the program and the pty
     await evaluate('(() => { const k = document.getElementById("kbd"); if (k) k.focus(); return !!k; })()')
