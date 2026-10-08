@@ -20,6 +20,12 @@
 //! overwritten. The version replaced is kept under `data/update/prev/`, so
 //! "the previous version" is one press away.
 //!
+//! A Mac's copy is a signed app, and a signed app is replaced whole: changing
+//! one file inside it breaks the signature, and a Mac then refuses to open it.
+//! So the zip a Mac fetches holds the whole `SHIKISHA-TERM.app`; the running
+//! one is moved aside, the new one put where it was, and the one moved aside
+//! kept as the previous version -- the same promise, kept the Mac's way.
+//!
 //! An installed (Store) copy runs from a folder that is read-only to it, and
 //! the Store is what replaces it -- but the Store can only do that once the
 //! program is closed, and a program that lives in the notification area is
@@ -55,16 +61,48 @@ pub const PUBLIC_KEY_HEX: &str = "935ea2b2bd6c6547c21384d01b35aa57a9e5027349a220
 const STORE_URL: &str = "https://apps.microsoft.com/detail/9PB8XQVM87Z0";
 
 /// The name of the executable inside the zip, and of the one it replaces
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const EXE: &str = "SHIKISHA-TERM.exe";
+
+/// What a copy of the program is, in an unpacked zip or among the kept
+/// versions: the executable on Windows, the whole app on a Mac
+#[cfg(target_os = "macos")]
+const PROGRAM: &str = "SHIKISHA-TERM.app";
+#[cfg(not(target_os = "macos"))]
+const PROGRAM: &str = EXE;
+
+/// Where the program is inside the app, on a Mac
+#[cfg(target_os = "macos")]
+const IN_APP: &str = "Contents/MacOS/SHIKISHA-TERM";
+
+/// Whether `dir` holds a whole copy of the program
+fn holds_program(dir: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    return dir.join(PROGRAM).join(IN_APP).is_file();
+    #[cfg(not(target_os = "macos"))]
+    return dir.join(PROGRAM).is_file();
+}
+
+/// The zip this machine updates from, and the names of its checks beside it
+/// (`.sha256`, `.sig`). A Mac's is one per processor; Windows' is one
+fn zip_name() -> &'static str {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "SHIKISHA-TERM-mac-arm64.zip"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "SHIKISHA-TERM-mac-x64.zip"
+    } else {
+        "SHIKISHA-TERM.zip"
+    }
+}
 /// Files that are loaded while the program runs, so they cannot be
 /// overwritten in place and are renamed aside first
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 const HELD_OPEN: &[&str] = &[EXE, "conpty.dll", "OpenConsole.exe"];
 /// Folders a person owns. A file in them is placed only where none exists
 const OWNED: &[&str] = &["config", "data", "logs", "desks", "scripts"];
 /// How often the latest version is read while the program runs
 const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long the new copy waits for the old one to leave before claiming the layout
-#[cfg(windows)]
 const HANDOFF_WAIT: Duration = Duration::from_secs(15);
 /// How long "restarting" stays on screen before this copy ends. The settings
 /// page reads the state twice a second, so this is long enough for it to be
@@ -335,7 +373,7 @@ fn find_prev() -> Option<String> {
     let rd = std::fs::read_dir(prev_root()).ok()?;
     let mut found: Vec<String> = rd
         .flatten()
-        .filter(|e| e.path().join(EXE).is_file())
+        .filter(|e| holds_program(&e.path()))
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     found.sort_by_key(|v| std::cmp::Reverse(parse(v)));
@@ -663,11 +701,13 @@ pub fn parse_release(v: &serde_json::Value) -> Option<Release> {
     let mut r = Release { version, notes: v.get("html_url").and_then(|u| u.as_str()).unwrap_or_default().to_string(), ..Default::default() };
     for a in v.get("assets").and_then(|a| a.as_array()).into_iter().flatten() {
         let (Some(name), Some(url)) = (a.get("name").and_then(|n| n.as_str()), a.get("browser_download_url").and_then(|u| u.as_str())) else { continue };
-        match name {
-            "SHIKISHA-TERM.zip" => r.zip = Some(url.to_string()),
-            "SHIKISHA-TERM.zip.sha256" => r.sha256 = Some(url.to_string()),
-            "SHIKISHA-TERM.zip.sig" => r.sig = Some(url.to_string()),
-            _ => {}
+        let zip = zip_name();
+        if name == zip {
+            r.zip = Some(url.to_string());
+        } else if name.strip_prefix(zip) == Some(".sha256") {
+            r.sha256 = Some(url.to_string());
+        } else if name.strip_prefix(zip) == Some(".sig") {
+            r.sig = Some(url.to_string());
         }
     }
     Some(r)
@@ -748,7 +788,7 @@ fn download_into(rel: &Release, dir: &Path) -> Result<()> {
     let zip_url = rel.zip.as_deref().ok_or_else(|| anyhow!("the release has no zip"))?;
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir)?;
-    let zip_path = dir.join("SHIKISHA-TERM.zip");
+    let zip_path = dir.join(zip_name());
     fetch_file(zip_url, &zip_path, &rel.version)?;
     set_phase(Phase::Verifying { version: rel.version.clone() });
     let bytes = std::fs::read(&zip_path)?;
@@ -767,7 +807,7 @@ fn download_into(rel: &Release, dir: &Path) -> Result<()> {
         set_phase(Phase::Unpacking { version: rel.version.clone(), done, total });
     })?;
     if find_exe_root(&stage).is_none() {
-        bail!("the zip holds no {EXE}");
+        bail!("the zip holds no {PROGRAM}");
     }
     std::fs::write(stage.join("stage.ok"), &rel.version)?;
     Ok(())
@@ -915,11 +955,11 @@ fn link_stays_inside(at: &Path, target: &Path) -> bool {
 /// The folder inside an unpacked zip that holds the executable: the zip's
 /// top folder, or the unpacked folder itself
 fn find_exe_root(stage: &Path) -> Option<PathBuf> {
-    if stage.join(EXE).is_file() {
+    if holds_program(stage) {
         return Some(stage.to_path_buf());
     }
     let rd = std::fs::read_dir(stage).ok()?;
-    rd.flatten().map(|e| e.path()).find(|p| p.is_dir() && p.join(EXE).is_file())
+    rd.flatten().map(|e| e.path()).find(|p| p.is_dir() && holds_program(p))
 }
 
 // ── Putting it in place ────────────────────────────────────────────
@@ -965,6 +1005,7 @@ fn walk(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn aside(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_os_string();
     s.push(".old");
@@ -976,6 +1017,7 @@ fn aside(path: &Path) -> PathBuf {
 /// under `.old` and the new one renamed in. The new file is written whole
 /// beside the old one first, so the moment in which neither exists is two
 /// renames long
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn place(src: &Path, dest: &Path, held: bool, said: &mut dyn FnMut(u64)) -> Result<()> {
     if let Some(d) = dest.parent() {
         std::fs::create_dir_all(d)?;
@@ -1006,6 +1048,7 @@ fn place(src: &Path, dest: &Path, held: bool, said: &mut dyn FnMut(u64)) -> Resu
 /// `said` hears, as it goes, how many of the bytes to be written are written:
 /// what is left alone is not counted, and the time goes by the bytes -- the
 /// executable alone is most of them
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn swap_files(source: &Path, root: &Path, said: &mut dyn FnMut(u64, u64)) -> Result<()> {
     let exe_dest = std::env::current_exe().unwrap_or_else(|_| root.join(EXE));
     // The executable last: everything else can be half done and the program
@@ -1041,6 +1084,7 @@ fn swap_files(source: &Path, root: &Path, said: &mut dyn FnMut(u64, u64)) -> Res
 }
 
 /// Copies one file whole, saying how many bytes each piece was
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn copy_file(src: &Path, dest: &Path, said: &mut dyn FnMut(u64)) -> Result<()> {
     let mut from = std::fs::File::open(src)?;
     let mut to = std::fs::File::create(dest)?;
@@ -1067,6 +1111,7 @@ fn copy_counting(from: &mut dyn std::io::Read, to: &mut dyn std::io::Write, said
     to.flush()
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn same_bytes(a: &Path, b: &Path) -> bool {
     match (std::fs::metadata(a), std::fs::metadata(b)) {
         (Ok(ma), Ok(mb)) if ma.len() == mb.len() => {
@@ -1077,6 +1122,7 @@ fn same_bytes(a: &Path, b: &Path) -> bool {
 }
 
 /// Moves what was set aside into `prev/<from>`, so it can be put back
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn keep_previous(root: &Path, from: &str) {
     let dir = prev_root().join(from);
     let _ = std::fs::remove_dir_all(prev_root());
@@ -1105,6 +1151,12 @@ pub fn apply(what: &Apply) -> Result<()> {
     r
 }
 
+#[cfg(target_os = "macos")]
+fn put_in_place(what: &Apply) -> Result<()> {
+    mac::put_app_in_place(what)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn put_in_place(what: &Apply) -> Result<()> {
     let root = crate::config::root_dir();
     let (version, source, rollback) = match what {
@@ -1187,11 +1239,117 @@ fn sweep_aside(root: &Path) {
 
 /// The copy that was started to finish an update waits for the one that
 /// started it to leave, so the layout is free to claim. Called before the
-/// claim. The variable is dropped so children never inherit it
-/// Nothing hands the running copy over here: a Linux install is replaced by
-/// the package manager, with the old process already gone.
-#[cfg(not(windows))]
-pub fn wait_for_handoff() {}
+/// claim. The variable is dropped so children never inherit it. A Mac's new
+/// app is started by the old one, as on Windows; a Linux install is replaced
+/// by the package manager, and never gets here
+#[cfg(unix)]
+pub fn wait_for_handoff() {
+    let Ok(pid) = std::env::var("SHIKISHA_HANDOFF") else { return };
+    // SAFETY: nothing else reads the environment on another thread this early
+    unsafe { std::env::remove_var("SHIKISHA_HANDOFF") };
+    let Ok(pid) = pid.parse::<i32>() else { return };
+    let until = Instant::now() + HANDOFF_WAIT;
+    // SAFETY: signal 0 only asks whether the process is there
+    while Instant::now() < until && unsafe { libc::kill(pid, 0) } == 0 {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A Mac's app, replaced whole
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::*;
+
+    /// The app this copy runs from
+    pub(super) fn running_app() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf)
+    }
+
+    /// Moves a folder, across disks too: an app in /Applications and this
+    /// program's data are often not on the same one
+    fn move_dir(from: &Path, to: &Path) -> Result<()> {
+        if let Some(p) = to.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        match std::fs::rename(from, to) {
+            Ok(()) => Ok(()),
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                // ditto keeps what an app is made of: its links and its signature
+                let ok = std::process::Command::new("/usr/bin/ditto").arg(from).arg(to).status().is_ok_and(|s| s.success());
+                if !ok {
+                    let _ = std::fs::remove_dir_all(to);
+                    bail!("{} could not be copied to {}", from.display(), to.display());
+                }
+                std::fs::remove_dir_all(from)?;
+                Ok(())
+            }
+            Err(e) => Err(e).with_context(|| format!("move {} to {}", from.display(), to.display())),
+        }
+    }
+
+    pub(super) fn put_app_in_place(what: &Apply) -> Result<()> {
+        let (version, source, rollback) = match what {
+            Apply::Fresh { version } => (
+                version.clone(),
+                find_exe_root(&stage_dir(version)).ok_or_else(|| anyhow!("nothing staged for {version}"))?.join(PROGRAM),
+                false,
+            ),
+            Apply::Rollback { version } => (version.clone(), prev_root().join(version).join(PROGRAM), true),
+            Apply::Store => bail!("the Store's update is not applied here"),
+        };
+        if !source.join(IN_APP).is_file() {
+            bail!("{} is not a whole {PROGRAM}", source.display());
+        }
+        let running = running_app().ok_or_else(|| anyhow!("this copy is not running from {PROGRAM}, so there is no app to replace"))?;
+        set_phase(Phase::Applying { version: Some(version.clone()), done: 0, total: 0 });
+        let from = current_version().to_string();
+        let mut j = Journal { version: version.clone(), from: from.clone(), step: "swap".into(), rollback };
+        write_journal(&j)?;
+        // The running app goes aside first: where it was is where the new one goes.
+        // A running app may be moved; it goes on running from where it went
+        let aside = update_dir().join("running.app");
+        let _ = std::fs::remove_dir_all(&aside);
+        if let Err(e) = move_dir(&running, &aside) {
+            let _ = std::fs::remove_file(journal_path());
+            let message = format!("{e:#} -- {} may be in a folder this account may not change", running.display());
+            set_phase(Phase::Failed { version: Some(version.clone()), message: message.clone() });
+            crate::append_hook_log(&format!("Update to {version} could not be put in place: {message}"));
+            bail!(message);
+        }
+        if let Err(e) = move_dir(&source, &running) {
+            let _ = move_dir(&aside, &running);
+            let _ = std::fs::remove_file(journal_path());
+            set_phase(Phase::Failed { version: Some(version.clone()), message: format!("{e:#}") });
+            crate::append_hook_log(&format!("Update to {version} could not be put in place, the app put back: {e:#}"));
+            return Err(e);
+        }
+        if rollback {
+            // Going back keeps nothing older; going forward again refetches
+            let _ = std::fs::remove_dir_all(&aside);
+            let _ = std::fs::remove_dir_all(prev_root());
+        } else {
+            let keep = prev_root().join(&from);
+            let _ = std::fs::remove_dir_all(prev_root());
+            if move_dir(&aside, &keep.join(PROGRAM)).is_err() {
+                let _ = std::fs::remove_dir_all(&aside);
+            }
+        }
+        let exe = running.join(IN_APP);
+        std::process::Command::new(&exe)
+            .current_dir(crate::config::root_dir())
+            .env("SHIKISHA_HANDOFF", std::process::id().to_string())
+            .spawn()
+            .with_context(|| format!("start {}", exe.display()))?;
+        j.step = "launched".into();
+        write_journal(&j)?;
+        crate::append_hook_log(&format!("Update: {from} -> {version} put in place; the new copy is starting"));
+        let mut s = lock();
+        s.phase = Phase::Restarting { version };
+        s.restart_at = Some(Instant::now());
+        Ok(())
+    }
+}
 
 #[cfg(windows)]
 pub fn wait_for_handoff() {
@@ -1404,12 +1562,15 @@ mod tests {
     /// release with none of them is still a version
     #[test]
     fn a_release_is_read_for_its_version_and_files() {
+        // This machine's zip among the others a release carries
+        let zip = zip_name();
         let v = serde_json::json!({
             "tag_name": "v0.9.0", "html_url": "https://github.com/styleio/ShikishaTerm/releases/tag/v0.9.0",
             "assets": [
-                {"name": "SHIKISHA-TERM.zip", "browser_download_url": "https://x/z.zip"},
-                {"name": "SHIKISHA-TERM.zip.sha256", "browser_download_url": "https://x/z.sha"},
-                {"name": "SHIKISHA-TERM.zip.sig", "browser_download_url": "https://x/z.sig"},
+                {"name": "SHIKISHA-TERM-someone-elses.zip", "browser_download_url": "https://x/no.zip"},
+                {"name": zip, "browser_download_url": "https://x/z.zip"},
+                {"name": format!("{zip}.sha256"), "browser_download_url": "https://x/z.sha"},
+                {"name": format!("{zip}.sig"), "browser_download_url": "https://x/z.sig"},
                 {"name": "other.msix", "browser_download_url": "https://x/o"}
             ]});
         let r = parse_release(&v).unwrap();
@@ -1651,11 +1812,18 @@ mod tests {
     fn the_unpacked_folder_is_found_under_a_top_folder_or_not() {
         let base = std::env::temp_dir().join(format!("shikisha-stage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("a/SHIKISHA-TERM")).unwrap();
-        std::fs::write(base.join("a/SHIKISHA-TERM").join(EXE), "x").unwrap();
+        // A copy of the program, as this machine's zip holds one
+        let plant = |dir: &Path| {
+            #[cfg(target_os = "macos")]
+            let program = dir.join(PROGRAM).join(IN_APP);
+            #[cfg(not(target_os = "macos"))]
+            let program = dir.join(PROGRAM);
+            std::fs::create_dir_all(program.parent().unwrap()).unwrap();
+            std::fs::write(program, "x").unwrap();
+        };
+        plant(&base.join("a/SHIKISHA-TERM"));
         assert_eq!(find_exe_root(&base.join("a")), Some(base.join("a/SHIKISHA-TERM")));
-        std::fs::create_dir_all(base.join("b")).unwrap();
-        std::fs::write(base.join("b").join(EXE), "x").unwrap();
+        plant(&base.join("b"));
         assert_eq!(find_exe_root(&base.join("b")), Some(base.join("b")));
         std::fs::create_dir_all(base.join("c/nothing")).unwrap();
         assert_eq!(find_exe_root(&base.join("c")), None);

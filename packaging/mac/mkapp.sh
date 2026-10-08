@@ -237,7 +237,13 @@ sign --entitlements "$HERE/app.entitlements" "$APP"
 codesign --verify --strict --deep "$APP"
 
 # ── the .dmg and the .zip ─────────────────────────────────────────────────
-STEM="$NAME-$VERSION-mac-$ARCH"
+# Named without the version: the copy already installed looks for exactly this
+# name among a release's files to update itself (update.rs, zip_name), and a
+# Mac's processors are called arm64 and x64 there, as the downloads page says
+case "$ARCH" in
+    arm64)  STEM="$NAME-mac-arm64" ;;
+    x86_64) STEM="$NAME-mac-x64" ;;
+esac
 DMG_ROOT="$WORK/dmg"
 mkdir -p "$DMG_ROOT"
 ditto "$APP" "$DMG_ROOT/$NAME.app"
