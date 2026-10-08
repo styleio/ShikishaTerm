@@ -3331,6 +3331,7 @@
   "err.tab_add.no_command": "open_tab needs a command: what the tab runs (for example \"codex\")",
   "err.tab_add.bad_line": "that is not a tab the settings can hold: {why}",
   "err.tab_add.folder_type": "folder has to be a path, written as text",
+  "err.tab_add.options_type": "The options have to be a table: from the shikisha command, a JSON object such as {\"folder\":\"C:/work/x\"}. This arrived as text, not JSON: {got}. Write Windows folders with /: a backslash in JSON has to be doubled, and a shell often undoes that",
   "err.tab_add.host_type": "host has to be the name of a machine, written as text",
   "err.tab_add.which_folder": "this call comes from no tab's folder, so say which folder the tab goes in: { command = \"codex\", folder = \"D:\\work\" }",
   "err.tab_add.no_desk_yet": "no desk is open yet, so there is nowhere to add a tab",

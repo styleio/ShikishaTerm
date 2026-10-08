@@ -745,3 +745,16 @@ fn a_tab_given_a_closed_tabs_name_is_handed_none_of_its_work() {
     let board = w.o.board(&w.scene);
     assert_eq!(board[0]["lead"], uid("lead"), "{board}");
 }
+
+/// The command that opens a tab in a folder writes a Windows folder with `/`,
+/// which survives the shell of an AI on Windows; a server's folder is left
+/// as it is
+#[test]
+fn a_tab_is_opened_in_a_folder_written_the_way_a_shell_keeps_it() {
+    let back = char::from(92).to_string();
+    let windows = ["C:", "work", "repo", "fix-x"].join(&back);
+    assert_eq!(open_in(&windows), r#"shikisha open_ai_tab <claude|codex|gemini> '{"folder":"C:/work/repo/fix-x"}'"#);
+    let share = format!("{back}{back}server{back}projects{back}x");
+    assert_eq!(open_in(&share), r#"shikisha open_ai_tab <claude|codex|gemini> '{"folder":"//server/projects/x"}'"#);
+    assert_eq!(open_in("/home/me/x"), r#"shikisha open_ai_tab <claude|codex|gemini> '{"folder":"/home/me/x"}'"#);
+}

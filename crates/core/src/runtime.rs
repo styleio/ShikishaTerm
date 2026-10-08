@@ -5505,8 +5505,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let uid = v.as_object_mut().and_then(|o| o.remove("uid")).and_then(|u| u.as_str().map(str::to_string));
                             if let (Some(id), Some(uid)) = (v.get("id").and_then(serde_json::Value::as_str).map(str::to_string), uid) {
                                 let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
-                                if let Some(next) = orchestra.opened(call.caller.as_deref(), &scene, &id, &uid) {
-                                    v["next"] = next;
+                                // A job's lead assigns it a task; anyone else
+                                // hands it the work in words
+                                match orchestra.opened(call.caller.as_deref(), &scene, &id, &uid) {
+                                    Some(next) => v["next"] = next,
+                                    None if call.method == "open_ai_tab" => {
+                                        v["next"] = serde_json::json!([format!("shikisha ask_tab {id} \"<one line>\" \"<what to do>\"")]);
+                                    }
+                                    None => {}
                                 }
                             }
                             Ok(v)
@@ -5634,7 +5640,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     } else if on_desk(&folder) {
                         let next = orchestra
                             .worktree_made(w.caller.as_deref(), &scene, &folder, &w.branch)
-                            .unwrap_or_else(|| serde_json::json!([format!("shikisha open_ai_tab <claude|codex|gemini> '{}'", serde_json::json!({"folder": folder}))]));
+                            .unwrap_or_else(|| serde_json::json!([crate::orch::open_in(&folder)]));
                         let _ = w.reply.send(Ok(serde_json::json!({"branch": w.branch, "folder": folder, "next": next})));
                     } else if now >= w.deadline {
                         let _ = w.reply.send(Ok(serde_json::json!({

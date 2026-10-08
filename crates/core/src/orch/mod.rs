@@ -324,6 +324,18 @@ fn title_of(body: &str) -> String {
     t
 }
 
+/// The command that opens an AI tab in `folder`, as an answer tells an AI to
+/// run it. A Windows folder is written with `/`: Windows takes it as it is,
+/// and a `\` in the JSON has to be doubled -- which the shell of an AI on
+/// Windows undoes, leaving JSON that is not JSON
+pub fn open_in(folder: &str) -> String {
+    let folder = match folder.contains('\\') && !folder.starts_with('/') {
+        true => folder.replace('\\', "/"),
+        false => folder.to_string(),
+    };
+    cmd(&["open_ai_tab", "<claude|codex|gemini>", &format!("'{}'", json!({"folder": folder}))])
+}
+
 fn cmd(parts: &[&str]) -> String {
     let mut s = String::from("shikisha");
     for p in parts {
@@ -1675,7 +1687,7 @@ impl Orchestra {
         let me = scene.by_called(caller?)?.clone();
         let job = self.led_job(&me, &serde_json::Map::new()).ok()?;
         self.store().ok()?.folder_made(job.id, folder, branch).ok()?;
-        Some(json!([cmd(&["open_ai_tab", "<claude|codex|gemini>", &format!("'{}'", json!({"folder": folder}))])]))
+        Some(json!([open_in(folder)]))
     }
 
     /// A person typed into a tab (by uid): if a job opened it, it is theirs now

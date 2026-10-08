@@ -3212,11 +3212,25 @@ impl HookEngine {
                         let command = crate::orch::ai_command(&ai).map_err(mlua::Error::runtime)?;
                         let mut line = serde_json::Map::new();
                         line.insert("command".into(), serde_json::json!(command));
-                        if let Some(serde_json::Value::Object(given)) = opts.as_ref().map(lua_to_json) {
-                            for key in ["folder", "host", "name"] {
-                                if let Some(v) = given.get(key) {
-                                    line.insert(key.into(), v.clone());
+                        // Options that are not a table are refused, not passed
+                        // over: an AI's JSON that its shell broke on the way
+                        // arrives as text, and a folder dropped in silence
+                        // opened the tab in the caller's folder instead
+                        match opts.as_ref().map(lua_to_json) {
+                            None | Some(serde_json::Value::Null) => {}
+                            Some(serde_json::Value::Object(given)) => {
+                                for key in ["folder", "host", "name"] {
+                                    if let Some(v) = given.get(key) {
+                                        line.insert(key.into(), v.clone());
+                                    }
                                 }
+                            }
+                            Some(other) => {
+                                let got = match other {
+                                    serde_json::Value::String(s) => s,
+                                    v => v.to_string(),
+                                };
+                                return Err(mlua::Error::runtime(crate::i18n::tp("err.tab_add.options_type", &[("got", &got)])));
                             }
                         }
                         open_line(lua, line, &c, &o, &pl, &dk)
@@ -7083,6 +7097,17 @@ mod tests {
                 "Close".to_string(),
             ]
         );
+    }
+
+    /// Options for `open_ai_tab` that arrived as text -- JSON a shell broke on
+    /// the way -- are refused with how to write them, never dropped: dropped,
+    /// the tab opened in the caller's folder instead of the one it was given
+    #[test]
+    fn open_ai_tab_refuses_options_that_are_not_a_table() {
+        let mut e = HookEngine::new().unwrap();
+        let broken = r#"{"folder":"C:\Users\me\work"}"#;
+        let err = e.call_primitive("open_ai_tab", &[serde_json::json!("claude"), serde_json::json!(broken)]).unwrap_err();
+        assert!(err.contains(broken) && err.contains("C:/work/x"), "{err}");
     }
 
     /// Every way `open_tab` can be asked wrongly is said before the settings

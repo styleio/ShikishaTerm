@@ -3328,6 +3328,7 @@
   "err.tab_add.no_command": "open_tab には command (タブで動かすもの。例: \"codex\") が必要です",
   "err.tab_add.bad_line": "設定に書けるタブの形になっていません: {why}",
   "err.tab_add.folder_type": "folder にはパスを文字列で書きます",
+  "err.tab_add.options_type": "オプションは表で渡します。shikisha コマンドからなら {\"folder\":\"C:/work/x\"} のような JSON のオブジェクトです。届いたのは JSON ではなく文字列でした: {got}。Windows のフォルダは / で書いてください。JSON の中のバックスラッシュは2つ重ねる必要があり、シェルがそれを1つに戻すことがあります",
   "err.tab_add.host_type": "host にはマシンの名前を文字列で書きます",
   "err.tab_add.which_folder": "この呼び出しはどのタブのフォルダからでもないため、タブを置くフォルダを指定してください: { command = \"codex\", folder = \"D:\\work\" }",
   "err.tab_add.no_desk_yet": "デスクがまだ開いていないため、タブを追加する先がありません",

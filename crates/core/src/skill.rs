@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -42,7 +42,7 @@ pub fn text() -> String {
     format!(
         r#"---
 name: {NAME}
-description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>"). Also use before making or changing a design or architecture choice in a project, and when asked why something was chosen: it says how to find and follow the project's decision records (ADR).
+description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>"). Also use to make a git worktree, or to hand work to another AI in a working folder of its own ("make a worktree for this", "give this to another AI", "hand this off"): use it rather than running git worktree add yourself, so the folder and the AI working in it are on the person's desk. Also use before making or changing a design or architecture choice in a project, and when asked why something was chosen: it says how to find and follow the project's decision records (ADR).
 ---
 
 # Working with other SHIKISHA-TERM tabs
@@ -105,6 +105,11 @@ To see a whole job through with other tabs -- "have <@claude> implement it and
 rounds -- run `shikisha skill orchestration` and follow it. It keeps the tasks
 and the reports for you, and every answer says which command to run next.
 
+To give work a working folder of its own -- a new branch in a git worktree,
+often with another AI working in it -- do not run `git worktree add`: run
+`shikisha skill worktree` and follow it. A folder made that way is on the
+person's desk, with the AI in it in a tab they can watch.
+
 Merge or push only when the person asked for it.
 
 To read what was said in another tab without asking it anything -- its last
@@ -135,6 +140,50 @@ Talk to the person in their own language.
 "#,
         mark()
     )
+}
+
+/// The guide `shikisha skill worktree` prints: a working folder of its own
+/// and an AI in it, out of the commands that already do each step. Kept here
+/// rather than in the skill so the skill stays short for every conversation
+/// it is opened in, and kept in the program so it describes this version
+pub fn worktree_guide() -> String {
+    r#"# A working folder of its own (git worktree)
+
+Three commands. Each answer ends with the next command, filled in: run it.
+
+1. Make the folder:
+
+       shikisha worktree_add <branch>
+
+   Name the branch after the work (`fix-login-timeout`). It is made from the
+   project this tab is in, where the project's worktree settings put it, and
+   put on the person's desk. It grows from the remote's default branch, so
+   what is not pushed is not in it: commit and push first if it needs that, or
+   name a branch to grow from with `'{"base":"<branch>"}'` after the name.
+   The answer is the folder (`folder`) once it is ready.
+
+2. Open an AI there:
+
+       shikisha open_ai_tab claude '{"folder":"<folder>"}'
+
+   (or codex, gemini). Write a Windows folder with `/` (`C:/work/x`), as
+   step 1's answer does: a `\` inside the JSON has to be doubled, and the
+   shell may undo that. The answer names the new tab (`id`).
+
+3. Give it the work:
+
+       shikisha ask_tab <id> "a line" "what to do"
+
+   As every `ask_tab`: the other AI cannot see this conversation, so say
+   what to do, on which branch, and what to report. It works in its own
+   folder, so it never sees your uncommitted changes.
+
+If the person only wanted the folder, stop after step 1. If they handed the
+work off and do not want to wait for it, end your turn when `ask_tab` says
+`[shikisha] STILL WORKING`. Leave the folder and the tab for the person:
+removing a worktree, merging or pushing is theirs to ask for.
+"#
+    .to_string()
 }
 
 /// Where a CLI keeps skills, from its profile. `None`: it has no such folder
@@ -323,5 +372,13 @@ mod tests {
         );
         assert!(file.exists());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The description is what every conversation reads, whatever it is
+    /// about, so it stays inside what the CLIs keep of one
+    #[test]
+    fn the_description_fits_what_a_cli_keeps() {
+        let description = text().lines().find_map(|l| l.strip_prefix("description: ").map(str::len)).unwrap();
+        assert!(description <= 1024, "the description is {description} characters");
     }
 }

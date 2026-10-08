@@ -82,8 +82,12 @@ fn skill(topic: Option<&str>, out: &mut impl std::io::Write, err: &mut impl std:
             let _ = write!(out, "{}", crate::orch::text::guide());
             0
         }
+        Some(t) if t == "worktree" => {
+            let _ = write!(out, "{}", crate::skill::worktree_guide());
+            0
+        }
         Some(other) => {
-            let _ = writeln!(err, "[shikisha] There is no guide called {other}. Try: shikisha skill orchestration");
+            let _ = writeln!(err, "[shikisha] There is no guide called {other}. Try: shikisha skill orchestration, shikisha skill worktree");
             2
         }
     }
@@ -105,7 +109,8 @@ fn usage() -> &'static str {
     shikisha adr_list                               -- where this project keeps its decision records, and each one's status
     shikisha list                                   -- every command this tab may call
     shikisha skill                                  -- print the skill that explains this to an AI
-    shikisha skill orchestration                    -- the guide for handing a job out to other AI tabs"
+    shikisha skill orchestration                    -- the guide for handing a job out to other AI tabs
+    shikisha skill worktree                         -- the guide for a git worktree with an AI working in it"
 }
 
 /// One argument as the command is handed it: JSON when it is written as a
@@ -318,6 +323,21 @@ pub fn shim_dir() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guide the skill sends an AI to is printed by its name, and a name
+    /// there is no guide for says which there are
+    #[test]
+    fn the_worktree_guide_is_printed_by_its_name() {
+        // Named through a variable: `this_door_has_no_commands_of_its_own`
+        // reads every quoted word handed to `Some` in this file as one
+        let (guide, none) = ("worktree", "nothing");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(skill(Some(guide), &mut out, &mut err), 0);
+        assert_eq!(String::from_utf8(out).unwrap(), crate::skill::worktree_guide());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(skill(Some(none), &mut out, &mut err), 2);
+        assert!(String::from_utf8(err).unwrap().contains("shikisha skill worktree"));
+    }
 
     #[test]
     fn every_answer_ends_in_a_line_that_says_what_happened() {
