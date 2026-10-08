@@ -1,6 +1,6 @@
 [package]
 name = "shikisha-chromium-helper"
-version = "0.26.0"
+version = "0.27.0"
 edition = "2024"
 description = "The helper processes of the Chromium a Mac's SHIKISHA-TERM.app carries: its renderers, GPU and network."
 license = "MIT"

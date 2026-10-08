@@ -8,12 +8,65 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-09
+
+### Added
+- **"Back to main" once a project's branch has gone in.** When the project's
+  own folder (not a worktree, not a MicroVM) is on a branch whose pull
+  request has been merged, the git panel's main button now reads "Back to
+  main" (or whichever branch the work went into). It switches to that branch
+  and pulls what went in. Before, the next step offered was Fetch, and getting
+  back meant picking the branch from the list. Git still refuses the switch
+  if uncommitted work is in the way. A worktree keeps its own next step,
+  removing the folder.
+- **An AI makes worktrees through the app, and can clear away the ones it
+  made.** The SHIKISHA-TERM skill now answers to "make a worktree", "hand this
+  off" and "clean up the worktrees". It points the AI to a guide of its own,
+  `shikisha skill worktree`: make the folder with `worktree_add`, open an AI
+  there with `open_ai_tab` and give it the work with `ask_tab`. That way the
+  folder and the AI working in it are on your desk, never a bare folder that
+  says nothing. A worktree an AI made wears an "AI" mark naming the tab that
+  made it. `shikisha worktree_list` lists the desk's worktrees, with who made
+  each and the tabs in it. `shikisha worktree_remove` deletes one an AI made,
+  through the same removal as the folder's menu. It is refused for a worktree
+  a person made, one with a tab still at work in it, and one with uncommitted
+  changes. The branch and its commits stay, and tabs resting in the folder
+  close with it. Both commands have rows of their own in the automation
+  permissions. `open_ai_tab` options that arrive as text instead of a JSON
+  object are now refused with how to write them. Before, they were dropped
+  without a word and the tab opened in the caller's folder.
+- **A worktree with no tab in it says what is left in it.** Its card shows
+  how many changes are uncommitted and how many commits are not pushed (or
+  "Nothing left in it"), and when it last moved. Once nothing uncommitted is
+  left, the same line has "Delete completely", the removal from the folder's
+  menu. The branch and its commits stay in the project.
+- **A job's tasks fold away.** The arrow on a job's heading folds its tasks
+  into one line that counts them by state. A press on that line unfolds them.
+  What is folded is remembered on this screen only. Questions waiting on you
+  are never folded away.
+
 ### Changed
 - **A decision record drafted from a conversation reads the way MADR writes
   it.** The chosen option begins `Chosen option: "...", because ...`, each
   consequence is a line of its own beginning `Good, because` or `Bad, because`,
   and each option of the pros and cons has a heading of its own -- in MADR's
   English words, whatever language the rest is written in.
+
+- **AIConfer shows the folder's own conversations when no AI tab is in
+  front.** With a terminal, page or other tab in front, AIConfer showed the
+  whole desk's conversations under the folder's name, so AIs talking in
+  another worktree read as this folder's. It now shows only the conversations
+  that this folder's tabs took part in, including tabs since closed. A line
+  above says "Conversations in <folder>", with "Show the whole desk's" to
+  switch to the whole desk and "Only <folder>" to switch back.
+- **The commit message box steps aside when there is nothing to commit.** On
+  a branch with no changes, where the main button merges a pull request and
+  GitHub writes the merge message, the box and its sparkle stayed up. They
+  read as something the merge wanted, and the sparkle could only fail. The
+  box comes back as soon as there is a change, when it already holds words,
+  or when "Commit into the last commit (amend)" needs a message. An error from
+  a Lua script now shows only its own words, without the code's address
+  (`[string "snippet"]:9:`) in front. The log keeps the whole message.
 
 ### Fixed
 - **A phone unlocks the master password lock after the PC has started
@@ -25,6 +78,22 @@ once it reaches its first tagged release.
   than one field that changed what it asked for. The door is also locked from
   its very first request, so a phone reloading the page as the app starts is
   not handed the board.
+- **An AI tab opened in a network folder works in that folder.** Command
+  Prompt cannot start in a `\\server\share` folder and quietly starts in
+  C:\Windows instead, so an AI installed through npm (Claude, Codex, Gemini)
+  opened in a worktree on a share worked on whatever it found there. Programs
+  npm installed are now started directly, without Command Prompt. This
+  applies to tabs, the help check, the assistant AI and the hook server. Other
+  commands that still need Command Prompt go through the drive letter this PC
+  has given the share. With no drive letter, the tab does not start somewhere
+  else: it says to use "Map network drive" in File Explorer. A tab that could
+  not start now shows as a row in its folder, which leads to the reason.
+  Before, the folder showed as an empty card. A folder that is a share itself
+  is headed by the share's name, not by nothing.
+- **The git panel reads the folder again when you come back to it.**
+  Switching back to the window (or, on a phone, to the page) refreshes the git
+  panel. Before, a file saved in an editor outside the app left the panel
+  saying nothing had changed.
 
 ## [0.26.0] - 2026-10-06
 
@@ -4868,7 +4937,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/styleio/ShikishaTerm/compare/v0.24.0...v0.24.1

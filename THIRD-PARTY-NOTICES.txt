@@ -16572,9 +16572,9 @@ MIT License
 ================================================================================
 
 Applies to:
-  * shikisha-core 0.26.0
+  * shikisha-core 0.27.0
     https://github.com/styleio/ShikishaTerm
-  * shikisha-shared 0.26.0
+  * shikisha-shared 0.27.0
   * aws-lc-sys 0.45.0
     https://github.com/aws/aws-lc-rs
   * block2 0.6.2
