@@ -458,10 +458,11 @@ impl Page {
         }
     }
 
-    /// The process that plays the page's sound. CEF names none; the sound of
-    /// a page is taken differently on a Mac, and nothing asks this here
+    /// The process whose tree plays the page's sound: this one. Chromium's
+    /// audio service is one of the helpers it started, and a Mac's tap is
+    /// made over this process's children (vaudio)
     pub fn sound_process(&self) -> u32 {
-        0
+        std::process::id()
     }
 
     /// The browser's own search on this page

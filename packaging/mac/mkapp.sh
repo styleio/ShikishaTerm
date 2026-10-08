@@ -117,6 +117,7 @@ plist_main() {
     <key>NSRemovableVolumesUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to use files on a removable drive.</string>
     <key>NSNetworkVolumesUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to use files on a network drive.</string>
     <key>NSLocalNetworkUsageDescription</key><string>SHIKISHA-TERM serves its screen to your phone and other computers on this network, and the programs in its terminals reach servers on it.</string>
+    <key>NSAudioCaptureUsageDescription</key><string>SHIKISHA-TERM sends the sound of a page you are sharing to the phone or computer watching it, and nothing else this Mac plays.</string>
     <key>NSBluetoothAlwaysUsageDescription</key><string>A page open in SHIKISHA-TERM wants to use a Bluetooth device.</string>
     <key>NSWebBrowserPublicKeyCredentialUsageDescription</key><string>A page open in SHIKISHA-TERM wants to sign you in with a passkey.</string>
 </dict>
