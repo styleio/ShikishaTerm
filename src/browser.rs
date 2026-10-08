@@ -359,7 +359,7 @@ pub enum Cmd {
 /// host and port (the scheme's usual port when none is written). `None` for
 /// anything that is not an address with a host
 fn origin_of(addr: &str) -> Option<(String, String, u16)> {
-    let uri: wry::http::Uri = addr.trim().parse().ok()?;
+    let uri: http::Uri = addr.trim().parse().ok()?;
     let scheme = uri.scheme_str()?.to_ascii_lowercase();
     let host = uri.host()?.to_ascii_lowercase();
     let port = uri.port_u16().or(match scheme.as_str() {

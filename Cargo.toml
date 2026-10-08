@@ -84,7 +84,9 @@ crossterm = { workspace = true }
 ed25519-dalek = { workspace = true }
 encoding_rs = { workspace = true }
 hkdf = { workspace = true }
-mlua = { workspace = true, features = ["lua54", "vendored"] }
+# Telling which site an address belongs to (src/browser.rs, origin_of)
+http = "1.5.0"
+mlua ={ workspace = true, features = ["lua54", "vendored"] }
 # Web Push (src/push.rs): P-256 for the VAPID signature and for the key
 # agreement RFC 8291 encrypts each message with
 p256 = { workspace = true, features = ["ecdh", "ecdsa"] }
@@ -110,7 +112,6 @@ ureq = { workspace = true, default-features = false, features = ["rustls", "json
 rustls = { workspace = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { workspace = true }
 vt100 = { workspace = true }
-wry = "0.57.0"
 zeroize = { workspace = true }
 # Unpacking a downloaded update beside the program's data (src/update.rs).
 # Deflate only: that is what the release workflow's Compress-Archive writes
@@ -123,6 +124,8 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 # another system leaves them out rather than failing to find them
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
+# The window's engine here (src/browser/webview2.rs). A Mac's is CEF, below
+wry = "0.57.0"
 # Kept at the same version as wry (CDP cannot be called unless the ICoreWebView2 types match)
 webview2-com = "0.39.1"
 windows = { workspace = true, features = [
