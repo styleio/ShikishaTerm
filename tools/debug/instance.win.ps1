@@ -65,23 +65,35 @@ if (-not $Mcp) { $Mcp = Join-Path $At 'mcp.json' }
 # Only the copies under this folder. A copy somebody is using lives elsewhere
 # and is none of this script's business -- which is the whole point of naming
 # the folder rather than the program
+#
+# The app first, the keepers after it, and again until none is left: a keeper
+# ended while the app still runs is started again by the app, to hold its
+# terminals, and that one was in no list taken before it -- it outlived -Stop
 function Stop-Copy {
-    Get-Process -Name 'SHIKISHA-TERM' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path -like (Join-Path $At '*') } |
-        ForEach-Object {
+    $mine = { $_.ExecutablePath -and $_.ExecutablePath -like (Join-Path $At '*') }
+    for ($round = 0; $round -lt 10; $round++) {
+        $left = @(Get-CimInstance Win32_Process -Filter "Name='SHIKISHA-TERM.exe'" | Where-Object $mine)
+        if (-not $left.Count) { return }
+        $app = @($left | Where-Object { $_.CommandLine -notlike '*--keeper*' })
+        $keepers = @($left | Where-Object { $_.CommandLine -like '*--keeper*' })
+        foreach ($p in $app + $keepers) {
             # Killing the window's tree may already have stopped a runtime
             # found by the same enumeration. Only stop a process still here.
-            $still = Get-Process -Id $_.Id -ErrorAction SilentlyContinue
-            if ($still -and $still.Path -eq $_.Path) {
+            $still = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+            if ($still -and $still.Path -eq $p.ExecutablePath) {
                 try {
                     & taskkill.exe /PID $still.Id /T /F 2>&1 | Out-Null
                 } catch {
                     # The process or one of its children can exit between
-                    # the check and taskkill. A surviving target is an error.
-                    if (Get-Process -Id $still.Id -ErrorAction SilentlyContinue) { throw }
+                    # the check and taskkill. One still here is asked again
+                    # on the next round
                 }
             }
         }
+        Start-Sleep -Milliseconds 300
+    }
+    $left = @(Get-CimInstance Win32_Process -Filter "Name='SHIKISHA-TERM.exe'" | Where-Object $mine)
+    if ($left.Count) { throw "could not stop the copy at ${At}: still running $($left.ProcessId -join ', ')" }
 }
 
 # Free means nothing is listening on the loopback now, and the way to ask is to

@@ -535,10 +535,11 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         // running tabs, and a panel is not one -- it has no process. Left
         // marked empty, the sidebar draws the heading as a folder with nothing
         // in it and never draws the rows underneath, so the panel simply had
-        // no line to press
+        // no line to press. A tab that could not start is one too: its row is
+        // where the reason is read, and the folder showed as a blank card
         if g.empty
             && ui.surfaces.iter().any(|s| {
-                matches!(s, Surface::Git { .. } | Surface::Sftp { .. } | Surface::Editor { .. })
+                matches!(s, Surface::Git { .. } | Surface::Sftp { .. } | Surface::Editor { .. } | Surface::Failed { .. })
                     && surface_place(s, tabs).is_some_and(|p| crate::uistate::same_folder(&p, at))
             })
         {

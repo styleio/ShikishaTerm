@@ -22515,6 +22515,16 @@ function gitAfterWork(before) {
     gitRefresh(true);
   }
 }
+// Coming back to the window -- or, on a phone, to the page -- is read again
+// too: a file saved in an editor outside the app changes the folder with no
+// tab here at work, and the column went on saying nothing had changed
+function gitOnReturn() {
+  const panel = document.getElementById("gitpanel");
+  if (document.hidden || !S || !panel || panel.hidden || !G.panel || G.busy) return;
+  gitRefresh(true);
+}
+window.addEventListener("focus", gitOnReturn);
+document.addEventListener("visibilitychange", gitOnReturn);
 // Whichever of the two is standing. Every button on the panel goes through
 // here, so the panel itself never learns where it is
 function gitTab() {

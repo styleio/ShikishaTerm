@@ -491,6 +491,22 @@ pub struct FolderLabel {
     pub made_by: Option<String>,
 }
 
+/// The last name in a folder's path, as a heading says it. A network share
+/// itself (`\\server\share`) has no last name to `Path::file_name` -- its
+/// share is part of the prefix -- and its card was headed by nothing at all:
+/// it is called by its share
+pub fn leaf_name(path: &std::path::Path) -> Option<String> {
+    if let Some(n) = path.file_name() {
+        return Some(n.to_string_lossy().to_string());
+    }
+    let text = path.to_string_lossy();
+    text.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|n| !n.is_empty() && !n.ends_with(':'))
+        .map(str::to_string)
+}
+
 /// A folder, as a heading over the tabs working in it.
 ///
 /// A group is a folder, so this is worked out from where the tabs actually
@@ -637,7 +653,7 @@ impl GroupState {
                 .map(str::to_string)
                 .filter(|n| !n.trim().is_empty())
                 .or_else(|| t.place.branch.clone().filter(|_| t.place.linked))
-                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
+                .or_else(|| leaf_name(path))
                 .or_else(|| t.place.branch.clone())
                 .unwrap_or_default();
             out.push((
@@ -696,7 +712,7 @@ impl GroupState {
                     name: Some(name.trim())
                         .filter(|n| !n.is_empty())
                         .map(str::to_string)
-                        .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
+                        .or_else(|| leaf_name(&path))
                         .unwrap_or_default(),
                     keep_first: false,
                     parked: false,
@@ -2876,6 +2892,18 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A share itself is named by its share; a folder in it, by its own name.
+    /// A drive alone has no name to give
+    #[test]
+    fn a_network_share_is_named_by_its_share() {
+        use std::path::Path;
+        assert_eq!(leaf_name(Path::new(r"\\nas\home")).as_deref(), Some("home"));
+        assert_eq!(leaf_name(Path::new(r"\\nas\home\")).as_deref(), Some("home"));
+        assert_eq!(leaf_name(Path::new(r"\\nas\home\work")).as_deref(), Some("work"));
+        assert_eq!(leaf_name(Path::new("/srv/app")).as_deref(), Some("app"));
+        assert_eq!(leaf_name(Path::new(r"C:\")), None);
+    }
 
     /// A folder is its machine and its path: the same path on two machines is
     /// two folders, each on the board under its own key, and a bare path --
