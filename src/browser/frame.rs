@@ -310,7 +310,7 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
     use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
     use tray_icon::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as Line, Submenu};
     let t = |k: &str| shikisha_core::i18n::t(k);
-    let cmd = |code| Some(Accelerator::new(Some(Modifiers::SUPER), code));
+    let cmd = |code| Some(Accelerator::new(Modifiers::META, code));
     let settings = MenuItem::new(t("menu.mac.settings"), true, cmd(Code::Comma));
     let quit = MenuItem::new(t("menu.mac.quit"), true, cmd(Code::KeyQ));
     let about = AboutMetadata {
