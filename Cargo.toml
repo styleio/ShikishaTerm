@@ -158,6 +158,9 @@ windows = { workspace = true, features = [
 cef = { version = "154.5.0", default-features = false, features = ["sandbox"] }
 objc2 = "0.6.4"
 objc2-foundation = "0.3.2"
+# The keys that work from any program (src/hotkeys.rs). Windows' are asked of
+# the system directly; a Mac's go through the same calls its own programs use
+global-hotkey = "0.8.0"
 
 # The icon and the version details Explorer shows for the exe
 [target.'cfg(windows)'.build-dependencies]

@@ -1252,7 +1252,7 @@ pub struct Config {
     /// Keys that work from any program, by what they open (see
     /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
     /// one not written at all has its key out of the box
-    /// (`hotkeys::DEFAULTS`), written empty it has none
+    /// (`hotkeys::defaults`), written empty it has none
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
     /// Remote UI viewable from a phone etc. Disabled by default.

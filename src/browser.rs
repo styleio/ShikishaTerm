@@ -206,6 +206,10 @@ pub enum Cmd {
     /// pumped by the loop it lives in, at times it names)
     #[cfg_attr(windows, allow(dead_code))]
     EngineTurn,
+    /// Register the keys that work from any program, on this thread: a Mac
+    /// takes them only here (`hotkeys::register_here`)
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    RegisterKeys,
     /// Another address the app's own pages come from. The settings and the
     /// result view are served by a second local server whose port is only
     /// known once it starts, so it is told here rather than at the window's birth
@@ -820,6 +824,11 @@ impl Browser {
         SnipOpener(self.proxy.clone())
     }
 
+    /// A way to have those keys registered where the system takes them
+    pub fn keys_registrar(&self) -> KeysRegistrar {
+        KeysRegistrar(self.proxy.clone())
+    }
+
     /// A way to hand the tool page its answer from another thread: the AI it
     /// asked is waited for away from the loop that draws everything
     pub fn snip_replier(&self) -> SnipReplier {
@@ -1323,6 +1332,19 @@ fn ua_override(ua: &str) -> String {
         },
     })
     .to_string()
+}
+
+/// Has the keys that work from any program registered on the window's thread,
+/// where a Mac takes them (see `hotkeys`)
+#[derive(Clone)]
+pub struct KeysRegistrar(tao::event_loop::EventLoopProxy<Cmd>);
+
+impl KeysRegistrar {
+    /// Register what the settings ask for now, letting go of what was held
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn register(&self) {
+        let _ = self.0.send_event(Cmd::RegisterKeys);
+    }
 }
 
 /// Opens a tool from another thread (see `Browser::snip_opener`).

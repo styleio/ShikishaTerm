@@ -80,7 +80,7 @@ pub const ACTIONS: &[Action] = &[
 /// Actions that also answer to a combination with no prefix, before anything
 /// is read from the settings. None, as it ships: the things opened over
 /// everything and wanted in the middle of typing -- the quick commands and the
-/// ideas -- have keys that work from any program (`hotkeys::DEFAULTS`), which
+/// ideas -- have keys that work from any program (`hotkeys::defaults`), which
 /// reach them in this window too. A combination a person writes here still
 /// works, in this window only
 const DEFAULT_DIRECT: &[(&str, &str)] = &[];

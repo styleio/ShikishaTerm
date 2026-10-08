@@ -1253,7 +1253,7 @@ fn run_in_window() -> Result<()> {
         // and chooses after; a tool's key opens that tool; the rest open something
         // on the board, which comes to the front for it
         let opener = surface.win.snip_opener();
-        surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
+        surface.hotkeys = hotkeys::Hotkeys::start(surface.win.keys_registrar(), move |action| {
             if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {
                 opener.summon(action);
             } else {

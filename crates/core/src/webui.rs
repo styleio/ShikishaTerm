@@ -8564,17 +8564,25 @@ function hotkeysCard() {
     el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.hotkeys.intro"]),
     list);
   const parse = text => {
-    const c = {ctrl:false, alt:false, shift:false, key:""};
+    const c = {ctrl:false, alt:false, shift:false, cmd:false, key:""};
     for (const part of String(text || "").split("+").map(p => p.trim())) {
       const low = part.toLowerCase();
       if (low === "ctrl" || low === "control") c.ctrl = true;
-      else if (low === "alt") c.alt = true;
+      else if (low === "alt" || low === "option") c.alt = true;
       else if (low === "shift") c.shift = true;
+      else if (low === "cmd" || low === "command") c.cmd = true;
       else if (HOTKEY_KEYS.includes(part.toUpperCase())) c.key = part.toUpperCase();
     }
     return c;
   };
-  const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key].filter(Boolean).join("+");
+  const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.cmd && "Cmd", c.key].filter(Boolean).join("+");
+  // The held keys this machine offers, by the names its keyboard prints: a
+  // Mac's are Control, Option, Shift and Command (⌘ is its own there)
+  const MODS = HOTKEYS.mods || ["ctrl", "alt", "shift"];
+  const MOD_NAMES = HOTKEYS.mac
+    ? {ctrl:"⌃ Control", alt:"⌥ Option", shift:"⇧ Shift", cmd:"⌘ Command"}
+    : {ctrl:"Ctrl", alt:"Alt", shift:"Shift", cmd:"Cmd"};
+  const held = c => c.ctrl || c.alt || (c.cmd && MODS.includes("cmd"));
   const dflt = a => HOTKEYS.defaults[a] || "";
   // What the settings hold for an action, as it would be read (one unwritten
   // has its key out of the box)
@@ -8587,9 +8595,9 @@ function hotkeysCard() {
     list.textContent = "";
     for (const action of HOTKEYS.actions) {
       const c = drafts[action] || (drafts[action] = parse(written(action)));
-      const toggles = ["ctrl", "alt", "shift"].map(m => {
+      const toggles = MODS.map(m => {
         const b = el("button", {class:"tog" + (c[m] ? " on" : ""), "aria-pressed": String(c[m])},
-          {ctrl:"Ctrl", alt:"Alt", shift:"Shift"}[m]);
+          MOD_NAMES[m]);
         b.onclick = () => { c[m] = !c[m]; keep(action, c); };
         return b;
       });
@@ -8611,7 +8619,7 @@ function hotkeysCard() {
   // Only a whole combination is written. Half of one is no key until it is
   // finished -- the row says what is missing
   const keep = (action, c) => {
-    const text = c.key && (c.ctrl || c.alt) ? shown(c) : "";
+    const text = c.key && held(c) ? shown(c) : "";
     if (text === dflt(action)) delete hk[action];
     else hk[action] = text;
     if (Object.keys(hk).length) current.hotkeys = Object.assign({}, hk);
@@ -8623,7 +8631,7 @@ function hotkeysCard() {
     const text = c.key ? shown(c) : "";
     const warn = msg => { say.className = "hint hkstate warnline"; say.textContent = msg; };
     say.className = "hint hkstate";
-    if (c.key && !c.ctrl && !c.alt) return warn(T["settings.hotkeys.need_mod"]);
+    if (c.key && !held(c)) return warn(T[HOTKEYS.mac ? "settings.hotkeys.need_mod_mac" : "settings.hotkeys.need_mod"]);
     const row = status && (status.rows || []).find(r => r.action === action);
     if (!status || !status.active) { say.textContent = text ? "" : T["settings.hotkeys.off"]; return; }
     if (!row || row.key !== text) { say.textContent = text ? T["settings.hotkeys.unsaved"] : T["settings.hotkeys.off"]; return; }
@@ -8631,6 +8639,7 @@ function hotkeysCard() {
     else if (row.state === "taken") warn(T["settings.hotkeys.taken"]);
     else if (row.state === "twice") warn(T["settings.hotkeys.twice"]);
     else if (row.state === "unreadable") warn(T["settings.hotkeys.unreadable"]);
+    else if (row.state === "elsewhere") warn(T["settings.hotkeys.elsewhere"]);
     else say.textContent = row.last ? fill(T["settings.hotkeys.last"], {when: clock(row.last)}) : T["settings.hotkeys.never"];
   }
   // What the program found. Asked again while the card is open: a save

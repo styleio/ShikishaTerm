@@ -7,10 +7,11 @@
 //! the system is the window's (`src/hotkeys.rs`), and it reports back here, so
 //! the settings page and the board can say what is really in effect.
 //!
-//! Only Ctrl, Alt and Shift are offered. A combination with the Windows key is
-//! the system's to hand out, and an update that claims one takes it from
-//! whoever had it with nothing said. A combination another program also uses
-//! can at least be seen and changed
+//! On Windows only Ctrl, Alt and Shift are offered. A combination with the
+//! Windows key is the system's to hand out, and an update that claims one
+//! takes it from whoever had it with nothing said. A combination another
+//! program also uses can at least be seen and changed. A Mac adds ⌘ (Cmd),
+//! the key its own programs hold for theirs
 
 /// What a key can be set to open, in the order the settings list them.
 /// `snip` is the scissors themselves: take the screen, frame it, then choose
@@ -24,22 +25,36 @@ pub const ACTIONS: &[&str] = &["snip", "text", "noun", "color", "edit", "quick_c
 /// forward first
 pub const ON_THE_BOARD: &[&str] = &["quick_commands", "ideas"];
 
-/// The combinations set out of the box, by action. Every one is Alt+Shift and
-/// a letter, the one pair of held keys the common programs leave alone (see
-/// [`DEFAULT`]); the letter is the one the window's own keys use for the
-/// same thing. Anything not here starts with no key
+/// The combinations set out of the box on Windows, by action. Every one is
+/// Alt+Shift and a letter, the one pair of held keys the common programs leave
+/// alone (see [`DEFAULT`]); the letter is the one the window's own keys use
+/// for the same thing. Anything not here starts with no key
 pub const DEFAULTS: &[(&str, &str)] =
     &[("snip", DEFAULT), ("quick_commands", "Alt+Shift+K"), ("ideas", "Alt+Shift+M")];
 
-/// The combination an action has out of the box, or "" for none
-pub fn default_of(action: &str) -> &'static str {
-    DEFAULTS.iter().find(|(a, _)| *a == action).map(|(_, k)| *k).unwrap_or("")
+/// The same on a Mac, where Option (Alt) and Shift with a letter is how
+/// letters such as ˛ and Œ are typed -- a key taken there would be a letter no
+/// one could type any more. Control and Option together are left alone by the
+/// common programs, and are what a Mac's own window tools use
+pub const DEFAULTS_MAC: &[(&str, &str)] =
+    &[("snip", "Ctrl+Alt+X"), ("quick_commands", "Ctrl+Alt+K"), ("ideas", "Ctrl+Alt+M")];
+
+/// The keys out of the box on the machine this runs on
+pub fn defaults() -> &'static [(&'static str, &'static str)] {
+    if cfg!(target_os = "macos") { DEFAULTS_MAC } else { DEFAULTS }
 }
 
-/// The actions and their keys out of the box, for the settings page
+/// The combination an action has out of the box, or "" for none
+pub fn default_of(action: &str) -> &'static str {
+    defaults().iter().find(|(a, _)| *a == action).map(|(_, k)| *k).unwrap_or("")
+}
+
+/// The actions and their keys out of the box, for the settings page, and the
+/// held keys a combination may use on this machine (⌘ only on a Mac)
 pub fn catalog_json() -> String {
-    let defaults: std::collections::BTreeMap<&str, &str> = DEFAULTS.iter().copied().collect();
-    serde_json::json!({ "actions": ACTIONS, "defaults": defaults }).to_string()
+    let defaults: std::collections::BTreeMap<&str, &str> = defaults().iter().copied().collect();
+    let mods: &[&str] = if cfg!(target_os = "macos") { &["ctrl", "alt", "shift", "cmd"] } else { &["ctrl", "alt", "shift"] };
+    serde_json::json!({ "actions": ACTIONS, "defaults": defaults, "mods": mods, "mac": cfg!(target_os = "macos") }).to_string()
 }
 
 /// The combination set out of the box for `snip`: two held keys and X, for
@@ -65,6 +80,10 @@ pub struct Combo {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+    /// ⌘ on a Mac. Read on every machine, so settings carried from a Mac say
+    /// what they are elsewhere rather than being unreadable; registered only
+    /// on a Mac
+    pub cmd: bool,
     /// "A"-"Z", "0"-"9" or "F1"-"F12"
     pub key: String,
 }
@@ -72,22 +91,25 @@ pub struct Combo {
 impl Combo {
     /// Read a combination as it is written in the settings. Case, spaces and
     /// the order of the held keys do not matter; what is held has to include
-    /// Ctrl or Alt, so typing a capital letter is never taken for a command
+    /// Ctrl, Alt or Cmd, so typing a capital letter is never taken for a
+    /// command. A Mac's names for them (Control, Option, Command) are read too
     pub fn parse(text: &str) -> Option<Combo> {
-        let mut c = Combo { ctrl: false, alt: false, shift: false, key: String::new() };
+        let mut c = Combo { ctrl: false, alt: false, shift: false, cmd: false, key: String::new() };
         for part in text.split('+').map(str::trim) {
             match part.to_ascii_lowercase().as_str() {
                 "ctrl" | "control" => c.ctrl = true,
-                "alt" => c.alt = true,
+                "alt" | "option" => c.alt = true,
                 "shift" => c.shift = true,
+                "cmd" | "command" => c.cmd = true,
                 _ if c.key.is_empty() && key_code(part).is_some() => c.key = part.to_ascii_uppercase(),
                 _ => return None,
             }
         }
-        (!c.key.is_empty() && (c.ctrl || c.alt)).then_some(c)
+        (!c.key.is_empty() && (c.ctrl || c.alt || c.cmd)).then_some(c)
     }
 
-    /// Written the one way the app writes it: Ctrl, Alt, Shift, then the key
+    /// Written the one way the app writes it: Ctrl, Alt, Shift, Cmd, then the
+    /// key -- the order a Mac lists them in too (⌃⌥⇧⌘)
     pub fn shown(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         if self.ctrl {
@@ -98,6 +120,9 @@ impl Combo {
         }
         if self.shift {
             parts.push("Shift");
+        }
+        if self.cmd {
+            parts.push("Cmd");
         }
         parts.push(&self.key);
         parts.join("+")
@@ -178,7 +203,8 @@ pub struct Row {
     /// The combination as the app writes it, or what was written when it
     /// could not be read
     pub key: String,
-    /// "on", "off", "taken" (another program has it), "unreadable", "twice"
+    /// "on", "off", "taken" (another program has it), "unreadable", "twice",
+    /// "elsewhere" (held with ⌘, a Mac's key, on a machine that has none)
     pub state: &'static str,
     /// When it last reached this program, in seconds since 1970
     pub last: Option<u64>,
@@ -263,6 +289,18 @@ mod tests {
         }
     }
 
+    /// A Mac's ⌘ is a held key of its own, written after the others, and a
+    /// Mac's names for Control and Option are the same keys
+    #[test]
+    fn a_macs_command_key_is_read_and_written() {
+        let c = Combo::parse("command+shift+x").unwrap();
+        assert!(c.cmd && c.shift && !c.ctrl && !c.alt);
+        assert_eq!(c.shown(), "Shift+Cmd+X");
+        assert_eq!(Combo::parse("Cmd+Ctrl+Alt+Shift+K").unwrap().shown(), "Ctrl+Alt+Shift+Cmd+K");
+        assert_eq!(Combo::parse("Option+Control+M"), Combo::parse("Ctrl+Alt+M"));
+        assert_eq!(Combo::parse("Cmd+X").unwrap().mods(), 0, "the Windows flags have no ⌘");
+    }
+
     /// The scissors, the quick commands and the ideas have their keys out of
     /// the box; the tools start with none; a key cleared stays cleared; one
     /// key is given to one action only
@@ -271,10 +309,10 @@ mod tests {
         let mut written = std::collections::BTreeMap::new();
         let w = wanted(&written);
         let key = |text: &str| Wanted::Key(Combo::parse(text).unwrap());
-        assert_eq!(w[0], ("snip", key(DEFAULT)));
+        assert_eq!(w[0], ("snip", key(default_of("snip"))));
         assert!(w[1..5].iter().all(|(_, k)| *k == Wanted::Off), "a tool had a key it was never given");
-        assert_eq!(w[5], ("quick_commands", key("Alt+Shift+K")));
-        assert_eq!(w[6], ("ideas", key("Alt+Shift+M")));
+        assert_eq!(w[5], ("quick_commands", key(default_of("quick_commands"))));
+        assert_eq!(w[6], ("ideas", key(default_of("ideas"))));
 
         written.insert("ideas".to_string(), String::new());
         assert_eq!(wanted(&written)[6].1, Wanted::Off, "the ideas' key came back after it was cleared");
@@ -304,16 +342,23 @@ mod tests {
     }
 
     /// Out of the box no two actions share a key, and each is one the
-    /// settings would accept if it were written there
+    /// settings would accept if it were written there -- on Windows and on a
+    /// Mac alike, where the same actions have keys
     #[test]
     fn the_keys_out_of_the_box_are_keys() {
-        let mut seen = Vec::new();
-        for (action, text) in DEFAULTS {
-            assert!(ACTIONS.contains(action), "{action} has a default but no row");
-            let c = Combo::parse(text).unwrap_or_else(|| panic!("{text} is not a combination"));
-            assert!(!seen.contains(&c), "{text} is given twice");
-            seen.push(c);
+        for list in [DEFAULTS, DEFAULTS_MAC] {
+            let mut seen = Vec::new();
+            for (action, text) in list {
+                assert!(ACTIONS.contains(action), "{action} has a default but no row");
+                let c = Combo::parse(text).unwrap_or_else(|| panic!("{text} is not a combination"));
+                assert!(!seen.contains(&c), "{text} is given twice");
+                seen.push(c);
+            }
         }
+        let actions = |l: &[(&str, &str)]| l.iter().map(|(a, _)| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(actions(DEFAULTS), actions(DEFAULTS_MAC), "a Mac has keys for other actions");
+        // Option+Shift with a letter types a letter on a Mac
+        assert!(DEFAULTS_MAC.iter().all(|(_, k)| !(k.contains("Alt") && k.contains("Shift") && !k.contains("Ctrl"))));
     }
 
     /// Registering the same key again keeps when it was last pressed; a

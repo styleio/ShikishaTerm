@@ -2183,6 +2183,8 @@
   "settings.hotkeys.none": "なし",
   "settings.hotkeys.off": "キーなし",
   "settings.hotkeys.need_mod": "使えません: Ctrl か Alt を一緒に押す組み合わせにしてください。",
+  "settings.hotkeys.need_mod_mac": "使えません: Control・Option・Command のどれかを一緒に押す組み合わせにしてください。",
+  "settings.hotkeys.elsewhere": "このパソコンでは使えません: Mac にしかない ⌘ Command を一緒に押すキーです。Ctrl か Alt を一緒に押す組み合わせを選んでください。",
   "settings.hotkeys.unsaved": "保存すると登録します",
   "settings.hotkeys.taken": "使えません: ほかのアプリがこのキーを使っています。別のキーを選んでください。",
   "settings.hotkeys.twice": "使えません: 上の行に同じキーを割り当てています。",

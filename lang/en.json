@@ -2181,6 +2181,8 @@
   "settings.hotkeys.none": "None",
   "settings.hotkeys.off": "No key",
   "settings.hotkeys.need_mod": "Not usable: hold Ctrl or Alt with the key.",
+  "settings.hotkeys.need_mod_mac": "Not usable: hold Control, Option or Command with the key.",
+  "settings.hotkeys.elsewhere": "Not usable on this computer: the key is held with ⌘ Command, which only a Mac has. Choose one with Ctrl or Alt.",
   "settings.hotkeys.unsaved": "Registered when you save",
   "settings.hotkeys.taken": "Not usable: another program already has this key. Choose a different one.",
   "settings.hotkeys.twice": "Not usable: a row above already has this key.",

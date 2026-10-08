@@ -465,6 +465,10 @@ pub(super) fn run_window(
             Event::UserEvent(cmd) => match cmd {
                 // Only to wake the loop: the turn was given above
                 Cmd::EngineTurn => {}
+                Cmd::RegisterKeys => {
+                    #[cfg(target_os = "macos")]
+                    crate::hotkeys::register_here();
+                }
                 Cmd::Trust { origin } => {
                     let mut list = own.borrow_mut();
                     if !list.iter().any(|o| same_origin(o, &origin)) {
