@@ -576,6 +576,25 @@ jobs:
 
       - run: ls -la out
 
+      # The Homebrew cask for this release, kept beside it rather than published:
+      # where a cask lives is a decision made once, by a person, not by a tag
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - name: The Homebrew cask
+        run: |
+          if ls out/SHIKISHA-TERM-mac-*.dmg.sha256 >/dev/null 2>&1; then
+            mkdir -p cask
+            sh src/packaging/mac/mkcask.sh "${GITHUB_REF_NAME}" out > cask/shikisha-term.rb
+            cat cask/shikisha-term.rb
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-cask
+          path: cask/shikisha-term.rb
+          retention-days: 30
+          if-no-files-found: ignore
+
       - uses: softprops/action-gh-release@v2
         with:
           draft: true

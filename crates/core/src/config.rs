@@ -1732,8 +1732,10 @@ pub fn user_agent() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Where the window's own browser keeps its data: WebView2's on Windows, the
+/// Chromium inside the app on a Mac -- each under a name that says which
 pub fn browser_data_dir() -> std::path::PathBuf {
-    browser_store("webview2")
+    browser_store(if cfg!(target_os = "macos") { "window-chromium" } else { "webview2" })
 }
 
 /// Where the browser on this machine keeps its profiles.
