@@ -379,7 +379,12 @@ mod tests {
         }
         let line = |n: u32| {
             let conn = crate::keepipe::connect(&door).unwrap();
-            let mut reader = std::io::BufReader::new(conn.try_clone().unwrap());
+            // A read that waits for good is a test that never ends (a release
+            // run sat on one for over an hour): a minute is the most any one
+            // message here can take, and then the test fails saying which
+            let reading = conn.try_clone().unwrap();
+            reading.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+            let mut reader = std::io::BufReader::new(reading);
             let mut hello = String::new();
             reader.read_line(&mut hello).unwrap();
             let key = crate::fardaemon::door_key(&home).unwrap();
@@ -407,8 +412,10 @@ mod tests {
             loop {
                 assert!(Instant::now() < until, "heard {want}");
                 let mut l = String::new();
-                if reader.read_line(&mut l).unwrap_or(0) == 0 {
-                    panic!("the line ended before {want}");
+                match reader.read_line(&mut l) {
+                    Ok(0) => panic!("the line ended before {want}"),
+                    Ok(_) => {}
+                    Err(e) => panic!("nothing came for a minute while waiting for {want}: {e}"),
                 }
                 if let Ok(crate::farlink::Frame::Job { m, .. }) = serde_json::from_str(&l)
                     && m["did"] == want
