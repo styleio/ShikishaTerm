@@ -8288,7 +8288,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
-            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve" | "catch_up") {
+            if matches!(act.as_str(), "fetch" | "pull" | "push" | "resolve" | "catch_up" | "back") {
                 // "message" is the AI writing one, which is a read of the diff
                 // followed by a wait on a program -- the same reason as the
                 // network ones for not doing it on this thread
@@ -8296,6 +8296,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // Untangling writes the file back, which is the same reach
                     // as anything else that edits the tree
                     "resolve" => "git_apply".to_string(),
+                    // Home to the branch it went into: a move, then a pull
+                    "back" => "git_checkout".to_string(),
                     _ => format!("git_{act}"),
                 };
                 // A panel of its own first, then the tab being looked at: the
@@ -8341,6 +8343,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // for the branch, or the one just chosen -- written down now,
                         // so it is not asked for again
                         let mut base = String::new();
+                        if act == "back" {
+                            base = args.get("base").and_then(|b| b.as_str()).unwrap_or_default().trim().to_string();
+                        }
                         if act == "catch_up" {
                             let here = crate::git::branch(&dir).ok().flatten().unwrap_or_default();
                             let chosen = args.get("base").and_then(|b| b.as_str()).unwrap_or_default().trim().to_string();
@@ -8379,6 +8384,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 "fetch" => crate::git::fetch(&dir, &who),
                                 "pull" => crate::git::pull(&dir, &who),
                                 "push" => crate::git::push(&dir, &who),
+                                "back" => crate::git::back_to(&dir, &base, &who),
                                 "catch_up" => crate::git::catch_up(&dir, &base, &who)
                                     .map(|n| serde_json::json!({"taken": n, "base": base}).to_string()),
                                 #[allow(unreachable_patterns)]

@@ -23402,6 +23402,18 @@ function gitNext() {
   if (b.integrated_into && g && g.linked && !onMicrovm(g)) {
     return {icon:"folder", label:T["git.cleanup"], run:() => discardFolder(g)};
   }
+  // The project's own checkout, on a branch that has gone in: home to the
+  // branch it went into, with what went in. Its folder is the project and is
+  // never cleared away, so this is what being done with the branch is there
+  if (b.integrated_into && b.name && g && !g.linked && !onMicrovm(g)) {
+    // Named as it is moved onto: `origin/main` is `main` here. Only the
+    // remote this branch pushes to is taken off -- a branch may have a slash
+    const remote = (b.upstream || "").split("/")[0];
+    const home = remote && b.integrated_into.startsWith(remote + "/")
+      ? b.integrated_into.slice(remote.length + 1) : b.integrated_into;
+    return {icon:"down", label:(T["git.back_home"] || "{base}").replaceAll("{base}", home),
+      run:() => gitAsk("back", {base: b.integrated_into})};
+  }
   if (b.name && !b.upstream) {
     return {icon:"up", label: T["git.publish"] || "", run:() => gitAsk("push")};
   }

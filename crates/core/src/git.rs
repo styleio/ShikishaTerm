@@ -1553,6 +1553,22 @@ pub fn integrated_into(dir: &Path, branch: &str) -> Option<String> {
     (merged.lines().next()? == tree.trim()).then_some(base)
 }
 
+/// Back onto the branch this one went into ([`integrated_into`]), with what
+/// went in: the way home for a project's own checkout that cut a branch, sent
+/// it through a pull request and saw it merged. `base` as that names it --
+/// `origin/main` is moved onto as `main`. Git refuses to move with work not
+/// committed in the way, and says which; nothing is put aside to get past it
+pub fn back_to(dir: &Path, base: &str, who: &As) -> Result<String> {
+    let base = base.trim();
+    let remotes = run(dir, &["remote"]).unwrap_or_default();
+    let name = match base.split_once('/') {
+        Some((remote, name)) if remotes.lines().any(|r| r.trim() == remote) => name,
+        _ => base,
+    };
+    checkout(dir, name)?;
+    pull(dir, who)
+}
+
 /// Write down what a branch was cut from, so it is not asked for again
 pub fn record_base(dir: &Path, branch: &str, base: &str) -> Result<()> {
     let base = base.trim();
@@ -2502,6 +2518,26 @@ mod tests {
         run(seed, &["add", "."]).unwrap();
         run(seed, &["commit", "-qm", "far"]).unwrap();
         run(seed, &["push", "-q", "far", "main"]).unwrap();
+    }
+
+    /// A checkout that cut a branch and saw it merged goes home: onto the
+    /// branch it went into, named without its server, with what went in
+    #[test]
+    fn going_back_lands_on_the_base_with_what_went_in() {
+        let Some((seed, far, near)) = catch_up_setup("back") else { return };
+        // The pull request merged on the server: its main has the work now
+        std::fs::write(near.join("b.txt"), "merged\n").unwrap();
+        run(&near, &["add", "."]).unwrap();
+        run(&near, &["commit", "-qm", "the work"]).unwrap();
+        run(&near, &["push", "-q", "origin", "work:main"]).unwrap();
+        run(&near, &["fetch", "-q"]).unwrap();
+        assert_eq!(integrated_into(&near, "work").as_deref(), Some("origin/main"));
+        // The local main is still where it was cloned, behind the server's
+        back_to(&near, "origin/main", &As::default()).unwrap();
+        assert_eq!(branch(&near).unwrap().as_deref(), Some("main"));
+        // Line endings are what checkout writes on this system
+        assert_eq!(std::fs::read_to_string(near.join("b.txt")).unwrap().trim_end(), "merged", "what went in is not here");
+        for d in [&near, &far, &seed] { let _ = std::fs::remove_dir_all(d); }
     }
 
     #[test]
