@@ -4853,6 +4853,13 @@ const MOVE_CODE = (function () {
 // and no runtime behind it, so it decided it was local and waited forever for
 // state that nothing was going to push.
 const REMOTE = {{REMOTE}};
+// Whose keys the page is pressed with: a Mac's keyboard, wherever the board is
+// running. There ⌘ is what Ctrl is on the others for what the app does --
+// copy, paste, find -- and Ctrl stays Ctrl, sent to the terminal as a Mac's
+// own terminal sends it
+const MAC_KEYS = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
+// The app's own modifier on this keyboard, held on its own: ⌘ on a Mac, Ctrl elsewhere
+const appKey = e => MAC_KEYS ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
 // ...and a different question, which used to be answered with that one.
 //
 // REMOTE says where the *state* comes from. This says what the page is being
@@ -13442,14 +13449,15 @@ function drawSeek() {
     inp.select();
   }
 }
-// Ctrl+F and F3 on the board itself. Pressed in the page instead, the browser
-// that draws it keeps the key and says so (Ev::SeekAsk), so either way the
-// same bar opens -- on a page whose controls offer the search. A key the
-// person set for something else keeps that meaning
+// Ctrl+F and F3 on the board itself (⌘F, ⌘G and ⇧⌘G on a Mac's keys).
+// Pressed in the page instead, the browser that draws it keeps the key and says
+// so (Ev::SeekAsk), so either way the same bar opens -- on a page whose
+// controls offer the search. A key the person set for something else keeps
+// that meaning
 document.addEventListener("keydown", e => {
-  if (e.isComposing || e.altKey || e.metaKey) return;
-  const find = e.ctrlKey && !e.shiftKey && e.code === "KeyF";
-  const again = e.key === "F3" && !e.ctrlKey;
+  if (e.isComposing || e.altKey) return;
+  const find = appKey(e) && !e.shiftKey && e.code === "KeyF";
+  const again = (e.key === "F3" && !e.ctrlKey && !e.metaKey) || (MAC_KEYS && appKey(e) && e.code === "KeyG");
   if (!find && !again) return;
   if (e.target && e.target.closest && e.target.closest("#seek")) return;
   if (!seekable(activeTab()) || covering() || directKeyOf(e)) return;
@@ -18251,6 +18259,26 @@ kbd.addEventListener("keydown", e => {
   if (nm) {
     e.preventDefault();
     send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+    return;
+  }
+  // ⌘ on a Mac's keys is the app's, never the terminal's. ⌘V at the window
+  // is a paste of this machine's clipboard -- the same one a right-click
+  // makes, text bracketed when the program asked and a picture sent up to a
+  // tab on another machine. From afar the browser's own paste lands in this
+  // box and goes on as typing: the clipboard is the one of whoever is looking.
+  // ⌘C copies what is selected on the screen. The rest are left to the window
+  if (MAC_KEYS && e.metaKey && !e.ctrlKey) {
+    const k = e.key.toLowerCase();
+    if (k === "v" && !e.shiftKey && !e.altKey && !REMOTE) {
+      e.preventDefault();
+      send({kind:"paste"});
+    } else if (k === "c" && !e.shiftKey && !e.altKey) {
+      const chosen = String(window.getSelection() || "");
+      if (chosen) {
+        e.preventDefault();
+        copyToClipboard(chosen);
+      }
+    }
     return;
   }
   if (e.ctrlKey && e.key.length === 1) {

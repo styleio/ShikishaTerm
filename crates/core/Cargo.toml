@@ -150,6 +150,12 @@ listeners = "0.6.1"
 
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
+# The clipboard a person pastes from: a window's machine has one, a server does
+# not (src/paste.rs)
+[target.'cfg(target_os = "macos")'.dependencies]
+arboard = { workspace = true }
+png = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 junction = "2.1.0"
 # Read the PATH a new terminal is started with -- the one in the registry, which

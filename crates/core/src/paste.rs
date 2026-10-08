@@ -11,7 +11,7 @@ use crate::tab::Tab;
 /// Pastes the clipboard's text into `t`, as a paste when the program in it
 /// asked to be told (bracketed paste), so a pasted line is not run on its own
 /// Enter. `Some` is a sentence to show: what went wrong
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub fn clipboard_into(t: &Tab) -> anyhow::Result<Option<String>> {
     let got = arboard::Clipboard::new().and_then(|mut c| c.get_text());
     // A picture, into a tab on another machine: an AI there cannot read this
@@ -40,9 +40,9 @@ pub fn clipboard_into(t: &Tab) -> anyhow::Result<Option<String>> {
     }
 }
 
-/// No clipboard of this machine's to read off Windows: a runtime on a server
-/// is never pasted into this way (a phone pastes on the phone)
-#[cfg(not(windows))]
+/// No clipboard of this machine's to read on a server: a runtime there is
+/// never pasted into this way (a phone pastes on the phone)
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn clipboard_into(_t: &Tab) -> anyhow::Result<Option<String>> {
     Ok(None)
 }
@@ -50,7 +50,7 @@ pub fn clipboard_into(_t: &Tab) -> anyhow::Result<Option<String>> {
 /// The picture on the clipboard sent up to the folder of a tab on another
 /// machine, and its path there typed into the tab. `None` when the tab is on
 /// this PC or the clipboard holds no picture: pasted as before
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn image_far(t: &Tab) -> Option<anyhow::Result<Option<String>>> {
     let machine = match (t.remote(), t.cloud()) {
         (Some(spec), _) => crate::elsewhere::Elsewhere::Ssh(spec.clone()),
