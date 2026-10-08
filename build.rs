@@ -16,8 +16,13 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 
 fn main() {
     // The date and time first, so old and new can be compared at a glance
-    let built = run("powershell", &["-NoProfile", "-Command", "Get-Date -Format 'MM/dd HH:mm'"])
-        .unwrap_or_else(|| "?".into());
+    // Asked each system its own way: PowerShell is Windows' (a Mac has `date`)
+    let built = if cfg!(windows) {
+        run("powershell", &["-NoProfile", "-Command", "Get-Date -Format 'MM/dd HH:mm'"])
+    } else {
+        run("date", &["+%m/%d %H:%M"])
+    }
+    .unwrap_or_else(|| "?".into());
     // Which commit, too (to tell apart several builds made in the same minute)
     let rev = run("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "nogit".into());
     let dirty = run("git", &["status", "--porcelain"])
