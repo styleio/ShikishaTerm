@@ -1252,7 +1252,7 @@ pub struct Config {
     /// Keys that work from any program, by what they open (see
     /// `hotkeys::ACTIONS`): "Alt+Shift+X". Only what was changed is written;
     /// one not written at all has its key out of the box
-    /// (`hotkeys::DEFAULTS`), written empty it has none
+    /// (`hotkeys::defaults`), written empty it has none
     #[serde(default)]
     pub hotkeys: std::collections::BTreeMap<String, String>,
     /// Remote UI viewable from a phone etc. Disabled by default.
@@ -1732,8 +1732,10 @@ pub fn user_agent() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Where the window's own browser keeps its data: WebView2's on Windows, the
+/// Chromium inside the app on a Mac -- each under a name that says which
 pub fn browser_data_dir() -> std::path::PathBuf {
-    browser_store("webview2")
+    browser_store(if cfg!(target_os = "macos") { "window-chromium" } else { "webview2" })
 }
 
 /// Where the browser on this machine keeps its profiles.
@@ -5168,9 +5170,11 @@ impl Appearance {
             Some(f) => format!("\"{f}\", monospace"),
             None => {
                 // Fonts that draw box-drawing characters and symbols in one
-                // cell. Japanese falls back to the monospaced MS Gothic
-                // (Meiryo is not monospaced)
-                "\"Cascadia Mono\",\"Consolas\",\"MS Gothic\",\"MS ゴシック\",monospace".into()
+                // cell, Windows' first and then a Mac's (ui-monospace is SF
+                // Mono, which a page cannot name). Japanese falls back to the
+                // monospaced MS Gothic (Meiryo is not monospaced), and on a Mac
+                // to Osaka's monospaced cut
+                "\"Cascadia Mono\",\"Consolas\",ui-monospace,\"Menlo\",\"MS Gothic\",\"MS ゴシック\",\"Osaka-Mono\",monospace".into()
             }
         }
     }
@@ -6503,9 +6507,9 @@ fn data_path_candidates(p: &str) -> Vec<String> {
 ///
 /// 1. the layout root (`root_dir`): the person's own folder, where the
 ///    settings screen writes and where a carried-over `scripts\` lands;
-/// 2. beside the exe: what ships with the program, such as the examples.
-///    The same place as 1 for the download, and the read-only package
-///    folder for the Store copy;
+/// 2. what ships with the program (`shipped_dir`), such as the examples.
+///    The same place as 1 for the download, the read-only package folder
+///    for the Store copy, and `Contents/Resources` inside a Mac's `.app`;
 /// 3. the working folder, for a path typed relative to wherever the program
 ///    was started from.
 ///
@@ -6520,9 +6524,9 @@ pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
     let candidates = data_path_candidates(p);
     let root = root_dir();
     let mut dirs = vec![root.clone()];
-    let exe = exe_dir();
-    if exe != root {
-        dirs.push(exe);
+    let shipped = shipped_dir();
+    if shipped != root {
+        dirs.push(shipped);
     }
     for cand in &candidates {
         for dir in &dirs {
@@ -6805,6 +6809,27 @@ pub fn exe_dir() -> std::path::PathBuf {
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Where what ships with the program and is only ever read -- lang, profiles,
+/// the automation manual, the bridges -- sits: beside the program, except in a
+/// Mac's `.app`. There the program is in `Contents/MacOS`, where nothing but
+/// code may be (anything else breaks the signature), and what ships with it is
+/// in `Contents/Resources`
+pub fn shipped_dir() -> std::path::PathBuf {
+    shipped_dir_for(&exe_dir())
+}
+
+fn shipped_dir_for(exe_dir: &std::path::Path) -> std::path::PathBuf {
+    let in_app = exe_dir.file_name().is_some_and(|n| n == "MacOS")
+        && exe_dir.parent().and_then(|c| c.file_name()).is_some_and(|n| n == "Contents");
+    if in_app
+        && let Some(resources) = exe_dir.parent().map(|c| c.join("Resources"))
+        && resources.is_dir()
+    {
+        return resources;
+    }
+    exe_dir.to_path_buf()
 }
 
 /// Whether this process is running from an installed package (the Store).
@@ -8856,6 +8881,23 @@ mod tests {
         assert!(!packaged(), "a test run should not be a packaged one");
         #[cfg(windows)]
         assert_eq!(root_dir(), exe_dir(), "the portable layout moved away from beside the exe");
+    }
+
+    #[test]
+    fn what_ships_is_read_from_resources_inside_an_app_and_beside_the_program_elsewhere() {
+        let root = std::env::temp_dir().join(format!("shikisha-shipped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let macos = root.join("SHIKISHA-TERM.app").join("Contents").join("MacOS");
+        let resources = root.join("SHIKISHA-TERM.app").join("Contents").join("Resources");
+        std::fs::create_dir_all(&macos).unwrap();
+        // A folder called MacOS that is not inside an app is just a folder
+        assert_eq!(shipped_dir_for(&macos), macos, "no Resources beside it");
+        std::fs::create_dir_all(&resources).unwrap();
+        assert_eq!(shipped_dir_for(&macos), resources, "inside an .app");
+        let plain = root.join("SHIKISHA-TERM");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(shipped_dir_for(&plain), plain, "an unpacked folder");
+        let _ = std::fs::remove_dir_all(&root);
         for p in [logs_dir(), state_path("x")] {
             assert!(p.starts_with(root_dir()), "{p:?} went outside the data folder");
         }

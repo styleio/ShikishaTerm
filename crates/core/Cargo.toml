@@ -99,6 +99,10 @@ serde_json = { workspace = true }
 # so it costs the build nothing
 similar = "2.7.0"
 sha2 = { workspace = true }
+# The language the system is set to, each system asked its own way: Windows' user
+# locale, a Mac's list of preferred languages (what a program started from the
+# Finder has instead of LANG), the environment elsewhere
+sys-locale = "0.3.2"
 tiny_http = { workspace = true }
 unicode-width = { workspace = true }
 ureq = { workspace = true, default-features = false, features = ["rustls", "json"] }
@@ -132,17 +136,27 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 # at the first handshake, found by the end-to-end probe). Pure Rust also keeps
 # the Linux build the single static file it is.
 str0m = { version = "0.23", default-features = false, features = ["rust-crypto"] }
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-# The process tree, each process's name, processor time and memory (repo.rs,
-# usage.rs). Linux keeps these in /proc and macOS behind its own process
-# calls; this reads both the same way. Only the process part is built
+# The process tree, each process's name, place on disk, processor time and
+# memory (repo.rs, usage.rs, guest.rs). Windows answers through its process
+# snapshot, Linux through /proc and macOS through its own process calls; this
+# reads all three the same way. Only the process part is built
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
-# Which process listens on which port (repo.rs). Linux ties a port to a
-# process through socket inodes in /proc, macOS through each process's file
-# descriptors; this answers both
+# Which process listens on which port (repo.rs). Windows keeps a table of them,
+# Linux ties a port to a process through socket inodes in /proc, macOS through
+# each process's file descriptors; this answers all three
 listeners = "0.6.1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+
+# The clipboard a person pastes from: a window's machine has one, a server does
+# not (src/paste.rs)
+[target.'cfg(target_os = "macos")'.dependencies]
+arboard = { workspace = true }
+png = { workspace = true }
+# A Mac's process tap (vaudio.rs) is described by an Objective-C object
+objc2 = "0.6.4"
 
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.

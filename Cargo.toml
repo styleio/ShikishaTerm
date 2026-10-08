@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/shared", "crates/core", "crates/server", "crates/bridge"]
+members = ["crates/shared", "crates/core", "crates/server", "crates/bridge", "crates/chromium-helper"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"
@@ -40,7 +40,7 @@ tokio = { version = "1.53.1", default-features = false }
 name = "shikisha-term"
 version = "0.26.0"
 edition = "2024"
-description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A portable terminal for orchestrating AI CLIs on Windows."
+description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A terminal for orchestrating AI CLIs on Windows and macOS."
 authors = ["styleio"]
 license = "MIT"
 readme = "README.md"
@@ -84,7 +84,9 @@ crossterm = { workspace = true }
 ed25519-dalek = { workspace = true }
 encoding_rs = { workspace = true }
 hkdf = { workspace = true }
-mlua = { workspace = true, features = ["lua54", "vendored"] }
+# Telling which site an address belongs to (src/browser.rs, origin_of)
+http = "1.5.0"
+mlua ={ workspace = true, features = ["lua54", "vendored"] }
 # Web Push (src/push.rs): P-256 for the VAPID signature and for the key
 # agreement RFC 8291 encrypts each message with
 p256 = { workspace = true, features = ["ecdh", "ecdsa"] }
@@ -110,7 +112,6 @@ ureq = { workspace = true, default-features = false, features = ["rustls", "json
 rustls = { workspace = true, default-features = false, features = ["ring", "std", "tls12", "logging"] }
 webpki-roots = { workspace = true }
 vt100 = { workspace = true }
-wry = "0.57.0"
 zeroize = { workspace = true }
 # Unpacking a downloaded update beside the program's data (src/update.rs).
 # Deflate only: that is what the release workflow's Compress-Archive writes
@@ -123,6 +124,8 @@ tokio = { workspace = true, default-features = false, features = ["rt", "net", "
 # another system leaves them out rather than failing to find them
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ProcessStatus", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Graphics_Gdi"] }
+# The window's engine here (src/browser/webview2.rs). A Mac's is CEF, below
+wry = "0.57.0"
 # Kept at the same version as wry (CDP cannot be called unless the ICoreWebView2 types match)
 webview2-com = "0.39.1"
 windows = { workspace = true, features = [
@@ -146,6 +149,25 @@ windows = { workspace = true, features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# A Mac's window is drawn by Chromium carried in the .app (CEF): a Mac's own
+# web view has no DevTools protocol, and the program is built on it
+# (src/browser/cef_engine.rs). Its pages are views in the window, placed by
+# AppKit's own calls
+[target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "154.5.0", default-features = false, features = ["sandbox"] }
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+# The keys that work from any program (src/hotkeys.rs). Windows' are asked of
+# the system directly; a Mac's go through the same calls its own programs use
+global-hotkey = "0.8.0"
+# A Mac's notifications, the way its own programs post them (src/macnote.rs),
+# and the blocks its calls answer through
+objc2-user-notifications = "0.3.2"
+block2 = "0.6.2"
+# The program's icon in the menu bar, where it lives while its window is put
+# away (src/browser/frame.rs). Windows' is hand-rolled (core/tray.rs)
+tray-icon = { version = "0.26.0", default-features = false }
 
 # The icon and the version details Explorer shows for the exe
 [target.'cfg(windows)'.build-dependencies]

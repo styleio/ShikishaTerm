@@ -12,11 +12,13 @@
 # tools/notices.ps1; release.yml rebuilds it before packing, so the download is
 # never assembled from a stale copy.
 
-# The program is a Windows executable and nothing else is ever handed out, so a
-# crate that only ever compiles for another target reaches nobody. Working the
-# list out for every target instead would credit macOS and Linux crates that are
-# not in the binary -- a longer file describing a build no one receives.
-targets = ["x86_64-pc-windows-msvc"]
+# The programs with a window are handed out for Windows and for a Mac (either
+# processor), and one file of notices travels with both. A crate that only
+# compiles for Linux reaches nobody through them; working the list out for
+# every target instead would credit crates that are in no download. The Mac's
+# Chromium carries its own credits, CHROMIUM-CREDITS.html in the .app
+# (packaging/mac/mkapp.sh).
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 # The test harness is not handed out. The build script's helpers are not in the
 # binary either, but they do run on the machine that makes it, and being
@@ -65,6 +67,10 @@ accepted = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
     "OpenSSL",
+    # bzip2's own terms, a BSD-style license. It unpacks the Chromium a Mac's
+    # build fetches (download-cef, a build dependency); nothing of it is in
+    # the program
+    "bzip2-1.0.6",
 ]
 
 # --- Where the text really is ----------------------------------------------
@@ -195,3 +201,11 @@ checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a"
 path = "LICENSE-LIBM-MIT"
 license = "MIT"
 checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997"
+
+# option-ext is MPL-2.0, which is copyleft for its own files only. It is listed
+# because cargo-about, asked for several targets at once, follows wry's
+# dependencies for a Mac although wry itself is only built for Windows: no
+# download carries it. It is accepted here by name, rather than MPL-2.0 for
+# everything, so a copyleft crate that really does arrive still stops the run.
+[option-ext]
+accepted = ["MPL-2.0"]

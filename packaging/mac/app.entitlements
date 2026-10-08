@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What SHIKISHA-TERM itself may do under the hardened runtime a notarized app
+  runs with. Its terminals' programs are its children, and a Mac asks for what
+  they touch in this app's name: without the entitlement the asking never
+  happens, and the program in the terminal just fails. Each one is asked for
+  with the reason Info.plist gives (packaging/mac/mkapp.sh).
+-->
+<plist version="1.0">
+<dict>
+    <!-- Chromium's own process runs JavaScript too (a proxy's PAC file) -->
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.device.camera</key><true/>
+    <key>com.apple.security.device.audio-input</key><true/>
+    <!-- osascript and the like, run from a terminal -->
+    <key>com.apple.security.automation.apple-events</key><true/>
+</dict>
+</plist>

@@ -724,8 +724,7 @@ fn bundled_stamp() -> Option<String> {
     static STAMP: OnceLock<Option<String>> = OnceLock::new();
     STAMP
         .get_or_init(|| {
-            let exe = std::env::current_exe().ok()?;
-            let dir = bridge_dirs(exe.parent()?).into_iter().find(|d| d.is_dir())?;
+            let dir = bridge_dirs(&crate::config::shipped_dir()).into_iter().find(|d| d.is_dir())?;
             let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
                 .ok()?
                 .flatten()
@@ -786,10 +785,8 @@ pub fn bundled_for(machine: &str) -> Result<std::path::PathBuf> {
         "aarch64" | "arm64" => "aarch64",
         other => bail!("there is no bridge for a {other} machine"),
     };
-    let exe = std::env::current_exe()?;
-    let dir = exe.parent().ok_or_else(|| anyhow!("no folder beside the program"))?;
     let name = format!("shikisha-bridge-{arch}-linux");
-    let places = bridge_dirs(dir);
+    let places = bridge_dirs(&crate::config::shipped_dir());
     places
         .iter()
         .map(|d| d.join(&name))

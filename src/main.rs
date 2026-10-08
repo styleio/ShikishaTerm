@@ -48,6 +48,8 @@ mod picker;
 mod hotkeys;
 mod snip;
 mod wintoast;
+#[cfg(target_os = "macos")]
+mod macnote;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -91,6 +93,7 @@ fn say_fatally(text: &str) {
     dialog::warn(&i18n::t("err.fatal.title"), text);
 }
 
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 fn say_fatally_with_page(text: &str, url: &str) {
     let pressed = dialog::ask(&i18n::t("err.fatal.title"), text, rfd::MessageLevel::Error, rfd::MessageButtons::OkCancel);
     // Having promised a page, hand over the address rather than doing nothing
@@ -116,7 +119,10 @@ fn main() -> Result<()> {
     shikisha_core::loginpath::adopt();
     // This process owns a desktop, so it is the one that can put a banner on it.
     // Told once, before anything has cause to send one
+    #[cfg(not(target_os = "macos"))]
     notify::use_local_banners(Box::new(wintoast::WindowsBanners));
+    #[cfg(target_os = "macos")]
+    notify::use_local_banners(Box::new(macnote::MacBanners::new()));
     webui::use_file_picker(Box::new(picker::DesktopPicker));
     let r = boot();
     if let Err(e) = &r {
@@ -243,7 +249,7 @@ fn boot() -> Result<()> {
         // there would find no ja.json and quietly fall back to English, on a
         // Japanese machine, with nothing to say it had happened.
         &[
-            config::exe_dir(),
+            config::shipped_dir(),
             config_file_dir(),
             std::path::PathBuf::from("."),
         ],
@@ -1204,10 +1210,20 @@ fn run_in_window() -> Result<()> {
         // Said here rather than returned, because this is the one failure whose
         // answer is known: the generic path can only repeat an error, and this
         // one can hand over the page that fixes it.
+        #[cfg(windows)]
         say_fatally_with_page(
             &shikisha_core::i18n::t("err.webview2.missing"),
             "https://developer.microsoft.com/microsoft-edge/webview2/",
         );
+        // A Mac's Chromium comes inside the .app: without it, the copy is not
+        // whole, and a whole one is where the program is handed out
+        #[cfg(target_os = "macos")]
+        say_fatally_with_page(
+            &shikisha_core::i18n::t("err.cef.missing"),
+            "https://github.com/styleio/ShikishaTerm/releases/latest",
+        );
+        #[cfg(not(any(windows, target_os = "macos")))]
+        say_fatally(&shikisha_core::i18n::t("err.window.none"));
         std::process::exit(1);
     }
     // The window takes this thread, the program's first; the tabs and
@@ -1241,8 +1257,15 @@ fn run_in_window() -> Result<()> {
         // The keys that work from any program. The scissors' own key frames first
         // and chooses after; a tool's key opens that tool; the rest open something
         // on the board, which comes to the front for it
+        // A notification clicked brings the window forward from wherever the
+        // click is heard (a Mac's are heard on a thread of the system's)
+        #[cfg(target_os = "macos")]
+        {
+            let raiser = surface.win.raiser();
+            macnote::raise_by(move || raiser.raise());
+        }
         let opener = surface.win.snip_opener();
-        surface.hotkeys = hotkeys::Hotkeys::start(move |action| {
+        surface.hotkeys = hotkeys::Hotkeys::start(surface.win.keys_registrar(), move |action| {
             if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {
                 opener.summon(action);
             } else {

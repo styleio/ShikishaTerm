@@ -374,12 +374,7 @@ fn load_manual(config_path: &std::path::Path) -> String {
     if let Some(d) = config_path.parent() {
         dirs.push(d.to_path_buf());
     }
-    if let Some(d) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
-    {
-        dirs.push(d);
-    }
+    dirs.push(crate::config::shipped_dir());
     dirs.push(std::path::PathBuf::from("."));
 
     let lang = crate::i18n::lang();
@@ -1886,6 +1881,7 @@ fn handle(
                     ("__QUICK__", js(quick_json())),
                     ("__REMOTE__", if remote_client { "true" } else { "false" }.to_string()),
                     ("__PACKAGED__", if crate::config::packaged() { "true" } else { "false" }.to_string()),
+                    ("__SYSTEM__", js(serde_json::Value::from(crate::system_name()).to_string())),
                     ("__GRANTS__", js(crate::grants::catalog_json())),
                     (
                         "__GITLUA__",
@@ -6372,6 +6368,9 @@ const REMOTE = __REMOTE__;
 // closes everything of the app's, the terminals kept running included, and
 // the settings say so where it matters
 const PACKAGED = __PACKAGED__;
+// The system the program here runs on ("windows", "mac", "linux"): what is
+// offered for a terminal, and what is said about it, are that system's
+const SYSTEM = __SYSTEM__;
 // True when this page is not a screen of its own but a dialog: a frame the
 // board placed over itself (?embed=1), which is how a browser puts a page
 // over the board the way the window places one. The way out is a word to the
@@ -7313,9 +7312,10 @@ const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
   ["cmd",     T["settings.tab.cat.cmd"]],
   ["remote",  T["settings.tab.cat.remote"]],
-  ["ssh",     "SSH (ssh.exe)"],
+  ["ssh",     SYSTEM === "windows" ? "SSH (ssh.exe)" : "SSH"],
   ["docker",  "Docker"],
-  ["wsl",     "WSL"],
+  // Linux inside Windows: there is none anywhere else
+  ...(SYSTEM === "windows" ? [["wsl", "WSL"]] : []),
   ["browser", T["settings.tab.kind.browser"]],
   ["git",     T["settings.tab.kind.git"]],
   ["editor",  T["settings.tab.kind.editor"]],
@@ -8394,15 +8394,21 @@ function basicCard() {
           ["off", T["settings.terminal_links.off"]],
         ]),
         el("span", {class:"hint"}, T["settings.terminal_links.hint"])),
-    row(T["settings.conpty"], conptyState(),
-        el("span", {class:"hint"}, T["settings.conpty.hint"])),
-    // What a folder opens with: a project added, or an empty folder pressed
+    // Windows' own pseudo console: elsewhere a terminal is the system's pty,
+    // with nothing shipped beside the program to choose or to be missing
+    SYSTEM === "windows" ? row(T["settings.conpty"], conptyState(),
+        el("span", {class:"hint"}, T["settings.conpty.hint"])) : null,
+    // What a folder opens with: a project added, or an empty folder pressed.
+    // A choice on Windows; elsewhere it is the person's login shell, as the
+    // system's own terminal opens it, and the row says so
     row(T["settings.default_shell"],
-        choose(current, "default_shell", [
-          ["", T["settings.default_shell.powershell"]],
-          ["cmd", T["settings.default_shell.cmd"]],
-          ["gitbash", T["settings.default_shell.gitbash"]],
-        ]),
+        SYSTEM === "windows"
+          ? choose(current, "default_shell", [
+              ["", T["settings.default_shell.powershell"]],
+              ["cmd", T["settings.default_shell.cmd"]],
+              ["gitbash", T["settings.default_shell.gitbash"]],
+            ])
+          : el("span", {}, T["settings.default_shell.login"]),
         el("span", {class:"hint"}, T["settings.default_shell.hint"])),
     row(T["settings.browser_data"],
         choose(current, "browser_data", [
@@ -8545,17 +8551,25 @@ function hotkeysCard() {
     el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.hotkeys.intro"]),
     list);
   const parse = text => {
-    const c = {ctrl:false, alt:false, shift:false, key:""};
+    const c = {ctrl:false, alt:false, shift:false, cmd:false, key:""};
     for (const part of String(text || "").split("+").map(p => p.trim())) {
       const low = part.toLowerCase();
       if (low === "ctrl" || low === "control") c.ctrl = true;
-      else if (low === "alt") c.alt = true;
+      else if (low === "alt" || low === "option") c.alt = true;
       else if (low === "shift") c.shift = true;
+      else if (low === "cmd" || low === "command") c.cmd = true;
       else if (HOTKEY_KEYS.includes(part.toUpperCase())) c.key = part.toUpperCase();
     }
     return c;
   };
-  const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.key].filter(Boolean).join("+");
+  const shown = c => [c.ctrl && "Ctrl", c.alt && "Alt", c.shift && "Shift", c.cmd && "Cmd", c.key].filter(Boolean).join("+");
+  // The held keys this machine offers, by the names its keyboard prints: a
+  // Mac's are Control, Option, Shift and Command (⌘ is its own there)
+  const MODS = HOTKEYS.mods || ["ctrl", "alt", "shift"];
+  const MOD_NAMES = HOTKEYS.mac
+    ? {ctrl:"⌃ Control", alt:"⌥ Option", shift:"⇧ Shift", cmd:"⌘ Command"}
+    : {ctrl:"Ctrl", alt:"Alt", shift:"Shift", cmd:"Cmd"};
+  const held = c => c.ctrl || c.alt || (c.cmd && MODS.includes("cmd"));
   const dflt = a => HOTKEYS.defaults[a] || "";
   // What the settings hold for an action, as it would be read (one unwritten
   // has its key out of the box)
@@ -8568,9 +8582,9 @@ function hotkeysCard() {
     list.textContent = "";
     for (const action of HOTKEYS.actions) {
       const c = drafts[action] || (drafts[action] = parse(written(action)));
-      const toggles = ["ctrl", "alt", "shift"].map(m => {
+      const toggles = MODS.map(m => {
         const b = el("button", {class:"tog" + (c[m] ? " on" : ""), "aria-pressed": String(c[m])},
-          {ctrl:"Ctrl", alt:"Alt", shift:"Shift"}[m]);
+          MOD_NAMES[m]);
         b.onclick = () => { c[m] = !c[m]; keep(action, c); };
         return b;
       });
@@ -8592,7 +8606,7 @@ function hotkeysCard() {
   // Only a whole combination is written. Half of one is no key until it is
   // finished -- the row says what is missing
   const keep = (action, c) => {
-    const text = c.key && (c.ctrl || c.alt) ? shown(c) : "";
+    const text = c.key && held(c) ? shown(c) : "";
     if (text === dflt(action)) delete hk[action];
     else hk[action] = text;
     if (Object.keys(hk).length) current.hotkeys = Object.assign({}, hk);
@@ -8604,7 +8618,7 @@ function hotkeysCard() {
     const text = c.key ? shown(c) : "";
     const warn = msg => { say.className = "hint hkstate warnline"; say.textContent = msg; };
     say.className = "hint hkstate";
-    if (c.key && !c.ctrl && !c.alt) return warn(T["settings.hotkeys.need_mod"]);
+    if (c.key && !held(c)) return warn(T[HOTKEYS.mac ? "settings.hotkeys.need_mod_mac" : "settings.hotkeys.need_mod"]);
     const row = status && (status.rows || []).find(r => r.action === action);
     if (!status || !status.active) { say.textContent = text ? "" : T["settings.hotkeys.off"]; return; }
     if (!row || row.key !== text) { say.textContent = text ? T["settings.hotkeys.unsaved"] : T["settings.hotkeys.off"]; return; }
@@ -8612,6 +8626,7 @@ function hotkeysCard() {
     else if (row.state === "taken") warn(T["settings.hotkeys.taken"]);
     else if (row.state === "twice") warn(T["settings.hotkeys.twice"]);
     else if (row.state === "unreadable") warn(T["settings.hotkeys.unreadable"]);
+    else if (row.state === "elsewhere") warn(T["settings.hotkeys.elsewhere"]);
     else say.textContent = row.last ? fill(T["settings.hotkeys.last"], {when: clock(row.last)}) : T["settings.hotkeys.never"];
   }
   // What the program found. Asked again while the card is open: a save
@@ -18668,7 +18683,7 @@ const HELP_PAGE: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{{help.page.title}}</title>
 <style>
  :root { {{THEME}} color-scheme: {{SCHEME}}; }
- body { background:var(--bg); color:var(--text); font-family:"Consolas","Meiryo",monospace;
+ body { background:var(--bg); color:var(--text); font-family:"Consolas",ui-monospace,"Menlo","Meiryo","Hiragino Sans",monospace;
         margin:0; padding:24px 32px; line-height:1.7; }
  h1,h2,h3 { color:var(--c6); border-bottom:1px solid var(--line); padding-bottom:6px; }
  h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }
@@ -20096,6 +20111,7 @@ mod tests {
             .replace("__TOKEN__", "t")
             .replace("__REMOTE__", "false")
             .replace("__PACKAGED__", "false")
+            .replace("__SYSTEM__", "\"windows\"")
             .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
             .replace("__QUICK__", &quick_json())
             .replace("__DICT__", "{}")
@@ -20198,6 +20214,7 @@ for (const crypto of [webcrypto, {{getRandomValues: b => webcrypto.getRandomValu
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
                 .replace("__PACKAGED__", "false")
+                .replace("__SYSTEM__", "\"windows\"")
                 .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")

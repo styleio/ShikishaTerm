@@ -25,22 +25,34 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::{Result, anyhow};
 
-// The window's engine: WebView2 on Windows, reached through the few names
-// taken from it here. Elsewhere there is none yet, and the window says so
+// The window's engine, reached through the few names `window` and `cdp`
+// take from it: WebView2 on Windows, the Chromium carried in the .app (CEF) on
+// a Mac. Elsewhere there is none yet, and the window says so
 #[cfg(windows)]
 mod webview2;
 #[cfg(windows)]
-use webview2::run_window;
+use webview2 as engine;
 #[cfg(windows)]
-pub use webview2::{main_hwnd, runtime_version};
-#[cfg(windows)]
-pub(crate) use webview2::cdp;
-#[cfg(not(windows))]
+pub use webview2::runtime_version;
+#[cfg(target_os = "macos")]
+mod cef_engine;
+#[cfg(target_os = "macos")]
+use cef_engine as engine;
+#[cfg(target_os = "macos")]
+pub use cef_engine::runtime_version;
+#[cfg(not(any(windows, target_os = "macos")))]
 mod unready;
-#[cfg(not(windows))]
-use unready::run_window;
-#[cfg(not(windows))]
-pub use unready::{main_hwnd, runtime_version};
+#[cfg(not(any(windows, target_os = "macos")))]
+use unready as engine;
+#[cfg(not(any(windows, target_os = "macos")))]
+pub use unready::runtime_version;
+// What is done through a page's DevTools protocol, the window's loop, and the
+// window as the system dresses it: the same on every system
+pub(crate) mod cdp;
+mod frame;
+mod window;
+pub use frame::main_hwnd;
+use window::run_window;
 
 /// Added on top of `INIT_JS` for pages placed inside the window, and only for
 /// those: the shell's own page already knows which pane was clicked.
@@ -184,12 +196,20 @@ const WINDOW_POST: &str = r#"
 /// person anything: the bar that does is the app's own, drawn under the page
 /// by the board (shell.rs), where a page cannot press it.
 static INIT_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!("{WINDOW_POST}{}", shikisha_core::pagejs::AUTOMATION)
+    format!("{WINDOW_POST}{}{}", frame::FRAME_JS, shikisha_core::pagejs::AUTOMATION)
 });
 
 /// An instruction from the conductor to the browser
 #[derive(Debug, Clone)]
 pub enum Cmd {
+    /// The engine asked for a turn of the loop of its own (CEF on a Mac is
+    /// pumped by the loop it lives in, at times it names)
+    #[cfg_attr(windows, allow(dead_code))]
+    EngineTurn,
+    /// Register the keys that work from any program, on this thread: a Mac
+    /// takes them only here (`hotkeys::register_here`)
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    RegisterKeys,
     /// Another address the app's own pages come from. The settings and the
     /// result view are served by a second local server whose port is only
     /// known once it starts, so it is told here rather than at the window's birth
@@ -343,7 +363,7 @@ pub enum Cmd {
 /// host and port (the scheme's usual port when none is written). `None` for
 /// anything that is not an address with a host
 fn origin_of(addr: &str) -> Option<(String, String, u16)> {
-    let uri: wry::http::Uri = addr.trim().parse().ok()?;
+    let uri: http::Uri = addr.trim().parse().ok()?;
     let scheme = uri.scheme_str()?.to_ascii_lowercase();
     let host = uri.host()?.to_ascii_lowercase();
     let port = uri.port_u16().or(match scheme.as_str() {
@@ -802,6 +822,17 @@ impl Browser {
     /// program are heard on a thread of their own
     pub fn snip_opener(&self) -> SnipOpener {
         SnipOpener(self.proxy.clone())
+    }
+
+    /// A way to have those keys registered where the system takes them
+    pub fn keys_registrar(&self) -> KeysRegistrar {
+        KeysRegistrar(self.proxy.clone())
+    }
+
+    /// A way to bring the window forward from another thread
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn raiser(&self) -> WindowRaiser {
+        WindowRaiser(self.proxy.clone())
     }
 
     /// A way to hand the tool page its answer from another thread: the AI it
@@ -1309,6 +1340,33 @@ fn ua_override(ua: &str) -> String {
     .to_string()
 }
 
+/// Brings the window to the front from another thread
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct WindowRaiser(tao::event_loop::EventLoopProxy<Cmd>);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl WindowRaiser {
+    /// In front, and the window the keyboard types into. Only for a window
+    /// that is showing: one put away is brought back by `Browser::show`,
+    /// which also notes that it is no longer away
+    pub fn raise(&self) {
+        let _ = self.0.send_event(Cmd::Show);
+    }
+}
+
+/// Has the keys that work from any program registered on the window's thread,
+/// where a Mac takes them (see `hotkeys`)
+#[derive(Clone)]
+pub struct KeysRegistrar(tao::event_loop::EventLoopProxy<Cmd>);
+
+impl KeysRegistrar {
+    /// Register what the settings ask for now, letting go of what was held
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn register(&self) {
+        let _ = self.0.send_event(Cmd::RegisterKeys);
+    }
+}
+
 /// Opens a tool from another thread (see `Browser::snip_opener`).
 pub struct SnipOpener(tao::event_loop::EventLoopProxy<Cmd>);
 
@@ -1595,14 +1653,13 @@ mod tests {
     /// window with no size, and WebView2 refused it (0x80070057): what came
     /// back from the notification area was an empty frame. The window has to
     /// be shown and restored before the page is built
-    #[cfg(windows)]
     #[test]
     fn the_board_is_built_into_a_window_that_has_a_size() {
-        let src = include_str!("browser/webview2.rs");
+        let src = include_str!("browser/window.rs");
         let show = src.find("Cmd::Show => {").expect("there is no Cmd::Show");
         let body = &src[show..show + 2500];
         let restored = body.find("window.set_minimized(false)").expect("it does not bring the window back from minimized");
-        let built = body.find("match shell_of()").expect("it does not rebuild the board");
+        let built = body.find("pages.fill(&window, shell_spec())").expect("it does not rebuild the board");
         assert!(restored < built, "it builds the board while still minimized");
     }
 
@@ -1613,17 +1670,16 @@ mod tests {
     /// through. The board laid itself out to it, passed it down to the page
     /// it was relaying, and a phone watching from another room got that page
     /// 128 pixels wide and blew it up to fill its screen
-    #[cfg(windows)]
     #[test]
     fn a_put_away_window_does_not_resize_what_it_holds() {
-        let src = include_str!("browser/webview2.rs");
+        let src = include_str!("browser/window.rs");
         let resized =
             src.find("event: WindowEvent::Resized(size),").expect("nothing follows the size");
         // Between the size arriving and the board being given one, rather than
         // a fixed number of characters after it: a line added above the guard
         // used to carry it out of the window and fail a test about the guard
         let after = &src[resized..];
-        let used = after.find("v.set_bounds(wry::Rect {").expect("the size is never used");
+        let used = after.find("v.fill(w, h)").expect("the size is never used");
         let body = &after[..used];
         assert!(
             body.contains("window.is_minimized()") && body.contains("last_size"),

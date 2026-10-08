@@ -6,6 +6,10 @@
 //!   stay in English**, so stale translations never break anything
 //! - Contributors only need to copy en.json, translate the values, and drop
 //!   it in as `lang/fr.json`
+//! - A sentence that is different on a Mac -- Finder for Explorer, the menu
+//!   bar for the notification area -- is written again under its key with
+//!   `@mac` after it, and on a Mac that one is said instead
+//!   ([`for_this_system`]). Elsewhere the variants are dropped
 
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
@@ -17,7 +21,34 @@ static DICT: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 static LANG: OnceLock<RwLock<String>> = OnceLock::new();
 
 fn dict() -> &'static RwLock<HashMap<String, String>> {
-    DICT.get_or_init(|| RwLock::new(parse(EN)))
+    DICT.get_or_init(|| RwLock::new(for_this_system(parse(EN))))
+}
+
+/// What marks a key as the same sentence said on another system
+const VARIANT: char = '@';
+
+/// The variant this system says, if it has its own
+const THIS_SYSTEM: Option<&str> = if cfg!(target_os = "macos") { Some("mac") } else { None };
+
+/// The dictionary as this system says it: each `key@<system>` of this
+/// system's said in place of `key`, and every variant left out after
+pub fn for_this_system(map: HashMap<String, String>) -> HashMap<String, String> {
+    for_system(map, THIS_SYSTEM)
+}
+
+fn for_system(mut map: HashMap<String, String>, system: Option<&str>) -> HashMap<String, String> {
+    if let Some(system) = system {
+        let ours: Vec<(String, String)> = map
+            .iter()
+            .filter_map(|(k, v)| {
+                let (base, of) = k.split_once(VARIANT)?;
+                (of == system).then(|| (base.to_string(), v.clone()))
+            })
+            .collect();
+        map.extend(ours);
+    }
+    map.retain(|k, _| !k.contains(VARIANT));
+    map
 }
 
 fn parse(json: &str) -> HashMap<String, String> {
@@ -50,6 +81,7 @@ pub fn init(lang: Option<&str>, dirs: &[std::path::PathBuf]) {
             }
         }
     }
+    let map = for_this_system(map);
     let _ = dict().write().map(|mut d| *d = map);
     let _ = LANG.get_or_init(|| RwLock::new(code.clone())).write().map(|mut l| *l = code);
 }
@@ -74,8 +106,10 @@ pub fn english() -> &'static str {
 }
 
 /// One language's dictionary, whichever language is running: English with that
-/// language laid over it, exactly as [`init`] builds the live one. For
-/// generating a page in a language this process is not showing.
+/// language laid over it, as [`init`] builds the live one. For generating a
+/// page in a language this process is not showing -- the manual among them,
+/// which ships to every system, so it is in the words that are not any one
+/// system's variant
 pub fn dictionary(code: &str, lang_dir: &std::path::Path) -> HashMap<String, String> {
     let mut map = parse(EN);
     if code != "en"
@@ -85,7 +119,7 @@ pub fn dictionary(code: &str, lang_dir: &std::path::Path) -> HashMap<String, Str
             map.insert(k, v);
         }
     }
-    map
+    for_system(map, None)
 }
 
 /// Current language code (e.g. "ja")
@@ -218,17 +252,11 @@ fn system_language() -> String {
         .to_ascii_lowercase()
 }
 
-#[cfg(windows)]
+/// The language the system says the person reads, when LANG does not. A Mac
+/// program started from the Finder or the Dock has no LANG at all, and a
+/// Japanese Mac would otherwise start in English
 fn os_language() -> Option<String> {
-    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
-    let mut buf = [0u16; 85];
-    let n = unsafe { GetUserDefaultLocaleName(buf.as_mut_ptr(), buf.len() as i32) };
-    (n > 1).then(|| String::from_utf16_lossy(&buf[..(n - 1) as usize]))
-}
-
-#[cfg(not(windows))]
-fn os_language() -> Option<String> {
-    None
+    sys_locale::get_locale().filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -264,6 +292,40 @@ mod tests {
                     "{}: a key not in English {key}",
                     path.display()
                 );
+            }
+        }
+    }
+
+    /// A sentence written again for a Mac is said there in place of the
+    /// other, and nowhere is the variant itself a word of its own
+    #[test]
+    fn a_macs_own_sentence_is_said_on_a_mac_only() {
+        let map = || {
+            HashMap::from([
+                ("tui.link.reveal".to_string(), "Show in Explorer".to_string()),
+                ("tui.link.reveal@mac".to_string(), "Show in Finder".to_string()),
+                ("tui.other".to_string(), "Same everywhere".to_string()),
+            ])
+        };
+        let mac = for_system(map(), Some("mac"));
+        assert_eq!(mac["tui.link.reveal"], "Show in Finder");
+        assert_eq!(mac["tui.other"], "Same everywhere");
+        let elsewhere = for_system(map(), None);
+        assert_eq!(elsewhere["tui.link.reveal"], "Show in Explorer");
+        for m in [mac, elsewhere] {
+            assert!(m.keys().all(|k| !k.contains(VARIANT)), "a variant was left in as a word of its own");
+        }
+    }
+
+    /// Every sentence written for a Mac is a sentence English has without the
+    /// variant: a variant of nothing would be said nowhere
+    #[test]
+    fn every_variant_is_of_a_sentence_that_exists() {
+        let en = parse(EN);
+        for key in en.keys() {
+            if let Some((base, system)) = key.split_once(VARIANT) {
+                assert_eq!(system, "mac", "{key}: the only system with sentences of its own is a Mac");
+                assert!(en.contains_key(base), "{key} is a variant of no sentence");
             }
         }
     }

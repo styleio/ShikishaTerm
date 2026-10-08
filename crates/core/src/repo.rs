@@ -463,46 +463,13 @@ pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Held> {
 }
 
 /// The name of the program a process runs: the file name of its executable
-/// (`node.exe`), which is what a person would look for in a task manager.
-/// A process that ended or cannot be opened has none
-#[cfg(windows)]
-pub fn program_of(pid: u32) -> Option<String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if h.is_null() {
-            return None;
-        }
-        // Room for any path Windows hands back through this call
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
-        CloseHandle(h);
-        if !ok || len == 0 {
-            return None;
-        }
-        let full = String::from_utf16_lossy(&buf[..len as usize]);
-        leaf_name(&full)
-    }
-}
-
-/// The name of the program a process runs, as the kernel keeps it
-#[cfg(unix)]
+/// (`node.exe` on Windows), which is what a person would look for in a task
+/// manager. A process that ended or cannot be asked about has none
 pub fn program_of(pid: u32) -> Option<String> {
     let table = process_table(Some(&[pid]), sysinfo::ProcessRefreshKind::nothing());
     let name = table.process(sysinfo::Pid::from_u32(pid))?.name().to_string_lossy();
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_string())
-}
-
-/// The last part of a path, whichever way its slashes lean
-#[cfg_attr(not(windows), allow(dead_code))]
-fn leaf_name(path: &str) -> Option<String> {
-    let leaf = path.rsplit(['\\', '/']).next()?.trim();
-    (!leaf.is_empty()).then(|| leaf.to_string())
 }
 
 /// A process and everything it started, however deep.
@@ -526,12 +493,13 @@ pub(crate) fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u
 
 // ── The two things only the operating system knows ────────────────
 
-// Away from Windows, the process tree and the listening sockets are read
-// through two libraries rather than by hand. Linux keeps both in /proc (a
-// port is tied to its process by the inode of the socket); macOS keeps them
-// behind its own process calls and each process's file descriptors. Reading
-// /proc directly answered only the first, and on a Mac every one of these
-// came back empty without a word.
+// The process tree and the listening sockets are read through two libraries
+// rather than by hand, on every system. Windows answers through its process
+// snapshot and its TCP table, Linux keeps both in /proc (a port is tied to its
+// process by the inode of the socket), and macOS keeps them behind its own
+// process calls and each process's file descriptors. Written by hand, each was
+// a different program to keep right; reading /proc directly answered only
+// Linux, and on a Mac every one of these came back empty without a word.
 
 /// A look at the machine's processes, with only what `kind` asks for filled
 /// in -- all of them, or just `only`.
@@ -539,7 +507,6 @@ pub(crate) fn descendants(root: u32, children: &HashMap<u32, Vec<u32>>) -> Vec<u
 /// Threads are left out. Linux lists each thread as a process of its own, and
 /// a thread is not something a tab started: counted, it would put the same
 /// program into the tree many times over
-#[cfg(unix)]
 pub(crate) fn process_table(only: Option<&[u32]>, kind: sysinfo::ProcessRefreshKind) -> sysinfo::System {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let mut table = System::new();
@@ -553,7 +520,6 @@ pub(crate) fn process_table(only: Option<&[u32]>, kind: sysinfo::ProcessRefreshK
 }
 
 /// Parent to children, for every process on the machine.
-#[cfg(unix)]
 pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
     let table = process_table(None, sysinfo::ProcessRefreshKind::nothing());
     let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -567,9 +533,9 @@ pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
 
 /// Every listening TCP socket, as (process, port, address bound).
 ///
-/// A socket owned by another account is not listed, which is the same answer
-/// Windows gives for a process it will not open: nothing
-#[cfg(unix)]
+/// Both families: a dev server that binds ::1 and one that binds 127.0.0.1
+/// are the same thing to the person looking at the row. A socket owned by
+/// another account is not listed: nothing is known of it
 fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
     use ::listeners::{Protocol, SocketState};
     let Ok(all) = ::listeners::get_all() else { return Vec::new() };
@@ -577,121 +543,6 @@ fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
         .filter(|l| l.protocol == Protocol::TCP && l.state == SocketState::Listen && l.socket.port() != 0)
         .map(|l| (l.process.pid, l.socket.port(), l.socket.ip()))
         .collect()
-}
-
-#[cfg(windows)]
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
-
-/// Every listening TCP socket, as (process, port, address bound). Both
-/// families: a dev server that binds ::1 and one that binds 127.0.0.1 are the
-/// same thing to the person looking at the row
-#[cfg(windows)]
-fn listening() -> Vec<(u32, u16, std::net::IpAddr)> {
-    let mut out = listening_on(AF_INET);
-    out.extend(listening_on(AF_INET6));
-    out
-}
-
-/// Parent to children, for every process on the machine.
-#[cfg(windows)]
-pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
-        TH32CS_SNAPPROCESS,
-    };
-    let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap == INVALID_HANDLE_VALUE {
-            return out;
-        }
-        let mut e: PROCESSENTRY32W = std::mem::zeroed();
-        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        if Process32FirstW(snap, &mut e) != 0 {
-            loop {
-                out.entry(e.th32ParentProcessID)
-                    .or_default()
-                    .push(e.th32ProcessID);
-                if Process32NextW(snap, &mut e) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snap);
-    }
-    out
-}
-
-/// The listening sockets of one address family, as (process, port).
-#[cfg(windows)]
-fn listening_on(family: u16) -> Vec<(u32, u16, std::net::IpAddr)> {
-    use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
-        TCP_TABLE_OWNER_PID_LISTENER,
-    };
-    let mut out = Vec::new();
-    unsafe {
-        let mut size: u32 = 0;
-        // First call asks how much room the table needs. It is expected to
-        // fail; the answer is the size it wrote back
-        GetExtendedTcpTable(
-            std::ptr::null_mut(),
-            &mut size,
-            0,
-            family as u32,
-            TCP_TABLE_OWNER_PID_LISTENER,
-            0,
-        );
-        if size == 0 {
-            return out;
-        }
-        let mut buf: Vec<u8> = vec![0; size as usize];
-        let rc = GetExtendedTcpTable(
-            buf.as_mut_ptr().cast(),
-            &mut size,
-            0,
-            family as u32,
-            TCP_TABLE_OWNER_PID_LISTENER,
-            0,
-        );
-        if rc != 0 {
-            return out;
-        }
-        // Both tables begin with the number of rows, then the rows themselves
-        let count = u32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        let (row_size, head) = match family == AF_INET {
-            true => (std::mem::size_of::<MIB_TCPROW_OWNER_PID>(), 4),
-            false => (std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>(), 4),
-        };
-        for i in 0..count {
-            let at = head + i * row_size;
-            if at + row_size > buf.len() {
-                break;
-            }
-            let row = buf.as_ptr().add(at);
-            let (port_at, pid_at) = match family == AF_INET {
-                // state, localAddr, localPort, remoteAddr, remotePort, pid
-                true => (8, std::mem::size_of::<MIB_TCPROW_OWNER_PID>() - 4),
-                // localAddr[16], scope, localPort, ... , pid
-                false => (20, std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>() - 4),
-            };
-            let port_raw = std::ptr::read_unaligned(row.add(port_at).cast::<u32>());
-            let pid = std::ptr::read_unaligned(row.add(pid_at).cast::<u32>());
-            // The port sits in the first two bytes, in network order
-            let port = u16::from_be((port_raw & 0xffff) as u16);
-            // The local address, in network order: four bytes after the
-            // state in the IPv4 row, the row's first sixteen in the IPv6 one
-            let addr = match family == AF_INET {
-                true => std::net::IpAddr::from(std::ptr::read_unaligned(row.add(4).cast::<[u8; 4]>())),
-                false => std::net::IpAddr::from(std::ptr::read_unaligned(row.cast::<[u8; 16]>())),
-            };
-            if port != 0 {
-                out.push((pid, port, addr));
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -784,18 +635,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A program is named by its file, not its whole path: the row has room
-    /// for `node.exe`, and that is what a task manager calls it too
-    #[test]
-    fn a_program_is_named_by_the_last_part_of_its_path() {
-        assert_eq!(leaf_name(r"C:\Program Files\nodejs\node.exe").as_deref(), Some("node.exe"));
-        assert_eq!(leaf_name("/usr/bin/python3").as_deref(), Some("python3"));
-        assert_eq!(leaf_name("vite").as_deref(), Some("vite"));
-        assert_eq!(leaf_name(r"C:\trailing\"), None);
-        assert_eq!(leaf_name(""), None);
-    }
-
-    /// This process listens nowhere, but it is running: its own name comes back
+    /// This process listens nowhere, but it is running: its own name comes
+    /// back, and it is the file's name alone -- the row has room for
+    /// `node.exe`, and that is what a task manager calls it too
     #[test]
     fn this_programs_own_name_can_be_read() {
         let name = program_of(std::process::id()).expect("no name for the running test");

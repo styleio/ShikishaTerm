@@ -68,7 +68,23 @@ mod imp {
         }
     }
 
-    /// Nothing here has a window to raise, so there is nothing to ask for.
+    /// A Mac's running copy is asked the way the Finder asks it: its app is
+    /// opened again, which the system answers by bringing the running one
+    /// forward and telling it so (`Event::Reopen`), and it shows its window.
+    /// A copy started from inside its `.app` by a terminal, rather than from
+    /// the Finder, is the only one that ever gets here
+    #[cfg(target_os = "macos")]
+    pub fn ask_to_show() {
+        let Some(app) = std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(std::path::Path::to_path_buf)
+        }) else {
+            return;
+        };
+        let _ = std::process::Command::new("/usr/bin/open").arg(app).status();
+    }
+
+    /// A server has no window to raise, so there is nothing to ask for.
+    #[cfg(not(target_os = "macos"))]
     pub fn ask_to_show() {}
 
     /// ...and therefore no message that means it.

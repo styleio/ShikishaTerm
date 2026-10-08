@@ -354,5 +354,5 @@ AI ごとの使用枠と、戻る時刻
 - `Ctrl+B b` — 接頭キーそのものをプログラムに送る
 - `Ctrl+B ?` — この一覧
 - `Ctrl+B :` — コマンドパレット
-- `Ctrl+B k / Alt+Shift+K` — クイックコマンド
-- `Ctrl+B m / Alt+Shift+M` — アイデア
+- `Ctrl+B k / Alt+Shift+K (Mac: Ctrl+Alt+K)` — クイックコマンド
+- `Ctrl+B m / Alt+Shift+M (Mac: Ctrl+Alt+M)` — アイデア

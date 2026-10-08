@@ -140,21 +140,13 @@ impl Meter {
 
 // ── The one thing only the operating system knows ─────────────────
 
-/// Each process's total processor time (100ns units) and resident memory.
-///
-/// A process we cannot open -- one that ended between listing and asking, or
-/// one owned by another account -- reads as nothing rather than as an error:
-/// the tree it belonged to still has an honest total from the rest
-#[cfg(windows)]
-fn read(pids: &[u32]) -> HashMap<u32, (u64, u64)> {
-    pids.iter().map(|pid| (*pid, read_one(*pid))).collect()
-}
-
-/// The same two numbers away from Windows, from one look at the machine.
+/// Each process's total processor time (in 100ns units) and resident memory
+/// (in bytes), from one look at the machine.
 ///
 /// The library counts processor time in milliseconds, turned here into the
-/// 100ns the Windows call answers in; memory is the resident set, in bytes
-#[cfg(unix)]
+/// 100ns the rest of this file reckons in. A process that ended between
+/// listing and asking, or one owned by another account, is simply not in the
+/// answer: the tree it belonged to still has an honest total from the rest
 fn read(pids: &[u32]) -> HashMap<u32, (u64, u64)> {
     let kind = sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory();
     let table = crate::repo::process_table(Some(pids), kind);
@@ -163,47 +155,6 @@ fn read(pids: &[u32]) -> HashMap<u32, (u64, u64)> {
         .iter()
         .map(|(pid, p)| (pid.as_u32(), (p.accumulated_cpu_time().saturating_mul(10_000), p.memory())))
         .collect()
-}
-
-#[cfg(windows)]
-fn read_one(pid: u32) -> (u64, u64) {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
-    use windows_sys::Win32::System::ProcessStatus::{
-        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-    unsafe {
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if h.is_null() {
-            return (0, 0);
-        }
-        let mut cpu = 0u64;
-        let (mut c, mut e, mut k, mut u): (FILETIME, FILETIME, FILETIME, FILETIME) =
-            (blank(), blank(), blank(), blank());
-        if GetProcessTimes(h, &mut c, &mut e, &mut k, &mut u) != 0 {
-            cpu = ticks(&k) + ticks(&u);
-        }
-        let mut mem = 0u64;
-        let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
-        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-        if GetProcessMemoryInfo(h, &mut pmc, pmc.cb) != 0 {
-            mem = pmc.WorkingSetSize as u64;
-        }
-        CloseHandle(h);
-        (cpu, mem)
-    }
-}
-
-#[cfg(windows)]
-fn blank() -> windows_sys::Win32::Foundation::FILETIME {
-    windows_sys::Win32::Foundation::FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }
-}
-
-#[cfg(windows)]
-fn ticks(ft: &windows_sys::Win32::Foundation::FILETIME) -> u64 {
-    ((ft.dwHighDateTime as u64) << 32) | ft.dwLowDateTime as u64
 }
 
 #[cfg(test)]

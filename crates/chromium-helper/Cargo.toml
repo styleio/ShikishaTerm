@@ -1,0 +1,15 @@
+[package]
+name = "shikisha-chromium-helper"
+version = "0.26.0"
+edition = "2024"
+description = "The helper processes of the Chromium a Mac's SHIKISHA-TERM.app carries: its renderers, GPU and network."
+license = "MIT"
+
+# Copied into the .app under each of the names Chromium starts its helpers by
+# (tools/mac/bundle.sh). Small on purpose: Chromium starts one for every page
+[[bin]]
+name = "shikisha-chromium-helper"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cef = { version = "154.5.0", default-features = false, features = ["sandbox"] }

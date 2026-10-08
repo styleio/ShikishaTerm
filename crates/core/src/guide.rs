@@ -709,7 +709,7 @@ pub fn all_settings_words() -> &'static [String] {
         let en: BTreeMap<String, serde_json::Value> =
             serde_json::from_str(crate::i18n::english()).unwrap_or_default();
         en.into_iter()
-            .filter(|(k, v)| k.starts_with("settings.") && v.is_string())
+            .filter(|(k, v)| k.starts_with("settings.") && !k.contains('@') && v.is_string())
             .map(|(k, _)| k)
             .collect()
     })
@@ -973,7 +973,7 @@ const PANEL: &str = r##"<!doctype html>
 :root{ {{THEME}}
   --s1:4px; --s2:6px; --s3:10px; --s4:14px; --s5:18px;
   --ui: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-  --mono: "Cascadia Mono", Consolas, "Noto Sans Mono", monospace; }
+  --mono: "Cascadia Mono", Consolas, ui-monospace, Menlo, "Noto Sans Mono", monospace; }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 /* The page is the panel: what is placed in the window has no frame of its

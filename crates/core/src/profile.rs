@@ -576,13 +576,7 @@ impl Profile {
 /// Search beside the exe (portable layout) first, then directly under the
 /// current directory.
 fn candidate_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(d) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("profiles")))
-    {
-        dirs.push(d);
-    }
+    let mut dirs = vec![crate::config::shipped_dir().join("profiles")];
     // Also check beside the config file (so it's found even in setups where
     // the exe and data live in different places)
     if let Some(d) = crate::config::config_file_path().parent() {

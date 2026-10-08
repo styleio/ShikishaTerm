@@ -9,8 +9,57 @@ use super::{Allowance, Limits, Span, Window};
 /// past its time is simply "no pill" until Claude Code has renewed it
 fn token() -> Option<String> {
     let path = super::home()?.join(".claude").join(".credentials.json");
-    let text = std::fs::read_to_string(path).ok()?;
-    token_in(&text, super::now_ms())
+    if let Ok(text) = std::fs::read_to_string(path) {
+        return token_in(&text, super::now_ms());
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(text) = keychain::credentials() {
+        return token_in(&text, super::now_ms());
+    }
+    None
+}
+
+/// A Mac's Claude Code keeps its sign-in in the login keychain, not in a file:
+/// the same text, under the item it names "Claude Code-credentials".
+///
+/// The keychain is the Mac's to guard: reading another program's item is asked
+/// of the person by the system, once, and their answer is theirs to give. So
+/// what came back is kept a minute rather than asked again for every pill, and
+/// a refusal -- or no item at all -- is not asked about again for ten minutes:
+/// a question the person already answered, put to them over and over, is a
+/// question that has stopped being one
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// What the keychain last said, and when
+    static LAST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+
+    const KEPT: Duration = Duration::from_secs(60);
+    const NOT_ASKED_AGAIN: Duration = Duration::from_secs(600);
+
+    pub(super) fn credentials() -> Option<String> {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, said)) = last.as_ref() {
+            let wait = if said.is_some() { KEPT } else { NOT_ASKED_AGAIN };
+            if at.elapsed() < wait {
+                return said.clone();
+            }
+        }
+        let out = std::process::Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        *last = Some((Instant::now(), out.clone()));
+        out
+    }
 }
 
 pub(super) fn signed_in() -> bool {

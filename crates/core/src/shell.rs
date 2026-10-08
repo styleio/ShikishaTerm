@@ -103,6 +103,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #titlebar .wbtn { width:46px; font-family:"Segoe Fluent Icons","Segoe MDL2 Assets",var(--mono);
     font-size:10px; }
   #titlebar .wbtn.close:hover { background:var(--stop); color:#fff; }
+  /* A Mac's own three buttons stand at the left end of the bar (the window
+     puts them there): the bar starts after them, and has none of its own */
+  #titlebar.macframe { padding-left:76px; }
 
 
   /* ── Left tab bar ───────────────────────── */
@@ -4853,6 +4856,13 @@ const MOVE_CODE = (function () {
 // and no runtime behind it, so it decided it was local and waited forever for
 // state that nothing was going to push.
 const REMOTE = {{REMOTE}};
+// Whose keys the page is pressed with: a Mac's keyboard, wherever the board is
+// running. There ⌘ is what Ctrl is on the others for what the app does --
+// copy, paste, find -- and Ctrl stays Ctrl, sent to the terminal as a Mac's
+// own terminal sends it
+const MAC_KEYS = /Mac|iPhone|iPad/.test((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "");
+// The app's own modifier on this keyboard, held on its own: ⌘ on a Mac, Ctrl elsewhere
+const appKey = e => MAC_KEYS ? (e.metaKey && !e.ctrlKey) : (e.ctrlKey && !e.metaKey);
 // ...and a different question, which used to be answered with that one.
 //
 // REMOTE says where the *state* comes from. This says what the page is being
@@ -5428,9 +5438,10 @@ function drawTabs() {
         onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️"),
     // The server versions this PC was paired with: a board each, opened in a
     // window of its own beside this one (far-keep plan §6.1). This PC's own
-    // window only: a phone, or a server's own board, has none of its own
-    AT_PC ? el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
-        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖧") : null));
+    // window only: a phone, or a server's own board, has none of its own.
+    // A desktop computer: the one picture of a machine every system's emoji has
+    AT_PC ?el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
+        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖥️") : null));
   drawCoach();
 }
 
@@ -13442,14 +13453,15 @@ function drawSeek() {
     inp.select();
   }
 }
-// Ctrl+F and F3 on the board itself. Pressed in the page instead, the browser
-// that draws it keeps the key and says so (Ev::SeekAsk), so either way the
-// same bar opens -- on a page whose controls offer the search. A key the
-// person set for something else keeps that meaning
+// Ctrl+F and F3 on the board itself (⌘F, ⌘G and ⇧⌘G on a Mac's keys).
+// Pressed in the page instead, the browser that draws it keeps the key and says
+// so (Ev::SeekAsk), so either way the same bar opens -- on a page whose
+// controls offer the search. A key the person set for something else keeps
+// that meaning
 document.addEventListener("keydown", e => {
-  if (e.isComposing || e.altKey || e.metaKey) return;
-  const find = e.ctrlKey && !e.shiftKey && e.code === "KeyF";
-  const again = e.key === "F3" && !e.ctrlKey;
+  if (e.isComposing || e.altKey) return;
+  const find = appKey(e) && !e.shiftKey && e.code === "KeyF";
+  const again = (e.key === "F3" && !e.ctrlKey && !e.metaKey) || (MAC_KEYS && appKey(e) && e.code === "KeyG");
   if (!find && !again) return;
   if (e.target && e.target.closest && e.target.closest("#seek")) return;
   if (!seekable(activeTab()) || covering() || directKeyOf(e)) return;
@@ -14516,6 +14528,10 @@ function drawTitle() {
   // the system's own caption tells a press from a drag
   bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
   bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
+  // A Mac's window keeps its own close, minimise and zoom, at the left end of
+  // this bar where every Mac window has them
+  const macFrame = window.__shikisha_frame === "mac";
+  bar.classList.toggle("macframe", macFrame);
   // Whose window this is, and what it is called -- what the system bar said,
   // where it said it. Which desk it is showing is the footer's to say.
   // The picture is the one the phone already fetches, from the same route
@@ -14528,6 +14544,7 @@ function drawTitle() {
   bar.append(el("div", {class: "drag"}));
   bar.append(el("button", {class: sideWidth() > 0 ? "on" : "",
     title: T["tui.title.side"] || "", onclick: () => window.__toggleSideBar()}, "\u25e8"));
+  if (macFrame) return;
   bar.append(el("button", {class: "wbtn", title: T["tui.title.min"] || "",
     onclick: () => winAct("minimize")}, "\ue921"));
   bar.append(el("button", {class: "wbtn", title: (winMax ? T["tui.title.restore"] : T["tui.title.max"]) || "",
@@ -18251,6 +18268,26 @@ kbd.addEventListener("keydown", e => {
   if (nm) {
     e.preventDefault();
     send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
+    return;
+  }
+  // ⌘ on a Mac's keys is the app's, never the terminal's. ⌘V at the window
+  // is a paste of this machine's clipboard -- the same one a right-click
+  // makes, text bracketed when the program asked and a picture sent up to a
+  // tab on another machine. From afar the browser's own paste lands in this
+  // box and goes on as typing: the clipboard is the one of whoever is looking.
+  // ⌘C copies what is selected on the screen. The rest are left to the window
+  if (MAC_KEYS && e.metaKey && !e.ctrlKey) {
+    const k = e.key.toLowerCase();
+    if (k === "v" && !e.shiftKey && !e.altKey && !REMOTE) {
+      e.preventDefault();
+      send({kind:"paste"});
+    } else if (k === "c" && !e.shiftKey && !e.altKey) {
+      const chosen = String(window.getSelection() || "");
+      if (chosen) {
+        e.preventDefault();
+        copyToClipboard(chosen);
+      }
+    }
     return;
   }
   if (e.ctrlKey && e.key.length === 1) {
@@ -24633,7 +24670,7 @@ function drawSftp() {
   u.pick.textContent = "";
   u.pick.classList.toggle("unset", !F.server);
   u.pick.append(el("span", {class:"nm"},
-    "🖧 " + (F.server || (T["sftp.no_address"] || ""))));
+    "🖥️ " + (F.server || (T["sftp.no_address"] || ""))));
   // The address says where; the name says what that place is to the person
   // who named it, which is the half read at a glance
   u.pick.append(...[serverMark(sftpMark())].filter(Boolean));
