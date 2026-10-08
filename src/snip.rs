@@ -129,6 +129,19 @@ pub fn take(s: Screen) -> Option<Vec<u8>> {
     }
 }
 
+/// Away from Windows the screen is taken through the system's own capture,
+/// which needs a permission the person grants; until that is asked for,
+/// there is no screen to say the pointer is on, and no picture
+#[cfg(not(windows))]
+pub fn screen_at_pointer() -> Option<Screen> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn take(_s: Screen) -> Option<Vec<u8>> {
+    None
+}
+
 /// BGRA rows, top first, as a BMP file.
 ///
 /// The fourth byte of each pixel is set to opaque: the desktop leaves it at
