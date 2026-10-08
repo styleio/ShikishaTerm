@@ -12,7 +12,7 @@
 
 // The picture and its tools are opened from the window, which only Windows
 // draws yet; elsewhere this is built all the same
-#![cfg_attr(not(windows), allow(dead_code))]
+#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 
 use std::sync::{Arc, Mutex};
 
@@ -129,15 +129,145 @@ pub fn take(s: Screen) -> Option<Vec<u8>> {
     }
 }
 
-/// Away from Windows the screen is taken through the system's own capture,
-/// which needs a permission the person grants; until that is asked for,
-/// there is no screen to say the pointer is on, and no picture
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub use mac::{screen_at_pointer, take};
+
+/// A Mac's screen, asked of CoreGraphics, and its picture taken by the
+/// system's own `screencapture` -- the one way to picture the screen that
+/// every macOS keeps working, and the one a person's permission is asked for
+/// by name
+#[cfg(target_os = "macos")]
+mod mac {
+    use super::{Screen, bmp_file};
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    struct Rect {
+        origin: Point,
+        size: Point,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        fn CGEventGetLocation(event: *mut c_void) -> Point;
+        fn CGGetDisplaysWithPoint(point: Point, max: u32, displays: *mut u32, count: *mut u32) -> i32;
+        fn CGDisplayBounds(display: u32) -> Rect;
+        fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
+        fn CGDisplayModeGetPixelWidth(mode: *mut c_void) -> usize;
+        fn CGDisplayModeGetWidth(mode: *mut c_void) -> usize;
+        fn CGDisplayModeRelease(mode: *mut c_void);
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(object: *const c_void);
+    }
+
+    /// The screen last found under the pointer, in the points the system
+    /// counts it in, beside what it was handed out as. `take` is handed back
+    /// the pixels; the picture is asked for in points
+    static LAST: std::sync::Mutex<Option<(Screen, Rect)>> = std::sync::Mutex::new(None);
+
+    /// The screen the pointer is on, in the pixels the window counts in: its
+    /// points times how many pixels each point is drawn with
+    pub fn screen_at_pointer() -> Option<Screen> {
+        unsafe {
+            let event = CGEventCreate(std::ptr::null());
+            if event.is_null() {
+                return None;
+            }
+            let at = CGEventGetLocation(event);
+            CFRelease(event);
+            let mut display = 0u32;
+            let mut count = 0u32;
+            if CGGetDisplaysWithPoint(at, 1, &mut display, &mut count) != 0 || count == 0 {
+                return None;
+            }
+            let bounds = CGDisplayBounds(display);
+            let mode = CGDisplayCopyDisplayMode(display);
+            let scale = if mode.is_null() {
+                1.0
+            } else {
+                let (pixels, points) = (CGDisplayModeGetPixelWidth(mode), CGDisplayModeGetWidth(mode));
+                CGDisplayModeRelease(mode);
+                if points == 0 { 1.0 } else { pixels as f64 / points as f64 }
+            };
+            let px = |v: f64| (v * scale).round() as i32;
+            let screen = Screen {
+                x: px(bounds.origin.x),
+                y: px(bounds.origin.y),
+                w: px(bounds.size.x),
+                h: px(bounds.size.y),
+            };
+            *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((screen, bounds));
+            Some(screen)
+        }
+    }
+
+    /// Whether the person has let this app picture the screen. Asked the first
+    /// time by the system's own dialog; once turned down, the settings page
+    /// where it is turned on is opened instead, since the system asks only once
+    fn may_picture_the_screen() -> bool {
+        unsafe {
+            if CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() {
+                return true;
+            }
+        }
+        shikisha_core::append_hook_log("snip: this app may not picture the screen yet; System Settings > Privacy & Security > Screen Recording");
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+            .status();
+        false
+    }
+
+    /// A picture of one screen, as a BMP the page can show as it is, at the
+    /// screen's own pixels
+    pub fn take(s: Screen) -> Option<Vec<u8>> {
+        let bounds = LAST.lock().unwrap_or_else(|e| e.into_inner()).filter(|(at, _)| *at == s).map(|(_, b)| b)?;
+        if !may_picture_the_screen() {
+            return None;
+        }
+        let file = std::env::temp_dir().join(format!("shikisha-snip-{}.png", std::process::id()));
+        let rect = format!(
+            "{},{},{},{}",
+            bounds.origin.x, bounds.origin.y, bounds.size.x, bounds.size.y
+        );
+        // -x: no camera sound. -R: this screen's rectangle, in points
+        let taken = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-t", "png", "-R", &rect])
+            .arg(&file)
+            .status()
+            .is_ok_and(|st| st.success());
+        let png = taken.then(|| std::fs::read(&file).ok()).flatten();
+        let _ = std::fs::remove_file(&file);
+        let (w, h, rgba) = super::rgba_of(&png?)?;
+        // The page reads BGRA rows, as Windows hands them over
+        let mut bgra = rgba;
+        for px in bgra.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        Some(bmp_file(w as i32, h as i32, bgra))
+    }
+}
+
+/// Where no window is drawn there is no screen to picture
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn screen_at_pointer() -> Option<Screen> {
     None
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn take(_s: Screen) -> Option<Vec<u8>> {
     None
 }

@@ -432,7 +432,22 @@ pub(super) fn keep_out_of_pictures(window: &tao::window::Window, out: bool) {
         use tao::platform::windows::WindowExtWindows;
         crate::snip::keep_out_of_pictures(window.hwnd(), out);
     }
-    #[cfg(not(windows))]
+    // A Mac's window that is not to be shared is left out of every picture
+    // of the screen (NSWindowSharingNone), and back in (ReadOnly) after
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use tao::platform::macos::WindowExtMacOS;
+        let ns_window = window.ns_window().cast::<AnyObject>();
+        if !ns_window.is_null() {
+            let sharing: usize = if out { 0 } else { 1 };
+            unsafe {
+                let _: () = msg_send![ns_window, setSharingType: sharing];
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (window, out);
 }
 
