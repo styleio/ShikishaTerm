@@ -6807,6 +6807,27 @@ pub fn exe_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+/// Where what ships with the program and is only ever read -- lang, profiles,
+/// the automation manual, the bridges -- sits: beside the program, except in a
+/// Mac's `.app`. There the program is in `Contents/MacOS`, where nothing but
+/// code may be (anything else breaks the signature), and what ships with it is
+/// in `Contents/Resources`
+pub fn shipped_dir() -> std::path::PathBuf {
+    shipped_dir_for(&exe_dir())
+}
+
+fn shipped_dir_for(exe_dir: &std::path::Path) -> std::path::PathBuf {
+    let in_app = exe_dir.file_name().is_some_and(|n| n == "MacOS")
+        && exe_dir.parent().and_then(|c| c.file_name()).is_some_and(|n| n == "Contents");
+    if in_app
+        && let Some(resources) = exe_dir.parent().map(|c| c.join("Resources"))
+        && resources.is_dir()
+    {
+        return resources;
+    }
+    exe_dir.to_path_buf()
+}
+
 /// Whether this process is running from an installed package (the Store).
 ///
 /// `GetCurrentPackageFullName` answers `APPMODEL_ERROR_NO_PACKAGE` when the
@@ -8856,6 +8877,23 @@ mod tests {
         assert!(!packaged(), "a test run should not be a packaged one");
         #[cfg(windows)]
         assert_eq!(root_dir(), exe_dir(), "the portable layout moved away from beside the exe");
+    }
+
+    #[test]
+    fn what_ships_is_read_from_resources_inside_an_app_and_beside_the_program_elsewhere() {
+        let root = std::env::temp_dir().join(format!("shikisha-shipped-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let macos = root.join("SHIKISHA-TERM.app").join("Contents").join("MacOS");
+        let resources = root.join("SHIKISHA-TERM.app").join("Contents").join("Resources");
+        std::fs::create_dir_all(&macos).unwrap();
+        // A folder called MacOS that is not inside an app is just a folder
+        assert_eq!(shipped_dir_for(&macos), macos, "no Resources beside it");
+        std::fs::create_dir_all(&resources).unwrap();
+        assert_eq!(shipped_dir_for(&macos), resources, "inside an .app");
+        let plain = root.join("SHIKISHA-TERM");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(shipped_dir_for(&plain), plain, "an unpacked folder");
+        let _ = std::fs::remove_dir_all(&root);
         for p in [logs_dir(), state_path("x")] {
             assert!(p.starts_with(root_dir()), "{p:?} went outside the data folder");
         }

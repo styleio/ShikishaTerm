@@ -388,12 +388,7 @@ fn load_manual(config_path: &std::path::Path) -> String {
     if let Some(d) = config_path.parent() {
         dirs.push(d.to_path_buf());
     }
-    if let Some(d) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
-    {
-        dirs.push(d);
-    }
+    dirs.push(crate::config::shipped_dir());
     dirs.push(std::path::PathBuf::from("."));
 
     let lang = crate::i18n::lang();

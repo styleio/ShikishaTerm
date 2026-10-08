@@ -110,13 +110,6 @@ fn say_fatally_with_page(text: &str, url: &str) {
 static ALLOC: shikisha_core::reserve::Reserve = shikisha_core::reserve::Reserve;
 
 fn main() -> Result<()> {
-    // On a Mac this same program is also each of Chromium's helpers, told so
-    // on its command line. Such a process does Chromium's part and nothing of
-    // the program's own -- not even what is done first
-    #[cfg(target_os = "macos")]
-    if let Some(code) = browser::run_helper_if_asked() {
-        std::process::exit(code);
-    }
     // Before anything else: which thread may show a dialog on a Mac
     dialog::note_first_thread();
     // Started from the Finder on a Mac, it would otherwise know only the
@@ -251,7 +244,7 @@ fn boot() -> Result<()> {
         // there would find no ja.json and quietly fall back to English, on a
         // Japanese machine, with nothing to say it had happened.
         &[
-            config::exe_dir(),
+            config::shipped_dir(),
             config_file_dir(),
             std::path::PathBuf::from("."),
         ],
