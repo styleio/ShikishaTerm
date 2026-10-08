@@ -252,6 +252,12 @@ pub(super) fn run_window(
     // icon's handler, which the system calls from wherever it likes
     let display_down = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // The notification-area icon, on the one window whose process outlives it
+    // A Mac's menus at the top of the screen, made with the window that
+    // wears the program's icon -- the one a person quits from
+    #[cfg(target_os = "macos")]
+    if wears_the_icon {
+        super::frame::menu_bar(ev_tx.clone());
+    }
     let tray = wears_the_icon
         .then(|| super::frame::Tray::add(&window, title, ev_tx.clone(), ev_loop.create_proxy(), std::sync::Arc::clone(&display_down)))
         .flatten();
@@ -1240,6 +1246,12 @@ pub(super) fn run_window(
             // shutting down, or an installer asking programs to let go of
             // their files (see `frame::session_ending`)
             Event::LoopDestroyed if !asked_to_end => super::frame::session_ending(),
+            // A Mac's Dock icon pressed while the window is put away: the same
+            // as the menu bar's Open
+            #[cfg(target_os = "macos")]
+            Event::Reopen { has_visible_windows: false, .. } => {
+                let _ = ev_tx.send(Ev::TrayOpen);
+            }
             _ => {}
         }
     });

@@ -161,6 +161,13 @@ objc2-foundation = "0.3.2"
 # The keys that work from any program (src/hotkeys.rs). Windows' are asked of
 # the system directly; a Mac's go through the same calls its own programs use
 global-hotkey = "0.8.0"
+# A Mac's notifications, the way its own programs post them (src/macnote.rs),
+# and the blocks its calls answer through
+objc2-user-notifications = "0.3.2"
+block2 = "0.6.2"
+# The program's icon in the menu bar, where it lives while its window is put
+# away (src/browser/frame.rs). Windows' is hand-rolled (core/tray.rs)
+tray-icon = { version = "0.26.0", default-features = false }
 
 # The icon and the version details Explorer shows for the exe
 [target.'cfg(windows)'.build-dependencies]

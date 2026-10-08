@@ -48,6 +48,8 @@ mod picker;
 mod hotkeys;
 mod snip;
 mod wintoast;
+#[cfg(target_os = "macos")]
+mod macnote;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -117,7 +119,10 @@ fn main() -> Result<()> {
     shikisha_core::loginpath::adopt();
     // This process owns a desktop, so it is the one that can put a banner on it.
     // Told once, before anything has cause to send one
+    #[cfg(not(target_os = "macos"))]
     notify::use_local_banners(Box::new(wintoast::WindowsBanners));
+    #[cfg(target_os = "macos")]
+    notify::use_local_banners(Box::new(macnote::MacBanners::new()));
     webui::use_file_picker(Box::new(picker::DesktopPicker));
     let r = boot();
     if let Err(e) = &r {
@@ -1252,6 +1257,13 @@ fn run_in_window() -> Result<()> {
         // The keys that work from any program. The scissors' own key frames first
         // and chooses after; a tool's key opens that tool; the rest open something
         // on the board, which comes to the front for it
+        // A notification clicked brings the window forward from wherever the
+        // click is heard (a Mac's are heard on a thread of the system's)
+        #[cfg(target_os = "macos")]
+        {
+            let raiser = surface.win.raiser();
+            macnote::raise_by(move || raiser.raise());
+        }
         let opener = surface.win.snip_opener();
         surface.hotkeys = hotkeys::Hotkeys::start(surface.win.keys_registrar(), move |action| {
             if shikisha_core::hotkeys::ON_THE_BOARD.contains(&action) {

@@ -829,6 +829,12 @@ impl Browser {
         KeysRegistrar(self.proxy.clone())
     }
 
+    /// A way to bring the window forward from another thread
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn raiser(&self) -> WindowRaiser {
+        WindowRaiser(self.proxy.clone())
+    }
+
     /// A way to hand the tool page its answer from another thread: the AI it
     /// asked is waited for away from the loop that draws everything
     pub fn snip_replier(&self) -> SnipReplier {
@@ -1332,6 +1338,20 @@ fn ua_override(ua: &str) -> String {
         },
     })
     .to_string()
+}
+
+/// Brings the window to the front from another thread
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct WindowRaiser(tao::event_loop::EventLoopProxy<Cmd>);
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl WindowRaiser {
+    /// In front, and the window the keyboard types into. Only for a window
+    /// that is showing: one put away is brought back by `Browser::show`,
+    /// which also notes that it is no longer away
+    pub fn raise(&self) {
+        let _ = self.0.send_event(Cmd::Show);
+    }
 }
 
 /// Has the keys that work from any program registered on the window's thread,

@@ -12358,6 +12358,8 @@ MIT License
 Applies to:
   * keyboard-types 0.7.0
     https://github.com/pyfisch/keyboard-types
+  * keyboard-types 0.8.3
+    https://github.com/rust-windowing/keyboard-types
 
 --------------------------------------------------------------------------------
 
@@ -16437,6 +16439,10 @@ MIT License
 Applies to:
   * global-hotkey 0.8.0
     https://github.com/tauri-apps/global-hotkey
+  * muda 0.21.1
+    https://github.com/tauri-apps/muda
+  * tray-icon 0.26.1
+    https://github.com/tauri-apps/tray-icon
 
 --------------------------------------------------------------------------------
 
@@ -16599,6 +16605,8 @@ Applies to:
     https://github.com/madsmtm/objc2
   * objc2-core-graphics 0.3.2
     https://github.com/madsmtm/objc2
+  * objc2-core-location 0.3.2
+    https://github.com/madsmtm/objc2
   * objc2-encode 4.1.0
     https://github.com/madsmtm/objc2
   * objc2-exception-helper 0.1.1
@@ -16606,6 +16614,8 @@ Applies to:
   * objc2-foundation 0.3.2
     https://github.com/madsmtm/objc2
   * objc2-io-kit 0.3.2
+    https://github.com/madsmtm/objc2
+  * objc2-user-notifications 0.3.2
     https://github.com/madsmtm/objc2
   * objc2-web-kit 0.3.2
     https://github.com/madsmtm/objc2

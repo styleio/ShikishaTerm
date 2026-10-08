@@ -196,13 +196,219 @@ impl Tray {
     }
 }
 
-/// Away from Windows the program's icon lives in the menu bar, which comes
-/// with the window drawn there; until it does, there is none
-#[cfg(not(windows))]
+/// A Mac's: the program's icon in the menu bar, with the same two lines,
+/// "Open" and "Quit". It is where the program is while its window is put
+/// away, besides the Dock (whose icon brings the window back too, see
+/// `Event::Reopen` in the loop). Its notices are notifications: a Mac's
+/// menu bar has no balloons
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 pub(super) struct Tray;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// The icon itself. Made, kept and let go on the window's thread, the only
+    /// one a Mac's menu bar is touched from
+    static MENU_BAR_ICON: std::cell::RefCell<Option<tray_icon::TrayIcon>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+impl Tray {
+    pub fn add(
+        _window: &tao::window::Window,
+        title: &str,
+        tell: Sender<Ev>,
+        revive: tao::event_loop::EventLoopProxy<Cmd>,
+        down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Option<Tray> {
+        use tray_icon::menu::{Menu, MenuItem};
+        let menu = Menu::new();
+        let open = MenuItem::new(shikisha_core::i18n::t("tray.open"), true, None);
+        let quit = MenuItem::new(shikisha_core::i18n::t("tray.quit"), true, None);
+        menu.append(&open).ok()?;
+        menu.append(&quit).ok()?;
+        let icon = menu_bar_picture()?;
+        let made = tray_icon::TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip(title)
+            .with_icon(icon)
+            .build();
+        let made = match made {
+            Ok(m) => m,
+            Err(e) => {
+                shikisha_core::append_hook_log(&format!("[tray] the menu bar icon could not be made: {e}"));
+                return None;
+            }
+        };
+        let quitting = tell.clone();
+        on_menu(open.id(), move || {
+            // The screen down is a screen to bring back, not a window to show
+            if down.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = revive.send_event(Cmd::DisplayWanted { asked: true });
+            } else {
+                let _ = tell.send(Ev::TrayOpen);
+            }
+        });
+        on_menu(quit.id(), move || {
+            let _ = quitting.send(Ev::TrayQuit);
+        });
+        MENU_BAR_ICON.with(|i| *i.borrow_mut() = Some(made));
+        Some(Tray)
+    }
+
+    /// Said as a notification, the way a Mac says things from the menu bar
+    pub fn notice(&self, title: &str, text: &str) {
+        use shikisha_shared::Toasts;
+        if let Err(e) = crate::macnote::MacBanners.show(title, text, None) {
+            shikisha_core::append_hook_log(&format!("[tray] {title}: {text} (not shown: {e})"));
+        }
+    }
+
+    pub fn remove(&self) {
+        MENU_BAR_ICON.with(|i| i.borrow_mut().take());
+    }
+}
+
+/// What each menu line of this program's does, by the line's id. One list for
+/// the menu bar's icon and the menus at the top of the screen alike: a press is
+/// heard by one handler, and there can be only one
+#[cfg(target_os = "macos")]
+static MENU_ACTIONS: std::sync::Mutex<Vec<(tray_icon::menu::MenuId, Box<dyn Fn() + Send>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Do `act` when the menu line `id` is chosen
+#[cfg(target_os = "macos")]
+fn on_menu(id: &tray_icon::menu::MenuId, act: impl Fn() + Send + 'static) {
+    use tray_icon::menu::MenuEvent;
+    static HEARD: std::sync::Once = std::sync::Once::new();
+    HEARD.call_once(|| {
+        MenuEvent::set_event_handler(Some(|e: MenuEvent| {
+            let actions = MENU_ACTIONS.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((_, act)) = actions.iter().find(|(id, _)| *id == e.id) {
+                act();
+            }
+        }));
+    });
+    MENU_ACTIONS.lock().unwrap_or_else(|p| p.into_inner()).push((id.clone(), Box::new(act)));
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// The menus at the top of the screen, kept for as long as they are shown
+    static MENU_BAR: std::cell::RefCell<Option<tray_icon::menu::Menu>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The menus at the top of a Mac's screen: the app's own (About, Settings ⌘,
+/// Hide, Quit ⌘Q), Edit and Window, as every Mac program has them.
+///
+/// Edit is not decoration. A Mac hands ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z to whatever is
+/// typed into through these lines: without them a page's boxes take no paste
+/// at all. And Quit is this program's own line, not the system's, so leaving
+/// asks first exactly as the tray's Quit does
+#[cfg(target_os = "macos")]
+pub(super) fn menu_bar(tell: Sender<Ev>) {
+    use tray_icon::menu::accelerator::{Accelerator, Code, Modifiers};
+    use tray_icon::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem as Line, Submenu};
+    let t = |k: &str| shikisha_core::i18n::t(k);
+    let cmd = |code| Some(Accelerator::new(Some(Modifiers::SUPER), code));
+    let settings = MenuItem::new(t("menu.mac.settings"), true, cmd(Code::Comma));
+    let quit = MenuItem::new(t("menu.mac.quit"), true, cmd(Code::KeyQ));
+    let about = AboutMetadata {
+        name: Some("SHIKISHA-TERM".into()),
+        version: Some(env!("CARGO_PKG_VERSION").into()),
+        ..Default::default()
+    };
+    let made = (|| -> tray_icon::menu::Result<Menu> {
+        let app = Submenu::with_items(
+            "SHIKISHA-TERM",
+            true,
+            &[
+                &Line::about(Some(&t("menu.mac.about")), Some(about)),
+                &Line::separator(),
+                &settings,
+                &Line::separator(),
+                &Line::services(Some(&t("menu.mac.services"))),
+                &Line::separator(),
+                &Line::hide(Some(&t("menu.mac.hide"))),
+                &Line::hide_others(Some(&t("menu.mac.hide_others"))),
+                &Line::show_all(Some(&t("menu.mac.show_all"))),
+                &Line::separator(),
+                &quit,
+            ],
+        )?;
+        let edit = Submenu::with_items(
+            t("menu.mac.edit"),
+            true,
+            &[
+                &Line::undo(Some(&t("menu.mac.undo"))),
+                &Line::redo(Some(&t("menu.mac.redo"))),
+                &Line::separator(),
+                &Line::cut(Some(&t("menu.mac.cut"))),
+                &Line::copy(Some(&t("menu.mac.copy"))),
+                &Line::paste(Some(&t("menu.mac.paste"))),
+                &Line::select_all(Some(&t("menu.mac.select_all"))),
+            ],
+        )?;
+        let window = Submenu::with_items(
+            t("menu.mac.window"),
+            true,
+            &[
+                &Line::minimize(Some(&t("menu.mac.minimize"))),
+                &Line::maximize(Some(&t("menu.mac.zoom"))),
+                &Line::separator(),
+                &Line::close_window(Some(&t("menu.mac.close"))),
+            ],
+        )?;
+        let bar = Menu::with_items(&[&app, &edit, &window])?;
+        bar.init_for_nsapp();
+        window.set_as_windows_menu_for_nsapp();
+        Ok(bar)
+    })();
+    match made {
+        Ok(bar) => MENU_BAR.with(|m| *m.borrow_mut() = Some(bar)),
+        Err(e) => {
+            shikisha_core::append_hook_log(&format!("[menu] the menus could not be made: {e}"));
+            return;
+        }
+    }
+    let opening = tell.clone();
+    on_menu(settings.id(), move || {
+        let _ = opening.send(Ev::OpenSettings {
+            section: None,
+            ret: false,
+            folder: None,
+            tabpos: None,
+            tabname: None,
+            tabkey: None,
+            sheet: false,
+        });
+    });
+    on_menu(quit.id(), move || {
+        let _ = tell.send(Ev::TrayQuit);
+    });
+}
+
+/// The program's picture, small enough for the menu bar (the bar scales it to
+/// its own height)
+#[cfg(target_os = "macos")]
+fn menu_bar_picture() -> Option<tray_icon::Icon> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(include_bytes!("../../assets/pwa/icon-192.png")));
+    let mut reader = decoder.read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()?];
+    let frame = reader.next_frame(&mut rgba).ok()?;
+    if frame.color_type != png::ColorType::Rgba || frame.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    rgba.truncate(frame.buffer_size());
+    tray_icon::Icon::from_rgba(rgba, frame.width, frame.height).ok()
+}
+
+/// Where no window is drawn there is no icon for one
+#[cfg(not(any(windows, target_os = "macos")))]
+#[derive(Clone, Copy)]
+pub(super) struct Tray;
+
+#[cfg(not(any(windows, target_os = "macos")))]
 impl Tray {
     pub fn add(
         _window: &tao::window::Window,
