@@ -884,6 +884,83 @@ impl Drifts {
     }
 }
 
+/// What is left in a worktree nobody works in (see
+/// [`crate::worktree::left_in`]). A card with no tab on it shows nothing
+/// running, so this is the one thing it has to say: whether it can go
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Default)]
+pub struct Left {
+    /// Changes not committed: what removing the folder refuses over
+    pub unsaved: u32,
+    /// Commits on no remote. Removing the folder keeps its branch, and them
+    pub unpushed: u32,
+    /// When its HEAD last moved, in seconds since 1970
+    pub moved: Option<u64>,
+}
+
+/// How long an answer about what is left stands before it is asked again.
+/// Nothing runs in these folders, so they change rarely -- but a person may
+/// commit in one from somewhere else
+const LEFT_FRESH: Duration = Duration::from_secs(20);
+
+/// One folder's last answer about what is left, and whether one is out
+#[derive(Default)]
+struct Leaving {
+    left: Option<Left>,
+    settled: Option<Instant>,
+    out: bool,
+}
+
+/// What is left in each worktree nobody works in, kept up to date in the
+/// background: git is run on a thread of its own, never by the drawing
+#[derive(Clone, Default)]
+pub struct Leftovers {
+    known: Arc<Mutex<HashMap<PathBuf, Leaving>>>,
+}
+
+/// The one table, for the whole app.
+pub fn leftovers() -> &'static Leftovers {
+    static LEFT: OnceLock<Leftovers> = OnceLock::new();
+    LEFT.get_or_init(Leftovers::default)
+}
+
+impl Leftovers {
+    /// Ask about these folders, and answer with what is known so far. Any
+    /// other folder is forgotten: one that gets a tab is no longer asked about
+    pub fn look(&self, paths: &[PathBuf]) -> HashMap<PathBuf, Left> {
+        let now = Instant::now();
+        let mut out = HashMap::new();
+        let mut send = Vec::new();
+        {
+            let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
+            known.retain(|k, _| paths.iter().any(|p| p == k));
+            for p in paths {
+                let e = known.entry(p.clone()).or_default();
+                if let Some(left) = &e.left {
+                    out.insert(p.clone(), left.clone());
+                }
+                if !e.out && e.settled.is_none_or(|at| now.duration_since(at) >= LEFT_FRESH) {
+                    e.out = true;
+                    send.push(p.clone());
+                }
+            }
+        }
+        for p in send {
+            let known = Arc::clone(&self.known);
+            std::thread::spawn(move || {
+                let left = crate::worktree::left_in(&p);
+                if let Ok(mut map) = known.lock()
+                    && let Some(e) = map.get_mut(&p)
+                {
+                    e.left = left;
+                    e.settled = Some(Instant::now());
+                    e.out = false;
+                }
+            });
+        }
+        out
+    }
+}
+
 /// The two commits to compare: where this folder is, and where the remote was
 /// when it was last fetched.
 ///

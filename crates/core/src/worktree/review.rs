@@ -25,7 +25,9 @@ pub struct Review {
 
 pub(super) fn changes(folder: &Path, local: bool) -> Result<Vec<crate::git::Change>> {
     // No conflict-marker reads are needed to decide whether a file is lost.
-    let status = crate::git::run(folder, &["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+    // Without optional locks: status may otherwise rewrite the index, and an
+    // AI running git in the same folder meets index.lock
+    let status = crate::git::run(folder, &["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
     Ok(crate::git::read_status(&status).into_iter().filter(|c| {
         !(local && c.index == '?' && std::fs::symlink_metadata(folder.join(&c.path))
             .is_ok_and(|m| m.file_type().is_symlink()))

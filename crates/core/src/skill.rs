@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -105,8 +105,8 @@ To see a whole job through with other tabs -- "have <@claude> implement it and
 rounds -- run `shikisha skill orchestration` and follow it. It keeps the tasks
 and the reports for you, and every answer says which command to run next.
 
-To give work a working folder of its own -- a new branch in a git worktree,
-often with another AI working in it -- do not run `git worktree add`: run
+To give work a working folder of its own -- a new branch in a git worktree
+with another AI working in it -- do not run `git worktree add`: run
 `shikisha skill worktree` and follow it. A folder made that way is on the
 person's desk, with the AI in it in a tab they can watch.
 
@@ -178,8 +178,9 @@ Three commands. Each answer ends with the next command, filled in: run it.
    what to do, on which branch, and what to report. It works in its own
    folder, so it never sees your uncommitted changes.
 
-If the person only wanted the folder, stop after step 1. If they handed the
-work off and do not want to wait for it, end your turn when `ask_tab` says
+Run all three. A folder with no AI working in it tells the person nothing: it
+is a card on their desk they cannot read. If they handed the work off and do
+not want to wait for it, end your turn when `ask_tab` says
 `[shikisha] STILL WORKING`. Leave the folder and the tab for the person:
 removing a worktree, merging or pushing is theirs to ask for.
 "#

@@ -570,6 +570,10 @@ pub struct GroupState {
     /// just added is exactly that folder. It is shown so its + can be pressed
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub empty: bool,
+    /// For a worktree on this machine with nothing running in it: what is
+    /// left in it, so its card says whether it can go
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left: Option<crate::folders::Left>,
     /// The issue or pull request this folder was made for, as the settings
     /// wrote it (`issue:owner/name#12`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -657,6 +661,7 @@ impl GroupState {
                     health: Default::default(),
                     drift: Default::default(),
                     empty: false,
+                    left: None,
                     work_item: None,
                     host: t.host().map(str::to_string),
                     mark: None,
@@ -704,6 +709,9 @@ impl GroupState {
                     health: Default::default(),
                     drift: Default::default(),
                     empty: true,
+                    // Filled in by whoever is drawing, off the disk, as the
+                    // health is
+                    left: None,
                     work_item: None,
                     host,
                     mark: None,

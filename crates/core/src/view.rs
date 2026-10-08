@@ -545,6 +545,21 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
             g.empty = false;
         }
     }
+    // What is left in each worktree here that nothing runs in. Its card shows
+    // no AI at work, so this is what it has to say -- changes, commits on no
+    // remote, when it last moved -- and whether it can go
+    let idle: Vec<std::path::PathBuf> = groups
+        .iter()
+        .filter(|(k, g)| {
+            g.empty && g.linked && g.host.is_none() && crate::uistate::place_of(k).0.is_none()
+                && matches!(g.health, folders::Health::Fine)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    let left = folders::leftovers().look(&idle);
+    for (at, g) in groups.iter_mut() {
+        g.left = left.get(at).cloned();
+    }
     // Once every household is known: which project each is a checkout of, so
     // one project on several machines is drawn as one
     crate::uistate::GroupState::join_wholes(&mut groups, &ui.project_checkouts, &ui.folder_projects);

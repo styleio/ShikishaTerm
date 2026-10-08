@@ -1312,6 +1312,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .job .jst.held { color:var(--warn); }
   .job .jst.dropped { color:var(--dim); text-decoration:line-through; }
   .job .jn { flex:1 1 0; min-width:0; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .job .jfold { display:block; width:calc(100% - 18px); margin-left:18px; overflow:hidden; text-overflow:ellipsis;
+    white-space:nowrap; border:none; background:none; color:var(--dim); text-align:left; }
+  .job .jfold:hover { color:var(--text); }
+  .job .jhead .jcaret { flex:none; min-height:0; padding:0 2px; border:none; background:none; color:var(--dim); }
+  .job .jhead .jcaret:hover { color:var(--text); }
   .job .jtry { flex:none; color:var(--dim); font-variant-numeric:tabular-nums; }
   .job button { font:inherit; font-size:11px; min-height:22px; padding:0 var(--s2); border-radius:var(--r-ctl);
     border:1px solid var(--edge); background:var(--panel2); color:var(--text); cursor:pointer; flex:none; }
@@ -4045,6 +4050,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.fnew { padding-left:29px; color:var(--dim); font-size:12.5px; }
   .tab.fnew:hover { color:var(--text); }
   .tab.fnew.pulse { color:var(--brand); font-weight:700; }
+  /* What is left in a worktree nothing runs in, under its row: the one thing
+     a card with no AI on it has to say, and the way to be rid of it */
+  .fleft { display:flex; flex-wrap:wrap; align-items:center; gap:2px 8px; padding:1px 8px 2px 29px;
+    font-size:11px; color:var(--dim); }
+  .fleft .lost { color:var(--warn); }
+  .fleft .lgo { margin-left:auto; padding:0 6px; border:1px solid var(--edge); border-radius:var(--r-ctl);
+    background:none; color:var(--dim); font:inherit; cursor:pointer; }
+  .fleft .lgo:hover { color:var(--warn); border-color:var(--warn); }
   .tab.folder .ail { cursor:pointer; }
   .tab.folder .caret { color:var(--dim); font-size:9px; }
   /* Folders that are not on this machine. One line whatever the number, because
@@ -8243,9 +8256,33 @@ function emptyRow(g, card) {
   row.addEventListener("contextmenu", e => { e.preventDefault(); folderMenu(e, g); });
   holdOpens(row, e => folderMenu(e, g));
   box.append(row);
+  const left = leftLine(g);
+  if (left) box.append(left);
   if (!own) box.append(el("div", {class:"tab fnew" + next, onclick:() => addTabHere(g)},
     el("span", {class:"nm"}, T["tui.pane.add"] || "+ Add tab")));
   return box;
+}
+// What is left in a worktree nothing runs in (`g.left`, from the app): the
+// changes removing it would refuse over, the commits on no remote, when it
+// last moved. With nothing uncommitted it can go, and the way to that is on
+// the same line -- the same removal the folder's menu holds, asked first
+function leftLine(g) {
+  const l = g.left;
+  if (!l) return null;
+  const n = (key, count) => (T[key] || "{n}").replaceAll("{n}", String(count));
+  const said = [];
+  if (l.unsaved) said.push(el("span", {class:"lost"}, n("tui.folder.left.unsaved", l.unsaved)));
+  // Kept by the branch when the folder goes, so said, not warned about
+  if (l.unpushed) said.push(el("span", {}, n("tui.folder.left.unpushed", l.unpushed)));
+  if (!l.unsaved && !l.unpushed) said.push(el("span", {}, T["tui.folder.left.clean"] || ""));
+  if (l.moved) {
+    const s = Math.floor(Date.now() / 1000) - l.moved;
+    said.push(el("span", {title:new Date(l.moved * 1000).toLocaleString()},
+      s < 60 ? T["tui.folder.left.moved_now"] || "" : (T["tui.folder.left.moved"] || "{ago}").replaceAll("{ago}", agoText(l.moved))));
+  }
+  if (!l.unsaved) said.push(el("button", {type:"button", class:"lgo", title:T["tui.folder.left.discard.title"] || "",
+    onclick:e => { e.stopPropagation(); discardFolder(g); }}, T["tui.menu.discard"] || ""));
+  return el("div", {class:"fleft"}, ...said);
 }
 // One tab's row. `g` is the folder it stands under, if any; `deep` when that
 // folder is a branch standing inside its project's household, so the tab
@@ -8260,11 +8297,27 @@ function jobsOf(t) {
 // One job: what it is, each task with what it is doing and the tab on it (a
 // press goes to that tab), the decisions waiting for the person, and the one
 // way to stop it all. Stopping cuts AIs off mid-work, so it is asked first
+// The jobs folded to their heading, by id. Folded only by a press: some want
+// to watch the work go by, some want the column back. Kept for this viewer
+// only -- what one person folds is not what everybody sees
+const jobsFolded = new Set((() => { try { return JSON.parse(localStorage.getItem("jobsFolded") || "[]"); } catch { return []; } })());
+function keepJobsFolded() {
+  try { localStorage.setItem("jobsFolded", JSON.stringify([...jobsFolded].slice(-50))); } catch {}
+}
 function jobRow(j) {
   const tabOf = uid => (S.tabs || []).find(t => t.uid === uid);
   const waiting = (j.decisions || []).some(d => d.who === "person");
   const box = el("div", {class:"job"});
+  const folded = jobsFolded.has(j.id);
+  const fold = e => {
+    e.stopPropagation();
+    folded ? jobsFolded.delete(j.id) : jobsFolded.add(j.id);
+    keepJobsFolded();
+    drawTabs();
+  };
   box.append(el("div", {class:"jhead"},
+    el("button", {type:"button", class:"jcaret", title:T[folded ? "tui.job.unfold" : "tui.job.fold"] || "", onclick:fold},
+      folded ? "▸" : "▾"),
     el("span", {class:"dot " + (waiting ? "QUESTION" : j.working ? "BUSY" : "DONE")}),
     el("span", {class:"jlabel"}, T["tui.job.label"] || ""),
     el("span", {class:"jt", title:j.goal}, j.goal),
@@ -8281,7 +8334,16 @@ function jobRow(j) {
             go:() => send({kind:"orch", act:"stop", job:j.id}),
           });
         }}, T["tui.job.stop"] || "")));
-  for (const task of j.tasks || []) {
+  // Folded, the tasks are one line of how many are in each state, which
+  // unfolds them again. The questions for the person below are never folded
+  // away: a job waiting on somebody who cannot see it waits for good
+  if (folded) {
+    const tasks = j.tasks || [];
+    const states = [...new Set(tasks.map(t => t.state))];
+    if (states.length) box.append(el("button", {type:"button", class:"jfold", title:T["tui.job.unfold"] || "", onclick:fold},
+      states.map(st => (T["tui.job.state." + st] || st) + " " + tasks.filter(t => t.state === st).length).join(" · ")));
+  }
+  for (const task of folded ? [] : j.tasks || []) {
     const w = task.tab ? tabOf(task.tab) : null;
     box.append(el("div", {class:"jtask"},
       el("span", {class:"jst " + task.state}, T["tui.job.state." + task.state] || task.state),

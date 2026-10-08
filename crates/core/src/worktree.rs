@@ -2484,6 +2484,40 @@ pub fn ready_to_discard_reviewed(folder: &Path, approved: Option<&str>) -> Resul
     Ok(false)
 }
 
+/// What is left in a worktree on this machine, for a card with no tab on it
+/// to say: what removing it would refuse over, what is committed and on no
+/// remote, and when its HEAD last moved. `None` when git cannot say
+///
+/// The changes are counted the way [`ready_to_discard`] counts them, so a
+/// card that says "nothing left" offers a removal that goes through
+pub fn left_in(folder: &Path) -> Option<crate::folders::Left> {
+    if !crate::repo::is_linked(folder) {
+        return None;
+    }
+    crate::git::there(folder, None);
+    let unsaved = review::changes(folder, true).ok()?.len() as u32;
+    // With no remote there is nowhere to push to, and every commit would be
+    // counted as one never pushed
+    let remotes = crate::git::run(folder, &["remote"]).unwrap_or_default();
+    let unpushed = match remotes.trim().is_empty() {
+        true => 0,
+        false => crate::git::run(folder, &["rev-list", "--count", "HEAD", "--not", "--remotes"])
+            .ok()
+            .and_then(|n| n.trim().parse().ok())
+            .unwrap_or(0),
+    };
+    // The worktree's own reflog grows on every commit and checkout made in
+    // it, and starts when it is made; nothing this app reads touches it
+    let own = crate::git::run(folder, &["rev-parse", "--absolute-git-dir"]).ok()?;
+    let own = Path::new(own.trim());
+    let moved = ["logs/HEAD", "HEAD"]
+        .iter()
+        .find_map(|f| std::fs::metadata(own.join(f)).and_then(|m| m.modified()).ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    Some(crate::folders::Left { unsaved, unpushed, moved })
+}
+
 /// The same question about a folder on a MicroVM, asked of git there -- and
 /// one more. A worktree here leaves its branch in the project's repository when
 /// its folder goes; a MicroVM worktree is a machine of its own, and its
@@ -5824,6 +5858,45 @@ tools/conpty.ps1"));
         let listed = crate::detach_console(&mut ask).output().unwrap();
         let name = folder.file_name().unwrap().to_string_lossy().into_owned();
         String::from_utf8_lossy(&listed.stdout).contains(&name)
+    }
+
+    /// A card with nothing running on it says what is left in its worktree:
+    /// changes removing it would refuse over, and commits on no remote
+    #[test]
+    fn what_is_left_in_a_worktree_is_counted_as_its_removal_counts_it() {
+        let (main, cut) = cut_for_removal(&format!("left-{}", crate::random_hex(6)));
+        let git = |at: &Path, args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(at).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // No remote: nothing can be unpushed, however many commits there are
+        let left = left_in(&cut.folder).expect("a worktree is read");
+        assert_eq!((left.unsaved, left.unpushed), (0, 0));
+        assert!(left.moved.is_some(), "a worktree's HEAD has moved at least once, when it was made");
+        assert!(ready_to_discard(&cut.folder).is_ok(), "nothing left, and the removal agrees");
+
+        let bare = main.parent().unwrap().join("remote.git");
+        git(main.parent().unwrap(), &["init", "-q", "--bare", &bare.display().to_string()]);
+        git(&main, &["remote", "add", "origin", &bare.display().to_string()]);
+        git(&main, &["push", "-q", "origin", "main"]);
+        assert_eq!(left_in(&cut.folder).unwrap().unpushed, 0, "what the remote has is not unpushed");
+
+        std::fs::write(cut.folder.join("notes.md"), "half an idea\n").unwrap();
+        let left = left_in(&cut.folder).unwrap();
+        assert_eq!(left.unsaved, 1);
+        assert!(ready_to_discard(&cut.folder).is_err(), "the card and the removal disagree");
+
+        git(&cut.folder, &["add", "-A"]);
+        git(&cut.folder, &["commit", "-qm", "an idea"]);
+        let left = left_in(&cut.folder).unwrap();
+        assert_eq!((left.unsaved, left.unpushed), (0, 1));
+
+        // The project's own folder is not a worktree, and has no card of this kind
+        assert!(left_in(&main).is_none());
+        let _ = std::fs::remove_dir_all(main.parent().unwrap());
+        let _ = std::fs::remove_dir_all(cut.folder.parent().unwrap());
     }
 
     #[test]
