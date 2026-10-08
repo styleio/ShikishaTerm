@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 /// varies:
 ///
 /// ```text
-///     git config --global --add safe.directory '%(prefix)///192.168.0.35/projects/php7/te0_main'
+///     git config --global --add safe.directory '%(prefix)///nas/projects/web/shop'
 /// ```
 ///
 /// The words around it are translated when git speaks another language; the
@@ -212,24 +212,24 @@ mod tests {
 
     /// Word for word what git for Windows says about a project on a share,
     /// with the person's own settings out of the way (2026-09-18).
-    const REFUSED: &str = "fatal: detected dubious ownership in repository at '//192.168.0.35/projects/php7/te0_main'\n\
-'//192.168.0.35/projects/php7/te0_main' is owned by:\n\t(inconvertible) (S-1-5-21-2962977560-3957723904-1976646925-1000)\n\
+    const REFUSED: &str = "fatal: detected dubious ownership in repository at '//nas/projects/web/shop'\n\
+'//nas/projects/web/shop' is owned by:\n\t(inconvertible) (S-1-5-21-1111111111-2222222222-3333333333-1000)\n\
 but the current user is:\n\tNPC/style (S-1-5-21-3345742566-3279784867-2879849460-1001)\n\
-To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory '%(prefix)///192.168.0.35/projects/php7/te0_main'\n";
+To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory '%(prefix)///nas/projects/web/shop'\n";
 
     #[test]
     fn what_git_asked_for_is_what_is_offered() {
         assert_eq!(
             asked_for(REFUSED).as_deref(),
-            Some("%(prefix)///192.168.0.35/projects/php7/te0_main"),
+            Some("%(prefix)///nas/projects/web/shop"),
         );
         // A branch's own folder, which is the second place git stops: the
         // folder is here, the git folder it belongs to is on the share
-        let cut = "fatal: detected dubious ownership in repository at 'C:/Users/me/SHIKISHA-TERM/branches/te0_main/x'\n\
-To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory 'C:/Users/me/SHIKISHA-TERM/branches/te0_main/x'\n";
+        let cut = "fatal: detected dubious ownership in repository at 'C:/Users/me/SHIKISHA-TERM/branches/shop/x'\n\
+To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory 'C:/Users/me/SHIKISHA-TERM/branches/shop/x'\n";
         assert_eq!(
             asked_for(cut).as_deref(),
-            Some("C:/Users/me/SHIKISHA-TERM/branches/te0_main/x"),
+            Some("C:/Users/me/SHIKISHA-TERM/branches/shop/x"),
         );
         // Without the quotes, which is how git writes a path with nothing in
         // it that would need them on a shell
@@ -250,12 +250,12 @@ To add an exception for this directory, call:\n\n\tgit config --global --add saf
     #[test]
     fn a_branch_this_app_made_is_covered_by_one_line() {
         let root = as_git_spells(&crate::worktree::branches_root());
-        let cut = format!("{root}/te0_main/tough-arachnid");
+        let cut = format!("{root}/shop/tough-arachnid");
         assert_eq!(spread(&cut), format!("{root}/*"), "every branch would need its own line");
         // Spelled the other way by git, it is still the same place
         assert_eq!(spread(&cut.to_uppercase()), format!("{root}/*"));
         // The project itself is not in there, and is written down as itself
-        let far = "%(prefix)///192.168.0.35/projects/php7/te0_main";
+        let far = "%(prefix)///nas/projects/web/shop";
         assert_eq!(spread(far), far);
         assert_eq!(spread("D:/work/proj"), "D:/work/proj");
         // The place itself, not something inside it
@@ -265,8 +265,8 @@ To add an exception for this directory, call:\n\n\tgit config --global --add saf
     #[test]
     fn a_folder_on_another_machine_is_written_the_way_git_writes_one() {
         assert_eq!(
-            as_git_spells(Path::new(r"\\192.168.0.35\projects\php7\te0_main")),
-            "%(prefix)///192.168.0.35/projects/php7/te0_main",
+            as_git_spells(Path::new(r"\\nas\projects\web\shop")),
+            "%(prefix)///nas/projects/web/shop",
         );
         assert_eq!(as_git_spells(Path::new(r"D:\work\proj")), "D:/work/proj");
     }

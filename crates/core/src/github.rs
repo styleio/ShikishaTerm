@@ -875,8 +875,8 @@ pub struct Source {
     ///
     /// Not the same string as `dir`, and the difference is the whole point. A
     /// checkout is worked out by asking the disk, which answers with the place
-    /// itself: a project opened as `P:\php7\te0_main` comes back as
-    /// `\\192.168.0.35\projects\php7\te0_main`, because that is where the
+    /// itself: a project opened as `P:\web\shop` comes back as
+    /// `\\nas\projects\web\shop`, because that is where the
     /// mapped drive goes. That answer is right for running git and wrong for
     /// pointing at a line of the settings, which holds what the person typed --
     /// so the Issue tab's "open the settings" button led nowhere, and the
@@ -1821,7 +1821,7 @@ mod tests {
     /// can be searched for. The two are the same string for a folder on this
     /// PC and different ones as soon as the way in is a name for somewhere
     /// else -- a drive mapped to another machine's share answers as that
-    /// machine (`P:\php7\te0_main` -> `\\192.168.0.35\projects\php7\te0_main`),
+    /// machine (`P:\web\shop` -> `\\nas\projects\web\shop`),
     /// and the Issue tab's "open the settings" button, which looks the folder
     /// up in the desk's list, then found nothing and dropped the person on the
     /// desk's own page (2026-09-18, a user's share). Written here with a path

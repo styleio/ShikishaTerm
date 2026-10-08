@@ -804,21 +804,21 @@ mod tests {
 
     /// A repository kept on another machine is opened through its network name,
     /// and Windows answers about it in a spelling nothing else accepts: taking
-    /// off only `\\?\` left `UNC\192.168.0.35\...`, and cutting a branch from
+    /// off only `\\?\` left `UNC\nas\...`, and cutting a branch from
     /// that project died with "cannot change to" (2026-09-18, a user's share).
     #[test]
     fn a_repository_on_another_machine_keeps_the_slashes_that_name_it() {
         assert_eq!(
-            plain("\\\\?\\UNC\\192.168.0.35\\projects\\php7\\te0_main".to_string()),
-            PathBuf::from("\\\\192.168.0.35\\projects\\php7\\te0_main"),
+            plain("\\\\?\\UNC\\nas\\projects\\web\\shop".to_string()),
+            PathBuf::from("\\\\nas\\projects\\web\\shop"),
         );
         // A folder on a drive of this machine loses the prefix and nothing else
         assert_eq!(plain("\\\\?\\D:\\ShikishaTerm".to_string()), PathBuf::from("D:\\ShikishaTerm"));
         // And a path that was never answered about is left as it is
         assert_eq!(plain("D:\\ShikishaTerm".to_string()), PathBuf::from("D:\\ShikishaTerm"));
         assert_eq!(
-            plain("\\\\192.168.0.35\\projects".to_string()),
-            PathBuf::from("\\\\192.168.0.35\\projects"),
+            plain("\\\\nas\\projects".to_string()),
+            PathBuf::from("\\\\nas\\projects"),
         );
     }
 

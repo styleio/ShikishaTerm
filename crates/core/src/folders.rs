@@ -121,7 +121,7 @@ pub fn by_letter(p: &Path) -> Option<PathBuf> {
 
 /// Which of `drives` (a letter and the share it leads to) reaches `unc`. The
 /// share a letter leads to may sit deeper than the share itself
-/// (`\\server\projects\php7`), so the longest one that holds the folder wins
+/// (`\\server\projects\web`), so the longest one that holds the folder wins
 fn letter_for(unc: &str, drives: &[(char, String)]) -> Option<PathBuf> {
     let holds = |remote: &str| -> Option<usize> {
         let remote = remote.trim_end_matches('\\');
@@ -1033,16 +1033,16 @@ mod tests {
     /// A share has no letter to be missing, so nothing is claimed about one.
     #[test]
     fn a_share_has_no_drive_letter() {
-        assert_eq!(drive_of(Path::new(r"\\192.168.0.35\projects\x")), None);
+        assert_eq!(drive_of(Path::new(r"\\nas\projects\x")), None);
         assert_eq!(drive_of(Path::new("/home/me/x")), None);
     }
 
     /// A share named either way is one; a long-path drive or a pipe is not.
     #[test]
     fn a_share_is_told_from_a_drive() {
-        let unc = r"\\192.168.0.35\projects\php7\x";
+        let unc = r"\\nas\projects\web\x";
         assert_eq!(unc_of(Path::new(unc)).as_deref(), Some(unc));
-        assert_eq!(unc_of(Path::new(r"\\?\UNC\192.168.0.35\projects\php7\x")).as_deref(), Some(unc));
+        assert_eq!(unc_of(Path::new(r"\\?\UNC\nas\projects\web\x")).as_deref(), Some(unc));
         assert_eq!(unc_of(Path::new(r"\\?\C:\x")), None);
         assert_eq!(unc_of(Path::new(r"\\.\pipe\x")), None);
         assert_eq!(unc_of(Path::new(r"D:\x")), None);
@@ -1053,16 +1053,16 @@ mod tests {
     #[test]
     fn a_share_is_reached_through_its_letter() {
         let drives = vec![
-            ('P', r"\\192.168.0.35\projects".to_string()),
-            ('Q', r"\\192.168.0.35\PROJECTS\php7\".to_string()),
-            ('R', r"\\192.168.0.35\projects2".to_string()),
+            ('P', r"\\nas\projects".to_string()),
+            ('Q', r"\\nas\PROJECTS\web\".to_string()),
+            ('R', r"\\nas\projects2".to_string()),
         ];
         let at = |unc: &str| letter_for(unc, &drives).map(|p| p.display().to_string());
-        assert_eq!(at(r"\\192.168.0.35\projects\php7\te0_main").as_deref(), Some(r"Q:\te0_main"));
-        assert_eq!(at(r"\\192.168.0.35\projects\node\a").as_deref(), Some(r"P:\node\a"));
-        assert_eq!(at(r"\\192.168.0.35\projects").as_deref(), Some(r"P:\"));
-        assert_eq!(at(r"\\192.168.0.35\projects2\a").as_deref(), Some(r"R:\a"));
-        assert_eq!(at(r"\\192.168.0.35\projects3\a"), None);
+        assert_eq!(at(r"\\nas\projects\web\shop").as_deref(), Some(r"Q:\shop"));
+        assert_eq!(at(r"\\nas\projects\node\a").as_deref(), Some(r"P:\node\a"));
+        assert_eq!(at(r"\\nas\projects").as_deref(), Some(r"P:\"));
+        assert_eq!(at(r"\\nas\projects2\a").as_deref(), Some(r"R:\a"));
+        assert_eq!(at(r"\\nas\projects3\a"), None);
         assert_eq!(at(r"\\other\projects\a"), None);
     }
 
