@@ -857,6 +857,20 @@ fn unpack_counting(zip_path: &Path, into: &Path, said: &mut dyn FnMut(u64, u64))
         if let Some(p) = out.parent() {
             std::fs::create_dir_all(p)?;
         }
+        // A link, made a link again. A Mac's app bundle is held together by
+        // them (a framework's Versions/Current), and written out as a file
+        // holding its target's name it is an app that will not start
+        #[cfg(unix)]
+        if entry.is_symlink() {
+            let mut target = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut target)?;
+            if !link_stays_inside(&rel, Path::new(&target)) {
+                bail!("the zip links {} to {target}, outside itself", rel.display());
+            }
+            let _ = std::fs::remove_file(&out);
+            std::os::unix::fs::symlink(&target, &out)?;
+            continue;
+        }
         let mut f = std::fs::File::create(&out)?;
         copy_counting(&mut entry, &mut f, &mut |n| {
             done += n;
@@ -869,6 +883,33 @@ fn unpack_counting(zip_path: &Path, into: &Path, said: &mut dyn FnMut(u64, u64))
         }
     }
     Ok(())
+}
+
+/// Whether a link at `at` (a path inside the zip) pointing at `target` lands
+/// inside the zip: a relative target, followed from the link's own folder,
+/// never climbing above the top
+#[cfg_attr(not(unix), allow(dead_code))]
+fn link_stays_inside(at: &Path, target: &Path) -> bool {
+    use std::path::Component;
+    if target.is_absolute() {
+        return false;
+    }
+    // How deep the link's folder is, then every step of the target from there
+    let mut depth = at.parent().map(|p| p.components().filter(|c| matches!(c, Component::Normal(_))).count()).unwrap_or(0);
+    for step in target.components() {
+        match step {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if depth == 0 {
+                    return false;
+                }
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+    true
 }
 
 /// The folder inside an unpacked zip that holds the executable: the zip's
@@ -1325,6 +1366,21 @@ pub mod store {
 
 #[cfg(test)]
 mod tests {
+    /// A link in a zip may point anywhere inside it, and nowhere outside
+    #[test]
+    fn a_link_in_a_zip_stays_inside_it() {
+        use super::link_stays_inside;
+        use std::path::Path;
+        let at = Path::new("chrome-mac-arm64/App.app/Contents/Frameworks/F.framework/Versions/Current");
+        assert!(link_stays_inside(at, Path::new("154.0")), "Versions/Current -> 154.0");
+        let lib = Path::new("a/F.framework/Libraries");
+        assert!(link_stays_inside(lib, Path::new("Versions/Current/Libraries")));
+        assert!(link_stays_inside(Path::new("a/b/link"), Path::new("../c")), "a sibling folder");
+        assert!(!link_stays_inside(Path::new("a/link"), Path::new("../../etc")), "above the top");
+        assert!(!link_stays_inside(Path::new("link"), Path::new("../x")), "beside the zip");
+        assert!(!link_stays_inside(Path::new("a/link"), Path::new("/etc/passwd")), "an absolute target");
+    }
+
     use super::*;
 
     #[test]

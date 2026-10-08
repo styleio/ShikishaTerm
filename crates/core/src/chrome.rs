@@ -65,6 +65,25 @@ pub fn found() -> Option<std::path::PathBuf> {
             return Some(p);
         }
     }
+    // A Mac's browsers are apps, in the Applications folder of the machine or
+    // of the person, and never on PATH
+    #[cfg(target_os = "macos")]
+    for root in [Some(std::path::PathBuf::from("/Applications")), crate::home_dir().map(|h| h.join("Applications"))]
+        .into_iter()
+        .flatten()
+    {
+        for app in [
+            "Google Chrome.app/Contents/MacOS/Google Chrome",
+            "Chromium.app/Contents/MacOS/Chromium",
+            "Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "Brave Browser.app/Contents/MacOS/Brave Browser",
+        ] {
+            let p = root.join(app);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
     #[cfg(windows)]
     for base in ["ProgramFiles", "ProgramFiles(x86)", "LocalAppData"] {
         let Some(root) = std::env::var_os(base) else { continue };
@@ -148,9 +167,24 @@ fn build_for_this_machine() -> Option<Build> {
         exe: "chrome-win64/chrome.exe",
         sha256: Some("8edfaa0923c11a30a9315a5e7e5794c5efb60146edea7e3f749f7fdc2aa026cb"),
     });
+    // A Mac's is an app inside the zip, held together by links
+    // (`update::unpack` makes them links again). Measured 2026-10-08
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    return Some(Build {
+        platform: "mac-arm64",
+        exe: "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        sha256: Some("1f701ef60757c63c6ccf98afaf28291dd0c8d1457d3d738e81fd62201c230ad0"),
+    });
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    return Some(Build {
+        platform: "mac-x64",
+        exe: "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        sha256: Some("cddfd83fadf88808fb036f44282488b1cf3f1b50efacce470225ae41f14b0302"),
+    });
     #[cfg(not(any(
         all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
-        all(target_os = "windows", target_arch = "x86_64")
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "macos", any(target_arch = "x86_64", target_arch = "aarch64"))
     )))]
     return None;
 }

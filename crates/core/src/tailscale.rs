@@ -44,16 +44,22 @@ use std::time::Duration;
 
 /// Where the `tailscale` command lives.
 ///
-/// The installer's own path first, because `PATH` on Windows frequently does
-/// not have it: the GUI is what people install, and it does not put the CLI
-/// anywhere a shell will find it.
+/// The installer's own path first, because `PATH` frequently does not have
+/// it: the GUI is what people install, and on Windows it does not put the CLI
+/// anywhere a shell will find it. A Mac's Tailscale -- the App Store's or the
+/// download -- carries its CLI inside the app, and a program started from the
+/// Finder has no `PATH` worth the name
 fn cli() -> Option<String> {
-    let installed = r"C:\Program Files\Tailscale\tailscale.exe";
+    let installed = if cfg!(windows) {
+        r"C:\Program Files\Tailscale\tailscale.exe"
+    } else {
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    };
     if std::path::Path::new(installed).exists() {
         return Some(installed.to_string());
     }
-    // Falls back to the name, for a machine where it is on PATH (and for
-    // anything that is not Windows).
+    // Falls back to the name, for a machine where it is on PATH (Linux, and a
+    // Mac whose Tailscale came from Homebrew).
     Some("tailscale".to_string())
 }
 
