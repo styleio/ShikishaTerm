@@ -6503,9 +6503,9 @@ fn data_path_candidates(p: &str) -> Vec<String> {
 ///
 /// 1. the layout root (`root_dir`): the person's own folder, where the
 ///    settings screen writes and where a carried-over `scripts\` lands;
-/// 2. beside the exe: what ships with the program, such as the examples.
-///    The same place as 1 for the download, and the read-only package
-///    folder for the Store copy;
+/// 2. what ships with the program (`shipped_dir`), such as the examples.
+///    The same place as 1 for the download, the read-only package folder
+///    for the Store copy, and `Contents/Resources` inside a Mac's `.app`;
 /// 3. the working folder, for a path typed relative to wherever the program
 ///    was started from.
 ///
@@ -6520,9 +6520,9 @@ pub fn resolve_data_path(p: &str) -> std::path::PathBuf {
     let candidates = data_path_candidates(p);
     let root = root_dir();
     let mut dirs = vec![root.clone()];
-    let exe = exe_dir();
-    if exe != root {
-        dirs.push(exe);
+    let shipped = shipped_dir();
+    if shipped != root {
+        dirs.push(shipped);
     }
     for cand in &candidates {
         for dir in &dirs {

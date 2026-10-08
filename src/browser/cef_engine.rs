@@ -668,6 +668,17 @@ fn start(wake: &tao::event_loop::EventLoopProxy<Cmd>) -> Result<()> {
     Ok(())
 }
 
+/// The switches `SHIKISHA_CHROMIUM_ARGS` hands Chromium, without their dashes:
+/// `--remote-debugging-port=9401 --foo` is `remote-debugging-port=9401`, `foo`
+fn extra_switches() -> Vec<String> {
+    std::env::var("SHIKISHA_CHROMIUM_ARGS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(|s| s.trim_start_matches('-').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// The program was started outside its `.app`, where the framework is not
 fn bail_out() -> Result<()> {
     Err(anyhow!(
@@ -839,6 +850,29 @@ mod hooks {
         impl App {
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
                 Some(Process::new())
+            }
+
+            /// Switches handed to Chromium from outside -- the debug tools'
+            /// DevTools port -- the way WebView2 takes them from
+            /// WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS. Only this process's:
+            /// the helpers are told what they need by Chromium itself
+            fn on_before_command_line_processing(
+                &self,
+                process_type: Option<&CefString>,
+                command_line: Option<&mut CommandLine>,
+            ) {
+                if process_type.is_some_and(|t| !t.to_string().is_empty()) {
+                    return;
+                }
+                let Some(line) = command_line else { return };
+                for switch in super::extra_switches() {
+                    match switch.split_once('=') {
+                        Some((name, value)) => {
+                            line.append_switch_with_value(Some(&CefString::from(name)), Some(&CefString::from(value)))
+                        }
+                        None => line.append_switch(Some(&CefString::from(switch.as_str()))),
+                    }
+                }
             }
         }
     }

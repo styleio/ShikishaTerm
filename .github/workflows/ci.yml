@@ -62,6 +62,11 @@ jobs:
   # the tests. `latest` is an Apple Silicon machine, which is what a Mac is now
   macos:
     runs-on: macos-latest
+    env:
+      # Where the build fetches the Chromium a Mac's window is drawn with
+      # (CEF), and where the app is put together from. Kept between runs:
+      # it is a few hundred megabytes, the same until its version changes
+      CEF_PATH: /Users/runner/cef
     steps:
       - uses: actions/checkout@v4
 
@@ -69,11 +74,35 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - uses: actions/cache@v4
+        with:
+          path: /Users/runner/cef
+          key: cef-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cef-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Build
         run: cargo build --workspace --locked --verbose
 
       - name: Test
         run: cargo test --workspace --locked --verbose
+
+      # Built and tested is not drawn. The app is put together the way a
+      # release is (unsigned here), opened as a copy of its own, and asked
+      # whether Chromium started, the board's page loaded and the page can
+      # talk to the program. The picture of the page is kept with the logs
+      - name: The app comes together and its window opens
+        run: |
+          CEF=$(find "$CEF_PATH" -maxdepth 2 -type d -name 'cef_macos_*' | head -1)
+          sh packaging/mac/mkapp.sh target/debug/SHIKISHA-TERM target/debug/shikisha-chromium-helper "$CEF" v0.0.0 arm64 /tmp/mac
+          node tools/debug/window-opens.mac.mjs /tmp/mac/SHIKISHA-TERM.app /tmp/window
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-window
+          path: /tmp/window
+          retention-days: 7
+          if-no-files-found: ignore
 
   # The runtime with no window. If this stops passing, the Linux build rots quietly --
   # the crates with a window cannot build on Linux, so this covers core / shared / serve.
@@ -131,7 +160,7 @@ jobs:
       - name: The scripts are the shell they say they are
         run: |
           sudo apt-get install -y dash shellcheck
-          for f in packaging/linux/*.sh; do
+          for f in packaging/linux/*.sh packaging/mac/*.sh; do
             case $(head -1 "$f") in
               *bash) shellcheck --shell=bash "$f"; bash -n "$f" ;;
               *)     shellcheck --shell=sh   "$f"; dash -n "$f" ;;

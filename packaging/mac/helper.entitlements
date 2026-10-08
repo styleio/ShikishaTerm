@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What Chromium's helper processes may do under the hardened runtime: compile
+  the JavaScript of the pages they draw (V8's JIT), and load the system's
+  plugins and their own libraries. A page's camera and microphone are opened in
+  a helper, so it is allowed them too.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key><true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+    <key>com.apple.security.device.camera</key><true/>
+    <key>com.apple.security.device.audio-input</key><true/>
+</dict>
+</plist>
