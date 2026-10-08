@@ -973,7 +973,7 @@ const PANEL: &str = r##"<!doctype html>
 :root{ {{THEME}}
   --s1:4px; --s2:6px; --s3:10px; --s4:14px; --s5:18px;
   --ui: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-  --mono: "Cascadia Mono", Consolas, "Noto Sans Mono", monospace; }
+  --mono: "Cascadia Mono", Consolas, ui-monospace, Menlo, "Noto Sans Mono", monospace; }
 *{box-sizing:border-box}
 html,body{height:100%;margin:0}
 /* The page is the panel: what is placed in the window has no frame of its

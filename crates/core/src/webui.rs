@@ -18687,7 +18687,7 @@ const HELP_PAGE: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{{help.page.title}}</title>
 <style>
  :root { {{THEME}} color-scheme: {{SCHEME}}; }
- body { background:var(--bg); color:var(--text); font-family:"Consolas","Meiryo",monospace;
+ body { background:var(--bg); color:var(--text); font-family:"Consolas",ui-monospace,"Menlo","Meiryo","Hiragino Sans",monospace;
         margin:0; padding:24px 32px; line-height:1.7; }
  h1,h2,h3 { color:var(--c6); border-bottom:1px solid var(--line); padding-bottom:6px; }
  h1 { font-size:20px; } h2 { font-size:17px; margin-top:32px; } h3 { font-size:15px; }

@@ -5168,9 +5168,11 @@ impl Appearance {
             Some(f) => format!("\"{f}\", monospace"),
             None => {
                 // Fonts that draw box-drawing characters and symbols in one
-                // cell. Japanese falls back to the monospaced MS Gothic
-                // (Meiryo is not monospaced)
-                "\"Cascadia Mono\",\"Consolas\",\"MS Gothic\",\"MS ゴシック\",monospace".into()
+                // cell, Windows' first and then a Mac's (ui-monospace is SF
+                // Mono, which a page cannot name). Japanese falls back to the
+                // monospaced MS Gothic (Meiryo is not monospaced), and on a Mac
+                // to Osaka's monospaced cut
+                "\"Cascadia Mono\",\"Consolas\",ui-monospace,\"Menlo\",\"MS Gothic\",\"MS ゴシック\",\"Osaka-Mono\",monospace".into()
             }
         }
     }
