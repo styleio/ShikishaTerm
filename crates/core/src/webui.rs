@@ -1905,6 +1905,7 @@ fn handle(
                     ("__QUICK__", js(quick_json())),
                     ("__REMOTE__", if remote_client { "true" } else { "false" }.to_string()),
                     ("__PACKAGED__", if crate::config::packaged() { "true" } else { "false" }.to_string()),
+                    ("__SYSTEM__", js(serde_json::Value::from(crate::system_name()).to_string())),
                     ("__GRANTS__", js(crate::grants::catalog_json())),
                     (
                         "__GITLUA__",
@@ -6391,6 +6392,9 @@ const REMOTE = __REMOTE__;
 // closes everything of the app's, the terminals kept running included, and
 // the settings say so where it matters
 const PACKAGED = __PACKAGED__;
+// The system the program here runs on ("windows", "mac", "linux"): what is
+// offered for a terminal, and what is said about it, are that system's
+const SYSTEM = __SYSTEM__;
 // True when this page is not a screen of its own but a dialog: a frame the
 // board placed over itself (?embed=1), which is how a browser puts a page
 // over the board the way the window places one. The way out is a word to the
@@ -7332,9 +7336,10 @@ const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
   ["cmd",     T["settings.tab.cat.cmd"]],
   ["remote",  T["settings.tab.cat.remote"]],
-  ["ssh",     "SSH (ssh.exe)"],
+  ["ssh",     SYSTEM === "windows" ? "SSH (ssh.exe)" : "SSH"],
   ["docker",  "Docker"],
-  ["wsl",     "WSL"],
+  // Linux inside Windows: there is none anywhere else
+  ...(SYSTEM === "windows" ? [["wsl", "WSL"]] : []),
   ["browser", T["settings.tab.kind.browser"]],
   ["git",     T["settings.tab.kind.git"]],
   ["editor",  T["settings.tab.kind.editor"]],
@@ -8413,15 +8418,21 @@ function basicCard() {
           ["off", T["settings.terminal_links.off"]],
         ]),
         el("span", {class:"hint"}, T["settings.terminal_links.hint"])),
-    row(T["settings.conpty"], conptyState(),
-        el("span", {class:"hint"}, T["settings.conpty.hint"])),
-    // What a folder opens with: a project added, or an empty folder pressed
+    // Windows' own pseudo console: elsewhere a terminal is the system's pty,
+    // with nothing shipped beside the program to choose or to be missing
+    SYSTEM === "windows" ? row(T["settings.conpty"], conptyState(),
+        el("span", {class:"hint"}, T["settings.conpty.hint"])) : null,
+    // What a folder opens with: a project added, or an empty folder pressed.
+    // A choice on Windows; elsewhere it is the person's login shell, as the
+    // system's own terminal opens it, and the row says so
     row(T["settings.default_shell"],
-        choose(current, "default_shell", [
-          ["", T["settings.default_shell.powershell"]],
-          ["cmd", T["settings.default_shell.cmd"]],
-          ["gitbash", T["settings.default_shell.gitbash"]],
-        ]),
+        SYSTEM === "windows"
+          ? choose(current, "default_shell", [
+              ["", T["settings.default_shell.powershell"]],
+              ["cmd", T["settings.default_shell.cmd"]],
+              ["gitbash", T["settings.default_shell.gitbash"]],
+            ])
+          : el("span", {}, T["settings.default_shell.login"]),
         el("span", {class:"hint"}, T["settings.default_shell.hint"])),
     row(T["settings.browser_data"],
         choose(current, "browser_data", [
@@ -20124,6 +20135,7 @@ mod tests {
             .replace("__TOKEN__", "t")
             .replace("__REMOTE__", "false")
             .replace("__PACKAGED__", "false")
+            .replace("__SYSTEM__", "\"windows\"")
             .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
             .replace("__QUICK__", &quick_json())
             .replace("__DICT__", "{}")
@@ -20226,6 +20238,7 @@ for (const crypto of [webcrypto, {{getRandomValues: b => webcrypto.getRandomValu
                 .replace("__TOKEN__", "t")
                 .replace("__REMOTE__", "false")
                 .replace("__PACKAGED__", "false")
+                .replace("__SYSTEM__", "\"windows\"")
                 .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")

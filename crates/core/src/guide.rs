@@ -709,7 +709,7 @@ pub fn all_settings_words() -> &'static [String] {
         let en: BTreeMap<String, serde_json::Value> =
             serde_json::from_str(crate::i18n::english()).unwrap_or_default();
         en.into_iter()
-            .filter(|(k, v)| k.starts_with("settings.") && v.is_string())
+            .filter(|(k, v)| k.starts_with("settings.") && !k.contains('@') && v.is_string())
             .map(|(k, _)| k)
             .collect()
     })

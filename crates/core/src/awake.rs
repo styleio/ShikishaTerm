@@ -66,9 +66,9 @@ pub struct Awake {
     /// asked: the PC may sleep whatever the setting says, and the row says so
     /// rather than claiming it is being kept up
     cannot: bool,
-    /// What holds a Linux machine up: a child that keeps an inhibitor lock
-    /// for as long as it lives
-    #[cfg(target_os = "linux")]
+    /// What holds a Linux machine or a Mac up: a child that keeps the
+    /// machine's own lock for as long as it lives
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     lock: Option<std::process::Child>,
 }
 
@@ -164,8 +164,45 @@ impl Awake {
         }
     }
 
+    /// A Mac is held up by `caffeinate`, the system's own, for as long as it
+    /// runs: the machine and its screen, as on Windows. Told to end with this
+    /// program (`-w`), so a crash hands the Mac back to its own settings
+    /// as surely as letting go does
+    #[cfg(target_os = "macos")]
+    fn ask(&mut self, on: bool) -> bool {
+        if !on {
+            if let Some(mut child) = self.lock.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            return true;
+        }
+        let (program, args) = caffeinate_command(std::process::id());
+        match std::process::Command::new(program)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                // One that could not hold ends at once: looked at a moment
+                // later so that is seen, not taken for holding
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                match child.try_wait() {
+                    Ok(None) => {
+                        self.lock = Some(child);
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Anywhere else there is no ask this program knows how to make
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     fn ask(&mut self, on: bool) -> bool {
         !on
     }
@@ -186,6 +223,13 @@ fn inhibit_command() -> (&'static str, Vec<String>) {
             "cat".into(),
         ],
     )
+}
+
+/// What holds a Mac up: the machine kept from idle sleep and the screen from
+/// going dark (`-i`, `-d`), until `pid` -- this program -- ends (`-w`)
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn caffeinate_command(pid: u32) -> (&'static str, Vec<String>) {
+    ("/usr/bin/caffeinate", vec!["-d".into(), "-i".into(), "-w".into(), pid.to_string()])
 }
 
 impl Drop for Awake {
@@ -241,6 +285,30 @@ mod tests {
         assert!(!a.hold_by(true, no), "the same refusal was said again every pass");
         assert!(a.hold_by(false, no), "wanting nothing did not clear the refusal");
         assert!(!a.cannot());
+    }
+
+    /// The command that holds a Mac up: the machine and the screen, for as
+    /// long as this program lives
+    #[test]
+    fn a_mac_is_held_by_caffeinate_that_ends_with_this_program() {
+        let (program, args) = caffeinate_command(4242);
+        assert_eq!(program, "/usr/bin/caffeinate");
+        assert_eq!(args, ["-d", "-i", "-w", "4242"], "the machine, the screen, and only while this program lives");
+    }
+
+    /// Holding a Mac really holds it, and letting go ends the hold
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_is_really_held_and_let_go() {
+        let mut awake = Awake::default();
+        assert!(awake.hold(true), "caffeinate could not hold the Mac");
+        assert!(awake.held() && !awake.cannot());
+        let pid = awake.lock.as_ref().map(|c| c.id()).expect("the hold has a child");
+        assert!(awake.hold(false));
+        assert!(!awake.held());
+        // The child is gone, not left behind holding the Mac
+        let alive = std::process::Command::new("/bin/kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false);
+        assert!(!alive, "caffeinate was left running");
     }
 
     /// The command that holds a Linux machine up: it blocks sleep and the idle

@@ -409,6 +409,18 @@ pub fn local_path(win: &str) -> String {
 /// Windows, `HOME` everywhere else. Every place that needs it asks here, so
 /// a system where one of them is missing is answered the same way throughout
 /// (reading only `USERPROFILE` once left Linux with no home at all)
+/// Which system this runs on, by the one word the settings page and the
+/// board use to tell them apart: "windows", "mac" or "linux"
+pub fn system_name() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "linux"
+    }
+}
+
 pub fn home_dir() -> Option<std::path::PathBuf> {
     home_in(|k| std::env::var_os(k))
 }
