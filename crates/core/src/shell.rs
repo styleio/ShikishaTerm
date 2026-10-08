@@ -23301,6 +23301,7 @@ function gitStageable() {
 }
 function gitCommit(then, amend) {
   if (G.busy) return;
+  G.wantWords = false;
   const text = gitMessage().trim();
   if (!text) {
     // A person being needed, not a failure (5.4): said in --warn, and gone
@@ -23741,7 +23742,13 @@ function gitMenu(anchor) {
     writing ? sep() : null,
     item(T["git.commit"] || "", () => gitCommit(), needStage || needWords),
     item(T["git.commit.push"] || "", () => gitCommit("push"), needStage || needWords),
-    item(T["git.commit.amend"] || "", () => gitCommit("", true), needWords),
+    // Rewording the last commit needs no change, only words: with none, the
+    // box they go in is brought back and asked for
+    item(T["git.commit.amend"] || "", worded ? () => gitCommit("", true) : () => {
+      G.wantWords = true; G.said = T["git.why.message"] || ""; G.bad = false; G.need = true;
+      drawGit();
+      if (gitUi) gitUi.msg.focus();
+    }),
     sep(),
     item(b.integrated_into && b.ahead ? T["git.push.branch"].replaceAll("{n}", b.ahead) : T["git.push"] || "", () => gitAsk("push")),
     item(T["git.pull"] || "", () => gitAsk("pull")),
@@ -23845,6 +23852,16 @@ function drawGitCommit() {
 // Commit, push, pull request, merge: the one being worked on stands out, the
 // ones behind it are ticked. A protected branch is where pull requests go, so
 // its last two are shown as not being its to do
+// Whether there is anything to commit: a change to stage, or one staged or
+// in conflict already. What the commit step and the message box both go by
+function gitHasChanges() {
+  return gitStageable().length > 0 || (G.rows || []).some(r => r.staged || r.conflict);
+}
+// Known to have nothing to commit -- not merely not looked at yet. Words
+// already in the box, or asked for to reword the last commit, still want it
+function gitNothingToCommit() {
+  return Array.isArray(G.rows) && !gitHasChanges() && !G.wantWords && !gitMessage().trim();
+}
 function gitIntegratedClean() {
   return !!(G.branch && G.branch.integrated_into) && Array.isArray(G.rows) && !G.rows.length && !gitPrFormShown();
 }
@@ -23854,7 +23871,7 @@ function drawGitSteps(u) {
   const b = G.branch || {};
   const prs = Array.isArray(G.prs) ? G.prs : [];
   const merged = prs.filter(p => p.state === "merged").length;
-  const changed = gitStageable().length > 0 || (G.rows || []).some(r => r.staged || r.conflict);
+  const changed = gitHasChanges();
   const theirs = !b.name || b.protected || !gitOnGithub();
   const steps = [
     ["commit", T["git.step.commit"] || "", !changed, false],
@@ -23879,8 +23896,12 @@ function drawGitSteps(u) {
 function drawGitPrForm(u) {
   const shown = gitPrFormShown() && !!I.pr && I.pr.from === "git";
   u.prForm.hidden = !shown;
-  // Nothing is left to commit while it is up, so the message box steps aside
-  u.msgBox.hidden = shown || gitIntegratedClean();
+  // The message is a commit's, so the box steps aside while there is nothing
+  // to commit: while a pull request is written, and when nothing has changed.
+  // A merge says nothing here -- GitHub writes its message from the pull
+  // request -- and a box left up read as one it wanted. What was written in
+  // it is kept, and back with the box
+  u.msgBox.hidden = shown || gitIntegratedClean() || gitNothingToCommit();
   if (!shown) return;
   const p = I.pr;
   const sig = JSON.stringify(p.bases);

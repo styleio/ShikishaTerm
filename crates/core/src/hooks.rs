@@ -600,13 +600,22 @@ fn git_place(
 /// where it came from -- "runtime error:" in front, a traceback behind -- belong
 /// in the log, not in front of somebody waiting for a commit message
 fn plain_lua_error(said: &str) -> String {
-    said.split("stack traceback:")
+    let said = said
+        .split("stack traceback:")
         .next()
         .unwrap_or(said)
         .trim()
         .trim_start_matches("runtime error:")
-        .trim()
-        .to_string()
+        .trim();
+    // `error("...")` puts where it was raised in front -- `[string "snippet"]:9: `
+    // -- which is the code's address, not anything the person can act on. The
+    // log keeps the whole of it
+    let place = said.strip_prefix("[string \"").and_then(|rest| {
+        let (_, after) = rest.split_once("\"]:")?;
+        let (line, msg) = after.split_once(':')?;
+        line.chars().all(|c| c.is_ascii_digit()).then_some(msg)
+    });
+    place.unwrap_or(said).trim().to_string()
 }
 
 /// A tab line put on the desk, as `open_tab` and `open_ai_tab` both do: in the
@@ -6152,6 +6161,18 @@ mod stamp_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a snippet's `error("...")` says reaches the person as the words
+    /// alone, without the code's address in front
+    #[test]
+    fn a_lua_error_is_said_without_where_it_was_raised() {
+        let lua = mlua::Lua::new();
+        let e = lua.load("local a = 1\nerror('nothing to describe yet')").set_name("snippet").exec().unwrap_err();
+        assert!(e.to_string().contains("[string \"snippet\"]:2:"), "{e}");
+        assert_eq!(plain_lua_error(&e.to_string()), "nothing to describe yet");
+        // Words that only look like an address are left as they were
+        assert_eq!(plain_lua_error("[string \"x\"]: not a line"), "[string \"x\"]: not a line");
+    }
 
     /// Days apart are counted from the dates, across the end of a month, a
     /// leap day and a year: what "tomorrow" in the quit question rests on
