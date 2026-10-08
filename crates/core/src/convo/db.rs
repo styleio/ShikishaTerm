@@ -453,6 +453,14 @@ impl Store {
         Ok(found.unwrap_or_else(|| gone_uid(desk, name)))
     }
 
+    /// A tab by who it is: an id as it is, a name as whoever answers to it now
+    fn uid_of(&self, desk: &str, tab: &str) -> Result<String> {
+        match crate::config::is_tab_uid(tab) {
+            true => Ok(tab.to_string()),
+            false => self.uid_now(desk, tab),
+        }
+    }
+
     /// [`Store::uid_now`], writing down what a name nobody answers to stands
     /// for, so what it took part in still reads with its name
     pub fn uid_named(&self, desk: &str, name: &str) -> Result<String> {
@@ -950,10 +958,50 @@ impl Store {
     /// takes part, by the names they go by, and how it began. One merged into
     /// another is not one of its own any more
     pub fn threads(&self, desk: &str, tab: Option<&str>, want: usize) -> Result<Vec<ThreadRow>> {
-        let tab = tab.map(|t| match crate::config::is_tab_uid(t) {
-            true => Ok(t.to_string()),
-            false => self.uid_now(desk, t),
-        }).transpose()?;
+        self.threads_among(desk, tab, None, want)
+    }
+
+    /// The conversations on `desk` held in one folder: those a tab working
+    /// there took part in. Which tabs those are is `here` -- the tabs in the
+    /// folder now, by id -- and every tab whose conversation was first seen
+    /// in the folder (`conversations.observed_cwd`), so a tab closed since
+    /// still counts where it worked
+    pub fn threads_in(&self, desk: &str, folder: &std::path::Path, here: &[String], want: usize) -> Result<Vec<ThreadRow>> {
+        // Who took part is kept by who the tab is; a name is turned into that
+        let who = |t: &str| self.uid_of(desk, t);
+        let mut tabs: std::collections::HashSet<String> = here.iter().map(|t| who(t)).collect::<Result<_>>()?;
+        let mut seen = self
+            .conn
+            .prepare("SELECT DISTINCT tab, observed_cwd FROM conversations WHERE observed_cwd IS NOT NULL")?;
+        for row in seen.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (tab, cwd) = row?;
+            if crate::same_folder(std::path::Path::new(&cwd), folder) {
+                tabs.insert(who(&tab)?);
+            }
+        }
+        let mut st = self.conn.prepare("SELECT DISTINCT thread_id, tab FROM thread_tabs")?;
+        let mut held = std::collections::HashSet::new();
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+            let (thread, tab) = row?;
+            if tabs.contains(&tab) {
+                held.insert(thread);
+            }
+        }
+        self.threads_among(desk, None, Some(&held), want)
+    }
+
+    /// The conversations on `desk`, by tab or among `only`, newest first
+    fn threads_among(
+        &self,
+        desk: &str,
+        tab: Option<&str>,
+        only: Option<&std::collections::HashSet<i64>>,
+        want: usize,
+    ) -> Result<Vec<ThreadRow>> {
+        let tab = tab.map(|t| self.uid_of(desk, t)).transpose()?;
+        // Read whole when picking among some: which ones is not something
+        // the database was told
+        let limit = if only.is_some() { -1 } else { want as i64 };
         let mut st = self.conn.prepare(
             "SELECT t.id, t.last_at FROM threads t WHERE t.desk = ?1 AND t.merged_into IS NULL \
              AND (?3 IS NULL OR EXISTS (SELECT 1 FROM thread_tabs m WHERE m.thread_id = t.id AND m.tab = ?3)) \
@@ -961,10 +1009,14 @@ impl Store {
              ORDER BY t.last_at DESC, t.id DESC LIMIT ?2",
         )?;
         let mut rows = st
-            .query_map(params![desk, want as i64, tab], |r| {
+            .query_map(params![desk, limit, tab], |r| {
                 Ok(ThreadRow { id: r.get(0)?, last_at: r.get(1)?, tabs: Vec::new(), first: String::new() })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        if let Some(only) = only {
+            rows.retain(|t| only.contains(&t.id));
+            rows.truncate(want);
+        }
         let mut who = self.conn.prepare(
             "SELECT COALESCE(n.name, m.tab) FROM thread_tabs m LEFT JOIN tab_names n ON n.uid = m.tab \
              WHERE m.thread_id = ?1 ORDER BY m.joined_at, m.tab",
@@ -1489,6 +1541,29 @@ mod tests {
         assert_eq!(all.iter().map(|t| t.id).collect::<Vec<_>>(), vec![a, b], "the one said in last first");
         assert_eq!(all[0].tabs, vec!["finch".to_string(), "otter".into()]);
         assert_eq!(all[0].first, "<@otter> ask <@finch> to review it");
+    }
+
+    /// A folder's conversations are the ones its tabs took part in: those in
+    /// it now, and those first seen working there and closed since. Another
+    /// folder's on the same desk are not among them
+    #[test]
+    fn a_folders_conversations_are_the_ones_its_tabs_were_in() {
+        let s = Store::in_memory().unwrap();
+        let here = std::env::temp_dir().join("shikisha-convo-here");
+        let away = std::env::temp_dir().join("shikisha-convo-away");
+        let (mine, _) = s.thread_for("d", "otter/r1", 1).unwrap();
+        let (gone, _) = s.thread_for("d", "heron/r2", 2).unwrap();
+        let (theirs, _) = s.thread_for("d", "lynx/r3", 3).unwrap();
+        s.line("d", mine, Some("otter"), "Can you review it?", None, "ask", 4).unwrap();
+        s.line("d", gone, Some("heron"), "Done earlier", None, "said", 5).unwrap();
+        s.line("d", theirs, Some("lynx"), "Elsewhere", None, "said", 6).unwrap();
+        // heron worked here and is closed; lynx works in another folder
+        s.seen_in("heron", "claude", "r2", false, 2, Some(&here.display().to_string())).unwrap();
+        s.seen_in("lynx", "claude", "r3", false, 3, Some(&away.display().to_string())).unwrap();
+        let ids = |rows: Vec<ThreadRow>| rows.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(ids(s.threads_in("d", &here, &["otter".to_string()], 10).unwrap()), vec![gone, mine]);
+        assert_eq!(ids(s.threads_in("d", &away, &[], 10).unwrap()), vec![theirs]);
+        assert_eq!(s.threads("d", None, 10).unwrap().len(), 3, "the whole desk still has all three");
     }
 
     #[test]

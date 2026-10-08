@@ -284,7 +284,19 @@ pub fn page(desk: &str, act: &str, args: &serde_json::Value, path: &std::path::P
     let store = crate::convo::db::Store::open_read(path);
     if act == "confer_threads" {
         let tab = args.get("tab").and_then(serde_json::Value::as_str).filter(|t| !t.is_empty());
-        return answer(store.and_then(|s| s.threads(desk, tab, THREADS)).map(|t| serde_json::json!({"tab": tab, "threads": t})));
+        // With no AI tab in front, the folder in front: the conversations its
+        // tabs took part in, not the whole desk's under that folder's name
+        let folder = args.get("folder").and_then(serde_json::Value::as_str).filter(|f| !f.is_empty());
+        let here: Vec<String> = args
+            .get("tabs")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        return answer(store.and_then(|s| match (tab, folder) {
+            (None, Some(f)) => s.threads_in(desk, std::path::Path::new(f), &here, THREADS),
+            _ => s.threads(desk, tab, THREADS),
+        })
+        .map(|t| serde_json::json!({"tab": tab, "folder": folder, "threads": t})));
     }
     let Some(thread) = args.get("thread").and_then(serde_json::Value::as_i64) else {
         return answer(Err(anyhow::anyhow!("no conversation was named")));

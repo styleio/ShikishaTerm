@@ -482,6 +482,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      its edge, a decision made is drawn in the colour of "answered" */
   #convopanel .fsearch[hidden], #convopanel .cfcast[hidden], #convopanel .cfthreads[hidden] { display:none; }
   #convopanel .cfthreads { flex:0 0 auto; padding:var(--s2) var(--s3) 0; }
+  #convopanel .cfscope { flex:0 0 auto; display:flex; align-items:center; gap:var(--s2); padding:var(--s2) var(--s3) 0;
+    font-size:11px; color:var(--dim); }
+  #convopanel .cfscope[hidden] { display:none; }
+  #convopanel .cfscope .cfscopet { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #convopanel .cfthpick { display:flex; align-items:center; gap:var(--s2); width:100%; min-height:32px; padding:var(--s1) var(--s3);
     font:inherit; font-size:12px; text-align:left; color:var(--text); background:var(--bg); border:1px solid var(--edge);
     border-radius:var(--r-ctl); cursor:pointer; }
@@ -17218,7 +17222,9 @@ function convoSoon(key) {
 let cvConfer = false;    // the panel is showing the conference, not a conversation
 const CF = {
   desk: "",        // the desk what has been read belongs to
-  focus: null,     // the tab whose conversations are offered (the AI tab in front), or null for the desk's
+  focus: null,     // the tab whose conversations are offered (the AI tab in front), or null
+  folder: null,    // with no AI tab in front, the folder in front whose conversations are offered
+  whole: false,    // the person asked for the whole desk's instead of that folder's
   threads: [],     // its conversations, the one something was said in last first
   thread: null,    // the conversation shown
   picked: false,   // chosen by the person (or opened by an ask), rather than the newest
@@ -17349,20 +17355,34 @@ function cfFocus() {
   const t = convoTab();
   return t && t.kind === "pty" && t.ai && !t.model ? convoTabKey(t) : null;
 }
-// Read the conversations again, and the one shown. Another desk or another
-// tab in front starts over: its conversations, the newest shown
+// With no AI tab in front, the folder in front, by its key: the panel is
+// headed with that folder's name, so it shows that folder's conversations
+// -- those its tabs took part in -- unless the whole desk's were asked for
+function cfFolder() {
+  if (cfFocus() || CF.whole) return null;
+  const g = activeFolder();
+  return g ? gkey(g) : null;
+}
+// Read the conversations again, and the one shown. Another desk, another
+// tab or another folder in front starts over: its conversations, the newest
+// shown
 function cfRefresh() {
   const desk = cfDesk();
   const focus = cfFocus();
-  if (CF.desk !== desk || CF.focus !== focus) {
+  const folder = cfFolder();
+  if (CF.desk !== desk || CF.focus !== focus || CF.folder !== folder) {
     const keep = CF.desk === desk && CF.picked;
     CF.seq = {}; CF.bad = "";
     CF.desk = desk;
     CF.focus = focus;
+    CF.folder = folder;
     CF.threads = [];
     cfShow(keep ? CF.thread : null, keep);
   }
-  cfAsk("confer_threads", focus ? {tab: focus} : {});
+  // The tabs in the folder now; the app adds the ones closed since
+  const g = activeFolder();
+  const here = ((S && S.tabs) || []).filter(t => t.uid && g && (S.groups || [])[t.group] === g).map(t => t.uid);
+  cfAsk("confer_threads", focus ? {tab: focus} : folder ? {folder, tabs: here} : {});
   if (CF.thread != null) cfAsk("confer", {thread: CF.thread});
 }
 // Show one conversation, from its newest page
@@ -17398,7 +17418,7 @@ function cfGot(d) {
   if (!d.ok) { CF.loading = false; CF.bad = d.error || ""; CF.drawn = ""; drawConvo(); return; }
   CF.bad = "";
   if (d.act === "confer_threads") {
-    if ((d.tab || null) !== CF.focus) return;
+    if ((d.tab || null) !== CF.focus || (d.folder || null) !== CF.folder) return;
     CF.threads = d.threads || [];
     // The newest, unless one was chosen and is still there
     const keep = CF.picked && CF.threads.some(t => t.id === CF.thread);
@@ -17696,8 +17716,13 @@ function drawThreads(box) {
 }
 // The conference, drawn into the panel's list
 function drawConfer(u) {
-  // Another tab in front: its conversations
-  if (CF.focus !== cfFocus() || CF.desk !== cfDesk()) cfRefresh();
+  // Another tab or folder in front: its conversations. Another folder is
+  // its own again, whatever the last one was switched to
+  const g = activeFolder();
+  const fk = g ? gkey(g) : null;
+  if (CF.whole && CF.wholeOf !== fk) CF.whole = false;
+  if (CF.focus !== cfFocus() || CF.desk !== cfDesk() || CF.folder !== cfFolder()) cfRefresh();
+  drawScope(u, g);
   drawThreads(u.threads);
   drawCast(u.cast);
   u.say.textContent = "";
@@ -17725,7 +17750,36 @@ function drawConfer(u) {
   }
   if (CF.bad) { u.say.textContent = CF.bad; return; }
   if (CF.loading) { u.say.textContent = T["convo.loading"] || "Reading…"; return; }
-  if (!CF.said.length) u.say.textContent = CF.focus ? (T["confer.empty.tab"] || "") : (T["confer.empty"] || "");
+  if (!CF.said.length) u.say.textContent = CF.focus ? (T["confer.empty.tab"] || "")
+    : CF.folder ? (T["confer.empty.folder"] || "") : (T["confer.empty"] || "");
+}
+// Whose conversations these are, when no AI tab is in front: the folder's,
+// with the way to the whole desk's beside it, or the desk's, with the way
+// back. Under an AI tab they are that tab's, as its own name says
+function drawScope(u, g) {
+  if (!u.scope) {
+    u.scope = el("div", {class: "cfscope"});
+    u.threads.before(u.scope);
+  }
+  const shown = !CF.focus && !!g;
+  const sig = shown ? (CF.whole ? "w" : "f") + "|" + (g.name || "") : "";
+  if (u.scope.dataset.sig === sig) return;
+  u.scope.dataset.sig = sig;
+  u.scope.hidden = !shown;
+  u.scope.textContent = "";
+  if (!shown) return;
+  const name = g.name || leafOf(g.folder || "");
+  const swap = () => {
+    CF.whole = !CF.whole;
+    CF.wholeOf = CF.whole ? gkey(g) : null;
+    CF.picked = false;
+    cfRefresh();
+    drawConvo();
+  };
+  u.scope.append(
+    el("span", {class: "cfscopet"}, CF.whole ? (T["confer.scope.desk"] || "") : (T["confer.scope.folder"] || "{name}").replaceAll("{name}", name)),
+    el("button", {type: "button", class: "link", onclick: swap},
+      CF.whole ? (T["confer.scope.to_folder"] || "{name}").replaceAll("{name}", name) : (T["confer.scope.to_desk"] || "")));
 }
 
 // Draw the column: whether it is there, the strip along its top, and which
