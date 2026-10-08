@@ -43,9 +43,9 @@ use crate::detect::TabState;
 use db::{Assignment, Store};
 
 /// The commands answered later rather than at once: the pipe holds their
-/// line open while the loop decides (`worktree_add` is the runtime's, which
-/// waits for the folder to be made)
-pub const HELD: [&str; 4] = ["assign", "inbox", "ask_lead", "worktree_add"];
+/// line open while the loop decides (`worktree_add` and `worktree_remove` are
+/// the runtime's, which wait for the folder to be made or to be gone)
+pub const HELD: [&str; 5] = ["assign", "inbox", "ask_lead", "worktree_add", "worktree_remove"];
 
 /// Every command this module answers
 pub const METHODS: [&str; 17] = [
@@ -329,11 +329,16 @@ fn title_of(body: &str) -> String {
 /// and a `\` in the JSON has to be doubled -- which the shell of an AI on
 /// Windows undoes, leaving JSON that is not JSON
 pub fn open_in(folder: &str) -> String {
-    let folder = match folder.contains('\\') && !folder.starts_with('/') {
+    cmd(&["open_ai_tab", "<claude|codex|gemini>", &format!("'{}'", json!({"folder": shell_folder(folder)}))])
+}
+
+/// A folder written the way an AI's shell keeps it: a Windows folder with
+/// `/` (see [`open_in`]). A folder on another machine is left as it is
+pub fn shell_folder(folder: &str) -> String {
+    match folder.contains('\\') && !folder.starts_with('/') {
         true => folder.replace('\\', "/"),
         false => folder.to_string(),
-    };
-    cmd(&["open_ai_tab", "<claude|codex|gemini>", &format!("'{}'", json!({"folder": folder}))])
+    }
 }
 
 fn cmd(parts: &[&str]) -> String {

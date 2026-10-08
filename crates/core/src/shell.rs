@@ -1205,6 +1205,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .prim { flex:none; font-size:10px; line-height:16px; padding:0 6px; color:var(--dim);
     border:1px solid var(--line); border-radius:var(--r-chip); }
   .tab.folder.wcard .fill { flex:1 1 0; min-width:0; }
+  .tab.folder .made { flex:none; font-size:9.5px; line-height:14px; padding:0 4px; color:var(--brand);
+    border:1px solid color-mix(in srgb, var(--brand) 45%, transparent); border-radius:var(--r-chip); }
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.folder.wcard .fbr .smark { margin-right:var(--s1); vertical-align:middle; min-width:0; }
@@ -8083,6 +8085,7 @@ function folderRow(g, mine, card) {
     // still shows which folder is the one with the problem
     ailMark(g),
     nameSlot("tabs", "f:" + gkey(g), g.name || "", v => send({kind:"foldername", folder:gkey(g), name:v}), folderNameClass(g)),
+    madeMark(g),
     // A card says it on its second line, with the machine's address
     card ? null : serverMark(g.mark));
   // Shut, the row has to speak for what it is hiding: the state of whichever
@@ -8137,6 +8140,12 @@ function folderRow(g, mine, card) {
   return row;
 }
 
+// The mark on a worktree an AI made (`worktree_add`), naming the tab that
+// asked for it. What tells the folders an AI may clear away again from the
+// ones a person made, which an AI never removes
+function madeMark(g) {
+  return g.made_by ? el("span", {class:"made", title:(T["tui.folder.made_by"] || "{tab}").replaceAll("{tab}", g.made_by)}, "AI") : null;
+}
 // What resting the pointer on a folder says: its name, and what is being done
 // in it. The path is on its settings page
 function folderAbout(g) {
@@ -8249,6 +8258,7 @@ function emptyRow(g, card) {
     ailMark(g),
     g.keep_first ? el("span", {title:T["tui.folders.pinned"]}, pickIcon("pin")) : null,
     nameSlot("tabs", "f:" + gkey(g), g.name || "", v => send({kind:"foldername", folder:gkey(g), name:v}), folderNameClass(g)),
+    madeMark(g),
     ...(card
       ? [g.family && !g.linked ? el("span", {class:"prim", title:T["tui.folder.primary.title"] || ""}, T["tui.folder.primary"] || "primary") : null,
          el("span", {class:"fill"}), folderSummary(g), folderWhere(g)]

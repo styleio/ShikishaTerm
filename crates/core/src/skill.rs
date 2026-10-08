@@ -26,7 +26,7 @@ pub const NAME: &str = "shikisha";
 
 /// Raised whenever the words below change, so a copy agreed to earlier is
 /// brought up to date the next time the app starts
-pub const VERSION: u32 = 8;
+pub const VERSION: u32 = 9;
 
 /// The line that says a file is this app's, and which version. Last, because
 /// the front matter has to be the first thing in the file
@@ -42,7 +42,7 @@ pub fn text() -> String {
     format!(
         r#"---
 name: {NAME}
-description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>"). Also use to make a git worktree, or to hand work to another AI in a working folder of its own ("make a worktree for this", "give this to another AI", "hand this off"): use it rather than running git worktree add yourself, so the folder and the AI working in it are on the person's desk. Also use before making or changing a design or architecture choice in a project, and when asked why something was chosen: it says how to find and follow the project's decision records (ADR).
+description: Hand work to another tab in SHIKISHA-TERM -- another AI, a terminal, or a web page -- and get the result. Use when a message names a tab as <@ID> (for example "ask <@otter> to review this", "run the tests in <@shell>", "check the price on <@shop>"). Also use to make a git worktree, or to hand work to another AI in a working folder of its own ("make a worktree for this", "give this to another AI", "hand this off"), or to clear away worktrees AIs made ("clean up the worktrees"): use it rather than running git worktree add or remove yourself, so the folder and the AI working in it are on the person's desk. Also use before making or changing a design or architecture choice in a project, and when asked why something was chosen: it says how to find and follow the project's decision records (ADR).
 ---
 
 # Working with other SHIKISHA-TERM tabs
@@ -108,7 +108,8 @@ and the reports for you, and every answer says which command to run next.
 To give work a working folder of its own -- a new branch in a git worktree
 with another AI working in it -- do not run `git worktree add`: run
 `shikisha skill worktree` and follow it. A folder made that way is on the
-person's desk, with the AI in it in a tab they can watch.
+person's desk, with the AI in it in a tab they can watch. The same guide says
+how to clear away the worktrees AIs made, when the person asks for that.
 
 Merge or push only when the person asked for it.
 
@@ -181,8 +182,29 @@ Three commands. Each answer ends with the next command, filled in: run it.
 Run all three. A folder with no AI working in it tells the person nothing: it
 is a card on their desk they cannot read. If they handed the work off and do
 not want to wait for it, end your turn when `ask_tab` says
-`[shikisha] STILL WORKING`. Leave the folder and the tab for the person:
-removing a worktree, merging or pushing is theirs to ask for.
+`[shikisha] STILL WORKING`. Leave the folder and the tab: merging or pushing
+is the person's to ask for, and the folder stays until they ask you to clear
+it away.
+
+# Clearing away worktrees AIs made
+
+When the person asks you to clear worktrees away ("clean up the worktrees"):
+
+    shikisha worktree_list
+
+lists this desk's worktrees: each folder, its branch, `made_by` (the AI tab
+that made it; empty means a person made it) and the tabs open in it. Remove
+one an AI made with
+
+    shikisha worktree_remove <folder>
+
+Its branch and its commits stay in the project. The folder goes with
+everything in it, files git ignores too, and the tabs resting in it are
+closed with it. It is refused for a worktree a person made (tell the person
+it can go), for one with a tab still at work in it, and for one with changes
+not committed (say so; do not commit them to get it removed). Remove only
+what the person asked you to clear away, and only once the work in it is
+finished.
 "#
     .to_string()
 }

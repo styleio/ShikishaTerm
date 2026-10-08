@@ -107,6 +107,17 @@ impl Manager {
             );
     }
 
+    /// How a removal asked for here ended, once it has: `None` while it is
+    /// still going, or when it was never asked for
+    pub fn outcome(&self, desk: &str, key: &str) -> Option<Result<(), String>> {
+        let n = self.views.get(desk)?.results.get(key)?;
+        match (n.busy, n.error.is_empty()) {
+            (true, _) => None,
+            (false, true) => Some(Ok(())),
+            (false, false) => Some(Err(n.error.clone())),
+        }
+    }
+
     pub fn finish(&mut self, key: &str, error: String) {
         self.reviews.remove(key);
         if self.active.as_deref() == Some(key) {
@@ -191,7 +202,7 @@ pub fn blocking_work<'a>(
 
 /// The same machine, at this folder or below it. Remote paths must not be
 /// canonicalized or case-folded using this PC's filesystem rules.
-fn contains(folder: &crate::config::Folder, path: &Path, on: Option<&str>) -> bool {
+pub fn contains(folder: &crate::config::Folder, path: &Path, on: Option<&str>) -> bool {
     let Some(root) = folder.cwd.as_deref() else { return false };
     if folder.host.as_ref().map(|h| h.name.as_str()) != on { return false; }
     if on.is_none() {

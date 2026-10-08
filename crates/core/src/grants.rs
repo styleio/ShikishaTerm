@@ -347,6 +347,12 @@ pub const CATALOG: &[Entry] = &[
     e("keep", Group::Orch, true, true, false),
     e("stop", Group::Orch, true, true, false),
     e("worktree_add", Group::Orch, true, true, false),
+    // Only a worktree an AI made (`made_by`), with nothing uncommitted in it
+    // and no tab at work in it: what a person made is theirs to remove
+    e("worktree_remove", Group::Orch, true, true, false),
+    // What there is to remove: this desk's worktrees, who made each, and the
+    // tabs in it. Reads only
+    e("worktree_list", Group::Orch, true, true, false),
     // -- Files and the network ------------------------------------------------
     // Through a registered gateway: the destination was chosen by a person
     e("read_file", Group::Files, true, true, false),

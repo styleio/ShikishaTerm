@@ -1736,6 +1736,9 @@ function shikisha.keep(assignment) return { accepted = true } end
 function shikisha.stop(assignment) return { accepted = true } end
 -- A working folder for a branch, made the way the worktree dialog makes one
 function shikisha.worktree_add(branch, opts) return { accepted = true } end
+-- And one an AI made, removed again: its branch and commits stay
+function shikisha.worktree_remove(folder) return { accepted = true } end
+function shikisha.worktree_list() return { accepted = true } end
 function shikisha.sleep(ms)
   return coroutine.yield({ op = "sleep", ms = ms })
 end

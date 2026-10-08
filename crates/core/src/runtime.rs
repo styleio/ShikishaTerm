@@ -169,6 +169,17 @@ struct WorktreeCall {
     deadline: std::time::Instant,
 }
 
+/// A `worktree_remove` waiting for its folder to be gone. The removal is the
+/// one the folder's menu starts, queued the way the folder manager queues
+/// one, and answered with how that ended
+struct RemoveCall {
+    /// The folder's place key, which is what the removal is known by
+    key: String,
+    desk: String,
+    reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
+    deadline: std::time::Instant,
+}
+
 /// A worktree being made from the dialog, from the press until its card is on
 /// the desk. The making runs on a thread; what it is written down as, and
 /// where, is decided here when it is pressed, so a desk switched in between
@@ -204,6 +215,9 @@ struct Pending {
     link: serde_json::Value,
     /// Whether it names and describes itself from what its AIs are asked
     auto: bool,
+    /// The AI tab that asked for it (`worktree_add`), by its id. Written
+    /// with the folder, so its card says so and an AI may remove it again
+    made_by: Option<String>,
     /// The branch name this app drew, when nobody typed one. Written into the
     /// folder's source, where it is what lets the work rename the branch once
     /// (see [`crate::worktree::auto_rename_plan`]). A name somebody typed
@@ -403,6 +417,9 @@ impl Pending {
         // machine too, from what the input bar hands its AIs
         if self.auto {
             config::set_folder_auto_label(&self.desk, &plan.place(), true)?;
+        }
+        if let Some(by) = &self.made_by {
+            config::set_folder_made_by(&self.desk, &plan.place(), by)?;
         }
         Ok(())
     }
@@ -2364,6 +2381,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Working folders asked for by a command (`worktree_add`), answered once
     // the folder is on the desk
     let mut worktree_calls: Vec<WorktreeCall> = Vec::new();
+    let mut remove_calls: Vec<RemoveCall> = Vec::new();
     let mut worktree_call_seq: u64 = COMMAND_ASKS;
     // Pages to be driven toward a goal for another tab, and the one being driven
     let mut words_calls: Vec<crate::asktab::WordsCall> = Vec::new();
@@ -4882,7 +4900,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let away = owner != desk_index;
                 // These operations use a dialog or the visible page's driving
                 // session. They may not silently act on the desk in front.
-                if away && matches!(call.method.as_str(), "worktree_add" | "browser_do" | "split_pane" | "close_pane" | "focus_pane" | "equalize_panes") {
+                if away && matches!(call.method.as_str(), "worktree_add" | "worktree_remove" | "browser_do" | "split_pane" | "close_pane" | "focus_pane" | "equalize_panes") {
                     let name = desks.get(owner).map(|d| d.name.as_str()).unwrap_or_default();
                     let _ = call.reply.send(Err(i18n::tp("err.api.open_desk", &[("desk", name)])));
                     continue;
@@ -4961,6 +4979,90 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         );
                         let now_ms = start.elapsed().as_millis() as u64;
                         crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                        continue;
+                    }
+                    // This desk's worktrees on this machine and on others: where,
+                    // on which branch, which AI tab made it (none: a person
+                    // did), and the tabs open in it. What an AI reads before
+                    // it clears away what AIs made
+                    if call.method == "worktree_list" {
+                        let Some(eng) = engine.as_ref() else { continue };
+                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
+                            let _ = call.reply.send(Err(e));
+                            continue;
+                        }
+                        let listed: Vec<serde_json::Value> = desks
+                            .get(desk_index)
+                            .map(|d| {
+                                d.folders
+                                    .iter()
+                                    .filter(|f| match (&f.host, f.cwd.as_deref()) {
+                                        (None, Some(c)) => crate::repo::is_linked(c),
+                                        (Some(_), Some(_)) => f.project.is_some(),
+                                        _ => false,
+                                    })
+                                    .map(|f| {
+                                        let open: Vec<String> = tabs
+                                            .iter()
+                                            .filter(|t| t.cwd().is_some_and(|p| crate::foldercare::contains(f, p, t.host())))
+                                            .map(crate::orch::glue::tab_id)
+                                            .collect();
+                                        serde_json::json!({
+                                            "folder": crate::orch::shell_folder(&f.cwd.as_deref().map(|c| c.display().to_string()).unwrap_or_default()),
+                                            "host": f.host.as_ref().map(|h| h.name.clone()),
+                                            "branch": f.cwd.as_deref().and_then(crate::repo::branch_of),
+                                            "made_by": f.made_by,
+                                            "tabs": open,
+                                        })
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let _ = call.reply.send(Ok(serde_json::json!({"worktrees": listed})));
+                        continue;
+                    }
+                    // A worktree an AI made, removed again by an AI. Only one
+                    // an AI made (`made_by`); then the removal the folder's
+                    // menu starts, with its refusals: a tab still at work in
+                    // it, anything not committed. A tab resting there goes with
+                    // the folder, as it does when a person removes it -- an AI
+                    // may not close tabs, and asking the person to close each
+                    // one was the chore this exists to take away. The branch
+                    // and its commits stay
+                    if call.method == "worktree_remove" {
+                        let Some(eng) = engine.as_ref() else { continue };
+                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
+                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
+                            let _ = call.reply.send(Err(e));
+                            continue;
+                        }
+                        let asked = call.params.first().and_then(serde_json::Value::as_str).map(str::trim).unwrap_or_default();
+                        let Some(d) = desks.get(desk_index) else { continue };
+                        let f = (!asked.is_empty())
+                            .then(|| d.folders.iter().find(|f| f.cwd.as_deref().is_some_and(|c| crate::same_folder(c, std::path::Path::new(asked)))))
+                            .flatten();
+                        let refused = match f {
+                            None => Some(format!("{asked:?} is no working folder on this desk: shikisha worktree_remove <folder>, as worktree_list names it")),
+                            Some(f) if f.made_by.is_none() => Some(format!(
+                                "{asked} was not made by an AI (worktree_add), so it is the person's to remove, from its card. Tell them it can go"
+                            )),
+                            _ => None,
+                        };
+                        if let Some(why) = refused {
+                            let _ = call.reply.send(Err(why));
+                            continue;
+                        }
+                        let Some(key) = f.and_then(|f| f.place()).map(|p| p.to_string_lossy().to_string()) else { continue };
+                        folder_manager.enqueue(&d.uid, key.clone());
+                        remove_calls.push(RemoveCall {
+                            key,
+                            desk: d.uid.clone(),
+                            reply: call.reply,
+                            deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
+                        });
                         continue;
                     }
                     // A working folder for a branch, made the way the worktree
@@ -5610,6 +5712,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                 }
+            }
+            // Working folders a command asked to remove: answered once the
+            // removal has ended, either way
+            if !remove_calls.is_empty() {
+                let now = std::time::Instant::now();
+                remove_calls.retain(|r| {
+                    let said = match folder_manager.outcome(&r.desk, &r.key) {
+                        Some(Ok(())) => Ok(serde_json::json!({
+                            "folder": crate::uistate::place_of(std::path::Path::new(&r.key)).1.display().to_string(),
+                            "removed": true,
+                            "kept": "its branch and its commits",
+                        })),
+                        Some(Err(why)) => Err(why),
+                        None if now >= r.deadline => Ok(serde_json::json!({
+                            "folder": r.key, "state": "still being removed",
+                        })),
+                        None => return true,
+                    };
+                    let _ = r.reply.send(said);
+                    false
+                });
             }
             // Working folders asked for by a command: answered once on the desk
             if !worktree_calls.is_empty() {
@@ -6729,6 +6852,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 folder,
                                 summary: f.summary.clone(),
                                 auto: f.auto_label,
+                                made_by: f.made_by.clone(),
                             })
                         })
                         .collect()
@@ -12824,6 +12948,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let same = |p: &Pending| crate::uistate::same_folder(&p.making.plan.place(), &plan.place());
                             makings.retain(|p| !(same(p) && p.error.is_some() && !p.made));
                             let already = makings.iter().any(|p| !p.gone && same(p));
+                            // Asked for by a command an AI tab ran: which one
+                            let made_by = (ask.seq >= COMMAND_ASKS)
+                                .then(|| worktree_calls.iter().find(|w| w.seq == ask.seq))
+                                .flatten()
+                                .and_then(|w| w.caller.as_deref())
+                                .and_then(|c| tabs.iter().find(|t| t.called() == c))
+                                .filter(|t| t.is_ai())
+                                .map(crate::orch::glue::tab_id);
                             making_seq += 1;
                             if !already { makings.push(Pending {
                                 id: making_seq,
@@ -12839,6 +12971,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 start: start.clone(),
                                 link: ask.link.clone(),
                                 auto: ask.auto,
+                                made_by,
                                 drawn: drawn.clone(),
                                 carry: carryable.clone(),
                                 made: false,
@@ -12931,6 +13064,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             start: start_of(&ai, start_ais),
                             link: ask.link.clone(),
                             auto: ask.auto,
+                            made_by: None,
                             drawn: drawn.as_ref().map(|_| branch.clone()),
                             carry: carryable.clone(),
                             made: false,

@@ -3442,6 +3442,11 @@ pub struct FolderConfig {
     /// they wrote is not written over
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_label: bool,
+    /// The AI tab that made this worktree (`worktree_add`), by its id then.
+    /// Absent for one a person made. What its card wears, and what lets an AI
+    /// remove it again (`worktree_remove`): an AI clears up after AIs only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
     /// The machine this folder is on, by the name in `hosts`. Absent is this
     /// one. A folder somewhere else is not missing from this machine -- it was
     /// never meant to be here -- so nothing about it is repaired or offered
@@ -3611,6 +3616,8 @@ pub struct Folder {
     pub summary: Option<String>,
     /// Whether its name and summary are written from what its AIs are asked
     pub auto_label: bool,
+    /// The AI tab that made it, when an AI did (see [`FolderConfig::made_by`])
+    pub made_by: Option<String>,
     /// The branch name this app drew for it, while the folder is still on it
     /// (see [`SourceSpec::drawn`]). The one name the work may write over
     pub drawn: Option<String>,
@@ -5075,6 +5082,7 @@ fn resolve_folders(
             work_item: def.work_item.as_deref().map(str::trim).filter(|w| !w.is_empty()).map(str::to_string),
             summary: def.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
             auto_label: def.auto_label,
+            made_by: def.made_by.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(str::to_string),
             drawn: def
                 .source
                 .as_ref()
@@ -5543,6 +5551,21 @@ pub fn set_folder_auto_label_at(path: &Path, desk_name: &str, cwd: &Path, on: bo
             false => {
                 o.shift_remove("auto_label");
             }
+        }
+        Ok(())
+    })
+}
+
+/// Writes which AI tab made a folder (see [`FolderConfig::made_by`])
+pub fn set_folder_made_by(desk_name: &str, cwd: &Path, by: &str) -> Result<()> {
+    set_folder_made_by_at(&config_file_path(), desk_name, cwd, by)
+}
+
+/// The same, told which settings file to edit.
+pub fn set_folder_made_by_at(path: &Path, desk_name: &str, cwd: &Path, by: &str) -> Result<()> {
+    with_folders(path, desk_name, |folders| {
+        if let Some(o) = find_folder(folders, cwd).and_then(|g| g.as_object_mut()) {
+            o.insert("made_by".into(), serde_json::json!(by));
         }
         Ok(())
     })
@@ -9761,6 +9784,21 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert!(doc["desks"][0]["folders"][0].get("parked").is_none());
         assert_eq!(doc["desks"][0]["folders"][1]["parked"], true);
+    }
+
+    /// A worktree an AI made says which tab made it; one a person made says
+    /// nothing, and is what an AI may never remove
+    #[test]
+    fn the_ai_that_made_a_folder_is_written_with_it() {
+        let at = std::env::temp_dir().join("shikisha-made-folder");
+        let body = serde_json::json!({"desks": [{"name": "work", "folders": [
+            {"cwd": at.display().to_string(), "tabs": []}
+        ]}]})
+        .to_string();
+        let (_dir, file) = tabs_file("made", &body);
+        assert_eq!(read_desk(&file).folders[0].made_by, None);
+        set_folder_made_by_at(&file, "work", &at, "otter").unwrap();
+        assert_eq!(read_desk(&file).folders[0].made_by.as_deref(), Some("otter"));
     }
 
     /// A folder names itself from what its AIs are asked only while it asks

@@ -1185,6 +1185,7 @@ mod remote_folder_tests {
             work_item: None,
             summary: None,
             auto_label: false,
+            made_by: None,
             drawn: None,
         };
         let cfg = config::TabConfig::default();

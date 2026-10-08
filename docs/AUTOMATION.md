@@ -1281,6 +1281,8 @@ right when there is one. Jobs are `j1`, tasks `t1`, assignments `a1`, questions 
 | `shikisha.stop("a1" or "all")` | **Stop a worker**: Esc now, and a tab the job opened is closed if it has not stopped 15 seconds later. The task is held: assigning it again goes on with it, `task_drop` takes it out |
 | `shikisha.open_ai_tab("claude" or "codex" or "gemini", {folder=…, name=…})` | **Open a new AI tab** running that CLI, set up the way every new AI tab is (Yolo only if the person's setting says so). Open to an AI where `open_tab` is not: what starts is never a command the caller wrote |
 | `shikisha.worktree_add("branch", {base=…})` | **Make a working folder (git worktree)** for a branch, placed by the project's worktree rules, and put it on the desk. Answers the folder |
+| `shikisha.worktree_list()` | **List the working folders (git worktrees)** on this desk: each folder, its branch, `made_by` (the AI tab that made it; empty when a person did) and the tabs open in it |
+| `shikisha.worktree_remove("folder")` | **Remove a working folder an AI made** (`made_by`). Refused for one a person made, one with a tab still at work in it, and one with changes not committed. Its branch and commits stay; the folder goes with everything in it, ignored files too, and the tabs resting in it are closed. Answers once it is gone |
 
 ### Handing a run between participants
 

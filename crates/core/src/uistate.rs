@@ -488,6 +488,7 @@ pub struct FolderLabel {
     pub folder: std::path::PathBuf,
     pub summary: Option<String>,
     pub auto: bool,
+    pub made_by: Option<String>,
 }
 
 /// A folder, as a heading over the tabs working in it.
@@ -593,6 +594,9 @@ pub struct GroupState {
     /// rather than by a person. The name is drawn a shade quieter then
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto: bool,
+    /// The AI tab that made this worktree, when an AI did: the card wears it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by: Option<String>,
 }
 
 impl GroupState {
@@ -669,6 +673,7 @@ impl GroupState {
                     // (`describe`), the same as the project's name
                     summary: None,
                     auto: false,
+                    made_by: None,
                 },
             ));
         }
@@ -719,6 +724,7 @@ impl GroupState {
                     // (`describe`), the same as the project's name
                     summary: None,
                     auto: false,
+                    made_by: None,
                 },
             ));
         }
@@ -748,6 +754,7 @@ impl GroupState {
             let Some(l) = labels.iter().find(|l| same_folder(&l.folder, at)) else { continue };
             g.summary = l.summary.clone();
             g.auto = l.auto;
+            g.made_by = l.made_by.clone();
             g.keep_first = l.keep_first;
             g.parked = l.parked;
         }
