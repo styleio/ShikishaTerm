@@ -56,6 +56,8 @@ thread_local! {
     static INITIALIZED: Cell<bool> = const { Cell::new(false) };
     /// Browsers made and not yet gone, so the end can wait for them
     static LIVE: Cell<usize> = const { Cell::new(0) };
+    /// Whether CEF is being given its turn right now
+    static TURNING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// One more browser, or one fewer
@@ -187,29 +189,64 @@ impl Port {
     }
 }
 
+thread_local! {
+    /// What CEF told this program, waiting to be acted on. Chromium is in the
+    /// middle of telling its observers when it calls one, and an observer
+    /// that answers on the spot -- another call to the protocol, a page
+    /// loaded -- reaches back into what Chromium is still walking. So what it
+    /// is told is only noted, and acted on once Chromium has finished
+    /// (`Pages::turn`), in the order it was told
+    static LATER: RefCell<std::collections::VecDeque<Box<dyn FnOnce()>>> =
+        RefCell::new(std::collections::VecDeque::new());
+}
+
+/// Act on this once CEF has finished what it is in the middle of
+fn later(f: impl FnOnce() + 'static) {
+    LATER.with(|l| l.borrow_mut().push_back(Box::new(f)));
+    // Told outside a turn -- a key pressed in a page is handed out by the
+    // system, not by CEF's turn -- the loop is woken to act on it
+    if let Some(wake) = &PUMP.lock().unwrap_or_else(|e| e.into_inner()).wake {
+        let _ = wake.send_event(Cmd::EngineTurn);
+    }
+}
+
+/// Everything noted while CEF was busy, acted on now. What is acted on may note
+/// more; that is acted on too
+fn act_on_what_was_told() {
+    while let Some(next) = LATER.with(|l| l.borrow_mut().pop_front()) {
+        next();
+    }
+}
+
 /// An answer the protocol gave, to whoever asked
 fn answered(wire: &Weak<Wire>, id: i32, ok: bool, result: &[u8]) {
-    let Some(wire) = wire.upgrade() else { return };
-    let done = wire.waiting.borrow_mut().remove(&id);
-    if let Some(done) = done {
-        done(ok, String::from_utf8_lossy(result).into_owned());
-    }
+    let text = String::from_utf8_lossy(result).into_owned();
+    let wire = wire.clone();
+    later(move || {
+        let Some(wire) = wire.upgrade() else { return };
+        let done = wire.waiting.borrow_mut().remove(&id);
+        if let Some(done) = done {
+            done(ok, text);
+        }
+    });
 }
 
 /// An event the protocol raised, to everyone listening for it
 fn raised(wire: &Weak<Wire>, method: &str, params: &[u8]) {
-    let Some(wire) = wire.upgrade() else { return };
-    let listeners: Vec<Rc<dyn Fn(&serde_json::Value)>> = match wire.listening.try_borrow() {
-        Ok(l) => l.get(method).map(|list| list.iter().map(|(_, f)| Rc::clone(f)).collect()).unwrap_or_default(),
-        Err(_) => return,
-    };
-    if listeners.is_empty() {
-        return;
-    }
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(params) else { return };
-    for on in listeners {
-        on(&v);
-    }
+    let (wire, method) = (wire.clone(), method.to_string());
+    later(move || {
+        let Some(wire) = wire.upgrade() else { return };
+        // Who is listening when it is acted on: one who stopped listening in
+        // the meantime is not told
+        let listeners: Vec<Rc<dyn Fn(&serde_json::Value)>> = match wire.listening.try_borrow() {
+            Ok(l) => l.get(&method).map(|list| list.iter().map(|(_, f)| Rc::clone(f)).collect()).unwrap_or_default(),
+            Err(_) => return,
+        };
+        for on in listeners {
+            on(&v);
+        }
+    });
 }
 
 // ── A page ────────────────────────────────────────────────────────────────
@@ -499,6 +536,11 @@ impl Pages {
 
     /// Give CEF its turn when it is due
     pub fn turn(&mut self) {
+        // A turn inside a turn: the system handing out an event while CEF
+        // runs is not a moment to run CEF again
+        if TURNING.with(|t| t.replace(true)) {
+            return;
+        }
         let now = std::time::Instant::now();
         let due = {
             let mut pump = PUMP.lock().unwrap_or_else(|e| e.into_inner());
@@ -512,6 +554,8 @@ impl Pages {
             self.last_turn = now;
             ::cef::do_message_loop_work();
         }
+        TURNING.with(|t| t.set(false));
+        act_on_what_was_told();
     }
 
     /// A page over the whole of `window`
@@ -697,8 +741,11 @@ pub(super) fn wind_down() {
     let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while LIVE.with(|l| l.get()) > 0 && std::time::Instant::now() < until {
         ::cef::do_message_loop_work();
+        act_on_what_was_told();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    // What is still noted holds pages and their lines, which go before CEF does
+    LATER.with(|l| l.borrow_mut().clear());
     ::cef::shutdown();
 }
 

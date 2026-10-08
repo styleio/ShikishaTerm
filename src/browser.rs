@@ -196,7 +196,7 @@ const WINDOW_POST: &str = r#"
 /// person anything: the bar that does is the app's own, drawn under the page
 /// by the board (shell.rs), where a page cannot press it.
 static INIT_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!("{WINDOW_POST}{}", shikisha_core::pagejs::AUTOMATION)
+    format!("{WINDOW_POST}{}{}", frame::FRAME_JS, shikisha_core::pagejs::AUTOMATION)
 });
 
 /// An instruction from the conductor to the browser

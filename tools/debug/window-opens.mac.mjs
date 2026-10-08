@@ -130,6 +130,23 @@ try {
     step('the page can talk to the program (window.ipc)', ipc === true)
     const size = await evaluate('JSON.stringify([innerWidth, innerHeight])')
     step('the page has a size', !!size && size !== '[0,0]', size)
+    const frame = await evaluate(
+      '(() => { const b = document.getElementById("titlebar"); return !!b && b.classList.contains("macframe") && !b.querySelector(".wbtn"); })()',
+    )
+    step("the bar leaves room for the Mac's own buttons and draws none", frame === true)
+    // Typing reaches the program in the terminal, and what it prints comes
+    // back: the whole way round, through the page, the program and the pty
+    await evaluate('(() => { const k = document.getElementById("kbd"); if (k) k.focus(); return !!k; })()')
+    await s.call('Input.insertText', { text: 'echo shikisha-$((6*7))' })
+    for (const type of ['keyDown', 'keyUp']) {
+      await s.call('Input.dispatchKeyEvent', { type, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 })
+    }
+    let echoed = false
+    for (let i = 0; i < 40 && !echoed; i++) {
+      echoed = (await evaluate('document.body.innerText.includes("shikisha-42")')) === true
+      if (!echoed) await sleep(250)
+    }
+    step('typing in the terminal runs a command and shows what it printed', echoed)
     await sleep(2000)
     const shot = await s.call('Page.captureScreenshot', { format: 'png' })
     if (shot.result?.data) {

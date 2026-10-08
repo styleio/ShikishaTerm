@@ -103,6 +103,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #titlebar .wbtn { width:46px; font-family:"Segoe Fluent Icons","Segoe MDL2 Assets",var(--mono);
     font-size:10px; }
   #titlebar .wbtn.close:hover { background:var(--stop); color:#fff; }
+  /* A Mac's own three buttons stand at the left end of the bar (the window
+     puts them there): the bar starts after them, and has none of its own */
+  #titlebar.macframe { padding-left:76px; }
 
 
   /* ── Left tab bar ───────────────────────── */
@@ -5435,9 +5438,10 @@ function drawTabs() {
         onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️"),
     // The server versions this PC was paired with: a board each, opened in a
     // window of its own beside this one (far-keep plan §6.1). This PC's own
-    // window only: a phone, or a server's own board, has none of its own
-    AT_PC ? el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
-        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖧") : null));
+    // window only: a phone, or a server's own board, has none of its own.
+    // A desktop computer: the one picture of a machine every system's emoji has
+    AT_PC ?el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
+        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖥️") : null));
   drawCoach();
 }
 
@@ -14524,6 +14528,10 @@ function drawTitle() {
   // the system's own caption tells a press from a drag
   bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
   bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
+  // A Mac's window keeps its own close, minimise and zoom, at the left end of
+  // this bar where every Mac window has them
+  const macFrame = window.__shikisha_frame === "mac";
+  bar.classList.toggle("macframe", macFrame);
   // Whose window this is, and what it is called -- what the system bar said,
   // where it said it. Which desk it is showing is the footer's to say.
   // The picture is the one the phone already fetches, from the same route
@@ -14536,6 +14544,7 @@ function drawTitle() {
   bar.append(el("div", {class: "drag"}));
   bar.append(el("button", {class: sideWidth() > 0 ? "on" : "",
     title: T["tui.title.side"] || "", onclick: () => window.__toggleSideBar()}, "\u25e8"));
+  if (macFrame) return;
   bar.append(el("button", {class: "wbtn", title: T["tui.title.min"] || "",
     onclick: () => winAct("minimize")}, "\ue921"));
   bar.append(el("button", {class: "wbtn", title: (winMax ? T["tui.title.restore"] : T["tui.title.max"]) || "",
@@ -24661,7 +24670,7 @@ function drawSftp() {
   u.pick.textContent = "";
   u.pick.classList.toggle("unset", !F.server);
   u.pick.append(el("span", {class:"nm"},
-    "🖧 " + (F.server || (T["sftp.no_address"] || ""))));
+    "🖥️ " + (F.server || (T["sftp.no_address"] || ""))));
   // The address says where; the name says what that place is to the person
   // who named it, which is the half read at a glance
   u.pick.append(...[serverMark(sftpMark())].filter(Boolean));

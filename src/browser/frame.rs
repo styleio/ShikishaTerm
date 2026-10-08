@@ -5,12 +5,17 @@
 
 use super::*;
 
-/// The program's own window, as this system draws an undecorated one.
+/// The program's own window, its bar drawn by the page.
 ///
 /// On Windows the frame is ours to draw, and the system keeps what it is
 /// better at: resizing from the edges (tao hit-tests them for an undecorated
 /// window) and the drop shadow, which `with_undecorated_shadow` asks for by
 /// name.
+///
+/// A Mac keeps its own frame and its three buttons where every Mac window has
+/// them, at the top left, with the page reaching up under a bar made clear:
+/// the page draws the rest of the bar around them (`FRAME_JS`), and nothing
+/// a Mac's person reaches for is somewhere else.
 ///
 /// What this costs, said plainly: Windows 11's Snap Layouts flyout appears
 /// when the pointer rests on a *system* maximize button, and ours is not
@@ -21,10 +26,33 @@ pub(super) fn main_builder(title: &str) -> tao::window::WindowBuilder {
     #[cfg(windows)]
     let b = {
         use tao::platform::windows::WindowBuilderExtWindows;
-        b.with_undecorated_shadow(true)
+        b.with_decorations(false).with_undecorated_shadow(true)
     };
+    #[cfg(target_os = "macos")]
+    let b = {
+        use tao::platform::macos::WindowBuilderExtMacOS;
+        b.with_titlebar_transparent(true)
+            .with_title_hidden(true)
+            .with_fullsize_content_view(true)
+            // Centred on the page's bar, which is taller than a Mac's own
+            .with_traffic_light_inset(tao::dpi::LogicalPosition::new(TRAFFIC_LIGHTS_X, TRAFFIC_LIGHTS_Y))
+    };
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let b = b.with_decorations(false);
     b
 }
+
+/// Where a Mac's three buttons sit, from the window's top left, in points: in
+/// the middle of the page's bar (32 points tall, the buttons 14)
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS_X: f64 = 12.0;
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS_Y: f64 = 9.0;
+
+/// What the page is told about the frame around it, before anything of it
+/// runs: on a Mac, that the system's three buttons are at the top left of its
+/// bar, so it leaves them room and draws none of its own
+pub(super) const FRAME_JS: &str = if cfg!(target_os = "macos") { "window.__shikisha_frame = \"mac\";\n" } else { "" };
 
 /// The tool's window over a picture of the screen: off the taskbar, and
 /// without a shadow that would fall across the picture

@@ -236,13 +236,11 @@ pub(super) fn run_window(
         .send(ev_loop.create_proxy())
         .map_err(|_| anyhow!(shikisha_core::i18n::t("err.browser.proxy_connect_failed")))?;
 
-    // The frame is ours to draw. The system keeps what it is better at --
-    // resizing from the edges (tao hit-tests them for an undecorated window)
-    // and the drop shadow -- and the page draws the bar, because the bar is
-    // where the panels are opened from and a system bar has nowhere to put them.
+    // The bar is the page's, because the bar is where the panels are opened
+    // from and a system bar has nowhere to put them. What the system keeps of
+    // the frame is each system's (`frame::main_builder`)
     let window = std::rc::Rc::new(
         super::frame::main_builder(title)
-            .with_decorations(false)
             .with_inner_size(tao::dpi::LogicalSize::new(1280.0, 900.0))
             // Shown without being made the active window, which is only the
             // first half: `frame::settle` does the second
