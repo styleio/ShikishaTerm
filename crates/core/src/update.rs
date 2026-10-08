@@ -889,7 +889,7 @@ fn unpack_counting(zip_path: &Path, into: &Path, said: &mut dyn FnMut(u64, u64))
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let Some(rel) = entry.enclosed_name() else { bail!("the zip names a path outside itself") };
-        let out = into.join(rel);
+        let out = into.join(&rel);
         if entry.is_dir() {
             std::fs::create_dir_all(&out)?;
             continue;
