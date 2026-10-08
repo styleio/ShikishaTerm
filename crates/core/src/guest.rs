@@ -267,31 +267,8 @@ fn split(line: &str) -> Vec<String> {
     out
 }
 
-/// Where a running process's program lives on disk.
-#[cfg(windows)]
-pub(crate) fn image_of(pid: u32) -> Option<String> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-    };
-    // The weakest right that answers this question. A process this program is
-    // not allowed to look at simply has no answer, which is the right outcome
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return None;
-    }
-    let mut buf = [0u16; 520];
-    let mut len = buf.len() as u32;
-    // SAFETY: the handle is open for the duration, and the buffer's length is
-    // passed with it and written back
-    let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len) };
-    unsafe { CloseHandle(handle) };
-    (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
-}
-
 /// Where a running process's program lives on disk, as the system says. A
 /// process of another account, or one that ended, has no answer
-#[cfg(unix)]
 pub(crate) fn image_of(pid: u32) -> Option<String> {
     use sysinfo::{ProcessRefreshKind, UpdateKind};
     let table = crate::repo::process_table(Some(&[pid]), ProcessRefreshKind::nothing().with_exe(UpdateKind::Always));
