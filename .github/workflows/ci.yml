@@ -86,6 +86,18 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --verbose
 
+      # The cask a release hands to Homebrew, written from made-up checksums and
+      # read by Homebrew's own rules (they apply to a file under Casks/), so a
+      # release never pushes one that Homebrew refuses
+      - name: The Homebrew cask is one Homebrew accepts
+        run: |
+          mkdir -p /tmp/sums /tmp/tap/Casks
+          for a in arm64 x64; do
+            echo "$(printf '%064d' 0)  SHIKISHA-TERM-mac-$a.dmg" > "/tmp/sums/SHIKISHA-TERM-mac-$a.dmg.sha256"
+          done
+          sh packaging/mac/mkcask.sh v0.0.0 /tmp/sums > /tmp/tap/Casks/shikisha-term.rb
+          brew style /tmp/tap/Casks/shikisha-term.rb
+
       # Built and tested is not drawn. The app is put together the way a
       # release is (unsigned here), opened as a copy of its own, and asked
       # whether Chromium started, the board's page loaded and the page can

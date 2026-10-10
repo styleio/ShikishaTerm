@@ -1,0 +1,101 @@
+name: Homebrew
+
+# Keeps this project's tap (styleio/homebrew-shikisha-term) on the release a Mac
+# is handed, so that
+#   brew install --cask styleio/shikisha-term/shikisha-term
+# installs what the release page offers. The cask is written from the checksums
+# the release carries (packaging/mac/mkcask.sh) and pushed to the tap.
+#
+# Only a published release moves the tap: a draft may still change or be thrown
+# away. A pre-release does not move it either -- the cask is the channel people
+# stay on, and the app updates itself beyond it (auto_updates).
+#
+# Running it by hand (workflow_dispatch) writes the cask for a tag already
+# published, for a tap that missed one
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release to write the cask for (e.g. v0.27.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Two releases published close together must not race each other into the tap
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  cask:
+    if: github.event_name == 'workflow_dispatch' || (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease)
+    runs-on: macos-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      TAP: styleio/homebrew-shikisha-term
+    steps:
+      - uses: actions/checkout@v4
+
+      # A release made without Apple's credentials has no Mac build, and so no
+      # cask to write. That is not a fault of this workflow: say so and stop
+      - name: The release's Mac checksums
+        id: sums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p sums
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir sums \
+              --pattern 'SHIKISHA-TERM-mac-*.dmg.sha256' || true
+          if [ ! -f sums/SHIKISHA-TERM-mac-arm64.dmg.sha256 ] || [ ! -f sums/SHIKISHA-TERM-mac-x64.dmg.sha256 ]; then
+            echo "::notice::$TAG has no Mac build, so the tap stays where it is"
+            echo "mac=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "mac=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Without the token, the tap would quietly fall behind the releases.
+      # Nobody notices that until someone installs an old version, so stop here
+      - name: The tap's token
+        if: steps.sums.outputs.mac == 'yes'
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not set: the tap cannot follow $TAG"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.sums.outputs.mac == 'yes'
+        with:
+          repository: ${{ env.TAP }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      # Read by Homebrew's own rules before it goes anywhere: a cask the tap
+      # holds and Homebrew refuses breaks the install for everyone
+      - name: Write the cask
+        if: steps.sums.outputs.mac == 'yes'
+        run: |
+          mkdir -p tap/Casks
+          sh packaging/mac/mkcask.sh "$TAG" sums > tap/Casks/shikisha-term.rb
+          cat tap/Casks/shikisha-term.rb
+          brew style tap/Casks/shikisha-term.rb
+
+      - name: Push it to the tap
+        if: steps.sums.outputs.mac == 'yes'
+        run: |
+          cd tap
+          git config user.name "styleio"
+          git config user.email "51430844+styleio@users.noreply.github.com"
+          git add Casks/shikisha-term.rb
+          if git diff --cached --quiet; then
+            echo "The tap already has $TAG"
+            exit 0
+          fi
+          git commit -m "shikisha-term ${TAG#v}"
+          git push origin HEAD

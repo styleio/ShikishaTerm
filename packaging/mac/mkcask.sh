@@ -1,14 +1,15 @@
 #!/bin/sh
 #
 #  Writes the Homebrew cask for a release, from the checksums of its two .dmg
-#  files, so `brew install --cask shikisha-term` installs what the release page
-#  hands out.
+#  files, so `brew install --cask styleio/shikisha-term/shikisha-term` installs
+#  what the release page hands out.
 #
 #      packaging/mac/mkcask.sh <version> <folder holding the .dmg.sha256 files>
 #
-#  Printed, not published: where the cask is kept (a tap of this project's own,
-#  or Homebrew's) is a person's decision. The cask says the app updates itself
-#  (auto_updates), so Homebrew does not fight the app over its own updates.
+#  Printed. .github/workflows/homebrew.yml puts it in this project's own tap
+#  when a release is published; CI reads it by Homebrew's rules on every push.
+#  The cask says the app updates itself (auto_updates), so Homebrew does not
+#  fight the app over its own updates.
 #
 set -eu
 
@@ -34,8 +35,8 @@ cask "shikisha-term" do
 
   url "https://github.com/styleio/ShikishaTerm/releases/download/v#{version}/SHIKISHA-TERM-mac-#{arch}.dmg"
   name "SHIKISHA-TERM"
-  desc "Terminal for running AI coding agents side by side and watching them from anywhere"
-  homepage "https://github.com/styleio/ShikishaTerm"
+  desc "Terminal for running AI coding agents side by side, watched from anywhere"
+  homepage "https://shikisha-term.com/"
 
   livecheck do
     url :url
@@ -43,13 +44,13 @@ cask "shikisha-term" do
   end
 
   auto_updates true
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   app "SHIKISHA-TERM.app"
 
   zap trash: [
     "~/Library/Application Support/SHIKISHA-TERM",
-    "~/Library/Application Support/ShikishaTerm",
+    "~/Library/Caches/SHIKISHA-TERM",
     "~/Library/Caches/com.wiredxeco.shikisha-term",
     "~/Library/Preferences/com.wiredxeco.shikisha-term.plist",
     "~/Library/Saved Application State/com.wiredxeco.shikisha-term.savedState",

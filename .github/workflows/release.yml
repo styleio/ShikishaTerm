@@ -576,24 +576,8 @@ jobs:
 
       - run: ls -la out
 
-      # The Homebrew cask for this release, kept beside it rather than published:
-      # where a cask lives is a decision made once, by a person, not by a tag
-      - uses: actions/checkout@v4
-        with:
-          path: src
-      - name: The Homebrew cask
-        run: |
-          if ls out/SHIKISHA-TERM-mac-*.dmg.sha256 >/dev/null 2>&1; then
-            mkdir -p cask
-            sh src/packaging/mac/mkcask.sh "${GITHUB_REF_NAME}" out > cask/shikisha-term.rb
-            cat cask/shikisha-term.rb
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: homebrew-cask
-          path: cask/shikisha-term.rb
-          retention-days: 30
-          if-no-files-found: ignore
+      # The Homebrew cask is not written here: this is a draft, and the tap
+      # follows a release only once it is published (homebrew.yml)
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -632,6 +616,8 @@ jobs:
             `SHIKISHA-TERM-mac-x64.dmg` for Intel. Open it and drag SHIKISHA-TERM to
             Applications. Signed and notarized by Apple; macOS 12 or later. It updates
             itself from the same page.
+
+            With Homebrew: `brew install --cask styleio/shikisha-term/shikisha-term`
 
             ## Linux
 
