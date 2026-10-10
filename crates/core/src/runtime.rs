@@ -13732,8 +13732,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(k) = want.tabkey {
                 query += &format!("&tabkey={}", urlish(&k));
             }
-            if let Some(s) = want.section {
-                query += &format!("&section={s}");
+            match want.section {
+                // The whole program's settings, at their top: "Edit settings"
+                Some(s) if s == shikisha_shared::SETTINGS_GENERAL => query += "&gen=1",
+                Some(s) => query += &format!("&section={s}"),
+                None => {}
             }
             if want.ret {
                 query += "&ret=1";
@@ -14350,12 +14353,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if update::ready_to_restart() {
             break;
         }
+        // ⌘W: what is over the board goes first, the way a Mac closes the
+        // window in front -- the settings before the window they stand in
+        if std::mem::take(&mut shell.mail().close_front) {
+            if settings_open {
+                shell.mail().close_settings = true;
+            } else if help_open {
+                help_open = false;
+            } else if qr_open {
+                qr_open = false;
+            } else if desk_open {
+                desk_open = false;
+            } else {
+                shell.mail().close_requested = true;
+            }
+        }
         let close_pressed = std::mem::take(&mut shell.mail().close_requested);
         let quit_chosen = std::mem::take(&mut shell.mail().tray_quit);
         if close_pressed && resident {
             shell.hide();
             shell.say_where_it_went();
         } else if (close_pressed || quit_chosen) && ask_to_quit(shell, &tabs, &desk_tabs, &stop_all) {
+            // Gone from the screen the moment it is decided: what is left --
+            // the tabs stopped, the record written -- takes a few seconds, and
+            // spent in view it was a window gone black that would not go
+            shell.hide();
             break;
         }
         let Some(ev) = polled else {

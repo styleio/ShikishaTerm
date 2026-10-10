@@ -496,7 +496,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::Pen { .. } => false,
         // This PC's window and its notification-area icon, and the keys that
         // work from any program on this PC. None of them is a thing a phone has
-        Ev::CloseRequested | Ev::Closed | Ev::TrayOpen | Ev::TrayQuit | Ev::Summon { .. } => false,
+        Ev::CloseRequested | Ev::CloseFront | Ev::Closed | Ev::TrayOpen | Ev::TrayQuit | Ev::Summon { .. } => false,
         // Done on the phone through a door of its own, so the same button
         // works there without this: the settings are the proxied /cfg, the
         // manual and a program's install page are plain links, a file is sent
@@ -4620,7 +4620,7 @@ mod tests {
             // ...and what this PC's browser says about a search and a download
             "Seek", "Download",
             // This PC's window, tray and keys
-            "CloseRequested", "Closed", "TrayOpen", "TrayQuit", "Summon",
+            "CloseRequested", "CloseFront", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own
             "OpenSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach",
             // Meaningless on a phone

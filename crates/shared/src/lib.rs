@@ -186,6 +186,10 @@ pub enum Ev {
     /// window away or ends the program is the conductor's call (a setting,
     /// and a question when an AI is at work)
     CloseRequested,
+    /// ⌘W on a Mac (its menus' Close): what is in front of the board goes
+    /// first -- the settings, or the help, the desk list or the code over it
+    /// -- and only with nothing over it is the window put away
+    CloseFront,
     /// The notification-area icon was pressed, or "Open" chosen on its menu
     TrayOpen,
     /// "Quit" chosen on the notification-area icon's menu
@@ -2120,6 +2124,11 @@ pub fn allowed_from_page(ev: &Ev) -> bool {
 /// phrase anybody looks for, short enough that a paste of a whole document
 /// is not walked through every text node of the page
 pub const SEEK_MAX_CHARS: usize = 500;
+
+/// The `section` an ask for the settings names to open on the settings of the
+/// whole program, at their top, rather than on a desk's: what "Edit settings"
+/// on the board opens, and a Mac's Settings… (⌘,)
+pub const SETTINGS_GENERAL: &str = "general";
 
 /// The control keys an [`Input::Key`] may name.
 ///

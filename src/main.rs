@@ -796,6 +796,7 @@ impl WinSurface {
                 // nowhere left to draw stays alive unseen, still holding the listening port.
                 Ev::Closed => self.mail.closed = true,
                 Ev::CloseRequested => self.mail.close_requested = true,
+                Ev::CloseFront => self.mail.close_front = true,
                 Ev::TrayOpen => self.mail.tray_open = true,
                 Ev::Summon { what } => self.summon(&what),
                 Ev::TrayQuit => self.mail.tray_quit = true,

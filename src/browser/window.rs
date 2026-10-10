@@ -987,6 +987,7 @@ pub(super) fn run_window(
                 }
                 Cmd::Hide => {
                     window.set_visible(false);
+                    super::frame::now_on_screen();
                     // Let go of the board's page, and of everything holding a
                     // reference to it -- a reference kept would keep Chromium's
                     // processes alive, and with them the memory this is for

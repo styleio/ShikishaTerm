@@ -309,6 +309,9 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
     let t = |k: &str| shikisha_core::i18n::t(k);
     let cmd = |code| Some(Accelerator::new(Modifiers::META, code));
     let settings = MenuItem::new(t("menu.mac.settings"), true, cmd(Code::Comma));
+    // Close is the program's own line too: it closes what stands in front of
+    // the board before it puts the window away (`Ev::CloseFront`)
+    let close = MenuItem::new(t("menu.mac.close"), true, cmd(Code::KeyW));
     let quit = MenuItem::new(t("menu.mac.quit"), true, cmd(Code::KeyQ));
     let about = AboutMetadata {
         name: Some("SHIKISHA-TERM".into()),
@@ -353,7 +356,7 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
                 &Line::minimize(Some(&t("menu.mac.minimize"))),
                 &Line::maximize(Some(&t("menu.mac.zoom"))),
                 &Line::separator(),
-                &Line::close_window(Some(&t("menu.mac.close"))),
+                &close,
             ],
         )?;
         let bar = Menu::with_items(&[&app, &edit, &window])?;
@@ -371,7 +374,7 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
     let opening = tell.clone();
     on_menu(settings.id(), move || {
         let _ = opening.send(Ev::OpenSettings {
-            section: None,
+            section: Some(shikisha_shared::SETTINGS_GENERAL.into()),
             ret: false,
             folder: None,
             tabpos: None,
@@ -379,6 +382,10 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
             tabkey: None,
             sheet: false,
         });
+    });
+    let closing = tell.clone();
+    on_menu(close.id(), move || {
+        let _ = closing.send(Ev::CloseFront);
     });
     on_menu(quit.id(), move || {
         let _ = tell.send(Ev::TrayQuit);
@@ -446,6 +453,24 @@ pub(super) fn keep_out_of_pictures(window: &tao::window::Window, out: bool) {
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (window, out);
+}
+
+/// What was just done to the windows, on the screen now rather than at the end
+/// of this turn of the loop. A Mac draws a window's going away when the turn
+/// ends; when what follows is long -- the program winding down after Quit --
+/// the window stood there with its page already let go, black, for a second
+/// or more
+pub(super) fn now_on_screen() {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyClass;
+        if let Some(transaction) = AnyClass::get(c"CATransaction") {
+            unsafe {
+                let _: () = msg_send![transaction, flush];
+            }
+        }
+    }
 }
 
 /// The bar taken hold of, on a window whose page tells it so: the system moves

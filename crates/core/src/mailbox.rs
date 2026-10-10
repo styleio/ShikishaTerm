@@ -48,6 +48,8 @@ pub struct Mailbox {
     /// The window's ✕ was pressed. The loop decides between putting the
     /// window away and quitting (a setting, and a question if an AI is at work)
     pub close_requested: bool,
+    /// ⌘W: the thing in front closed, or the window put away when nothing is
+    pub close_front: bool,
     /// The notification-area icon asked for the window back
     pub tray_open: bool,
     /// "Quit" was chosen on the notification-area icon's menu
