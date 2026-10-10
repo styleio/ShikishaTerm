@@ -1430,7 +1430,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the content area in it: zero pixels tall, over the tab list, with the
      status line above where the terminal should have been */
   #main { grid-column:2; grid-row:2; position:relative; overflow:hidden;
-    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --dx:0px; --dr:0px; --navh:0px; --askh:0px; --striph:0px; }
+    --fx:0px; --fy:0px; --fr:0px; --fb:0px; --dx:0px; --dr:0px; --navh:0px; --crashh:0px; --askh:0px; --striph:0px; }
   /* The panes themselves. Only the ones that aren't focused draw anything here
      — the focused pane's rectangle is filled by the full renderer above. */
   #panes { position:absolute; inset:0; top:var(--striph, 0px); }
@@ -2853,7 +2853,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      is drawn in the space that opens up. Drawing inside the page would
      fight with the site's own CSS, disappear on every navigation, and
      cover the site's own fixed header from above */
-  #nav { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr); height:36px; z-index:5;
+  #nav { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr); height:36px; z-index:5;
     display:flex; align-items:center; gap:var(--s2); padding:0 8px;
     border-bottom:1px solid var(--line); background:var(--panel);
     transition:background .15s, border-color .15s; }
@@ -5021,10 +5021,17 @@ let crashSig = null;
 function drawCrashBar() {
   const bar = document.getElementById("crashbar");
   if (!bar) return;
+  // What stands under it moves with it (layout, --crashh): when it comes and
+  // goes, and when what it says makes it taller
+  if (!bar.dataset.watched && window.ResizeObserver) {
+    bar.dataset.watched = "1";
+    new ResizeObserver(() => layout()).observe(bar);
+  }
   const x = S.last_exit;
-  if (!x) { bar.hidden = true; crashSig = null; return; }
+  const was = bar.hidden;
+  if (!x) { bar.hidden = true; crashSig = null; if (!was) layout(); return; }
   const sig = [x.code, x.when, x.asking, x.carried, x.lost, x.why || ""].join("|");
-  if (crashSig === sig) { bar.hidden = false; return; }
+  if (crashSig === sig) { bar.hidden = false; if (was) layout(); return; }
   crashSig = sig;
   bar.textContent = "";
   const by = x.by || "";
@@ -13668,8 +13675,15 @@ function layout() {
   // ...and the search bar, one row under it when both are up
   const sk = document.getElementById("seek");
   const navbar = n.hidden ? 0 : 36;
-  main.style.setProperty("--seekat", navbar + "px");
-  main.style.setProperty("--navh", (navbar + (!sk || sk.hidden ? 0 : 36)) + "px");
+  // All of them under the notice about a run that ended badly, while it is
+  // up: it stands at the top of the pane, and a browser's bar, its search row
+  // and the page itself start below it. Drawn over them it hid the very
+  // controls a person reaches for, and a page cannot be drawn over at all
+  const cb = document.getElementById("crashbar");
+  const crashh = (!cb || cb.hidden) ? 0 : Math.ceil(cb.getBoundingClientRect().height);
+  main.style.setProperty("--crashh", crashh + "px");
+  main.style.setProperty("--seekat", (crashh + navbar) + "px");
+  main.style.setProperty("--navh", (crashh + navbar + (!sk || sk.hidden ? 0 : 36)) + "px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
   report();
@@ -30255,12 +30269,18 @@ mod tests {
         // each layer: with panes, "the top" is no longer the top of the window
         assert!(
             PAGE.contains("const navbar = n.hidden ? 0 : 36;")
-                && PAGE.contains("setProperty(\"--navh\", (navbar + (!sk || sk.hidden ? 0 : 36)) + \"px\")"),
+                && PAGE.contains("setProperty(\"--navh\", (crashh + navbar + (!sk || sk.hidden ? 0 : 36)) + \"px\")"),
             "showing the bar, or the search row under it, does not move the page down"
         );
-        // ...and the search row stands right under the bar, wherever it is
+        // ...and the search row stands right under the bar, wherever it is --
+        // and both under the notice about a run that ended badly, while it is
+        // up, which the bar's own rule follows too
         assert!(
-            PAGE.contains("main.style.setProperty(\"--seekat\", navbar + \"px\");")
+            PAGE.contains("#nav { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px));"),
+            "the notice about a bad ending is drawn over the bar"
+        );
+        assert!(
+            PAGE.contains("main.style.setProperty(\"--seekat\", (crashh + navbar) + \"px\");")
                 && PAGE.contains("top:calc(var(--fy) + var(--seekat, 0px))"),
             "the search row does not stand under the bar"
         );
