@@ -115,6 +115,20 @@ function session(wsUrl) {
 }
 
 try {
+  // The keychain's name was changed in the app's copy of Chromium
+  // (packaging/mac/mkapp.sh). This copy runs on a pretend keychain, so the
+  // framework itself is read: the app's name in it, the one every Chromium
+  // shares nowhere
+  const framework = fs.readFileSync(path.join(app, 'Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework'))
+  const times = (s) => {
+    let n = 0
+    for (let at = framework.indexOf(s); at !== -1; at = framework.indexOf(s, at + 1)) n++
+    return n
+  }
+  const ours = times('SHIKISHA Safe Storage')
+  const shared = times('Chromium Safe Storage')
+  step("Chromium keeps its key in the keychain under the app's name", ours === 1 && shared === 0, `"SHIKISHA Safe Storage" ${ours}, "Chromium Safe Storage" ${shared}`)
+
   const target = await pageTarget()
   step('Chromium started and the board page is open', !!target, target?.url ?? (ended ? `the program ended (${JSON.stringify(ended)})` : 'no page in 90 s'))
   if (target) {

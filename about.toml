@@ -17,7 +17,9 @@
 # compiles for Linux reaches nobody through them; working the list out for
 # every target instead would credit crates that are in no download. The Mac's
 # Chromium carries its own credits, CHROMIUM-CREDITS.html in the .app
-# (packaging/mac/mkapp.sh).
+# (packaging/mac/mkapp.sh). The one change made to it there, the name its key
+# is kept under in the keychain, is in Chromium's own BSD-licensed code, whose
+# terms ask for the credits and nothing about changes.
 targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"]
 
 # The test harness is not handed out. The build script's helpers are not in the

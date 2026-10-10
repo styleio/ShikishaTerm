@@ -81,6 +81,28 @@ ditto "$CEF/$FRAMEWORK" "$CONTENTS/Frameworks/$FRAMEWORK"
 # licenses: they travel with it, as THIRD-PARTY-NOTICES.txt does for the rest
 install -m 644 "$CEF/CREDITS.html" "$CONTENTS/Resources/CHROMIUM-CREDITS.html"
 
+# Chromium keeps the key its saved passwords and cookies are locked with in the
+# keychain, under a name fixed in the framework: "Chromium Safe Storage", the
+# same for every CEF app and every plain Chromium. Sharing it means one app's
+# "Always Allow" opens the others' keys, and the keychain's question names
+# whichever app asked first. CEF has no setting for it, so the one copy of the
+# name is changed here, in the app's copy of the framework, to one of the same
+# length (the bytes around it stay where they are). Exactly one is expected:
+# none or more means CEF has changed how it keeps the name, and the build stops
+# rather than ship the shared name, or a guess
+KEYCHAIN_FROM="Chromium Safe Storage"
+KEYCHAIN_TO="SHIKISHA Safe Storage"
+CEF_BIN="$CONTENTS/Frameworks/$FRAMEWORK/Chromium Embedded Framework"
+[ ${#KEYCHAIN_FROM} = ${#KEYCHAIN_TO} ] || { echo "mkapp: the keychain's names differ in length" >&2; exit 1; }
+found=$(FROM=$KEYCHAIN_FROM TO=$KEYCHAIN_TO perl -0777 -pi -e '
+    $n = s/\Q$ENV{FROM}\E\0/$ENV{TO}\0/g;
+    END { print STDERR $n + 0 }
+' "$CEF_BIN" 2>&1 >/dev/null)
+[ "$found" = 1 ] || {
+    echo "mkapp: \"$KEYCHAIN_FROM\" is in $FRAMEWORK $found times, not once: CEF keeps the keychain's name another way now, and packaging/mac/mkapp.sh has to learn it" >&2
+    exit 1
+}
+
 plist_main() {
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
