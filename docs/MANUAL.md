@@ -453,6 +453,7 @@ settings screen, so it cannot fall behind.
 - **Remote access** — Remote control & QR
 - **Server version** — Open a SHIKISHA server's board in a window of its own
 - **Notifications** — The phones that receive notifications
+- **Site notifications** — Sites you allowed or blocked
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
 - **Quick actions** — One-tap buttons in the input bar

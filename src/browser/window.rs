@@ -686,6 +686,20 @@ pub(super) fn run_window(
                                 let ours = from_ours(&ipc_own.borrow(), at);
                                 // There's no way to know who pressed it except here
                                 match heard(body, Some(&who), ours, &mut ipc_asked.borrow_mut()) {
+                                    // A page's notification, or its asking about
+                                    // them: filed under the site the engine says
+                                    // the script runs on, never one the page names.
+                                    // The program's own pages are not a site
+                                    Some(Ev::PageNotice { from, title, body, .. }) => {
+                                        if let (false, Some(site)) = (ours, shikisha_core::pagenotice::site(at)) {
+                                            let _ = ipc.send(Ev::PageNotice { from, site, title, body });
+                                        }
+                                    }
+                                    Some(Ev::NoticeAsk { from, ask, .. }) => {
+                                        if let (false, Some(site)) = (ours, shikisha_core::pagenotice::site(at)) {
+                                            let _ = ipc.send(Ev::NoticeAsk { from, site, ask });
+                                        }
+                                    }
                                     Some(ev) => {
                                         let _ = ipc.send(ev);
                                     }

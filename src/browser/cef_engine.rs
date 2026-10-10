@@ -969,6 +969,40 @@ mod hooks {
             fn drag_handler(&self) -> Option<DragHandler> {
                 Some(Drags::new(Rc::clone(&self.hooks)))
             }
+            fn permission_handler(&self) -> Option<PermissionHandler> {
+                Some(Permissions::new())
+            }
+        }
+    }
+
+    wrap_permission_handler! {
+        pub struct Permissions;
+
+        impl PermissionHandler {
+            /// A page asking for a permission. Its notifications are refused
+            /// here, always: a page's `Notification` is this program's own (the
+            /// one the init script puts in its place), shown as this program's
+            /// notification and asked about on the board. What reaches here is
+            /// what that cannot stand in for -- a service worker's -- and a
+            /// notification of Chromium's own would come from a helper app of
+            /// its own, under another name than this program's
+            fn on_show_permission_prompt(
+                &self,
+                _browser: Option<&mut Browser>,
+                _prompt_id: u64,
+                _requesting_origin: Option<&CefString>,
+                requested_permissions: u32,
+                callback: Option<&mut PermissionPromptCallback>,
+            ) -> ::std::os::raw::c_int {
+                let notifications = sys::cef_permission_request_types_t::CEF_PERMISSION_TYPE_NOTIFICATIONS as u32;
+                if requested_permissions & notifications == 0 {
+                    return 0;
+                }
+                if let Some(callback) = callback {
+                    callback.cont(PermissionRequestResult::DENY);
+                }
+                1
+            }
         }
     }
 

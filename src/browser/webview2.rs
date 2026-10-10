@@ -385,6 +385,7 @@ fn finish(view: wry::WebView, wiring: Wiring, user_agent: Option<&str>, whole: b
     if let Some(closing) = wiring.closing {
         on_close_requested(&port.0, move || closing());
     }
+    refuse_notifications(&port.0);
     if let Some((page, tell)) = wiring.downloads {
         let name = page.clone().unwrap_or_default();
         if !arm_downloads(&port.0, page, tell) {
@@ -479,6 +480,33 @@ fn on_process_failed<F: Fn(bool) + 'static>(webview: &ICoreWebView2, f: F) {
 /// The one way a window a script opened can say it is done: its messages
 /// stop arriving once it leaves its first about:blank, and a sign-in
 /// window that closes itself would otherwise stay in front of its page
+/// A page asking WebView2 for a permission: its notifications are refused,
+/// always. A page's `Notification` is this program's own (the script put in
+/// its place: `shikisha_core::pagenotice`), shown as this program's banner
+/// and asked about on the board, the same on a Mac. What reaches here is what
+/// that cannot stand in for -- a service worker's -- and WebView2's own
+/// notification would be shown apart from this program's
+fn refuse_notifications(webview: &ICoreWebView2) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS, COREWEBVIEW2_PERMISSION_STATE_DENY,
+    };
+    let handler = webview2_com::PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
+        if let Some(args) = args {
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+            unsafe {
+                if args.PermissionKind(&mut kind).is_ok() && kind == COREWEBVIEW2_PERMISSION_KIND_NOTIFICATIONS {
+                    let _ = args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY);
+                }
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    unsafe {
+        let _ = webview.add_PermissionRequested(&handler, &mut token);
+    }
+}
+
 fn on_close_requested<F: Fn() + 'static>(webview: &ICoreWebView2, f: F) {
     let handler = webview2_com::WindowCloseRequestedEventHandler::create(Box::new(move |_sender, _args| {
         f();

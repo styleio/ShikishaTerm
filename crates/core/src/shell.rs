@@ -12520,6 +12520,32 @@ function drawKeyChanges() {
   });
 }
 
+// A site whose page asked whether it may show notifications. Asked once per
+// site; the answer is kept and said again to every page of the site from then
+// on (Settings lists the answers, where one can be taken back). Put away
+// without an answer it is asked again the next time the site asks, as a
+// browser does. The same question on the window and on a phone; answered on
+// either, it goes from both
+let noticeAsking = "";
+function drawNoticeAsks() {
+  const waiting = (S && S.notice_asks) || [];
+  if (noticeAsking && !waiting.some(a => a.site === noticeAsking)) { noticeAsking = ""; closeAsk(true); }
+  if (noticeAsking) return;
+  const a = waiting[0];
+  if (!a) return;
+  noticeAsking = a.site;
+  const answer = allow => { noticeAsking = ""; send({kind:"notice-answer", site:a.site, allow}); };
+  askQuestion({
+    title: T["tui.notice.title"] || "",
+    say: T["tui.notice.say"] || "",
+    what: a.host,
+    label: T["tui.notice.allow"] || "",
+    no: {label: T["tui.notice.block"] || "", act: () => answer(false)},
+    go: () => answer(true),
+    back: () => answer(null),
+  });
+}
+
 // The question asked as the program starts, about letting the AI CLIs used on
 // this PC report what they are doing. Each CLI with the file its hook goes
 // into and, a press away, exactly what goes into it -- agreed to having been
@@ -13691,6 +13717,7 @@ window.__state = function (json) {
   drawStrip();
   drawCloseAsk();
   drawKeyChanges();
+  drawNoticeAsks();
   drawHookAsk();
   drawStatus();
   drawNav();

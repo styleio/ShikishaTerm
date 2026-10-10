@@ -103,6 +103,12 @@ The phones that receive notifications
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
+### Site notifications
+
+Sites you allowed or blocked
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
 ### Shortcuts
 
 What each key does

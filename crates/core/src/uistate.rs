@@ -2508,6 +2508,10 @@ pub struct UiState {
     /// whether to trust the new one
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub key_changes: Vec<crate::ssh::KeyChange>,
+    /// Sites whose pages asked whether they may show notifications, waiting
+    /// for the person: the same question on the window and on a phone
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notice_asks: Vec<crate::pagenotice::Asking>,
     /// A machine to ask about the SHIKISHA bridge, once
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_offer: Option<BridgeOffer>,

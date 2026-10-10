@@ -6273,6 +6273,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::HostKey { machine, fingerprint, trust }) => {
                         shell.mail().host_keys.push((machine, fingerprint, trust));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::NoticeAnswer { site, allow }) => {
+                        shell.mail().notice_answers.push((site, allow));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
                         shell.mail().far_pages.push((folder, port));
                     }
@@ -6697,6 +6700,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_list: remote_view.clone(),
             far_ports: far_ports_view.clone(),
             key_changes: crate::ssh::key_changes(),
+            notice_asks: crate::pagenotice::asking(),
             bridge_offer: cfg.as_ref().and_then(|c| bridge_offer(c, tabs.iter().filter_map(|t| t.host()))),
             login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
@@ -7582,7 +7586,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // over the screen, the browsers step aside. They keep their pages;
             // being given no rectangle is all that happens to them
             // The question a tab's ✕ asks is one of those things
-            let covered = help_open || desk_open || qr_open || page_covered || close_ask.is_some();
+            // and so is the question whether a site may show notifications
+            let covered = help_open
+                || desk_open
+                || qr_open
+                || page_covered
+                || close_ask.is_some()
+                || !crate::pagenotice::asking().is_empty();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -7994,6 +8004,52 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
                 PickHeard::Unasked => append_hook_log(&format!("pick: dropped a report from {child}, which was not picking")),
+            }
+        }
+        // A site's notifications (crate::pagenotice). What its pages showed is
+        // shown only where the person said yes to that site, as a banner
+        // about the tab, with the site's name in front of the page's words
+        for (child, site, title, body) in shell.mail().take_page_notices() {
+            if site.is_empty() || crate::pagenotice::answer(&site) != Some(true) {
+                append_hook_log(&format!("notice: dropped one from {child} ({site}), which may not show them"));
+                continue;
+            }
+            let tab = caps.name_of_child(&child).and_then(|n| page_ctx(&surfaces, &n, String::new(), true)).map(|p| p.index);
+            let shown = crate::pagenotice::shown(&site);
+            let words = crate::pagenotice::clean(&title, crate::pagenotice::TITLE_MAX);
+            let title = if words.is_empty() {
+                shown.to_string()
+            } else {
+                i18n::tp("msg.notice.title", &[("site", shown), ("title", &words)])
+            };
+            let body = crate::pagenotice::clean(&body, crate::pagenotice::BODY_MAX);
+            if let Err(e) = crate::notify::banner_here(&title, &body, tab) {
+                append_hook_log(&format!("notice: not shown ({e})"));
+            }
+        }
+        // A page asking about them: told what was said about its site, or the
+        // question put up when it wants one and nobody has answered yet
+        for (child, site, ask) in shell.mail().take_notice_asks() {
+            if site.is_empty() {
+                continue;
+            }
+            match crate::pagenotice::answer(&site) {
+                Some(allow) => caps.tell_page(&child, &crate::pagenotice::tell_js(Some(allow))),
+                None if ask => crate::pagenotice::ask(&site, &child),
+                None => {}
+            }
+        }
+        // The person's answer, from the window or a phone: kept, and told to
+        // every page of the site that was waiting for it
+        for (site, allow) in shell.mail().take_notice_answers() {
+            match crate::pagenotice::answered(&site, allow) {
+                Ok(pages) => {
+                    let told = crate::pagenotice::tell_js(crate::pagenotice::answer(&site));
+                    for page in pages {
+                        caps.tell_page(&page, &told);
+                    }
+                }
+                Err(e) => flash = Some(format!("{e:#}")),
             }
         }
         // What the 🎯 panel asked for

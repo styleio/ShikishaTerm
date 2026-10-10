@@ -94,6 +94,7 @@ pub mod mcp;
 pub mod migrate;
 pub mod netaddr;
 pub mod notify;
+pub mod pagenotice;
 pub mod orch;
 pub mod pagejs;
 pub mod pagelint;

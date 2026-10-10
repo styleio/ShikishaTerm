@@ -1253,6 +1253,15 @@ impl Capabilities {
     /// for a person's press (`crate::pick::admit`). A pick of nothing is the
     /// person's Escape: picking ends there. Answers the page's display name
     /// and what became of the report, for the log and the person
+    /// Tell a page something, by a line of script run in it, without waiting
+    /// for it to answer: what the page learns from the program it learns this
+    /// way (`pagenotice::tell_js`). `child` is its in-window name
+    pub fn tell_page(&self, child: &str, js: &str) {
+        if let Some(h) = self.host.borrow().as_ref() {
+            let _ = h.eval_in(Some(child), js);
+        }
+    }
+
     pub fn note_picked(&self, child: &str, item: serde_json::Value) -> PickHeard {
         let heard = self.hear_pick(child, item);
         // The page counts what was kept, not what it sent: told here, after
@@ -1704,6 +1713,8 @@ impl Capabilities {
         self.pressed.borrow_mut().remove(&key);
         self.asks.borrow_mut().remove(&key);
         self.picks.borrow_mut().remove(&key);
+        // A question about its site's notifications waits for it no more
+        crate::pagenotice::page_gone(&key);
         self.consoles.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);

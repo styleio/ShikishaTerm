@@ -205,6 +205,15 @@ pub struct Mailbox {
     /// Elements pages reported picked: (the page's in-window name, what it
     /// said). Null is the person's Escape on that page
     pub picked: Vec<(String, serde_json::Value)>,
+    /// Notifications pages showed: (the page's in-window name, its site, the
+    /// title, the words). See `crate::pagenotice`
+    pub page_notices: Vec<(String, String, String, String)>,
+    /// Pages asking about their notifications: (page, site, whether the
+    /// person is to be asked)
+    pub notice_asks: Vec<(String, String, bool)>,
+    /// The person's answers about sites' notifications: (site, yes / no /
+    /// put away)
+    pub notice_answers: Vec<(String, Option<bool>)>,
     /// What the 🎯 panel asked for: (page key, act, args)
     pub designs: Vec<(String, String, serde_json::Value)>,
     /// Lines pages said on their consoles: (the page's in-window name, the line)
@@ -415,6 +424,8 @@ impl Mailbox {
                 self.recorded.push(RecordedStep { child, act, sel, value, xpath, hint });
             }
             Ev::Picked { from: Some(child), item } => self.picked.push((child, item)),
+            Ev::PageNotice { from: Some(child), site, title, body } => self.page_notices.push((child, site, title, body)),
+            Ev::NoticeAsk { from: Some(child), site, ask } => self.notice_asks.push((child, site, ask)),
             Ev::ConsoleLine { from: Some(child), entry } => self.console_lines.push((child, entry)),
             // A frame of a page being watched from somewhere else. Decoded
             // here because what goes out to a phone is bytes
@@ -609,6 +620,15 @@ impl Mailbox {
     }
     pub fn take_picked(&mut self) -> Vec<(String, serde_json::Value)> {
         std::mem::take(&mut self.picked)
+    }
+    pub fn take_page_notices(&mut self) -> Vec<(String, String, String, String)> {
+        std::mem::take(&mut self.page_notices)
+    }
+    pub fn take_notice_asks(&mut self) -> Vec<(String, String, bool)> {
+        std::mem::take(&mut self.notice_asks)
+    }
+    pub fn take_notice_answers(&mut self) -> Vec<(String, Option<bool>)> {
+        std::mem::take(&mut self.notice_answers)
     }
     pub fn take_designs(&mut self) -> Vec<(String, String, serde_json::Value)> {
         std::mem::take(&mut self.designs)

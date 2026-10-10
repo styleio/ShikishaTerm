@@ -4001,6 +4001,28 @@ fn handle(
                 .collect();
             req.respond(json_resp(serde_json::json!(rows)))?;
         }
+        // The answers about sites' notifications, to manage
+        ("GET", "/api/sitenotices") => {
+            let rows: Vec<serde_json::Value> = crate::pagenotice::answers()
+                .into_iter()
+                .map(|(site, allow)| {
+                    let host = crate::pagenotice::shown(&site).to_string();
+                    serde_json::json!({ "site": site, "host": host, "allow": allow })
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        ("POST", "/api/sitenotices/delete") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let site = v.get("site").and_then(|x| x.as_str()).unwrap_or_default();
+            let ok = crate::pagenotice::forget(site).is_ok();
+            req.respond(json_resp(serde_json::json!({ "ok": ok })))?;
+        }
         ("POST", "/api/logins/delete") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -9382,6 +9404,38 @@ function loginsCard() {
   }
   return box;
 }
+// Sites whose pages asked to show notifications, and the answer each got
+// (crate::pagenotice). Answered on the board when a site first asks; here to
+// see them and take one back, after which the site is asked again
+function siteNoticesCard() {
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.sec.sitenotices"],
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.sitenotices.intro"]),
+    list);
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await settingsFetch("/api/sitenotices", {})).json(); }
+    catch (e) { return; }
+    list.textContent = "";
+    if (!rows.length) { list.append(el("div", {class:"hint"}, T["settings.sitenotices.none"])); return; }
+    for (const r of rows) {
+      const del = el("button", {class:"btn"}, T["settings.sitenotices.forget"]);
+      del.addEventListener("click", async () => {
+        del.disabled = true;
+        try {
+          await settingsFetch("/api/sitenotices/delete", {method:"POST", json:{site: r.site}});
+        } catch (e) {}
+        load();
+      });
+      list.append(el("div", {class:"row"},
+        el("label", {}, r.host),
+        el("span", {class:"hint"}, T[r.allow ? "settings.sitenotices.allowed" : "settings.sitenotices.blocked"]),
+        del));
+    }
+  }
+  return box;
+}
 // Saved page snapshots.
 //
 // Pictures a rally (or you) took of a browser page with browser_snapshot. Here
@@ -9474,6 +9528,7 @@ function globalSections() {
     // The phones themselves are this machine's: a phone signs itself up once.
     // Which desk's messages reach it is that desk's page's question
     {id:"notify",    label:T["settings.sec.notify"],    sub:T["settings.sec.notify.sub"],    build:phoneNotifyCard},
+    {id:"sitenotices", label:T["settings.sec.sitenotices"], sub:T["settings.sec.sitenotices.sub"], build:siteNoticesCard},
     // Two cards: the keys that work from any program, then the keys inside
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},

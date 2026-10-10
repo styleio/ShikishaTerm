@@ -689,6 +689,20 @@ pub enum Ev {
     /// the page, never taken from the message; believed only while that page
     /// was armed (the loop checks), so a page cannot fill a composer unasked
     Picked { from: Option<String>, item: serde_json::Value },
+    /// A page in a browser tab showed a notification (`new Notification`,
+    /// which is the program's: see `shikisha_core::pagenotice`). `from` and
+    /// `site` are stamped by the window that heard the page -- `site` from
+    /// where the page's script runs, as the engine says -- never taken from
+    /// the message, and the words are only shown when the person said yes to
+    /// that site
+    PageNotice { from: Option<String>, site: String, title: String, body: String },
+    /// A page asked about its notifications: `ask` when it wants the person
+    /// asked (`Notification.requestPermission`), otherwise only to be told
+    /// the answer so far, as its document starts. Stamped as `PageNotice` is
+    NoticeAsk { from: Option<String>, site: String, ask: bool },
+    /// The person's answer about a site's notifications, from the board or a
+    /// phone: yes, no, or (`None`) the question put away without one
+    NoticeAnswer { site: String, allow: Option<bool> },
     /// The 🎯 panel asking for something done to what was picked: a note on
     /// one, one taken out, all cleared, or all handed to an AI tab as a
     /// draft. `page` is the browser tab's key; `act` is one of a short list
@@ -1633,6 +1647,23 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             from: None,
             item: v.get("item").cloned().unwrap_or(serde_json::Value::Null),
         },
+        // A page's notification and its asking about them: who and which site
+        // are stamped by the side that heard the page (see `Ev::PageNotice`)
+        Some("notice") => Ev::PageNotice {
+            from: None,
+            site: String::new(),
+            title: v.get("title").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            body: v.get("body").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+        },
+        Some("notice-ask") => Ev::NoticeAsk {
+            from: None,
+            site: String::new(),
+            ask: v.get("ask").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("notice-answer") => Ev::NoticeAnswer {
+            site: v.get("site").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            allow: v.get("allow").and_then(|x| x.as_bool()),
+        },
         Some("devtools") => Ev::DevTools {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
@@ -2075,6 +2106,12 @@ pub fn allowed_from_page(ev: &Ev) -> bool {
             // step, and like one it is believed only while the page was
             // armed -- the loop drops it otherwise
             | Ev::Picked { .. }
+            // Its notification, and its asking whether it may show them. Both
+            // only report: what is shown is decided by the person's answer
+            // about the site, and the answer comes from the board, never from
+            // a page (`NoticeAnswer` is not here)
+            | Ev::PageNotice { .. }
+            | Ev::NoticeAsk { .. }
             | Ev::Result { .. }
     )
 }

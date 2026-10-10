@@ -192,11 +192,17 @@ const WINDOW_POST: &str = r#"
 /// Always injected into every document first.
 ///
 /// It runs on every navigation, so the helpers automation calls into are
-/// there however many times a login redirects. Nothing in here asks the
+/// there however many times a login redirects. A page's `Notification` is
+/// this program's from the start too (`pagenotice::SHIM`). Nothing in here asks the
 /// person anything: the bar that does is the app's own, drawn under the page
 /// by the board (shell.rs), where a page cannot press it.
 static INIT_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
-    format!("{WINDOW_POST}{}{}", frame::FRAME_JS, shikisha_core::pagejs::AUTOMATION)
+    format!(
+        "{WINDOW_POST}{}{}{}",
+        frame::FRAME_JS,
+        shikisha_core::pagejs::AUTOMATION,
+        shikisha_core::pagenotice::SHIM
+    )
 });
 
 /// An instruction from the conductor to the browser
@@ -473,6 +479,10 @@ pub fn heard(
             Ev::Recorded { from, act, sel, value, xpath, hint }
         }
         Ev::Picked { item, .. } => Ev::Picked { from, item },
+        // Which site is stamped by the window that heard it, from where the
+        // page's script runs; here, only whose it was
+        Ev::PageNotice { title, body, .. } => Ev::PageNotice { from, site: String::new(), title, body },
+        Ev::NoticeAsk { ask, .. } => Ev::NoticeAsk { from, site: String::new(), ask },
         Ev::Ready { url, complete, .. } => Ev::Ready { from, url, complete },
         Ev::Loading { busy, .. } => Ev::Loading { from, busy },
         other => other,

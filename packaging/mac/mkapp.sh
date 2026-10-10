@@ -127,12 +127,16 @@ PLIST
 
 # Chromium starts its helpers by these names: the app's own, followed by what
 # each one is for. A Mac's code signing wants one app per kind, each with
-# what it is allowed to do (packaging/mac/helper.entitlements)
+# what it is allowed to do (packaging/mac/helper.entitlements).
+#
+# Not "(Alerts)", the one Chromium shows a page's notifications from: that
+# would be a second app in System Settings > Notifications, under another name
+# than this program's. A page's notifications are this program's own
+# (src/macnote.rs), and Chromium is refused them (src/browser/cef_engine.rs)
 HELPERS="|.helper
  (GPU)|.helper.gpu
  (Renderer)|.helper.renderer
- (Plugin)|.helper.plugin
- (Alerts)|.helper.alerts"
+ (Plugin)|.helper.plugin"
 
 plist_helper() {
     cat <<PLIST

@@ -915,6 +915,9 @@ impl WinSurface {
                 // 🎯: the same resolution as 📼 (the loop knows the shown page)
                 Ev::Pick { on, touch } => self.mail.pick_arms.push((on, touch)),
                 Ev::Picked { from: Some(child), item } => self.mail.picked.push((child, item)),
+                Ev::PageNotice { from: Some(child), site, title, body } => self.mail.page_notices.push((child, site, title, body)),
+                Ev::NoticeAsk { from: Some(child), site, ask } => self.mail.notice_asks.push((child, site, ask)),
+                Ev::NoticeAnswer { site, allow } => self.mail.notice_answers.push((site, allow)),
                 Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::Console { page, act, args } => self.mail.console_asks.push((page, act, args)),
                 Ev::DevTools { page } => self.mail.devtools.push(page),

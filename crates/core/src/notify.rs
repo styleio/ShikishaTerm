@@ -313,6 +313,15 @@ fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
     LOCAL_BANNERS.get().map(|b| b.as_ref())
 }
 
+/// A banner here, about tab `tab` (its screen number): what a page in that
+/// tab said (`pagenotice`). Nothing is sent anywhere else
+pub fn banner_here(title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
+    match local_banners() {
+        Some(t) => t.show(title, body, tab),
+        None => Err("no shell is running to show a banner".into()),
+    }
+}
+
 /// The tab a person pressed a banner for, if a shell is showing banners at all.
 pub fn banner_clicked_tab() -> Option<usize> {
     local_banners().and_then(|t| t.clicked_tab())

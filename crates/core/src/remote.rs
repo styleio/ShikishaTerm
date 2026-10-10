@@ -387,6 +387,12 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // (ssh::answer_key_change), and from the phone the same question with
         // the same two fingerprints is what was read
         Ev::HostKey { .. } => true,
+        // Whether a site may show notifications: the same question on the
+        // phone as on the window, and answered on either it goes from both.
+        // Only a question that is up is answered (pagenotice::answered takes
+        // the site the question named); a yes to a site nobody asked about
+        // is kept, as in Settings, and shows nothing until a page of it asks
+        Ev::NoticeAnswer { .. } => true,
         // Opening one of them in a browser tab here: a tab like any other the
         // phone adds, on an address this app worked out itself
         Ev::FarPage { .. } => true,
@@ -480,6 +486,8 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::JsError { .. }
         | Ev::Recorded { .. }
         | Ev::Picked { .. }
+        | Ev::PageNotice { .. }
+        | Ev::NoticeAsk { .. }
         | Ev::ConsoleLine { .. }
         | Ev::Seek { .. }
         | Ev::Download { .. }
@@ -4608,7 +4616,7 @@ mod tests {
             // Kept on this machine on purpose
             "Paste", "Password",
             // What this PC's own pages report
-            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "ConsoleLine", "Touched", "Compose", "Pen",
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "PageNotice", "NoticeAsk", "ConsoleLine", "Touched", "Compose", "Pen",
             // ...and what this PC's browser says about a search and a download
             "Seek", "Download",
             // This PC's window, tray and keys
