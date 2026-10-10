@@ -358,6 +358,16 @@ impl Chrome {
         // run at all rather than run with a sandbox it cannot build. There is
         // no third option to choose here -- the choice is this or no browser --
         // so it is said out loud in the log rather than hidden in a flag
+        // A Mac's keychain is asked for the key a profile's cookies are kept
+        // under, and asking it is a window of the system's own -- "Google
+        // Chrome for Testing wants to use Chromium Safe Storage", password
+        // field and all -- put up by a browser nobody can see, over whatever
+        // the person was doing. This browser has no person: its profiles are
+        // automation's, most of them gone when it stops, so its key is a fixed
+        // one kept by the browser itself
+        if cfg!(target_os = "macos") {
+            cmd.arg("--use-mock-keychain");
+        }
         if as_root() {
             crate::append_hook_log(
                 "chrome: running as root, so the browser's own sandbox is off (it refuses to start otherwise)",

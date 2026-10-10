@@ -777,6 +777,11 @@ thread_local! {
 }
 
 /// Give a page's search keys to the board (on) or back to the browser (off)
+/// Whether a page's own ⌘F has a box of the browser's to open. Chromium inside
+/// CEF draws none: without the board's search row a Mac's ⌘F in a browser tab
+/// did nothing at all, so here every browser tab's is the board's
+pub(super) const FINDS_ITSELF: bool = false;
+
 pub(super) fn find_keys_for(page: &str, on: bool) {
     FIND_KEYS.with(|k| {
         let mut k = k.borrow_mut();
@@ -1328,7 +1333,10 @@ mod hooks {
                     _ => return 0,
                 };
                 let at = browser.main_frame().map(|f| CefString::from(&f.url()).to_string()).unwrap_or_default();
-                if ours(&at) || !super::FIND_KEYS.with(|k| k.borrow().contains(page)) {
+                // The board's row: asked for by the page's controls, or always,
+                // there being no box of the browser's to fall back on
+                let to_board = !super::FINDS_ITSELF || super::FIND_KEYS.with(|k| k.borrow().contains(page));
+                if ours(&at) || !to_board {
                     return 0;
                 }
                 let _ = tell.send(shikisha_shared::Ev::SeekAsk { from: Some(page.clone()), what: what.to_string(), text: String::new() });

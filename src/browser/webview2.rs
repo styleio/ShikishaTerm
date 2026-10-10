@@ -537,6 +537,10 @@ thread_local! {
 }
 
 /// Give a page's Ctrl+F to the board (on) or back to the browser (off)
+/// Whether a page's own Ctrl+F has a box of the browser's to open: WebView2
+/// draws its own, which a page without the board's search row keeps
+pub(super) const FINDS_ITSELF: bool = true;
+
 pub(super) fn find_keys_for(page: &str, on: bool) {
     FIND_KEYS.with(|k| {
         let mut k = k.borrow_mut();

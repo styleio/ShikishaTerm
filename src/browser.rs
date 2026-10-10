@@ -961,6 +961,13 @@ impl Browser {
         self.send(Cmd::CancelDownload { id: id.to_string() })
     }
 
+    /// Whether the browser drawing the pages has a search box of its own for a
+    /// page's Ctrl+F (`FINDS_ITSELF` of the engine). Without one, every browser
+    /// tab's search is the board's row
+    pub fn pages_find_themselves() -> bool {
+        engine::FINDS_ITSELF
+    }
+
     /// Give Ctrl+F in a page to the board's search row, or back to the browser
     pub fn find_keys(&self, to: Option<&str>, on: bool) -> Result<()> {
         self.send(Cmd::FindKeys { to: to.map(str::to_string), on })

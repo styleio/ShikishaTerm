@@ -172,6 +172,12 @@ pub trait Shell {
     fn phone_panes(&self) -> &[shikisha_shared::PaneGeom];
     fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>);
     fn is_hidden(&self) -> bool;
+    /// Whether the browser drawing this shell's pages has a search box of its
+    /// own for a page's Ctrl+F. One that has not is searched with the board's
+    /// row in every browser tab, not only where the page's controls offer it
+    fn pages_find_themselves(&self) -> bool {
+        true
+    }
     fn last_drawn(&self) -> Option<&crate::uistate::UiState>;
     fn queue_input(&mut self, ev: Event);
     fn inject(&mut self, ev: Event);

@@ -13483,7 +13483,9 @@ let seekTimer = 0;
 let seekShown = 0;
 // A page whose controls offer the search: a browser tab (not the app's own
 // settings) with the search ticked among its controls
-const seekable = t => !!(t && t.kind === "browser" && !t.settings && S && S.nav && S.nav.find);
+// Where the page's controls offer it -- or every browser tab, where the browser
+// drawing them has no search box of its own (S.board_finds)
+const seekable = t => !!(t && t.kind === "browser" && !t.settings && S && ((S.nav && S.nav.find) || S.board_finds));
 function seekOpen() {
   if (!seekable(activeTab()) || covering()) return false;
   send({kind:"seek", what:"open"});

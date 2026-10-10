@@ -2512,6 +2512,11 @@ pub struct UiState {
     /// for the person: the same question on the window and on a phone
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notice_asks: Vec<crate::pagenotice::Asking>,
+    /// The browser drawing the pages has no search box of its own (Chromium
+    /// inside a Mac's window): every browser tab is searched with the board's
+    /// row, not only one whose controls offer it
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub board_finds: bool,
     /// A machine to ask about the SHIKISHA bridge, once
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_offer: Option<BridgeOffer>,

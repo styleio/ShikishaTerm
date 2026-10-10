@@ -6701,6 +6701,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             far_ports: far_ports_view.clone(),
             key_changes: crate::ssh::key_changes(),
             notice_asks: crate::pagenotice::asking(),
+            board_finds: !shell.pages_find_themselves(),
             bridge_offer: cfg.as_ref().and_then(|c| bridge_offer(c, tabs.iter().filter_map(|t| t.host()))),
             login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
@@ -14077,8 +14078,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             };
             // Only where the page's controls offer it: off, Ctrl+F is the
-            // browser's own small box, and the bar has no button for it
-            if !searchable(key) || !caps.nav_of(key).is_some_and(|n| n.find) {
+            // browser's own small box, and the bar has no button for it --
+            // unless the browser has no box of its own, and the row is the
+            // only search there is
+            let offered = !shell.pages_find_themselves() || caps.nav_of(key).is_some_and(|n| n.find);
+            if !searchable(key) || !offered {
                 continue;
             }
             // A key pressed in a page is about that page. One that is not the
@@ -14095,6 +14099,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 "open" => {
                     seek_opened += 1;
                     s.opened = seek_opened;
+                    // Asked for by a key pressed in the page: the keys go on
+                    // to the row now, not to the page they were pressed in --
+                    // on a Mac the page kept them, and the words typed next
+                    // went into the page instead of the search
+                    if from.is_some() {
+                        shell.take_keyboard_back();
+                    }
                     None
                 }
                 "find" => {

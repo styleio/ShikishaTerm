@@ -2211,6 +2211,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn phone_panes(&self) -> &[shikisha_shared::PaneGeom] { WinSurface::phone_panes(self) }
     fn set_phone_panes(&mut self, panes: Vec<shikisha_shared::PaneGeom>) { WinSurface::set_phone_panes(self, panes) }
     fn is_hidden(&self) -> bool { WinSurface::is_hidden(self) }
+    fn pages_find_themselves(&self) -> bool { browser::Browser::pages_find_themselves() }
     fn last_drawn(&self) -> Option<&shikisha_core::uistate::UiState> { WinSurface::last_drawn(self) }
     fn queue_input(&mut self, ev: Event) { WinSurface::queue_input(self, ev) }
     fn inject(&mut self, ev: Event) { WinSurface::inject(self, ev) }
