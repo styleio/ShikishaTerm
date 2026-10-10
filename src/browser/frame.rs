@@ -449,35 +449,53 @@ pub(super) fn keep_out_of_pictures(window: &tao::window::Window, out: bool) {
 }
 
 /// The bar double-clicked. On a Mac, what the person chose in System Settings
-/// ("Double-click a window's title bar to"): zoom, minimise, or nothing. Zoom
-/// is the window's own, not a maximise: it goes to the size that fits and,
-/// pressed again, back
+/// ("Double-click a window's title bar to"): fill the screen, zoom, minimise,
+/// or nothing. Zoom is the window's own, not a maximise: it goes to the size
+/// that fits and, pressed again, back
 pub(super) fn bar_double_clicked(window: &tao::window::Window) {
     #[cfg(target_os = "macos")]
     {
-        use objc2::msg_send;
-        use objc2::runtime::AnyObject;
-        use objc2_foundation::{NSString, NSUserDefaults};
+        use objc2::runtime::{AnyObject, Bool, Sel};
+        use objc2::{msg_send, sel};
+        use objc2_foundation::{NSRect, NSString, NSUserDefaults};
         use tao::platform::macos::WindowExtMacOS;
         let ns_window = window.ns_window().cast::<AnyObject>();
         if ns_window.is_null() {
             return;
         }
         let defaults = NSUserDefaults::standardUserDefaults();
+        // What System Settings writes: Fill, Maximize (its "Zoom"), Minimize
+        // or None. Before the choice had more than two answers it was a yes or
+        // no to minimising
         let action = defaults
             .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
-            .map(|s| s.to_string());
-        // Before the choice had three answers it was a yes or no to minimising
-        let minimise = match action.as_deref() {
-            Some(a) => a == "Minimize",
-            None => defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick")),
-        };
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                let old = defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick"));
+                if old { "Minimize" } else { "Maximize" }.to_string()
+            });
         let none: *const AnyObject = std::ptr::null();
         unsafe {
-            match action.as_deref() {
-                Some("None") => {}
-                _ if minimise => {
+            match action.as_str() {
+                "None" => {}
+                "Minimize" => {
                     let _: () = msg_send![ns_window, performMiniaturize: none];
+                }
+                // The window's own fill where AppKit has one, so a second
+                // double-click puts it back as it does for every other window;
+                // otherwise the screen less the menu bar and the Dock
+                "Fill" => {
+                    let fill: Sel = sel!(_zoomFill:);
+                    let can: Bool = msg_send![ns_window, respondsToSelector: fill];
+                    if can.as_bool() {
+                        let _: () = msg_send![ns_window, performSelector: fill, withObject: none];
+                    } else {
+                        let screen: *const AnyObject = msg_send![ns_window, screen];
+                        if !screen.is_null() {
+                            let r: NSRect = msg_send![screen, visibleFrame];
+                            let _: () = msg_send![ns_window, setFrame: r, display: true, animate: true];
+                        }
+                    }
                 }
                 _ => {
                     let _: () = msg_send![ns_window, performZoom: none];

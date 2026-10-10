@@ -59,7 +59,10 @@ fs.writeFileSync(
 // programs the copy starts
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/.test(k)))
 env.SHIKISHA_HOME = home
-env.SHIKISHA_CHROMIUM_ARGS = `--remote-debugging-port=${cdp}`
+// A pretend keychain: the real one asks, in a window of its own, whether this
+// copy may read Chromium's key, and every build is a new signature to ask
+// about. Nobody is there to answer on CI, and the page waits for the answer
+env.SHIKISHA_CHROMIUM_ARGS = `--remote-debugging-port=${cdp} --use-mock-keychain`
 const child = spawn(path.join(app, 'Contents/MacOS/SHIKISHA-TERM'), [], { env, cwd: work, stdio: ['ignore', 'pipe', 'pipe'] })
 let said = ''
 child.stdout.on('data', (d) => (said += d))
