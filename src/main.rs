@@ -47,6 +47,8 @@ mod devtools;
 mod picker;
 mod hotkeys;
 mod snip;
+// A Mac's banners are macnote's; this one's would be built there for nobody
+#[cfg(not(target_os = "macos"))]
 mod wintoast;
 #[cfg(target_os = "macos")]
 mod macnote;

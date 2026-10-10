@@ -4704,5 +4704,17 @@
   "err.worktree.review_changed": "The folder changed while you were reviewing it. Choose Delete again to review the latest changes.",
   "git.integrated": "Changes are in {base}",
   "git.push.branch": "Push {n} to working branch",
-  "msg.folder.discarded_kept": "Deleted {path}. Branch “{branch}” and its committed history were kept."
+  "msg.folder.discarded_kept": "Deleted {path}. Branch “{branch}” and its committed history were kept.",
+  "mac.ask.NSAppleEventsUsageDescription": "A program running in a SHIKISHA-TERM terminal wants to control another app.",
+  "mac.ask.NSCameraUsageDescription": "A program running in SHIKISHA-TERM, or a page open in it, wants to use the camera.",
+  "mac.ask.NSMicrophoneUsageDescription": "A program running in SHIKISHA-TERM, or a page open in it, wants to use the microphone.",
+  "mac.ask.NSDesktopFolderUsageDescription": "A program running in a SHIKISHA-TERM terminal wants to read or change files on the Desktop.",
+  "mac.ask.NSDocumentsFolderUsageDescription": "A program running in a SHIKISHA-TERM terminal wants to read or change files in Documents.",
+  "mac.ask.NSDownloadsFolderUsageDescription": "A program running in a SHIKISHA-TERM terminal, or a page saving a file, wants to use the Downloads folder.",
+  "mac.ask.NSRemovableVolumesUsageDescription": "A program running in a SHIKISHA-TERM terminal wants to use files on a removable drive.",
+  "mac.ask.NSNetworkVolumesUsageDescription": "A program running in a SHIKISHA-TERM terminal wants to use files on a network drive.",
+  "mac.ask.NSLocalNetworkUsageDescription": "SHIKISHA-TERM serves its screen to your phone and other computers on this network, and the programs in its terminals reach servers on it.",
+  "mac.ask.NSAudioCaptureUsageDescription": "SHIKISHA-TERM sends the sound of a page you are sharing to the phone or computer watching it, and nothing else this Mac plays.",
+  "mac.ask.NSBluetoothAlwaysUsageDescription": "A page open in SHIKISHA-TERM wants to use a Bluetooth device.",
+  "mac.ask.NSWebBrowserPublicKeyCredentialUsageDescription": "A page open in SHIKISHA-TERM wants to sign you in with a passkey."
 }

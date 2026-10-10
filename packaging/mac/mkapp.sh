@@ -103,6 +103,33 @@ found=$(FROM=$KEYCHAIN_FROM TO=$KEYCHAIN_TO perl -0777 -pi -e '
     exit 1
 }
 
+# ── what the Mac's questions say ──────────────────────────────────────────
+# Each reason the system shows when it asks the person for something, in the
+# words of lang/*.json (the keys mac.ask.<the Info.plist key>), so that a Mac
+# set to Japanese asks in Japanese. English is the app's own language and goes
+# in Info.plist; every language, English too, goes in <lang>.lproj, where a
+# Mac looks first. A sentence a language has not got is said in English
+LANGS=""
+for f in "$ROOT"/lang/*.json; do
+    l=$(basename "$f" .json)
+    plutil -convert xml1 -o "$WORK/lang-$l.plist" "$f"
+    LANGS="$LANGS $l"
+done
+ASKS=$(sed -n 's/^  "mac\.ask\.\([A-Za-z]*\)".*/\1/p' "$ROOT/lang/en.json")
+[ -n "$ASKS" ] || { echo "mkapp: lang/en.json has no mac.ask.* sentences, and a Mac asks nothing without them" >&2; exit 1; }
+said() {
+    /usr/libexec/PlistBuddy -c "Print :mac.ask.$2" "$WORK/lang-$1.plist" 2>/dev/null ||
+        /usr/libexec/PlistBuddy -c "Print :mac.ask.$2" "$WORK/lang-en.plist"
+}
+asks_plist() {
+    # What the programs run in its terminals touch is asked for in this app's
+    # name. Without a reason written here a Mac does not ask; it refuses, and
+    # the program in the terminal just fails
+    for k in $ASKS; do
+        printf '    <key>%s</key><string>%s</string>\n' "$k" "$(said en "$k" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+    done
+}
+
 plist_main() {
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -119,7 +146,7 @@ plist_main() {
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
-    <key>CFBundleLocalizations</key><array><string>en</string><string>ja</string></array>
+    <key>CFBundleLocalizations</key><array>$(for l in $LANGS; do printf '<string>%s</string>' "$l"; done)</array>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <!-- Chromium's own advice: the allocator's nano zone and Chromium's do not mix -->
@@ -127,21 +154,7 @@ plist_main() {
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSRequiresAquaSystemAppearance</key><false/>
-    <!-- What the programs run in its terminals touch is asked for in this
-         app's name. Without a reason written here a Mac does not ask; it
-         refuses, and the program in the terminal just fails -->
-    <key>NSAppleEventsUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to control another app.</string>
-    <key>NSCameraUsageDescription</key><string>A program running in SHIKISHA-TERM, or a page open in it, wants to use the camera.</string>
-    <key>NSMicrophoneUsageDescription</key><string>A program running in SHIKISHA-TERM, or a page open in it, wants to use the microphone.</string>
-    <key>NSDesktopFolderUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to read or change files on the Desktop.</string>
-    <key>NSDocumentsFolderUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to read or change files in Documents.</string>
-    <key>NSDownloadsFolderUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal, or a page saving a file, wants to use the Downloads folder.</string>
-    <key>NSRemovableVolumesUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to use files on a removable drive.</string>
-    <key>NSNetworkVolumesUsageDescription</key><string>A program running in a SHIKISHA-TERM terminal wants to use files on a network drive.</string>
-    <key>NSLocalNetworkUsageDescription</key><string>SHIKISHA-TERM serves its screen to your phone and other computers on this network, and the programs in its terminals reach servers on it.</string>
-    <key>NSAudioCaptureUsageDescription</key><string>SHIKISHA-TERM sends the sound of a page you are sharing to the phone or computer watching it, and nothing else this Mac plays.</string>
-    <key>NSBluetoothAlwaysUsageDescription</key><string>A page open in SHIKISHA-TERM wants to use a Bluetooth device.</string>
-    <key>NSWebBrowserPublicKeyCredentialUsageDescription</key><string>A page open in SHIKISHA-TERM wants to sign you in with a passkey.</string>
+$(asks_plist)
 </dict>
 </plist>
 PLIST
@@ -184,6 +197,14 @@ PLIST
 }
 
 plist_main > "$CONTENTS/Info.plist"
+plutil -lint -s "$CONTENTS/Info.plist"
+for l in $LANGS; do
+    mkdir -p "$CONTENTS/Resources/$l.lproj"
+    for k in $ASKS; do
+        printf '"%s" = "%s";\n' "$k" "$(said "$l" "$k" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    done > "$CONTENTS/Resources/$l.lproj/InfoPlist.strings"
+    plutil -lint -s "$CONTENTS/Resources/$l.lproj/InfoPlist.strings"
+done
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 echo "$HELPERS" | while IFS='|' read -r kind suffix; do
     helper="$NAME Helper$kind"

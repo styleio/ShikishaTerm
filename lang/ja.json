@@ -4676,5 +4676,17 @@
   "err.worktree.review_changed": "確認中にフォルダの内容が変わりました。もう一度削除を選び、最新の変更を確認してください。",
   "git.integrated": "{base} に反映済み",
   "git.push.branch": "作業ブランチへプッシュ（{n}）",
-  "msg.folder.discarded_kept": "{path} を削除しました。ブランチ「{branch}」とコミット済みの履歴は残しています。"
+  "msg.folder.discarded_kept": "{path} を削除しました。ブランチ「{branch}」とコミット済みの履歴は残しています。",
+  "mac.ask.NSAppleEventsUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラムが、ほかのアプリを操作しようとしています。",
+  "mac.ask.NSCameraUsageDescription": "SHIKISHA-TERM で動いているプログラム、または SHIKISHA-TERM で開いているページが、カメラを使おうとしています。",
+  "mac.ask.NSMicrophoneUsageDescription": "SHIKISHA-TERM で動いているプログラム、または SHIKISHA-TERM で開いているページが、マイクを使おうとしています。",
+  "mac.ask.NSDesktopFolderUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラムが、デスクトップのファイルを読むか、変更しようとしています。",
+  "mac.ask.NSDocumentsFolderUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラムが、「書類」フォルダのファイルを読むか、変更しようとしています。",
+  "mac.ask.NSDownloadsFolderUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラム、またはファイルを保存しようとしているページが、「ダウンロード」フォルダを使おうとしています。",
+  "mac.ask.NSRemovableVolumesUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラムが、取り外し可能なドライブのファイルを使おうとしています。",
+  "mac.ask.NSNetworkVolumesUsageDescription": "SHIKISHA-TERM のターミナルで動いているプログラムが、ネットワークドライブのファイルを使おうとしています。",
+  "mac.ask.NSLocalNetworkUsageDescription": "SHIKISHA-TERM は、このネットワーク上のスマホやほかのコンピュータに画面を送ります。また、ターミナルで動いているプログラムが、このネットワーク上のサーバーにつなぎます。",
+  "mac.ask.NSAudioCaptureUsageDescription": "SHIKISHA-TERM は、共有しているページの音を、それを見ているスマホやコンピュータに送ります。この Mac で鳴っているほかの音は送りません。",
+  "mac.ask.NSBluetoothAlwaysUsageDescription": "SHIKISHA-TERM で開いているページが、Bluetooth 機器を使おうとしています。",
+  "mac.ask.NSWebBrowserPublicKeyCredentialUsageDescription": "SHIKISHA-TERM で開いているページが、パスキーでサインインしようとしています。"
 }
