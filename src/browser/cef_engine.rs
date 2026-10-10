@@ -498,7 +498,11 @@ impl Finder {
                     let _ = tell.send(Ev::Seek { from: page, at: 0, of: 0 });
                     return;
                 }
+                // And on to the first match: a new search in CEF marks every
+                // match and selects none, so the row said 0 of 3 where a
+                // browser says 1 of 3 and shows which one
                 host.find(Some(&::cef::CefString::from(text)), 1, 0, 0);
+                host.find(Some(&::cef::CefString::from(text)), 1, 0, 1);
             }
             Seek::Next => host.find(Some(&::cef::CefString::from(self.last.borrow().as_str())), 1, 0, 1),
             Seek::Prev => host.find(Some(&::cef::CefString::from(self.last.borrow().as_str())), 0, 0, 1),

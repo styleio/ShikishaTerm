@@ -4095,7 +4095,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     shell.show();
                 }
                 notify::banner_raise();
-                append_hook_log(&format!("wintoast: clicked (tab{tab})"));
+                append_hook_log(&format!("banner: clicked (tab{tab})"));
                 if tab >= 1 {
                     shell.mail().selects.push(tab);
                 }
@@ -14858,7 +14858,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // verify settings without waiting for a hook)
                         KeyCode::Char('t') => {
                             flash = Some(if notifier.is_empty() {
-                                i18n::t("msg.notify_none")
+                                let desk = desks.get(desk_index).map(|d| d.name.as_str()).unwrap_or_default();
+                                i18n::tp("msg.notify_none", &[("desk", desk)])
                             } else {
                                 notifier.send_all(&crate::i18n::t("err.main.test_notify_body"))
                             });

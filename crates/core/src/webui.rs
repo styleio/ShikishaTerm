@@ -1499,6 +1499,13 @@ fn pet_adjectives_json() -> String {
 /// grid's bounds, how long a name and a body may be, where the icons are,
 /// and what a secret named in a body looks like. Handed over rather than
 /// written again in the page, so the two cannot hold different limits
+/// This machine's own shell for the settings page, as {name, cmd}
+/// (`config::machine_shell`)
+fn machine_shell_json() -> String {
+    let (name, cmd) = crate::config::machine_shell();
+    serde_json::json!({ "name": name, "cmd": cmd }).to_string()
+}
+
 fn quick_json() -> String {
     use crate::quick as q;
     serde_json::json!({
@@ -1882,6 +1889,7 @@ fn handle(
                     ("__REMOTE__", if remote_client { "true" } else { "false" }.to_string()),
                     ("__PACKAGED__", if crate::config::packaged() { "true" } else { "false" }.to_string()),
                     ("__SYSTEM__", js(serde_json::Value::from(crate::system_name()).to_string())),
+                    ("__SHELL__", js(machine_shell_json())),
                     ("__GRANTS__", js(crate::grants::catalog_json())),
                     (
                         "__GITLUA__",
@@ -6393,6 +6401,9 @@ const PACKAGED = __PACKAGED__;
 // The system the program here runs on ("windows", "mac", "linux"): what is
 // offered for a terminal, and what is said about it, are that system's
 const SYSTEM = __SYSTEM__;
+// The shell a terminal here opens with when nothing else is said
+// (config::machine_shell): what the command field offers and gives as its example
+const MACHINE_SHELL = __SHELL__;
 // True when this page is not a screen of its own but a dialog: a frame the
 // board placed over itself (?embed=1), which is how a browser puts a page
 // over the board the way the window places one. The way out is a word to the
@@ -7214,11 +7225,11 @@ const AI_CLIS = [
   {label:"Gemini CLI",  cmd:"gemini", check:"gemini"},
   {label:"Aider",       cmd:"aider",  check:null},
 ];
-// Plain shells (the "Command" category).
-const SHELL_CMDS = [
+// Plain shells (the "Command" category): Windows' two, or this machine's own
+const SHELL_CMDS = SYSTEM === "windows" ? [
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
-];
+] : [{label:MACHINE_SHELL.name, cmd:MACHINE_SHELL.cmd, check:null}];
 // All launchers, for the command field's datalist.
 const COMMON_COMMANDS = AI_CLIS.concat(SHELL_CMDS);
 // A "cmd" tab whose head is one of these is an AI CLI, so it groups under the
@@ -15817,7 +15828,7 @@ function launchCard(t, renamed) {
   const cmdRow = el("div", {class:"row"});
   const real = launchLine(t);
   let before = cmdToText(t.command);
-  const cmdInput = field(t, "command", T[farPlaceOf(t) ? "settings.tab.command.ph.far" : "settings.tab.command.ph"],
+  const cmdInput = field(t, "command", (T[farPlaceOf(t) ? "settings.tab.command.ph.far" : "settings.tab.command.ph"] || "").replaceAll("{shell}", MACHINE_SHELL.cmd),
     {mono:true, onInput:() => {
       followKind(t, before);
       before = cmdToText(t.command);
@@ -20167,6 +20178,7 @@ mod tests {
             .replace("__REMOTE__", "false")
             .replace("__PACKAGED__", "false")
             .replace("__SYSTEM__", "\"windows\"")
+            .replace("__SHELL__", &machine_shell_json())
             .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
             .replace("__QUICK__", &quick_json())
             .replace("__DICT__", "{}")
@@ -20270,6 +20282,7 @@ for (const crypto of [webcrypto, {{getRandomValues: b => webcrypto.getRandomValu
                 .replace("__REMOTE__", "false")
                 .replace("__PACKAGED__", "false")
                 .replace("__SYSTEM__", "\"windows\"")
+            .replace("__SHELL__", &machine_shell_json())
                 .replace("__HOTKEYS__", &crate::hotkeys::catalog_json())
                 .replace("__QUICK__", &quick_json())
                 .replace("__DICT__", "{}")

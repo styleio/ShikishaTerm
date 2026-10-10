@@ -139,6 +139,23 @@ impl Combo {
         parts.join("+")
     }
 
+    /// Written for a person to read off this machine's keyboard: on a Mac in
+    /// its own symbols, in its order (⌃⌥⇧⌘) and with nothing between them, the
+    /// way its menus write ⌃⌥X; elsewhere as it is written (`shown`)
+    pub fn label(&self, mac: bool) -> String {
+        if !mac {
+            return self.shown();
+        }
+        let mut out = String::new();
+        for (held, mark) in [(self.ctrl, '⌃'), (self.alt, '⌥'), (self.shift, '⇧'), (self.cmd, '⌘')] {
+            if held {
+                out.push(mark);
+            }
+        }
+        out.push_str(&self.key);
+        out
+    }
+
     /// The held keys, as the system's flags
     pub fn mods(&self) -> u32 {
         (if self.ctrl { MOD_CONTROL } else { 0 })
@@ -266,18 +283,31 @@ pub fn active() -> bool {
     ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The keys that work, by action, for the badges beside what they open
+/// The keys that work, by action, for the badges beside what they open: as a
+/// person reads them on this machine's keyboard (`Combo::label`)
 pub fn working() -> std::collections::BTreeMap<String, String> {
     rows()
         .into_iter()
         .filter(|r| r.state == "on")
-        .map(|r| (r.action, r.key))
+        .map(|r| {
+            let shown = Combo::parse(&r.key).map_or(r.key, |c| c.label(cfg!(target_os = "macos")));
+            (r.action, shown)
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read on a Mac in its own symbols and order; elsewhere as written
+    #[test]
+    fn a_combination_is_labelled_for_the_keyboard() {
+        let c = Combo::parse("shift+cmd+ctrl+alt+x").unwrap();
+        assert_eq!(c.label(true), "⌃⌥⇧⌘X");
+        assert_eq!(c.label(false), "Ctrl+Alt+Shift+Cmd+X");
+        assert_eq!(Combo::parse("Ctrl+Alt+K").unwrap().label(true), "⌃⌥K");
+    }
 
     /// A combination is read however it is typed and written back one way
     #[test]

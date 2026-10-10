@@ -9804,7 +9804,10 @@ function drawDownloads() {
     if (d.state === "going" && d.total > 0) words.append(progressBar(d.got * 100 / d.total).bar);
     // Where it went, with the machine named when it is not where the list is
     if (d.state === "done" && d.path) {
-      const where = (d.machine ? d.machine + ": " : "") + dlFolder(d.path);
+      // The way every other path is said: this PC's home as ~, held left to
+      // right -- without the marks the box, which cuts a long path at the
+      // front, put the leading / at the end ("Users/me/Downloads/")
+      const where = (d.machine ? d.machine + ": " : "") + homeShort(dlFolder(d.path));
       words.append(el("span", {class:"dp", title:(d.machine ? d.machine + ": " : "") + d.path}, where));
     }
     const coming = d.state === "going" || d.state === "sending";
