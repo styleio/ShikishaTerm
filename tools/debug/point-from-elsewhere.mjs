@@ -3,9 +3,10 @@
  * for a phone with a finger?
  *
  *     cargo build
- *     node tools/debug/point-from-elsewhere.win.mjs
+ *     node tools/debug/point-from-elsewhere.mjs
  *
- * Needs Windows, Node and Chrome. Starts this checkout's build in a folder of
+ * Needs Windows or a Mac, Node and Chrome (CHROME says where, if it is not
+ * where it usually is); on a Mac, the .app tools/debug/lib/copy.mjs describes. Starts this checkout's build in a folder of
  * its own with the relay on, shows it a page of this script's own serving
  * (four quadrants that write down every press they receive), and then opens
  * the relay in a headless Chrome twice -- once as a laptop and once as a touch
@@ -38,17 +39,14 @@
  * dispatched touch is that.
  */
 import {findChrome, connectCdp} from './chrome.mjs';
+import { startCopy, tokenOf, shellCommand, tmp } from './lib/copy.mjs';
 import fs from 'node:fs';
 import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
-const ROOT = path.resolve(import.meta.dirname, '..', '..');
-const RUN = path.join(os.tmpdir(), 'sk-pointing');
-const APP = path.join(RUN, 'app');
+const RUN = tmp('sk-pointing');
 const WORK = path.join(RUN, 'work');
-const CONFIG = path.join(APP, 'config', 'config.json');
 const BOARD = 9357;          // the app's relay; 93xx is this folder's band
 const WINDOW_CDP = 9358;     // the app's own window: a port of its own, so it takes none of Chrome's
 const CHROME_CDP = 9359;     // the stand-in device's own DevTools port
@@ -58,14 +56,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
 let failures = 0;
 const check = (ok, what) => { console.log((ok ? '  PASS ' : '  FAIL ') + what); if (!ok) failures += 1; };
-const ps = (...args) => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8' });
-const stopApp = () => ps('-Command',
-  `Get-Process -Name 'SHIKISHA-TERM' -ErrorAction SilentlyContinue | ` +
-  `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
-  `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
-
-
-
 // The page that is pressed. Four quadrants, each saying what reached it --
 // which one was clicked, which was double clicked, and which the pointer last
 // passed over. Quadrants rather than coordinates, because the page is re-shaped
@@ -111,22 +101,13 @@ await new Promise((r) => server.listen(PAGE_PORT, "127.0.0.1", r));
 const said = (kind) => heard.filter((h) => h.kind === kind).map((h) => h.q);
 const clear = () => { heard = []; };
 
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
-if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
-
 console.log('starting this checkout\'s build, isolated, with the relay on');
-stopApp();
-await sleep(800);
-fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, WORK, path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
-if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
-fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
-fs.writeFileSync(CONFIG, JSON.stringify({
+const copy = await startCopy({ run: RUN, windowCdp: WINDOW_CDP, config: {
   language: 'en',
   remote: { enabled: true, bind: '127.0.0.1', port: BOARD },
+  agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Check', id: 'check', folders: [{ cwd: WORK, tabs: [
-    { name: 'shell', id: 'shell', command: 'cmd.exe' },
+    { name: 'shell', id: 'shell', command: shellCommand() },
     // Three pages: one whose row was asked to carry the switch, one with a row
     // that was not, and one with no row at all. The switch has a home in each
     // case, and which home is the thing being checked
@@ -136,23 +117,14 @@ fs.writeFileSync(CONFIG, JSON.stringify({
       nav: { reload: true, url: true } },
     { name: 'plain', id: 'plain', command: `browser http://127.0.0.1:${PAGE_PORT}/` },
   ] }] }],
-}, null, 2));
+} }).catch((e) => die(e.message));
+fs.mkdirSync(WORK, { recursive: true });
+const token = await tokenOf(copy).catch((e) => { copy.stop(); die(e.message); });
 
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
-env.LOCALAPPDATA = path.join(RUN, 'localappdata');
-env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${WINDOW_CDP}`;
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
-
-const tokenFile = path.join(APP, 'data', 'remote-token');
-let token = '';
-for (let i = 0; i < 160 && !token; i++) {
-  try { token = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { await sleep(250); }
-}
-if (!token) { stopApp(); die('the relay never opened -- see ' + path.join(APP, 'logs')); }
-
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-pointer-'));
+const profile = fs.mkdtempSync(tmp('sk-pointer-'));
 const chrome = spawn(findChrome(), [
   '--headless=new',
+  '--use-mock-keychain',
   '--remote-debugging-port=' + CHROME_CDP,
   '--user-data-dir=' + profile,
   '--window-size=1280,860',
@@ -335,7 +307,7 @@ try {
   server.close();
   await sleep(500);
   fs.rmSync(profile, { recursive: true, force: true });
-  stopApp();
+  copy.stop();
 }
 console.log(failures ? `\n${failures} FAILED` : '\nall good');
 process.exit(failures ? 1 : 0);

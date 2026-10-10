@@ -17,7 +17,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-const app = process.argv[2]
+const app = process.argv[2] && path.resolve(process.argv[2])
 const out = path.resolve(process.argv[3] ?? 'window-opens')
 if (!app || !fs.existsSync(path.join(app, 'Contents/MacOS/SHIKISHA-TERM'))) {
   console.error('usage: node tools/debug/window-opens.mac.mjs <SHIKISHA-TERM.app> [out]')

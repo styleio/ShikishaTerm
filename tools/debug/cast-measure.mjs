@@ -10,7 +10,7 @@
  * be put side by side with the numbers from before it.
  *
  *     cargo build
- *     node tools/debug/cast-measure.win.mjs [--seconds 10] [--dpr 3] [--split]
+ *     node tools/debug/cast-measure.mjs [--seconds 10] [--dpr 3] [--split]
  *
  * The phone is a headless Chrome the size of a common phone (390x844 CSS
  * pixels, `--dpr` device pixels to one, 3 by default: most phones sold now).
@@ -22,23 +22,21 @@
  * device pixels, pictures per second, kilobytes per second, and the PC's CPU
  * (the app and the browser processes it started, as a share of one core).
  *
- * Needs Windows, Node and Chrome. Nothing of a copy somebody is using is read,
- * written or stopped.
+ * Needs Windows or a Mac, Node and Chrome (CHROME says where, if it is not
+ * where it usually is). On a Mac the copy is the .app tools/debug/lib/copy.mjs
+ * describes. Nothing of a copy somebody is using is read, written or stopped.
  */
 import {findChrome, connectCdp} from './chrome.mjs';
+import { startCopy, tmp } from './lib/copy.mjs';
 import fs from 'node:fs';
-import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
-const RUN = path.join(os.tmpdir(), 'sk-cast-measure');
-const APP = path.join(RUN, 'app');
+const RUN = tmp('sk-cast-measure');
 const WORK = path.join(RUN, 'work');
-const LOCAL = path.join(RUN, 'localappdata');
-const CONFIG = path.join(APP, 'config', 'config.json');
 const SHOTS = path.join(ROOT, 'target', 'shots');
 const arg = (name, dflt) => { const i = process.argv.indexOf(name); return i > 0 ? Number(process.argv[i + 1]) : dflt; };
 const SECONDS = arg('--seconds', 10);
@@ -47,29 +45,11 @@ const SPLIT_MODE = process.argv.includes('--split');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
-const ps = (...args) => spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', ...args], { encoding: 'utf8' });
-const stopApp = () => ps('-Command',
-  `Get-Process -Name 'SHIKISHA-TERM' -ErrorAction SilentlyContinue | ` +
-  `Where-Object { $_.Path -and $_.Path -like '${RUN}\\*' } | ` +
-  `ForEach-Object { & taskkill.exe /PID $_.Id /T /F 2>&1 | Out-Null }`);
 const until = async (test, what, ms = 20000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await Promise.resolve().then(test).catch(() => false)) return true; await sleep(200); }
   throw new Error('timed out waiting for ' + what);
 };
-
-/** CPU seconds spent so far by the app and every browser process it started */
-function cpuSeconds() {
-  const r = ps('-Command',
-    `$t = 0; Get-CimInstance Win32_Process | Where-Object { ` +
-    `($_.ExecutablePath -and $_.ExecutablePath -like '${RUN}\\*') -or ` +
-    `(($_.Name -eq 'msedgewebview2.exe' -or $_.Name -eq 'chrome.exe') -and ($_.CommandLine + '') -like '*sk-cast-measure\\localappdata*') } | ` +
-    `ForEach-Object { $t += [double]$_.KernelModeTime + [double]$_.UserModeTime }; $t / 1e7`);
-  return Number(r.stdout.trim()) || 0;
-}
-
-const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
-if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
 // A page that never stops changing: a bar sweeping across and a line said to
 // the console ten times a second
@@ -91,14 +71,8 @@ const freePort = () => new Promise((res) => {
 const PHONE_PORT = await freePort();
 const PHONE_KEY = 'castmeasure0123456789abc';
 
-stopApp();
-await sleep(800);
-fs.rmSync(RUN, { recursive: true, force: true });
-for (const d of [APP, WORK, LOCAL, SHOTS]) fs.mkdirSync(d, { recursive: true });
-const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
-if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
-fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
-fs.writeFileSync(CONFIG, JSON.stringify({
+fs.mkdirSync(SHOTS, { recursive: true });
+const copy = await startCopy({ run: RUN, config: {
   language: 'en',
   ...(SPLIT_MODE ? { split: true } : {}),
   remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
@@ -108,10 +82,10 @@ fs.writeFileSync(CONFIG, JSON.stringify({
   desks: [{ name: 'Cast', id: 'cast', folders: [{ cwd: WORK, tabs: [
     { name: 'page', id: 'page', command: `browser http://127.0.0.1:${pagePort}/` },
   ] }] }],
-}, null, 2));
-const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC|SHIKISHA)/i.test(k)));
-env.LOCALAPPDATA = LOCAL;
-spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
+} }).catch((e) => die(e.message));
+fs.mkdirSync(WORK, { recursive: true });
+/** CPU seconds spent so far by the app and every browser process it started */
+const cpuSeconds = () => copy.cpuSeconds();
 
 const targetsOf = async (port) => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json());
 async function connect(target) {
@@ -176,11 +150,12 @@ async function measure(phone, label) {
 }
 
 let chrome = null;
-const PHONE_DIR = path.join(RUN, 'phone');
+const PHONE_DIR = tmp('sk-cast-measure-phone');
 try {
   console.log(`phone: 390x844 css @${DPR}, ${SECONDS}s per screen${SPLIT_MODE ? ', split mode' : ''}`);
+  fs.rmSync(PHONE_DIR, { recursive: true, force: true });
   fs.mkdirSync(PHONE_DIR, { recursive: true });
-  chrome = spawn(findChrome(), ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + PHONE_DIR,
+  chrome = spawn(findChrome(), ['--headless=new', '--use-mock-keychain', '--remote-debugging-port=0', '--user-data-dir=' + PHONE_DIR,
     '--no-first-run', '--no-default-browser-check', '--autoplay-policy=no-user-gesture-required', 'about:blank'], { stdio: 'ignore' });
   const portFile = path.join(PHONE_DIR, 'DevToolsActivePort');
   await until(() => fs.existsSync(portFile) && Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]) > 0, 'the phone\'s Chrome');
@@ -225,7 +200,10 @@ try {
   console.error('  FAIL ' + e.message);
   process.exitCode = 1;
 } finally {
-  if (chrome && chrome.exitCode === null) spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F']);
-  stopApp();
+  if (chrome && chrome.exitCode === null) {
+    if (process.platform === 'win32') spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F']);
+    else chrome.kill();
+  }
+  copy.stop();
   server.close();
 }
