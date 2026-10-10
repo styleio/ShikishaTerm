@@ -508,10 +508,12 @@ pub(super) fn drag(window: &tao::window::Window, at: Option<(f64, f64)>) {
         }
     }
     // Elsewhere the window is put back under the pointer by as far as it has
-    // gone since the press, and the system drags from there
+    // gone since the press, and the system drags from there. Not a maximised
+    // window: the system restores it under the pointer as the drag begins, at
+    // the same share of its width, and moving it first left it somewhere else
     #[cfg(not(target_os = "macos"))]
     {
-        if let Some((x, y)) = at {
+        if let (Some((x, y)), false) = (at, window.is_maximized()) {
             let scale = window.scale_factor();
             if let (Ok(now), Ok(inner), Ok(outer)) = (window.cursor_position(), window.inner_position(), window.outer_position()) {
                 let pressed = (inner.x as f64 + x * scale, inner.y as f64 + y * scale);
