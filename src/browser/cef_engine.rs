@@ -1109,15 +1109,22 @@ mod hooks {
                 }
             }
 
-            /// The page asked to close its window (`window.close()`), unless
-            /// it is this program closing it
-            fn do_close(&self, _browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
-                if !self.hooks.going.get()
-                    && let Some(closing) = &self.hooks.wiring.closing
-                {
+            /// The page closing: asked by the page (`window.close()`), which is
+            /// told to the program to decide, or done by the program, which
+            /// takes the page's view out of the window -- what makes CEF let
+            /// the page go. Never CEF's default, which asks the window the
+            /// page sits in to close: that window is the program's own, and
+            /// asked it hid itself and kept the page, so every time the window
+            /// was put away the board's page stayed behind, alive and unseen
+            fn do_close(&self, browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
+                if self.hooks.going.get() {
+                    if let Some(host) = browser.and_then(|b| b.host()) {
+                        super::mac::take_out(host.window_handle());
+                    }
+                } else if let Some(closing) = &self.hooks.wiring.closing {
                     closing();
                 }
-                0
+                1
             }
 
             fn on_before_close(&self, _browser: Option<&mut Browser>) {
@@ -1352,6 +1359,16 @@ mod mac {
             let top = if flipped.as_bool() { y } else { bounds.size.height - y - h.max(0.0) };
             let frame = NSRect::new(NSPoint::new(x, top), NSSize::new(w.max(0.0), h.max(0.0)));
             let _: () = msg_send![view, setFrame: frame];
+        }
+    }
+
+    /// Out of its window: a page's view taken out is the page let go
+    pub(super) fn take_out(view: *mut std::ffi::c_void) {
+        if view.is_null() {
+            return;
+        }
+        unsafe {
+            let _: () = msg_send![view.cast::<AnyObject>(), removeFromSuperview];
         }
     }
 
