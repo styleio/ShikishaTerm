@@ -262,6 +262,11 @@ pub(super) struct Hooks {
     popup: RefCell<Option<(String, String)>>,
     /// Where the results of the browser's own search go
     finds: RefCell<Option<(Option<String>, Sender<Ev>)>>,
+    /// For a page over a whole window: that window (its NSWindow), whose bar
+    /// the page draws. Only such a page says where the window may be taken
+    /// hold of -- a site in a tab that marks part of itself draggable does
+    /// not get to move the window
+    bar_of: Option<usize>,
 }
 
 /// The engine around the window's pages
@@ -283,6 +288,9 @@ pub(super) struct Page {
 impl Drop for Page {
     fn drop(&mut self) {
         self.hooks.going.set(true);
+        if let Some(window) = self.hooks.bar_of {
+            mac::forget_bar(window);
+        }
         if let Some(host) = self.browser.host() {
             host.close_browser(1);
         }
@@ -566,7 +574,11 @@ impl Pages {
             window.ns_view()
         };
         let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-        let page = self.make(spec, parent, (0, 0, size.width as i32, size.height as i32))?;
+        let bar_of = {
+            use tao::platform::macos::WindowExtMacOS;
+            window.ns_window() as usize
+        };
+        let page = self.make(spec, parent, (0, 0, size.width as i32, size.height as i32), Some(bar_of))?;
         Ok(page)
     }
 
@@ -576,7 +588,7 @@ impl Pages {
             Place::At(seat) => seat.get(),
             Place::Fill => (0, 0, 0, 0),
         };
-        self.make(spec, self.shared.parent, rect)
+        self.make(spec, self.shared.parent, rect, None)
     }
 
     /// A private page's folder is about to be removed: its store goes first
@@ -584,13 +596,14 @@ impl Pages {
         self.shared.contexts.borrow_mut().remove(dir);
     }
 
-    fn make(&mut self, spec: Spec, parent: *mut std::ffi::c_void, rect: Rect4) -> Result<Page> {
+    fn make(&mut self, spec: Spec, parent: *mut std::ffi::c_void, rect: Rect4, bar_of: Option<usize>) -> Result<Page> {
         let hooks = Rc::new(Hooks {
             wiring: spec.wiring,
             shared: Rc::clone(&self.shared),
             going: Cell::new(false),
             popup: RefCell::new(None),
             finds: RefCell::new(None),
+            bar_of,
         });
         let mut context = context_for(&self.shared, &spec.store, spec.through)?;
         let info = ::cef::WindowInfo::default().set_as_child(
@@ -953,6 +966,43 @@ mod hooks {
             fn keyboard_handler(&self) -> Option<KeyboardHandler> {
                 Some(Keys::new(Rc::clone(&self.hooks)))
             }
+            fn drag_handler(&self) -> Option<DragHandler> {
+                Some(Drags::new(Rc::clone(&self.hooks)))
+            }
+        }
+    }
+
+    wrap_drag_handler! {
+        pub struct Drags {
+            hooks: Rc<Hooks>,
+        }
+
+        impl DragHandler {
+            /// Where the page marks itself as a window's bar (CSS `app-region:
+            /// drag`, less what is marked `no-drag`): heard only from a page
+            /// over a whole window, and handed to the application, which hands
+            /// a press there to the system as a press on a title bar
+            fn on_draggable_regions_changed(
+                &self,
+                _browser: Option<&mut Browser>,
+                frame: Option<&mut Frame>,
+                regions: Option<&[DraggableRegion]>,
+            ) {
+                let Some(window) = self.hooks.bar_of else { return };
+                // The page's own document, not a frame inside it
+                if frame.is_some_and(|f| f.is_main() == 0) {
+                    return;
+                }
+                let regions = regions
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|r| {
+                        let b = &r.bounds;
+                        (f64::from(b.x), f64::from(b.y), f64::from(b.width), f64::from(b.height), r.draggable != 0)
+                    })
+                    .collect();
+                super::mac::set_bar(window, regions);
+            }
         }
     }
 
@@ -1003,6 +1053,7 @@ mod hooks {
                     going: std::cell::Cell::new(false),
                     popup: std::cell::RefCell::new(Some((name, uri))),
                     finds: std::cell::RefCell::new(None),
+                    bar_of: None,
                 });
                 if let Some(client) = client {
                     *client = Some(PageClient::new(hooks));
@@ -1283,6 +1334,75 @@ mod mac {
         }
     }
 
+    /// Where each window may be taken hold of, as its page last said: rects in
+    /// the page's pixels from the window's top left, each one either part of
+    /// the bar or carved out of it (a button sitting on it). By the window's
+    /// address; touched only on the main thread
+    static BARS: std::sync::Mutex<Vec<(usize, Vec<(f64, f64, f64, f64, bool)>)>> = std::sync::Mutex::new(Vec::new());
+
+    pub(super) fn set_bar(window: usize, regions: Vec<(f64, f64, f64, f64, bool)>) {
+        let mut bars = BARS.lock().unwrap_or_else(|e| e.into_inner());
+        bars.retain(|(w, _)| *w != window);
+        if !regions.is_empty() {
+            bars.push((window, regions));
+        }
+    }
+
+    pub(super) fn forget_bar(window: usize) {
+        BARS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(w, _)| *w != window);
+    }
+
+    /// Whether a point of `window` (from its top left) is on its bar: inside
+    /// a part of it, and not on anything carved out of it
+    fn on_bar(window: usize, (x, y): (f64, f64)) -> bool {
+        let bars = BARS.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((_, regions)) = bars.iter().find(|(w, _)| *w == window) else { return false };
+        let inside = |&(rx, ry, rw, rh, _): &(f64, f64, f64, f64, bool)| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        regions.iter().any(|r| r.4 && inside(r)) && !regions.iter().any(|r| !r.4 && inside(r))
+    }
+
+    /// A press on a window's bar, given to the system the way a press on a
+    /// title bar is: it drags the window from the point pressed, and a second
+    /// press in a row does what System Settings says a double-click does.
+    /// The page does not see it. `false` when the press is somewhere else
+    fn took_bar_press(event: *mut AnyObject) -> bool {
+        unsafe {
+            // NSEventTypeLeftMouseDown
+            let kind: usize = msg_send![event, type];
+            if kind != 1 {
+                return false;
+            }
+            let window: *mut AnyObject = msg_send![event, window];
+            if window.is_null() {
+                return false;
+            }
+            let content: *mut AnyObject = msg_send![window, contentView];
+            if content.is_null() {
+                return false;
+            }
+            let bounds: NSRect = msg_send![content, bounds];
+            let at: NSPoint = msg_send![event, locationInWindow];
+            if !on_bar(window as usize, (at.x, bounds.size.height - at.y)) {
+                return false;
+            }
+            // A press on a window behind another app's still brings it forward
+            let app: *mut AnyObject = msg_send![objc2::class!(NSApplication), sharedApplication];
+            let active: Bool = msg_send![app, isActive];
+            if !active.as_bool() {
+                let _: () = msg_send![app, activateIgnoringOtherApps: true];
+            }
+            let none: *const AnyObject = std::ptr::null();
+            let _: () = msg_send![window, makeKeyAndOrderFront: none];
+            let clicks: isize = msg_send![event, clickCount];
+            if clicks >= 2 {
+                super::super::frame::bar_double_clicked_mac(window);
+            } else {
+                let _: () = msg_send![window, performWindowDragWithEvent: event];
+            }
+            true
+        }
+    }
+
     /// Whether the application is in the middle of handing out an event
     static SENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1298,6 +1418,9 @@ mod mac {
     }
 
     extern "C" fn send_event(this: *mut AnyObject, sel: objc2::runtime::Sel, event: *mut AnyObject) {
+        if !event.is_null() && took_bar_press(event) {
+            return;
+        }
         let was = SENDING.swap(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(original) = ORIGINAL_SEND.get() {
             let original: extern "C" fn(*mut AnyObject, objc2::runtime::Sel, *mut AnyObject) =

@@ -110,6 +110,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A Mac's own three buttons stand at the left end of the bar (the window
      puts them there): the bar starts after them, and has none of its own */
   #titlebar.macframe { padding-left:68px; }
+  /* Taken hold of the way a Mac's title bar is: the system drags the window
+     from the press itself, snaps it to the screen's edges, and does what the
+     person set a double-click to do. The buttons on it are not the bar */
+  #titlebar.macframe { app-region:drag; -webkit-app-region:drag; }
+  #titlebar.macframe button { app-region:no-drag; -webkit-app-region:no-drag; }
   /* Full screen puts them away, and the room left for them goes too */
   #titlebar.macframe.full { padding-left:0; }
 
@@ -14611,12 +14616,14 @@ function drawTitle() {
   // page never saw a click finish, and so it never saw a double-click either:
   // the bar double-clicked and nothing happened. A few pixels of travel is how
   // the system's own caption tells a press from a drag
-  bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
-  // A Mac's is the system's choice of zoom, minimise or nothing (bar-double)
-  bar.ondblclick = e => { if (!e.target.closest("button")) winAct(window.__shikisha_frame === "mac" ? "bar-double" : "maximize"); };
+  //
+  // A Mac's bar is the system's to take hold of (app-region, above): neither
+  // press reaches the page there
+  const macFrame = window.__shikisha_frame === "mac";
+  bar.onmousedown = macFrame ? null : e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
+  bar.ondblclick = macFrame ? null : e => { if (!e.target.closest("button")) winAct("maximize"); };
   // A Mac's window keeps its own close, minimise and zoom, at the left end of
   // this bar where every Mac window has them
-  const macFrame = window.__shikisha_frame === "mac";
   bar.classList.toggle("macframe", macFrame);
   bar.classList.toggle("full", winFull);
   // Whose window this is, and what it is called -- what the system bar said,
@@ -27650,12 +27657,19 @@ mod tests {
             // Called with the act first; a drag also says where it was pressed
             assert!(p.contains(&format!("winAct(\"{act}\"")), "nothing ever calls {act}");
         }
-        // Taken hold of by the bar itself, never by a button sitting on it
+        // Taken hold of by the bar itself, never by a button sitting on it:
+        // by the page where the page draws the whole frame, and by the system
+        // on a Mac, where the bar is marked as one
         assert!(
             p.contains(
-                r#"bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };"#
+                r#"bar.onmousedown = macFrame ? null : e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };"#
             ),
             "there is nowhere to grab the bar, or it grabs even over the buttons"
+        );
+        assert!(
+            p.contains("#titlebar.macframe { app-region:drag; -webkit-app-region:drag; }")
+                && p.contains("#titlebar.macframe button { app-region:no-drag; -webkit-app-region:no-drag; }"),
+            "a Mac's bar cannot be taken hold of, or its buttons are part of it"
         );
         // Dragged only once the pointer moves: a drag started on the press takes
         // the release with it, and the double-click never arrives

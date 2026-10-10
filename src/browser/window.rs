@@ -337,7 +337,6 @@ pub(super) fn run_window(
                                 "drag" => super::frame::drag(&win, *at),
                                 "minimize" => win.set_minimized(true),
                                 "maximize" => win.set_maximized(!win.is_maximized()),
-                                "bar-double" => super::frame::bar_double_clicked(&win),
                                 // The same message the frame's own ✕ sent, so
                                 // whatever closing means is decided in one place
                                 "close" => {

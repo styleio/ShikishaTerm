@@ -448,135 +448,75 @@ pub(super) fn keep_out_of_pictures(window: &tao::window::Window, out: bool) {
     let _ = (window, out);
 }
 
-/// The bar taken hold of: the system moves the window with the pointer from
-/// here on, as it does a window's own title bar. `at` is where in the window
-/// the bar was pressed, in the page's pixels from its top left (see
-/// `Ev::Window`).
+/// The bar taken hold of, on a window whose page tells it so: the system moves
+/// the window with the pointer from here on. `at` is where in the window the
+/// bar was pressed, in the page's pixels from its top left (see `Ev::Window`).
 ///
 /// The page says so only after a few pixels of travel and a message later, and
-/// the system drags from wherever it is told the press was. Told nothing, the
-/// window trailed the pointer by that much and the point taken hold of slid out
-/// from under it: dragged 100 points, the window went 11 across and 101 down
+/// the system drags from wherever the pointer is when it is asked; so the
+/// window is first put back under the pointer by as far as it has gone since
+/// the press. Not a maximised window: the system restores it under the pointer
+/// as the drag begins, at the same share of its width, and moving it first
+/// left it somewhere else. A Mac's bar never gets here: the application hands
+/// a press on it to the system itself (`took_bar_press` in cef_engine.rs)
 pub(super) fn drag(window: &tao::window::Window, at: Option<(f64, f64)>) {
-    // A Mac's drag is handed a press made here, at the point taken hold of,
-    // rather than the event being handled (tao's `drag_window`): that is the
-    // page's message, not the mouse. The page fills the window to its top
-    // edge, and a page's pixel is a point while the board is unzoomed
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::msg_send;
-        use objc2::runtime::{AnyClass, AnyObject};
-        use objc2_foundation::{NSPoint, NSRect};
-        use tao::platform::macos::WindowExtMacOS;
-        let ns_window = window.ns_window().cast::<AnyObject>();
-        let (Some(event_class), Some(info_class)) = (AnyClass::get(c"NSEvent"), AnyClass::get(c"NSProcessInfo")) else {
-            return;
-        };
-        if ns_window.is_null() {
-            return;
-        }
-        unsafe {
-            // A window counts from its bottom left
-            let at: NSPoint = match at {
-                Some((x, y)) => {
-                    let frame: NSRect = msg_send![ns_window, frame];
-                    NSPoint::new(x, frame.size.height - y)
-                }
-                None => {
-                    let screen: NSPoint = msg_send![event_class, mouseLocation];
-                    msg_send![ns_window, convertPointFromScreen: screen]
-                }
-            };
-            let number: isize = msg_send![ns_window, windowNumber];
-            let info: *mut AnyObject = msg_send![info_class, processInfo];
-            let now: f64 = msg_send![info, systemUptime];
-            let none: *const AnyObject = std::ptr::null();
-            // NSEventTypeLeftMouseDown
-            let press: *mut AnyObject = msg_send![event_class,
-                mouseEventWithType: 1usize,
-                location: at,
-                modifierFlags: 0usize,
-                timestamp: now,
-                windowNumber: number,
-                context: none,
-                eventNumber: 0isize,
-                clickCount: 1isize,
-                pressure: 1.0f32];
-            if !press.is_null() {
-                let _: () = msg_send![ns_window, performWindowDragWithEvent: press];
+    if let (Some((x, y)), false) = (at, window.is_maximized()) {
+        let scale = window.scale_factor();
+        if let (Ok(now), Ok(inner), Ok(outer)) = (window.cursor_position(), window.inner_position(), window.outer_position()) {
+            let pressed = (inner.x as f64 + x * scale, inner.y as f64 + y * scale);
+            let (dx, dy) = ((now.x - pressed.0).round() as i32, (now.y - pressed.1).round() as i32);
+            if dx != 0 || dy != 0 {
+                window.set_outer_position(tao::dpi::PhysicalPosition::new(outer.x + dx, outer.y + dy));
             }
         }
     }
-    // Elsewhere the window is put back under the pointer by as far as it has
-    // gone since the press, and the system drags from there. Not a maximised
-    // window: the system restores it under the pointer as the drag begins, at
-    // the same share of its width, and moving it first left it somewhere else
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let (Some((x, y)), false) = (at, window.is_maximized()) {
-            let scale = window.scale_factor();
-            if let (Ok(now), Ok(inner), Ok(outer)) = (window.cursor_position(), window.inner_position(), window.outer_position()) {
-                let pressed = (inner.x as f64 + x * scale, inner.y as f64 + y * scale);
-                let (dx, dy) = ((now.x - pressed.0).round() as i32, (now.y - pressed.1).round() as i32);
-                if dx != 0 || dy != 0 {
-                    window.set_outer_position(tao::dpi::PhysicalPosition::new(outer.x + dx, outer.y + dy));
-                }
-            }
-        }
-        let _ = window.drag_window();
-    }
+    let _ = window.drag_window();
 }
 
-/// The bar double-clicked. On a Mac, what the person chose in System Settings
+/// A Mac's bar double-clicked: what the person chose in System Settings
 /// ("Double-click a window's title bar to"): fill the screen, zoom, minimise,
 /// or nothing. Zoom is the window's own, not a maximise: it goes to the size
 /// that fits and, pressed again, back
-pub(super) fn bar_double_clicked(window: &tao::window::Window) {
-    #[cfg(target_os = "macos")]
-    {
-        use objc2::runtime::{AnyObject, Bool, Sel};
-        use objc2::{msg_send, sel};
-        use objc2_foundation::{NSString, NSUserDefaults};
-        use tao::platform::macos::WindowExtMacOS;
-        let ns_window = window.ns_window().cast::<AnyObject>();
-        if ns_window.is_null() {
-            return;
-        }
-        let defaults = NSUserDefaults::standardUserDefaults();
-        // What System Settings writes: Fill, Maximize (its "Zoom"), Minimize
-        // or None. Before the choice had more than two answers it was a yes or
-        // no to minimising
-        let action = defaults
-            .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                let old = defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick"));
-                if old { "Minimize" } else { "Maximize" }.to_string()
-            });
-        let act: Sel = match action.as_str() {
-            "None" => return,
-            "Minimize" => sel!(performMiniaturize:),
-            // The window's own fill, so a second double-click puts it back as
-            // it does for every other window. A Mac without one (before macOS
-            // 15) has no Fill to choose either, but zooms if it somehow says so
-            "Fill" => {
-                let fill = sel!(_zoomFill:);
-                let can: Bool = unsafe { msg_send![ns_window, respondsToSelector: fill] };
-                if can.as_bool() { fill } else { sel!(performZoom:) }
-            }
-            _ => sel!(performZoom:),
-        };
-        // On the next turn of the run loop, not now: this is heard inside the
-        // loop's handler, and the window's animated resize draws the window
-        // while it runs -- which asks that same handler, still held here, and
-        // the program stopped for good on the first double-click
-        let none: *const AnyObject = std::ptr::null();
-        unsafe {
-            let _: () = msg_send![ns_window, performSelector: act, withObject: none, afterDelay: 0.0f64];
-        }
+#[cfg(target_os = "macos")]
+pub(super) fn bar_double_clicked_mac(ns_window: *mut objc2::runtime::AnyObject) {
+    use objc2::runtime::{AnyObject, Bool, Sel};
+    use objc2::{msg_send, sel};
+    use objc2_foundation::{NSString, NSUserDefaults};
+    if ns_window.is_null() {
+        return;
     }
-    #[cfg(not(target_os = "macos"))]
-    window.set_maximized(!window.is_maximized());
+    let defaults = NSUserDefaults::standardUserDefaults();
+    // What System Settings writes: Fill, Maximize (its "Zoom"), Minimize or
+    // None. Before the choice had more than two answers it was a yes or no to
+    // minimising
+    let action = defaults
+        .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let old = defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick"));
+            if old { "Minimize" } else { "Maximize" }.to_string()
+        });
+    let act: Sel = match action.as_str() {
+        "None" => return,
+        "Minimize" => sel!(performMiniaturize:),
+        // The window's own fill, the one a title bar's double-click uses. A
+        // Mac without one (before macOS 15) has no Fill to choose either, but
+        // zooms if it somehow says so
+        "Fill" => {
+            let fill = sel!(_zoomFill:);
+            let can: Bool = unsafe { msg_send![ns_window, respondsToSelector: fill] };
+            if can.as_bool() { fill } else { sel!(performZoom:) }
+        }
+        _ => sel!(performZoom:),
+    };
+    // On the next turn of the run loop, not now: this can be heard inside the
+    // loop's handler, and the window's animated resize draws the window while
+    // it runs -- which asks that same handler, still held, and the program
+    // stopped for good on the first double-click
+    let none: *const AnyObject = std::ptr::null();
+    unsafe {
+        let _: () = msg_send![ns_window, performSelector: act, withObject: none, afterDelay: 0.0f64];
+    }
 }
 
 /// The system is ending the session: signing out, restarting, shutting down,
