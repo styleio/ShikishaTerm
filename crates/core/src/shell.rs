@@ -3443,6 +3443,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     align-items:flex-start; justify-content:center; z-index:52; padding:8vh 16px 16px; }
   #past[hidden], #palette[hidden], #branch[hidden], #browse[hidden],
   #repair[hidden], #sask[hidden], #sdiff[hidden] { display:none; }
+  /* The first-start setup is asked before anything else, and alone. A question
+     that comes up meanwhile (whether the AI CLIs may report what they do, came
+     the same moment) stays open behind it, unseen, and is there when setup is
+     done: drawn beside it, it showed half under the setup box */
+  body.setting-up #sask, body.setting-up #dlgscrim { visibility:hidden; }
   #past .vbox, #palette .vbox, #branch .vbox, #browse .vbox,
   #repair .vbox, #sask .vbox, #sdiff .vbox { background:var(--panel); border:1px solid var(--line);
     border-radius:var(--r-card); padding:var(--s4) var(--s5); width:min(720px,92vw);
@@ -6529,6 +6534,10 @@ function drawWelcome() {
   if (!box) return;
   const st = OURS ? (S && S.setup) : null;
   box.hidden = !st;
+  document.body.classList.toggle("setting-up", !!st);
+  // Nor can it be pressed or take the keys meanwhile: Enter meant for Done
+  // must not answer the question nobody can see
+  for (const id of ["sask", "dlgscrim"]) { const q = document.getElementById(id); if (q) q.inert = !!st; }
   if (!st) { box.dataset.sig = ""; return; }
   const installed = st.installed || [];
   // The card picked stays picked while it is still there; a refresh that
