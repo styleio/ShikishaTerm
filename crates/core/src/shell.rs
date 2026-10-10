@@ -82,7 +82,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      of the bar, which is where the name and the icon ended up. The buttons
      stretch on their own below, because a window's buttons fill the bar's
      height wherever you press them */
+  /* Above every veil a dialog spreads over the page: with a dialog open the
+     window can still be moved, zoomed and put away by its bar, as any window
+     with a sheet on it can */
   #titlebar { grid-column:1/4; grid-row:1; display:flex; align-items:center;
+    position:relative; z-index:80;
     background:var(--panel); border-bottom:1px solid var(--line);
     user-select:none; -webkit-user-select:none; }
   /* The empty middle. Nothing in it: it is somewhere to take hold of */
@@ -105,7 +109,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #titlebar .wbtn.close:hover { background:var(--stop); color:#fff; }
   /* A Mac's own three buttons stand at the left end of the bar (the window
      puts them there): the bar starts after them, and has none of its own */
-  #titlebar.macframe { padding-left:76px; }
+  #titlebar.macframe { padding-left:68px; }
+  /* Full screen puts them away, and the room left for them goes too */
+  #titlebar.macframe.full { padding-left:0; }
 
 
   /* ── Left tab bar ───────────────────────── */
@@ -14561,6 +14567,8 @@ window.__toggleTabBar = function () {
 // nothing here decides anything, so what closing means stays in the one place
 // that always decided it.
 let winMax = false;
+// And whether it fills the screen, where a Mac puts its three buttons away
+let winFull = false;
 function winAct(act) { send({kind: "window", act}); }
 // A press on the bar, waiting to find out whether it is a drag
 function holdBar(down) {
@@ -14579,9 +14587,10 @@ function holdBar(down) {
 }
 // Told by the window itself, because a window can be maximised by the system
 // -- dragged to an edge, Win+Up -- without this bar being touched
-window.__maximized = function (on) {
-  if (winMax === !!on) return;
+window.__maximized = function (on, full) {
+  if (winMax === !!on && winFull === !!full) return;
   winMax = !!on;
+  winFull = !!full;
   drawTitle();
 };
 function drawTitle() {
@@ -14589,7 +14598,7 @@ function drawTitle() {
   if (!bar || !OURS) return;
   // Rebuilt only when what it would say changed: it is under the pointer, and
   // the page is redrawn several times a second
-  const key = [tabWidth() > 0, sideWidth() > 0, winMax].join("|");
+  const key = [tabWidth() > 0, sideWidth() > 0, winMax, winFull].join("|");
   if (bar.dataset.key === key) return;
   bar.dataset.key = key;
   bar.textContent = "";
@@ -14603,11 +14612,13 @@ function drawTitle() {
   // the bar double-clicked and nothing happened. A few pixels of travel is how
   // the system's own caption tells a press from a drag
   bar.onmousedown = e => { if (e.button === 0 && !e.target.closest("button")) holdBar(e); };
-  bar.ondblclick = e => { if (!e.target.closest("button")) winAct("maximize"); };
+  // A Mac's is the system's choice of zoom, minimise or nothing (bar-double)
+  bar.ondblclick = e => { if (!e.target.closest("button")) winAct(window.__shikisha_frame === "mac" ? "bar-double" : "maximize"); };
   // A Mac's window keeps its own close, minimise and zoom, at the left end of
   // this bar where every Mac window has them
   const macFrame = window.__shikisha_frame === "mac";
   bar.classList.toggle("macframe", macFrame);
+  bar.classList.toggle("full", winFull);
   // Whose window this is, and what it is called -- what the system bar said,
   // where it said it. Which desk it is showing is the footer's to say.
   // The picture is the one the phone already fetches, from the same route

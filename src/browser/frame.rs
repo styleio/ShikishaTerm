@@ -31,23 +31,20 @@ pub(super) fn main_builder(title: &str) -> tao::window::WindowBuilder {
     #[cfg(target_os = "macos")]
     let b = {
         use tao::platform::macos::WindowBuilderExtMacOS;
+        // The three buttons are left where AppKit puts them, 8 points in from
+        // the top and the left: the middle of a 32-point bar, which is the
+        // page's. Moved by hand (tao's traffic-light inset) they sat above the
+        // top edge, because the move squeezed the bar they stand in and was
+        // only made again when tao's own view drew, which under CEF's is
+        // almost never
         b.with_titlebar_transparent(true)
             .with_title_hidden(true)
             .with_fullsize_content_view(true)
-            // Centred on the page's bar, which is taller than a Mac's own
-            .with_traffic_light_inset(tao::dpi::LogicalPosition::new(TRAFFIC_LIGHTS_X, TRAFFIC_LIGHTS_Y))
     };
     #[cfg(not(any(windows, target_os = "macos")))]
     let b = b.with_decorations(false);
     b
 }
-
-/// Where a Mac's three buttons sit, from the window's top left, in points: in
-/// the middle of the page's bar (32 points tall, the buttons 14)
-#[cfg(target_os = "macos")]
-const TRAFFIC_LIGHTS_X: f64 = 12.0;
-#[cfg(target_os = "macos")]
-const TRAFFIC_LIGHTS_Y: f64 = 9.0;
 
 /// What the page is told about the frame around it, before anything of it
 /// runs: on a Mac, that the system's three buttons are at the top left of its
@@ -449,6 +446,47 @@ pub(super) fn keep_out_of_pictures(window: &tao::window::Window, out: bool) {
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     let _ = (window, out);
+}
+
+/// The bar double-clicked. On a Mac, what the person chose in System Settings
+/// ("Double-click a window's title bar to"): zoom, minimise, or nothing. Zoom
+/// is the window's own, not a maximise: it goes to the size that fits and,
+/// pressed again, back
+pub(super) fn bar_double_clicked(window: &tao::window::Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::msg_send;
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::{NSString, NSUserDefaults};
+        use tao::platform::macos::WindowExtMacOS;
+        let ns_window = window.ns_window().cast::<AnyObject>();
+        if ns_window.is_null() {
+            return;
+        }
+        let defaults = NSUserDefaults::standardUserDefaults();
+        let action = defaults
+            .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
+            .map(|s| s.to_string());
+        // Before the choice had three answers it was a yes or no to minimising
+        let minimise = match action.as_deref() {
+            Some(a) => a == "Minimize",
+            None => defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick")),
+        };
+        let none: *const AnyObject = std::ptr::null();
+        unsafe {
+            match action.as_deref() {
+                Some("None") => {}
+                _ if minimise => {
+                    let _: () = msg_send![ns_window, performMiniaturize: none];
+                }
+                _ => {
+                    let _: () = msg_send![ns_window, performZoom: none];
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.set_maximized(!window.is_maximized());
 }
 
 /// The system is ending the session: signing out, restarting, shutting down,

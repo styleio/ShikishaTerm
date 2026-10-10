@@ -339,6 +339,7 @@ pub(super) fn run_window(
                                 }
                                 "minimize" => win.set_minimized(true),
                                 "maximize" => win.set_maximized(!win.is_maximized()),
+                                "bar-double" => super::frame::bar_double_clicked(&win),
                                 // The same message the frame's own ✕ sent, so
                                 // whatever closing means is decided in one place
                                 "close" => {
@@ -1205,7 +1206,8 @@ pub(super) fn run_window(
                 // an edge, Win+Up -- and a bar that said otherwise would be
                 // showing the wrong one of two glyphs
                 if let Some(v) = main_view(&shell) {
-                    v.run_js(&format!("window.__maximized && window.__maximized({});", window.is_maximized()));
+                    v.run_js(&format!("window.__maximized && window.__maximized({}, {});",
+                        window.is_maximized(), window.fullscreen().is_some()));
                 }
                 // What size to draw the board at. Not the one that arrives
                 // while the window is put away: a minimized window is reported
