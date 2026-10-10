@@ -14569,7 +14569,7 @@ window.__toggleTabBar = function () {
 let winMax = false;
 // And whether it fills the screen, where a Mac puts its three buttons away
 let winFull = false;
-function winAct(act) { send({kind: "window", act}); }
+function winAct(act, at) { send(Object.assign({kind: "window", act}, at)); }
 // A press on the bar, waiting to find out whether it is a drag
 function holdBar(down) {
   const done = () => {
@@ -14580,7 +14580,7 @@ function holdBar(down) {
     if (!(e.buttons & 1)) return done();
     if (Math.abs(e.screenX - down.screenX) + Math.abs(e.screenY - down.screenY) < 4) return;
     done();
-    winAct("drag");
+    winAct("drag", {x: down.clientX, y: down.clientY});
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", done);
@@ -27647,7 +27647,8 @@ mod tests {
         assert!(p.contains(r#"<div id="titlebar"></div>"#), "the bar itself is missing");
         // The whole of its state is these four acts
         for act in ["drag", "minimize", "maximize", "close"] {
-            assert!(p.contains(&format!("winAct(\"{act}\")")), "nothing ever calls {act}");
+            // Called with the act first; a drag also says where it was pressed
+            assert!(p.contains(&format!("winAct(\"{act}\"")), "nothing ever calls {act}");
         }
         // Taken hold of by the bar itself, never by a button sitting on it
         assert!(

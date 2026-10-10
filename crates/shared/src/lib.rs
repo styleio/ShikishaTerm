@@ -747,6 +747,13 @@ pub enum Ev {
     /// asking this window to do something to itself
     Window {
         act: String,
+        /// For "drag": where in the window the bar was pressed, in the page's
+        /// pixels from its top left. The page says "drag" only once the
+        /// pointer has moved, and the pointer moves on while that is said; the
+        /// drag is anchored at this point, so the point taken hold of stays
+        /// under the pointer. In the window, not on the screen: the page's
+        /// idea of where the window is lags a drag the system made
+        at: Option<(f64, f64)>,
     },
     /// The file panel asking for a folder's contents, or for a search of the
     /// folder it stands in. `panel` names the place the same way the git panel
@@ -1671,6 +1678,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         // The window's own bar (see `Ev::Window`).
         Some("window") => Ev::Window {
             act: v.get("act").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            at: v.get("x").and_then(|x| x.as_f64()).zip(v.get("y").and_then(|y| y.as_f64())),
         },
         // The file panel asking for a listing or a search (see `Ev::Files`).
         Some("files") => Ev::Files {

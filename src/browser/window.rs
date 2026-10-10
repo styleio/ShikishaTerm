@@ -331,12 +331,10 @@ pub(super) fn run_window(
                         // Answered on the spot: the loop that would otherwise be
                         // told is a tick away, and a drag that starts a tick late
                         // is a drag the pointer has already left behind
-                        if let Some(Ev::Window { act }) = ev.as_ref() {
+                        if let Some(Ev::Window { act, at }) = ev.as_ref() {
                             shikisha_core::append_hook_log(&format!("window act: {act}"));
                             match act.as_str() {
-                                "drag" => {
-                                    let _ = win.drag_window();
-                                }
+                                "drag" => super::frame::drag(&win, *at),
                                 "minimize" => win.set_minimized(true),
                                 "maximize" => win.set_maximized(!win.is_maximized()),
                                 "bar-double" => super::frame::bar_double_clicked(&win),
