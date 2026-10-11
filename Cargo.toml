@@ -165,6 +165,8 @@ global-hotkey = "0.8.0"
 # and the blocks its calls answer through
 objc2-user-notifications = "0.3.2"
 block2 = "0.6.2"
+# SIGTERM heard and ended as Quit ends the program (src/browser/frame.rs)
+libc = "0.2"
 # The program's icon in the menu bar, where it lives while its window is put
 # away (src/browser/frame.rs). Windows' is hand-rolled (core/tray.rs)
 tray-icon = { version = "0.26.0", default-features = false }

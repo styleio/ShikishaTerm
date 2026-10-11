@@ -54,6 +54,8 @@ pub struct Mailbox {
     pub tray_open: bool,
     /// "Quit" was chosen on the notification-area icon's menu
     pub tray_quit: bool,
+    /// Asked to end from outside (SIGTERM): ended without the quit question
+    pub told_to_end: bool,
     /// The sidebar gear (or a deep-link shortcut) was pressed. The loop opens the
     /// settings page. Carries an optional section to land on and whether to return
     /// to the board once saved (Some = requested, None = not requested).

@@ -194,6 +194,11 @@ pub enum Ev {
     TrayOpen,
     /// "Quit" chosen on the notification-area icon's menu
     TrayQuit,
+    /// The system, or a program speaking for it, asked this one to end
+    /// (SIGTERM on a Mac): ended as Quit ends it, asking nothing, because
+    /// nobody is there to answer -- and not as a crash, which is what being
+    /// cut off would be taken for at the next start
+    Terminate,
     /// A key that works from any program asked for something on the board
     /// (`hotkeys::ON_THE_BOARD`, by name): the window comes to the front
     /// and opens it

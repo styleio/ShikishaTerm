@@ -14386,6 +14386,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 shell.mail().close_requested = true;
             }
         }
+        // Asked to end from outside. The way Quit ends, with nothing asked:
+        // nobody is there to answer, and the machine that asked will not
+        // wait. What was kept running is left running, as the question's
+        // own default leaves it
+        if std::mem::take(&mut shell.mail().told_to_end) {
+            append_hook_log("told to end from outside: closing as on Quit, asking nothing");
+            shell.hide();
+            break;
+        }
         let close_pressed = std::mem::take(&mut shell.mail().close_requested);
         let quit_chosen = std::mem::take(&mut shell.mail().tray_quit);
         if close_pressed && resident {

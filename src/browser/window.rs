@@ -257,6 +257,7 @@ pub(super) fn run_window(
     #[cfg(target_os = "macos")]
     if wears_the_icon {
         super::frame::menu_bar(ev_tx.clone());
+        super::frame::end_when_told(ev_tx.clone());
     }
     let tray = wears_the_icon
         .then(|| super::frame::Tray::add(&window, title, ev_tx.clone(), ev_loop.create_proxy(), std::sync::Arc::clone(&display_down)))

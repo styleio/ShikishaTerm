@@ -802,6 +802,7 @@ impl WinSurface {
                 Ev::TrayOpen => self.mail.tray_open = true,
                 Ev::Summon { what } => self.summon(&what),
                 Ev::TrayQuit => self.mail.tray_quit = true,
+                Ev::Terminate => self.mail.told_to_end = true,
                 // The settings page's "close settings" button. Where the tab actually
                 // gets torn down (caps, active) isn't touched here — that's left to the loop.
                 Ev::CloseSettings => self.mail.close_settings = true,
@@ -1295,7 +1296,9 @@ fn run_in_window() -> Result<()> {
         shikisha_core::lastexit::mark_running();
         let out = run(&mut surface);
         // Only a run that got here finished. Anything else -- a crash, a power
-        // cut, being stopped from outside -- leaves the mark for the next start
+        // cut, being killed -- leaves the mark for the next start. Being asked
+        // to end (SIGTERM on a Mac) ends as Quit does, and gets here
+        // (browser/frame.rs, end_when_told)
         shikisha_core::lastexit::mark_closed();
         out
     })

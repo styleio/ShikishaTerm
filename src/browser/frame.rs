@@ -392,6 +392,50 @@ pub(super) fn menu_bar(tell: Sender<Ev>) {
     });
 }
 
+/// SIGTERM, the way a Mac's system and its tools ask a program to end
+/// (launchd, `kill`, an installer). Left to itself it ends the program on the
+/// spot, the mark of a running program stays behind, and the next start says
+/// "it stopped with an error". Heard here and handed to the loop as Quit,
+/// minus the question. The handler only raises a flag -- next to nothing is
+/// safe inside one -- and a thread of its own carries it over
+#[cfg(target_os = "macos")]
+pub(super) fn end_when_told(tell: Sender<Ev>) {
+    static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    extern "C" fn heard(_: libc::c_int) {
+        TOLD.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    let ours = heard as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    // Listened for again whenever another has taken it: Chromium puts its own
+    // in a moment after starting, which closes its browsers and so the
+    // program, without anything of ours knowing it was asked to end
+    let listen = move || unsafe {
+        let mut now: libc::sigaction = std::mem::zeroed();
+        libc::sigaction(libc::SIGTERM, std::ptr::null(), &mut now);
+        if now.sa_sigaction == ours {
+            return true;
+        }
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = ours;
+        libc::sigemptyset(&mut action.sa_mask);
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut()) == 0
+    };
+    if !listen() {
+        shikisha_core::append_hook_log("SIGTERM could not be listened for: it will end the program as a crash would");
+        return;
+    }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        listen();
+        if TOLD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            shikisha_core::append_hook_log("SIGTERM: ending as on Quit");
+            if tell.send(Ev::Terminate).is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// The program's picture, small enough for the menu bar (the bar scales it to
 /// its own height)
 #[cfg(target_os = "macos")]
