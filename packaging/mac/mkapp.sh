@@ -29,7 +29,9 @@
 #                       signed with it as it is, with no timestamp and no
 #                       hardened runtime, for copies that never leave here. What
 #                       the system was allowed for one build stays allowed for
-#                       the next, as it does not for one signed ad hoc
+#                       the next, as it does not for one signed ad hoc. Its
+#                       Chromium keeps its key in a pretend keychain, which asks
+#                       nothing when the next build comes
 #    MAC_RELEASE=1      a build to be handed out: it stops rather than go out
 #                       unsigned or unnotarized. A Mac opens neither, and the
 #                       person who downloaded it is told it is damaged
@@ -140,6 +142,15 @@ asks_plist() {
     done
 }
 
+# A copy signed with a certificate of this Mac's own has no team, and the
+# keychain knows such an app by its binary: each new build would be asked for
+# the password to Chromium's key. It uses the pretend keychain instead
+# (src/browser/cef_engine.rs, extra_switches), and keeps its logins across builds
+LOCAL_ENV=""
+if [ "${MAC_SIGN_LOCAL:-}" = 1 ]; then
+    LOCAL_ENV="<key>SHIKISHA_MOCK_KEYCHAIN</key><string>1</string>"
+fi
+
 plist_main() {
     cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -160,7 +171,7 @@ plist_main() {
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
     <!-- Chromium's own advice: the allocator's nano zone and Chromium's do not mix -->
-    <key>LSEnvironment</key><dict><key>MallocNanoZone</key><string>0</string></dict>
+    <key>LSEnvironment</key><dict><key>MallocNanoZone</key><string>0</string>$LOCAL_ENV</dict>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSRequiresAquaSystemAppearance</key><false/>

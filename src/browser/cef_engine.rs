@@ -731,14 +731,26 @@ fn start(wake: &tao::event_loop::EventLoopProxy<Cmd>) -> Result<()> {
 }
 
 /// The switches `SHIKISHA_CHROMIUM_ARGS` hands Chromium, without their dashes:
-/// `--remote-debugging-port=9401 --foo` is `remote-debugging-port=9401`, `foo`
+/// `--remote-debugging-port=9401 --foo` is `remote-debugging-port=9401`, `foo`.
+///
+/// And the pretend keychain, for a copy built on this Mac
+/// (`SHIKISHA_MOCK_KEYCHAIN=1`, written into its Info.plist by
+/// packaging/mac/mkapp.sh with MAC_SIGN_LOCAL). Such a copy has no team, and
+/// the keychain knows an app without one by its binary: every new build was a
+/// stranger asking for the key with a password. Its own switch rather than a
+/// word in `SHIKISHA_CHROMIUM_ARGS`, so that a copy started with switches of
+/// its own keeps both
 fn extra_switches() -> Vec<String> {
-    std::env::var("SHIKISHA_CHROMIUM_ARGS")
+    let mut switches: Vec<String> = std::env::var("SHIKISHA_CHROMIUM_ARGS")
         .unwrap_or_default()
         .split_whitespace()
         .map(|s| s.trim_start_matches('-').to_string())
         .filter(|s| !s.is_empty())
-        .collect()
+        .collect();
+    if std::env::var("SHIKISHA_MOCK_KEYCHAIN").as_deref() == Ok("1") && !switches.iter().any(|s| s == "use-mock-keychain") {
+        switches.push("use-mock-keychain".to_string());
+    }
+    switches
 }
 
 /// The program was started outside its `.app`, where the framework is not
