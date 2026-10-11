@@ -1568,7 +1568,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      terminal program keeps at its foot -- an AI's prompt, the line under it
      saying which mode it is in -- is exactly what a person types at and reads,
      and a bar laid over it hid both */
-  #screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #screen { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); margin:0; padding:8px; white-space:pre;
     overflow:auto; line-height:1.25; font-family:var(--mono); --cw:1ch; }
   /* One element per terminal row, so a screen that changed in one place can
@@ -1921,7 +1921,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The last line says what is happening and what this connection is, and a
      line hidden behind the sub-input bar is a line nobody reads. So the panel
      stops above the bar, by however tall the bar is now, like every surface */
-  #sftppanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #sftppanel { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column;
     overflow:hidden; font-size:13px; user-select:text; }
   /* The connection, and the way to make another. One row, because which server
@@ -2044,7 +2044,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      the list is where they would have to go to answer, and a card that says
      what is wrong while the answer lives somewhere else is half a card */
   #held[hidden] { display:none; }
-  #held { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #held { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); z-index:4; overflow:auto;
     display:flex; align-items:flex-start; justify-content:center;
     padding:var(--s7) 16px 16px; box-sizing:border-box; background:var(--bg); }
@@ -2084,7 +2084,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      Its sibling is the file panel, and its parts are the style guide's: a bar of
      controls, an enclosed list of records (5.5), fields (5.1), one primary button */
   #issuespanel[hidden], #issuespanel [hidden] { display:none !important; }
-  #issuespanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #issuespanel { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4; font-size:13px;
     display:flex; flex-direction:column; padding-bottom:72px; box-sizing:border-box;
     container-type:inline-size; background:var(--bg); }
@@ -2318,7 +2318,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      that order. One look for both, because to the person looking they are one
      thing -- this tab is not running, and here is what to do about it */
   #failpanel[hidden], #holdpanel[hidden] { display:none; }
-  #failpanel, #holdpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #failpanel, #holdpanel { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); overflow:auto; z-index:4;
     display:flex; align-items:flex-start; justify-content:center; padding:var(--s6) var(--s5); }
   #failpanel .box, #holdpanel .box { max-width:620px; width:100%; display:flex; flex-direction:column; gap:var(--s3); }
@@ -2340,7 +2340,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #holdpanel .acts .lead { color:var(--dim); font-size:12.5px; }
   #failpanel .acts .go, #holdpanel .acts .go { border-color:var(--brand); color:var(--brand); }
   #editpanel[hidden] { display:none; }
-  #editpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #editpanel { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
     font-size:13px;
     /* In the panes' own band (§4 of the style guide). The library inside
@@ -2565,7 +2565,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      A toolbar, then three columns: the branches, what is staged over what is
      not, and the change itself. Same place as a terminal, same edges */
   #gitpanel[hidden] { display:none; }
-  #gitpanel { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+  #gitpanel { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px)); display:flex; flex-direction:column; overflow:hidden;
     font-size:13px; user-select:text; }
   #gitpanel .bar { display:flex; align-items:center; gap:var(--s2); padding:6px 10px;
@@ -2983,6 +2983,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      reopened the app and is looking at their work, not at INDEX. It waits
      until it is read -- there is no second chance to tell somebody why their
      terminal disappeared */
+  /* What stands in a pane starts under the notices at the top of it
+     (--crashh, worked out in layout()): the board, a terminal, a panel and a
+     page alike. Laid over them, a notice hid the very first lines */
   #crashbar, #soundbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:25;
     display:flex; align-items:flex-start; gap:var(--s3); flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
@@ -3042,7 +3045,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* INDEX is a screen, not a pane: it fills the content area whatever the
      panes underneath are doing. It was drawn into the focused pane's rectangle
      once, which is how it came to be one of them */
-  #board { position:absolute; inset:0; overflow:auto; padding:22px 26px; }
+  #board { position:absolute; inset:var(--crashh, 0px) 0 0 0; overflow:auto; padding:22px 26px; }
   .mark { color:var(--brand); font-weight:700; letter-spacing:.5px;
     font-size:13px; line-height:1.15; white-space:pre; }
   /* Plain title for narrow screens (hidden by default) */
@@ -27212,9 +27215,9 @@ mod tests {
     fn the_composer_does_not_cover_the_prompt_at_the_foot_of_a_terminal() {
         let p = super::page();
         assert!(
-            p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+            p.contains("#screen { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px));")
-                || p.contains("#screen { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);
+                || p.contains("#screen { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
     bottom:calc(var(--fb) + var(--dock, 0px));"),
             "the terminal still runs on under the composer"
         );
@@ -29633,7 +29636,7 @@ mod tests {
         // It stands where the terminal would, in the focused pane's rectangle,
         // and the terminal stands down while it is up
         assert!(
-            PAGE.contains("#held { position:absolute; left:var(--fx); top:var(--fy); right:var(--fr);"),
+            PAGE.contains("#held { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);"),
             "the card is not drawn where the terminal is"
         );
         assert!(
