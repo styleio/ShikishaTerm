@@ -16,10 +16,12 @@
  * behind the other windows, with LOCALAPPDATA in `run` as well.
  *
  * Mac: the copy is the .app packaging/mac/mkapp.sh makes, named by SHIKISHA_APP
- * or else target/mac/SHIKISHA-TERM.app:
+ * or else target/mac/SHIKISHA-TERM.app. Made with tools/debug/mkapp-test.mac.sh,
+ * which signs it the same way every time, so that what the person at the Mac
+ * allowed once (the sound, the screen) is not asked again for the next build:
  *
- *     sh packaging/mac/mkapp.sh target/debug/SHIKISHA-TERM \
- *         target/debug/shikisha-chromium-helper "$CEF" v0.0.0 arm64 target/mac
+ *     sh tools/debug/mkapp-test.mac.sh target/debug/SHIKISHA-TERM \
+ *         target/debug/shikisha-chromium-helper "$CEF" target/mac
  *
  * It is opened by Launch Services (`open -n`), not as a child of this script:
  * a Mac asks for a permission -- the camera, the sound other apps play -- in

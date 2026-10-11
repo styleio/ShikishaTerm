@@ -24,6 +24,12 @@
 #                       an App Store Connect API key (the .p8 file's path, its
 #                       id, its issuer). With them the .dmg is notarized and
 #                       the ticket stapled to it and to the app
+#    MAC_SIGN_LOCAL=1   MAC_SIGN_IDENTITY is a certificate of this Mac's own,
+#                       not Apple's (tools/debug/mkapp-test.mac.sh makes one):
+#                       signed with it as it is, with no timestamp and no
+#                       hardened runtime, for copies that never leave here. What
+#                       the system was allowed for one build stays allowed for
+#                       the next, as it does not for one signed ad hoc
 #    MAC_RELEASE=1      a build to be handed out: it stops rather than go out
 #                       unsigned or unnotarized. A Mac opens neither, and the
 #                       person who downloaded it is told it is damaged
@@ -62,6 +68,10 @@ esac
 [ -x "$PROGRAM" ] || { echo "mkapp: no program at $PROGRAM" >&2; exit 1; }
 [ -x "$HELPER" ] || { echo "mkapp: no helper at $HELPER" >&2; exit 1; }
 [ -d "$CEF/$FRAMEWORK" ] || { echo "mkapp: no $FRAMEWORK in $CEF" >&2; exit 1; }
+if [ "${MAC_RELEASE:-}" = 1 ] && [ "${MAC_SIGN_LOCAL:-}" = 1 ]; then
+    echo "mkapp: a release is not signed with a certificate of this Mac's own" >&2
+    exit 1
+fi
 if [ "${MAC_RELEASE:-}" = 1 ]; then
     for v in MAC_SIGN_IDENTITY MAC_NOTARY_KEY MAC_NOTARY_KEY_ID MAC_NOTARY_ISSUER; do
         eval "given=\${$v:-}"
@@ -275,7 +285,11 @@ iconutil -c icns "$ICONSET" -o "$CONTENTS/Resources/$NAME.icns"
 # ── signing, from the inside out ──────────────────────────────────────────
 # Each piece is signed before what holds it: a signature covers what is inside
 # it, so signing the outside first would be undone by signing the inside
-if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
+if [ -n "${MAC_SIGN_IDENTITY:-}" ] && [ "${MAC_SIGN_LOCAL:-}" = 1 ]; then
+    # The hardened runtime loads only libraries of the app's own team, and a
+    # certificate of this Mac's own has no team: Chromium would not load
+    sign() { codesign --force --sign "$MAC_SIGN_IDENTITY" "$@"; }
+elif [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
     sign() { codesign --force --timestamp --options runtime --sign "$MAC_SIGN_IDENTITY" "$@"; }
 else
     echo "mkapp: MAC_SIGN_IDENTITY is not set: signed for this Mac only" >&2
@@ -306,7 +320,7 @@ ln -s /Applications "$DMG_ROOT/Applications"
 DMG="$OUT/$STEM.dmg"
 rm -f "$DMG"
 hdiutil create -quiet -volname "$NAME" -srcfolder "$DMG_ROOT" -fs HFS+ -format UDZO "$DMG"
-if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
+if [ -n "${MAC_SIGN_IDENTITY:-}" ] && [ "${MAC_SIGN_LOCAL:-}" != 1 ]; then
     codesign --force --timestamp --sign "$MAC_SIGN_IDENTITY" "$DMG"
 fi
 
