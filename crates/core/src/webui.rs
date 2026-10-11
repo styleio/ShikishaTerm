@@ -2983,10 +2983,12 @@ fn handle(
                     }),
                     true => match far.as_ref().map_or_else(|| crate::worktree::rename(&plan), |h| crate::worktree::rename_far(h, &plan)) {
                         Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
-                        Ok(()) => serde_json::json!({
+                        // The person renamed it, and knows. The AIs in the
+                        // folder do not, until their next turn
+                        Ok(()) => { crate::notice::branch_renamed(&at, &plan.from, &plan.to); serde_json::json!({
                             "ok": true, "done": true, "from": plan.from, "to": plan.to,
                             "sent": plan.sent_as,
-                        }),
+                        }) }
                     },
                 },
             };

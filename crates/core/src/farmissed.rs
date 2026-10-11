@@ -48,7 +48,7 @@ pub const KEPT: &[&str] = &["report", "note", "notify", "say"];
 /// hook of the AI's CLI asking whether this turn is held. Answered that the
 /// PC is away and not written down -- one comes every turn, and once the turn
 /// is over there is nothing left to answer
-pub const OF_THE_MOMENT: &[&str] = &["confer_stop"];
+pub const OF_THE_MOMENT: &[&str] = &["confer_stop", crate::notice::METHOD];
 
 /// One call kept to be handed over: its line whole, what it said included
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

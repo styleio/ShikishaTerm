@@ -1329,6 +1329,10 @@ fn hook_mode(kind: String) -> Result<()> {
         line_hook(&v);
         return Ok(());
     }
+    if kind == shikisha_core::agenthook::NOTICE_ARG {
+        notice_hook(&v);
+        return Ok(());
+    }
     // Stamped where it was said, not where it lands. Hooks are separate
     // processes told not to block, so two of them race and the loser of the
     // race is not the loser of the argument
@@ -1388,6 +1392,17 @@ fn hook_mode(kind: String) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The start of a turn: what this app changed under the tab since it last
+/// looked, printed as context for the turn (`shikisha_core::notice`). The
+/// same CLI run outside this app has no app to ask, and is told nothing
+fn notice_hook(v: &serde_json::Value) {
+    let event = v.get("hook_event_name").and_then(|e| e.as_str()).unwrap_or("UserPromptSubmit");
+    if std::env::var(api::ENV_PIPE).is_err() {
+        return println!("{}", shikisha_core::notice::hook_output(event, None));
+    }
+    shikisha_core::notice::ask_and_print(event);
 }
 
 /// The end of a turn, for a tab that may owe the chat a line: the one hook

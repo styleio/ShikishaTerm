@@ -83,6 +83,7 @@ pub mod keeper;
 pub mod keymap;
 pub mod keys;
 pub mod labels;
+pub mod notice;
 pub mod lastexit;
 pub mod lastsession;
 pub mod layout;

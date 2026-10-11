@@ -63,7 +63,8 @@
         "Stop": "DONE",
         "Interrupt": "WAIT"
       },
-      "turn_end": "Stop"
+      "turn_end": "Stop",
+      "turn_start": "UserPromptSubmit"
     }
   }
 }

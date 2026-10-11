@@ -185,10 +185,16 @@ const HOOK_WAIT: Duration = Duration::from_secs(8);
 ///   `line`  the Stop event on its input; the app's
 ///   `confer_stop` with the turn's last message decides whether the turn is
 ///   held for a line said to the chat (`{"decision":"block","reason":...}`)
+///   `notice`  the start of a turn; what the app changed under the tab since
+///   it last looked, as context for the turn (`crate::notice`)
 fn far_hook(which: &str) -> i32 {
     let mut input = String::new();
     let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input);
     let event: Value = serde_json::from_str(&input).unwrap_or_default();
+    if which == crate::agenthook::NOTICE_ARG {
+        crate::notice::ask_and_print(event.get("hook_event_name").and_then(|e| e.as_str()).unwrap_or("UserPromptSubmit"));
+        return 0;
+    }
     let answer = match which {
         "line" => {
             let said = event.get("last_assistant_message").and_then(|m| m.as_str()).unwrap_or_default().to_string();

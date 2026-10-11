@@ -64,7 +64,8 @@
         "SubagentStart": "up",
         "SubagentStop": "down"
       },
-      "turn_end": "Stop"
+      "turn_end": "Stop",
+      "turn_start": "UserPromptSubmit"
     },
     "verify": "{home}/.claude/projects/*/{id}.jsonl",
     "asks": {

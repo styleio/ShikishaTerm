@@ -5177,6 +5177,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = call.reply.send(Ok(serde_json::json!({"hold": hold})));
                         continue;
                     }
+                    // The start of a turn, from the hook that tells a tab what
+                    // this app changed under it (`main::notice_hook`). Its own
+                    // key calls, so the tab is who is calling. Answered here and
+                    // at once: the CLI waits for it before the turn begins
+                    if call.method == crate::notice::METHOD {
+                        let me = call
+                            .caller
+                            .as_deref()
+                            .and_then(|c| tabs.iter().find(|t| t.called() == c));
+                        let says = me.and_then(|t| {
+                            let (host, at) = crate::uistate::place_of(&t.place()?);
+                            let says = crate::notice::take(t.uid(), &at, host.as_deref())?;
+                            append_hook_log(&format!("notice: {} is told: {says}", crate::orch::glue::tab_id(t)));
+                            Some(says)
+                        });
+                        let _ = call.reply.send(Ok(serde_json::json!({"says": says})));
+                        continue;
+                    }
                     // Saying something to the conference, marking a line, sharing
                     // a card: a tab's own words, so a tab has to be calling
                     if matches!(call.method.as_str(), "say" | "react" | "share") {
@@ -19172,6 +19190,9 @@ fn rename_drawn_branch(settings: &std::path::Path, job: &LabelJob, slug: &str) {
         return;
     }
     append_hook_log(&format!("{} ({})", plan.line(), dir.display()));
+    // The AIs in the folder read the drawn name when they started, and are
+    // told at their next turn that it is gone
+    crate::notice::branch_renamed(&job.folder, &plan.from, &plan.to);
     // The settings hold the branch a folder is on, and no longer a drawn name:
     // this happens once, and the next name written is only a name
     if let Err(why) = config::set_folder_branch_at(settings, &job.desk, &job.folder, &plan.to, None) {

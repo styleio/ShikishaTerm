@@ -402,6 +402,13 @@ pub struct HookSpec {
     /// from its first sentence
     #[serde(default)]
     pub turn_end: Option<String>,
+    /// The event a turn begins at, when the CLI takes what a hook prints
+    /// there as something to know before it answers: `"UserPromptSubmit"`.
+    /// Where it is named, a tab is told there -- once -- what this app
+    /// changed under it since it last looked, such as the name of the branch
+    /// it is on (`agenthook::NOTICE_ARG`). Absent: it is not told
+    #[serde(default)]
+    pub turn_start: Option<String>,
     /// What this CLI counts a hook's patience in. Absent is seconds, which is
     /// what most of them use -- and getting it wrong is not a rounding error:
     /// three seconds written where three milliseconds was meant kills every

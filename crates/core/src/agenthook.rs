@@ -44,6 +44,16 @@ const TIMEOUT_S: u32 = 3;
 /// the chat (`main::hook_mode`, `asktab::Ask::hear_stop`)
 pub const LINE_ARG: &str = "line";
 
+/// What the other hook that answers back is run with: the start of a turn,
+/// where a tab is told what this app changed under it since it last looked
+/// ([`crate::notice`], `main::hook_mode`). Waited for, since what a hook
+/// says is only read when the CLI waits for it -- and answered at once: an app
+/// with nothing to say says so without looking anything up
+pub const NOTICE_ARG: &str = "notice";
+/// Whether the CLI waits for this hook and reads what it prints
+fn answers_back(arg: &str) -> bool {
+    arg == LINE_ARG || arg == NOTICE_ARG
+}
 /// How long a CLI waits for that one, in seconds. It is waited for -- it
 /// decides whether the turn ends -- and the app answers it at once; this is
 /// the most a stuck app can cost a turn
@@ -135,6 +145,9 @@ pub fn targets() -> Vec<Target> {
             if let Some(event) = hook.turn_end.as_ref() {
                 entries.push(Entry { event: event.clone(), arg: LINE_ARG.to_string() });
             }
+            if let Some(event) = hook.turn_start.as_ref() {
+                entries.push(Entry { event: event.clone(), arg: NOTICE_ARG.to_string() });
+            }
             Some(Target {
                 name: p.name.clone(),
                 file: expand(&hook.file),
@@ -224,12 +237,12 @@ fn spaceless(path: &Path) -> Option<String> {
 /// `async` is not a nicety. A hook is a program the CLI runs and waits for,
 /// and these fire on every turn and every permission dialog -- a fifth of a
 /// second of process startup, charged to the person's turn, for a report
-/// nobody is waiting on. The one exception is [`LINE_ARG`]: it answers back,
-/// and a CLI ignores what a hook it did not wait for says. The timeout stays
-/// for the CLIs that still honour one.
+/// nobody is waiting on. The exceptions are [`LINE_ARG`] and [`NOTICE_ARG`]:
+/// they answer back, and a CLI ignores what a hook it did not wait for says.
+/// The timeout stays for the CLIs that still honour one.
 fn handler(format: HookFormat, timeout: u32, arg: &str, program: &Path) -> serde_json::Value {
     let mut h = handler_of(format, timeout, arg, program);
-    if arg == LINE_ARG
+    if answers_back(arg)
         && let Some(o) = h.as_object_mut()
     {
         o.shift_remove("async");
@@ -1189,21 +1202,21 @@ printf '\\033]{FAR_OSC};{FAR_OSC_TAG};%s;%s;%s\\007' '{arg}' \"$(date +%s%3N)\" 
     )
 }
 
-/// The hook that answers back, on another machine: the bridge's own
+/// A hook that answers back, on another machine: the bridge's own
 /// `shikisha` (on the tab's PATH there, `farlink`), which asks the app as the
 /// tab whose key it holds and prints the answer the way the CLI reads it --
 /// `{}` whenever it cannot ask. Waited for, like the one on this PC
-fn far_line_handler(format: HookFormat, timeout: u32) -> serde_json::Value {
+fn far_answering_handler(format: HookFormat, timeout: u32, arg: &str) -> serde_json::Value {
     match format {
         HookFormat::Args => serde_json::json!({
             "type": "command",
             "command": "shikisha",
-            "args": [MARK, LINE_ARG],
+            "args": [MARK, arg],
             "timeout": timeout,
         }),
         HookFormat::Bare | HookFormat::Shell => serde_json::json!({
             "type": "command",
-            "command": format!("shikisha {MARK} {LINE_ARG}"),
+            "command": format!("shikisha {MARK} {arg}"),
             "timeout": timeout,
         }),
     }
@@ -1246,7 +1259,9 @@ fn far_wanted(t: &Target) -> Vec<(String, Vec<serde_json::Value>)> {
     let mut wanted: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
     for entry in &t.entries {
         let h = if entry.arg == LINE_ARG {
-            far_line_handler(t.format, t.line_timeout)
+            far_answering_handler(t.format, t.line_timeout, LINE_ARG)
+        } else if entry.arg == NOTICE_ARG {
+            far_answering_handler(t.format, t.timeout, NOTICE_ARG)
         } else {
             far_handler(t.format, t.timeout, &entry.arg)
         };
@@ -1372,7 +1387,7 @@ pub fn far_preview(t: &Target, existing: Option<&str>) -> Vec<Line> {
 /// with the file each names as the profile wrote it (`{home}/...`), for
 /// placing there
 pub fn far_targets(host: &str) -> Vec<(Target, String)> {
-    // The hook that answers back goes through the bridge, so only onto a
+    // The hooks that answer back go through the bridge, so only onto a
     // machine the bridge was agreed to; anywhere else what a hook says
     // reaches this app one way, as a line on the terminal, and nothing is
     // asked of it that would need an answer
@@ -1383,7 +1398,7 @@ pub fn far_targets(host: &str) -> Vec<(Target, String)> {
             let file = p.resume.as_ref()?.hook.as_ref()?.file.clone();
             let mut t = targets().into_iter().find(|t| t.name == p.name)?;
             if !bridged {
-                t.entries.retain(|e| e.arg != LINE_ARG);
+                t.entries.retain(|e| !answers_back(&e.arg));
             }
             Some((t, file))
         })
@@ -2364,6 +2379,27 @@ mod tests {
         // And taking it out takes out both
         uninstall(&t).unwrap();
         assert_eq!(status(&t), Status::Absent);
+    }
+
+    /// The profiles that name the start of a turn ask for the notice hook
+    /// there, beside the report of being at work -- and the notice is waited
+    /// for, since a CLI reads nothing from a hook it did not wait for. The
+    /// report beside it still is not: it is on every turn, for nobody
+    #[test]
+    fn the_start_of_a_turn_carries_a_notice_that_is_waited_for() {
+        let claude = targets().into_iter().find(|t| t.name == "Claude Code").expect("the Claude profile hooks");
+        assert!(
+            claude.entries.iter().any(|e| e.event == "UserPromptSubmit" && e.arg == NOTICE_ARG),
+            "{:?}",
+            claude.entries
+        );
+        let notice = handler(HookFormat::Args, TIMEOUT_S, NOTICE_ARG, Path::new("shikisha.exe"));
+        assert!(notice.get("async").is_none(), "the notice is not waited for: {notice}");
+        let busy = handler(HookFormat::Args, TIMEOUT_S, "state:BUSY", Path::new("shikisha.exe"));
+        assert_eq!(busy["async"], serde_json::json!(true));
+        let far = far_answering_handler(HookFormat::Bare, TIMEOUT_S, NOTICE_ARG);
+        assert_eq!(far["command"], format!("shikisha {MARK} {NOTICE_ARG}"));
+        assert!(far.get("async").is_none(), "{far}");
     }
 
     /// Each event carries what this app will make of it, in the entry itself.
