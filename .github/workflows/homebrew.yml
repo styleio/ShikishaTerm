@@ -11,7 +11,8 @@ name: Homebrew
 # stay on, and the app updates itself beyond it (auto_updates).
 #
 # Running it by hand (workflow_dispatch) writes the cask for a tag already
-# published, for a tap that missed one
+# published, for a tap that missed one -- and, with or without a Mac build in
+# that tag, checks that the token may still push to the tap
 on:
   release:
     types: [published]
@@ -57,10 +58,13 @@ jobs:
             echo "mac=yes" >> "$GITHUB_OUTPUT"
           fi
 
-      # Without the token, the tap would quietly fall behind the releases.
-      # Nobody notices that until someone installs an old version, so stop here
-      - name: The tap's token
-        if: steps.sums.outputs.mac == 'yes'
+      # Without the token, or with one that may no longer write, the tap would
+      # quietly fall behind the releases. Nobody notices that until someone
+      # installs an old version, so stop here. Cloned rather than checked out:
+      # a tap nothing has been pushed to yet is an empty repository. The dry
+      # push asks the server for the right to write, and writes nothing
+      - name: The tap, with a token that may push to it
+        if: steps.sums.outputs.mac == 'yes' || github.event_name == 'workflow_dispatch'
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -68,13 +72,18 @@ jobs:
             echo "::error::HOMEBREW_TAP_TOKEN is not set: the tap cannot follow $TAG"
             exit 1
           fi
-
-      - uses: actions/checkout@v4
-        if: steps.sums.outputs.mac == 'yes'
-        with:
-          repository: ${{ env.TAP }}
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: tap
+          git clone -q "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP}.git" tap
+          cd tap
+          git config user.name "styleio"
+          git config user.email "51430844+styleio@users.noreply.github.com"
+          git checkout -q -B main
+          # A commit of nothing, on no branch: the clone stays as it came
+          probe=$(git commit-tree "$(git hash-object -t tree /dev/null)" -m probe)
+          if ! git push -q --dry-run origin "$probe:refs/heads/shikisha-probe"; then
+            echo "::error::HOMEBREW_TAP_TOKEN may not push to $TAP"
+            exit 1
+          fi
+          echo "the token may push to $TAP"
 
       # Read by Homebrew's own rules before it goes anywhere: a cask the tap
       # holds and Homebrew refuses breaks the install for everyone
@@ -90,12 +99,10 @@ jobs:
         if: steps.sums.outputs.mac == 'yes'
         run: |
           cd tap
-          git config user.name "styleio"
-          git config user.email "51430844+styleio@users.noreply.github.com"
           git add Casks/shikisha-term.rb
           if git diff --cached --quiet; then
             echo "The tap already has $TAG"
             exit 0
           fi
           git commit -m "shikisha-term ${TAG#v}"
-          git push origin HEAD
+          git push origin HEAD:main
