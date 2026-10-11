@@ -484,7 +484,7 @@
   "tui.sound.title": "ページの音がスマホに届いていません",
   "tui.sound.mac_refused": "この Mac では、SHIKISHA-TERM がページの音を録音することが許可されていません。［システム設定］>［プライバシーとセキュリティ］>［画面収録とシステムオーディオ録音］の「システムオーディオ録音のみ」で、SHIKISHA-TERM をオンにしてください。",
   "tui.sound.mac_asking": "Mac の画面に、SHIKISHA-TERM がページの音を録音してよいかの確認が出ています。Mac で「許可」を選んでください。",
-  "tui.sound.failed": "ページの音を送れません: {why}",
+  "tui.sound.failed": "ページの音を取り出せませんでした。スピーカーをもう一度押して、やり直してください。（理由: {why}）",
   "tui.sound.settings": "システム設定を開く",
   "tui.sound.close": "閉じる",
   "tui.cast.waiting": "画面を受け取っています…",

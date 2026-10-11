@@ -7801,15 +7801,20 @@ function drawCoach() {
   if (t.textContent !== text) t.textContent = text;
   box.hidden = false;
   // To the right of what it points at, and below it when there is no room
+  // -- or when the notices at the top of the pane are up: beside the list
+  // it stands over the first lines of them, which are the ones to read
   const r = anchor.getBoundingClientRect();
   const w = box.getBoundingClientRect().width || 240;
-  if (r.right + 8 + w <= window.innerWidth) {
+  const notices = ["crashbar", "soundbar"].map(id => document.getElementById(id))
+    .filter(b => b && !b.hidden)
+    .reduce((low, b) => Math.max(low, b.getBoundingClientRect().bottom), 0);
+  if (r.right + 8 + w <= window.innerWidth && Math.max(4, r.top - 8) >= notices) {
     box.style.left = (r.right + 8) + "px";
     box.style.top = Math.max(4, r.top - 8) + "px";
     box.classList.remove("below");
   } else {
     box.style.left = Math.max(4, Math.min(r.left, window.innerWidth - w - 8)) + "px";
-    box.style.top = (r.bottom + 8) + "px";
+    box.style.top = Math.max(r.bottom + 8, notices ? notices + 8 : 0) + "px";
     box.classList.add("below");
   }
 }
@@ -13772,6 +13777,9 @@ function layout() {
   main.style.setProperty("--navh", (crashh + navbar + (!sk || sk.hidden ? 0 : 36)) + "px");
   // ...and the bar asking the person something, out of the bottom
   main.style.setProperty("--askh", a.hidden ? "0px" : "44px");
+  // The bubble for the first steps keeps out from under the notices, which
+  // come, go and change height between the board's redraws
+  drawCoach();
   report();
 }
 

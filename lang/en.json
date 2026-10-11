@@ -484,7 +484,7 @@
   "tui.sound.title": "The page's sound isn't reaching the phone",
   "tui.sound.mac_refused": "This Mac doesn't let SHIKISHA-TERM record the sound of the page. In System Settings > Privacy & Security > Screen & System Audio Recording, turn SHIKISHA-TERM on under “System Audio Recording Only”.",
   "tui.sound.mac_asking": "This Mac is asking whether SHIKISHA-TERM may record the sound of the page. Choose Allow on the Mac's screen.",
-  "tui.sound.failed": "The sound of the page can't be sent: {why}",
+  "tui.sound.failed": "The page's sound couldn't be taken. Press the speaker again to try once more. (Reason: {why})",
   "tui.sound.settings": "Open System Settings",
   "tui.sound.close": "Close",
   "tui.cast.waiting": "Waiting for the screen…",
