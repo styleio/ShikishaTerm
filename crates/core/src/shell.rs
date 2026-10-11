@@ -1638,7 +1638,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     cursor:pointer; user-select:none; -webkit-user-select:none;
     touch-action:manipulation; }
   #castear.on { color:var(--brand); border-color:var(--brand); }
+  #castear.cannot { color:var(--warn); border-color:var(--warn); }
   #castear[hidden] { display:none; }
+  /* Why the sound is not coming, under the speaker, while that is so */
+  #castearsay { position:absolute; right:calc(var(--fr) + 10px);
+    top:calc(var(--fy) + var(--navh) + 90px); z-index:9; max-width:min(320px, 70%);
+    padding:8px 11px; border-radius:var(--r-ctl); border:1px solid var(--warn);
+    background:color-mix(in srgb, var(--panel) 90%, transparent); color:var(--text);
+    font-size:12.5px; line-height:1.5; }
+  #castearsay[hidden] { display:none; }
   /* Said in the picture's own rectangle while there is no picture yet. The
      frame arrives long before the screen does -- the bar, the tabs and this
      empty black box -- and on a phone that gap was three seconds of a page
@@ -2975,14 +2983,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      reopened the app and is looking at their work, not at INDEX. It waits
      until it is read -- there is no second chance to tell somebody why their
      terminal disappeared */
-  #crashbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:25;
+  #crashbar, #soundbar { position:absolute; left:var(--fx); right:var(--fr); top:var(--fy); z-index:25;
     display:flex; align-items:flex-start; gap:var(--s3); flex-wrap:wrap;
     padding:11px 16px; background:linear-gradient(180deg,var(--tint),var(--panel));
     border-bottom:2px solid var(--danger); box-shadow:0 8px 22px rgba(0,0,0,.55); }
-  #crashbar[hidden] { display:none; }
-  #crashbar .cb-ico { font-size:16px; flex:none; line-height:1.5; }
-  #crashbar .cb-text { flex:1 1 220px; min-width:0; }
-  #crashbar .cb-title { font-weight:700; color:var(--text); font-size:13px; }
+  #crashbar[hidden], #soundbar[hidden] { display:none; }
+  /* The notice that the page's sound is not reaching the phone: drawn like
+     the one above, under it when both are up, and amber rather than red --
+     nothing was lost, something has to be allowed */
+  #soundbar { top:calc(var(--fy) + var(--crash1, 0px)); border-bottom-color:var(--warn); z-index:24; }
+  #soundbar .cb-say { color:var(--text); font-size:13px; margin-top:3px; line-height:1.5; }
+  #crashbar .cb-ico, #soundbar .cb-ico { font-size:16px; flex:none; line-height:1.5; }
+  #crashbar .cb-text, #soundbar .cb-text { flex:1 1 220px; min-width:0; }
+  #crashbar .cb-title, #soundbar .cb-title { font-weight:700; color:var(--text); font-size:13px; }
   #crashbar .cb-code { color:var(--dim); font-size:12px; font-family:var(--mono); margin-top:2px; }
   /* Whether the work came back. The good case is said in the ordinary text
      colour rather than a cheerful one: it is a fact, not a congratulation */
@@ -2994,12 +3007,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     color:var(--text); font-size:13px; line-height:1.55; white-space:pre-wrap;
     max-height:38vh; overflow:auto; }
   #crashbar .cb-sends { flex:1 1 100%; color:var(--dim); font-size:12px; margin-top:-2px; }
-  #crashbar .cb-actions { flex:none; margin-left:auto; display:flex; gap:8px; }
-  #crashbar button { flex:none; padding:8px 16px; border-radius:var(--r-ctl); border:0;
+  #crashbar .cb-actions, #soundbar .cb-actions { flex:none; margin-left:auto; display:flex; gap:8px; }
+  #crashbar button, #soundbar button { flex:none; padding:8px 16px; border-radius:var(--r-ctl); border:0;
     font:inherit; font-weight:700; cursor:pointer; font-size:13px; }
-  #crashbar .cb-ask { background:var(--brand); color:#04121c; }
+  #crashbar .cb-ask, #soundbar .cb-ask { background:var(--brand); color:#04121c; }
   #crashbar .cb-ask[disabled] { opacity:.6; cursor:default; }
-  #crashbar .cb-close { background:transparent; color:var(--muted); }
+  #crashbar .cb-close, #soundbar .cb-close { background:transparent; color:var(--muted); }
   /* Claude-style "thinking" bubble floated over the conversation while a reply
      generates — bouncing dots + a bubble that breathes, so the wait feels alive.
      Sits just above the chat input, bottom-left like a chat app. */
@@ -4561,6 +4574,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="castway" hidden></div>
     <div id="castwait" hidden><div class="spin"></div><span></span></div>
     <button id="castear" hidden type="button"></button>
+    <div id="castearsay" hidden></div>
     <canvas id="cast" hidden></canvas>
     <!-- And, in the same place, what is said instead when the page being
          looked at is drawn on the device of whoever opened it: there is no
@@ -4574,6 +4588,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="back" hidden></div>
     {{TOAST_HTML}}
     <div id="crashbar" hidden></div>
+    <div id="soundbar" hidden></div>
     <div id="thinking" hidden></div>
     <div id="pageui">
       <button id="readOpen" class="pagebtn" aria-label="read">&#128214;</button>
@@ -5073,6 +5088,72 @@ function drawCrashBar() {
     x.why ? el("div", {class:"cb-why"}, x.why) : null,
   ].filter(Boolean));
   bar.hidden = false;
+}
+
+// Why the sound of the page being watched is not reaching the phone
+// (S.sound_trouble). Said in two places, each where its person is looking:
+// beside the speaker on the phone, and as a notice on this PC's board -- on a
+// Mac with the button that opens the setting it is about. What a Mac's
+// settings refused, only they can allow
+const soundSay = t => t.kind === "mac_refused" ? (T["tui.sound.mac_refused"] || "")
+  : t.kind === "mac_asking" ? (T["tui.sound.mac_asking"] || "")
+  : (T["tui.sound.failed"] || "{why}").split("{why}").join(t.why || "");
+let soundSig = null, soundClosed = null;
+function drawSoundTrouble() {
+  const t = (S && S.sound_trouble) || null;
+  const sig = t ? t.kind + "|" + (t.why || "") : null;
+  // The phone: the speaker goes back to off when nothing can come out of it,
+  // and says why under it. A question still on the Mac's screen leaves it on:
+  // the sound starts as soon as it is answered
+  if (t && t.kind !== "mac_asking" && earOn) {
+    earOn = false;
+    const v = document.getElementById("castv");
+    if (v) v.muted = true;
+  }
+  const ear = document.getElementById("castear");
+  const heard = !!(ear && !ear.hidden);
+  if (heard) castEar(true);
+  const say = document.getElementById("castearsay");
+  if (say) {
+    say.hidden = !(t && heard);
+    if (t) say.textContent = soundSay(t);
+  }
+  // This PC's board. Put away by its own button until something else is said
+  const bar = document.getElementById("soundbar");
+  if (!bar) return;
+  if (!bar.dataset.watched && window.ResizeObserver) {
+    bar.dataset.watched = "1";
+    new ResizeObserver(() => layout()).observe(bar);
+  }
+  const was = bar.hidden;
+  if (!t || REMOTE || soundClosed === sig) {
+    bar.hidden = true;
+    if (!t) soundClosed = null;
+    soundSig = null;
+    if (!was) layout();
+    return;
+  }
+  if (soundSig === sig) { bar.hidden = false; if (was) layout(); return; }
+  soundSig = sig;
+  bar.textContent = "";
+  const onMac = window.__shikisha_frame === "mac";
+  bar.append(...[
+    el("span", {class:"cb-ico"}, "\u{1F507}"),
+    el("div", {class:"cb-text"},
+      el("div", {class:"cb-title"}, T["tui.sound.title"] || ""),
+      el("div", {class:"cb-say"}, soundSay(t))),
+    el("span", {class:"cb-actions"},
+      (onMac && t.kind === "mac_refused")
+        ? el("button", {class:"cb-ask", onclick: () => send({kind:"soundsettings"})}, T["tui.sound.settings"] || "")
+        : null,
+      el("button", {class:"cb-close", onclick: () => {
+        soundClosed = sig;
+        bar.hidden = true;
+        layout();
+      }}, T["tui.sound.close"] || "Close")),
+  ].filter(Boolean));
+  bar.hidden = false;
+  if (was) layout();
 }
 
 // Over a page in this window, the toast is the page's to draw. A page here
@@ -13679,8 +13760,13 @@ function layout() {
   // up: it stands at the top of the pane, and a browser's bar, its search row
   // and the page itself start below it. Drawn over them it hid the very
   // controls a person reaches for, and a page cannot be drawn over at all
-  const cb = document.getElementById("crashbar");
-  const crashh = (!cb || cb.hidden) ? 0 : Math.ceil(cb.getBoundingClientRect().height);
+  // The notice that the page's sound is not reaching the phone stands under
+  // it, and the two together are what everything is moved down by
+  const tall = id => { const b = document.getElementById(id);
+    return (!b || b.hidden) ? 0 : Math.ceil(b.getBoundingClientRect().height); };
+  const crash1 = tall("crashbar");
+  const crashh = crash1 + tall("soundbar");
+  main.style.setProperty("--crash1", crash1 + "px");
   main.style.setProperty("--crashh", crashh + "px");
   main.style.setProperty("--seekat", (crashh + navbar) + "px");
   main.style.setProperty("--navh", (crashh + navbar + (!sk || sk.hidden ? 0 : 36)) + "px");
@@ -14020,6 +14106,7 @@ window.__state = function (json) {
   drawBrowse();
   drawPushBar();
   drawCrashBar();
+  drawSoundTrouble();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
   const away = !screen.hidden && S.scrolled > 0;
@@ -20121,11 +20208,19 @@ function castEar(show) {
   const el = document.getElementById("castear");
   if (!el) return;
   el.hidden = !show;
-  if (!show) return;
+  if (!show) {
+    const say = document.getElementById("castearsay");
+    if (say) say.hidden = true;
+    return;
+  }
+  // Off because it cannot be, said as that rather than as a choice
+  const cannot = !earOn && !!(S && S.sound_trouble && S.sound_trouble.kind !== "mac_asking");
   el.textContent = earOn ? "\u{1F50A}" : "\u{1F507}";
   el.classList.toggle("on", earOn);
+  el.classList.toggle("cannot", cannot);
   el.title = earOn
     ? (T["tui.cast.sound.on"] || "Sound on")
+    : cannot ? (T["tui.cast.sound.cannot"] || "")
     : (T["tui.cast.sound.off"] || "Sound off");
   el.setAttribute("aria-label", el.title);
 }

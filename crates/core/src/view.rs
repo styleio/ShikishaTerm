@@ -642,6 +642,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         key_changes: ui.key_changes.clone(),
         notice_asks: ui.notice_asks.clone(),
         board_finds: ui.board_finds,
+        sound_trouble: ui.sound_trouble.clone(),
         bridge_offer: ui.bridge_offer.clone(),
         login_step: ui.login_step.clone(),
         machine_ais: ui.machine_ais.clone(),
@@ -1913,6 +1914,8 @@ pub struct Ui {
     /// The browser drawing the pages has no search box of its own: every
     /// browser tab is searched with the board's row
     pub board_finds: bool,
+    /// Why the watched page's sound is not reaching the far end
+    pub sound_trouble: Option<crate::vaudio::Trouble>,
     /// A machine to ask about the SHIKISHA bridge, once
     pub bridge_offer: Option<crate::uistate::BridgeOffer>,
     /// The sign-in step of a project just cloned onto a MicroVM, while open

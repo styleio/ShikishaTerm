@@ -503,6 +503,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // to /api/attach. These intents would open those on this PC, in front
         // of nobody
         Ev::OpenSettings { .. }
+        | Ev::SoundSettings
         | Ev::CloseSettings
         | Ev::SettingsFull
         | Ev::Help
@@ -4622,7 +4623,7 @@ mod tests {
             // This PC's window, tray and keys
             "CloseRequested", "CloseFront", "Closed", "TrayOpen", "TrayQuit", "Summon",
             // The phone has a door of its own
-            "OpenSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach",
+            "OpenSettings", "SoundSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach",
             // Meaningless on a phone
             "Thanks", "RemoteCut", "Setup", "SetupRefresh",
             // Refused before this list was kept, each with its reason beside it

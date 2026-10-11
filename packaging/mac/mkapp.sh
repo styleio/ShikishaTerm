@@ -200,9 +200,16 @@ plist_main > "$CONTENTS/Info.plist"
 plutil -lint -s "$CONTENTS/Info.plist"
 for l in $LANGS; do
     mkdir -p "$CONTENTS/Resources/$l.lproj"
-    for k in $ASKS; do
-        printf '"%s" = "%s";\n' "$k" "$(said "$l" "$k" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-    done > "$CONTENTS/Resources/$l.lproj/InfoPlist.strings"
+    {
+        # The app's name, in every language the same, beside the reasons as
+        # a Mac's own apps have it. Once, with reasons and no name here, the
+        # system asked in the name of the bundle's file instead
+        # ("SHIKISHA-TERM.app.bundle")
+        printf '"CFBundleDisplayName" = "%s";\n"CFBundleName" = "%s";\n' "$NAME" "$NAME"
+        for k in $ASKS; do
+            printf '"%s" = "%s";\n' "$k" "$(said "$l" "$k" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        done
+    } > "$CONTENTS/Resources/$l.lproj/InfoPlist.strings"
     plutil -lint -s "$CONTENTS/Resources/$l.lproj/InfoPlist.strings"
 done
 printf 'APPL????' > "$CONTENTS/PkgInfo"

@@ -906,6 +906,7 @@ impl WinSurface {
                 Ev::Words { on, goal, agree } => self.mail.words.push((on, goal, agree)),
                 // The notice about a run that ended badly
                 Ev::WhyStopped { ask } => self.mail.why_stopped.push(ask),
+                Ev::SoundSettings => self.mail.sound_settings = true,
                 // A message for the page in view to draw; the loop knows which
                 Ev::PageToast { text, warn } => self.mail.page_toasts.push((text, warn)),
                 // ✨ suggestion request; the loop owns the assistant AI call.

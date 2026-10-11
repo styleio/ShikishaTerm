@@ -34,6 +34,75 @@ pub fn available() -> bool {
     cfg!(windows) || cfg!(target_os = "macos")
 }
 
+/// Why the page's sound is not reaching the one who asked for it, while that
+/// is so. Said beside the speaker on the far end and on the board here: a
+/// speaker that says it is on and plays nothing is a fault nobody can find
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Trouble {
+    /// This Mac's privacy settings do not let the app record what the page
+    /// plays. The person changes that in System Settings, and nowhere else
+    MacRefused,
+    /// This Mac is asking the person, on its own screen, whether it may.
+    /// Until it is answered nothing is heard
+    MacAsking,
+    /// Anything else, as it was said
+    Failed { why: String },
+}
+
+/// Where a Mac lets an app record what other apps play: Privacy & Security,
+/// Screen & System Audio Recording
+pub const MAC_SETTINGS: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
+
+static TROUBLE: std::sync::Mutex<Option<Trouble>> = std::sync::Mutex::new(None);
+
+/// What stands between the page's sound and the far end now, if anything
+pub fn trouble() -> Option<Trouble> {
+    TROUBLE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn say_trouble(now: Option<Trouble>) {
+    let mut held = TROUBLE.lock().unwrap_or_else(|e| e.into_inner());
+    if *held != now {
+        match &now {
+            Some(t) => crate::append_hook_log(&format!("the page's sound is not reaching the viewer: {t:?}")),
+            None if held.is_some() => crate::append_hook_log("the page's sound is reaching the viewer again"),
+            None => {}
+        }
+        *held = now;
+    }
+}
+
+/// The question on a Mac's screen was answered, one way or the other
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn answered() {
+    let mut held = TROUBLE.lock().unwrap_or_else(|e| e.into_inner());
+    if *held == Some(Trouble::MacAsking) {
+        *held = None;
+    }
+}
+
+/// A Mac's settings said no. A failure of its own kind, so that it is told
+/// apart from every other on the way up
+#[derive(Debug)]
+pub struct Refused;
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("this Mac's privacy settings do not let SHIKISHA-TERM record the sound of the page")
+    }
+}
+
+impl std::error::Error for Refused {}
+
+fn trouble_of(e: &anyhow::Error) -> Trouble {
+    if e.downcast_ref::<Refused>().is_some() {
+        Trouble::MacRefused
+    } else {
+        Trouble::Failed { why: format!("{e:#}") }
+    }
+}
+
 /// Start listening to what a process and its children are playing.
 ///
 /// The process is the browser the page lives in, not this program: a page is
@@ -460,9 +529,79 @@ mod mac_tap {
         })
     }
 
+    /// What this Mac's privacy settings say about the app recording what
+    /// other apps play
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Permission {
+        Allowed,
+        Refused,
+        /// Not answered yet. The system asks the person the first time a tap
+        /// is made, and a tap made before the answer hears nothing
+        Unanswered,
+    }
+
+    /// A call of TCC's, the part of the system that keeps those settings.
+    /// Its calls are not public, so they are looked up while running; a Mac
+    /// without them answers nothing, and the sound is tried as before --
+    /// heard if allowed, silence if not, and no word of why
+    fn tcc(name: &CStr) -> Option<*mut c_void> {
+        static LIB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let lib = *LIB.get_or_init(|| unsafe {
+            libc::dlopen(c"/System/Library/PrivateFrameworks/TCC.framework/TCC".as_ptr(), libc::RTLD_LAZY) as usize
+        });
+        if lib == 0 {
+            return None;
+        }
+        let found = unsafe { libc::dlsym(lib as *mut c_void, name.as_ptr()) };
+        (!found.is_null()).then_some(found)
+    }
+
+    /// The service that is recording what other apps play
+    const AUDIO_CAPTURE: &str = "kTCCServiceAudioCapture";
+
+    fn permission() -> Option<Permission> {
+        type Preflight = unsafe extern "C" fn(*const c_void, *const c_void) -> i32;
+        let call: Preflight = unsafe { std::mem::transmute(tcc(c"TCCAccessPreflight")?) };
+        autoreleasepool(|_| {
+            let service = ns_string(AUDIO_CAPTURE)?;
+            match unsafe { call(Retained::as_ptr(&service).cast(), std::ptr::null()) } {
+                0 => Some(Permission::Allowed),
+                1 => Some(Permission::Refused),
+                2 => Some(Permission::Unanswered),
+                _ => None,
+            }
+        })
+    }
+
+    /// The person's answer, once there is one
+    type Answer = Arc<Mutex<Option<bool>>>;
+
+    /// Ask the person, through the system's own question, and do not wait
+    /// for them. Asked here rather than left to making the tap: the tap's
+    /// call waits for the answer itself, and while it waits nothing can say
+    /// that a question is on the screen
+    fn request() -> Option<Answer> {
+        type Request = unsafe extern "C" fn(*const c_void, *const c_void, &block2::DynBlock<dyn Fn(Bool)>);
+        let call: Request = unsafe { std::mem::transmute(tcc(c"TCCAccessRequest")?) };
+        let answer: Answer = Arc::new(Mutex::new(None));
+        let to = Arc::clone(&answer);
+        let told = block2::RcBlock::new(move |granted: Bool| {
+            *to.lock().unwrap_or_else(|e| e.into_inner()) = Some(granted.as_bool());
+        });
+        autoreleasepool(|_| {
+            let service = ns_string(AUDIO_CAPTURE)?;
+            unsafe { call(Retained::as_ptr(&service).cast(), std::ptr::null(), &told) };
+            Some(())
+        })?;
+        Some(answer)
+    }
+
     /// The page's sound, as it plays
     pub struct Tapped {
         pid: u32,
+        /// The question on the screen, while it is waiting to be answered:
+        /// no tap is made until it is
+        asking: Option<Answer>,
         tap: Option<(Tap, StreamDescription, Heard)>,
         /// Which processes the tap is over, and when that was last looked at:
         /// a page that starts playing later does so from a process the tap was
@@ -479,13 +618,35 @@ mod mac_tap {
         if look_up::<CreateTap>(c"AudioHardwareCreateProcessTap").is_none() {
             bail!("this Mac cannot record one program's sound: it needs macOS 14.2 or later");
         }
-        Ok(Tapped { pid, tap: None, over: Vec::new(), looked: None, fit: super::Fit::default() })
+        let asking = match permission() {
+            Some(Permission::Refused) => return Err(super::Refused.into()),
+            Some(Permission::Unanswered) => request(),
+            _ => None,
+        };
+        if asking.is_some() {
+            super::say_trouble(Some(super::Trouble::MacAsking));
+        }
+        Ok(Tapped { pid, asking, tap: None, over: Vec::new(), looked: None, fit: super::Fit::default() })
     }
 
     impl super::Ears for Tapped {
         fn take(&mut self) -> Result<Samples> {
             if self.looked.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1)) {
                 self.looked = Some(std::time::Instant::now());
+                if let Some(asking) = &self.asking {
+                    match *asking.lock().unwrap_or_else(|e| e.into_inner()) {
+                        Some(false) => return Err(super::Refused.into()),
+                        Some(true) => {}
+                        // Nothing is heard until it is answered
+                        None => return Ok(Vec::new()),
+                    }
+                    self.asking = None;
+                    super::answered();
+                }
+                // Changed in System Settings while this was listening
+                if permission() == Some(Permission::Refused) {
+                    return Err(super::Refused.into());
+                }
                 let now = players(self.pid);
                 if now != self.over {
                     self.tap = None;
@@ -812,11 +973,15 @@ pub fn pour(pid: u32, mouth: crate::webrtc::Mouth, wanted: std::sync::Arc<std::s
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 // The viewer may have gone while nobody was listening
                 if !mouth.alive() {
+                    say_trouble(None);
                     return;
                 }
                 continue;
             }
             if ears.is_none() {
+                // A new try: what the last one ran into is not this one's
+                // to say, and a Mac asking the person says so as it opens
+                say_trouble(None);
                 match listen(pid) {
                     Ok(e) => {
                         ears = Some(e);
@@ -825,6 +990,8 @@ pub fn pour(pid: u32, mouth: crate::webrtc::Mouth, wanted: std::sync::Arc<std::s
                     }
                     Err(e) => {
                         crate::append_hook_log(&format!("the page's sound cannot be taken: {e:#}"));
+                        // Said to the far end, whose speaker goes back to off
+                        say_trouble(Some(trouble_of(&e)));
                         wanted.store(false, Ordering::Relaxed);
                         continue;
                     }
@@ -836,6 +1003,8 @@ pub fn pour(pid: u32, mouth: crate::webrtc::Mouth, wanted: std::sync::Arc<std::s
                 Ok(got) => got,
                 Err(why) => {
                     crate::append_hook_log(&format!("the page's sound stopped: {why:#}"));
+                    say_trouble(Some(trouble_of(&why)));
+                    wanted.store(false, Ordering::Relaxed);
                     return;
                 }
             };
@@ -862,6 +1031,22 @@ pub fn pour(pid: u32, mouth: crate::webrtc::Mouth, wanted: std::sync::Arc<std::s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Mac's refusal is told apart from any other failure, however far up
+    /// it travelled, and the far end reads which one by its kind
+    #[test]
+    fn a_refusal_is_said_as_one() {
+        let refused = anyhow::Error::from(Refused).context("the page's sound stopped");
+        assert_eq!(trouble_of(&refused), Trouble::MacRefused);
+        let other = anyhow::anyhow!("the device went away");
+        assert_eq!(trouble_of(&other), Trouble::Failed { why: "the device went away".into() });
+        assert_eq!(serde_json::to_value(Trouble::MacRefused).unwrap(), serde_json::json!({"kind": "mac_refused"}));
+        assert_eq!(serde_json::to_value(Trouble::MacAsking).unwrap(), serde_json::json!({"kind": "mac_asking"}));
+        assert_eq!(
+            serde_json::to_value(Trouble::Failed { why: "x".into() }).unwrap(),
+            serde_json::json!({"kind": "failed", "why": "x"})
+        );
+    }
 
     /// A frame is twenty milliseconds of two channels at 48kHz, which is what
     /// the far end is expecting and not something to be worked out twice.

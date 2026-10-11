@@ -6702,6 +6702,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             key_changes: crate::ssh::key_changes(),
             notice_asks: crate::pagenotice::asking(),
             board_finds: !shell.pages_find_themselves(),
+            sound_trouble: crate::vaudio::trouble(),
             bridge_offer: cfg.as_ref().and_then(|c| bridge_offer(c, tabs.iter().filter_map(|t| t.host()))),
             login_step: login_view.clone(),
             machine_ais: machine_ais.clone(),
@@ -9904,6 +9905,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Explaining it means reading a system log and asking an AI, neither
         // of which belongs on the loop that draws, so it happens on a thread
         // and the answer arrives through the same door as everything else
+        // "Open System Settings" on the notice about the page's sound: the
+        // place a Mac lets this app record it. Only a Mac's board offers it
+        if std::mem::take(&mut shell.mail().sound_settings) && cfg!(target_os = "macos") {
+            let _ = crate::webui::opened_external(crate::vaudio::MAC_SETTINGS);
+        }
+
         for ask in shell.mail().take_why_stopped() {
             if !ask {
                 crate::lastexit::dismiss();

@@ -188,9 +188,11 @@ const listen = async (secs) => {
   const before = await says(SOUND_STATS);
   await sleep(secs * 1000);
   const after = await says(SOUND_STATS);
-  if (typeof before !== 'string' || !before.startsWith('{')) return before;
   if (typeof after !== 'string' || !after.startsWith('{')) return after;
-  const a = JSON.parse(before), b = JSON.parse(after);
+  // No line yet when the half began is a line that had carried nothing: it
+  // starts to once the person on the Mac has said yes
+  const a = typeof before === 'string' && before.startsWith('{') ? JSON.parse(before) : { packets: 0, seconds: 0, energy: 0 };
+  const b = JSON.parse(after);
   return JSON.stringify({
     packets: b.packets - a.packets,
     seconds: +(b.seconds - a.seconds).toFixed(2),
@@ -199,14 +201,22 @@ const listen = async (secs) => {
   });
 };
 
+// What the phone says about the sound, besides playing it: the speaker, and
+// the line under it when the sound cannot come
+const SAYS = `JSON.stringify({ trouble: (S && S.sound_trouble) || null,
+  speaker: (document.getElementById('castear') || {}).title || '',
+  line: (() => { const l = document.getElementById('castearsay'); return l && !l.hidden ? l.textContent : ''; })() })`;
+
 console.log('\nwith the page playing a tone:');
 console.log(' ', await listen(Math.round(SECONDS / 2)));
+console.log('  the phone says', await says(SAYS));
 
 console.log('\nwith the page silent (and another program playing the same tone):');
 level = 0;
 const other = otherPlayer();
 await sleep(3000);
 console.log(' ', await listen(Math.round(SECONDS / 2)));
+console.log('  the phone says', await says(SAYS));
 
 // What the copy itself said about the sound
 try {

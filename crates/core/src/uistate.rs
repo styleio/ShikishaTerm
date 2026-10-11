@@ -2517,6 +2517,10 @@ pub struct UiState {
     /// row, not only one whose controls offer it
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub board_finds: bool,
+    /// Why the sound of the page being watched is not reaching the far end,
+    /// while that is so: said beside its speaker and on the board here
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_trouble: Option<crate::vaudio::Trouble>,
     /// A machine to ask about the SHIKISHA bridge, once
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bridge_offer: Option<BridgeOffer>,

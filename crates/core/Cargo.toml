@@ -157,6 +157,8 @@ arboard = { workspace = true }
 png = { workspace = true }
 # A Mac's process tap (vaudio.rs) is described by an Objective-C object
 objc2 = "0.6.4"
+# ...and the system's answer to asking whether it may be made comes to a block
+block2 = "0.6.2"
 
 # What only exists on Windows. Everything above this line builds anywhere,
 # which is the whole point of the runtime being its own crate.
