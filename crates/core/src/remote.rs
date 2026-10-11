@@ -1556,11 +1556,14 @@ impl RemoteUi {
                     let _ = req.respond(Response::from_string("forbidden origin").with_status_code(403));
                     return;
                 }
+                // Which door it was, so that a failure can be found again. The
+                // path only: what follows the question mark is the token
+                let door = req.url().split('?').next().unwrap_or("").to_string();
                 if let Err(e) = handle(
                     req, &token, &snapshot, &tx, &clients, &casting, &pipes, &page_line,
                     &pages_open, &states, &polls, &kf, &sf, &settings, &gate, &book, sticky,
                 ) {
-                    crate::append_hook_log(&crate::i18n::tp("err.remote.hook_log", &[("e", &e.to_string())]));
+                    crate::append_hook_log(&crate::i18n::tp("err.remote.hook_log", &[("e", &format!("{door}: {e}"))]));
                 }
             });
             std::thread::spawn(move || {
