@@ -1408,11 +1408,16 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .swatches i.any { background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red); }
   .swatches input { position:absolute; width:0; height:0; opacity:0; }
 
-  /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible) */
-  #hamburger { display:none; position:fixed; top:6px; left:6px; z-index:40;
+  /* Hamburger and scrim. Not shown on wide screens (sidebar stays visible).
+     The right panel has the same handle at the other corner: one shape for
+     the two drawers, so a thumb that knows one knows the other */
+  #hamburger, #sidebtn { display:none; position:fixed; top:6px; z-index:40;
     width:34px; height:30px; align-items:center; justify-content:center;
     background:var(--panel); border:1px solid var(--line); border-radius:var(--r-ctl);
     color:var(--text); font-size:16px; cursor:pointer; }
+  #hamburger { left:6px; }
+  #sidebtn { right:6px; }
+  #sidebtn.on { background:var(--raise); }
   #backdrop { display:none; }
 
   /* ── Content area ───────────────────────── */
@@ -4344,7 +4349,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .rturn th { background:var(--panel); font-weight:700; white-space:nowrap; }
   /* The drawer handle is fixed to the top-left corner and would sit on top of
      the reader's own heading. While reading there is no board to reach for */
-  body.reading #hamburger { display:none; }
+  body.reading #hamburger, body.reading #sidebtn { display:none; }
   /* The way back into the past, at the head of the document — which is where
      the conversation carries on upward. Full width so a thumb cannot miss it,
      and quiet, because it is not the thing you came here to read */
@@ -4388,6 +4393,15 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       border-top:none; border-bottom:1px solid var(--line); }
     /* ☰ sits on the left of the top bar (centered at the bar's height) */
     #hamburger { display:flex; top:calc(6px + env(safe-area-inset-top)); left:8px; }
+    /* ◨ mirrors it on the right. STOP is the bar's last control, so the
+       bar keeps a wider margin on this side than on the other: a thumb
+       reaching for the panel must not land on STOP, and one reaching for
+       STOP must not open the panel. A rule between them says they are two
+       things, not a pair */
+    #status { padding-right:calc(42px + var(--s4)); }
+    #sidebtn { display:flex; top:calc(6px + env(safe-area-inset-top)); right:8px; }
+    #sidebtn::before { content:""; position:absolute; top:4px; bottom:4px;
+      left:calc(-1 * var(--s2) - 1px); width:1px; background:var(--line); }
     /* Save width on the emergency stop by showing just a red ■ (a universal stop symbol) */
     #stop { font-size:0; padding:2px 9px; }
     #stop::after { content:"\25A0"; font-size:13px; }
@@ -4437,13 +4451,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
        STOP is the one control that must never be behind something */
     #side { position:fixed; top:calc(42px + env(safe-area-inset-top));
       right:0; bottom:0; left:0; z-index:29; width:auto; border-left:none; }
-    /* Its edge is the way back to it once a file has taken the screen. Wider
-       than the window's, because a finger is not a pointer, and it wears a
-       mark so it is not an invisible control */
-    #sidegrip { right:0; width:18px; cursor:default; }
-    #sidegrip::after { content:""; position:absolute; top:50%; right:5px;
-      width:4px; height:40px; margin-top:-20px; border-radius:999px;
-      background:var(--line); }
+    /* No edge to take hold of: the column is a sheet here, not a width,
+       and ◨ in the top bar is the way to it. An edge strip down the whole
+       right side sat over the end of the row of tabs, where the list of
+       closed tabs is, and took presses meant for it */
+    #sidegrip { display:none; }
+    /* The list of closed tabs goes beside +, the other way to a tab, rather
+       than out in the corner where ◨ is */
+    #strip .sclosed { margin-left:0; }
 
     /* Body content sits below the top bar now, so it no longer needs margin for ☰ */
     #board { padding:16px 12px; }
@@ -4496,6 +4511,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="titlebar"></div>
   <div id="splash"><div class="logo">SHIKISHA-TERM</div><div class="spin"></div><div class="msg"></div></div>
   <div id="hamburger">&#9776;</div>
+  <div id="sidebtn">&#9704;</div>
   <div id="backdrop"></div>
   <nav id="tabs"></nav>
   <!-- The tab bar's edge, as something you can take hold of -->
@@ -5227,6 +5243,13 @@ addEventListener("blur", release);
   const ham = document.getElementById("hamburger");
   const bd = document.getElementById("backdrop");
   if (ham) ham.onclick = () => app.classList.toggle("drawer");
+  // The right panel's handle. One drawer at a time: the left one would sit
+  // over the panel this opens
+  const sb = document.getElementById("sidebtn");
+  if (sb) {
+    sb.title = T["tui.title.side"] || "";
+    sb.onclick = () => { app.classList.remove("drawer"); window.__toggleSideBar(); };
+  }
   if (bd) bd.onclick = () => app.classList.remove("drawer");
   // Picking a tab collapses the drawer back to full width
   const tabs = document.getElementById("tabs");
@@ -14973,9 +14996,6 @@ window.__toggleSideBar = function () {
     window.addEventListener("mouseup", up);
   };
   grip.ondblclick = (e) => { e.preventDefault(); setSideWidth(SIDEW_DEF); settleSideWidth(); };
-  // A finger taps rather than drags: on a phone the edge is how the column
-  // comes back after a file took the screen
-  grip.onclick = () => { if (phoneWidth()) window.__toggleSideBar(); };
   settleSideWidth();
   // A phone opens on what is running, not on the sheet the PC left open
   if (phoneWidth() && sideWidth() > 0) {
@@ -17967,6 +17987,8 @@ function drawSide() {
   const out = sideWidth() > 0 && !held && !(sideStoodAside && phoneWidth());
   side.hidden = !out;
   grip.hidden = held;
+  const handle = document.getElementById("sidebtn");
+  if (handle) handle.classList.toggle("on", out);
   if (!out) return;
   const bar = side.querySelector(".sbar");
   const body = side.querySelector(".sbody");
@@ -27755,6 +27777,25 @@ mod tests {
         // One panel, wherever it is put: a second copy of the markup would be
         // a second thing to keep right
         assert_eq!(p.matches("id=\"gitpanel\"").count(), 1, "there are two git screens");
+    }
+
+    /// On a phone the right panel is reached the way the left one is: a
+    /// handle in the corner of the top bar, kept clear of STOP. The edge strip
+    /// it replaces ran down over the end of the row of tabs and took presses
+    /// meant for the list of closed tabs, which now stands beside +.
+    #[test]
+    fn a_phone_reaches_the_right_panel_from_the_top_bar() {
+        let p = super::page();
+        let narrow = &p[p.find("@media (max-width:700px), (max-aspect-ratio:1/1) {").expect("no narrow layout")..];
+        assert_eq!(p.matches("<div id=\"sidebtn\">").count(), 1, "there is no handle for the right panel");
+        assert!(narrow.contains("#sidebtn { display:flex;"), "the handle is not shown on a phone");
+        assert!(
+            narrow.contains("#status { padding-right:calc(42px + var(--s4)); }"),
+            "the top bar does not keep STOP clear of the handle"
+        );
+        assert!(narrow.contains("#sidegrip { display:none; }"), "the edge strip still lies over the row of tabs");
+        assert!(narrow.contains("#strip .sclosed { margin-left:0; }"), "the closed tabs are still out in the corner");
+        assert!(p.contains("handle.classList.toggle(\"on\", out)"), "the handle does not say whether the panel is out");
     }
 
     /// A page that covers the window stops at the window's own bar. The frame
