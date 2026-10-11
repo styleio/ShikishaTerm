@@ -50,8 +50,8 @@ cask "shikisha-term" do
 
   zap trash: [
     "~/Library/Application Support/SHIKISHA-TERM",
-    "~/Library/Caches/SHIKISHA-TERM",
     "~/Library/Caches/com.wiredxeco.shikisha-term",
+    "~/Library/Caches/SHIKISHA-TERM",
     "~/Library/Preferences/com.wiredxeco.shikisha-term.plist",
     "~/Library/Saved Application State/com.wiredxeco.shikisha-term.savedState",
   ]

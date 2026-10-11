@@ -92,9 +92,9 @@ jobs:
       - name: The Homebrew cask is one Homebrew accepts
         run: |
           mkdir -p /tmp/sums /tmp/tap/Casks
-          for a in arm64 x64; do
-            echo "$(printf '%064d' 0)  SHIKISHA-TERM-mac-$a.dmg" > "/tmp/sums/SHIKISHA-TERM-mac-$a.dmg.sha256"
-          done
+          # One made-up sum per build: Homebrew refuses two that are the same
+          echo "$(printf '%064d' 1)  SHIKISHA-TERM-mac-arm64.dmg" > /tmp/sums/SHIKISHA-TERM-mac-arm64.dmg.sha256
+          echo "$(printf '%064d' 2)  SHIKISHA-TERM-mac-x64.dmg" > /tmp/sums/SHIKISHA-TERM-mac-x64.dmg.sha256
           sh packaging/mac/mkcask.sh v0.0.0 /tmp/sums > /tmp/tap/Casks/shikisha-term.rb
           brew style /tmp/tap/Casks/shikisha-term.rb
 
