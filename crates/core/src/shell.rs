@@ -13439,7 +13439,11 @@ const goTo = () => {
 let navAt = null;
 function drawNav() {
   const n = document.getElementById("nav");
-  const want = S && S.nav;
+  // The bar belongs to the browser in view. INDEX and the settings form cover
+  // the panes while that browser stays the active tab underneath, so the bar
+  // is put away with the panes rather than drawn over what covers them
+  const covered = !!S && (!!S.board || (!!S.settings_open && !S.settings_float));
+  const want = S && !covered && S.nav;
   n.hidden = !want;
   n.classList.toggle("loading", !!(want && want.loading));   // in-flight loading band
   if (!want) { n.textContent = ""; syncPoint(); layout(); return; }
