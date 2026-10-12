@@ -353,6 +353,18 @@ impl FailKind {
     }
 }
 
+/// Whether a line that ends a turn says the person stopped it before it
+/// answered: Codex files the turn as aborted, Claude Code files the person's
+/// interruption as a message of theirs naming the answer it cut off
+pub fn turn_stopped(line: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return false };
+    match v.get("type").and_then(Value::as_str) {
+        Some("event_msg") => v.pointer("/payload/type").and_then(Value::as_str) == Some("turn_aborted"),
+        Some("user") => v.get("interruptedMessageId").is_some_and(|i| !i.is_null()),
+        _ => false,
+    }
+}
+
 /// The kind of failure a line that ends a turn in an error says it is
 /// ([`FailKind`]); [`FailKind::Error`] for any other line
 pub fn turn_fail_kind(line: &str) -> FailKind {
@@ -380,12 +392,15 @@ pub struct TurnEnd {
     pub error: Option<String>,
     /// What kind of failure ([`turn_fail_kind`])
     pub kind: FailKind,
+    /// The turn was stopped by the person before it answered: a request of
+    /// the AI's refused, or Esc ([`turn_stopped`])
+    pub stopped: bool,
 }
 
 impl TurnEnd {
     fn of(line: &str, at: u64) -> Option<Self> {
         let mark = turn_mark(line).filter(|m| m.ended())?;
-        Some(TurnEnd { at, mark, error: turn_error(line), kind: turn_fail_kind(line) })
+        Some(TurnEnd { at, mark, error: turn_error(line), kind: turn_fail_kind(line), stopped: turn_stopped(line) })
     }
 
     /// As it travels between the bridge and this PC
@@ -397,6 +412,7 @@ impl TurnEnd {
             "kind": self.kind.name(),
             // Read by a PC from before failures had kinds
             "limit": self.kind == FailKind::Limit,
+            "stopped": self.stopped,
         })
     }
 
@@ -407,6 +423,7 @@ impl TurnEnd {
             mark: if failed { TurnMark::Failed } else { TurnMark::Over },
             error: v.get("error").and_then(Value::as_str).map(str::to_string),
             kind: kind_from_json(v),
+            stopped: v.get("stopped").and_then(Value::as_bool) == Some(true),
         })
     }
 }
@@ -2624,7 +2641,7 @@ mod tests {
         // and where it is
         let began = r#"{"type":"event_msg","payload":{"type":"task_started"}}"#;
         let bytes = format!("{began}\n{failed}\n{began}\n{answered}\n");
-        let first = TurnEnd { at: began.len() as u64 + 1, mark: TurnMark::Failed, error: turn_error(failed), kind: FailKind::Error };
+        let first = TurnEnd { at: began.len() as u64 + 1, mark: TurnMark::Failed, error: turn_error(failed), kind: FailKind::Error, stopped: false };
         assert_eq!(first_end_in(bytes.as_bytes(), 0), Some(first.clone()));
         // Read from a file a piece at a time, the same end is found
         let f = std::env::temp_dir().join(format!("reader-end-{}.jsonl", std::process::id()));
@@ -2667,6 +2684,11 @@ mod tests {
         // not answer, filed as a completion carrying the refusal
         let refused = r#"{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.","codex_error_info":"cyber_policy"}}}"#;
         assert_eq!((turn_mark(refused), turn_fail_kind(refused)), (Some(TurnMark::Failed), FailKind::Refused));
+        // The person stopping a turn ends it, and is told apart
+        let aborted = r#"{"type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"#;
+        assert!(turn_stopped(aborted) && turn_mark(aborted) == Some(TurnMark::Over));
+        assert!(turn_stopped(r#"{"type":"user","interruptedMessageId":"m1","message":{"role":"user","content":"[Request interrupted]"}}"#));
+        assert!(!turn_stopped(answered) && !turn_stopped(failed));
         // And the end of the record is where the tab stands now
         let now = standing_in(bytes.len() as u64, format!("{began}\n{failed}\n").as_bytes(), false);
         assert_eq!(now.mark.map(|m| m.0), Some(TurnMark::Failed));
@@ -2693,7 +2715,7 @@ mod tests {
         assert_eq!(Standing::from_json(&old).map(|s| s.kind), Some(FailKind::Limit));
         // And to a PC that knows only that: a turn's end says `limit` too,
         // and reads back whichever way it came
-        let end = TurnEnd { at: 3, mark: TurnMark::Failed, error: None, kind: FailKind::Limit };
+        let end = TurnEnd { at: 3, mark: TurnMark::Failed, error: None, kind: FailKind::Limit, stopped: false };
         let v = end.clone().to_json();
         assert_eq!(v["limit"], true);
         assert_eq!(TurnEnd::from_json(&v), Some(end));

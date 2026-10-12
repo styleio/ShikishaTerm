@@ -240,11 +240,11 @@ pub struct Ask {
     /// again: what it shows now may be somebody else's turn, and is not
     /// taken for this ask's answer (see [`RECORD_GIVES_NONE`])
     pub overtaken: bool,
-    /// The caller was told the tab is waiting for a person, and on what
-    /// screen (`screen_mark`): said once for each question it stops at -- a
-    /// question on a screen of its own is another -- while the ask goes on
-    /// for the answer
-    pub question_told: Option<u64>,
+    /// The caller was told the tab is waiting for a person: when, and the
+    /// question as its dialog asks it (`detect::question_region`, marked by
+    /// `screen_mark`; `None` while only its hook has said so). Said once for
+    /// each question it stops at, while the ask goes on for the answer
+    pub question_told: Option<(Instant, Option<u64>)>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -467,7 +467,7 @@ impl Ask {
     fn recorded(&mut self, t: &Tab) -> Option<String> {
         match self.outcome(t, false)? {
             Outcome::Reply(reply) => Some(reply),
-            Outcome::Failed { .. } => None,
+            Outcome::Failed { .. } | Outcome::Stopped => None,
         }
     }
 
@@ -713,7 +713,7 @@ fn flat(s: &str) -> String {
 pub fn reply_in(path: &Path, sent: &str, from: u64) -> Option<String> {
     match outcome_in(path, sent, from)? {
         Outcome::Reply(reply) => Some(reply),
-        Outcome::Failed { .. } => None,
+        Outcome::Failed { .. } | Outcome::Stopped => None,
     }
 }
 
@@ -727,6 +727,10 @@ pub enum Outcome {
     /// was said on the way. `error` is what the CLI showed, empty when it
     /// showed nothing; `kind` what kind of failure it was
     Failed { error: String, kind: crate::reader::FailKind },
+    /// The person stopped the turn before it answered: a request of the
+    /// AI's refused at its dialog, or Esc. What it said on the way is not
+    /// an answer
+    Stopped,
 }
 
 /// [`reply_in`], with a turn that failed told as such: one reading of the
@@ -743,7 +747,7 @@ pub fn outcome_in(path: &Path, sent: &str, from: u64) -> Option<Outcome> {
 pub fn failure_in(path: &Path, sent: &str, from: u64) -> Option<String> {
     match outcome_in(path, sent, from)? {
         Outcome::Failed { error, .. } => Some(error),
-        Outcome::Reply(_) => None,
+        Outcome::Reply(_) | Outcome::Stopped => None,
     }
 }
 
@@ -760,7 +764,7 @@ const REPLY_TURNS: usize = 16;
 pub fn reply_when_over(path: &Path, sent: &str, from: u64) -> Option<String> {
     match outcome_when_over(path, sent, from)? {
         Outcome::Reply(reply) => Some(reply),
-        Outcome::Failed { .. } => None,
+        Outcome::Failed { .. } | Outcome::Stopped => None,
     }
 }
 
@@ -796,6 +800,9 @@ fn decide(
         && end.mark == crate::reader::TurnMark::Failed
     {
         return Some(Outcome::Failed { error: end.error.clone().unwrap_or_default(), kind: end.kind });
+    }
+    if end.as_ref().is_some_and(|e| e.stopped) {
+        return Some(Outcome::Stopped);
     }
     if over {
         end.as_ref()?;
@@ -935,6 +942,12 @@ fn failed(a: &Ask, t: &Tab, error: Option<String>, kind: crate::reader::FailKind
     v
 }
 
+/// The answer for a turn the person stopped before it answered
+fn stopped(a: &Ask, same_folder: Option<bool>) -> Value {
+    answer(a, "STOPPED", None, "record", same_folder,
+        Some("the person stopped the turn before it answered (a request of the tab's refused, or Esc); nothing came of it"))
+}
+
 /// The answer for a turn the record says failed: at the usage limit, the
 /// limit's answer (asking again will not help until it lifts); any other
 /// failure, [`failed`]
@@ -1069,6 +1082,7 @@ pub fn step(
                     Some(Outcome::Failed { error, kind }) => {
                         return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                     }
+                    Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
                     None => {}
                 }
             }
@@ -1099,8 +1113,20 @@ pub fn step(
             // once the person has answered it is passed on as any other
             a.quiet_since = None;
             let screen = tail(&t.last_screen, 12);
-            let mark = screen_mark(&screen);
-            if a.question_told == Some(mark) {
+            // Which question, by the dialog's own words: the cursor moved to
+            // another choice, a redraw, a clock on screen ask nothing new. A
+            // question its hook reported before the screen drew it has no
+            // words yet, and is the same one when they come
+            let mark = t.question_matched().map(screen_mark);
+            let new = match (a.question_told, mark) {
+                (None, _) => true,
+                (Some((_, Some(was))), Some(now)) => was != now,
+                _ => false,
+            };
+            if !new {
+                if let (Some((at, None)), Some(m)) = (a.question_told, mark) {
+                    a.question_told = Some((at, Some(m)));
+                }
                 // Told already. The record may know better than the screen:
                 // words on the screen taken for a question while the turn
                 // went on and ended would otherwise hold the answer back
@@ -1109,7 +1135,10 @@ pub fn step(
                     Source::Here(_) => a.record_look.is_none_or(|at| at.elapsed() >= RECORD_AGAIN),
                     _ => true,
                 };
-                if a.run.is_none() && due {
+                // Only once the question has stood a while, as the busy road
+                // waits: a turn begun a moment ago may not be in the record yet
+                let stood = a.question_told.is_some_and(|(at, _)| at.elapsed() >= RECORD_TRUSTED_AFTER);
+                if a.run.is_none() && due && stood {
                     if matches!(a.source(t), Source::Here(_)) {
                         a.record_look = Some(now);
                     }
@@ -1119,12 +1148,13 @@ pub fn step(
                                 Some("the tab's own record says the turn ended, though its screen still looked like a question")));
                         }
                         Some(Outcome::Failed { error, kind }) => return Step::Answer(ended_badly(a, t, error, kind, same_folder)),
+                        Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
                         None => {}
                     }
                 }
                 return Step::Nothing;
             }
-            a.question_told = Some(mark);
+            a.question_told = Some((now, mark));
             return Step::Answer(answer(
                 a,
                 "QUESTION",
@@ -1217,6 +1247,7 @@ pub fn step(
                         Some(Outcome::Failed { error, kind }) => {
                             return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                         }
+                        Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
                         None => {}
                     }
                 }
@@ -1324,7 +1355,7 @@ fn line_step(a: &mut Ask, target: Option<&Tab>) -> Step {
     Step::Nothing
 }
 
-/// What tells one screen from another, for a question already told of
+/// What tells one question from another, for one already told of
 /// ([`Ask::question_told`])
 fn screen_mark(screen: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -1853,10 +1884,20 @@ mod tests {
         assert_eq!(
             outcome_in(refused.path(), q, 0).map(|o| match o {
                 Outcome::Failed { kind, .. } => kind,
-                Outcome::Reply(_) => panic!("a refusal is not a reply"),
+                other => panic!("a refusal is not {other:?}"),
             }),
             Some(crate::reader::FailKind::Refused)
         );
+        // A turn the person stopped -- its dialog refused, or Esc -- is not
+        // answered with what it said on the way
+        let stopped = record(&[
+            codex_said("user", "input_text", q),
+            codex_said("assistant", "output_text", "I will run the test suite first."),
+            json!({"type": "event_msg", "payload": {"type": "turn_aborted", "reason": "interrupted"}}),
+        ]);
+        assert_eq!(outcome_in(stopped.path(), q, 0), Some(Outcome::Stopped));
+        assert_eq!(reply_in(stopped.path(), q, 0), None);
+        assert_eq!(outcome_when_over(stopped.path(), q, 0), Some(Outcome::Stopped));
     }
 
     /// What the AI said to the person's next words is the person's answer,
@@ -1893,10 +1934,6 @@ mod tests {
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing));
         t.state = TabState::Question;
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "a second question, once answered the first, is told");
-        // ...and one that follows at once, with no work seen between: its own
-        // screen says it is another
-        t.last_screen = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)".into();
-        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "a question on a new screen is not told");
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "the same question, told again");
         t.state = TabState::Done;
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "settling");
