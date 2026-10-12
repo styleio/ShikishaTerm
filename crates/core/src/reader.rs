@@ -378,45 +378,54 @@ impl TurnEnd {
 pub fn turn_end_after(path: &Path, from: u64) -> Option<TurnEnd> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    turn_end_by(len, from, &mut |start, n| {
+    turn_end_by(len, from, from, &mut |start, n| {
         let mut buf = vec![0u8; n];
         file.seek(SeekFrom::Start(start))?;
         file.read_exact(&mut buf)?;
         Ok(buf)
     })
+    .0
 }
 
-/// [`turn_end_after`] over a record `len` long read a piece at a time by `read_at`
+/// [`turn_end_after`] over a record `len` long read a piece at a time by
+/// `read_at`, starting at `resume`: the start of a line at or after `from`
+/// that an earlier look read up to without finding the end. Also gives where
+/// this look read up to, for the next one to resume at -- a turn that runs
+/// long is not read again from its start every look
 fn turn_end_by(
     len: u64,
     from: u64,
+    resume: u64,
     read_at: &mut dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
-) -> Option<TurnEnd> {
-    if from >= len {
-        return None;
-    }
+) -> (Option<TurnEnd>, u64) {
+    let resume = resume.max(from);
     let stop = len.min(from.saturating_add(TURN_READ_MAX));
     let mut carried: Vec<u8> = Vec::new();
-    let mut carried_at = from;
-    let mut at = from;
+    let mut carried_at = resume;
+    let mut at = resume;
     while at < stop {
         let n = (stop - at).min(TURN_READ_PIECE) as usize;
-        let piece = read_at(at, n).ok()?;
+        let Ok(piece) = read_at(at, n) else { return (None, carried_at) };
         if piece.len() != n {
-            return None;
+            return (None, carried_at);
         }
         carried.extend_from_slice(&piece);
         at += n as u64;
         // Whole lines only; what is left of the last is carried into the next piece
         let Some(last) = carried.iter().rposition(|&b| b == b'\n') else { continue };
         if let Some(end) = first_end_in(&carried[..=last], carried_at) {
-            return Some(end);
+            return (Some(end), carried_at);
         }
         carried.drain(..=last);
         carried_at += last as u64 + 1;
     }
-    None
+    (None, carried_at)
 }
+
+/// The machines whose bridge said it has no `turn_end`, by how they are named
+/// (see [`Record::turn_end_after`])
+static BRIDGE_LACKS_TURN_END: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// How much of a record [`turn_end_after`] reads past the turn's start
 pub const TURN_READ_MAX: u64 = 32 * 1024 * 1024;
@@ -920,26 +929,39 @@ impl Record {
         }
     }
 
-    /// How the turn that begins at byte `from` ended (see [`turn_end_after`]).
-    /// `None` while it has not, or when that could not be read. On another
-    /// machine this goes over the network, so it is for a thread of its own
-    pub fn turn_end_after(&self, from: u64) -> Option<TurnEnd> {
+    /// How the turn that begins at byte `from` ended (see [`turn_end_after`]),
+    /// read on from `resume` (see [`turn_end_by`]), and where the next look
+    /// may resume. The end is `None` while the turn has not ended, or when
+    /// that could not be read. On another machine this goes over the network,
+    /// so it is for a thread of its own
+    pub fn turn_end_after(&self, from: u64, resume: u64) -> (Option<TurnEnd>, u64) {
         match self {
-            Record::Here { glob, id } => turn_end_after(&crate::sessionfind::locate(glob, id)?, from),
+            Record::Here { glob, id } => match crate::sessionfind::locate(glob, id) {
+                Some(path) => (turn_end_after(&path, from), from),
+                None => (None, from),
+            },
             Record::Far { at, glob, id } => {
                 // One request to the bridge, when it is there. A bridge from
-                // before this knows no such thing: then the long way
-                if crate::farlink::is_up(at) {
-                    let asked = serde_json::json!({"glob": glob, "id": id, "from": from});
+                // before this knows no such thing, and is not asked again for
+                // the rest of this run of the app: then the long way
+                let known = format!("{at:?}");
+                let lacking = || BRIDGE_LACKS_TURN_END.lock().is_ok_and(|l| l.contains(&known));
+                if crate::farlink::is_up(at) && !lacking() {
+                    let asked = serde_json::json!({"glob": glob, "id": id, "from": resume.max(from)});
                     match crate::farlink::call(at, "turn_end", asked) {
-                        Ok(Value::Null) => return None,
-                        Ok(v) => return TurnEnd::from_json(&v),
-                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not say how the turn ended ({e}); reading it the long way")),
+                        Ok(Value::Null) => return (None, resume),
+                        Ok(v) => return (TurnEnd::from_json(&v), resume),
+                        Err(e) => {
+                            crate::append_hook_log(&format!("reader: the bridge could not say how the turn ended ({e}); reading it the long way"));
+                            if e.to_string().contains("no operation called") && let Ok(mut l) = BRIDGE_LACKS_TURN_END.lock() {
+                                l.insert(known);
+                            }
+                        }
                     }
                 }
-                let path = locate_far(at, glob, id)?;
-                let (len, mut read_at) = far_pieces(at, &path).ok()?;
-                turn_end_by(len, from, &mut read_at)
+                let Some(path) = locate_far(at, glob, id) else { return (None, resume) };
+                let Ok((len, mut read_at)) = far_pieces(at, &path) else { return (None, resume) };
+                turn_end_by(len, from, resume, &mut read_at)
             }
         }
     }
@@ -2552,6 +2574,25 @@ mod tests {
         assert_eq!((far_in.mark, far_in.at), (TurnMark::Failed, (began.len() + 1 + padding.len()) as u64));
         assert_eq!(turn_end_after(&f, far_in.at + 1).map(|e| e.mark), Some(TurnMark::Over));
         let _ = std::fs::remove_file(&f);
+        // A turn still going is read once: the next look resumes where the
+        // last one stopped, and still finds the end once it is written
+        let going = format!("{began}\n{padding}");
+        let reads = std::cell::Cell::new(0usize);
+        let read = |text: &str| {
+            let bytes = text.as_bytes().to_vec();
+            let reads = &reads;
+            move |start: u64, n: usize| -> std::io::Result<Vec<u8>> {
+                reads.set(reads.get() + n);
+                Ok(bytes[start as usize..start as usize + n].to_vec())
+            }
+        };
+        let (none, to) = turn_end_by(going.len() as u64, 0, 0, &mut read(&going));
+        assert_eq!((none, to), (None, going.len() as u64), "read to the end of its whole lines");
+        reads.set(0);
+        let ended = format!("{going}{failed}\n");
+        let (end, _) = turn_end_by(ended.len() as u64, 0, to, &mut read(&ended));
+        assert_eq!(end.map(|e| (e.mark, e.at)), Some((TurnMark::Failed, going.len() as u64)));
+        assert_eq!(reads.get(), failed.len() + 1, "only what was written since is read");
         // A Codex at its usage limit says so in the kind of its error
         let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
         assert!(turn_at_limit(limited) && !turn_at_limit(failed) && !turn_at_limit(answered));
