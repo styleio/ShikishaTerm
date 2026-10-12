@@ -5,26 +5,46 @@
 use crate::profile::Profile;
 
 /// The question a dialog asks, from the screen where a question pattern
-/// matched at byte `at`: the line it begins on and the lines after it, up to
-/// the first that offers a choice (`›`/`❯` or `1.`). Which choice the cursor
-/// is on, a spinner or a clock elsewhere on screen, a redraw at a new width:
-/// none of it changes which question is being asked
+/// matched at byte `at`: what it is about -- the lines just above the one it
+/// matched on, where a CLI shows the command or the file (Claude Code puts
+/// them above "Do you want to proceed?") -- that line, and the lines after
+/// it up to the first that offers a choice. Choice lines are left out:
+/// which one the cursor is on, a redraw at a new width, none of it changes
+/// which question is being asked; another command is another question
 pub fn question_region(screen: &str, at: usize) -> String {
     let start = screen[..at].rfind('\n').map_or(0, |i| i + 1);
     let choice = |l: &str| {
         let l = l.trim_start();
-        l.starts_with('›') || l.starts_with('❯') || l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        let l = l.strip_prefix('›').or_else(|| l.strip_prefix('❯')).unwrap_or(l).trim_start();
+        l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
     };
-    let mut lines = Vec::new();
+    let flat = |l: &str| l.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Above: the nearest lines with something on them -- past the choices
+    // just above, when the cursor stands on a later one -- up to the next choice
+    let mut above: Vec<String> = screen[..start]
+        .lines()
+        .rev()
+        .map(flat)
+        .filter(|l| !l.is_empty())
+        .skip_while(|l| choice(l))
+        .take_while(|l| !choice(l))
+        .take(QUESTION_ABOVE)
+        .collect();
+    above.reverse();
+    let mut below = Vec::new();
     for (i, l) in screen[start..].lines().enumerate() {
-        if i > 0 && choice(l) || i >= 8 {
+        if choice(l) || i >= 8 {
             break;
         }
-        lines.push(l.split_whitespace().collect::<Vec<_>>().join(" "));
+        below.push(flat(l));
     }
-    lines.retain(|l| !l.is_empty());
-    lines.join("\n")
+    above.into_iter().chain(below).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
 }
+
+/// How many lines above a question are taken as what it is about (see
+/// [`question_region`]): a command and its description, a file and the
+/// edit's first lines -- enough to tell two questions apart
+const QUESTION_ABOVE: usize = 4;
 
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
@@ -380,6 +400,13 @@ impl Detector {
         self.working_shown
     }
 
+    /// When the program said by its hook that it is asking a person (its
+    /// own clock), while that still stands: a question its screen has not
+    /// drawn is told apart from the next by this
+    pub fn hook_question_at(&self) -> Option<u64> {
+        self.word.filter(|w| w.state == TabState::Question).map(|w| w.sent_ms)
+    }
+
     /// The question on screen at the last tick, as the dialog says it
     /// (`None` when none matched -- a question the program reported by its
     /// hook may be one the screen has not drawn yet)
@@ -553,7 +580,10 @@ impl Detector {
             .profile
             .question
             .iter()
-            .find_map(|r| r.find(screen_text))
+            .filter_map(|r| r.find(screen_text))
+            // The match lowest on the screen: a dialog is drawn under what
+            // came before it, and words left above it may say the same
+            .max_by_key(|m| m.start())
             .map(|m| question_region(screen_text, m.start()));
         if self.question_matched.is_some() {
             self.state = TabState::Question;
@@ -887,6 +917,49 @@ mod tests {
         assert_ne!(read(&dialog("cargo build", 1)).1, asked, "another command, the same question");
         let code = r#"let dialog = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)";"#;
         assert_ne!(read(code).0, TabState::Question, "a line of code read as a dialog");
+    }
+
+    /// Claude Code shows what it asks about above the question, and its
+    /// cursor can stand on any choice: two commands are two questions, and
+    /// the cursor on No is still the one question
+    #[test]
+    fn claudes_permission_prompt_is_known_by_its_command_whichever_choice_is_chosen() {
+        let prompt = |cmd: &str, cursor: usize| {
+            let mark = |n: usize| if n == cursor { "❯" } else { " " };
+            format!("● I will check the status first.\n\n Bash command\n\n   {cmd}\n   Show the working tree status\n\n Do you want to proceed?\n {} 1. Yes\n {} 2. Yes, and don't ask again for {cmd} commands\n {} 3. No, and tell Claude what to do differently (esc)",
+                mark(1), mark(2), mark(3))
+        };
+        let read = |screen: &str| {
+            let mut d = Detector::new(crate::profile::load_for_command("claude"));
+            let state = d.tick(screen, 100, 0);
+            (state, d.question_matched().map(str::to_string))
+        };
+        let (state, status) = read(&prompt("git status", 1));
+        assert_eq!(state, TabState::Question);
+        assert!(status.as_deref().is_some_and(|q| q.contains("git status") && q.contains("Do you want to proceed?")), "{status:?}");
+        assert_ne!(read(&prompt("git diff", 1)).1, status, "two commands read as one question");
+        let (on_two, same) = read(&prompt("git status", 2));
+        assert_eq!((on_two, same), (TabState::Question, status), "the cursor on another choice changed the question");
+    }
+
+    /// The screen a real Claude Code 2.1.296 stopped on, asked to write a
+    /// file (taken with tools/debug/claude-question.win.mjs; the folder's name
+    /// made up). Its command stands above the question, between two rules
+    #[test]
+    fn a_real_claude_prompt_is_known_by_its_command() {
+        let real = " Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n Write \"hi\" to hello.txt\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n echo hi > hello.txt\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to D:\\work\\site from this project\n   3. Yes, and switch to auto mode · auto mode handles these prompts for you\n   4. No\n Esc to cancel · Tab to amend";
+        let read = |screen: &str| {
+            let mut d = Detector::new(crate::profile::load_for_command("claude"));
+            let state = d.tick(screen, 100, 0);
+            (state, d.question_matched().map(str::to_string))
+        };
+        let (state, asked) = read(real);
+        assert_eq!(state, TabState::Question);
+        assert!(asked.as_deref().is_some_and(|q| q.contains("echo hi > hello.txt") && q.contains("Do you want to proceed?")), "{asked:?}");
+        let on_no = real.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No");
+        assert_eq!(read(&on_no), (TabState::Question, asked.clone()), "the cursor on No changed the question");
+        let other = real.replace("echo hi > hello.txt", "rm hello.txt");
+        assert_ne!(read(&other).1, asked, "another command read as the same question");
     }
 
     /// Measured 2026-10-12: a review asked of Codex said "sales agents ...

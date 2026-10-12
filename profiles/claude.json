@@ -15,7 +15,7 @@
   ],
   "question_patterns": [
     "Do you want to",
-    "❯\\s*1\\.",
+    "❯\\s*\\d\\.",
     "\\(y/n\\)",
     "yes/no",
     "Allow .+\\?",

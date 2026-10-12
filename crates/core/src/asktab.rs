@@ -244,7 +244,14 @@ pub struct Ask {
     /// question as its dialog asks it (`detect::question_region`, marked by
     /// `screen_mark`; `None` while only its hook has said so). Said once for
     /// each question it stops at, while the ask goes on for the answer
-    pub question_told: Option<(Instant, Option<u64>)>,
+    pub question_told: Option<Told>,
+    /// Since when the record has said the turn asked in was stopped by the
+    /// person (see [`Ask::on_stopped`])
+    pub stopped_since: Option<Instant>,
+    /// ...and the tab took up work again after it: the person gave it other
+    /// words in place of the refused request, and what it answers to them
+    /// is what comes back
+    pub redirected: bool,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -531,6 +538,8 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         answered: false,
         overtaken: false,
         question_told: None,
+        stopped_since: None,
+        redirected: false,
     }
 }
 
@@ -942,10 +951,68 @@ fn failed(a: &Ask, t: &Tab, error: Option<String>, kind: crate::reader::FailKind
     v
 }
 
+/// A question told to the caller, and what tells it from the next one
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Told {
+    /// When it was told
+    pub at: Instant,
+    /// The question as its dialog asks it, marked (`detect::question_region`,
+    /// [`screen_mark`]); `None` while the screen has not drawn it
+    pub words: Option<u64>,
+    /// When the program's hook said it is asking (`Tab::hook_question_at`)
+    pub hook: Option<u64>,
+}
+
+impl Told {
+    /// Whether `now` is another question than this one: other words on its
+    /// dialog, or -- with no words on either -- another word from its hook
+    fn another(&self, now: &Told) -> bool {
+        match (self.words, now.words) {
+            (Some(was), Some(is)) => was != is,
+            (None, None) => matches!((self.hook, now.hook), (Some(was), Some(is)) if was != is),
+            // Its words drawn after its hook said so, or gone a moment: the same one
+            _ => false,
+        }
+    }
+
+    /// What is known of the same question now that was not when it was told
+    fn fill_in(&mut self, now: &Told) {
+        self.words = self.words.or(now.words);
+        self.hook = self.hook.or(now.hook);
+    }
+}
+
+impl Ask {
+    /// The record says the person stopped the turn asked in: its dialog
+    /// refused (Codex: "No, and tell Codex what to do differently"), or Esc.
+    /// Not answered at once: the person may go on to give the tab other
+    /// words, and what it answers to them is what the caller was promised.
+    /// Seen at work again, it is followed to that answer; left quiet for
+    /// [`RECORD_GIVES_NONE`], the turn was stopped and nothing came of it
+    fn on_stopped(&mut self, t: &Tab, same_folder: Option<bool>) -> Option<Step> {
+        let since = *self.stopped_since.get_or_insert_with(Instant::now);
+        if matches!(t.state, TabState::Busy | TabState::Background | TabState::Question) {
+            self.redirected = true;
+            return None;
+        }
+        if self.redirected {
+            if t.reply_settling() {
+                return None;
+            }
+            let reply = t.last_response.clone().unwrap_or_else(|| tail(&t.last_screen, 40));
+            return Some(Step::Answer(answer(self, "DONE", Some(&reply), "record", same_folder,
+                Some("the person stopped the turn asked in and gave the tab other words; this is what it answered to them"))));
+        }
+        (since.elapsed() >= RECORD_GIVES_NONE).then(|| Step::Answer(stopped(self, same_folder)))
+    }
+}
+
 /// The answer for a turn the person stopped before it answered
 fn stopped(a: &Ask, same_folder: Option<bool>) -> Value {
-    answer(a, "STOPPED", None, "record", same_folder,
-        Some("the person stopped the turn before it answered (a request of the tab's refused, or Esc); nothing came of it"))
+    let mut v = answer(a, "STOPPED", None, "record", same_folder,
+        Some("the person stopped the turn before it answered (a request of the tab's refused, or Esc); nothing came of it"));
+    v["by_person"] = json!(true);
+    v
 }
 
 /// The answer for a turn the record says failed: at the usage limit, the
@@ -1082,7 +1149,11 @@ pub fn step(
                     Some(Outcome::Failed { error, kind }) => {
                         return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                     }
-                    Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
+                    Some(Outcome::Stopped) => {
+                        if let Some(step) = a.on_stopped(t, same_folder) {
+                            return step;
+                        }
+                    }
                     None => {}
                 }
             }
@@ -1117,15 +1188,11 @@ pub fn step(
             // another choice, a redraw, a clock on screen ask nothing new. A
             // question its hook reported before the screen drew it has no
             // words yet, and is the same one when they come
-            let mark = t.question_matched().map(screen_mark);
-            let new = match (a.question_told, mark) {
-                (None, _) => true,
-                (Some((_, Some(was))), Some(now)) => was != now,
-                _ => false,
-            };
+            let seen = Told { at: now, words: t.question_matched().map(screen_mark), hook: t.hook_question_at() };
+            let new = a.question_told.is_none_or(|was| was.another(&seen));
             if !new {
-                if let (Some((at, None)), Some(m)) = (a.question_told, mark) {
-                    a.question_told = Some((at, Some(m)));
+                if let Some(was) = a.question_told.as_mut() {
+                    was.fill_in(&seen);
                 }
                 // Told already. The record may know better than the screen:
                 // words on the screen taken for a question while the turn
@@ -1137,7 +1204,7 @@ pub fn step(
                 };
                 // Only once the question has stood a while, as the busy road
                 // waits: a turn begun a moment ago may not be in the record yet
-                let stood = a.question_told.is_some_and(|(at, _)| at.elapsed() >= RECORD_TRUSTED_AFTER);
+                let stood = a.question_told.is_some_and(|was| was.at.elapsed() >= RECORD_TRUSTED_AFTER);
                 if a.run.is_none() && due && stood {
                     if matches!(a.source(t), Source::Here(_)) {
                         a.record_look = Some(now);
@@ -1148,13 +1215,17 @@ pub fn step(
                                 Some("the tab's own record says the turn ended, though its screen still looked like a question")));
                         }
                         Some(Outcome::Failed { error, kind }) => return Step::Answer(ended_badly(a, t, error, kind, same_folder)),
-                        Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
+                        Some(Outcome::Stopped) => {
+                        if let Some(step) = a.on_stopped(t, same_folder) {
+                            return step;
+                        }
+                    }
                         None => {}
                     }
                 }
                 return Step::Nothing;
             }
-            a.question_told = Some((now, mark));
+            a.question_told = Some(seen);
             return Step::Answer(answer(
                 a,
                 "QUESTION",
@@ -1247,7 +1318,11 @@ pub fn step(
                         Some(Outcome::Failed { error, kind }) => {
                             return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                         }
-                        Some(Outcome::Stopped) => return Step::Answer(stopped(a, same_folder)),
+                        Some(Outcome::Stopped) => {
+                        if let Some(step) = a.on_stopped(t, same_folder) {
+                            return step;
+                        }
+                    }
                         None => {}
                     }
                 }
@@ -1940,6 +2015,43 @@ mod tests {
         a.quiet_since = Some(Instant::now() - SCREEN_SETTLE - Duration::from_secs(1));
         let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the answer after the question did not come") };
         assert_eq!(v["state"], "DONE");
+    }
+
+    /// A question is told again only when it is another: other words on its
+    /// dialog, or -- with no words yet on either -- another word from its hook
+    #[test]
+    fn a_question_is_another_by_its_words_or_else_by_its_hook() {
+        let at = Instant::now();
+        let q = |words, hook| Told { at, words, hook };
+        assert!(q(Some(1), None).another(&q(Some(2), None)), "other words");
+        assert!(!q(Some(1), Some(5)).another(&q(Some(1), Some(9))), "the same words");
+        assert!(q(None, Some(5)).another(&q(None, Some(9))), "two hook-only questions");
+        assert!(!q(None, Some(5)).another(&q(Some(1), Some(5))), "its words drawn after its hook");
+        let mut told = q(None, Some(5));
+        told.fill_in(&q(Some(1), Some(5)));
+        assert_eq!((told.words, told.hook), (Some(1), Some(5)));
+    }
+
+    /// A turn the person stopped is not answered at once: given other words
+    /// after it, the tab's answer to them comes back; left quiet, STOPPED
+    #[test]
+    fn a_stopped_turn_waits_for_the_words_given_after_it() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        let mut a = sent_ask();
+        t.state = TabState::Done;
+        assert!(a.on_stopped(&t, None).is_none(), "answered at once");
+        a.stopped_since = Some(Instant::now() - RECORD_GIVES_NONE);
+        let Some(Step::Answer(v)) = a.on_stopped(&t, None) else { panic!("left quiet, it is never said") };
+        assert_eq!((v["state"].as_str(), v["by_person"].as_bool()), (Some("STOPPED"), Some(true)));
+        let mut b = sent_ask();
+        t.state = TabState::Busy;
+        assert!(b.on_stopped(&t, None).is_none());
+        assert!(b.redirected, "the person's other words are not followed");
+        t.state = TabState::Done;
+        t.last_response = Some("Reviewed with the tests skipped: one finding.".into());
+        let Some(Step::Answer(v)) = b.on_stopped(&t, None) else { panic!("the answer to the other words did not come") };
+        assert_eq!(v["state"], "DONE");
+        assert!(v["reply"].as_str().is_some_and(|r| r.contains("one finding")), "{v}");
     }
 
     /// A failed tab is free to be typed into, and saying it again is the way

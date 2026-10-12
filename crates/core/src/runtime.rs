@@ -5863,6 +5863,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             answered: false,
                                             overtaken: false,
                                             question_told: None,
+                                            stopped_since: None,
+                                            redirected: false,
                                         });
                                     }
                                 }
@@ -8557,7 +8559,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     append_hook_log(&format!("scheduled prompt run {} of {} never went in to tab \"{}\"", f.n, f.id, t.title));
                     continue;
                 }
-                let failed = record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some()
+                let outcome = record.as_deref().and_then(|p| crate::asktab::outcome_in(p, &f.text, f.from));
+                // Stopped by the person before it answered: nothing came of
+                // it, once the tab has gone quiet again
+                if outcome == Some(crate::asktab::Outcome::Stopped)
+                    && crate::asktab::quiet(t.state)
+                    && t.ms_since_change(now_ms) >= ROUTINE_SETTLE_MS
+                {
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_stopped", None);
+                    append_hook_log(&format!("scheduled prompt run {} of {} was stopped in tab \"{}\"", f.n, f.id, t.title));
+                    continue;
+                }
+                let failed = matches!(outcome, Some(crate::asktab::Outcome::Failed { .. }))
                     || (t.state == TabState::Failed
                         && (f.busy_seen
                             || f.typed_ms.is_some_and(|at| now_ms.saturating_sub(at) >= ROUTINE_FAILED_AFTER_MS)));
