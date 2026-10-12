@@ -323,13 +323,16 @@ pub struct FarRead {
     /// A look out on its thread, and whether it asked for the turn to be over
     /// too (see [`FarRead::reply`]). An answer to the other kind of look is
     /// not this one's
-    pending: Option<(std::sync::mpsc::Receiver<Found>, bool)>,
+    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<bool>)>, bool)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
     /// The machine keeps no record there by that name: the screen is what
     /// there is, as for a tab here with no record
     missing: bool,
+    /// What the last look found of the tab going on to somebody else's turn
+    /// (see [`moved_on_in`]): `None` while not known
+    moved_on: Option<bool>,
 }
 
 /// What one look at a far record found
@@ -353,7 +356,11 @@ impl FarRead {
     fn reply(&mut self, record: &crate::reader::Record, sent: &str, from: u64, over: bool) -> Option<Outcome> {
         if let Some((rx, kind)) = &self.pending {
             let kind = *kind;
-            match rx.try_recv() {
+            let got = rx.try_recv();
+            if let Ok((_, Some(moved))) = &got {
+                self.moved_on = Some(*moved);
+            }
+            match got.map(|(found, _)| found) {
                 Ok(Found::Is(outcome)) => {
                     self.pending = None;
                     // A failure is one whichever kind of look found it
@@ -374,35 +381,26 @@ impl FarRead {
         let (tx, rx) = std::sync::mpsc::channel();
         let (record, sent) = (record.clone(), sent.to_string());
         std::thread::spawn(move || {
+            let mut moved = None;
             let found = match record.page(u64::MAX, REPLY_TURNS) {
                 None => Found::Missing,
                 Some(Ok(page)) => match asked_in(&page, &sent, from) {
                     None => Found::NotYet,
-                    // The turn's end is known here only by the record's last
-                    // mark and when that was written: after the question. A
-                    // failure written since is this turn's or a later one's,
-                    // and either way no answer to the question is coming. A
-                    // reply, on the road taken while the screen reads busy,
-                    // counts once the turn is over and nothing begun since
+                    // Read the way a record here is read: how the turn asked
+                    // in ended, from that turn's own end, never the record's
+                    // last -- a later turn's failure is not this one's
                     Some(asked) => {
-                        let since_asked = |when: Option<i64>| match (page.turns[asked].when, when) {
-                            (Some(asked_when), Some(w)) => w >= asked_when,
-                            _ => false,
+                        moved = Some(moved_on(&page, asked));
+                        let end = page.turns[asked].at.and_then(|begun| record.turn_end_after(begun));
+                        let last_over = || {
+                            record.standing().and_then(|s| s.mark).map(|(m, _)| m) == Some(crate::reader::TurnMark::Over)
                         };
-                        let replied = || reply_after(&page, asked, None).map_or(Found::NotYet, |r| Found::Is(Outcome::Reply(r)));
-                        match record.standing() {
-                            Some(s) if matches!(s.mark, Some((crate::reader::TurnMark::Failed, when)) if since_asked(when)) => {
-                                Found::Is(Outcome::Failed { error: s.error.unwrap_or_default(), at_limit: s.at_limit })
-                            }
-                            Some(s) if over && matches!(s.mark, Some((crate::reader::TurnMark::Over, when)) if since_asked(when)) => replied(),
-                            _ if over => Found::NotYet,
-                            _ => replied(),
-                        }
+                        decide(&page, asked, end, over, last_over).map_or(Found::NotYet, Found::Is)
                     }
                 },
                 Some(Err(_)) => Found::NotYet,
             };
-            let _ = tx.send(found);
+            let _ = tx.send((found, moved));
         });
         self.pending = Some((rx, over));
         self.last = Some(Instant::now());
@@ -756,6 +754,22 @@ fn outcome(path: &Path, sent: &str, from: u64, over: bool) -> Option<Outcome> {
     let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
     let asked = asked_in(&page, sent, from)?;
     let end = page.turns[asked].at.and_then(|begun| crate::reader::turn_end_after(path, begun));
+    decide(&page, asked, end, over, || {
+        crate::reader::last_turn_mark(path).map(|(mark, _)| mark) == Some(crate::reader::TurnMark::Over)
+    })
+}
+
+/// What came of the turn at `asked` in `page`, given how the record says it
+/// ended (`end`): the one reading for a record here and one on another
+/// machine. `last_over` says whether the record's last mark ends a turn,
+/// asked only on the `over` road
+fn decide(
+    page: &crate::reader::Page,
+    asked: usize,
+    end: Option<crate::reader::TurnEnd>,
+    over: bool,
+    last_over: impl FnOnce() -> bool,
+) -> Option<Outcome> {
     if let Some(end) = &end
         && end.mark == crate::reader::TurnMark::Failed
     {
@@ -767,11 +781,26 @@ fn outcome(path: &Path, sent: &str, from: u64, over: bool) -> Option<Outcome> {
         // in the background and was woken by it is still on the job: what it
         // said before it was woken is not the answer (measured 2026-09-30).
         // The ordinary road -- the screen going quiet -- waits for the answer then
-        if crate::reader::last_turn_mark(path).map(|(mark, _)| mark) != Some(crate::reader::TurnMark::Over) {
+        if !last_over() {
             return None;
         }
     }
-    reply_after(&page, asked, end.map(|e| e.at)).map(Outcome::Reply)
+    reply_after(page, asked, end.map(|e| e.at)).map(Outcome::Reply)
+}
+
+/// Whether the record shows the person saying something after the turn
+/// `sent` was given in: the tab has gone on to somebody else's turn, and its
+/// screen is that turn's. `None` when the turn asked in is not found in the
+/// part of the record read (cut off by later turns, or a conversation begun
+/// anew), which says nothing either way
+pub fn moved_on_in(path: &Path, sent: &str, from: u64) -> Option<bool> {
+    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+    let asked = asked_in(&page, sent, from)?;
+    Some(moved_on(&page, asked))
+}
+
+fn moved_on(page: &crate::reader::Page, asked: usize) -> bool {
+    page.turns[asked + 1..].iter().any(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text))
 }
 
 /// Where in a page of the record `sent` was given: the last turn of the
@@ -1139,9 +1168,17 @@ pub fn step(
                 // on for good. While the tab has done nothing since, what its
                 // screen shows is this turn's, and answer enough; once it has
                 // gone on to other work, its screen is that work's, and is
-                // nobody's answer to this
+                // nobody's answer to this. Gone on is read off the record --
+                // the person saying something after the ask -- and off the
+                // screen having been seen to settle and start again; a record
+                // where the ask cannot be found at all says nothing for the
+                // screen, and the screen is not taken then either
                 if since.elapsed() >= RECORD_GIVES_NONE {
-                    if a.overtaken {
+                    let record_says = match &source {
+                        Source::Here(path) => moved_on_in(path, &a.text, a.record_from.unwrap_or(0)),
+                        _ => a.far.moved_on,
+                    };
+                    if a.overtaken || record_says != Some(false) {
                         return Step::Answer(answer(
                             a,
                             "NOREPLY",
@@ -1693,6 +1730,11 @@ mod tests {
         assert_eq!(reply_when_over(later.path(), q, 0), None);
         assert_eq!(failure_in(later.path(), q, 0).as_deref(), Some(error), "the review still failed");
         assert_eq!(failure_in(later.path(), "Why did the collaboration stop?", 0), None);
+        // The record says the tab went on to the person's turn: its screen is
+        // not the review's answer
+        assert_eq!(moved_on_in(later.path(), q, 0), Some(true));
+        assert_eq!(moved_on_in(failed.path(), q, 0), Some(false));
+        assert_eq!(moved_on_in(failed.path(), "never asked", 0), None, "not found says nothing");
         assert_eq!(
             reply_in(later.path(), "Why did the collaboration stop?", 0).as_deref(),
             Some("The model was at capacity.")

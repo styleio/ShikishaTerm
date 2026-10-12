@@ -8458,12 +8458,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 let record = t.record();
                 // Its turn ended in an error: no answer is coming, and the
-                // screen says what went wrong. Told by the tab, or by the
-                // record of a CLI whose record files its failures and whose
-                // tab is not told of them by a hook
-                let failed = f.busy_seen
-                    && (t.state == TabState::Failed
-                        || record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some());
+                // screen says what went wrong. Told by the record, which
+                // speaks of this prompt's own turn whenever it was looked at;
+                // or by the tab, once it has been seen at work on the prompt
+                // or long enough has passed for it to have been -- a turn
+                // that failed at once can end between two looks, and a tab
+                // that reads as failed from before the prompt is not taken
+                // for this run's failure
+                let failed = record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some()
+                    || (t.state == TabState::Failed
+                        && (f.busy_seen || now_ms.saturating_sub(f.sent_ms) >= ROUTINE_FAILED_AFTER_MS));
                 if failed {
                     let screen = screen_tail(t, ROUTINE_SCREEN_LINES);
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_failed", Some(&screen));
@@ -19958,6 +19962,11 @@ fn routine_tidy(f: &RoutineFlight, t: &Tab, index: usize, list: &[Tab], desk: &s
 /// How long the screen of a tab whose CLI keeps no record must hold still
 /// after its work, before the turn is taken to be over
 const ROUTINE_SETTLE_MS: u64 = 3000;
+/// How long after a scheduled prompt went in a tab that reads as failed is
+/// taken to have failed on it, though it was never seen at work: a CLI starts
+/// on what it is given within a few seconds, and one that read as failed
+/// before the prompt reads as working by then
+const ROUTINE_FAILED_AFTER_MS: u64 = 10_000;
 /// How much of such a tab's screen is kept as its answer
 const ROUTINE_SCREEN_LINES: usize = 40;
 
