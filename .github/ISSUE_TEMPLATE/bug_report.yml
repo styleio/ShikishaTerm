@@ -49,8 +49,11 @@ body:
     attributes:
       label: Anything from logs/
       description: |
-        `logs/hooks.log` for automation problems, the session log for display problems.
-        **Please remove hostnames, IP addresses and anything else private first** — these
+        The easiest way: **Settings › Save diagnostics** saves the logs as one zip with keys,
+        addresses, links, your name and the AIs' words already hidden. Look inside it, then
+        drag it into this box.
+        Or paste from `logs/hooks.log` for automation problems, the session log for display
+        problems — **remove hostnames, IP addresses and anything else private first**: these
         logs record whatever was on screen.
       render: text
     validations:

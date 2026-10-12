@@ -168,6 +168,7 @@ pub mod webui;
 pub mod winpath;
 pub mod desk;
 pub mod deskpack;
+pub mod diagnose;
 pub mod vaudio;
 /// The Rust view of libvpx. Only where there is one to link against.
 #[cfg(all(not(windows), feature = "vp8"))]

@@ -231,7 +231,7 @@ pub fn opened_external(url: &str) -> bool {
 
 /// Best-effort version of the system for a bug report (the field is optional).
 #[cfg(windows)]
-fn os_version() -> String {
+pub(crate) fn os_version() -> String {
     std::process::Command::new("cmd")
         .args(["/C", "ver"])
         .output()
@@ -244,7 +244,7 @@ fn os_version() -> String {
 /// The same away from Windows: the system's own name and version
 /// (`macOS 15.4 Sequoia`, `Linux 24.04 Ubuntu`)
 #[cfg(not(windows))]
-fn os_version() -> String {
+pub(crate) fn os_version() -> String {
     sysinfo::System::long_os_version().unwrap_or_default()
 }
 
@@ -3444,6 +3444,23 @@ fn handle(
                 }
             }
         }
+        // What a bug report carries, made now and handed to the person, never
+        // sent anywhere (`crate::diagnose`). How many things were hidden in it
+        // goes along, so the page can say to look before attaching it
+        ("GET", "/api/diagnostics") => match crate::diagnose::bundle() {
+            Ok((name, bytes, hid)) => {
+                let cd = format!("attachment; filename=\"{name}\"");
+                let resp = Response::from_data(bytes)
+                    .with_header(Header::from_bytes(&b"Content-Type"[..], &b"application/zip"[..]).unwrap())
+                    .with_header(Header::from_bytes(&b"Content-Disposition"[..], cd.as_bytes()).unwrap())
+                    .with_header(Header::from_bytes(&b"X-Hidden"[..], hid.to_string().as_bytes()).unwrap())
+                    .with_header(Header::from_bytes(&b"X-File-Name"[..], name.as_bytes()).unwrap());
+                req.respond(resp)?;
+            }
+            Err(e) => {
+                req.respond(Response::from_string(format!("{e:#}")).with_status_code(500))?;
+            }
+        },
         // The durable replay script: css/xpath anchors only, no digest/ref
         // dependency — paste into ▶ run mode or an automation, on any PC.
         // ?run=<id> for a specific run, otherwise the latest. 404 when the
@@ -6344,6 +6361,7 @@ const PAGE: &str = r##"<!doctype html>
   <span id="msg"></span>
   <div class="headlinks" id="headlinks">
     <a class="quiet" href="#" onclick="openExt('bug');return false" title="{{settings.report_bug}}">{{settings.report_bug}}</a>
+    <a class="quiet" href="#" onclick="saveDiagnostics();return false" title="{{settings.diagnostics.hint}}">{{settings.diagnostics}}</a>
     <a class="quiet" href="#" onclick="openExt('discussions');return false" title="{{settings.discussions}}">{{settings.discussions}}</a>
     <button class="quiet" onclick="load()">{{common.reload}}</button>
   </div>
@@ -18035,6 +18053,25 @@ document.addEventListener("keydown", e => {
 // and pre-fills the bug template with this build and the OS version.
 function openExt(dest) {
   settingsFetch("/api/open?dest=" + dest, {}).catch(()=>{});
+}
+
+// The file a bug report carries: made on this machine, saved where the
+// person saves things, sent nowhere. What was hidden in it is said, so it
+// is looked at before it is attached
+async function saveDiagnostics() {
+  try {
+    const r = await settingsFetch("/api/diagnostics", {});
+    if (!r.ok) { msg(fill(T["settings.diagnostics.failed"], {e: await r.text()}), true); return; }
+    const name = r.headers.get("X-File-Name") || "shikisha-diagnostics.zip";
+    const hid = r.headers.get("X-Hidden") || "0";
+    const u = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = u; a.download = name; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(u), 1000);
+    msg(fill(T["settings.diagnostics.saved"], {name, n: hid}));
+  } catch (e) {
+    msg(fill(T["settings.diagnostics.failed"], {e: e.message || e}), true);
+  }
 }
 
 // Said once, before the first paint: this page is inside a frame the board

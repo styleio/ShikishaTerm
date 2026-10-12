@@ -4058,17 +4058,30 @@ fn proxy_settings(
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            let mut text = resp.body_mut().read_to_string().unwrap_or_default();
+            // What a download says about itself goes along with it: its name,
+            // and what the settings server said beside it. Read before the body
+            let kept: Vec<(String, String)> = ["content-disposition", "x-hidden", "x-file-name"]
+                .iter()
+                .filter_map(|h| resp.headers().get(*h).and_then(|v| v.to_str().ok()).map(|v| (h.to_string(), v.to_string())))
+                .collect();
+            // Bytes, not text: a download (a zip, a picture) read as text came
+            // through empty
+            let mut body = resp.body_mut().read_to_vec().unwrap_or_default();
             // The settings HTML embeds its own token; scrub it so the phone never
             // sees it. (Getting back to the board is the page's own sticky "Close",
             // which navigates to "/" on the phone — with the unsaved-changes guard.)
             if path == "/cfg" && ctype.contains("text/html") {
-                text = text.replace(&sett_token, "");
+                body = String::from_utf8_lossy(&body).replace(&sett_token, "").into_bytes();
             }
-            let resp = Response::from_string(text)
+            let mut resp = Response::from_data(body)
                 .with_status_code(status)
                 .with_header(Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap())
                 .with_header(Header::from_bytes(&b"Cache-Control"[..], &b"no-store"[..]).unwrap());
+            for (name, value) in kept {
+                if let Ok(h) = Header::from_bytes(name.as_bytes(), value.as_bytes()) {
+                    resp = resp.with_header(h);
+                }
+            }
             req.respond(resp).map_err(Into::into)
         }
         Err(e) => req
@@ -6171,6 +6184,45 @@ mod tests {
             !crate::push::subs().iter().any(|s| s.endpoint == "https://push.invalid/p"),
             "the phone's notifications outlived its key"
         );
+
+        ui.shutdown();
+        settings.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A download from the settings reaches the phone as it left: the bytes
+    /// of a zip, its name, and what was said beside it. Read as text on the
+    /// way through, a zip arrived empty
+    #[test]
+    fn a_download_from_the_settings_reaches_the_phone_whole() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let settings = crate::webui::WebUi::start_with(
+            cfg,
+            Arc::new(Mutex::new(crate::webui::RemoteInfo::default())),
+            Arc::new(Mutex::new(None)),
+        )
+        .unwrap();
+        let (origin, sett_token) = settings.url.split_once("/?token=").unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        ui.set_settings_backend(origin.to_string(), sett_token.to_string());
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let mut phone = Phone::new(&base);
+        phone.pair("tok123456789012");
+        phone.also("sst=tok123456789012");
+
+        let mut r = phone.get("/api/diagnostics");
+        assert_eq!(r.status().as_u16(), 200);
+        let hidden = r.headers().get("x-hidden").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let named = r.headers().get("content-disposition").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let bytes = r.body_mut().read_to_vec().unwrap();
+        assert!(hidden.is_some(), "what was hidden was not said");
+        assert!(named.contains("shikisha-diagnostics-"), "the name did not come along: {named}");
+        let zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("what arrived is not the zip");
+        assert!(zip.file_names().any(|n| n == "about.txt"));
 
         ui.shutdown();
         settings.shutdown();
