@@ -74,6 +74,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
             bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
             incarnation: crate::api::incarnation_of(t.uid()),
             typed_request,
+            failure: t.record_failure().map(str::to_string),
         });
     }
     Scene { tabs: out }

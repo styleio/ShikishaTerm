@@ -213,8 +213,9 @@ fn with_next(r: &Value, next: &[Value]) -> String {
 "))
 }
 
-/// The answer, as an AI reads it: the reply, then one line of what happened
-fn said(r: &Value) -> String {
+/// The answer, as an AI reads it: the reply, then one line of what happened.
+/// The same words whether it came back on the call or, later, in the inbox
+pub(crate) fn said(r: &Value) -> String {
     let s = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or_default();
     let tab = s("tab");
     let round = match (
@@ -266,8 +267,17 @@ fn said(r: &Value) -> String {
         ),
         "LIMIT" => format!("[shikisha] NOT DONE: <@{tab}> hit its usage limit{facts}"),
         "FAILED" => {
-            format!("{reply}\n\n[shikisha] NOT DONE: the turn of <@{tab}> ended in an error{facts}")
+            let error = match s("error").trim().trim_end_matches('.') {
+                "" => String::new(),
+                e => format!(": {e}"),
+            };
+            format!(
+                "{reply}\n\n[shikisha] NOT DONE: the turn of <@{tab}> ended in an error{error}{facts}. Nothing came of it; asking again sends it again"
+            )
         }
+        "NOREPLY" => format!(
+            "[shikisha] NOT DONE: no reply to this was found from <@{tab}>, and it has gone on to other work since; ask again if you still need it{facts}"
+        ),
         "EXIT" => format!("[shikisha] NOT DONE: the program in <@{tab}> has ended{facts}"),
         "GONE" => format!("[shikisha] NOT DONE: <@{tab}> was closed{facts}"),
         other => format!("{reply}\n\n[shikisha] {other}{facts}"),
@@ -358,6 +368,15 @@ mod tests {
         );
         let q = said(&json!({"tab":"otter","state":"QUESTION","reply":"Allow? (y/n)"}));
         assert!(q.contains("WAITING") && q.starts_with("Allow?"), "{q}");
+        // A turn that failed says what went wrong and that the way on is to ask again
+        let failed = said(&json!({"tab":"otter","state":"FAILED","reply":"■ Selected model is at capacity.",
+            "error":"Selected model is at capacity.","round":1}));
+        assert!(failed.starts_with("■ Selected model"), "{failed}");
+        assert!(
+            failed.contains("NOT DONE: the turn of <@otter> ended in an error: Selected model is at capacity (round 1). Nothing")
+                && failed.contains("asking again sends it again"),
+            "{failed}"
+        );
     }
 
     /// The words after the command are its arguments, as Lua would pass them

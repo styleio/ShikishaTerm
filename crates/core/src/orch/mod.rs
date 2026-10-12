@@ -141,6 +141,9 @@ pub struct TabFact {
     pub incarnation: Option<u64>,
     /// Its CLI follows pasted text only when a typed line asks it to
     pub typed_request: bool,
+    /// What its CLI said went wrong, when its last turn ended in an error
+    /// and its record says so (`Tab::record_failure`)
+    pub failure: Option<String>,
 }
 
 impl TabFact {
@@ -2044,6 +2047,31 @@ impl Orchestra {
                             ),
                         ));
                     }
+                    // Its turn ended in an error and nothing will come of
+                    // waiting: said at once, not after it has sat quiet a while
+                    TabState::Failed if !asking.contains(&a.id) => {
+                        let said = t
+                            .failure
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|e| !e.is_empty())
+                            .map(|e| format!(" ({e})"))
+                            .unwrap_or_default();
+                        raised.push((
+                            job,
+                            format!("failed:{}", a.id),
+                            format!("<@{}>'s turn ended in an error", a.tab_name),
+                            format!(
+                                "a{} (t{}) is held up: <@{}>'s turn ended in an error{said} and it has stopped. \
+                                 See what it said: {} Then tell it to go on, or assign the task elsewhere: {}",
+                                a.id,
+                                a.task,
+                                a.tab_name,
+                                cmd(&["tab_conversation", &a.tab_name]),
+                                cmd(&["tell", &format!("a{}", a.id), "\"<carry on with the task>\""])
+                            ),
+                        ));
+                    }
                     _ if t.turn_over() && !asking.contains(&a.id) => {
                         let since = *self.quiet_since.entry(a.id).or_insert(now);
                         if now.duration_since(since) >= LEFT {
@@ -2068,6 +2096,7 @@ impl Orchestra {
                         self.quiet_since.remove(&a.id);
                         let _ = store.lower(&format!("approval:{}", a.id));
                         let _ = store.lower(&format!("limit:{}", a.id));
+                        let _ = store.lower(&format!("failed:{}", a.id));
                     }
                 },
             }

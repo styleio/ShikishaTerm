@@ -24,6 +24,7 @@ fn tab(id: &str, state: TabState) -> TabFact {
         bridge: false,
         incarnation: Some(1),
         typed_request: id.starts_with("claude"),
+        failure: None,
     }
 }
 
@@ -249,6 +250,33 @@ fn a_busy_tab_gets_the_brief_when_it_is_free_and_a_waiting_one_never() {
     assert!(e.contains("approve"), "{e}");
     // Nothing was tried, so nothing failed: the task is open again
     assert_eq!(w.o.store().unwrap().task(2).unwrap().unwrap().state, "open");
+}
+
+/// A worker whose turn ended in an error is said to the lead at once, with
+/// what its CLI said and the way on -- not after it has sat quiet a while
+/// as "stopped without reporting"
+#[test]
+fn a_worker_whose_turn_failed_is_raised_at_once_with_its_error() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("Review commit abc.")]);
+    w.assign("t1", "codex");
+    w.set("codex", TabState::Failed);
+    w.scene.tabs.iter_mut().find(|t| t.id == "codex").unwrap().failure =
+        Some("Selected model is at capacity. Please try a different model.".into());
+    w.o.last_watch = None;
+    w.o.tick(&w.scene);
+    let inbox = w.ok("lead", "inbox", vec![]);
+    let alert = inbox["mail"].as_array().unwrap().iter().find(|m| m["kind"] == "alert").expect("raised").clone();
+    let said = alert.to_string();
+    assert!(said.contains("ended in an error") && said.contains("at capacity"), "{said}");
+    assert!(said.contains("shikisha tell a1"), "the way on is named: {said}");
+    // Raised once, however long it stays failed
+    w.ok("lead", "inbox", vec![json!({"dealt": inbox["handover"]})]);
+    w.o.last_watch = None;
+    w.o.tick(&w.scene);
+    let again = w.ok("lead", "inbox", vec![]);
+    assert!(!again["mail"].as_array().unwrap().iter().any(|m| m["kind"] == "alert"), "{again}");
 }
 
 #[test]

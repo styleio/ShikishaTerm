@@ -3404,6 +3404,12 @@ struct TurnLook {
     next: Option<Instant>,
     /// A look at a record on another machine, out on a thread of its own
     far: Option<std::sync::mpsc::Receiver<Option<crate::reader::Standing>>>,
+    /// The record says the last turn ended in an error (a turn begun after
+    /// this tab's program was): what the CLI said went wrong, empty when it
+    /// said nothing. A level like the busy reading, gone once a turn begins
+    failed: Option<String>,
+    /// ...and the error was the usage limit
+    at_limit: bool,
 }
 
 /// How often a record is looked at for a turn going on. The record is the
@@ -3881,10 +3887,18 @@ impl Tab {
             .launched
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(i64::MAX, |d| d.as_millis() as i64);
-        let going_on = move |s: Option<crate::reader::Standing>| {
-            s.and_then(|s| s.mark).is_some_and(|(mark, when)| {
-                mark == crate::reader::TurnMark::Working && when.is_some_and(|w| w >= since)
-            })
+        // Whether a turn is going on, and whether the last one failed: both
+        // only for a turn this tab's program began
+        let reading = move |s: Option<crate::reader::Standing>| {
+            let Some(s) = s else { return (false, None, false) };
+            match s.mark {
+                Some((mark, Some(when))) if when >= since => match mark {
+                    crate::reader::TurnMark::Working => (true, None, false),
+                    crate::reader::TurnMark::Failed => (false, Some(s.error.unwrap_or_default()), s.at_limit),
+                    crate::reader::TurnMark::Over => (false, None, false),
+                },
+                _ => (false, None, false),
+            }
         };
         let now = Instant::now();
         // A record on another machine: read on a thread, the answer picked up
@@ -3894,7 +3908,10 @@ impl Tab {
                 match rx.try_recv() {
                     Ok(standing) => {
                         self.turn_look.far = None;
-                        self.detector.record_says(going_on(standing));
+                        let (busy, failed, at_limit) = reading(standing);
+                        self.detector.record_says(busy);
+                        self.turn_look.failed = failed;
+                        self.turn_look.at_limit = at_limit;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => self.turn_look.far = None,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -3934,7 +3951,18 @@ impl Tab {
             self.turn_look.found = id.zip(self.record());
         }
         let standing = self.turn_look.found.as_ref().and_then(|(_, path)| crate::reader::standing_of(path));
-        self.detector.record_says(going_on(standing));
+        let (busy, failed, at_limit) = reading(standing);
+        self.detector.record_says(busy);
+        self.turn_look.failed = failed;
+        self.turn_look.at_limit = at_limit;
+    }
+
+    /// What the CLI's own record says went wrong in the last turn, when that
+    /// turn ended in an error rather than an answer: empty when it said
+    /// nothing. `None` for a turn that did not fail, and for a CLI whose
+    /// record marks no turns (its failure is told by its hook, if at all)
+    pub fn record_failure(&self) -> Option<&str> {
+        self.turn_look.failed.as_deref()
     }
 
     /// The turn has ended and its answer is still being looked for in the
@@ -5515,8 +5543,16 @@ impl Tab {
             // Order is which one a person needs to hear. A turn that ended
             // against the limit produced no answer and no amount of waiting on
             // this tab will change that, so it outranks work still running
-            if self.limit_note.is_some() {
+            // The record names a usage limit where the screen has no line for
+            // it (Codex says it in the kind of the error it files)
+            if self.limit_note.is_some() || (self.turn_look.failed.is_some() && self.turn_look.at_limit) {
                 self.state = TabState::Limit;
+            } else if self.turn_look.failed.is_some() {
+                // The turn ended in an error the CLI gave up on, and it says
+                // so only in its record: Codex calls no hook for it, and its
+                // screen reads like any other end. Saying it again is what
+                // gets an answer, and that outranks work still running
+                self.state = TabState::Failed;
             } else if background || aside {
                 self.state = TabState::Background;
                 // Which of the two is holding it, once as it starts to: the
