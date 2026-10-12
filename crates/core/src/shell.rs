@@ -5624,14 +5624,17 @@ function drawTabs() {
 // page for them, where they are paired, looked at and removed
 function boardsButton(names) {
   const open = name => send({kind:"openboard", name});
+  // A function, not the name itself: a name holding `$&` would be read as a
+  // pattern of the replacement and come out changed
+  const said = name => (T["tui.boards.open"] || "{name}").replaceAll("{name}", () => name);
   const list = (anchor, point) => openList(anchor, [
     ...names.map(name => el("div", {onclick:() => { closeFolderMenu(); open(name); }},
-      (T["tui.boards.open"] || "{name}").replaceAll("{name}", name))),
+      said(name))),
     el("div", {class:"boardsmanage", onclick:() => { closeFolderMenu(); openSettings("boards"); }},
-      T["tui.boards.manage"] || "")], false, point);
+      T["tui.boards.manage"] || "")], names.length > 8, point);
   const one = names.length === 1;
   return el("span", {class:"sidebtn boardsbtn",
-      title: one ? (T["tui.boards.open"] || "{name}").replaceAll("{name}", names[0]) : (T["tui.boards.title"] || ""),
+      title: one ? said(names[0]) : (T["tui.boards.title"] || ""),
       onclick:e => { e.stopPropagation(); one ? open(names[0]) : list(e.currentTarget); },
       oncontextmenu:e => { e.preventDefault(); e.stopPropagation(); list(e.currentTarget, e); }}, "🖥️");
 }
