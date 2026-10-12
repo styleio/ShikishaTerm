@@ -2418,6 +2418,10 @@ pub struct UiState {
     /// nowhere and why
     #[serde(default)]
     pub quick_to: std::collections::BTreeMap<String, crate::quick::QuickDest>,
+    /// The server versions this PC was paired with, by the name each was
+    /// saved under: the board's 🖥️ opens them, and is there only once there is one
+    #[serde(default)]
+    pub boards: Vec<String>,
     /// The folders this desk's tabs are working in. One means nothing is
     /// drawn: the heading only exists to tell folders apart
     #[serde(default)]

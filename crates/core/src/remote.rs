@@ -502,6 +502,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // This PC's window and its notification-area icon, and the keys that
         // work from any program on this PC. None of them is a thing a phone has
         Ev::CloseRequested | Ev::CloseFront | Ev::Closed | Ev::TrayOpen | Ev::TrayQuit | Ev::Terminate | Ev::Summon { .. } => false,
+        // A server version's board opens in a window on this PC, in front of
+        // nobody holding the phone; a phone is paired with it by its own code
+        Ev::OpenBoard { .. } => false,
         // Done on the phone through a door of its own, so the same button
         // works there without this: the settings are the proxied /cfg, the
         // manual and a program's install page are plain links, a file is sent
@@ -4682,6 +4685,8 @@ mod tests {
             "Seek", "Download",
             // This PC's window, tray and keys
             "CloseRequested", "CloseFront", "Closed", "TrayOpen", "TrayQuit", "Terminate", "Summon",
+            // A window on this PC (a phone pairs with the server version itself)
+            "OpenBoard",
             // The phone has a door of its own
             "OpenSettings", "SoundSettings", "CloseSettings", "SettingsFull", "Help", "InstallHelp", "Attach",
             // Meaningless on a phone

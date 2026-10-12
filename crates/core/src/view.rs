@@ -597,6 +597,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         direct_keys: crate::keys::direct_now(),
         quick: ui.quick.clone(),
         quick_to: ui.quick_to.clone(),
+        boards: ui.boards.clone(),
         desks: ui.desk_names.clone(),
         desk_index: ui.desk_index,
         active: ui.active,
@@ -1970,6 +1971,8 @@ pub struct Ui {
     pub quick: std::sync::Arc<crate::quick::QuickView>,
     /// Where each kind of quick command would go right now
     pub quick_to: std::collections::BTreeMap<String, crate::quick::QuickDest>,
+    /// The server versions this PC was paired with, by name (`Config::boards`)
+    pub boards: Vec<String>,
 }
 
 /// The name used when placing the result view (finished discussion / review /

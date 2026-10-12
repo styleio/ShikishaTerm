@@ -1490,6 +1490,8 @@
   "settings.boards.name_dup": "A server of that name is added already.",
   "settings.boards.not_saved": "That server is not in the saved settings.",
   "tui.boards.title": "Server versions",
+  "tui.boards.open": "Open the server version {name}",
+  "tui.boards.manage": "Manage server versions…",
   "err.board.bad_url": "That is not the address of a board: write http:// or https://, the host, and the port, and nothing after it.",
   "err.board.unreachable": "the server could not be reached ({e})",
   "err.board.not_paired": "the server does not know this PC any more: remove it and add it again with a new code",

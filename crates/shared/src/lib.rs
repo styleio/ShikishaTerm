@@ -687,6 +687,9 @@ pub enum Ev {
     /// sent: the place in this Mac's settings where it is allowed. Named, not
     /// given as an address: a page never says what this machine opens
     SoundSettings,
+    /// Open the board of a server version this PC was paired with, by the
+    /// name it was saved under, in a window of its own beside this one
+    OpenBoard { name: String },
     /// A short message to show on the page in view, drawn by the page itself:
     /// in the window a page is a window of its own, and nothing of the board's
     /// can be drawn over it. What the 📼 panel has to say for a moment goes
@@ -1848,6 +1851,9 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             ask: v.get("ask").and_then(|x| x.as_bool()).unwrap_or(true),
         },
         Some("soundsettings") => Ev::SoundSettings,
+        Some("openboard") => Ev::OpenBoard {
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        },
         Some("pagetoast") => Ev::PageToast {
             text: v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             warn: v.get("warn").and_then(|x| x.as_bool()).unwrap_or(false),
