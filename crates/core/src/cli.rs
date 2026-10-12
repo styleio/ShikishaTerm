@@ -271,9 +271,12 @@ pub(crate) fn said(r: &Value) -> String {
                 "" => String::new(),
                 e => format!(": {e}"),
             };
-            format!(
-                "{reply}\n\n[shikisha] NOT DONE: the turn of <@{tab}> ended in an error{error}{facts}. Nothing came of it; asking again sends it again"
-            )
+            let next = if r.get("refused").and_then(Value::as_bool) == Some(true) {
+                "its AI's provider would not answer this, and the same words will be refused again: put it another way, or tell the person"
+            } else {
+                "asking again sends it again"
+            };
+            format!("{reply}\n\n[shikisha] NOT DONE: the turn of <@{tab}> ended in an error{error}{facts}. Nothing came of it; {next}")
         }
         "NOREPLY" => format!(
             "[shikisha] NOT DONE: no reply to this was found from <@{tab}>, and it has gone on to other work since; ask again if you still need it{facts}"
@@ -377,6 +380,11 @@ mod tests {
                 && failed.contains("asking again sends it again"),
             "{failed}"
         );
+        // A refusal is not to be sent again as it was
+        let refused = said(&json!({"tab":"otter","state":"FAILED","reply":"This content can't be shown",
+            "error":"This content was flagged for possible cybersecurity risk.","refused":true}));
+        assert!(refused.contains("refused again: put it another way, or tell the person"), "{refused}");
+        assert!(!refused.contains("asking again sends it again"), "{refused}");
     }
 
     /// The words after the command are its arguments, as Lua would pass them

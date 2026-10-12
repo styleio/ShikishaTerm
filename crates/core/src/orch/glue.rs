@@ -75,6 +75,7 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
             incarnation: crate::api::incarnation_of(t.uid()),
             typed_request,
             failure: t.record_failure().map(str::to_string),
+            refused: t.record_failure().is_some() && t.record_fail_kind() == crate::reader::FailKind::Refused,
         });
     }
     Scene { tabs: out }

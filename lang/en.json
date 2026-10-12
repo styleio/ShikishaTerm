@@ -2382,6 +2382,7 @@
   "routine.why.busy": "The tab was busy.",
   "routine.why.limit": "The AI is at its usage limit.",
   "routine.why.turn_failed": "The AI stopped with an error before it answered.",
+  "routine.why.not_sent": "The prompt was stopped before it was sent.",
   "routine.why.tab_gone": "The tab is not open.",
   "routine.why.tab_ended": "The program in the tab ended.",
   "routine.why.tab_closed": "The tab was closed before the AI answered.",
