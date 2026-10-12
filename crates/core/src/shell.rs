@@ -17247,6 +17247,8 @@ function convoSpeaker(r) {
     return (T["convo.from.job.lead"] || "Job #{n} · {tab}").replaceAll("{n}", n).replaceAll("{tab}", convoTabName(f.sender));
   }
   if (f.by === "job") return (T["convo.from.job"] || "Job #{n}").replaceAll("{n}", n);
+  // A prompt sent by the clock, from the settings form, by its name
+  if (f.by === "automation" && f.via === "routine") return (T["convo.from.routine"] || "Scheduled prompt · {name}").replaceAll("{name}", f.sender || "");
   return T["convo.from.auto"] || "Automation (Lua)";
 }
 // What happened, for a row that is not something said

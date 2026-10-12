@@ -2541,6 +2541,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut schedule_looked = Instant::now();
     // ...and when each tab's next one runs, for the board to say
     let mut timed_next: Vec<(usize, u64)> = Vec::new();
+    // Scheduled prompts (`crate::routine`): what came of each run, the runs
+    // waiting for their answer, when the clock and the answers were last
+    // looked at, and which tab on screen each next comes to
+    let mut routine_book = crate::routine::Book::load();
+    routine_book.save();
+    let mut routine_flights: Vec<RoutineFlight> = Vec::new();
+    let mut routine_looked = Instant::now();
+    let mut routine_watched = Instant::now();
+    let mut routine_next: Vec<(usize, u64)> = Vec::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
     let mut ball = ball::Ball::default();
@@ -4713,7 +4722,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 }
                                 let key = crate::schedule::key(&timed.script, &timed.hook, tab.map(|(_, t)| t.uid()));
                                 let last = schedule_kept.last.get(&key).copied();
-                                let (due, keep) = crate::schedule::due(timed.when, last, now, &local);
+                                let (due, keep) = crate::schedule::due(timed.when, last, now, crate::schedule::GRACE, &local);
                                 if last != Some(keep) {
                                     schedule_kept.last.insert(key, keep);
                                     changed = true;
@@ -6754,7 +6763,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // rather than emptying and leaving the person guessing. Taken from
             // the sends themselves, here, where they are: a second tally kept
             // alongside them would be a second thing to get wrong
-            timed: timed_next.clone(),
+            timed: timed_next.iter().chain(&routine_next).copied().collect(),
             sending: pending_send
                 .iter()
                 .map(|p| {
@@ -7614,9 +7623,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 let titles: Vec<&str> = list.iter().map(|t| t.title.as_str()).collect();
                 let rows = surfaces_written(desks.get(owner), &titles, &caps.hosted_names(),
                     if owner == desk_index { &editors } else { &[] }, owner == desk_index && issues_open);
+                // A request that names no row (a scheduled prompt's tab, in a
+                // desk with no screen numbers) is the row its key is at now
+                let at = match request.at {
+                    0 => rows.iter().position(|(s, _)| crate::view::surface_key(s, list) == request.key).map_or(0, |i| i + 1),
+                    at => at,
+                };
                 close_asked += 1;
                 match crate::closed::close(
-                    request.at,
+                    at,
                     &request.key,
                     request.sure,
                     &rows,
@@ -7904,37 +7919,285 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Lines waiting for a tab a quick command opened: handed over once
         // the program in it has started and is holding still, the same "ready"
         // a startup hook waits for. A tab that never comes, or never settles,
-        // is said rather than waited on for ever
+        // is said rather than waited on for ever. The tab may be in a desk
+        // that is not on screen: a scheduled prompt runs in its own desk,
+        // whichever one the person is looking at
         if !pending_quicks.is_empty() {
             let now_ms = start.elapsed().as_millis() as u64;
+            let now = crate::hooks::epoch_ms() / 1000;
             let mut still = Vec::new();
             for p in std::mem::take(&mut pending_quicks) {
-                let at = (1..=surfaces.len()).find(|&s| {
-                    session_at(&surfaces, s)
-                        .and_then(|i| tabs.get(i))
+                let owner = tab_owner(&p.uid, desk_index, &tabs, &desk_tabs);
+                let away_surfaces: Vec<Surface>;
+                let mut away_ball = ball::Ball::default();
+                let (list, surf, held): (&mut Vec<Tab>, &[Surface], &mut ball::Ball) = match owner {
+                    Some(o) if o != desk_index => {
+                        let list = &mut desk_tabs[o];
+                        away_surfaces = (0..list.len()).map(Surface::Session).collect();
+                        (list, &away_surfaces[..], &mut away_ball)
+                    }
+                    _ => (&mut tabs, &surfaces[..], &mut ball),
+                };
+                let at = (1..=surf.len()).find(|&s| {
+                    session_at(surf, s)
+                        .and_then(|i| list.get(i))
                         .is_some_and(|t| t.uid() == p.uid)
                 });
                 let ready = at
-                    .and_then(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                    .and_then(|s| session_at(surf, s).and_then(|i| list.get(i)))
                     .is_some_and(|t| quick_ready(t, now_ms));
+                // The run of a scheduled prompt this tab was opened for
+                let flight = p.routine.as_ref().and_then(|(id, n)| routine_flights.iter().position(|f| &f.id == id && f.n == *n));
                 match (at, ready) {
                     (Some(s), true) => {
                         let said = p.text.clone();
-                        if hand_over(&mut tabs, &surfaces, s, p.text, p.submit, now_ms, &mut pending_send, &mut ball) && p.submit {
-                            record_sent(&tabs, &surfaces, s, &said, p.from.clone());
+                        // How long its record was before the words went in:
+                        // the answer is looked for after that
+                        let from = session_at(surf, s).and_then(|i| list.get(i)).and_then(crate::asktab::record_len).unwrap_or(0);
+                        let landed = hand_over(list, surf, s, p.text, p.submit, now_ms, &mut pending_send, held);
+                        if landed && p.submit {
+                            record_sent(list, surf, s, &said, p.from.clone());
+                        }
+                        if let Some(i) = flight {
+                            if landed {
+                                let f = &mut routine_flights[i];
+                                (f.handed, f.from, f.sent_ms) = (true, from, now_ms);
+                            } else {
+                                let f = routine_flights.remove(i);
+                                routine_end(&mut routine_book, &f, now, crate::routine::How::Failed, "routine.why.locked", None);
+                            }
                         }
                     }
                     _ if Instant::now() > p.until => {
-                        let why = at.and_then(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                        let why = at.and_then(|s| session_at(surf, s).and_then(|i| list.get(i)))
                             .map(|t| format!("open={}, output={}, state={}, quiet={}ms", t.far_open(), t.had_output(), t.state.label(), t.ms_since_change(now_ms)))
-                            .unwrap_or_else(|| "the tab is absent from this desk".into());
+                            .unwrap_or_else(|| "the tab is absent from every desk".into());
                         crate::append_hook_log(&format!("quick command {:?} for tab {} timed out: {why}", p.label, p.uid));
-                        flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)]));
+                        match flight {
+                            Some(i) => {
+                                let f = routine_flights.remove(i);
+                                routine_end(&mut routine_book, &f, now, crate::routine::How::Failed, "routine.why.never_ready", None);
+                            }
+                            None => flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)])),
+                        }
                     }
                     _ => still.push(p),
                 }
             }
             pending_quicks = still;
+        }
+
+        // Scheduled prompts (`crate::routine`): the ones whose time has come
+        // by the clock, looked at four times a minute while automation is on,
+        // and the ones a person asked to run now from the settings -- which
+        // the brake does not hold, being their own press
+        {
+            let now_ms = start.elapsed().as_millis() as u64;
+            let now = crate::hooks::epoch_ms() / 1000;
+            let routines: Vec<crate::routine::Routine> = cfg.as_ref().map(|c| c.routines.clone()).unwrap_or_default();
+            let mut wanted: Vec<(String, Option<u64>)> = crate::routine::take_run_now().into_iter().map(|id| (id, None)).collect();
+            if routine_looked.elapsed() >= Duration::from_secs(15) {
+                routine_looked = Instant::now();
+                let local = |at: u64| crate::hooks::local_at(at);
+                let mut kept_changed = false;
+                let mut next = Vec::new();
+                // Nothing runs by the clock while automation is stopped, so
+                // nothing says it will
+                if auto_enabled {
+                    for r in routines.iter().filter(|r| r.on && r.fault().is_none()) {
+                        let Some(when) = r.when.when() else { continue };
+                        let key = r.kept_key();
+                        let last = schedule_kept.last.get(&key).copied();
+                        let (due, keep) = crate::schedule::due(when, last, now, r.grace(), &local);
+                        if last != Some(keep) {
+                            schedule_kept.last.insert(key, keep);
+                            kept_changed = true;
+                        }
+                        match due {
+                            crate::schedule::Due::Run(at) => wanted.push((r.id.clone(), Some(at))),
+                            crate::schedule::Due::Missed(at) => {
+                                append_hook_log(&format!(
+                                    "scheduled prompt \"{}\" missed -- it was due {} and the app could not run it within {} min",
+                                    r.shown_name(),
+                                    crate::hooks::local_clock_at(at),
+                                    r.grace() / 60
+                                ));
+                                routine_book.note(&r.id, Some(at), now, crate::routine::How::Missed, "routine.why.late");
+                                routine_book.save();
+                            }
+                            crate::schedule::Due::Not => {}
+                        }
+                        // A prompt for a tab on screen says when, on the tab
+                        if !r.tab.is_empty()
+                            && let Some(pane) = (1..=surfaces.len()).find(|&s| {
+                                session_at(&surfaces, s).and_then(|i| tabs.get(i)).is_some_and(|t| t.uid() == r.tab)
+                            })
+                        {
+                            next.push((pane, crate::schedule::next(when, Some(keep), now, &local)));
+                        }
+                    }
+                }
+                routine_next = next;
+                if kept_changed {
+                    schedule_kept.save();
+                }
+                // The history of a prompt taken out of the settings goes with it
+                if cfg.is_some() && routine_book.keep_only(&routines.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()) {
+                    routine_book.save();
+                }
+            }
+            for (id, due) in wanted {
+                let Some(r) = routines.iter().find(|r| r.id == id) else {
+                    append_hook_log(&format!("scheduled prompt {id} asked to run, but the settings hold no such prompt"));
+                    continue;
+                };
+                let name = r.shown_name();
+                if let Some(why) = r.fault() {
+                    append_hook_log(&format!("scheduled prompt \"{name}\" not run: {why}"));
+                    routine_book.note(&r.id, due, now, crate::routine::How::Failed, why);
+                    routine_book.save();
+                    continue;
+                }
+                // One run at a time: the last one's answer has not come
+                if routine_flights.iter().any(|f| f.id == r.id) {
+                    append_hook_log(&format!("scheduled prompt \"{name}\" skipped: its last run has not been answered yet"));
+                    routine_book.note(&r.id, due, now, crate::routine::How::Skipped, "routine.why.last_going");
+                    routine_book.save();
+                    continue;
+                }
+                let from = crate::convo::Origin { by: crate::convo::By::Automation, device: None, via: "routine", sender: Some(name.clone()), job: None };
+                let started = match r.tab.is_empty() {
+                    // A tab of its own, opened for the run in its folder
+                    true => routine_open(r, &desks, desk_index, &tabs, &desk_tabs, &ai_choices, &config_file, from, &mut pending_quicks),
+                    // The tab it names, if that tab is free to be typed into
+                    false => match tab_owner(&r.tab, desk_index, &tabs, &desk_tabs) {
+                        None => Err("routine.why.tab_gone"),
+                        Some(o) => {
+                            let away_surfaces: Vec<Surface>;
+                            let mut away_ball = ball::Ball::default();
+                            let (list, surf, held): (&mut Vec<Tab>, &[Surface], &mut ball::Ball) = match o == desk_index {
+                                true => (&mut tabs, &surfaces[..], &mut ball),
+                                false => {
+                                    let list = &mut desk_tabs[o];
+                                    away_surfaces = (0..list.len()).map(Surface::Session).collect();
+                                    (list, &away_surfaces[..], &mut away_ball)
+                                }
+                            };
+                            routine_hand(r, list, surf, held, now_ms, &mut pending_send, from)
+                        }
+                    },
+                };
+                match started {
+                    Ok(begun) => {
+                        let n = routine_book.begin(&r.id, due, now);
+                        if let Some(run) = routine_book.run_mut(&r.id, n) {
+                            run.tab = Some(begun.uid.clone());
+                            run.title = Some(begun.title.clone());
+                        }
+                        routine_book.save();
+                        append_hook_log(&format!(
+                            "scheduled prompt \"{name}\" run {n} ({}) -> {} \"{}\": {}",
+                            due.map_or_else(|| "run now".to_string(), |at| format!("due {}", crate::hooks::local_clock_at(at))),
+                            if begun.opened { "new tab" } else { "tab" },
+                            begun.title,
+                            log_excerpt(&r.prompt, 120)
+                        ));
+                        if begun.opened {
+                            if let Some(p) = pending_quicks.last_mut() {
+                                p.routine = Some((r.id.clone(), n));
+                            }
+                            watcher.poke();
+                        }
+                        routine_flights.push(RoutineFlight {
+                            id: r.id.clone(),
+                            n,
+                            uid: begun.uid,
+                            text: r.prompt.clone(),
+                            from: begun.from,
+                            sent_ms: now_ms,
+                            busy_seen: false,
+                            handed: !begun.opened,
+                            tidy: begun.opened && r.tidy,
+                        });
+                    }
+                    Err(why) => {
+                        let how = match why {
+                            "routine.why.busy" | "routine.why.limit" => crate::routine::How::Skipped,
+                            _ => crate::routine::How::Failed,
+                        };
+                        append_hook_log(&format!("scheduled prompt \"{name}\" not run: {why}"));
+                        routine_book.note(&r.id, due, now, how, why);
+                        routine_book.save();
+                    }
+                }
+            }
+        }
+
+        // The runs waiting for their answer, looked at once a second. The
+        // record of the conversation says when a turn is over, where the CLI
+        // keeps one; the screen going quiet after it was busy says so where
+        // it does not. A tab opened for the run is closed once it is over, if
+        // nobody has touched it and it is not the one in front
+        if !routine_flights.is_empty() && routine_watched.elapsed() >= Duration::from_secs(1) {
+            routine_watched = Instant::now();
+            let now_ms = start.elapsed().as_millis() as u64;
+            let now = crate::hooks::epoch_ms() / 1000;
+            let shown = session_at(&surfaces, active).and_then(|i| tabs.get(i)).map(|t| t.uid().to_string());
+            let mut still = Vec::new();
+            for mut f in std::mem::take(&mut routine_flights) {
+                if !f.handed {
+                    still.push(f);
+                    continue;
+                }
+                let owner = tab_owner(&f.uid, desk_index, &tabs, &desk_tabs);
+                let list: &[Tab] = match owner {
+                    Some(o) if o != desk_index => &desk_tabs[o],
+                    _ => &tabs,
+                };
+                let Some((index, t)) = list.iter().enumerate().find(|(_, t)| t.uid() == f.uid) else {
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.tab_closed", None);
+                    continue;
+                };
+                if t.exited() {
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.tab_ended", None);
+                    continue;
+                }
+                // At its usage limit, the AI answers nothing until the limit
+                // lifts; the run is over, and the next one is not held up
+                if t.state == TabState::Limit {
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.limit", None);
+                    continue;
+                }
+                if matches!(t.state, TabState::Busy | TabState::Question) {
+                    f.busy_seen = true;
+                }
+                let record = t.record();
+                let said = record.as_deref().and_then(|p| crate::asktab::reply_when_over(p, &f.text, f.from));
+                let quiet = f.busy_seen && crate::asktab::turn_over(t.state) && t.ms_since_change(now_ms) >= ROUTINE_SETTLE_MS;
+                if said.is_none() && !quiet {
+                    still.push(f);
+                    continue;
+                }
+                let reply = said
+                    .or_else(|| record.as_deref().and_then(|p| crate::asktab::reply_in(p, &f.text, f.from)))
+                    .unwrap_or_else(|| screen_tail(t, ROUTINE_SCREEN_LINES));
+                routine_end(&mut routine_book, &f, now, crate::routine::How::Answered, "", Some(&reply));
+                append_hook_log(&format!("scheduled prompt run {} of {} answered in tab \"{}\"", f.n, f.id, t.title));
+                let touched = t.last_manual_ms.is_some_and(|ms| ms > f.sent_ms);
+                if f.tidy && !touched && shown.as_deref() != Some(f.uid.as_str()) && !t.locked {
+                    close_requests.push(CloseRequest {
+                        desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
+                        // Found by its key where it is, when the request is
+                        // carried out: a desk not on screen has no screen
+                        // numbers to name it by here
+                        at: 0,
+                        key: crate::view::surface_key(&Surface::Session(index), list),
+                        sure: false,
+                        reply: None,
+                    });
+                }
+            }
+            routine_flights = still;
         }
 
         // Lua quick-actions tapped in the bar: look up the code (kept server-side)
@@ -18800,6 +19063,7 @@ fn open_and_say(
         submit,
         from,
         until: Instant::now() + QUICK_WAIT,
+        routine: None,
     });
     Some(title)
 }
@@ -19200,6 +19464,142 @@ pub struct PendingQuick {
     /// says sent the first message
     pub from: crate::convo::Origin,
     pub until: Instant,
+    /// The scheduled prompt and the number of its run the tab was opened
+    /// for, when it was opened for one: its run goes on once the words are in
+    pub routine: Option<(String, u64)>,
+}
+
+/// A run of a scheduled prompt on its way: handed to its tab (or waiting for
+/// the tab opened for it to be ready), with its answer still to come
+pub struct RoutineFlight {
+    /// The prompt, by its id, and the number of this run of it
+    pub id: String,
+    pub n: u64,
+    /// The tab it went to
+    pub uid: String,
+    /// What was sent, which the answer is looked for after
+    pub text: String,
+    /// How long the tab's record was before it was sent
+    /// ([`crate::asktab::record_len`])
+    pub from: u64,
+    pub sent_ms: u64,
+    /// The tab has been seen at work since: a quiet screen means the turn is
+    /// over only after it was busy
+    pub busy_seen: bool,
+    /// The words are in. A tab opened for the run is not, until it is ready
+    pub handed: bool,
+    /// Close the tab once it is over (a tab opened for the run, and the
+    /// prompt says to)
+    pub tidy: bool,
+}
+
+/// How long the screen of a tab whose CLI keeps no record must hold still
+/// after its work, before the turn is taken to be over
+const ROUTINE_SETTLE_MS: u64 = 3000;
+/// How much of such a tab's screen is kept as its answer
+const ROUTINE_SCREEN_LINES: usize = 40;
+
+/// What a run of a scheduled prompt started: the tab it went to, whether
+/// that tab was opened for it, and how long the tab's record was before
+struct RoutineStart {
+    uid: String,
+    title: String,
+    opened: bool,
+    from: u64,
+}
+
+/// A run of `r` in a tab of its own, opened in its folder with its AI, the
+/// words handed over when the tab is ready (`pending`). Nothing is brought
+/// forward on the screen: the person is looking at something of their own
+#[allow(clippy::too_many_arguments)]
+fn routine_open(
+    r: &crate::routine::Routine,
+    desks: &[config::Desk],
+    desk_index: usize,
+    tabs: &[Tab],
+    desk_tabs: &[Vec<Tab>],
+    ais: &[crate::uistate::AiChoice],
+    config_file: &std::path::Path,
+    from: crate::convo::Origin,
+    pending: &mut Vec<PendingQuick>,
+) -> Result<RoutineStart, &'static str> {
+    let owner = desks.iter().position(|d| d.uid == r.desk).ok_or("routine.why.desk_gone")?;
+    let desk = &desks[owner];
+    let at = std::path::PathBuf::from(&r.folder);
+    if desk.folder_at(&at).is_none() {
+        return Err("routine.why.folder_gone");
+    }
+    // The AI its machine was given, on a MicroVM or a server; this PC's
+    // otherwise, as a quick command chooses
+    let choice = match machine_ai_of(Some(desk), &at).or_else(|| server_ai_of(Some(desk), &at, &r.ai)) {
+        Some(Ok(a)) => a,
+        Some(Err(why)) => return Err(why),
+        None => quick_ai_choice(&r.ai, ais).cloned().ok_or("msg.quick.no_ai")?,
+    };
+    let list = if owner == desk_index { tabs } else { desk_tabs.get(owner).map_or(&[][..], |l| l.as_slice()) };
+    let mut nothing_forward = None;
+    let title = open_and_say(
+        config_file, &desk.uid, &at, &choice.key, &choice.name, &r.shown_name(), r.prompt.clone(), true, from, list, pending,
+        &mut nothing_forward,
+    )
+    .ok_or("routine.why.open_failed")?;
+    let uid = pending.last().map(|p| p.uid.clone()).unwrap_or_default();
+    Ok(RoutineStart { uid, title, opened: true, from: 0 })
+}
+
+/// A run of `r` in the tab it names, typed in now if that tab is free: an AI
+/// whose turn is over. Words pasted into the middle of an AI's work are a
+/// request nobody meant, so a busy tab is skipped, not waited for
+fn routine_hand(
+    r: &crate::routine::Routine,
+    list: &mut [Tab],
+    surf: &[Surface],
+    held: &mut ball::Ball,
+    now_ms: u64,
+    pending_send: &mut Vec<PendingSend>,
+    from: crate::convo::Origin,
+) -> Result<RoutineStart, &'static str> {
+    let at = (1..=surf.len())
+        .find(|&s| session_at(surf, s).and_then(|i| list.get(i)).is_some_and(|t| t.uid() == r.tab))
+        .ok_or("routine.why.tab_gone")?;
+    let t = session_at(surf, at).and_then(|i| list.get(i)).ok_or("routine.why.tab_gone")?;
+    if t.exited() {
+        return Err("routine.why.tab_ended");
+    }
+    if !t.is_ai() {
+        return Err("routine.why.not_ai");
+    }
+    if t.state == TabState::Limit {
+        return Err("routine.why.limit");
+    }
+    if t.locked || !t.far_open() || !crate::asktab::turn_over(t.state) {
+        return Err("routine.why.busy");
+    }
+    let (uid, title, before) = (t.uid().to_string(), t.title.clone(), crate::asktab::record_len(t).unwrap_or(0));
+    if !hand_line(list, surf, at, r.prompt.clone(), now_ms, pending_send, held) {
+        return Err("routine.why.locked");
+    }
+    record_sent(list, surf, at, &r.prompt, from);
+    Ok(RoutineStart { uid, title, opened: false, from: before })
+}
+
+/// A run of a scheduled prompt over, written down with how it went
+fn routine_end(book: &mut crate::routine::Book, f: &RoutineFlight, now: u64, how: crate::routine::How, why: &str, reply: Option<&str>) {
+    if let Some(run) = book.run_mut(&f.id, f.n) {
+        run.how = how;
+        run.end = Some(now);
+        run.why = (!why.is_empty()).then(|| why.to_string());
+        run.reply = reply.map(crate::routine::kept_reply);
+    }
+    book.save();
+}
+
+/// The last `lines` lines of a tab's screen with anything on them: what a
+/// CLI that keeps no record of its own answered
+fn screen_tail(t: &Tab, lines: usize) -> String {
+    let screen = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().contents();
+    let kept: Vec<&str> = screen.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    kept[kept.len().saturating_sub(lines)..].join("\n")
 }
 /// The screen to move to, following the ball. None if it shouldn't move.
 ///
@@ -21069,6 +21469,7 @@ mod survey_tests {
             submit: true,
             from: crate::convo::Origin::person(crate::convo::Device::Window, "quick"),
             until: Instant::now() + QUICK_WAIT,
+            routine: None,
         }];
         assert_eq!(
             opened_for("Resolve conflicts", &here, &[], &pending),

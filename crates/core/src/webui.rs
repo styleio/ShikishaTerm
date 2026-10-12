@@ -3118,6 +3118,41 @@ fn handle(
             let gone = crate::push::forget(endpoint);
             req.respond(json_resp(serde_json::json!({ "ok": gone })))?;
         }
+        // Scheduled prompts: what came of each run, and when each comes next,
+        // as the settings hold them on disk -- a form not yet saved has
+        // neither. Read off the files the board's loop writes, so a phone's
+        // settings see the same as the window's
+        ("GET", "/api/routines") => {
+            let routines = crate::config::load().map(|c| c.routines).unwrap_or_default();
+            let now = crate::hooks::epoch_ms() / 1000;
+            let next = crate::routine::next_times(&routines, &crate::schedule::Kept::load(), now);
+            let book = crate::routine::Book::read();
+            req.respond(json_resp(serde_json::json!({"next": next, "runs": book.runs, "now": now})))?;
+        }
+        // "Run now", for a prompt as it was saved. One the board has not read
+        // yet, or that cannot run, is said rather than queued for nothing
+        ("POST", "/api/routines/run") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let id = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let saved = crate::config::load().and_then(|c| c.routines.into_iter().find(|r| r.id == id));
+            let body = match saved {
+                None => serde_json::json!({"error": crate::i18n::t("routine.err.unsaved")}),
+                Some(r) => match r.fault() {
+                    Some(why) => serde_json::json!({"error": crate::i18n::t(why)}),
+                    None => {
+                        crate::routine::want_run(&r.id);
+                        serde_json::json!({"ok": true})
+                    }
+                },
+            };
+            req.respond(json_resp(body))?;
+        }
         ("POST", "/api/notify/test") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -5709,6 +5744,35 @@ const PAGE: &str = r##"<!doctype html>
  .qfields { flex:1 1 280px; min-width:0; }
  .qfields > .field:first-child { margin-top:0; }
  .qfields textarea.qbody { min-height:96px; }
+ /* ── Scheduled prompts: a list of them, each opening onto its form and
+    its history. The line says what, when and how it last went, so the
+    list can be read without opening any of them ── */
+ .rtlist { display:flex; flex-direction:column; gap:var(--s2); margin-top:var(--s3); }
+ .rt { border:1px solid var(--edge); border-radius:var(--r-card); background:var(--panel2); padding:var(--s2) var(--s3); }
+ .rt.open { border-color:var(--edge-hi); }
+ .rt.off .rtname, .rt.off .rtsum { color:var(--faint); }
+ .rthead { display:flex; align-items:center; gap:var(--s2); flex-wrap:wrap; min-width:0; }
+ .rthead .rtname { font-weight:600; color:var(--text); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 160px; }
+ .rthead .rtbtns { display:flex; gap:var(--s1); flex-wrap:wrap; }
+ .rtsum { font-size:12px; color:var(--dim); margin-top:2px; overflow-wrap:anywhere; }
+ .rtstate { font-size:11.5px; padding:1px 6px; border-radius:999px; border:1px solid var(--line); color:var(--dim); white-space:nowrap; }
+ .rtstate.answered { border-color:color-mix(in srgb, var(--live) 60%, transparent); color:var(--text); }
+ .rtstate.going { border-color:var(--brand); color:var(--text); }
+ .rtstate.failed, .rtstate.cut { border-color:color-mix(in srgb, var(--danger) 70%, transparent); color:var(--text); }
+ .rtform { margin-top:var(--s3); padding-top:var(--s3); border-top:1px solid var(--line); }
+ .rtform > .field:first-child { margin-top:0; }
+ .rtform textarea { min-height:96px; }
+ .rtdays { display:flex; gap:var(--s1); flex-wrap:wrap; }
+ .rtdays .tog { min-width:40px; }
+ .rtwarn { margin-top:var(--s2); }
+ .rthist { margin-top:var(--s3); padding-top:var(--s3); border-top:1px solid var(--line); display:flex; flex-direction:column; gap:var(--s2); }
+ .rtrun { font-size:12.5px; }
+ .rtrun .rtrunhead { display:flex; gap:var(--s2); align-items:center; flex-wrap:wrap; color:var(--dim); }
+ .rtrun .rtrunhead b { color:var(--text); font-weight:500; font-variant-numeric:tabular-nums; }
+ .rtrun .rtreply { margin:var(--s1) 0 0; white-space:pre-wrap; overflow-wrap:anywhere; font-family:inherit; font-size:12.5px;
+   color:var(--text); background:var(--panel); border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2);
+   max-height:320px; overflow:auto; }
+ .rtrun .rtreply.short { max-height:4.8em; overflow:hidden; }
  /* A few sentences rather than a document: the height of the quick
     command's body above */
  textarea.short { min-height:96px; }
@@ -9003,6 +9067,371 @@ function quickSecretNames(body) {
 // because a pair of braces in this page's source is where its words go
 const quickSecretRef = name => "{" + "{secrets." + name + "}" + "}";
 
+// ── Scheduled prompts ──────────────────────────────────────
+// A prompt handed to an AI at a time (routine.rs). This form is the front
+// door; a script named after a time is the door for what a form cannot say,
+// and the card says where that is
+const ROUTINE_LATE = [5, 60, 360, 1440];  // minutes offered for "how late"
+const ROUTINE_DAYS = [0, 1, 2, 3, 4, 5, 6];
+let routineOpen = null;     // the prompt whose form is open, by id
+let routineShown = null;    // the prompt whose history is open, by id
+let routineSeen = {next:{}, runs:{}};  // what /api/routines last said
+
+function routineList() {
+  if (!Array.isArray(current.routines)) current.routines = [];
+  return current.routines;
+}
+
+function routinesCard() {
+  const list = el("div", {class:"rtlist"});
+  const draw = () => drawRoutines(list, draw);
+  const add = el("button", {onclick:() => {
+    const r = routineNew();
+    routineOpen = r.id;
+    refreshSave(); draw();
+  }}, T["settings.routine.add"]);
+  const box = card(T["settings.routine.title"],
+    el("div", {class:"hint"}, T["settings.routine.intro"]),
+    list,
+    el("div", {class:"row2", style:"margin-top:var(--s3)"}, add),
+    el("div", {class:"hint", style:"margin-top:var(--s3)"}, T["settings.routine.scripts"]));
+  draw();
+  routineFetch(draw);
+  // While the page is open, what came of the runs keeps coming in
+  const timer = setInterval(() => {
+    if (!document.body.contains(box)) { clearInterval(timer); return; }
+    routineFetch(draw);
+  }, 15000);
+  return box;
+}
+
+async function routineFetch(draw) {
+  const j = await settingsApi("/api/routines").catch(() => null);
+  if (!j) return;
+  const same = JSON.stringify(j.next) === JSON.stringify(routineSeen.next) && JSON.stringify(j.runs) === JSON.stringify(routineSeen.runs);
+  routineSeen = {next: j.next || {}, runs: j.runs || {}};
+  // Redrawn only when something changed, so a form being typed into keeps
+  // its place and its cursor
+  if (!same && !document.activeElement?.closest?.(".rtform")) draw();
+}
+
+function routineNew() {
+  // The desk and folder in front of the person are not known here; the
+  // first desk's first folder is a start, and the form shows it to be changed
+  const d = desks.find(d => d.uid) || {};
+  const f = (d.folders || [])[0];
+  const r = {id: "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: "", on: true, prompt: "", desk: d.uid || "", folder: f ? placeKey(f) : "",
+    when: {repeat: "days", days: [1, 2, 3, 4, 5], time: "09:00"}, late: 60, tidy: true};
+  routineList().push(r);
+  return r;
+}
+
+// What is wrong with a prompt, as routine.rs says it (Routine::fault)
+function routineFault(r) {
+  if (!(r.prompt || "").trim()) return "routine.fault.prompt";
+  if (typeof r.tab === "string" && !r.tab) return "routine.fault.tab";
+  if (!r.desk || (!r.folder && !r.tab)) return "routine.fault.place";
+  const w = r.when || {};
+  if (w.repeat === "days") {
+    if (!(w.days || []).length || !/^\d{1,2}:\d{2}$/.test(w.time || "")) return "routine.fault.when";
+  } else if (w.repeat === "hourly") {
+    if (!(w.minute >= 0 && w.minute < 60)) return "routine.fault.when";
+  } else if (w.repeat === "every") {
+    if (!(w.minutes >= 1)) return "routine.fault.when";
+  } else return "routine.fault.when";
+  return null;
+}
+
+// When it comes round, in words: "Weekdays 09:00", "Mon Wed Fri 18:30",
+// "Every hour at :15", "Every 30 min"
+function routineWhenText(w) {
+  w = w || {};
+  if (w.repeat === "hourly") return fill(T["settings.routine.when.hourly.text"], {m: String(w.minute || 0).padStart(2, "0")});
+  if (w.repeat === "every") {
+    const m = Number(w.minutes) || 0;
+    return m % 60 === 0 && m >= 60
+      ? fill(T["settings.routine.when.every.hours"], {n: m / 60})
+      : fill(T["settings.routine.when.every.minutes"], {n: m});
+  }
+  const days = [...new Set(w.days || [])].sort();
+  const key = days.join("");
+  const which = key === "0123456" ? T["settings.routine.days.all"]
+    : key === "12345" ? T["settings.routine.days.weekdays"]
+    : key === "06" ? T["settings.routine.days.weekends"]
+    : days.map(d => T["settings.routine.day." + d]).join(" ");
+  return which + " " + (w.time || "");
+}
+
+// Where it goes, in words: the tab, or the folder a tab is opened in
+function routineWhereText(r) {
+  const d = desks.find(d => d.uid === r.desk);
+  if (!d) return T["settings.routine.where.nodesk"];
+  if (r.tab) {
+    const t = d.tabs.find(t => t.uid === r.tab);
+    return fill(T["settings.routine.where.tab.text"], {tab: t ? t.name : "?", desk: d.name});
+  }
+  const fi = d.folders.findIndex(f => placeKey(f) === r.folder);
+  const ai = AI_CLIS.find(a => a.cmd === r.ai);
+  return fill(T[ai ? "settings.routine.where.new.text" : "settings.routine.where.new.any"], {
+    folder: fi >= 0 ? folderLabel(d.folders[fi], fi) : "?", desk: d.name, ai: ai ? ai.label : ""});
+}
+
+function routineStateChip(run) {
+  if (!run) return null;
+  const word = T["routine.how." + run.how] || run.how;
+  return el("span", {class:"rtstate " + run.how, title: run.why ? (T[run.why] || run.why) : ""}, word);
+}
+
+function drawRoutines(list, draw) {
+  list.textContent = "";
+  const all = routineList();
+  if (!all.length) {
+    list.append(el("div", {class:"empty"}, T["settings.routine.none"]));
+    return;
+  }
+  for (const r of all) list.append(routineRow(r, draw));
+}
+
+function routineRow(r, draw) {
+  const open = routineOpen === r.id, shown = routineShown === r.id;
+  const runs = routineSeen.runs[r.id] || [];
+  const last = runs[runs.length - 1];
+  const next = routineSeen.next[r.id];
+  const row = el("div", {class:"rt" + (open ? " open" : "") + (r.on === false ? " off" : ""), "data-routine":r.id});
+  const on = el("input", {type:"checkbox", title:T["settings.routine.on"]});
+  on.checked = r.on !== false;
+  on.addEventListener("change", () => { r.on = on.checked; refreshSave(); draw(); });
+  const runNow = el("button", {onclick: async () => {
+    runNow.disabled = true;
+    const j = await settingsApi("/api/routines/run", {id: r.id}).catch(e => ({error: e.message}));
+    runNow.disabled = false;
+    if (j && j.ok) { result(fill(T["settings.routine.run.sent"], {name: routineName(r)})); setTimeout(() => routineFetch(draw), 2000); }
+    else result((j && j.error) || T["settings.routine.run.failed"], true);
+  }}, T["settings.routine.run"]);
+  const btns = el("div", {class:"rtbtns"},
+    runNow,
+    el("button", {class:"quiet" + (shown ? " on" : ""), onclick:() => { routineShown = shown ? null : r.id; draw(); }},
+      fill(T["settings.routine.history"], {n: runs.length})),
+    el("button", {class:"quiet" + (open ? " on" : ""), onclick:() => { routineOpen = open ? null : r.id; draw(); }},
+      T[open ? "settings.routine.close" : "settings.routine.edit"]));
+  const head = el("div", {class:"rthead"},
+    el("label", {class:"check", style:"margin:0"}, on),
+    el("span", {class:"rtname"}, routineName(r) || T["settings.routine.unnamed"]),
+    routineStateChip(last) || "",
+    btns);
+  const fault = routineFault(r);
+  const sum = [routineWhenText(r.when), routineWhereText(r)];
+  if (r.on !== false && !fault && next) sum.push(fill(T["settings.routine.next"], {when: clock(next)}));
+  row.append(head, el("div", {class:"rtsum"}, sum.join(" · ")));
+  if (fault) row.append(el("div", {class:"site-warn rtwarn"}, T[fault]));
+  if (open) row.append(routineForm(r, draw));
+  if (shown) row.append(routineHistory(r, runs));
+  return row;
+}
+
+function routineName(r) {
+  const n = (r.name || "").trim();
+  if (n) return n;
+  const first = (r.prompt || "").split("\n").map(l => l.trim()).find(Boolean) || "";
+  return first.length > 40 ? first.slice(0, 40) + "…" : first;
+}
+
+function routineForm(r, draw) {
+  const form = el("div", {class:"rtform"});
+  const changed = (redraw) => { refreshSave(); if (redraw) draw(); else { const s = form.closest(".rt"); if (s) s.querySelector(".rtname").textContent = routineName(r) || T["settings.routine.unnamed"]; } };
+  const field = (label, ctl, hint) => el("div", {class:"field"}, el("label", {}, label),
+    el("div", {class:"fieldctl"}, ctl), hint ? el("div", {class:"hint"}, hint) : "");
+
+  // The name and the prompt
+  const name = el("input", {type:"text", maxlength:"80", placeholder:T["settings.routine.name.ph"]});
+  name.value = r.name || "";
+  name.addEventListener("input", () => { r.name = name.value; changed(false); });
+  const prompt = el("textarea", {rows:"5", maxlength:"8000", spellcheck:"false", placeholder:T["settings.routine.prompt.ph"]});
+  prompt.value = r.prompt || "";
+  prompt.addEventListener("input", () => { r.prompt = prompt.value; changed(false); });
+  prompt.addEventListener("change", () => draw());
+  form.append(field(T["settings.routine.name"], name), field(T["settings.routine.prompt"], prompt, T["settings.routine.prompt.hint"]));
+
+  // Where it goes: a tab of its own each time, or one tab already open
+  // A prompt for a tab keeps its `tab` even while none is picked, so the
+  // form stays on that choice and says to pick one
+  const mode = typeof r.tab === "string" ? "tab" : "new";
+  const modes = el("div", {class:"qseg", role:"radiogroup"});
+  for (const m of ["new", "tab"]) {
+    modes.append(el("button", {class:"tog" + (m === mode ? " on" : ""), role:"radio", "aria-checked":String(m === mode),
+      onclick:() => {
+        if (m === "new") { delete r.tab; }
+        else {
+          const d = desks.find(d => d.uid === r.desk);
+          const t = d && routineAiTabs(d)[0];
+          r.tab = t ? t.uid : "";
+          // No tab, no folder: a prompt with neither runs nowhere, rather
+          // than in a tab of its own nobody asked for
+          r.folder = t ? placeKey(d.folders[t.group] || {}) : "";
+        }
+        changed(true);
+      }}, T["settings.routine.where." + m]));
+  }
+  form.append(field(T["settings.routine.where"], modes, T["settings.routine.where." + mode + ".hint"]));
+
+  const deskPick = el("select");
+  for (const d of desks.filter(d => d.uid)) deskPick.append(el("option", {value:d.uid}, d.name || d.uid));
+  if (!desks.some(d => d.uid === r.desk)) deskPick.prepend(el("option", {value:r.desk || ""}, T["settings.routine.where.nodesk"]));
+  deskPick.value = r.desk || "";
+  deskPick.addEventListener("change", () => {
+    r.desk = deskPick.value;
+    const d = desks.find(d => d.uid === r.desk);
+    if (mode === "tab") {
+      const t = d && routineAiTabs(d)[0];
+      r.tab = t ? t.uid : "";
+      r.folder = t ? placeKey(d.folders[t.group] || {}) : "";
+    } else {
+      const f = d && d.folders[0];
+      r.folder = f ? placeKey(f) : "";
+    }
+    changed(true);
+  });
+  form.append(field(T["settings.routine.desk"], deskPick));
+  const desk = desks.find(d => d.uid === r.desk);
+
+  if (mode === "new") {
+    const folderPick = el("select");
+    (desk ? desk.folders : []).forEach((f, i) => folderPick.append(el("option", {value:placeKey(f)}, folderLabel(f, i))));
+    if (!desk || !desk.folders.some(f => placeKey(f) === r.folder)) folderPick.prepend(el("option", {value:r.folder || ""}, T["settings.routine.folder.none"]));
+    folderPick.value = r.folder || "";
+    folderPick.addEventListener("change", () => { r.folder = folderPick.value; changed(true); });
+    const aiPick = el("select");
+    aiPick.append(el("option", {value:""}, T["settings.quick.ai.any"]));
+    for (const a of AI_CLIS) aiPick.append(el("option", {value:a.cmd}, a.label));
+    aiPick.value = r.ai || "";
+    aiPick.addEventListener("change", () => { r.ai = aiPick.value; if (!r.ai) delete r.ai; changed(true); });
+    const tidy = el("input", {type:"checkbox"});
+    tidy.checked = r.tidy !== false;
+    tidy.addEventListener("change", () => { r.tidy = tidy.checked; changed(false); });
+    form.append(field(T["settings.routine.folder"], folderPick),
+      field(T["settings.routine.ai"], aiPick, T["settings.routine.ai.hint"]),
+      el("div", {class:"field"}, el("label", {class:"check"}, tidy, T["settings.routine.tidy"]),
+        el("div", {class:"hint"}, T["settings.routine.tidy.hint"])));
+  } else {
+    const tabPick = el("select");
+    const tabs = desk ? routineAiTabs(desk) : [];
+    for (const t of tabs) tabPick.append(el("option", {value:t.uid}, t.name + " · " + folderLabel(desk.folders[t.group] || {}, t.group)));
+    if (!tabs.some(t => t.uid === r.tab)) tabPick.prepend(el("option", {value:r.tab || ""}, T["settings.routine.tab.none"]));
+    tabPick.value = r.tab || "";
+    tabPick.addEventListener("change", () => {
+      r.tab = tabPick.value;
+      const t = tabs.find(t => t.uid === r.tab);
+      r.folder = t ? placeKey(desk.folders[t.group] || {}) : "";
+      changed(true);
+    });
+    form.append(field(T["settings.routine.tab"], tabPick));
+  }
+
+  // When it comes round
+  const w = r.when = r.when || {repeat:"days", days:[1, 2, 3, 4, 5], time:"09:00"};
+  const repeats = el("div", {class:"qseg", role:"radiogroup"});
+  for (const k of ["days", "hourly", "every"]) {
+    repeats.append(el("button", {class:"tog" + (w.repeat === k ? " on" : ""), role:"radio", "aria-checked":String(w.repeat === k),
+      onclick:() => {
+        w.repeat = k;
+        if (k === "days") { if (!(w.days || []).length) w.days = [1, 2, 3, 4, 5]; if (!w.time) w.time = "09:00"; }
+        if (k === "hourly" && !(w.minute >= 0)) w.minute = 0;
+        if (k === "every" && !(w.minutes >= 1)) w.minutes = 60;
+        changed(true);
+      }}, T["settings.routine.when." + k]));
+  }
+  form.append(field(T["settings.routine.when"], repeats));
+  if (w.repeat === "days") {
+    const days = el("div", {class:"rtdays"});
+    const set = new Set(w.days || []);
+    for (const d of ROUTINE_DAYS) {
+      days.append(el("button", {class:"tog" + (set.has(d) ? " on" : ""), role:"checkbox", "aria-checked":String(set.has(d)),
+        onclick:() => { if (set.has(d)) set.delete(d); else set.add(d); w.days = [...set].sort(); changed(true); }},
+        T["settings.routine.day." + d]));
+    }
+    const preset = (days, label) => el("button", {class:"quiet", onclick:() => { w.days = days; changed(true); }}, label);
+    const time = el("input", {type:"time", value:w.time || "09:00", style:"max-width:140px"});
+    time.addEventListener("change", () => { w.time = time.value; changed(true); });
+    form.append(field(T["settings.routine.days"], el("div", {}, days,
+        el("div", {class:"row2", style:"margin-top:var(--s1)"},
+          preset([0, 1, 2, 3, 4, 5, 6], T["settings.routine.days.all"]),
+          preset([1, 2, 3, 4, 5], T["settings.routine.days.weekdays"]),
+          preset([0, 6], T["settings.routine.days.weekends"])))),
+      field(T["settings.routine.time"], time, T["settings.routine.time.hint"]));
+  } else if (w.repeat === "hourly") {
+    const minute = el("input", {type:"number", min:"0", max:"59", step:"1", value:String(w.minute ?? 0), style:"max-width:100px"});
+    minute.addEventListener("change", () => { w.minute = Math.max(0, Math.min(59, Number(minute.value) || 0)); minute.value = String(w.minute); changed(true); });
+    form.append(field(T["settings.routine.minute"], minute, T["settings.routine.minute.hint"]));
+  } else {
+    const hours = (w.minutes || 0) % 60 === 0 && w.minutes >= 60;
+    const n = el("input", {type:"number", min:"1", step:"1", value:String(hours ? w.minutes / 60 : (w.minutes || 60)), style:"max-width:100px"});
+    const unit = el("select", {}, el("option", {value:"1"}, T["settings.routine.unit.minutes"]), el("option", {value:"60"}, T["settings.routine.unit.hours"]));
+    unit.value = hours ? "60" : "1";
+    const set = () => { w.minutes = Math.max(1, Math.round(Number(n.value) || 1)) * Number(unit.value); changed(true); };
+    n.addEventListener("change", set);
+    unit.addEventListener("change", set);
+    form.append(field(T["settings.routine.every"], el("div", {class:"row2"}, n, unit), T["settings.routine.every.hint"]));
+  }
+
+  // How late a time that went by may still be run
+  const late = el("select");
+  const offered = ROUTINE_LATE.includes(r.late) || r.late == null ? ROUTINE_LATE : [...ROUTINE_LATE, r.late].sort((a, b) => a - b);
+  for (const m of offered) {
+    const text = m % 1440 === 0 ? fill(T["settings.routine.late.days"], {n: m / 1440})
+      : m % 60 === 0 ? fill(T["settings.routine.late.hours"], {n: m / 60})
+      : fill(T["settings.routine.late.minutes"], {n: m});
+    late.append(el("option", {value:String(m)}, text));
+  }
+  late.value = String(r.late ?? 60);
+  late.addEventListener("change", () => { r.late = Number(late.value); changed(true); });
+  form.append(field(T["settings.routine.late"], late, T["settings.routine.late.hint"]));
+
+  form.append(el("div", {class:"qdelrow"}, el("button", {class:"danger", onclick:() => {
+    const all = routineList();
+    const i = all.indexOf(r);
+    if (i >= 0) all.splice(i, 1);
+    if (routineOpen === r.id) routineOpen = null;
+    refreshSave(); draw();
+  }}, T["settings.routine.delete"])));
+  return form;
+}
+
+// The tabs of a desk a prompt can be handed to: the AI tabs
+function routineAiTabs(desk) {
+  return (desk.tabs || []).filter(t => t.uid && AI_CLIS.some(a => a.cmd === headOf(t.command)));
+}
+
+function routineHistory(r, runs) {
+  const box = el("div", {class:"rthist"});
+  if (!runs.length) {
+    box.append(el("div", {class:"hint"}, T["settings.routine.history.none"]));
+    return box;
+  }
+  for (const run of runs.slice().reverse()) {
+    const head = el("div", {class:"rtrunhead"},
+      el("b", {}, clock(run.due || run.at)),
+      routineStateChip(run),
+      run.due ? "" : el("span", {}, T["settings.routine.history.now"]),
+      run.title ? el("span", {}, run.title) : "");
+    if (run.why) {
+      const why = T[run.why] || run.why;
+      head.append(el("span", {}, run.times > 1 ? fill(T["settings.routine.history.times"], {why, n: run.times, last: clock(run.end || run.at)}) : why));
+    }
+    const item = el("div", {class:"rtrun"}, head);
+    if (run.reply) {
+      const reply = el("pre", {class:"rtreply short"}, run.reply);
+      const more = el("button", {class:"quiet", onclick:() => {
+        const short = reply.classList.toggle("short");
+        more.textContent = T[short ? "settings.routine.history.more" : "settings.routine.history.less"];
+      }}, T["settings.routine.history.more"]);
+      item.append(reply, el("div", {class:"row2"}, more));
+    }
+    box.append(item);
+  }
+  return box;
+}
+
 function quickCard() {
   const body = el("div", {class:"qedit"}, el("div", {class:"hint"}, "…"));
   const box = card(T["settings.quick.title"],
@@ -9674,6 +10103,9 @@ function globalSections() {
     {id:"keys",      label:T["settings.sec.keys"],      sub:T["settings.sec.keys.sub"],
      build:() => el("div", {}, hotkeysCard(), keysCard())},
     {id:"quick",     label:T["settings.sec.quick"],     sub:T["settings.sec.quick.sub"],     build:quickCard},
+    // Prompts handed to an AI at a time, filled in on a form; the scripts
+    // named after a time are the way past what a form can say
+    {id:"routines",  label:T["settings.sec.routines"],  sub:T["settings.sec.routines.sub"],  build:routinesCard},
     {id:"actions",   label:T["settings.sec.actions"],   sub:T["settings.sec.actions.sub"],   build:actionsCard},
     {id:"hosts",     label:T["settings.sec.hosts"],     sub:T["settings.sec.hosts.sub"],     build:hostsCard},
     {id:"servers",   label:T["settings.sec.servers"],   sub:T["settings.sec.servers.sub"],   build:marksCard},
@@ -17719,6 +18151,8 @@ function payload() {
   const agreed = Object.fromEntries(Object.entries(out.agreed || {})
     .filter(([, kinds]) => Array.isArray(kinds) && kinds.length));
   if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
+  // Scheduled prompts: none is no key at all
+  if (Array.isArray(out.routines) && !out.routines.length) delete out.routines;
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.
   if (out.actions) {
     // `lua` is off unless it's on, so only the exception is worth writing

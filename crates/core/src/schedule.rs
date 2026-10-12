@@ -33,6 +33,9 @@ pub enum Days {
     Weekends,
     /// One day of the week, 0 for Sunday
     One(u8),
+    /// Any of these days: bit 0 for Sunday, bit 6 for Saturday. What the
+    /// settings' form makes, where the days are ticked one by one
+    Set(u8),
 }
 
 /// When a hook named after a time runs
@@ -42,9 +45,12 @@ pub enum When {
     Every(u64),
     /// At this time of day, on these days
     At { days: Days, hour: u8, minute: u8 },
+    /// Every hour, at this minute past it
+    Hourly(u8),
 }
 
-/// How late a time may still be run, when it went by while it could not be
+/// How late a time may still be run, when it went by while it could not be.
+/// The hooks named after a time use this one; a scheduled prompt says its own
 pub const GRACE: u64 = 60 * 60;
 
 /// The shortest repeat there is. A hook asked to run every few seconds is
@@ -104,13 +110,28 @@ fn holds(days: Days, wday: u8) -> bool {
         Days::Weekdays => (1..=5).contains(&wday),
         Days::Weekends => wday == 0 || wday == 6,
         Days::One(d) => d == wday,
+        Days::Set(set) => set & (1 << wday) != 0,
     }
 }
 
 /// The last moment at or before `now` a time of day falls on, by the clock
 /// `local` reads (seconds since 1970 in, the wall clock out)
 pub fn last_time(when: When, now: u64, local: &dyn Fn(u64) -> Local) -> Option<u64> {
+    if let When::Hourly(minute) = when {
+        // This hour's, else the last hour's: counted back by the minutes the
+        // wall clock shows, so a zone half an hour off the hour is still right
+        let into_hour = u64::from(local(now).4) * 60 + now % 60;
+        let want = u64::from(minute) * 60;
+        let at = now.checked_sub(into_hour)? + want;
+        return match at > now {
+            true => at.checked_sub(3600),
+            false => Some(at),
+        };
+    }
     let When::At { days, hour, minute } = when else { return None };
+    if matches!(days, Days::Set(0)) {
+        return None;
+    }
     let today = local(now);
     let into_day = u64::from(today.3) * 3600 + u64::from(today.4) * 60 + now % 60;
     let want = u64::from(hour) * 3600 + u64::from(minute) * 60;
@@ -141,8 +162,9 @@ pub enum Due {
 }
 
 /// Whether a hook is due, given when it last ran (or was first seen), and
-/// what to keep as "last" afterwards
-pub fn due(when: When, last: Option<u64>, now: u64, local: &dyn Fn(u64) -> Local) -> (Due, u64) {
+/// what to keep as "last" afterwards. `grace` is how late a time that went by
+/// may still be run ([`GRACE`] for a hook)
+pub fn due(when: When, last: Option<u64>, now: u64, grace: u64, local: &dyn Fn(u64) -> Local) -> (Due, u64) {
     // Seen for the first time: it counts from now, never for the past
     let Some(last) = last else { return (Due::Not, now) };
     match when {
@@ -150,8 +172,8 @@ pub fn due(when: When, last: Option<u64>, now: u64, local: &dyn Fn(u64) -> Local
             true => (Due::Run(last + secs), now),
             false => (Due::Not, last),
         },
-        When::At { .. } => match last_time(when, now, local) {
-            Some(at) if at > last && now - at <= GRACE => (Due::Run(at), now),
+        When::At { .. } | When::Hourly(_) => match last_time(when, now, local) {
+            Some(at) if at > last && now - at <= grace => (Due::Run(at), now),
             Some(at) if at > last => (Due::Missed(at), at),
             _ => (Due::Not, last),
         },
@@ -163,6 +185,7 @@ pub fn due(when: When, last: Option<u64>, now: u64, local: &dyn Fn(u64) -> Local
 pub fn next(when: When, last: Option<u64>, now: u64, local: &dyn Fn(u64) -> Local) -> u64 {
     match when {
         When::Every(secs) => last.unwrap_or(now) + secs,
+        When::Hourly(_) => last_time(when, now, local).map_or(now, |at| at + 3600),
         When::At { .. } => {
             // The next time it holds, a day at a time from today's
             let mut at = last_time(when, now, local).unwrap_or(now);
@@ -255,14 +278,14 @@ mod tests {
     fn a_time_of_day_runs_once_when_it_comes() {
         let nine = parse("at_0900").unwrap();
         // Seen for the first time after nine: it does not run for this morning
-        assert_eq!(due(nine, None, MON_10, &utc), (Due::Not, MON_10));
+        assert_eq!(due(nine, None, MON_10, GRACE, &utc), (Due::Not, MON_10));
         // Kept from yesterday evening, now 10:00: nine came an hour ago -- run
         let yesterday = MON_10 - 15 * 3600;
-        let (d, last) = due(nine, Some(yesterday), MON_10 - 3540, &utc);
+        let (d, last) = due(nine, Some(yesterday), MON_10 - 3540, GRACE, &utc);
         assert_eq!(d, Due::Run(MON_10 - 3600), "nine o'clock did not run at 09:01");
         // ...and not again until tomorrow
-        assert_eq!(due(nine, Some(last), MON_10, &utc).0, Due::Not);
-        assert_eq!(due(nine, Some(last), MON_10 + 23 * 3600, &utc).0, Due::Run(MON_10 + 23 * 3600));
+        assert_eq!(due(nine, Some(last), MON_10, GRACE, &utc).0, Due::Not);
+        assert_eq!(due(nine, Some(last), MON_10 + 23 * 3600, GRACE, &utc).0, Due::Run(MON_10 + 23 * 3600));
     }
 
     #[test]
@@ -270,11 +293,11 @@ mod tests {
         let nine = parse("at_0900").unwrap();
         let yesterday = MON_10 - 15 * 3600;
         // Woken at 09:50: run, late
-        assert_eq!(due(nine, Some(yesterday), MON_10 - 600, &utc).0, Due::Run(MON_10 - 3600));
+        assert_eq!(due(nine, Some(yesterday), MON_10 - 600, GRACE, &utc).0, Due::Run(MON_10 - 3600));
         // Woken at 11:30: missed, and kept as missed so it is not run later
-        let (d, last) = due(nine, Some(yesterday), MON_10 + 5400, &utc);
+        let (d, last) = due(nine, Some(yesterday), MON_10 + 5400, GRACE, &utc);
         assert_eq!(d, Due::Missed(MON_10 - 3600));
-        assert_eq!(due(nine, Some(last), MON_10 + 5460, &utc).0, Due::Not, "a missed time ran after all");
+        assert_eq!(due(nine, Some(last), MON_10 + 5460, GRACE, &utc).0, Due::Not, "a missed time ran after all");
     }
 
     #[test]
@@ -299,13 +322,51 @@ mod tests {
     }
 
     #[test]
+    fn days_ticked_one_by_one_are_kept() {
+        // Monday, Wednesday and Friday at nine
+        let mwf = When::At { days: Days::Set(0b010_1010), hour: 9, minute: 0 };
+        // Monday 10:00: this morning's
+        assert_eq!(last_time(mwf, MON_10, &utc), Some(MON_10 - 3600));
+        // Tuesday 10:00: still Monday's; the next is Wednesday's
+        assert_eq!(last_time(mwf, MON_10 + 86_400, &utc), Some(MON_10 - 3600));
+        assert_eq!(next(mwf, None, MON_10 + 86_400, &utc), MON_10 + 2 * 86_400 - 3600);
+        // No day ticked is never
+        let none = When::At { days: Days::Set(0), hour: 9, minute: 0 };
+        assert_eq!(last_time(none, MON_10, &utc), None);
+        assert_eq!(due(none, Some(MON_10 - 7 * 86_400), MON_10, GRACE, &utc).0, Due::Not);
+    }
+
+    #[test]
+    fn every_hour_at_a_minute() {
+        let quarter = When::Hourly(15);
+        // 10:00: the last was 09:15, the next 10:15
+        assert_eq!(last_time(quarter, MON_10, &utc), Some(MON_10 - 45 * 60));
+        assert_eq!(next(quarter, None, MON_10, &utc), MON_10 + 15 * 60);
+        // 10:15 exactly is 10:15's
+        assert_eq!(last_time(quarter, MON_10 + 15 * 60, &utc), Some(MON_10 + 15 * 60));
+        let (d, last) = due(quarter, Some(MON_10), MON_10 + 15 * 60 + 20, GRACE, &utc);
+        assert_eq!(d, Due::Run(MON_10 + 15 * 60));
+        assert_eq!(due(quarter, Some(last), MON_10 + 30 * 60, GRACE, &utc).0, Due::Not);
+    }
+
+    #[test]
+    fn how_late_is_the_callers_to_say() {
+        let nine = parse("at_0900").unwrap();
+        let yesterday = MON_10 - 15 * 3600;
+        // Woken at 09:50 with ten minutes allowed: missed
+        assert_eq!(due(nine, Some(yesterday), MON_10 - 600, 600, &utc).0, Due::Missed(MON_10 - 3600));
+        // ...with a day allowed, run at 11:30
+        assert_eq!(due(nine, Some(yesterday), MON_10 + 5400, 86_400, &utc).0, Due::Run(MON_10 - 3600));
+    }
+
+    #[test]
     fn a_repeat_runs_from_when_it_last_ran() {
         let half = parse("every_30m").unwrap();
-        assert_eq!(due(half, Some(MON_10), MON_10 + 1700, &utc).0, Due::Not);
-        assert_eq!(due(half, Some(MON_10), MON_10 + 1800, &utc), (Due::Run(MON_10 + 1800), MON_10 + 1800));
+        assert_eq!(due(half, Some(MON_10), MON_10 + 1700, GRACE, &utc).0, Due::Not);
+        assert_eq!(due(half, Some(MON_10), MON_10 + 1800, GRACE, &utc), (Due::Run(MON_10 + 1800), MON_10 + 1800));
         // Back after a night asleep: once, not once for every half hour gone by
-        let (d, last) = due(half, Some(MON_10), MON_10 + 10 * 3600, &utc);
+        let (d, last) = due(half, Some(MON_10), MON_10 + 10 * 3600, GRACE, &utc);
         assert!(matches!(d, Due::Run(_)));
-        assert_eq!(due(half, Some(last), MON_10 + 10 * 3600 + 60, &utc).0, Due::Not);
+        assert_eq!(due(half, Some(last), MON_10 + 10 * 3600 + 60, GRACE, &utc).0, Due::Not);
     }
 }

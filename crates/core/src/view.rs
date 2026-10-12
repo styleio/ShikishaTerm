@@ -693,7 +693,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         .iter()
                         .find(|(n, _)| *n == i + 1)
                         .map(|(_, s)| s.clone());
-                    // The next time one of its hooks named after a time runs
+                    // The next time one of its hooks named after a time, or a
+                    // prompt scheduled for it, runs
                     ts.timed = ui
                         .timed
                         .iter()

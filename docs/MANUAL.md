@@ -38,8 +38,9 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   it has answered but something it started is still at work -- a command left running, or a
   helper (subagent) the AI runs on the side -- and you can already type to it. A tab that
   answered or asked something while you were on another one is in bold with a small **unread**
-  mark, which goes when you open it. A tab whose automation runs by the clock (`at_0900.lua`
-  and the like) shows when it next runs, as **⏰ 09:00**. Under the name, the
+  mark, which goes when you open it. A tab a scheduled prompt goes to, or whose automation
+  runs by the clock (`at_0900.lua` and the like), shows when it next runs, as **⏰ 09:00**.
+  Under the name, the
   branch it is on, its pull request, and any ports it is listening on; under that,
   what it last said about itself. The ports show on the folder's card too, after its branch.
   Press a port (`:3000` and so on) and the column on the
@@ -447,6 +448,30 @@ Listing, changing and deleting happen on that same screen. Press a row to open i
 
 ## 7. Automation
 
+### Scheduled prompts
+
+To have an AI do something at a time -- every weekday at nine, every hour, every 30
+minutes -- open **Settings → Scheduled prompts** and press **+ New scheduled prompt**.
+Fill in the prompt, where it goes, and when:
+
+- **A new tab each time** opens a tab in the folder you choose, with the AI you choose, and
+  starts a fresh conversation. With **Close the tab when the AI has answered** ticked, the tab
+  is closed once the answer is in -- unless you typed into it or are looking at it. A closed
+  tab can be opened again with its conversation.
+- **A tab that is open** sends the prompt to that AI tab, carrying on its conversation. If the
+  tab is busy at that time, that run is skipped rather than typed into its work.
+
+**Run now** runs one at once. **History** shows each run: when, how it went, and what the AI
+answered. A run whose last run has not been answered yet is skipped, and says so.
+
+It runs by this app's clock. Nothing is registered with Task Scheduler or cron, and nothing
+runs while the app is closed or the PC sleeps. A time that went by is run once when the app
+can, if it is no later than **Run late by up to** allows. While automation is stopped (the
+**A** switch at the top), nothing runs by the clock; **Run now** still runs. The settings
+open from a phone the same way, so all of this works from there too.
+
+### Scripts
+
 What to do when a tab finishes, asks a question, or goes quiet: hand the answer to
 another tab, answer a confirmation, send a notification. Written in a few lines of
 Lua, or described in plain words and written for you by an AI you already have.
@@ -474,6 +499,7 @@ settings screen, so it cannot fall behind.
 - **Site notifications** — Sites you allowed or blocked
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt
+- **Scheduled prompts** — Prompts handed to an AI at a time
 - **Quick actions** — One-tap buttons in the input bar
 - **Where it runs** — Servers over SSH, and MicroVMs, to cut worktrees on besides this PC
 - **Server names** — Tell production from staging at a glance

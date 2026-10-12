@@ -1304,6 +1304,10 @@ pub struct Config {
     /// the desk on screen when one is pressed
     #[serde(default)]
     pub quick_commands: crate::quick::QuickSpec,
+    /// Prompts handed to an AI at a time (see `routine.rs`). App-wide, like
+    /// the quick commands; each one names the desk and the folder it runs in
+    #[serde(default, deserialize_with = "crate::routine::lenient")]
+    pub routines: Vec<crate::routine::Routine>,
     /// Bounds and stall behavior for work handed to other tabs (`ask_tab`) and
     /// for pages driven from words (🗣).
     #[serde(default)]

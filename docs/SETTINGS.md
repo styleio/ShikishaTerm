@@ -127,6 +127,12 @@ Buttons that send a command or a prompt
 - **Sends to**
 - **Press Enter at the end** — Untick to leave the text typed in, not sent.
 
+### Scheduled prompts
+
+Prompts handed to an AI at a time
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
 ### Quick actions
 
 One-tap buttons in the input bar

@@ -43,6 +43,10 @@ shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 
 ### At a time, or every so often
 
+To hand an AI a prompt at a time, no script is needed: **Settings → Scheduled prompts** does
+it on a form, with a history of the answers. A script is for what a form cannot say --
+deciding what to send from what a tab is doing, or doing something other than sending.
+
 A file named after a time runs at that time, by this PC's clock — the same way, only
 the name says when instead of what happened.
 
