@@ -223,18 +223,27 @@ pub fn rename(id: &str, name: &str) -> anyhow::Result<()> {
 }
 
 /// Take this device's key away. Everything else keeps working.
+///
+/// What was kept for it goes too: its phone notifications carry what the AI
+/// said, and would otherwise go on reaching a device that is out
 pub fn revoke(id: &str) -> anyhow::Result<bool> {
-    with_book(|book| {
+    let gone = with_book(|book| {
         let before = book.clients.len();
         book.clients.retain(|c| c.id != id);
         book.clients.len() != before
-    })
+    })?;
+    if gone {
+        crate::push::forget_device(Some(id));
+    }
+    Ok(gone)
 }
 
 /// Take every device's key away. For the day something is wrong and working
 /// out which device it was costs more than pairing them all again
 pub fn revoke_all() -> anyhow::Result<()> {
-    with_book(|book| book.clients.clear())
+    with_book(|book| book.clients.clear())?;
+    crate::push::forget_device(None);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -277,6 +286,7 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             *BOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
             let _ = std::fs::remove_file(&self.file);
+            let _ = std::fs::remove_file(self.file.with_extension("push.json"));
         }
     }
 

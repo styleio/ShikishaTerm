@@ -989,6 +989,11 @@ pub struct Gate {
     /// Wrong master passwords in a row. A score of its own: it is another
     /// password than the board's, and a slip on one must not shut the other
     master_misses: Mutex<Misses>,
+    /// A device's key was taken away, and the link it was first let in by
+    /// is to stop working as well (`RemoteUi::renew_pairing_key`). Set where
+    /// the key is taken away, which cannot reach the board's own token; done
+    /// by the loop that holds the board
+    new_pairing_key_wanted: AtomicBool,
 }
 
 /// The app locked with its master password, as this door holds it.
@@ -1186,6 +1191,24 @@ impl Gate {
         self.grants.drop_owner(owner);
         self.pw.drop_owner(owner);
         self.let_go_of_ended_lines();
+    }
+
+    /// A device's key was taken away: everything it holds goes, and so does
+    /// the link it came in by.
+    ///
+    /// The link is the pairing key, and the device still has it -- in the
+    /// tab, in its history, in a bookmark. Left working, it let a removed
+    /// device open the link again and be written in as a new one, with
+    /// nobody asked: the list said it was gone while it watched on. The other
+    /// devices hold keys of their own and are not touched by the link changing
+    pub fn revoked(&self, owner: &str) {
+        self.drop_client(owner);
+        self.new_pairing_key_wanted.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the link is to be changed, answered once
+    pub fn take_new_pairing_key_wanted(&self) -> bool {
+        self.new_pairing_key_wanted.swap(false, Ordering::SeqCst)
     }
 
     /// Every line whose session is no longer granted is told and dropped
@@ -1493,6 +1516,7 @@ impl RemoteUi {
             moving: Mutex::new(None),
             master: Mutex::new(locked.then(MasterLock::default)),
             master_misses: Mutex::new(Misses::new(Instant::now())),
+            new_pairing_key_wanted: AtomicBool::new(false),
         });
         let book = Arc::new(crate::reply::Book::new());
 
@@ -1679,13 +1703,20 @@ impl RemoteUi {
     /// until it re-pairs with the new URL. `url` is rebuilt so the pairing QR,
     /// which reads it every frame, shows the new token.
     pub fn rotate_token(&mut self, new: String) {
+        self.renew_pairing_key(new);
+        self.cut_sessions();
+    }
+
+    /// Change the link a device is first let in by, and nothing else: every
+    /// device already in the book keeps its own key and what it is looking
+    /// at. What stops working is the old link, wherever it was kept
+    pub fn renew_pairing_key(&mut self, new: String) {
         // The codes handed out behind the token being replaced: they would be
         // refused at the new doors anyway, and go now rather than lie about
         // until they run out
         forget_moves(&auth_mark(&self.token.lock().unwrap(), &self.gate.password));
         *self.token.lock().unwrap() = new.clone();
         self.url = format!("{}/?t={}", self.origin, new);
-        self.cut_sessions();
     }
 
     /// End every remote session WITHOUT changing the token — the fixed-token
@@ -1712,7 +1743,7 @@ impl RemoteUi {
     pub fn cut_client(&self, id: &str) -> bool {
         let gone = crate::clients::revoke(id).unwrap_or(false);
         if gone {
-            self.gate.drop_client(id);
+            self.gate.revoked(id);
         }
         gone
     }
@@ -3188,7 +3219,8 @@ fn handle(
     // before the routes below so its `/api/*` don't collide with the remote's
     // own verbs.
     if is_settings_path(&path) {
-        return proxy_settings(req, settings, &token, &method, &path);
+        let device = if gate.is_here(&session) { Some(crate::push::HERE) } else { owner.as_deref() };
+        return proxy_settings(req, settings, &token, &method, &path, device);
     }
 
     match (method.as_str(), path.as_str()) {
@@ -3927,6 +3959,7 @@ fn proxy_settings(
     remote_token: &str,
     method: &str,
     path: &str,
+    device: Option<&str>,
 ) -> Result<()> {
     // First hop: swap the URL token for a cookie, then bounce to a `/cfg` with the
     // credential gone, so it never lingers in the address bar or history. What the
@@ -3993,17 +4026,23 @@ fn proxy_settings(
     // Tell the settings server the operator is on a phone, not at this PC's screen.
     // Built here rather than forwarded, so the phone can never claim otherwise.
     let remote_hdr = crate::webui::REMOTE_CLIENT_HEADER;
+    // And which device in the book it is, the same way: what is kept for a
+    // device (its phone notifications) has to go when its key does
+    let device_hdr = crate::webui::REMOTE_DEVICE_HEADER;
+    let device = device.unwrap_or_default();
     let result = if method == "GET" {
         agent
             .get(&url)
             .header("X-Token", &sett_token)
             .header(remote_hdr, "1")
+            .header(device_hdr, device)
             .call()
     } else {
         let mut rb = agent
             .post(&url)
             .header("X-Token", &sett_token)
-            .header(remote_hdr, "1");
+            .header(remote_hdr, "1")
+            .header(device_hdr, device);
         if let Some(ct) = &req_ctype {
             rb = rb.header("Content-Type", ct);
         }
@@ -5330,7 +5369,7 @@ mod tests {
     #[test]
     fn one_device_is_shut_out_without_touching_the_others() {
         let _book = crate::clients::tests::OwnBook::new();
-        let ui = RemoteUi::start(
+        let mut ui = RemoteUi::start(
             "127.0.0.1".parse().unwrap(),
             0,
             "pairing-key-44444".into(),
@@ -5374,17 +5413,36 @@ mod tests {
             "it was removed from the list by mistake"
         );
 
-        // The phone's own key is gone and so is what it was looking at. It
-        // still holds the pairing key, which is deliberate -- that one is the
-        // way back in, not the thing being revoked
+        // The phone's own key is gone and so is what it was looking at
         assert_eq!(
             phone.said("/api/state"),
             (403, "forbidden".to_string()),
             "the revoked key still gets in"
         );
 
-        // And the laptop never noticed
+        // And the link it came in by goes as well, done by the loop that holds
+        // the board. The phone still has that link -- in the tab, the history,
+        // a bookmark -- and it used to open it again and be written in as a
+        // new device, with nobody asked
+        assert!(ui.sessions().take_new_pairing_key_wanted(), "the link was not asked to change");
+        assert!(!ui.sessions().take_new_pairing_key_wanted(), "asked twice for one removal");
+        ui.renew_pairing_key("pairing-key-55555".into());
+        let before = ui.clients();
+        let opened = phone.get("/?t=pairing-key-44444");
+        let cookies: Vec<String> = opened.headers().get_all("set-cookie").iter()
+            .filter_map(|v| v.to_str().ok()).map(str::to_string).collect();
+        assert!(!cookies.iter().any(|c| c.starts_with("rs=") || c.starts_with("rk=")), "the old link let it in again: {cookies:?}");
+        assert_eq!(ui.clients().len(), before.len(), "the old link wrote it into the book again");
+        assert_eq!(phone.state("pairing-key-44444"), 403, "the old link still reads the board");
+
+        // And the laptop never noticed: its key is its own, whatever the link
         assert_eq!(laptop.state("pairing-key-44444"), 200, "it was locked out by mistake");
+        assert_eq!(laptop.said("/api/state").0, 200, "the laptop needs the link to get in");
+
+        // A new device comes in by the new link
+        let mut newcomer = Phone::new(&base);
+        newcomer.pair("pairing-key-55555");
+        assert_eq!(newcomer.said("/api/state").0, 200, "the new link does not let a device in");
 
         assert!(!ui.cut_client(&phone_row.id), "it says it removed it a second time too");
     }
@@ -6067,6 +6125,52 @@ mod tests {
             .unwrap();
         let html = r.body_mut().read_to_string().unwrap();
         assert!(html.contains("const REMOTE = true;"), "the phone's settings page must know it is remote");
+
+        ui.shutdown();
+        settings.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// End to end, phone → proxy → settings server: a phone's notification
+    /// registration is kept as that phone's, so taking the phone's key away
+    /// takes its notifications with it. The proxy is what says which device
+    /// it is, so this is the piece the settings-side test cannot see
+    #[test]
+    fn a_phone_registers_for_notifications_as_itself() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let settings = crate::webui::WebUi::start_with(
+            cfg,
+            Arc::new(Mutex::new(crate::webui::RemoteInfo::default())),
+            Arc::new(Mutex::new(None)),
+        )
+        .unwrap();
+        let (origin, sett_token) = settings.url.split_once("/?token=").unwrap();
+        let ui = RemoteUi::start("127.0.0.1".parse().unwrap(), 0, "tok123456789012".into(), String::new()).unwrap();
+        ui.set_settings_backend(origin.to_string(), sett_token.to_string());
+        let base = ui.url.split("/?").next().unwrap().to_string();
+        let before = ui.clients();
+        let mut phone = Phone::new(&base);
+        phone.pair("tok123456789012");
+        let row = ui.clients().into_iter().find(|c| !before.iter().any(|b| b.id == c.id)).expect("pairing wrote no row");
+        phone.also("sst=tok123456789012");
+
+        let (code, said) = phone.said_post(
+            "/api/push/subscribe",
+            r#"{"endpoint":"https://push.invalid/p","p256dh":"k","auth":"a","device":"someone-else"}"#,
+        );
+        assert_eq!(code, 200, "{said}");
+        let kept = crate::push::subs().into_iter().find(|s| s.endpoint == "https://push.invalid/p").expect("not kept");
+        assert_eq!(kept.device, row.id, "the registration is not kept as the phone that made it");
+
+        assert!(ui.cut_client(&row.id));
+        assert!(
+            !crate::push::subs().iter().any(|s| s.endpoint == "https://push.invalid/p"),
+            "the phone's notifications outlived its key"
+        );
 
         ui.shutdown();
         settings.shutdown();

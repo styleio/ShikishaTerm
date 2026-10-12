@@ -106,6 +106,11 @@ fn random_token() -> Result<String> {
 /// (see `NATIVE_DIALOG_PATHS`).
 pub const REMOTE_CLIENT_HEADER: &str = "X-Remote-Client";
 
+/// Which device in the book (`crate::clients`) a request through the remote
+/// proxy came from; empty when it was let in some other way. Built by the
+/// proxy like `REMOTE_CLIENT_HEADER`, never forwarded from the phone
+pub const REMOTE_DEVICE_HEADER: &str = "X-Remote-Device";
+
 /// Endpoints whose whole job is to open a native dialog on this PC. From a phone
 /// there is nobody standing at that screen to answer it, so the request would sit
 /// there until it timed out — the app looking frozen from the phone's side. These
@@ -3069,15 +3074,24 @@ fn handle(
                 Ok(k) => (k, String::new()),
                 Err(e) => (String::new(), e),
             };
+            // `claimed`: whether it is known which device it is. A phone that
+            // finds its own unclaimed registers again, which claims it
             let subs: Vec<serde_json::Value> = crate::push::subs()
                 .into_iter()
-                .map(|s| serde_json::json!({ "endpoint": s.endpoint, "name": s.name }))
+                .map(|s| serde_json::json!({ "endpoint": s.endpoint, "name": s.name, "claimed": !s.device.is_empty() }))
                 .collect();
             req.respond(json_resp(serde_json::json!({
                 "key": key, "error": err, "subs": subs,
             })))?;
         }
         ("POST", "/api/push/subscribe") => {
+            // Whose it is comes from the door, not from the body: this PC's
+            // own screen, or the device the remote proxy says it let in
+            let device = if header_value(&req, REMOTE_CLIENT_HEADER) == "1" {
+                header_value(&req, REMOTE_DEVICE_HEADER).to_string()
+            } else {
+                crate::push::HERE.to_string()
+            };
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
                 req.respond(Response::from_string("payload too large").with_status_code(413))?;
@@ -3085,7 +3099,7 @@ fn handle(
             };
             let resp = match serde_json::from_str::<crate::push::Sub>(&body) {
                 Ok(sub) if !sub.endpoint.is_empty() => {
-                    crate::push::remember(sub);
+                    crate::push::remember(crate::push::Sub { device, ..sub });
                     serde_json::json!({ "ok": true })
                 }
                 Ok(_) => serde_json::json!({ "ok": false, "error": "no endpoint" }),
@@ -12839,7 +12853,11 @@ function remoteCard() {
       // beside each is a screen where the safe move is to press nothing
       const drop = el("button", {class:"danger", onclick: async () => {
         const called = name.value.trim() || (T["settings.phone.device.unnamed"] || "");
-        if (!await confirmAction(fill(T["settings.phone.device.confirm"], {name: called}), T["settings.phone.device.revoke"])) return;
+        // A link the person wrote is not changed for them: the device can
+        // open it again, and this is the moment to say so and where to go
+        const written = !!r.sticky_token && String(r.fixed_token || "").trim().length >= 16;
+        const ask = written ? "settings.phone.device.confirm_fixed" : "settings.phone.device.confirm";
+        if (!await confirmAction(fill(T[ask], {name: called}), T["settings.phone.device.revoke"])) return;
         let ok = false;
         try {
           const r = await settingsFetch("/api/remote/clients/revoke", {method:"POST", json:{id:c.id}});
@@ -12849,6 +12867,10 @@ function remoteCard() {
         // three: the row stays, and whoever pressed it believes the key is gone
         if (!ok) msg(T["settings.phone.device.gone"], true);
         refreshDevices();
+        // The link it came in by is being changed: the code drawn here is the
+        // old one a moment from now, so it is drawn again once the board has
+        // made the new one (the loop that holds it does, within a frame)
+        if (ok && !written) setTimeout(refreshRemote, 800);
       }}, T["settings.phone.device.revoke"]);
       devices.append(el("div", {class:"listrow devrow"}, name,
         el("span", {class:"when"},
@@ -20316,6 +20338,53 @@ for (const crypto of [webcrypto, {{getRandomValues: b => webcrypto.getRandomValu
     /// The point of the whole book is that a device can be named and taken
     /// away on its own, so that is what this walks: two devices in, one named,
     /// one revoked, and the other still there afterwards.
+    /// Whose a phone registration is comes from the door it came in by: the
+    /// device the remote proxy says it let in, or this PC's own screen. What
+    /// the body says is not taken -- a device naming another there would
+    /// otherwise outlive its own key under the other's name
+    #[test]
+    fn a_phone_registration_belongs_to_the_device_the_door_let_in() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let dir = std::env::temp_dir().join(format!("shikitest_{}", crate::random_hex(8)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(&cfg, "{}").unwrap();
+        let ui = WebUi::start_with(
+            cfg,
+            Arc::new(std::sync::Mutex::new(RemoteInfo::default())),
+            Arc::new(std::sync::Mutex::new(None)),
+        )
+        .unwrap();
+        let (base, token) = ui.url.split_once("/?token=").unwrap();
+        let (base, token) = (base.to_string(), token.to_string());
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
+        let body = |endpoint: &str| {
+            serde_json::json!({"endpoint": endpoint, "p256dh": "k", "auth": "a", "device": "someone-else"}).to_string()
+        };
+        agent
+            .post(&format!("{base}/api/push/subscribe"))
+            .header("X-Token", &token)
+            .header(REMOTE_CLIENT_HEADER, "1")
+            .header(REMOTE_DEVICE_HEADER, "phone-1")
+            .send(body("https://push.invalid/phone"))
+            .unwrap();
+        agent
+            .post(&format!("{base}/api/push/subscribe"))
+            .header("X-Token", &token)
+            .send(body("https://push.invalid/here"))
+            .unwrap();
+        let whose = |endpoint: &str| crate::push::subs().into_iter().find(|s| s.endpoint == endpoint).map(|s| s.device);
+        assert_eq!(whose("https://push.invalid/phone").as_deref(), Some("phone-1"), "the device the door let in is not the one kept");
+        assert_eq!(whose("https://push.invalid/here").as_deref(), Some(crate::push::HERE), "this PC's own screen is not kept as itself");
+
+        ui.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_settings_page_can_name_and_revoke_one_device() {
         let _book = crate::clients::tests::OwnBook::new();

@@ -181,7 +181,21 @@ async function shikishaSubscribed(api) {
     const sub = reg && await reg.pushManager.getSubscription();
     if (!sub) return false;
     const j = await api("/api/push");
-    return !!(j && (j.subs || []).some(s => s.endpoint === sub.endpoint));
+    const known = j && (j.subs || []).find(s => s.endpoint === sub.endpoint);
+    // Registered before the app wrote down which device each phone is: said
+    // again, quietly, so that taking this device's key away also takes its
+    // notifications (the app reads whose it is from the door, not from this)
+    if (known && !known.claimed) {
+      try {
+        await api("/api/push/subscribe", {
+          endpoint: sub.endpoint,
+          p256dh: shikishaBytesB64(sub.getKey("p256dh")),
+          auth: shikishaBytesB64(sub.getKey("auth")),
+          name: known.name || shikishaDeviceName(),
+        });
+      } catch (e) {}
+    }
+    return !!known;
   } catch (e) { return false; }
 }
 
@@ -222,6 +236,12 @@ fn vapid_path() -> PathBuf {
 }
 
 fn subs_path() -> PathBuf {
+    // Beside a test's own book of devices, so a test that takes a key away
+    // never forgets a phone of the machine running it
+    #[cfg(test)]
+    if let Some(book) = crate::clients::tests::book_here() {
+        return book.with_extension("push.json");
+    }
     crate::config::state_path("push-subs.json")
 }
 
@@ -238,6 +258,23 @@ pub struct Sub {
     /// it is; a person with two phones needs to be able to tell them apart.
     #[serde(default)]
     pub name: String,
+    /// Which device in the book (`crate::clients`) asked for it, [`HERE`] for
+    /// this PC's own screen, empty when nobody knows -- a phone registered
+    /// before this was written down, until it next opens the board. Taken
+    /// from the door it came in by, never from what it said about itself
+    #[serde(default)]
+    pub device: String,
+}
+
+/// The device of a registration made on this PC's own screen
+pub const HERE: &str = "this-pc";
+
+impl Sub {
+    /// Whether whoever registered this may still be sent to: a device whose
+    /// key was taken away is not, wherever its registration was left lying
+    fn still_let_in(&self, book: &crate::clients::Book) -> bool {
+        self.device.is_empty() || self.device == HERE || book.clients.iter().any(|c| c.id == self.device)
+    }
 }
 
 // ── The sender's own key ────────────────────────────────────────────────────
@@ -333,6 +370,26 @@ pub fn remember(sub: Sub) {
         None => list.push(sub),
     }
     write_subs(&list);
+}
+
+/// Forget what a device registered, now that its key is gone.
+///
+/// The phone notifications carry what the AI said; a phone taken off the
+/// list that went on receiving them was a phone still reading the board.
+/// Registrations nobody can put a device to go as well: one of them may be
+/// this device's, and a phone still in the list claims its own back the next
+/// time it opens the board (`shikishaSubscribed`). `None` forgets every
+/// device's, for when every key is taken away. Answers how many went
+pub fn forget_device(id: Option<&str>) -> usize {
+    let mut list = subs();
+    let before = list.len();
+    list.retain(|s| s.device == HERE || id.is_some_and(|id| !s.device.is_empty() && s.device != id));
+    let gone = before - list.len();
+    if gone > 0 {
+        write_subs(&list);
+        crate::append_hook_log(&format!("push: forgot {gone} phone registration(s) along with a device's key"));
+    }
+    gone
 }
 
 /// Forget one phone, by endpoint. Answers whether there was one.
@@ -489,7 +546,13 @@ struct Message<'a> {
 /// here rather than left to be retried forever. Nothing else is treated as
 /// final: a push service having a bad minute is not a reason to lose a phone.
 pub fn send(title: &str, body: &str, url: Option<&str>) -> Result<usize, String> {
-    let list = subs();
+    // Never to a device that is no longer let in, whichever way its key went
+    let book = crate::clients::load();
+    let (list, shut_out): (Vec<Sub>, Vec<Sub>) = subs().into_iter().partition(|s| s.still_let_in(&book));
+    for s in &shut_out {
+        crate::append_hook_log(&format!("push: {} belongs to a device no longer let in; forgetting it", s.endpoint));
+        forget(&s.endpoint);
+    }
     if list.is_empty() {
         return Err(crate::i18n::t("err.push.nobody"));
     }
@@ -750,5 +813,53 @@ mod tests {
             5, 48, 89, 50, 161, 199, 234, 190, 19, 182, 206, 201, 253, 164, 136, 130
         ]));
         assert_eq!(unb64("not base64!!"), None);
+    }
+
+    fn sub_of(endpoint: &str, device: &str) -> Sub {
+        Sub { endpoint: endpoint.into(), p256dh: String::new(), auth: String::new(), name: String::new(), device: device.into() }
+    }
+
+    fn endpoints() -> Vec<String> {
+        let mut e: Vec<String> = subs().into_iter().map(|s| s.endpoint).collect();
+        e.sort();
+        e
+    }
+
+    /// A phone whose key is taken away stops being sent what the AI said.
+    /// Before, its registration outlived its key: off the list, it went on
+    /// receiving every answer as a notification
+    #[test]
+    fn a_device_taken_off_the_list_is_sent_nothing_more() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let (phone, _) = crate::clients::pair("phone").unwrap();
+        let (tablet, _) = crate::clients::pair("tablet").unwrap();
+        remember(sub_of("https://push.invalid/phone", &phone.id));
+        remember(sub_of("https://push.invalid/tablet", &tablet.id));
+        remember(sub_of("https://push.invalid/here", HERE));
+        remember(sub_of("https://push.invalid/unknown", ""));
+
+        crate::clients::revoke(&phone.id).unwrap();
+        assert_eq!(
+            endpoints(),
+            ["https://push.invalid/here", "https://push.invalid/tablet"],
+            "the removed device's registration stayed, or another device's went; \
+             one nobody can put a device to goes too, as it may be the removed one's"
+        );
+
+        crate::clients::revoke_all().unwrap();
+        assert_eq!(endpoints(), ["https://push.invalid/here"], "only this PC's own screen is left when every key goes");
+    }
+
+    /// Whichever way a key went -- by hand in the file, from another copy --
+    /// a registration of a device not in the book is never sent to
+    #[test]
+    fn a_registration_whose_device_is_gone_is_not_let_in() {
+        let _book = crate::clients::tests::OwnBook::new();
+        let (kept, _) = crate::clients::pair("kept").unwrap();
+        let book = crate::clients::load();
+        assert!(sub_of("e", &kept.id).still_let_in(&book));
+        assert!(sub_of("e", HERE).still_let_in(&book));
+        assert!(sub_of("e", "").still_let_in(&book), "a phone registered before devices were written down lost its notifications");
+        assert!(!sub_of("e", "gone-device").still_let_in(&book), "a device no longer in the book is sent to");
     }
 }

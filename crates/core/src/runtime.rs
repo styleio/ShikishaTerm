@@ -14031,6 +14031,26 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             last_remote_ui = None;
             flash = Some(i18n::t(if sticky { "msg.remote_cut_sticky" } else { "msg.remote_cut" }));
         }
+        // A device's key was taken away: the link it was let in by goes too,
+        // or it opens the link again and is a new device (`Gate::revoked`).
+        // Not a link the person wrote themselves -- that one is theirs to
+        // change, and the settings screen says so where the key is taken --
+        // and not on the server version, where a link lets nobody in
+        if let Some(r) = remote_ui.as_mut()
+            && r.sessions().take_new_pairing_key_wanted()
+        {
+            let written = cfg.as_ref().is_some_and(|c| c.remote.sticky_token && c.remote.fixed_token.trim().len() >= FIXED_TOKEN_MIN);
+            if written || crate::pairing::by_code_only() {
+                append_hook_log("remote: a device was removed; the link stays, as it is not this app's to change");
+            } else {
+                let new = random_hex(24);
+                let _ = crypto::write_atomic(&config::state_path("remote-token"), &new);
+                r.renew_pairing_key(new);
+                append_hook_log("remote: a device was removed; the link it came in by no longer opens the board");
+                publish_remote(&remote_info, &remote_ui);
+                last_remote_ui = None;
+            }
+        }
 
         // A built-in orchestrator (discussion / code review / browser rally)
         // just finished: show its transcript as a chat-style result tab and
@@ -17684,7 +17704,7 @@ pub fn publish_remote(info: &Arc<Mutex<webui::RemoteInfo>>, ui: &Option<remote::
             // Handed over so that revoking a device from the settings page
             // also ends what that device is looking at
             let live = r.sessions();
-            i.cut = Some(Arc::new(move |id: &str| live.drop_client(id)));
+            i.cut = Some(Arc::new(move |id: &str| live.revoked(id)));
         }
         None => *i = Default::default(),
     }
