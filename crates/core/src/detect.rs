@@ -837,6 +837,12 @@ mod tests {
         let asked = "› Code review (correctness) on branch fix-ui. Payment statements: sales agents \
                      see delivered payment statements and approve or object.\n\n• Working (0s • esc to interrupt)";
         assert_eq!(d.tick(asked, 100, 0), TabState::Busy, "the words it was asked read as a question");
+        // ...nor the dialog's own words, quoted in what it was asked: a question
+        // is the dialog with its choices under it, the one under the cursor
+        let quoted = "› Review the profile: it now reads 'Would you like to run the following command?' \
+                      and 'No, and tell Codex what to do differently' as Codex asking.\n\n• Working (0s • esc to interrupt)";
+        let mut d = Detector::new(crate::profile::load_for_command("codex"));
+        assert_eq!(d.tick(quoted, 100, 0), TabState::Busy, "the dialog's words, quoted, read as a question");
         for dialog in [
             "  Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)\n  3. No, and tell Codex what to do differently (esc)",
             "  Would you like to make the following edits?\n\n› 1. Yes, proceed (y)",
