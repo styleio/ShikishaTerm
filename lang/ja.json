@@ -82,6 +82,8 @@
   "tui.tab.close": "タブを閉じる",
   "tui.menu.rename": "名前を変更",
   "tui.menu.edit": "編集",
+  "tui.menu.copy_ref": "このタブの参照をコピー",
+  "tui.menu.copy_ref.done": "{ref} をコピーしました。AI への指示、スクリプト、メモの中でこのタブを名指しするときに貼り付けてください。",
   "tui.menu.forget": "この作業フォルダを外す",
   "tui.menu.urls": "公開 URL",
   "tui.menu.ports": "サーバーのポートを開く",

@@ -82,6 +82,8 @@
   "tui.tab.close": "Close tab",
   "tui.menu.rename": "Rename",
   "tui.menu.edit": "Edit",
+  "tui.menu.copy_ref": "Copy this tab's reference",
+  "tui.menu.copy_ref.done": "Copied {ref}. Paste it where an AI, a script or a note should name this tab.",
   "tui.menu.forget": "Take this folder off the list",
   "tui.menu.urls": "Public URLs",
   "tui.menu.ports": "Open the server's ports",

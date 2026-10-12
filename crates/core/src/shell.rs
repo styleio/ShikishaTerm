@@ -8964,6 +8964,12 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // How another AI's message, a script or a note names this tab: `<@id>`,
+    // the same that @ in the input writes. For pasting somewhere the @ list
+    // is not -- another tab's prompt file, a chat, an issue
+    t.id && (t.ai || t.kind === "browser" || t.kind === "pty")
+      ? item(T["tui.menu.copy_ref"] || "", () => { copyToClipboard("<@" + t.id + ">"); toast((T["tui.menu.copy_ref.done"] || "").replaceAll("{ref}", "<@" + t.id + ">")); })
+      : null,
     // A terminal's history, searched: the way in on a phone, which has no
     // keys to press for it
     t.kind === "pty" && !t.hold ? item(T["tui.menu.find_terminal"] || "", () => {
