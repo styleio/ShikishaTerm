@@ -1023,9 +1023,10 @@ mod tests {
         // A start the system would not say proves nothing about reuse
         let unknown = HashMap::from([(10u32, (None, 100u64)), (60, (Some(10), 900)), (50, (Some(60), 0))]);
         assert!(!cut_off(50, &unknown));
-        // Parents that point back round still end
-        let ring = HashMap::from([(1u32, (Some(2u32), 5u64)), (2, (Some(1), 5))]);
-        assert!(!cut_off(1, &ring));
+        // Parents that point back round still end. Not through 1, which on
+        // a Unix system is the first process an orphan is handed to
+        let ring = HashMap::from([(7u32, (Some(8u32), 5u64)), (8, (Some(7), 5))]);
+        assert!(!cut_off(7, &ring));
     }
 
     /// A cut-off program goes to the tab whose folder it works in: the
