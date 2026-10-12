@@ -67,6 +67,11 @@ Open **CI** in the git panel to list the commit's checks. Press a check to open 
 job's log in an editor tab that only reads (at the first error, when there is one).
 A check still running, or one with no log to download, opens its page in a
 browser tab instead.
+When a pull request has been reviewed, **Have the AI answer the review** in the git
+panel's ▾ hands the threads nobody has marked resolved -- each with its file, its lines
+and who said what -- to an AI tab in the same folder. It fixes what should be fixed and
+commits, and asks you about questions and anything it disagrees with. Replying on
+GitHub and resolving the threads stays with you.
 An address or a file path in a terminal is underlined under the pointer. Press it
 for what it can be opened with -- a browser tab, the editor at that line, the
 default app, its folder -- or Ctrl+click to open it straight away (Settings >

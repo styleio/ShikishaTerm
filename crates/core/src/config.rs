@@ -4225,6 +4225,11 @@ pub struct GitSpec {
     /// `{branch}`, `{folder}`, `{checks}` and `{language}`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ci_prompt: Option<String>,
+    /// What an AI tab opened to answer a pull request's review is told first,
+    /// in the same three states. Its words to fill in are `{pr}`, `{title}`,
+    /// `{url}`, `{branch}`, `{folder}`, `{comments}` and `{language}`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt: Option<String>,
     /// Lua that produces the message itself. When set, the built-in template is
     /// not used at all -- this is the whole of it
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4266,6 +4271,11 @@ impl GitSpec {
     /// else the default
     pub fn ci_prompt(&self) -> String {
         self.ci_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.ci.default_prompt"))
+    }
+    /// What an AI tab opened to answer a pull request's review is told: the
+    /// one written, else the default
+    pub fn review_prompt(&self) -> String {
+        self.review_prompt.clone().unwrap_or_else(|| crate::i18n::t("ai.review.default_prompt"))
     }
     /// The prompt an issue is drafted with: the one written, else the default
     pub fn issue_prompt(&self) -> String {

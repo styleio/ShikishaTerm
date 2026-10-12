@@ -1174,8 +1174,9 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
     Some(match (act, pulls) {
         ("list", false) => "github_issues",
         ("list", true) | ("branch_prs", _) => "github_prs",
-        // Reading a pull request's failed checks, to hand them to an AI tab
-        ("ci_fix", _) => "github_pr",
+        // Reading a pull request's failed checks, or its review threads left
+        // open, to hand them to an AI tab
+        ("ci_fix", _) | ("review_fix", _) => "github_pr",
         // Reading one check's log, for a person
         ("ci_log", _) => "github_pr",
         ("detail", false) => "github_issue",
@@ -1560,6 +1561,79 @@ pub fn ci_failures(
         out.push(row);
     }
     Ok(Value::Array(out))
+}
+
+/// The review threads of a pull request nobody has marked resolved: where
+/// each is (the file, and its lines in the file as the pull request has it),
+/// whether the code has moved on under it, and what was said in it, in
+/// order. Asked of GitHub's GraphQL, which is the only place a thread's
+/// "resolved" is kept -- a thread answered and resolved is not work left
+pub fn review_threads(
+    sources: &[Source],
+    project: &str,
+    number: u64,
+    look: &dyn Fn(&str) -> Option<String>,
+) -> Result<Value> {
+    let source = sources
+        .iter()
+        .find(|s| s.name == project)
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
+    let (repo, token) = target_of(source, look)?;
+    let hub = Hub::new(token);
+    let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{author{login} body}}}}}}}";
+    let mut out = Vec::new();
+    let mut after = Value::Null;
+    // A pull request with more threads than one page holds is read on; ten
+    // pages is a thousand threads, more than anybody hands to one AI tab
+    for _ in 0..10 {
+        let v = hub.call("POST", "graphql", Some(json!({
+            "query": query,
+            "variables": {"owner": repo.owner, "name": repo.name, "number": number, "after": after},
+        })))?;
+        if let Some(e) = v.pointer("/errors/0/message").and_then(|m| m.as_str()) {
+            bail!("{e}");
+        }
+        let threads = v.pointer("/data/repository/pullRequest/reviewThreads").cloned().unwrap_or(Value::Null);
+        out.extend(open_threads(&threads));
+        match threads.pointer("/pageInfo/hasNextPage").and_then(|h| h.as_bool()) {
+            Some(true) => after = threads.pointer("/pageInfo/endCursor").cloned().unwrap_or(Value::Null),
+            _ => break,
+        }
+    }
+    Ok(Value::Array(out))
+}
+
+/// The threads of one page of an answer that are still open, shaped for the
+/// prompt: `path`, `line` (and `from`, for one about several lines),
+/// `outdated` when the code under it has changed since, and `said` -- who
+/// said what, in order
+fn open_threads(threads: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    for t in threads.get("nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+        if t.get("isResolved").and_then(|r| r.as_bool()) == Some(true) {
+            continue;
+        }
+        let said: Vec<Value> = t
+            .pointer("/comments/nodes")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+            .map(|c| json!({"who": c.pointer("/author/login"), "said": c.get("body")}))
+            .collect();
+        if said.is_empty() {
+            continue;
+        }
+        let line = t.get("line").filter(|l| !l.is_null()).or_else(|| t.get("originalLine")).cloned().unwrap_or(Value::Null);
+        let mut row = json!({"path": t.get("path"), "line": line, "said": said});
+        if let Some(from) = t.get("startLine").filter(|s| !s.is_null() && Some(*s) != Some(&line)) {
+            row["from"] = from.clone();
+        }
+        if t.get("isOutdated").and_then(|o| o.as_bool()) == Some(true) {
+            row["outdated"] = json!(true);
+        }
+        out.push(row);
+    }
+    out
 }
 
 /// One GitHub Actions job's log, for a person to read (its end, when it is
@@ -1964,6 +2038,26 @@ mod tests {
             "a reason wrapped on the way up is still the account's"
         );
         assert!(!settings_fix(&anyhow!("unreachable")));
+    }
+
+    #[test]
+    fn only_the_review_threads_left_open_are_work() {
+        let page = json!({"nodes": [
+            {"isResolved": true, "isOutdated": false, "path": "a.rs", "line": 3, "startLine": null, "originalLine": 3,
+             "comments": {"nodes": [{"author": {"login": "rev"}, "body": "done already"}]}},
+            {"isResolved": false, "isOutdated": false, "path": "a.rs", "line": 12, "startLine": 10, "originalLine": 12,
+             "comments": {"nodes": [{"author": {"login": "rev"}, "body": "name this better"}, {"author": {"login": "me"}, "body": "which name?"}]}},
+            {"isResolved": false, "isOutdated": true, "path": "b.rs", "line": null, "startLine": null, "originalLine": 7,
+             "comments": {"nodes": [{"author": {"login": "rev"}, "body": "off by one"}]}},
+        ]});
+        let open = open_threads(&page);
+        assert_eq!(open.len(), 2, "a resolved thread was handed on: {open:?}");
+        assert_eq!(open[0]["path"], "a.rs");
+        assert_eq!((open[0]["from"].clone(), open[0]["line"].clone()), (json!(10), json!(12)), "the lines it is about");
+        assert_eq!(open[0]["said"][1], json!({"who": "me", "said": "which name?"}), "the thread lost its order");
+        assert_eq!(open[1]["line"], 7, "a thread whose line moved away says where it was");
+        assert_eq!(open[1]["outdated"], true);
+        assert!(open[0].get("outdated").is_none());
     }
 
     #[test]

@@ -23933,6 +23933,16 @@ function gitCiFix() {
   gitIssuesAsk("ci_fix", {project: g.project, number: p ? p.number : 0, head: G.branch.name,
     sha: G.checks.sha || (p && p.sha) || "", title: p ? (p.title || "") : "", url: p ? (p.url || "") : ""});
 }
+// The review threads left open on this branch's pull request, to an AI tab
+function gitReviewFix() {
+  const g = gitGroup();
+  const p = gitPrsOpen()[0] || null;
+  if (!g || !p || G.busy || !G.branch) return;
+  G.busy = "review_fix"; G.said = ""; G.armed = 0;
+  drawGit();
+  gitIssuesAsk("review_fix", {project: g.project, number: p.number, head: G.branch.name,
+    sha: p.sha || "", title: p.title || "", url: p.url || ""});
+}
 // One check's log, in an editor that only reads. Any check, passed or not: a
 // green one is read to see what ran. One asked at a time; the row says it is
 // on its way, and a second press on the same row while it is does nothing
@@ -24052,7 +24062,7 @@ function gitIssues(d) {
     // What it merged into moved on the server
     G.quietFetch = true;
     gitAsk("fetch");
-  } else if (d.act === "ci_fix") {
+  } else if (d.act === "ci_fix" || d.act === "review_fix") {
     const tab = d.data || {};
     G.said = (T[tab.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replaceAll("{title}", tab.title || "")
       + " " + (T["git.prs.push"] || "");
@@ -24151,6 +24161,9 @@ function gitMenu(anchor) {
     item(T["git.fetch"] || "", () => gitAsk("fetch")),
     sep(),
     item(T["git.pr.create"] || "", () => { G.prForm = true; gitPrFormFit(); drawGit(); }, gitPrWhy()),
+    // The threads a review left open, to an AI tab in this folder, told what
+    // the project's review prompt says
+    item(T["git.review.fix"] || "", gitReviewFix, gitPrsOpen().length ? "" : (T["git.review.why"] || "")),
     ...methods,
     sep(),
     item(T["git.branch.new"] || "", () => gitNewBranch()),

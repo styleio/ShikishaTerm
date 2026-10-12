@@ -8918,25 +8918,28 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             .partition(|done| done.owner.ready(&desks, desk_index));
         ci_finished = away;
         for done in ready {
-            let CiFix { owner, project, number, seq, title, url, head, sha, dir, at, result } = done;
+            let CiFix { owner, project, number, seq, title, url, head, sha, dir, at, result, review } = done;
             let home = owner.at(&desks, &at);
             let ai = cfg.as_ref().and_then(|c| c.ai_engine.clone()).unwrap_or_default();
             let chosen = ai_for_folder(home, &at, &ai, &ai_choices);
             let mut js = match (result, home, chosen.as_ref().ok()) {
                 (Err(e), ..) => serde_json::json!({"ok": false, "error": plain_error(&format!("{e:#}"))}),
                 (Ok(failed), ..) if failed.as_array().is_none_or(|a| a.is_empty()) => {
-                    serde_json::json!({"ok": false, "error": i18n::t("git.ci.none")})
+                    serde_json::json!({"ok": false, "error": i18n::t(if review { "git.review.none" } else { "git.ci.none" })})
                 }
                 (Ok(_), None, _) => serde_json::json!({"ok": false, "error": i18n::t("err.github.no_project")}),
                 (Ok(_), _, None) => serde_json::json!({"ok": false, "error": chosen.as_ref().err().cloned().unwrap_or_default()}),
                 (Ok(failed), Some(desk), Some(choice)) => {
-                    let label = i18n::t("git.ci.tab");
+                    let label = i18n::t(if review { "git.review.tab" } else { "git.ci.tab" });
                     let ci = ci_ran_on(number, &title, &url, &head, &sha);
                     let opened = hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
                         // What came from GitHub -- the title, the logs -- goes in last,
                         // so nothing in it is taken for a word to fill in
-                        desk.git_of(&at)
-                            .ci_prompt()
+                        let git = desk.git_of(&at);
+                        match review {
+                            true => git.review_prompt(),
+                            false => git.ci_prompt(),
+                        }
                             .replace("{ci}", &ci)
                             // Empty rather than "0" for a branch with no pull
                             // request: a prompt somebody wrote their own way
@@ -8950,7 +8953,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .replace("{language}", &i18n::t("lang.self"))
                             .replace("{url}", &url)
                             .replace("{title}", &title)
-                            .replace("{checks}", &serde_json::to_string_pretty(&failed).unwrap_or_default())
+                            .replace(if review { "{comments}" } else { "{checks}" }, &serde_json::to_string_pretty(&failed).unwrap_or_default())
                     });
                     match opened {
                         Ok(tab) => {
@@ -8963,7 +8966,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                 }
             };
-            js["act"] = serde_json::json!("ci_fix");
+            js["act"] = serde_json::json!(if review { "review_fix" } else { "ci_fix" });
             js["project"] = serde_json::json!(project);
             js["number"] = serde_json::json!(number);
             js["seq"] = seq;
@@ -9506,9 +9509,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
-            // CI that failed on a pull request's commit, handed to an AI tab in
-            // the folder its branch is checked out in
-            if act == "ci_fix" {
+            // CI that failed on a pull request's commit, or the review threads
+            // left open on it, handed to an AI tab in the folder its branch is
+            // checked out in
+            if act == "ci_fix" || act == "review_fix" {
+                let review = act == "review_fix";
                 let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
                 let (project, head, sha, title, url) = (text("project"), text("head"), text("sha"), text("title"), text("url"));
                 let owner = AsyncProject::of(desks.get(desk_index), &project);
@@ -9521,14 +9526,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     std::thread::spawn(move || {
                         match crate::github::far_head_folder(&far, &head) {
                             None => {
-                                let js = serde_json::json!({"act": "ci_fix", "ok": false, "seq": seq, "project": project, "number": number,
+                                let js = serde_json::json!({"act": if review { "review_fix" } else { "ci_fix" }, "ok": false, "seq": seq, "project": project, "number": number,
                                     "error": i18n::tp("err.github.pr.no_folder", &[("branch", &head)])});
                                 let _ = issues.send(js.to_string());
                             }
                             Some((dir, on)) => {
                                 let at = std::path::PathBuf::from(crate::uistate::place_key(Some(&on), &dir));
-                                let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
-                                let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, dir, at, result });
+                                let result = match review {
+                                    true => crate::github::review_threads(&sources, &project, number, &|k| tokens.get(k).cloned()),
+                                    false => crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned()),
+                                };
+                                let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, dir, at, result, review });
                             }
                         }
                     });
@@ -9546,8 +9554,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(dir) => {
                         let tx = ci_tx.clone();
                         std::thread::spawn(move || {
-                            let result = crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned());
-                            let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, at: dir.clone(), dir, result });
+                            let result = match review {
+                                true => crate::github::review_threads(&sources, &project, number, &|k| tokens.get(k).cloned()),
+                                false => crate::github::ci_failures(&sources, &project, &sha, &|k| tokens.get(k).cloned()),
+                            };
+                            let _ = tx.send(CiFix { owner, project, number, seq, title, url, head, sha, at: dir.clone(), dir, result, review });
                         });
                     }
                 }
@@ -19045,6 +19056,9 @@ struct CiFix {
     /// The same folder as a place key: where the tab that fixes it goes
     at: std::path::PathBuf,
     result: anyhow::Result<serde_json::Value>,
+    /// The review threads left open rather than the failed checks: what the
+    /// result holds, and which prompt it is handed on with
+    review: bool,
 }
 
 /// A tab opened under `label` in the folder `at` names (a place key) that is
