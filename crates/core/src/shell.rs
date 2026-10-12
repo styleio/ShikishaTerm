@@ -2550,12 +2550,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #editpanel .mdnotes button { min-height:28px; padding:0 var(--s3); font:inherit; font-size:12px; border-radius:var(--r-ctl);
     border:1px solid var(--brand); background:none; color:var(--brand); cursor:pointer; }
   #editpanel .mdnotes button.quiet { border-color:transparent; color:var(--dim); }
-  #editpanel .md .mdnote, #editpanel .md .mdnotenew { margin:var(--s1) 0 var(--s4); padding:var(--s2) var(--s3);
+  #editpanel .md .mdnote, #editpanel .md .mdnotenew, #editpanel .ediff .mdnote { margin:var(--s1) 0 var(--s4); padding:var(--s2) var(--s3);
     border:1px solid var(--line); border-left:3px solid var(--warn); border-radius:var(--r-ctl); background:var(--panel);
     font-size:12.5px; line-height:1.5; }
-  #editpanel .md .mdnote .q { color:var(--faint); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #editpanel .md .mdnote .t { white-space:pre-wrap; color:var(--text); }
-  #editpanel .md .mdnote .a, #editpanel .md .mdnotenew .a { display:flex; justify-content:flex-end; gap:var(--s1); margin-top:var(--s1); }
+  /* A note inside a change's lines: words, not the lines' fixed spacing */
+  #editpanel .ediff .mdnote { white-space:normal; margin:var(--s1) var(--s2) var(--s2); }
+  #editpanel .md .mdnote .q, #editpanel .ediff .mdnote .q { color:var(--faint); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #editpanel .md .mdnote .t, #editpanel .ediff .mdnote .t { white-space:pre-wrap; color:var(--text); }
+  #editpanel .md .mdnote .a, #editpanel .md .mdnotenew .a, #editpanel .ediff .mdnote .a { display:flex; justify-content:flex-end; gap:var(--s1); margin-top:var(--s1); }
   #editpanel .md .mdnotenew textarea { width:100%; min-height:64px; resize:vertical; font:inherit; font-size:13px; padding:var(--s2);
     background:var(--bg); color:var(--text); border:1px solid var(--edge); border-radius:var(--r-chip); outline:none; box-sizing:border-box; }
   #editpanel .md .mdnotenew textarea:focus { border-color:var(--brand); box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
@@ -15371,6 +15373,9 @@ function editBuild(box) {
   md.addEventListener("keydown", mdKeys, true);
   main.addEventListener("scroll", () => mdTocNow(), {passive: true});
   const change = el("div", {class: "ediff"});
+  // A line of a change, pressed with the menu button (held, on a phone): a
+  // note on it for an AI, or its place handed to the input
+  change.addEventListener("contextmenu", diffNoteMenu);
   const say = el("div", {class: "esay"});
   box.append(bar, host, md, change, say);
   edUi = {where, mark, kind, enc, fenc, toFile, save, tell, host, change, say, changeSig: "",
@@ -15431,6 +15436,7 @@ function drawEdit() {
       u.change.textContent = "";
       gitChangeInto(u.change, how, false);
     }
+    diffNotesPaint();
     return;
   }
   u.changeSig = "";
@@ -15839,6 +15845,7 @@ window.__notes = function (d) {
   else { NT.said = d.error || ""; NT.bad = true; }
   if (d.act === "send" && d.ok) toast(NT.said);
   mdNotesPaint();
+  diffNotesPaint();
 };
 function mdNotesHere() { return NT.notes.filter(n => n.path === ED.path); }
 // The menu of a paragraph: a note on it (on the words selected, when some are)
@@ -15915,6 +15922,11 @@ function mdNotesPaint() {
     host.after(card);
   }
   if (!mine.length && !NT.said) return;
+  page.prepend(notesBar(mine, ED.path));
+}
+// The bar over a file's notes: how many, the AI tab to hand them all to,
+// and taking them all away. The same over a document and over a change
+function notesBar(mine, path) {
   const bar = el("div", {class: "mdnotes"},
     el("span", {class: "grow" + (NT.bad ? " bad" : "")}, mine.length
       ? (T["md.notes.count"] || "{n}").replaceAll("{n}", mine.length) : NT.said));
@@ -15924,17 +15936,84 @@ function mdNotesPaint() {
       const ais = mentionCandidates().filter(x => x.ai);
       openList(go, ais.length ? ais.map(x => el("div", {class: "mrow", onclick: () => {
         closeFolderMenu();
-        notesAsk("send", {path: ED.path, to: x.id});
+        notesAsk("send", {path, to: x.id});
       }}, markFor(x) || el("span", {class: "aim"}, "•"), el("span", {class: "nm"}, x.name || x.id)))
         : [el("div", {class: "mnone"}, T["tui.pick.no_ai"] || "")], false, null, "picksend");
     };
     // Written by a person and not to be had back: asked first
     bar.append(go, el("button", {type: "button", class: "quiet", onclick: () => askQuestion({
       title: T["md.notes.clear.title"] || "", say: (T["md.notes.clear.say"] || "").replaceAll("{n}", mine.length),
-      what: ED.path, label: T["md.notes.clear"] || "", danger: true, go: () => notesAsk("clear", {path: ED.path})})},
+      what: path, label: T["md.notes.clear"] || "", danger: true, go: () => notesAsk("clear", {path})})},
       T["md.notes.clear"] || ""));
   }
-  page.prepend(bar);
+  return bar;
+}
+
+// The notes on a change: each card under the line it is about, and the bar
+// that hands them to an AI. The lines are the file's as it is now, so a
+// note is on what the AI will read -- and a change already committed is
+// another file than the one on disk, so it takes none
+function diffNotesPaint() {
+  const u = edUi;
+  const t = gitDiffShown();
+  if (!u || !t) return;
+  const place = mdPlace();
+  if (NT.place !== place) { NT.place = place; NT.notes = []; notesAsk("list"); }
+  const mine = t.file_diff.startsWith("commit:") ? [] : NT.notes.filter(n => n.path === t.file);
+  // Drawn again only when the notes or the change are different: the state
+  // comes several times a second, and a card drawn anew each time takes its
+  // buttons out from under the pointer
+  const sig = JSON.stringify([u.changeSig, mine, NT.said, NT.bad]);
+  if (u.notesSig === sig) return;
+  u.notesSig = sig;
+  for (const old of u.change.querySelectorAll(".mdnote, .mdnotes")) old.remove();
+  if (t.file_diff.startsWith("commit:")) return;
+  const lines = [...u.change.querySelectorAll("[data-line]")];
+  for (const n of mine) {
+    // The line as it is now, or the last one shown before it
+    const at = lines.filter(s => !s.classList.contains("d") && Number(s.dataset.line) <= n.to).pop() || lines[0];
+    if (!at) continue;
+    at.after(el("div", {class: "mdnote dnote"},
+      n.quote ? el("div", {class: "q", title: n.quote}, "「" + n.quote + "」") : null,
+      el("div", {class: "t"}, n.text),
+      el("div", {class: "a"},
+        el("button", {type: "button", class: "quiet", onclick: () => diffNoteWrite(t, n)}, T["md.notes.edit"] || ""),
+        el("button", {type: "button", class: "quiet", onclick: () => notesAsk("drop", {id: n.id})}, T["md.notes.drop"] || ""))));
+  }
+  if (!mine.length && !NT.said) return;
+  u.change.prepend(notesBar(mine, t.file));
+}
+// A note on lines of a change, written or changed in the app's own question
+function diffNoteWrite(t, note, where) {
+  askQuestion({title: T["md.notes.write"] || "",
+    say: "「" + String((note || where).quote || "").slice(0, 120) + "」", field: note ? note.text : "",
+    label: T["md.notes.keep"] || "",
+    go: text => {
+      if (note) notesAsk("edit", {id: note.id, text});
+      else if (text) notesAsk("add", {path: t.file, from: where.from, to: where.to, quote: where.quote, text});
+    }});
+}
+// The menu of a line of a change: a note on it (on the lines selected, when
+// some are), or its place put in the input for the AI to read
+function diffNoteMenu(e) {
+  const t = gitDiffShown();
+  const at = e.target.closest && e.target.closest("[data-line]");
+  if (!t || !at || t.file_diff.startsWith("commit:")) return;
+  e.preventDefault();
+  const sel = window.getSelection();
+  const said = String(sel || "").trim();
+  const ends = said && sel.rangeCount
+    ? [sel.getRangeAt(0).startContainer, sel.getRangeAt(0).endContainer]
+      .map(n => (n.nodeType === 1 ? n : n.parentElement).closest("[data-line]")).filter(Boolean)
+    : [];
+  const nums = (ends.length ? ends : [at]).map(s => Number(s.dataset.line));
+  const from = Math.min(...nums), to = Math.max(...nums);
+  const quote = said || at.textContent.replace(/^[+\- ]/, "").trim();
+  openList(e.target, [
+    el("div", {onclick: () => { closeFolderMenu(); diffNoteWrite(t, null, {from, to, quote}); }}, T["md.notes.write"] || ""),
+    el("div", {onclick: () => { closeFolderMenu();
+      insertIntoComposer(from === to ? t.file + ":" + from : t.file + ":" + from + "-" + to); }}, T["tui.edit.tell"] || ""),
+  ], false, e);
 }
 
 // A path written in the document, as a path in the folder: from the folder
@@ -24795,7 +24874,10 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   for (const r of rows || []) list.append(r);
   if (more && more.say) foldBody.append(el("div", {class:"vsay"}, more.say));
   const input = box.querySelector("#sq");
-  input.hidden = !field;
+  // A field given empty is a box to type into, starting empty -- a new
+  // folder's name, a note. Only a question given no field has none: hidden
+  // for an empty one, those boxes were never there to type in
+  input.hidden = field == null;
   input.value = field || "";
   const again = box.querySelector(".snever");
   again.hidden = !never;
@@ -25208,12 +25290,23 @@ function drawSftp() {
 // not for whoever reads it, so what is left on screen is what changed
 function diffLines(patch) {
   const box = el("pre", {class:"lines dlines"});
+  // Which line of the file as it is now each line shown is: a note or a
+  // place handed to an AI names that one. Counted from each piece's header;
+  // a removed line is where the line after it now stands
+  let at = 0;
   // A Windows line ending's carriage return belongs to the patch, not to what is shown
   for (const line of String(patch || "").split(/\r?\n/)) {
+    const head = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (head) { at = Number(head[1]); continue; }
     if (line.startsWith("diff --git ") || line.startsWith("index ")
       || line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("@@")) continue;
-    box.append(el("span", {class: line.startsWith("+") ? "a" : line.startsWith("-") ? "d" : ""},
-      line + "\n"));
+    const gone = line.startsWith("-");
+    const span = el("span", {class: line.startsWith("+") ? "a" : gone ? "d" : ""}, line + "\n");
+    if (at && !line.startsWith("\\")) {
+      span.dataset.line = String(Math.max(1, at));
+      if (!gone) at++;
+    }
+    box.append(span);
   }
   return box;
 }

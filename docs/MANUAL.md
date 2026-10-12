@@ -114,6 +114,9 @@ the screen's colours are, with its formulas, diagrams and pictures; on a phone i
 phone's own printing, where "Save as PDF" is one of the printers. Right-click a paragraph of the preview (hold it on a phone) to **write a note for the
 AI** on it; the notes stay under their paragraphs, and **Hand to an AI** puts them all in an
 AI tab's input as `path:line` lines, for you to read and send. Handed notes are taken off.
+The same works on a **change** opened from the git panel: right-click a line (hold it on a
+phone) to write a note on it. The line numbers are the file's as it is now, so the AI reads
+them as they are; select several lines first to write a note on all of them.
 
 **ADR** lists the project's decision records: short Markdown files, kept in the repository in
 the MADR format, that say what was decided and why. It is there for a project whose settings
