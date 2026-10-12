@@ -8076,6 +8076,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // How long its record was before the words went in:
                         // the answer is looked for after that
                         let from = session_at(surf, s).and_then(|i| list.get(i)).and_then(crate::asktab::record_len).unwrap_or(0);
+                        // Counted before the words go, so their own Enter is the one after
+                        let submits_before = session_at(surf, s).and_then(|i| list.get(i)).map_or(0, Tab::submits);
                         let landed = hand_over(list, surf, s, p.text, p.submit, now_ms, &mut pending_send, held);
                         if landed && p.submit {
                             record_sent(list, surf, s, &said, p.from.clone());
@@ -8084,6 +8086,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             if landed {
                                 let f = &mut routine_flights[i];
                                 (f.handed, f.from, f.sent_ms, f.typed_ms) = (true, from, now_ms, None);
+                                f.submits_before = submits_before;
                             } else {
                                 let f = routine_flights.remove(i);
                                 routine_end(&mut routine_book, &f, now, crate::routine::How::Failed, "routine.why.locked", None);
@@ -8270,6 +8273,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             from: begun.from,
                             sent_ms: now_ms,
                             typed_ms: None,
+                            submits_before: begun.submits,
                             busy_seen: false,
                             handed: !begun.opened,
                             tidy: begun.opened && r.tidy,
@@ -8339,7 +8343,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // way it is typed having gone without one (stopped by the
                 // person) means it was never sent
                 let typing = pending_send.iter().any(|p| p.serial == t.serial());
-                if f.typed_ms.is_none() && t.submitted_at_ms().is_some_and(|at| at >= f.sent_ms) {
+                if f.typed_ms.is_none() && t.submits() > f.submits_before {
                     f.typed_ms = Some(now_ms);
                 }
                 // (A model tab is handed its words without an Enter)
@@ -19766,6 +19770,9 @@ pub struct RoutineFlight {
     /// When the last of the words had been typed in, as first seen: a long
     /// prompt goes in a piece at a time, and the turn starts only after it
     pub typed_ms: Option<u64>,
+    /// How many submits the tab had taken before this prompt went to it
+    /// (`Tab::submits`): one more is this prompt's Enter
+    pub submits_before: u64,
     /// The tab has been seen at work since: a quiet screen means the turn is
     /// over only after it was busy
     pub busy_seen: bool,
@@ -19794,6 +19801,8 @@ struct RoutineStart {
     title: String,
     opened: bool,
     from: u64,
+    /// The tab's submits so far (`Tab::submits`), as the prompt went to it
+    submits: u64,
 }
 
 /// A run of `r` in a tab of its own, opened in its folder with its AI, the
@@ -19832,7 +19841,7 @@ fn routine_open(
     )
     .ok_or("routine.why.open_failed")?;
     let uid = pending.last().map(|p| p.uid.clone()).unwrap_or_default();
-    Ok(RoutineStart { uid, title, opened: true, from: 0 })
+    Ok(RoutineStart { uid, title, opened: true, from: 0, submits: 0 })
 }
 
 /// A run of `r` in the tab it names, typed in now if that tab is free: an AI
@@ -19863,12 +19872,13 @@ fn routine_hand(
     if t.locked || !t.far_open() || !crate::asktab::turn_over(t.state) {
         return Err("routine.why.busy");
     }
-    let (uid, title, before) = (t.uid().to_string(), t.title.clone(), crate::asktab::record_len(t).unwrap_or(0));
+    let (uid, title, before, submits) =
+        (t.uid().to_string(), t.title.clone(), crate::asktab::record_len(t).unwrap_or(0), t.submits());
     if !hand_line(list, surf, at, r.prompt.clone(), now_ms, pending_send, held) {
         return Err("routine.why.locked");
     }
     record_sent(list, surf, at, &r.prompt, from);
-    Ok(RoutineStart { uid, title, opened: false, from: before })
+    Ok(RoutineStart { uid, title, opened: false, from: before, submits })
 }
 
 /// A run of a scheduled prompt over, written down with how it went

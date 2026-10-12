@@ -395,6 +395,8 @@ impl TurnEnd {
             "failed": self.mark == TurnMark::Failed,
             "error": self.error,
             "kind": self.kind.name(),
+            // Read by a PC from before failures had kinds
+            "limit": self.kind == FailKind::Limit,
         })
     }
 
@@ -2689,6 +2691,14 @@ mod tests {
         // From a bridge that knew only the usage limit
         let old = serde_json::json!({"len": 9, "mark": "over", "when": 5, "failed": true, "limit": true});
         assert_eq!(Standing::from_json(&old).map(|s| s.kind), Some(FailKind::Limit));
+        // And to a PC that knows only that: a turn's end says `limit` too,
+        // and reads back whichever way it came
+        let end = TurnEnd { at: 3, mark: TurnMark::Failed, error: None, kind: FailKind::Limit };
+        let v = end.clone().to_json();
+        assert_eq!(v["limit"], true);
+        assert_eq!(TurnEnd::from_json(&v), Some(end));
+        let old_end = serde_json::json!({"at": 3, "failed": true, "error": null, "limit": true});
+        assert_eq!(TurnEnd::from_json(&old_end).map(|e| e.kind), Some(FailKind::Limit));
         let over = Standing { len: 9, mark: Some((TurnMark::Over, Some(5))), error: None, kind: FailKind::Error };
         let v = over.clone().to_json();
         assert!(v.get("failed").is_none());

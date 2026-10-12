@@ -3658,6 +3658,9 @@ pub struct Tab {
     /// submit, so "how long after the submit did output still move" can be
     /// answered on the same clock `last_change_ms` uses
     submit_tick_ms: AtomicU64,
+    /// How many submits (Enter) have gone in, ever: counted as each goes, so
+    /// "has one gone in since" is never a moment late (see `Tab::submits`)
+    submits: AtomicU64,
     /// Hash of the screen content at the moment of execution.
     ///
     /// Using output byte count instead would count cursor blinking or frame
@@ -4698,6 +4701,7 @@ impl Tab {
             submitted_screen: AtomicU64::new(0),
             saw_working: AtomicBool::new(false),
             submit_tick_ms: AtomicU64::new(u64::MAX),
+            submits: AtomicU64::new(0),
             last_resize_ms: AtomicU64::new(NEVER_RESIZED),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -4720,11 +4724,10 @@ impl Tab {
         })
     }
 
-    /// When the last submit (Enter) went in, on the clock `Tab::tick` is given
-    /// (its launch `Instant`'s elapsed millis). `None` before any, and for the
-    /// moment between a submit and the next tick, which is what stamps it
-    pub fn submitted_at_ms(&self) -> Option<u64> {
-        Some(self.submit_tick_ms.load(Ordering::Relaxed)).filter(|&ms| ms != u64::MAX)
+    /// How many submits (Enter) have gone into this tab since it started:
+    /// compared with the count at some moment, whether one has gone in since
+    pub fn submits(&self) -> u64 {
+        self.submits.load(Ordering::Relaxed)
     }
 
     /// Whether we're waiting for a response to a submitted input
@@ -4818,6 +4821,7 @@ impl Tab {
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
         if contains_submit(bytes) {
             self.prompted.store(true, Ordering::Relaxed);
+            self.submits.fetch_add(1, Ordering::Relaxed);
             // Something has now been said in this tab, in this run. That is
             // what decides which conversation "carry it over" means: the one
             // happening here, or — on a tab nobody has spoken to yet — the one
