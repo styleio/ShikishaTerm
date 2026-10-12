@@ -1469,6 +1469,8 @@
   "settings.boards.name_dup": "その名前のサーバーは追加済みです。",
   "settings.boards.not_saved": "そのサーバーは保存した設定にありません。",
   "tui.boards.title": "サーバー版",
+  "tui.boards.open": "サーバー版「{name}」を開く",
+  "tui.boards.manage": "サーバー版を管理…",
   "err.board.bad_url": "盤面のアドレスではありません。http:// か https://、ホスト、ポートまでを書き、その後には何も書かないでください。",
   "err.board.unreachable": "サーバーに繋がりませんでした（{e}）",
   "err.board.not_paired": "サーバーがこの PC を知りません。外してから、新しいコードで追加し直してください",

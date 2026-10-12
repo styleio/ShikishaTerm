@@ -233,6 +233,19 @@ pub fn open_window(url: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Open the board of the server version saved under `name`, with the key it
+/// handed this PC (`secret` reads the secrets, under whatever lock they are
+/// kept): what the settings' "Open" and the board's own 🖥️ both do. The error
+/// is a sentence for the person
+pub fn open_board(name: &str, secret: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
+    let name = name.trim();
+    let board = crate::config::load()
+        .and_then(|c| c.boards.into_iter().find(|b| b.name == name))
+        .ok_or_else(|| crate::i18n::t("settings.boards.not_saved"))?;
+    let key = secret(&crate::config::board_key(name)).ok_or_else(|| crate::i18n::t("err.board.no_key"))?;
+    open_window(&board.url, &key).map_err(|e| format!("{e:#}"))
+}
+
 /// The address of a board, as written: http or https, and nothing after the
 /// host and port -- no key, no path. `None` when it is not one
 pub fn board_url(text: &str) -> Option<String> {

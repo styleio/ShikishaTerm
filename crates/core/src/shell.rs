@@ -868,7 +868,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu .aphost { display:flex; align-items:center; gap:var(--s2); min-width:240px; }
   .fmenu .aphost .ck { width:12px; flex:none; color:var(--brand); }
   .fmenu .aphost .at { margin-left:auto; padding-left:var(--s3); font-family:var(--mono); font-size:11px; color:var(--dim); }
-  .fmenu .aphostadd { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
+  .fmenu .aphostadd, .fmenu .boardsmanage { border-top:1px solid var(--line); margin-top:var(--s1); color:var(--text); }
   .fmenu div.fsay { cursor:default; white-space:normal; font-size:11.5px; line-height:1.5; color:var(--dim); }
   .fmenu div.fsay:hover { background:transparent; }
   .fmenu div.fsay.bad { color:var(--warn); }
@@ -5598,12 +5598,31 @@ function drawTabs() {
     el("span", {class:"sidebtn quickbtn" + (quickOpen ? " sel" : ""), title:T["tui.quick.title"] || "Quick commands",
         onclick:e => { e.stopPropagation(); quickOpen ? closeQuick() : window.__openQuick(); }}, "🎛️"),
     // The server versions this PC was paired with: a board each, opened in a
-    // window of its own beside this one (far-keep plan §6.1). This PC's own
-    // window only: a phone, or a server's own board, has none of its own.
-    // A desktop computer: the one picture of a machine every system's emoji has
-    AT_PC ?el("span", {class:"sidebtn boardsbtn", title:T["tui.boards.title"] || "Server versions",
-        onclick:e => { e.stopPropagation(); openSettings("boards"); }}, "🖥️") : null));
+    // window of its own beside this one (far-keep plan §6.1). Here only once
+    // there is one -- pairing is done once, in the settings, and a button for
+    // it is noise to everybody who has none -- and then what it does is open
+    // one. This PC's own window only: a phone, or a server's own board, has
+    // none of its own. A desktop computer: the one picture of a machine every
+    // system's emoji has
+    AT_PC && (S.boards || []).length ? boardsButton(S.boards) : null));
   drawCoach();
+}
+
+// 🖥️ for the paired server versions: one opens at a press; several are a
+// list. The list, and the right-click on the one, ends in the settings'
+// page for them, where they are paired, looked at and removed
+function boardsButton(names) {
+  const open = name => send({kind:"openboard", name});
+  const list = (anchor, point) => openList(anchor, [
+    ...names.map(name => el("div", {onclick:() => { closeFolderMenu(); open(name); }},
+      (T["tui.boards.open"] || "{name}").replaceAll("{name}", name))),
+    el("div", {class:"boardsmanage", onclick:() => { closeFolderMenu(); openSettings("boards"); }},
+      T["tui.boards.manage"] || "")], false, point);
+  const one = names.length === 1;
+  return el("span", {class:"sidebtn boardsbtn",
+      title: one ? (T["tui.boards.open"] || "{name}").replaceAll("{name}", names[0]) : (T["tui.boards.title"] || ""),
+      onclick:e => { e.stopPropagation(); one ? open(names[0]) : list(e.currentTarget); },
+      oncontextmenu:e => { e.preventDefault(); e.stopPropagation(); list(e.currentTarget, e); }}, "🖥️");
 }
 
 // ── The ? that answers ────────────────────────────────────
@@ -8712,7 +8731,11 @@ function openList(anchor, rows, tall, point, cls) {
   // is, the way every menu of that kind opens -- and never off the window
   const r = anchor.getBoundingClientRect();
   const box = m.getBoundingClientRect();
-  const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;
+  // ...and above it when there is no room below (a button at the foot of the
+  // window), rather than pushed up over the button that opened it
+  const below = r.bottom + 4, above = r.top - box.height - 4;
+  const x = point ? point.clientX : r.left;
+  const y = point ? point.clientY + 2 : (below + box.height > window.innerHeight - 8 && above >= 8 ? above : below);
   m.style.left = Math.max(8, Math.min(x, window.innerWidth - box.width - 8)) + "px";
   m.style.top = Math.max(8, Math.min(y, window.innerHeight - box.height - 8)) + "px";
   // A press anywhere else puts it away -- but a press *on it* must not, or the

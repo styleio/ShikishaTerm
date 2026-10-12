@@ -4822,9 +4822,9 @@ fn handle(
                 },
                 (_, None, _) => serde_json::json!({ "ok": false, "error": crate::i18n::t("settings.boards.not_saved") }),
                 (_, Some(_), None) => serde_json::json!({ "ok": false, "error": crate::i18n::t("err.board.no_key") }),
-                ("open", Some(b), Some(key)) => match crate::pairing::open_window(&b.url, &key) {
+                ("open", Some(_), Some(key)) => match crate::pairing::open_board(&name, &|_| Some(key.clone())) {
                     Ok(()) => serde_json::json!({ "ok": true }),
-                    Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
                 },
                 (_, Some(b), Some(key)) => match crate::pairing::invite(&b.url, &key) {
                     Ok(code) => {

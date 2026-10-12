@@ -200,6 +200,8 @@ pub struct Mailbox {
     pub why_stopped: Vec<bool>,
     /// "Open System Settings" on the notice about the page's sound
     pub sound_settings: bool,
+    /// Server versions' boards to open, by the name each was saved under
+    pub open_boards: Vec<String>,
     /// Short messages for the page in view to draw (text, a warning)
     pub page_toasts: Vec<(String, bool)>,
     /// 📼 record-mode toggles from the composer (true = arm the shown browser's

@@ -2535,6 +2535,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // way their answer gets back to the loop
     let mut asking_why = false;
     let (why_tx, why_rx) = std::sync::mpsc::channel::<String>();
+    // A server version's board opened from the board's own 🖥️: asking the
+    // server for a ticket goes over the network, so on a thread; what went
+    // wrong comes back here to be said
+    let (board_tx, board_rx) = std::sync::mpsc::channel::<String>();
     // ✨ finished command suggestions arrive from worker threads (the
     // assistant AI call takes seconds); polled once per tick below
     let (suggest_tx, suggest_rx) = std::sync::mpsc::channel::<String>();
@@ -7058,6 +7062,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     (key.clone(), quick_dest(&go))
                 })
                 .collect(),
+            boards: cfg.as_ref().map(|c| c.boards.iter().map(|b| b.name.clone()).collect()).unwrap_or_default(),
             first_run,
             settings_gen,
             // Any desk: a phone registers itself once, for whichever desk
@@ -10653,6 +10658,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // place a Mac lets this app record it. Only a Mac's board offers it
         if std::mem::take(&mut shell.mail().sound_settings) && cfg!(target_os = "macos") {
             let _ = crate::webui::opened_external(crate::vaudio::MAC_SETTINGS);
+        }
+        // A server version's board, from the board's own 🖥️. Its key is read
+        // here, where the secrets are, and the window opened on a thread
+        for name in std::mem::take(&mut shell.mail().open_boards) {
+            let key = caps.secret_value(&crate::config::board_key(&name)).ok();
+            let said = board_tx.clone();
+            std::thread::spawn(move || {
+                if let Err(why) = crate::pairing::open_board(&name, &|_| key.clone()) {
+                    append_hook_log(&format!("pairing: the board of {name} did not open: {why}"));
+                    let _ = said.send(why);
+                }
+            });
+        }
+        while let Ok(why) = board_rx.try_recv() {
+            flash = Some(why);
         }
 
         for ask in shell.mail().take_why_stopped() {
