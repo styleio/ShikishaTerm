@@ -76,6 +76,14 @@ const SCREEN_SETTLE: Duration = Duration::from_secs(3);
 /// on a reply that is already written
 const BACKGROUND_GRACE: Duration = Duration::from_secs(180);
 
+/// How long a tab that keeps a record may sit finished without the record
+/// giving its turn an answer, before its screen is taken instead. The record
+/// catches up within seconds of a turn's end; one that has not in two minutes
+/// will not, and an ask left waiting on it never ends (a turn whose answer was
+/// cut short by the person speaking again, a CLI that filed it in a shape not
+/// read here)
+const RECORD_GIVES_NONE: Duration = Duration::from_secs(120);
+
 /// A tab that never looked busy after being sent something is taken to have
 /// started (and finished) quickly once this has passed
 const NEVER_SEEN_BUSY: Duration = Duration::from_secs(8);
@@ -656,14 +664,36 @@ fn flat(s: &str) -> String {
 /// [`Ask::record_from`]): the question is looked for only after it
 pub fn reply_in(path: &Path, sent: &str, from: u64) -> Option<String> {
     let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
-    reply_after(&page, asked_in(&page, sent, from)?)
+    let asked = asked_in(&page, sent, from)?;
+    // A turn that ended in an error gave no answer, whatever was said on the
+    // way to it: that is for `failure_in` to tell
+    if let Some(begun) = page.turns[asked].at
+        && matches!(crate::reader::turn_end_after(path, begun), Some((crate::reader::TurnMark::Failed, _)))
+    {
+        return None;
+    }
+    reply_after(&page, asked)
+}
+
+/// What went wrong, when the turn `sent` was given in ended in an error the
+/// CLI gave up on rather than in an answer (see [`crate::reader::TurnMark::Failed`]):
+/// the words it showed, or an empty string when it showed none. `None` while
+/// that turn goes on, once it ended any other way, and for a record that marks
+/// no ends of its own. `from` as for [`reply_in`]
+pub fn failure_in(path: &Path, sent: &str, from: u64) -> Option<String> {
+    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+    let begun = page.turns[asked_in(&page, sent, from)?].at?;
+    match crate::reader::turn_end_after(path, begun)? {
+        (crate::reader::TurnMark::Failed, said) => Some(said.unwrap_or_default()),
+        _ => None,
+    }
 }
 
 /// How many things said are read back to find the turn a reply belongs to
 const REPLY_TURNS: usize = 16;
 
 /// The reply to `sent` in the record at `path`, but only once the record says
-/// the turn it was given in has ended ([`crate::reader::turn_over_after`]).
+/// the turn it was given in has ended in an answer ([`crate::reader::turn_end_after`]).
 ///
 /// This is the answer for a tab whose screen still reads as busy: the screen
 /// is a guess at what the CLI is doing, the record is the CLI saying so. A
@@ -673,7 +703,9 @@ pub fn reply_when_over(path: &Path, sent: &str, from: u64) -> Option<String> {
     let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
     let asked = asked_in(&page, sent, from)?;
     let begun = page.turns[asked].at?;
-    if !crate::reader::turn_over_after(path, begun) {
+    // Over, and with an answer: a turn that ended in an error is
+    // `failure_in`'s to tell
+    if crate::reader::turn_end_after(path, begun)?.0 != crate::reader::TurnMark::Over {
         return None;
     }
     // And no turn has begun since. An AI that answered, left work running in
@@ -704,12 +736,18 @@ fn asked_in(page: &crate::reader::Page, sent: &str, from: u64) -> Option<usize> 
     })
 }
 
-/// The last thing the AI said after the turn at `asked`
+/// The last thing the AI said after the turn at `asked`, before the person
+/// said anything more. What it said to the next person's words is that
+/// person's answer: measured 2026-10-12, a review that failed went unanswered,
+/// the person asked the reviewer something of their own, and its answer to
+/// them was handed to the AI that had asked for the review, as the review.
+/// A hook's words in the person's place are not the person saying more
 fn reply_after(page: &crate::reader::Page, asked: usize) -> Option<String> {
     page.turns[asked + 1..]
         .iter()
-        .rev()
-        .find(|t| t.who == Who::Ai && !t.text.trim().is_empty())
+        .take_while(|t| t.who != Who::You || crate::reader::from_a_hook(&t.text))
+        .filter(|t| t.who == Who::Ai && !t.text.trim().is_empty())
+        .last()
         .map(|t| t.text.trim().to_string())
 }
 
@@ -724,9 +762,10 @@ pub fn quiet(state: TabState) -> bool {
 }
 
 /// The tab's turn is over, whether or not something it started runs on: free
-/// to be typed into
+/// to be typed into. A turn that ended in an error is over too, and saying it
+/// again is the one thing that gets an answer out of it
 pub fn turn_over(state: TabState) -> bool {
-    quiet(state) || state == TabState::Background
+    quiet(state) || matches!(state, TabState::Background | TabState::Failed)
 }
 
 /// The answer sent back to the caller
@@ -752,6 +791,27 @@ fn answer(
     }
     if let Some(n) = note {
         v["note"] = json!(n);
+    }
+    v
+}
+
+/// The answer for a turn that ended in an error: the bottom of the tab's
+/// screen, where the CLI showed it, and what it said went wrong, from its
+/// record where it keeps one (`error`, empty or `None` when it said nothing
+/// there). The words were given and nothing came of them; they can be given
+/// again as they are
+fn failed(a: &Ask, t: &Tab, error: Option<String>, same_folder: Option<bool>) -> Value {
+    let screen = tail(&t.last_screen, 12);
+    let mut v = answer(
+        a,
+        "FAILED",
+        Some(&screen),
+        "screen",
+        same_folder,
+        Some("the turn ended in an error and gave no answer; its screen is in reply. Ask again to have it tried again"),
+    );
+    if let Some(error) = error.filter(|e| !e.trim().is_empty()) {
+        v["error"] = json!(error);
     }
     v
 }
@@ -925,15 +985,12 @@ pub fn step(
             ));
         }
         TabState::Failed => {
-            let screen = tail(&t.last_screen, 12);
-            return Step::Answer(answer(
-                a,
-                "FAILED",
-                Some(&screen),
-                "screen",
-                same_folder,
-                Some("the turn ended in an error"),
-            ));
+            // The words went to a tab whose last turn had failed, and it reads
+            // that way until it starts on them: that failure is not this one's
+            let sent = a.sent_at.unwrap_or(a.asked_at);
+            if a.seen_busy || sent.elapsed() >= NEVER_SEEN_BUSY {
+                return Step::Answer(failed(a, t, t.record_failure().map(str::to_string), same_folder));
+            }
         }
         TabState::Done | TabState::Wait => {
             let sent = a.sent_at.unwrap_or(a.asked_at);
@@ -969,8 +1026,19 @@ pub fn step(
             return Step::Nothing;
         }
         match a.source(t) {
-            Source::Here(_) | Source::Far(_) => {
+            source @ (Source::Here(_) | Source::Far(_)) => {
                 if since.elapsed() >= SETTLE {
+                    // Told by the record here before the tab's own reading
+                    // turns to it, and for a CLI that reads as failed only by
+                    // its hook, which may not be there. A record on another
+                    // machine is told through the tab's reading
+                    let failure = match &source {
+                        Source::Here(path) => failure_in(path, &a.text, a.record_from.unwrap_or(0)),
+                        _ => None,
+                    };
+                    if let Some(error) = failure {
+                        return Step::Answer(failed(a, t, Some(error), same_folder));
+                    }
                     if let Some(reply) = a.recorded(t) {
                         return Step::Answer(answer(
                             a,
@@ -981,6 +1049,19 @@ pub fn step(
                             None,
                         ));
                     }
+                }
+                // A record that never gives this turn an answer is not waited
+                // on for good: what the screen shows is answer enough
+                if since.elapsed() >= RECORD_GIVES_NONE {
+                    let reply = t.last_response.clone().unwrap_or_else(|| tail(&t.last_screen, 40));
+                    return Step::Answer(answer(
+                        a,
+                        "DONE",
+                        Some(&reply),
+                        "screen",
+                        same_folder,
+                        Some("the tab's record holds no reply to this ask; this is what its screen shows"),
+                    ));
                 }
             }
             Source::Screen => {
@@ -1342,10 +1423,14 @@ mod tests {
 
     #[test]
     fn a_line_the_hook_did_not_hear_is_read_from_the_record() {
+        // The hook's ask for the line, put in the person's place the way
+        // Codex files it: in a tag of its own
         let rec = record(&[
             said("user", "review it"),
             said("assistant", "The memo says ABC."),
-            said("user", "Your answer has been passed on in full ..."),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "<hook_prompt hook_run_id=\"stop:4:hooks.json\">Your full answer is kept separately. Reply with only one short line.</hook_prompt>"}
+            ]}}),
             said("assistant", "I sent the memo's exact text."),
         ]);
         let mut a = sent_ask();
@@ -1472,6 +1557,92 @@ mod tests {
             json!({"type": "gemini", "content": "The log shows three errors."}),
         ]);
         assert_eq!(reply_when_over(f.path(), q, 0), None);
+    }
+
+    /// Measured 2026-10-12: a Codex review stopped at "Selected model is at
+    /// capacity". Its record filed a completion carrying the error and no
+    /// answer, the ask looked for an answer that would never come, and the
+    /// AI that asked for the review waited for good. Then the person asked
+    /// the reviewer something of their own -- and its answer to them was
+    /// handed over as the review
+    #[test]
+    fn a_turn_the_model_could_not_take_is_a_failure_and_not_an_answer() {
+        let q = "Adversarially review commit 5ced063 and reply with the findings only.";
+        let codex_said = |role: &str, kind: &str, text: &str| {
+            json!({"type": "response_item", "payload": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}})
+        };
+        let started = json!({"type": "event_msg", "payload": {"type": "task_started"}});
+        let error = "Selected model is at capacity. Please try a different model.";
+        let mut lines = vec![
+            started.clone(),
+            codex_said("user", "input_text", q),
+            codex_said("assistant", "output_text", "Checking the diff against the design first."),
+            json!({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": null,
+                "error": {"message": error, "codex_error_info": "server_overloaded"}}}),
+        ];
+        let failed = record(&lines);
+        assert_eq!(reply_in(failed.path(), q, 0), None, "what it said on the way is not an answer");
+        assert_eq!(reply_when_over(failed.path(), q, 0), None);
+        assert_eq!(failure_in(failed.path(), q, 0).as_deref(), Some(error));
+
+        // The person's own question afterwards, and its answer: not the review's
+        lines.push(started);
+        lines.push(codex_said("user", "input_text", "Why did the collaboration stop?"));
+        lines.push(codex_said("assistant", "output_text", "The model was at capacity."));
+        lines.push(json!({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "The model was at capacity.", "error": null}}));
+        let later = record(&lines);
+        assert_eq!(reply_in(later.path(), q, 0), None);
+        assert_eq!(reply_when_over(later.path(), q, 0), None);
+        assert_eq!(failure_in(later.path(), q, 0).as_deref(), Some(error), "the review still failed");
+        assert_eq!(failure_in(later.path(), "Why did the collaboration stop?", 0), None);
+        assert_eq!(
+            reply_in(later.path(), "Why did the collaboration stop?", 0).as_deref(),
+            Some("The model was at capacity.")
+        );
+    }
+
+    /// What the AI said to the person's next words is the person's answer,
+    /// even where the record marks no ends at all
+    #[test]
+    fn the_reply_ends_where_the_person_speaks_again() {
+        let q = "Summarise the log.";
+        let f = record(&[
+            said("user", q),
+            said("assistant", "Three errors, all in the parser."),
+            said("user", "something else"),
+            said("assistant", "An answer to something else."),
+        ]);
+        assert_eq!(reply_in(f.path(), q, 0).as_deref(), Some("Three errors, all in the parser."));
+        let none_yet = record(&[said("user", q), said("user", "something else"), said("assistant", "theirs")]);
+        assert_eq!(reply_in(none_yet.path(), q, 0), None);
+    }
+
+    /// A failed tab is free to be typed into, and saying it again is the way
+    /// on. Once the words went in, the failure before them is not their answer
+    #[test]
+    fn a_failed_tab_is_asked_again_and_answers_failed_only_for_its_own_turn() {
+        assert!(turn_over(TabState::Failed));
+        assert!(!quiet(TabState::Failed), "a failed tab has not answered");
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Failed;
+        let mut queued = sent_ask();
+        queued.phase = Phase::Queued;
+        assert!(matches!(step(&mut queued, Some(&t), false, None, true), Step::Send), "a failed tab takes the words");
+
+        let mut a = sent_ask();
+        a.hook_expected = false;
+        a.sent_at = Some(Instant::now());
+        a.seen_busy = false;
+        assert!(
+            matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing),
+            "still reading as the last turn's failure"
+        );
+        t.state = TabState::Busy;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing));
+        t.state = TabState::Failed;
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("its own failure is its answer") };
+        assert_eq!(v["state"], "FAILED");
+        assert!(v["note"].as_str().is_some_and(|n| n.contains("Ask again")), "{v}");
     }
 
     #[test]

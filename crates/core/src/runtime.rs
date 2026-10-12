@@ -1408,6 +1408,9 @@ fn tend_asks(
                 ));
                 let pending = state == "PENDING";
                 let reply = v["reply"].as_str().map(str::to_string);
+                // How an answer that is not a reply reads in the inbox, should
+                // nobody hold the line for it any more
+                let told = crate::cli::said(&v);
                 // Still holding the line: answer on it
                 if let Some(line) = a.reply.take() {
                     if line.send(Ok(v)).is_ok() {
@@ -1419,9 +1422,13 @@ fn tend_asks(
                     }
                     append_hook_log("ask_tab: the caller let go of the line; the reply goes into its tab");
                 }
-                // Nobody holds the line any more: a finished reply goes into
-                // the caller's inbox, and the caller is told when it is free
-                // to read it; anything else is dropped
+                // Nobody holds the line any more: the answer goes into the
+                // caller's inbox, and the caller is told when it is free to
+                // read it. Not only a reply: an ask that ended any other way
+                // -- the turn failed, the tab hit its limit or stopped at a
+                // question -- is the caller's to act on, and it was told it
+                // would hear (2026-10-12: a review that failed after the
+                // caller let go was never heard of again)
                 match (state.as_str(), reply) {
                     ("PENDING", _) => {
                         a.phase = Phase::Deliver;
@@ -1430,6 +1437,11 @@ fn tend_asks(
                     ("DONE", Some(r)) if a.caller.is_some() => {
                         orchestra.mail_tab(&caller_box, &a.target, &crate::asktab::handed_subject(&a.target), &r);
                         append_hook_log(&format!("ask_tab: {}'s reply is in {caller_id}'s inbox", a.target));
+                        owes
+                    }
+                    (_, _) if a.caller.is_some() => {
+                        orchestra.mail_tab(&caller_box, &a.target, &crate::asktab::handed_subject(&a.target), &told);
+                        append_hook_log(&format!("ask_tab: {}'s answer ({state}) is in {caller_id}'s inbox", a.target));
                         owes
                     }
                     _ => owes,
@@ -8311,6 +8323,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 if matches!(t.state, TabState::Busy | TabState::Question) {
                     f.busy_seen = true;
+                }
+                // Its turn ended in an error: no answer is coming, and the
+                // screen says what went wrong
+                if f.busy_seen && t.state == TabState::Failed {
+                    let screen = screen_tail(t, ROUTINE_SCREEN_LINES);
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_failed", Some(&screen));
+                    append_hook_log(&format!("scheduled prompt run {} of {} ended in an error in tab \"{}\"", f.n, f.id, t.title));
+                    continue;
                 }
                 let record = t.record();
                 let said = record.as_deref().and_then(|p| crate::asktab::reply_when_over(p, &f.text, f.from));
