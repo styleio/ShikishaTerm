@@ -8,6 +8,19 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The ports panel says what each server is, and opens it where it said.**
+  Each line now says the folder the server runs in and what it runs
+  (`apps/admin · vite`), with the whole command on its tooltip, where it used
+  to say only `node.exe`. A server that printed its address on a terminal as
+  it started (`http://127.0.0.1:5173/`) is opened at that address, `https`
+  included. One bound to `127.0.0.1` alone opens at `127.0.0.1` rather than
+  `localhost`: a browser takes the two for different sites, and a server that
+  checks cookies or a CSRF token turned the other one away. In a folder with
+  Auto on, the AI that writes automatic names also names each server ("Admin
+  console"), once per server; what it is sent is listed under Automatic names
+  in the desk's settings.
+
 ## [0.27.0] - 2026-10-09
 
 ### Added

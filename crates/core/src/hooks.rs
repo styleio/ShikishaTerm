@@ -1984,6 +1984,39 @@ end
 error(shikisha.t("err.label.failed"))
 "#;
 
+/// What names the servers listening in a folder, for the ports panel
+/// (`crate::portinfo`). Asked the same light way as a folder's name, by the
+/// same AI; the answer is an object of port numbers to names, and which of
+/// them are kept is decided where it comes back
+pub const PORT_NAME_LUA: &str = r#"
+local prompt = shikisha.get_var("port_prompt") or ""
+local ai     = shikisha.get_var("port_ai") or ""
+local opts = { light = true }
+if ai ~= "" then opts.ai = ai end
+local ask = prompt
+for try = 1, 2 do
+  local said, why = shikisha.ai_ask(ask, opts)
+  if not said then error(why) end
+  local body = said:match("%b{}")
+  local got, bad = nil, "no JSON object"
+  if body then got, bad = shikisha.json_decode(body) end
+  if type(got) == "table" then
+    local named = {}
+    local any = false
+    for k, v in pairs(got) do
+      if type(v) == "string" and v ~= "" then
+        named[tostring(k)] = v
+        any = true
+      end
+    end
+    if any then return shikisha.json_encode(named) end
+    bad = "no port was named"
+  end
+  ask = prompt .. "\n\n" .. shikisha.tf("ai.draft.retry", { error = bad or "no name" })
+end
+error(shikisha.t("err.ports.name_failed"))
+"#;
+
 /// What the commit-message button runs when nobody has written their own.
 ///
 /// It is Lua rather than Rust so that "I want it in English" and "I want a
@@ -6488,6 +6521,7 @@ mod tests {
             ("question", super::ASK_LUA),
             ("decision record proposal", super::ADR_PROPOSE_LUA),
             ("folder label", super::LABEL_LUA),
+            ("port names", super::PORT_NAME_LUA),
             ("folder move", super::FOLDER_MOVE_LUA),
         ] {
             eng.lua

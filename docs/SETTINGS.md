@@ -53,7 +53,7 @@ Assistant AI, deciding AI, connections, agreements
 
 **Automatic names**
 
-- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, and the branch name that follows them. A desk can choose another one.
+- **AI for automatic names** — Writes the name and summary of a working folder with Auto on, the branch name that follows them, and the names of the servers listening there. A desk can choose another one.
 - **Model for those names** — A name costs a fraction of an answer this way. Turn it off if the names it writes are not recognisable.
 
 **Asking other tabs (skill)**

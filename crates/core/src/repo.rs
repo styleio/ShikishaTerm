@@ -29,12 +29,15 @@ pub struct Place {
     /// recognise it by (`node.exe`, `python`), for the ports panel. A port
     /// whose holder could not be named is simply not in here
     pub programs: std::collections::BTreeMap<u16, String>,
-    /// The host to open a port at, for a port `localhost` does not reach
+    /// The host to open a port at, for a port not opened at `localhost`
     /// (`open_host`). A port not in here opens at `localhost`
     pub hosts: std::collections::BTreeMap<u16, String>,
     /// The ports among `ports` that were found by this tab's folder rather
     /// than below the tab (`Held::loose`)
     pub loose: std::collections::BTreeSet<u16>,
+    /// By port, what the panel says the port is and where it opens it
+    /// (`crate::portinfo`). A port missing here is said by number and program
+    pub about: std::collections::BTreeMap<u16, crate::portinfo::About>,
     /// `owner/name` on GitHub, when that is where this folder pushes to
     pub repo: Option<String>,
     /// The folder shared by this checkout and every branch cut from it. Two
@@ -383,18 +386,31 @@ pub fn listeners() -> HashMap<u32, std::collections::BTreeMap<u16, Vec<std::net:
     out
 }
 
-/// The host to open a port at, when `localhost` would not reach it.
+/// The host to open a port at, when it is not `localhost`.
 ///
-/// A program bound to every address (`0.0.0.0`, `::`) or to the loopback
-/// answers at `localhost`, which is `None` here. One bound only to a
-/// particular address -- the LAN's, say -- answers there alone: asking
-/// `localhost` for it finds nothing listening. An IPv4 address is preferred
-/// over an IPv6 one when a port is on both, and an IPv6 one comes in the
-/// brackets an address in a URL needs
+/// A program bound to every address (`0.0.0.0`, `::`), or to the IPv6
+/// loopback, answers at `localhost`, which is `None` here. One bound to an
+/// IPv4 loopback address alone is opened at that address as it was written:
+/// `localhost` would reach it, but a browser takes `localhost` and
+/// `127.0.0.1` for two different sites, and a server that checks where a
+/// request came from (its cookies, its CSRF token, its CORS list) turns away
+/// the one it did not expect. One bound only to a particular address -- the
+/// LAN's, say -- answers there alone: asking `localhost` for it finds nothing
+/// listening. An IPv4 address is preferred over an IPv6 one when a port is
+/// on both, and an IPv6 one comes in the brackets an address in a URL needs
 pub fn open_host(bound: &[std::net::IpAddr]) -> Option<String> {
     use std::net::IpAddr;
-    if bound.is_empty() || bound.iter().any(|a| a.is_loopback() || a.is_unspecified()) {
+    if bound.is_empty() || bound.iter().any(|a| a.is_unspecified()) {
         return None;
+    }
+    if bound.iter().any(|a| a.is_loopback()) {
+        let v4: Vec<&IpAddr> = bound.iter().filter(|a| a.is_loopback() && a.is_ipv4()).collect();
+        // On both loopbacks, or on the IPv6 one only, `localhost` is the one
+        // name that reaches every address it is on
+        return match (v4.as_slice(), bound.iter().any(|a| a.is_loopback() && a.is_ipv6())) {
+            ([one], false) => Some(one.to_string()),
+            _ => None,
+        };
     }
     // An IPv6 address that only means something on one network card
     // (fe80::/10) is the last choice: a URL cannot say which card
@@ -417,9 +433,14 @@ pub struct Held {
     pub ports: Vec<u16>,
     /// By port, the program that holds it, when it could be named
     pub programs: std::collections::BTreeMap<u16, String>,
-    /// By port, the host to open it at, for a port `localhost` does not
-    /// reach (see `open_host`). A port missing here opens at `localhost`
+    /// By port, the host to open it at, for a port not opened at
+    /// `localhost` (see `open_host`). A port missing here opens at `localhost`
     pub hosts: std::collections::BTreeMap<u16, String>,
+    /// By port, the addresses it was bound on, which say what a printed
+    /// address for it may be (`crate::portinfo::pick`)
+    pub bound: std::collections::BTreeMap<u16, Vec<std::net::IpAddr>>,
+    /// By port, the process holding it: where it works and what started it
+    pub procs: std::collections::BTreeMap<u16, Proc>,
     /// The ports among `ports` found by the folder their program works in
     /// rather than below the tab (see `ports_below`): which tab started them
     /// is no longer known, only that they run in this tab's folder
@@ -428,7 +449,7 @@ pub struct Held {
 
 impl Held {
     /// A port and what holds it, once: the first to claim a port keeps it
-    fn take(&mut self, port: u16, bound: &[std::net::IpAddr], name: Option<&String>, loose: bool) {
+    fn take(&mut self, port: u16, bound: &[std::net::IpAddr], name: Option<&String>, proc: Option<&Proc>, loose: bool) {
         if self.ports.contains(&port) {
             return;
         }
@@ -438,6 +459,10 @@ impl Held {
         }
         if let Some(host) = open_host(bound) {
             self.hosts.insert(port, host);
+        }
+        self.bound.insert(port, bound.to_vec());
+        if let Some(p) = proc {
+            self.procs.insert(port, p.clone());
         }
         if loose {
             self.loose.insert(port);
@@ -472,50 +497,109 @@ pub fn ports_below(roots: &[(usize, u32)], folders: &[(usize, PathBuf)]) -> Hash
     }
     let table = process_table(None, sysinfo::ProcessRefreshKind::nothing());
     let children = children_in(&table);
-    // The same process under two roots is named once
-    let mut names: HashMap<u32, Option<String>> = HashMap::new();
+    let lines = lines_of(&table);
+    // Each tab's listeners first, then the listeners no tab reached and of
+    // those the ones cut off from whatever started them
+    let mut below: Vec<(usize, Vec<u32>)> = Vec::new();
     let mut below_a_tab: HashSet<u32> = HashSet::new();
     for (key, root) in roots {
+        let all = descendants(*root, &children);
+        let held: Vec<u32> = all.iter().copied().filter(|pid| by_pid.contains_key(pid)).collect();
+        below_a_tab.extend(all);
+        below.push((*key, held));
+    }
+    let mut cut: Vec<u32> = if folders.is_empty() {
+        Vec::new()
+    } else {
+        by_pid
+            .keys()
+            .copied()
+            .filter(|pid| !below_a_tab.contains(pid) && cut_off(*pid, &lines))
+            .collect()
+    };
+    cut.sort_unstable();
+    // Where each of these works and what started it, asked of the system for
+    // these few only: reading that is a look inside a process
+    let holders: Vec<u32> = below.iter().flat_map(|(_, h)| h.iter().copied()).chain(cut.iter().copied()).collect();
+    let procs = procs_of(&holders, &lines);
+    // The same process under two roots is named once
+    let mut names: HashMap<u32, Option<String>> = HashMap::new();
+    for (key, pids) in below {
         let mut held = Held::default();
-        for pid in descendants(*root, &children) {
-            below_a_tab.insert(pid);
-            let Some(p) = by_pid.get(&pid) else { continue };
+        for pid in pids {
             let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
-            for (port, bound) in p {
-                held.take(*port, bound, name.as_ref(), false);
+            for (port, bound) in &by_pid[&pid] {
+                held.take(*port, bound, name.as_ref(), procs.get(&pid), false);
             }
         }
         if !held.ports.is_empty() {
-            out.insert(*key, held);
+            out.insert(key, held);
         }
     }
-    // The listeners no tab reached, and of those the ones cut off from
-    // whatever started them. Their folders are asked of the system only for
-    // these few: reading where a process works is a look inside it
-    let lines = lines_of(&table);
-    let cut: Vec<u32> = by_pid
-        .keys()
-        .copied()
-        .filter(|pid| !below_a_tab.contains(pid) && cut_off(*pid, &lines))
-        .collect();
-    if !cut.is_empty() && !folders.is_empty() {
-        let kind = sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always);
-        let at = process_table(Some(&cut), kind);
-        let mut cut = cut;
-        cut.sort_unstable();
-        for pid in cut {
-            let Some(cwd) = at.process(sysinfo::Pid::from_u32(pid)).and_then(|p| p.cwd()) else { continue };
-            let Some(key) = folder_holding(cwd, folders) else { continue };
-            let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
-            let held = out.entry(key).or_default();
-            for (port, bound) in &by_pid[&pid] {
-                held.take(*port, bound, name.as_ref(), true);
-            }
+    for pid in cut {
+        let Some(cwd) = procs.get(&pid).and_then(|p| p.cwd.as_deref()) else { continue };
+        let Some(key) = folder_holding(cwd, folders) else { continue };
+        let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
+        let held = out.entry(key).or_default();
+        for (port, bound) in &by_pid[&pid] {
+            held.take(*port, bound, name.as_ref(), procs.get(&pid), true);
         }
     }
     for held in out.values_mut() {
         held.ports.sort_unstable();
     }
+    out
+}
+
+/// A process holding a port: the folder it works in and the words that
+/// started it, as the system gave them. Either can be missing -- a process of
+/// another account, or one that ended between two looks, does not say
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Proc {
+    pub cwd: Option<PathBuf>,
+    pub argv: Vec<String>,
+}
+
+/// What was last read of each process holding a port, by its id, with the
+/// time it started: an id given to a new process since is a new process
+static PROCS: std::sync::Mutex<Option<HashMap<u32, (u64, Proc)>>> = std::sync::Mutex::new(None);
+
+/// Where each of `pids` works and what started it. Read from the system only
+/// for a process not read before -- a server that keeps running says the same
+/// thing every time it is asked -- and only the processes asked about this
+/// time are kept, so one that stopped is forgotten with it
+fn procs_of(pids: &[u32], lines: &HashMap<u32, (Option<u32>, u64)>) -> HashMap<u32, Proc> {
+    let mut kept = PROCS.lock().unwrap_or_else(|e| e.into_inner());
+    let before = kept.take().unwrap_or_default();
+    let born = |pid: &u32| lines.get(pid).map(|l| l.1).unwrap_or(0);
+    let mut now: HashMap<u32, (u64, Proc)> = HashMap::new();
+    let mut ask: Vec<u32> = Vec::new();
+    for pid in pids {
+        match before.get(pid) {
+            Some((b, p)) if *b == born(pid) => {
+                now.insert(*pid, (*b, p.clone()));
+            }
+            _ => ask.push(*pid),
+        }
+    }
+    ask.sort_unstable();
+    ask.dedup();
+    if !ask.is_empty() {
+        let kind = sysinfo::ProcessRefreshKind::nothing()
+            .with_cwd(sysinfo::UpdateKind::Always)
+            .with_cmd(sysinfo::UpdateKind::Always);
+        let table = process_table(Some(&ask), kind);
+        for pid in ask {
+            let Some(p) = table.process(sysinfo::Pid::from_u32(pid)) else { continue };
+            let proc = Proc {
+                cwd: p.cwd().filter(|c| !c.as_os_str().is_empty()).map(Path::to_path_buf),
+                argv: p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect(),
+            };
+            now.insert(pid, (born(&pid), proc));
+        }
+    }
+    let out = now.iter().map(|(pid, (_, p))| (*pid, p.clone())).collect();
+    *kept = Some(now);
     out
 }
 
@@ -1094,9 +1178,9 @@ mod tests {
         let bound = all.get(&mine).and_then(|ports| ports.get(&ours));
         assert!(bound.is_some(), "the port {ours} opened here does not show in the table");
         // And with the address it was bound on, which is what says it opens
-        // at localhost
+        // there and not at localhost
         assert_eq!(bound.unwrap(), &vec![std::net::IpAddr::from([127, 0, 0, 1])]);
-        assert_eq!(open_host(bound.unwrap()), None);
+        assert_eq!(open_host(bound.unwrap()).as_deref(), Some("127.0.0.1"));
         for (pid, ports) in &all {
             assert!(*pid > 0 || !ports.is_empty());
             for p in ports.keys() {
@@ -1111,11 +1195,17 @@ mod tests {
         let lan: IpAddr = "192.168.1.20".parse().unwrap();
         let v6: IpAddr = "2001:db8::5".parse().unwrap();
         let link: IpAddr = "fe80::1".parse().unwrap();
-        // Everywhere, or the loopback: localhost reaches it
+        // Everywhere, or the IPv6 loopback, or both loopbacks: localhost
+        // reaches it
         assert_eq!(open_host(&["0.0.0.0".parse().unwrap()]), None);
         assert_eq!(open_host(&["::".parse().unwrap()]), None);
         assert_eq!(open_host(&["::1".parse().unwrap()]), None);
-        assert_eq!(open_host(&[lan, "127.0.0.1".parse().unwrap()]), None);
+        assert_eq!(open_host(&["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()]), None);
+        assert_eq!(open_host(&[lan, "0.0.0.0".parse().unwrap()]), None);
+        // The IPv4 loopback alone: at that address as written, the site the
+        // server expects requests from
+        assert_eq!(open_host(&["127.0.0.1".parse().unwrap()]).as_deref(), Some("127.0.0.1"));
+        assert_eq!(open_host(&[lan, "127.0.0.1".parse().unwrap()]).as_deref(), Some("127.0.0.1"));
         // Only somewhere particular: there
         assert_eq!(open_host(&[lan]).as_deref(), Some("192.168.1.20"));
         assert_eq!(open_host(&[v6, lan]).as_deref(), Some("192.168.1.20"));

@@ -9913,19 +9913,29 @@ function drawHerePorts(box, g, group) {
   for (const t of (S && S.tabs) || []) {
     if (t.group !== group || !t.place) continue;
     for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || "",
-      host: (t.place.hosts || {})[port] || "", loose: (t.place.loose || []).includes(port)});
+      host: (t.place.hosts || {})[port] || "", loose: (t.place.loose || []).includes(port),
+      about: (t.place.about || {})[port] || {}});
   }
   held.sort((a, b) => a.port - b.port);
-  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name + ":" + h.loose)].join("|");
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name + ":" + h.loose
+    + ":" + JSON.stringify(h.about))].join("|");
   if (PT.drawn === sig && box.firstChild) return;
   PT.drawn = sig;
   box.textContent = "";
   box.append(el("div", {class:"chead"}, el("span", {class:"ttl"}, T["tui.ports.here.title"] || "")));
   const list = el("div", {class:"plist"});
   for (const h of held) {
-    // A program listening on one address only (the LAN's, say) answers
-    // there and not at localhost, so it is opened, and named, where it listens
-    const url = "http://" + (h.host || "localhost") + ":" + h.port + "/";
+    // Opened where the server said it is, when it printed its address: a
+    // server that checks where a request came from works only there. Else a
+    // program listening on one address only (the LAN's, the IPv4 loopback)
+    // is opened, and named, where it listens, and anything else at localhost
+    const a = h.about;
+    const origin = a.url || ("http://" + (h.host || "localhost") + ":" + h.port);
+    const url = origin + "/";
+    // The address, said when it is not plain localhost: the one thing that
+    // says why this row opens somewhere other than localhost
+    const shown = origin.replace(/^http:\/\//, "").replace(/:\d+$/, "");
+    const there = shown === "localhost" ? "" : shown;
     const tab = h.t.id || h.t.name || "";
     // The same road a pressed address on a terminal takes: the app checks the
     // address, finds the folder from the tab, and opens it there
@@ -9940,14 +9950,21 @@ function drawHerePorts(box, g, group) {
       acts.push(el("button", {type:"button", class:"pa", title: T["tui.link.copy_url"] || "",
         onclick: e => { e.stopPropagation(); copyToClipboard(url); toast(T["tui.urls.copied"] || ""); }}, pickIcon("copy")));
     }
-    list.append(el("div", {class:"prt", title: (T["tui.urls.open"] || "").replaceAll("{port}", h.port),
-        onclick: () => act("page")},
+    // What it is, the surest words first: the name an AI gave it, else the
+    // folder it runs in and what it runs, else the program. Under that, the
+    // words the first line did not use, and which tab it belongs to. The
+    // whole command is on the row's tooltip -- what runs is shown, not guessed
+    const program = h.program || (T["tui.ports.unnamed"] || "");
+    const head = a.name || a.what || program;
+    const under = a.name ? (a.what || program) : a.what ? program : "";
+    const tip = [(T["tui.urls.open"] || "").replaceAll("{port}", h.port),
+      a.command ? (T["tui.ports.command"] || "").replaceAll("{command}", a.command) : ""].filter(Boolean).join("\n");
+    list.append(el("div", {class:"prt", title: tip, onclick: () => act("page")},
       el("span", {class:"pp"}, ":" + h.port),
       el("span", {class:"pw"},
-        el("span", {class:"pg"}, h.program || (T["tui.ports.unnamed"] || "")),
-        // The address, when it is not this PC's own loopback: the one thing
-        // that says why this row opens somewhere other than localhost
-        el("span", {class:"po"}, h.host ? el("span", {class:"ph"}, h.host) : null,
+        el("span", {class:"pg"}, head),
+        el("span", {class:"po"}, there ? el("span", {class:"ph"}, there) : null,
+          under ? el("span", {}, under) : null,
           ...(h.loose ? [el("span", {}, T["tui.ports.loose"] || "")]
             : [markFor(h.t) || null, el("span", {}, h.t.name || tab)]))),
       ...acts));

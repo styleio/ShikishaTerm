@@ -12,7 +12,8 @@
  * Checked:
  *   chip      the port on the folder's card is pressed with the mouse: the
  *             column opens on the ports panel, called up with its own ✕, and
- *             lists the port with the program holding it and the tab it came from
+ *             lists the port with what it runs (the server's script), the
+ *             program holding it and the tab it came from
  *   open      pressing the row opens a browser tab of that folder on the port,
  *             written into the settings, and the page is what the server serves
  *   menu      a folder's right-click menu offers the ports and calls the panel up
@@ -214,8 +215,8 @@ try {
   check(p.on === 'ports' && p.shown && p.called.includes('ports'), 'the column stands on the ports panel, called up: ' + JSON.stringify({ on: p.on, called: p.called }));
   const row = p.rows.find((r) => r.port === ':' + PORT);
   check(!!row, `the port is a row: ${JSON.stringify(p.rows)}`);
-  check(!!row && /^node(\.exe)?$/i.test(row.program), 'with the program holding it: ' + (row && row.program));
-  check(!!row && row.tab.includes('serve'), 'and the tab it came from: ' + (row && row.tab));
+  check(!!row && row.program === 'serve.mjs', 'with what it runs: ' + (row && row.program));
+  check(!!row && /node(\.exe)?/i.test(row.tab) && row.tab.includes('serve'), 'the program holding it and the tab it came from: ' + (row && row.tab));
   check(!!row && row.acts === 2, 'on the PC, its own browser and a copy of the address are offered: ' + (row && row.acts));
   check(await board.run('document.querySelectorAll("#side .sbar button.called .sx").length === 1'), 'the panel carries its own ✕');
   await board.shot('1-panel');
@@ -224,7 +225,8 @@ try {
   await board.press(`[...document.querySelectorAll("#portpanel .prt")].find(r => r.querySelector(".pp").textContent === ":${PORT}")`);
   await until(() => pageTabs().length === 1, 'a browser tab written into the folder', 20000)
     .catch(async (e) => { console.log('    (the board says: ' + await board.run('S.flash || ""') + ')'); throw e; });
-  check(pageTabs()[0].command === `browser http://localhost:${PORT}/`, 'written down on the port: ' + pageTabs()[0].command);
+  // Bound to 127.0.0.1 alone: opened there, the site the server expects
+  check(pageTabs()[0].command === `browser http://127.0.0.1:${PORT}/`, 'written down on the port: ' + pageTabs()[0].command);
   await until(() => board.run('S.tabs.some(t => t.kind === "browser")'), 'the page among the tabs', 15000).catch(() => {});
   const pageAt = await board.run(`(S.tabs.find(t => t.kind === "browser") || {}).index`);
   check(pageAt != null && await board.run(`S.tabs.find(t => t.index === ${pageAt}).group === S.tabs.find(t => t.id === "serve").group`), 'the page is a tab of the same folder');
@@ -318,14 +320,14 @@ try {
   await until(async () => (await board.panel()).rows.some((r) => r.port === ':' + LOOSE), 'the cut-off server as a row', 15000)
     .catch(async (e) => { console.log('    (the panel has: ' + JSON.stringify(await board.panel()) + ')'); throw e; });
   const loose = (await board.panel()).rows.find((r) => r.port === ':' + LOOSE);
-  check(/^node(\.exe)?$/i.test(loose.program), 'with the program holding it: ' + loose.program);
-  check(loose.tab === L['tui.ports.loose'], 'it says which tab started it is not known, not a tab name: ' + loose.tab);
+  check(loose.program === 'loose.mjs', 'with what it runs: ' + loose.program);
+  check(loose.tab.endsWith(L['tui.ports.loose']) && !loose.tab.includes('quiet'), 'it says which tab started it is not known, not a tab name: ' + loose.tab);
   check(await board.run(`(S.tabs.find(t => t.id === "quiet").place.loose || []).includes(${LOOSE})`), 'the state marks the port as found by its folder');
   check(!(await board.run(`(S.tabs.find(t => t.id === "serve").place.loose || []).length`)), 'a server under its tab is not marked so');
   await board.shot('8-loose');
   await board.press(`[...document.querySelectorAll("#portpanel .prt")].find(r => r.querySelector(".pp").textContent === ":${LOOSE}")`);
-  await until(() => settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://localhost:${LOOSE}/`), 'a page on the cut-off server', 20000).catch(() => {});
-  check(settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://localhost:${LOOSE}/`), 'its row opens a browser tab of that folder');
+  await until(() => settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://127.0.0.1:${LOOSE}/`), 'a page on the cut-off server', 20000).catch(() => {});
+  check(settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://127.0.0.1:${LOOSE}/`), 'its row opens a browser tab of that folder');
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);

@@ -105,6 +105,7 @@ pub mod pageops;
 pub mod pick;
 pub mod paste;
 pub mod placed;
+pub mod portinfo;
 pub mod pr;
 pub mod pressure;
 pub mod profile;

@@ -403,6 +403,9 @@ pub struct PlaceState {
     /// known (`repo::Held::loose`)
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub loose: std::collections::BTreeSet<u16>,
+    /// By port, what it is and where it opens (`portinfo::About`)
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub about: std::collections::BTreeMap<u16, crate::portinfo::About>,
     /// `owner/name` on GitHub, when that is where this folder pushes to. What
     /// the screen asks before it asks GitHub anything at all: with this
     /// missing, the git column has no way to tell a folder whose server has
@@ -2753,6 +2756,7 @@ impl TabState {
                 programs: t.place.programs.clone(),
                 hosts: t.place.hosts.clone(),
                 loose: t.place.loose.clone(),
+                about: t.place.about.clone(),
                 repo: t.place.repo.clone(),
             }),
             cost: t.usage.line(),

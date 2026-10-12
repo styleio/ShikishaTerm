@@ -46,7 +46,12 @@ letters. `Ctrl+B 0` brings it back from anywhere.
   Press a port (`:3000` and so on) and the column on the
   right shows **Ports**: what listens in that folder, with the program and the tab it came
   from. Press a line to open it in a browser tab (on the PC, you can also open it in the PC's
-  browser or copy the address). A folder's right-click menu (a long press on a phone) has
+  browser or copy the address). Each line also says the folder the server runs in and what it
+  runs (`apps/admin · vite`), and the whole command is on the line's tooltip. When the server
+  printed its address on a terminal as it started (`http://127.0.0.1:5173/`), the line opens
+  that address: a server that checks where a request came from, with cookies or a CSRF token,
+  only works at the address it printed. In a folder with Auto on, the AI that writes automatic
+  names gives each server a name too ("Admin console"). A folder's right-click menu (a long press on a phone) has
   "Show the ports" too. For a folder on a server the entry is "Open the server's ports", and
   on a MicroVM "Public URLs"; the machine is asked when you press Ask.
 - Under INDEX and Issue, the **PROJECT** heading with a `+` at its end (add a project).

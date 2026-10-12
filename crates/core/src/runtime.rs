@@ -2766,6 +2766,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut label_jobs: Vec<LabelJob> = Vec::new();
     let mut label_seq: u64 = 0;
     let mut label_look = Instant::now();
+    // The ports panel's words for each port (`crate::portinfo`): the
+    // addresses read off each tab's terminal, by the tab's uid; the names AIs
+    // gave servers, kept from run to run; for each server not named yet, when
+    // it was first seen (so the servers a project starts together are named in
+    // one ask) and when it may be asked about (later, after an ask failed);
+    // and the asks out, at most one per folder
+    let mut url_memory: std::collections::HashMap<String, crate::portinfo::Memory> =
+        std::collections::HashMap::new();
+    let mut port_names = crate::portinfo::Names::load();
+    let mut port_unnamed: std::collections::HashMap<String, (Instant, Instant)> = std::collections::HashMap::new();
+    let mut port_jobs: Vec<PortJob> = Vec::new();
     let mut drawn_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Whether automation may switch which tab is on screen (see ViewMove)
@@ -4474,6 +4485,36 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .filter_map(|(i, t)| t.cwd().map(|c| (i, c.to_path_buf())))
                     .collect();
                 let ports = crate::repo::ports_below(&roots, &folders);
+                // The addresses printed on the terminals of the folders that
+                // have servers (`portinfo`), read again only off a terminal
+                // that printed something since. Every terminal in such a
+                // folder, not just the one holding the port: an AI that
+                // starts a server and says where it is in its own tab is
+                // where the address is printed, and the server may be counted
+                // as some other tab's
+                let serving: Vec<&std::path::Path> = ports
+                    .keys()
+                    .filter_map(|i| tabs.get(*i))
+                    .filter(|t| tab_machine(t).is_none())
+                    .filter_map(|t| t.cwd())
+                    .collect();
+                for t in tabs.iter() {
+                    let (Some(c), None) = (t.cwd(), tab_machine(t)) else { continue };
+                    if t.uid().is_empty() || !serving.iter().any(|s| crate::uistate::same_folder(s, c)) {
+                        continue;
+                    }
+                    let printed = t.output_count();
+                    let m = url_memory.entry(t.uid().to_string()).or_default();
+                    if m.read_at != Some(printed) {
+                        m.read_at = Some(printed);
+                        m.take(crate::portinfo::seen_in(&t.recent_text(30_000)));
+                    }
+                }
+                url_memory.retain(|uid, _| tabs.iter().chain(desk_tabs.iter().flatten()).any(|t| t.uid() == uid));
+                // Each tab's folder and the addresses its terminal printed,
+                // for the ports of every tab in the same folder
+                let printed: Vec<(Option<std::path::PathBuf>, String)> =
+                    tabs.iter().map(|t| (t.cwd().map(std::path::Path::to_path_buf), t.uid().to_string())).collect();
                 let cost = meter.sample(&roots);
                 self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
                 // Keyed by place: the same path on two machines is two
@@ -4575,12 +4616,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         None => (None, false),
                     };
                     let held = ports.get(&i).cloned().unwrap_or_default();
+                    let about = port_about(&held, t, &printed, &url_memory, &port_names);
                     t.place = crate::repo::Place {
                         branch,
                         ports: held.ports,
                         programs: held.programs,
                         hosts: held.hosts,
                         loose: held.loose,
+                        about,
                         repo,
                         pr,
                         family,
@@ -9541,19 +9584,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 ("language", &i18n::t("ai.label.language")),
                             ],
                         );
-                        // The desk's own answer, then the app's, then the
-                        // assistant AI. Three steps rather than two because
-                        // the app-wide one is where a person who has one
-                        // assistant AI for code and another for this says so
-                        let ai = desk
-                            .summary_ai
-                            .clone()
-                            .filter(|a| !a.trim().is_empty())
-                            .or_else(|| cfg.as_ref().and_then(|c| c.summary_ai.clone()))
-                            .filter(|a| !a.trim().is_empty())
-                            .or_else(|| cfg.as_ref().and_then(|c| c.ai_engine.clone()))
-                            .filter(|a| !a.trim().is_empty())
-                            .unwrap_or_default();
+                        let ai = names_ai(desk, cfg.as_ref());
                         for (name, value) in [("label_prompt", prompt), ("label_ai", ai)] {
                             let _ = eng.call_primitive_as(
                                 None,
@@ -9583,6 +9614,75 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         eng.start_snippet(&tag, crate::hooks::LABEL_LUA);
                     }
                 }
+                // The servers listening in those folders, named by the same
+                // AI from what the system and the terminals said about them
+                // (`portinfo`). One ask per folder for all its unnamed
+                // servers, once the newest has been up a moment
+                let (stale, live): (Vec<PortJob>, Vec<PortJob>) =
+                    port_jobs.drain(..).partition(|j| now.duration_since(j.started) > LABEL_GIVE_UP);
+                port_jobs = live;
+                for job in stale {
+                    append_hook_log(&format!("port names for {} never came back", crate::uistate::place_said(&job.folder)));
+                    for k in job.keys.into_values() {
+                        port_unnamed.insert(k, (now, now + PORT_RETRY));
+                    }
+                }
+                let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for (at, _) in &wanted {
+                    let busy = port_jobs.iter().any(|j| crate::uistate::same_folder(&j.folder, at));
+                    let mut asked: Vec<crate::portinfo::Asked> = Vec::new();
+                    let mut keys = std::collections::BTreeMap::new();
+                    let mut settling = false;
+                    for t in tabs.iter() {
+                        // Kept under the tab's own spelling of the folder,
+                        // which is what its rows are looked up by
+                        let Some(here) = t.place().filter(|p| crate::uistate::same_folder(p, at)) else { continue };
+                        for (port, a) in &t.place.about {
+                            // Nothing to go on but the program's name: not
+                            // worth an ask, and the answer would be a guess
+                            if a.name.is_some() || keys.contains_key(port) || (a.what.is_empty() && a.said.is_none()) {
+                                continue;
+                            }
+                            let k = crate::portinfo::key(&here, *port, a);
+                            present.insert(k.clone());
+                            let (first, not_before) = *port_unnamed.entry(k.clone()).or_insert((now, now));
+                            settling |= now.duration_since(first) < PORT_SETTLE;
+                            if busy || now < not_before {
+                                continue;
+                            }
+                            keys.insert(*port, k);
+                            asked.push(crate::portinfo::Asked {
+                                port: *port,
+                                program: t.place.programs.get(port).cloned().unwrap_or_default(),
+                                about: a.clone(),
+                                package: a.cwd.as_deref().and_then(crate::portinfo::package_name),
+                            });
+                        }
+                    }
+                    if asked.is_empty() || settling {
+                        continue;
+                    }
+                    if engine.is_none() {
+                        engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+                    }
+                    let Some(eng) = engine.as_mut() else { continue };
+                    let prompt = crate::portinfo::prompt(&crate::uistate::place_said(at), &asked);
+                    for (name, value) in [("port_prompt", prompt), ("port_ai", names_ai(desk, cfg.as_ref()))] {
+                        let _ = eng.call_primitive_as(
+                            None,
+                            grants::Subject::Human,
+                            "set_var",
+                            &[serde_json::json!(name), serde_json::json!(value)],
+                        );
+                    }
+                    label_seq += 1;
+                    let tag = format!("{PORT_TAG}{label_seq}");
+                    port_jobs.push(PortJob { tag: tag.clone(), folder: at.clone(), keys, started: now });
+                    eng.start_snippet(&tag, crate::hooks::PORT_NAME_LUA);
+                }
+                // A server gone, or in a folder no longer named, is forgotten:
+                // started again it is a new one, and settles again
+                port_unnamed.retain(|k, _| present.contains(k) || port_jobs.iter().any(|j| j.keys.values().any(|v| v == k)));
             }
         }
         // Answers from the Lua that was left running (the commit message)
@@ -9597,6 +9697,45 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         Err(why) => serde_json::json!({"act": job.act, "panel": job.panel, "ok": false, "error": why}),
                     };
                     let _ = adr_tx.send(js.to_string());
+                    continue;
+                }
+                // The names of a folder's servers: kept, and put on the rows
+                // now rather than at the next look at the ports
+                if tag.starts_with(PORT_TAG) {
+                    let Some(i) = port_jobs.iter().position(|j| j.tag == tag) else { continue };
+                    let job = port_jobs.remove(i);
+                    let asked: Vec<u16> = job.keys.keys().copied().collect();
+                    match said.and_then(|text| crate::portinfo::names_in(&text, &asked)) {
+                        Ok(named) => {
+                            let kept: Vec<(String, String)> = named
+                                .iter()
+                                .filter_map(|(port, name)| Some((job.keys.get(port)?.clone(), name.clone())))
+                                .collect();
+                            port_names.put(kept);
+                            for t in tabs.iter_mut() {
+                                let Some(here) = t.place().filter(|p| crate::uistate::same_folder(p, &job.folder)) else { continue };
+                                for (port, a) in t.place.about.iter_mut() {
+                                    if job.keys.get(port).is_some_and(|k| *k == crate::portinfo::key(&here, *port, a)) {
+                                        a.name = named.get(port).cloned();
+                                    }
+                                }
+                            }
+                            // A port the answer left out is asked about again later
+                            let now = Instant::now();
+                            for (port, k) in &job.keys {
+                                if !named.contains_key(port) {
+                                    port_unnamed.insert(k.clone(), (now, now + PORT_RETRY));
+                                }
+                            }
+                        }
+                        Err(why) => {
+                            append_hook_log(&format!("port names for {}: {why}", crate::uistate::place_said(&job.folder)));
+                            let now = Instant::now();
+                            for k in job.keys.into_values() {
+                                port_unnamed.insert(k, (now, now + PORT_RETRY));
+                            }
+                        }
+                    }
                     continue;
                 }
                 // A folder's name and summary go into the settings, and only
@@ -20654,6 +20793,94 @@ const LABEL_TAG: &str = "folder_label:";
 /// How long a folder's name is waited for before its requests are read again
 /// next time. The AI is given ninety seconds, and asked twice at most
 const LABEL_GIVE_UP: Duration = Duration::from_secs(5 * 60);
+
+/// The AI that writes a desk's automatic names -- its folders', and their
+/// servers' (`portinfo`): the desk's own answer, then the app's, then the
+/// assistant AI. Three steps rather than two because the app-wide one is where
+/// a person who has one assistant AI for code and another for this says so
+fn names_ai(desk: &config::Desk, cfg: Option<&config::Config>) -> String {
+    desk.summary_ai
+        .clone()
+        .filter(|a| !a.trim().is_empty())
+        .or_else(|| cfg.and_then(|c| c.summary_ai.clone()))
+        .filter(|a| !a.trim().is_empty())
+        .or_else(|| cfg.and_then(|c| c.ai_engine.clone()))
+        .filter(|a| !a.trim().is_empty())
+        .unwrap_or_default()
+}
+
+/// What the ports panel says about each of a tab's ports (`portinfo`): what
+/// the server is from its folder and command, where it opens from the address
+/// printed for it -- on this tab's terminal first, then on the others in the
+/// same folder (`printed`: each tab's folder and uid) -- and the name an AI
+/// gave it. A tab on another machine has none of these: its servers are not
+/// this PC's processes
+fn port_about(
+    held: &crate::repo::Held,
+    t: &Tab,
+    printed: &[(Option<std::path::PathBuf>, String)],
+    memory: &std::collections::HashMap<String, crate::portinfo::Memory>,
+    names: &crate::portinfo::Names,
+) -> std::collections::BTreeMap<u16, crate::portinfo::About> {
+    let mut out = std::collections::BTreeMap::new();
+    if tab_machine(t).is_some() {
+        return out;
+    }
+    let home = t.cwd();
+    let place = t.place();
+    let own = memory.get(t.uid());
+    let others: Vec<&crate::portinfo::Seen> = printed
+        .iter()
+        .filter(|(c, uid)| {
+            uid != t.uid() && matches!((c, home), (Some(c), Some(h)) if crate::uistate::same_folder(c, h))
+        })
+        .filter_map(|(_, uid)| memory.get(uid))
+        .flat_map(|m| m.seen.iter())
+        .collect();
+    for port in &held.ports {
+        let mut a = crate::portinfo::About::default();
+        if let Some(p) = held.procs.get(port) {
+            a.what = crate::portinfo::describe(home, p);
+            a.command = crate::portinfo::command_line(&p.argv);
+            a.cwd = p.cwd.clone();
+        }
+        let bound = held.bound.get(port).map(Vec::as_slice).unwrap_or_default();
+        let seen = own
+            .and_then(|m| crate::portinfo::pick(&m.seen, *port, bound))
+            .or_else(|| crate::portinfo::pick(others.iter().copied(), *port, bound));
+        if let Some(s) = seen {
+            a.url = Some(s.origin.clone());
+            a.said = Some(s.line.clone()).filter(|l| !l.is_empty());
+        }
+        if let Some(place) = place.as_deref() {
+            a.name = names.get(&crate::portinfo::key(place, *port, &a)).map(str::to_string);
+        }
+        out.insert(*port, a);
+    }
+    out
+}
+
+/// What the names of a folder's servers come back under, followed by a number
+const PORT_TAG: &str = "port_names:";
+
+/// How long a new server goes unnamed before its folder is asked about: long
+/// enough for the others a project starts with it to be listening too, so
+/// they are named in the one ask
+const PORT_SETTLE: Duration = Duration::from_secs(5);
+
+/// How long a server whose name could not be had waits before it is asked
+/// about again
+const PORT_RETRY: Duration = Duration::from_secs(10 * 60);
+
+/// An ask for the names of the servers in one folder (`portinfo`)
+struct PortJob {
+    tag: String,
+    /// The folder as a place key
+    folder: std::path::PathBuf,
+    /// By port, what makes the server the one asked about (`portinfo::key`)
+    keys: std::collections::BTreeMap<u16, String>,
+    started: Instant,
+}
 
 /// Calling a drawn branch after the work, now that the work has a name.
 ///
