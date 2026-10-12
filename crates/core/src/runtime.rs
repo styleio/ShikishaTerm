@@ -1256,6 +1256,10 @@ fn tend_asks(
     let ask_desk = |a: &crate::asktab::Ask| a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
     let ask_target =
         |a: &crate::asktab::Ask, t: Option<&Tab>| t.map(crate::orch::glue::tab_id).unwrap_or_else(|| a.target.clone());
+    // Each ask sent this pass, by the tab it went to (its uid, or its name for
+    // one followed by name), and when: another ask put in front of a tab is
+    // not the person giving it other words (see `Ask::superseded`)
+    let mut sent_now: Vec<(String, std::time::Instant)> = Vec::new();
     asks.retain_mut(|a| {
         // The tabs of the desk it was asked on. A desk that is not in front
         // keeps its tabs running and their state read (`Tab::tick_away`), so
@@ -1383,7 +1387,10 @@ fn tend_asks(
                 Ok(_) => {
                     append_hook_log(&format!("ask_tab: sent to {}", a.target));
                     a.phase = Phase::Waiting;
-                    a.sent_at = Some(std::time::Instant::now());
+                    // One moment, kept for both: an ask is never after itself
+                    let sent = std::time::Instant::now();
+                    a.sent_at = Some(sent);
+                    sent_now.push((a.target_uid.clone().unwrap_or_else(|| a.target.clone()), sent));
                     // Into the conference, with the asker's line. A command
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
@@ -1509,6 +1516,12 @@ fn tend_asks(
             }
         }
     });
+    for a in asks.iter_mut() {
+        let to = a.target_uid.clone().unwrap_or_else(|| a.target.clone());
+        if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| *t == to && *at > mine)) {
+            a.superseded = true;
+        }
+    }
 }
 /// A conversation begun by an AI asking another, for the deciding AI to
 /// place beside the desk's recent ones
@@ -5920,6 +5933,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             question_told: None,
                                             stopped_since: None,
                                             redirected: false,
+                                            superseded: false,
                                         });
                                     }
                                 }
