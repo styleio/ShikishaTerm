@@ -94,7 +94,7 @@ await new Promise((r) => modelServer.listen(0, '127.0.0.1', r));
 const modelPort = modelServer.address().port;
 
 // ── The copy, its home and its tabs ────────────────────────────────────────
-const F = { bad: path.join(WORK, 'bad'), good: path.join(WORK, 'good'), slow: path.join(WORK, 'slow') };
+const F = { bad: path.join(WORK, 'bad'), good: path.join(WORK, 'good'), slow: path.join(WORK, 'slow'), ask: path.join(WORK, 'ask') };
 for (const d of [APP, path.join(HOME, '.codex'), ...Object.values(F), path.join(RUN, 'localappdata')]) fs.mkdirSync(d, { recursive: true });
 fs.copyFileSync(...SIGN_IN);
 // Never an update, and the sandbox that needs no administrator (as confer-real).
@@ -116,6 +116,8 @@ const TABS = {
   'codex-bad': { cwd: F.bad, command: [...codex, '-m', BAD_MODEL] },
   'codex-good': { cwd: F.good, command: codex },
   'codex-slow': { cwd: F.slow, command: [...codex, '-c', 'model_provider="held"', '-m', 'held-model'] },
+  // One that asks before it writes anything: its dialog is the real one
+  'codex-ask': { cwd: F.ask, command: ['codex', '-a', 'on-request', '-s', 'read-only'] },
 };
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: 'en',
@@ -278,6 +280,19 @@ try {
   const told = await until(async () => /at capacity|ended in an error|NOT DONE/i.test(await screen('codex-good'))
     && ['DONE', 'WAIT', 'BACKGROUND'].includes(await state('codex-good')), 'the asker to say what came back', 5 * 60000).catch(() => false);
   check(told, 'the asker was told and read the failure', (await screen('codex-good')).split('\n').slice(-25).join('\n'));
+
+  console.log('5. Codex\'s own approval dialog is read as its question, by the shipped profile');
+  const profile = JSON.parse(fs.readFileSync(path.join(ROOT, 'profiles', 'codex.json'), 'utf8'));
+  // The profile's patterns, in the dialect JavaScript shares with them here: (?s) as the s flag
+  const asks = profile.question_patterns.map((q) => q.startsWith('(?s)') ? new RegExp(q.slice(4), 's') : new RegExp(q));
+  await call('send_to_tab', 'codex-ask', 'Create a file named hello.txt in this folder containing the word hi, with a shell command. Do nothing else.');
+  let dialog = '';
+  await until(async () => /Would you like to/.test(dialog = await screen('codex-ask')), 'the approval dialog', 4 * 60000).catch(() => {});
+  console.log('   ' + dialog.split('\n').filter((l) => /Would you like|Yes|No, and/.test(l)).map((l) => l.trim()).join(' | '));
+  check(/Would you like to/.test(dialog), 'Codex stopped at its own approval dialog');
+  check(asks.some((r) => r.test(dialog)), 'the profile reads that screen as a question', dialog.slice(-600));
+  check((await state('codex-ask')) === 'QUESTION', 'the tab reads as waiting for a person', await state('codex-ask'));
+  await call('send', 'codex-ask', '\x1b');
 } catch (e) {
   console.error(e.stack || e.message);
   checks.push(false);
