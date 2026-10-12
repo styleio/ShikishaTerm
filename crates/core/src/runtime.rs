@@ -6775,7 +6775,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             push_wanted: desks
                 .iter()
                 .flat_map(|d| d.notify.values())
-                .any(|d| matches!(d, notify::Destination::Phone {})),
+                .any(|d| matches!(d, notify::Destination::Phone { .. })),
             asking_why,
             ask_why_by: crate::webui::assistant_ai(
                 cfg.as_ref().and_then(|c| c.ai_engine.as_deref()),

@@ -29,7 +29,12 @@ pub enum Destination {
     /// address and no account -- a phone subscribes itself from the settings
     /// screen, and the message is encrypted for that phone before it is handed
     /// to anybody to carry.
-    Phone {},
+    Phone {
+        /// Only while the person is away from this PC (`crate::away`):
+        /// sitting in front of the window, they have the banner already
+        #[serde(default)]
+        only_away: bool,
+    },
 }
 
 impl Destination {
@@ -55,7 +60,7 @@ impl Destination {
             // A push service guarantees to carry 4KB, and what it carries here
             // is encrypted, which costs a little more than what went in. A
             // phone's lock screen shows two or three lines regardless.
-            Destination::Phone {} => 1_000,
+            Destination::Phone { .. } => 1_000,
         }
     }
 
@@ -65,7 +70,7 @@ impl Destination {
             Destination::Telegram { .. } => "telegram",
             Destination::Discord { .. } => "discord",
             Destination::Windows {} => "windows",
-            Destination::Phone {} => "phone",
+            Destination::Phone { .. } => "phone",
         }
     }
 }
@@ -239,7 +244,11 @@ pub fn send_blocking_about(
     // A phone that subscribed for itself. The message is split the same way a
     // banner splits it -- a heading and a line -- and the link, when there is
     // one, becomes where a tap goes rather than text nobody can tap.
-    if let Destination::Phone {} = dest {
+    if let Destination::Phone { only_away } = dest {
+        if *only_away && !crate::away::person_away() {
+            crate::append_hook_log("phone: not told -- the person is at this PC");
+            return Ok(());
+        }
         let mut lines = text.lines();
         let title = lines.next().unwrap_or_default();
         let rest: Vec<&str> = lines.collect();
@@ -290,7 +299,7 @@ pub fn send_blocking_about(
             .post(webhook)
             .send_json(serde_json::json!({ "content": text })),
         // Both handled above, before an HTTP agent was ever built.
-        Destination::Windows {} | Destination::Phone {} => unreachable!(),
+        Destination::Windows {} | Destination::Phone { .. } => unreachable!(),
     };
     match result {
         Ok(_) => Ok(()),
@@ -338,10 +347,20 @@ pub fn banner_raise() {
 mod tests {
     use super::*;
 
+    /// A phone destination says whether it waits for the person to be away;
+    /// one written before it could is told always, as it was
+    #[test]
+    fn a_phone_may_wait_for_the_person_to_be_away() {
+        let said: Destination = serde_json::from_str(r#"{"type":"phone","only_away":true}"#).unwrap();
+        assert!(matches!(said, Destination::Phone { only_away: true }));
+        let before: Destination = serde_json::from_str(r#"{"type":"phone"}"#).unwrap();
+        assert!(matches!(before, Destination::Phone { only_away: false }), "a phone set up before was changed");
+    }
+
     /// A send that failed reaches the screen, naming the destination, once.
     #[test]
     fn a_failure_waits_to_be_shown_on_screen() {
-        record_failure("test", &Destination::Phone {}, "nobody there");
+        record_failure("test", &Destination::Phone { only_away: false }, "nobody there");
         // Other tests may queue failures of their own beside this one; the
         // one recorded here is found by its name.
         let mut seen = Vec::new();

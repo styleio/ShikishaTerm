@@ -3146,7 +3146,7 @@ fn handle(
                             *chat_id = deref(chat_id);
                         }
                         crate::notify::Destination::Windows {}
-                        | crate::notify::Destination::Phone {} => {}
+                        | crate::notify::Destination::Phone { .. } => {}
                     }
                     match crate::notify::send_blocking(
                         &dest,
@@ -12288,17 +12288,37 @@ function tickDestination(desk, type, called, label, hint, redraw) {
                       : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
   }}, T["settings.notify.test"]);
   test.hidden = !box.checked;
+  // The phones may be told only while the person is away from this PC:
+  // sitting at it, they have the banner already
+  const away = el("input", {type:"checkbox"});
+  const awayRow = el("div", {style:"margin-left:var(--s5)"},
+    el("label", {class:"check"}, away, document.createTextNode(T["settings.notify.phone.away"] || "")),
+    el("div", {class:"hint"}, T["settings.notify.phone.away.hint"] || ""));
+  const syncAway = () => {
+    const n = nameOf();
+    awayRow.hidden = type !== "phone" || !n;
+    away.checked = !!(n && desk.notify[n].only_away);
+  };
+  away.addEventListener("change", () => {
+    const n = nameOf();
+    if (!n) return;
+    if (away.checked) desk.notify[n].only_away = true; else delete desk.notify[n].only_away;
+    refreshSave();
+  });
+  syncAway();
   box.addEventListener("change", () => {
     const had = nameOf();
     if (box.checked && !had) desk.notify[called] = {type};
     if (!box.checked && had) delete desk.notify[had];
     test.hidden = !box.checked;
+    syncAway();
     refreshSave();
     redraw();
   });
   return el("div", {},
     el("div", {class:"row"}, tick, test),
-    el("div", {class:"hint"}, hint));
+    el("div", {class:"hint"}, hint),
+    awayRow);
 }
 
 // One chat destination. Type, name, the one secret it needs, and -- for

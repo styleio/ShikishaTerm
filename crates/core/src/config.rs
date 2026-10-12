@@ -3696,7 +3696,7 @@ pub fn desk_notify(
                 *chat_id = deref_secret(chat_id, look);
             }
             // Nothing to keep secret: neither has an address or an account.
-            crate::notify::Destination::Windows {} | crate::notify::Destination::Phone {} => {}
+            crate::notify::Destination::Windows {} | crate::notify::Destination::Phone { .. } => {}
         }
     }
     map

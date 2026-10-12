@@ -3348,6 +3348,8 @@
   "settings.desk.notify.prim_only": "未設定（登録が1つなので {name} に届きます）",
   "settings.desk.notify.phone.label": "登録したスマホに通知する",
   "settings.desk.notify.phone.hint": "スマホの登録は全体設定の「通知」で1回だけ行います。ここでは、このデスクの通知をスマホに送るかどうかを決めます",
+  "settings.notify.phone.away": "この PC から離れているときだけ",
+  "settings.notify.phone.away.hint": "離れているとは、この PC の画面がロックされているか、3 分間キーボードもマウスも触られていないときです。PC の前にいれば、この PC の通知が出ます。テストはすぐに送ります。",
   "settings.desk.grants.changed": "標準と違う答え: {n} 件",
   "wizard.pick.copy": "「{name}」の通知先・AIプロバイダ・自動化の権限・git の設定をコピーして始める",
   "wizard.pick.copy.hint": "API キーや Webhook も新しいデスク用にコピーされます。コピーしない場合は、新しいデスクで登録してください",

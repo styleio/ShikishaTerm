@@ -3351,6 +3351,8 @@
   "settings.desk.notify.prim_only": "Not set (the one destination, {name}, gets it)",
   "settings.desk.notify.phone.label": "Notify the registered phones",
   "settings.desk.notify.phone.hint": "Phones are registered once, under General → Notifications. Here you choose whether this desk's notifications go to them",
+  "settings.notify.phone.away": "Only while I am away from this PC",
+  "settings.notify.phone.away.hint": "Away is when this PC's screen is locked, or nothing has been typed or moved on it for 3 minutes. Sitting at it, you have this PC's banner already. Test still sends at once.",
   "settings.desk.grants.changed": "Answers that differ from the standard: {n}",
   "wizard.pick.copy": "Start with a copy of {name}'s notification destinations, AI providers, automation permissions and git settings",
   "wizard.pick.copy.hint": "API keys and webhooks are copied for the new desk too. Without the copy, register them on the new desk",
