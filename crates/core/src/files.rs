@@ -377,6 +377,9 @@ pub struct Spot {
     pub line: u32,
     pub col: u32,
     pub len: u32,
+    /// The same place counted the way the editor counts a line (in UTF-16
+    /// units, from 1): a character outside the first plane is two there
+    pub col16: u32,
     pub text: String,
     /// Where the match starts in `text`, in characters
     pub at: u32,
@@ -398,6 +401,9 @@ pub struct Spots {
     /// Whether it stopped before the end: of the files, of the clock or of
     /// what a list is worth reading
     pub capped: bool,
+    /// Files not looked in because they are bigger than the editor opens
+    #[serde(skip_serializing_if = "is_zero")]
+    pub too_big: usize,
 }
 
 /// How many places a search lists before it stops. More than anybody reads
@@ -433,35 +439,76 @@ pub fn matcher(ask: &Ask) -> Result<regex::Regex, String> {
 /// or a folder anywhere (`node_modules`, `*.rs`); one with a slash is a
 /// path from the folder's top (`src/**/*.ts`)
 pub fn patterns(list: &str) -> Vec<(bool, regex::Regex)> {
+    globs(list)
+        .into_iter()
+        .filter_map(|(anchored, body)| regex::Regex::new(&format!("^{}$", body(Dialect::Rust))).ok().map(|r| (anchored, r)))
+        .collect()
+}
+
+/// Which regular expressions a pattern is written out for: this program's,
+/// or the extended ones of `grep -E` on another machine
+#[derive(Clone, Copy, PartialEq)]
+enum Dialect {
+    Rust,
+    Posix,
+}
+
+/// Each pattern of a list: whether it is a path from the top, and its body
+/// as a regular expression of either dialect (without its anchors)
+fn globs(list: &str) -> Vec<(bool, impl Fn(Dialect) -> String)> {
     list.split([',', '\n'])
         .map(str::trim)
         .filter(|p| !p.is_empty())
-        .filter_map(|p| {
+        .map(|p| {
             let p = p.replace('\\', "/");
             let anchored = p.trim_end_matches('/').contains('/');
-            let p = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/');
-            let mut re = String::from("^");
-            let mut chars = p.chars().peekable();
-            while let Some(c) = chars.next() {
-                match c {
-                    '*' if chars.peek() == Some(&'*') => {
-                        chars.next();
-                        if chars.peek() == Some(&'/') {
+            let p = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/').to_string();
+            (anchored, move |dialect: Dialect| {
+                let mut re = String::new();
+                let mut chars = p.chars().peekable();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '*' if chars.peek() == Some(&'*') => {
                             chars.next();
-                            re.push_str("(?:.*/)?");
-                        } else {
-                            re.push_str(".*");
+                            if chars.peek() == Some(&'/') {
+                                chars.next();
+                                re.push_str(if dialect == Dialect::Rust { "(?:.*/)?" } else { "(.*/)?" });
+                            } else {
+                                re.push_str(".*");
+                            }
                         }
+                        '*' => re.push_str("[^/]*"),
+                        '?' => re.push_str("[^/]"),
+                        c if dialect == Dialect::Rust => re.push_str(&regex::escape(&c.to_string())),
+                        // Only what POSIX gives a meaning to is escaped: a
+                        // backslash before anything else is undefined there
+                        c if ".[]\\()*+?{}|^$".contains(c) => {
+                            re.push('\\');
+                            re.push(c);
+                        }
+                        c => re.push(c),
                     }
-                    '*' => re.push_str("[^/]*"),
-                    '?' => re.push_str("[^/]"),
-                    c => re.push_str(&regex::escape(&c.to_string())),
                 }
-            }
-            re.push('$');
-            regex::Regex::new(&re).ok().map(|r| (anchored, r))
+                re
+            })
         })
         .collect()
+}
+
+/// The patterns of a list as one extended regular expression for `grep -E`
+/// over the paths a machine lists (`./` before them where `find` made the
+/// list), meaning what [`kept`] means here: a path from the top names that
+/// path or a folder it is under, any other pattern any one name along the
+/// path. `None` for an empty list
+pub fn posix_paths(list: &str) -> Option<String> {
+    let parts: Vec<String> = globs(list)
+        .into_iter()
+        .map(|(anchored, body)| {
+            let body = body(Dialect::Posix);
+            if anchored { format!("^(\\./)?{body}(/|$)") } else { format!("(^|/){body}(/|$)") }
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("|"))
 }
 
 /// Whether `rel` is one of the files the patterns name: an anchored one is
@@ -491,39 +538,62 @@ pub fn kept(rel: &str, include: &[(bool, regex::Regex)], exclude: &[(bool, regex
     (include.is_empty() || named_by(rel, include)) && !named_by(rel, exclude)
 }
 
-/// The places on one line, each with the line shown around it
-fn spots_on(line: &str, n: u32, re: &regex::Regex) -> Vec<Spot> {
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// The places on one line, each with the line shown around it, no more than
+/// `room` of them. Each place is counted on from the last, so a long line
+/// with many matches is walked once, not once per match
+fn spots_on(line: &str, n: u32, re: &regex::Regex, room: usize) -> Vec<Spot> {
     let line = line.trim_end_matches(['\r', '\n']);
-    re.find_iter(line)
-        .filter(|m| !m.as_str().is_empty())
-        .map(|m| {
-            let col = line[..m.start()].chars().count();
-            let len = m.as_str().chars().count();
-            let (text, at) = shown_around(line, col, len);
-            Spot { line: n, col: col as u32 + 1, len: len as u32, text, at: at as u32 }
-        })
-        .collect()
+    let mut out = Vec::new();
+    // Where the last place ended, in bytes, characters and UTF-16 units
+    let (mut byte, mut chars, mut units) = (0usize, 0usize, 0usize);
+    // Where each character starts, worked out once and only for a line that
+    // has something on it
+    let mut starts: Option<Vec<usize>> = None;
+    for m in re.find_iter(line) {
+        if out.len() >= room {
+            break;
+        }
+        if m.as_str().is_empty() {
+            continue;
+        }
+        let before = &line[byte..m.start()];
+        chars += before.chars().count();
+        units += before.encode_utf16().count();
+        byte = m.start();
+        let len = m.as_str().chars().count();
+        let starts = starts.get_or_insert_with(|| line.char_indices().map(|(i, _)| i).collect());
+        let (text, at) = shown_around(line, starts, chars, len);
+        out.push(Spot { line: n, col: chars as u32 + 1, len: len as u32, col16: units as u32 + 1, text, at: at as u32 });
+    }
+    out
 }
 
 /// Enough of a line to recognise the place by, with the match in it: the
-/// line's start trimmed of its indent, and a long line cut around the match.
-/// Says where the match starts in what is shown
-fn shown_around(line: &str, col: usize, len: usize) -> (String, usize) {
-    let chars: Vec<char> = line.chars().collect();
-    let indent = chars.iter().take_while(|c| c.is_whitespace()).count().min(col);
-    let (mut start, mut end) = (indent, chars.len());
+/// line's start trimmed of its indent, and a long line cut around the match
+/// -- never more than [`SHOWN`] characters, however long the match. Says
+/// where the match starts in what is shown. `starts` is where each
+/// character of the line starts
+fn shown_around(line: &str, starts: &[usize], col: usize, _len: usize) -> (String, usize) {
+    let count = starts.len();
+    let indent = line.chars().take(col).take_while(|c| c.is_whitespace()).count();
+    let (mut start, mut end) = (indent, count);
     if end - start > SHOWN {
         start = col.saturating_sub(SHOWN / 3).max(indent);
-        end = (start + SHOWN).max(col + len).min(chars.len());
+        end = (start + SHOWN).min(count);
     }
+    let at_byte = |i: usize| if i >= count { line.len() } else { starts[i] };
     let mut out = String::new();
     let mut at = col - start;
     if start > indent {
         out.push('\u{2026}');
         at += 1;
     }
-    out.extend(&chars[start..end]);
-    if end < chars.len() {
+    out.push_str(&line[at_byte(start)..at_byte(end)]);
+    if end < count {
         out.push('\u{2026}');
     }
     (out, at)
@@ -540,6 +610,7 @@ pub fn search(root: &Path, ask: &Ask, gone: &(dyn Fn() -> bool + Sync)) -> Resul
     let next = std::sync::atomic::AtomicUsize::new(0);
     let found = std::sync::atomic::AtomicUsize::new(0);
     let stopped = std::sync::atomic::AtomicBool::new(false);
+    let too_big = std::sync::atomic::AtomicUsize::new(0);
     let out = std::sync::Mutex::new(Vec::new());
     let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
     std::thread::scope(|s| {
@@ -553,10 +624,24 @@ pub fn search(root: &Path, ask: &Ask, gone: &(dyn Fn() -> bool + Sync)) -> Resul
                         stopped.store(true, Relaxed);
                         break;
                     }
-                    let Some(text) = read_whole(&root.join(rel)) else { continue };
+                    let text = match read_whole(&root.join(rel)) {
+                        Read::Text(t) => t,
+                        Read::TooBig => {
+                            too_big.fetch_add(1, Relaxed);
+                            continue;
+                        }
+                        Read::Not => continue,
+                    };
                     let mut spots = Vec::new();
                     for (n, line) in text.split('\n').enumerate() {
-                        spots.extend(spots_on(line, n as u32 + 1, &re));
+                        // The budget and the stop are minded inside a file
+                        // too: one file can be a whole search's worth
+                        let room = SPOTS_CAP.saturating_sub(found.load(Relaxed) + spots.len());
+                        if room == 0 || (n % 512 == 0 && (gone() || started.elapsed() > SEARCH_TIME_CAP)) {
+                            stopped.store(true, Relaxed);
+                            break;
+                        }
+                        spots.extend(spots_on(line, n as u32 + 1, &re, room));
                     }
                     if !spots.is_empty() {
                         found.fetch_add(spots.len(), Relaxed);
@@ -567,7 +652,9 @@ pub fn search(root: &Path, ask: &Ask, gone: &(dyn Fn() -> bool + Sync)) -> Resul
         }
     });
     capped |= stopped.into_inner();
-    Ok(trimmed(out.into_inner().unwrap_or_else(|e| e.into_inner()), capped))
+    let mut found = trimmed(out.into_inner().unwrap_or_else(|e| e.into_inner()), capped);
+    found.too_big = too_big.into_inner();
+    Ok(found)
 }
 
 /// The files in path order, cut at [`SPOTS_CAP`] places
@@ -587,23 +674,35 @@ fn trimmed(mut files: Vec<FileSpots>, mut capped: bool) -> Spots {
         total += f.spots.len();
         kept.push(f);
     }
-    Spots { files: kept, total, capped }
+    Spots { files: kept, total, capped, too_big: 0 }
+}
+
+/// What a file is, to a search inside it
+enum Read {
+    Text(String),
+    /// Bigger than the editor opens: not looked in, and said so
+    TooBig,
+    /// Not text, or not there
+    Not,
 }
 
 /// A file's text when it is text and small enough for the editor to open:
 /// what a match is shown in, and opened at
-fn read_whole(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > READ_LIMIT {
-        return None;
+fn read_whole(path: &Path) -> Read {
+    let Ok(meta) = std::fs::metadata(path) else { return Read::Not };
+    if !meta.is_file() {
+        return Read::Not;
     }
-    let bytes = std::fs::read(path).ok()?;
+    if meta.len() > READ_LIMIT {
+        return Read::TooBig;
+    }
+    let Ok(bytes) = std::fs::read(path) else { return Read::Not };
     // Binary files have no lines to show, and a match inside one is a
     // coincidence of bytes rather than something a person wrote
     if bytes.iter().take(8192).any(|b| *b == 0) {
-        return None;
+        return Read::Not;
     }
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Read::Text(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The files under `root` worth looking in, up to `cap`, and whether the
@@ -630,22 +729,28 @@ type Listed = std::sync::Arc<(Vec<String>, bool)>;
 
 /// A folder's files, read again only when the last reading is older than
 /// [`QUICK_FRESH`]: every letter typed asks
-pub fn listing(key: &str, read: impl FnOnce() -> (Vec<String>, bool)) -> Listed {
+/// A reading that failed is not kept: the next letter typed asks again. The
+/// reading itself is done outside the lock, so a slow machine holds up no
+/// other folder's list
+pub fn listing(key: &str, read: impl FnOnce() -> Result<(Vec<String>, bool), String>) -> Result<Listed, String> {
     static KEPT: std::sync::Mutex<Option<std::collections::HashMap<String, (Instant, Listed)>>> = std::sync::Mutex::new(None);
-    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
-    let kept = kept.get_or_insert_with(Default::default);
-    kept.retain(|_, (at, _)| at.elapsed() < QUICK_FRESH);
-    if let Some((_, l)) = kept.get(key) {
-        return l.clone();
+    {
+        let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = kept.get_or_insert_with(Default::default);
+        kept.retain(|_, (at, _)| at.elapsed() < QUICK_FRESH);
+        if let Some((_, l)) = kept.get(key) {
+            return Ok(l.clone());
+        }
     }
-    let l: Listed = std::sync::Arc::new(read());
-    kept.insert(key.to_string(), (Instant::now(), l.clone()));
-    l
+    let l: Listed = std::sync::Arc::new(read()?);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    kept.get_or_insert_with(Default::default).insert(key.to_string(), (Instant::now(), l.clone()));
+    Ok(l)
 }
 
 /// This machine's files under `root`, for opening one by name
-pub fn quick_list(root: &Path) -> Listed {
-    listing(&root.display().to_string(), || candidates_up_to(root, QUICK_FILES_CAP))
+pub fn quick_list(root: &Path) -> Result<Listed, String> {
+    listing(&root.display().to_string(), || Ok(candidates_up_to(root, QUICK_FILES_CAP)))
 }
 
 /// How well the letters typed fit a path: `None` when they do not. Every
@@ -734,9 +839,13 @@ pub mod far {
         )
     }
 
+    /// What a command here ends with when the folder it was to stand in is
+    /// not there: told apart from a search that found nothing
+    pub const GONE: i32 = 3;
+
     /// What to run there to find files by name.
     pub fn names_command(root: &str) -> String {
-        format!("cd {} && {} | head -c {LIST_BYTES}", sh_quote(root), listing())
+        format!("cd {} || exit {GONE}; {} | head -c {LIST_BYTES}", sh_quote(root), listing())
     }
 
     /// The code [`copy_command`] ends with when the name it was to copy to is
@@ -798,15 +907,33 @@ pub mod far {
         if ask.word {
             flags.push_str(" -w");
         }
-        flags.push_str(if ask.regex { " -E" } else { " -F" });
+        // A regular expression is read as Perl's where the machine's grep
+        // can (GNU's can), which is the reading this program gives one --
+        // `\\d`, `(?:)` and the rest. Elsewhere it is read as POSIX's
+        let dialect = if ask.regex { "$R" } else { "-F" };
+        // Which files are looked in is decided before they are looked in, so
+        // a narrower pattern is what lets a capped search reach the rest.
+        // Where grep cannot read a list ended by zero bytes, every file is
+        // looked in and what comes back is filtered here
+        let filter = |list: &str, out: bool| match super::posix_paths(list) {
+            Some(re) => format!(" | {{ if [ -n \"$Z\" ]; then grep -z{} -E -e {}; else cat; fi; }}", if out { "v" } else { "" }, sh_quote(&re)),
+            None => String::new(),
+        };
         format!(
-            "cd {} && {} | xargs -0 grep {flags} -e {} -- 2>/dev/null | head -n {}",
+            "cd {} || exit {GONE}; R=-E; echo | grep -P '' >/dev/null 2>&1 && R=-P; Z=; printf 'a\\0' | grep -qz a 2>/dev/null && Z=1; \
+             {}{}{} | xargs -0 grep {flags} {dialect} -e {} -- 2>/dev/null | head -n {} | head -c {SPOTS_BYTES}",
             sh_quote(root),
             listing(),
+            filter(&ask.include, false),
+            filter(&ask.exclude, true),
             sh_quote(ask.q.trim()),
             limit + 1
         )
     }
+
+    /// How much of what a search there printed is read back: the places it
+    /// lists, with room for long lines, and no more however long they run
+    const SPOTS_BYTES: usize = 4 * 1024 * 1024;
 
     /// What it printed -- a path, a zero byte, then the line number and the
     /// line -- as the same places a search here finds. Where on the line is
@@ -816,7 +943,9 @@ pub mod far {
         let (include, exclude) = (patterns(&ask.include), patterns(&ask.exclude));
         let mut files: Vec<FileSpots> = Vec::new();
         let mut lines = 0usize;
-        let mut capped = false;
+        let mut found = 0usize;
+        // Read back to its limit in bytes: the last line may be cut
+        let mut capped = out.len() >= SPOTS_BYTES;
         for row in out.lines() {
             let Some((path, rest)) = row.split_once('\0') else { continue };
             let Some((n, line)) = rest.split_once(':') else { continue };
@@ -830,10 +959,16 @@ pub mod far {
             if !kept(path, &include, &exclude) {
                 continue;
             }
-            let spots = spots_on(line, n, &re);
+            let room = super::SPOTS_CAP.saturating_sub(found);
+            if room == 0 {
+                capped = true;
+                break;
+            }
+            let spots = spots_on(line, n, &re, room);
             if spots.is_empty() {
                 continue;
             }
+            found += spots.len();
             match files.last_mut().filter(|f| f.path == path) {
                 Some(f) => f.spots.extend(spots),
                 None => files.push(FileSpots { path: path.to_string(), spots }),
@@ -956,17 +1091,61 @@ mod tests {
     #[test]
     fn every_place_on_a_line_is_found_and_shown() {
         let re = matcher(&ask("ab")).unwrap();
-        let s = spots_on("    xx ab yy AB\r", 7, &re);
+        let s = spots_on("    xx ab yy AB\r", 7, &re, 100);
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].line, s[0].col, s[0].len), (7, 8, 2));
         assert_eq!(s[0].text, "xx ab yy AB", "the indent and the line's end are not shown");
         assert_eq!(&s[0].text[s[0].at as usize..s[0].at as usize + 2], "ab");
         let long = format!("{}needle{}", "x".repeat(500), "y".repeat(500));
-        let s = spots_on(&long, 1, &matcher(&ask("needle")).unwrap());
+        let s = spots_on(&long, 1, &matcher(&ask("needle")).unwrap(), 100);
         let shown: Vec<char> = s[0].text.chars().collect();
         assert!(shown.len() <= SHOWN + 2 && shown[0] == '\u{2026}');
         assert_eq!(shown[s[0].at as usize..s[0].at as usize + 6].iter().collect::<String>(), "needle");
         assert_eq!(s[0].col, 501);
+    }
+
+    #[test]
+    fn a_long_line_of_matches_is_bounded_in_count_and_in_size() {
+        // A minified file: a hundred thousand matches on one line
+        let line = "a".repeat(100_000);
+        let s = spots_on(&line, 1, &matcher(&ask("a")).unwrap(), 5);
+        assert_eq!(s.len(), 5, "no more than the room left");
+        assert_eq!(s[4].col, 5);
+        // One match the length of the whole line is shown cut
+        let whole = spots_on(&line, 1, &matcher(&Ask { regex: true, ..ask(".*") }).unwrap(), 10);
+        assert_eq!(whole.len(), 1);
+        assert!(whole[0].text.chars().count() <= SHOWN + 2, "{} characters shown", whole[0].text.chars().count());
+        assert_eq!(whole[0].len, 100_000, "the place itself keeps its length, for the editor");
+    }
+
+    #[test]
+    fn a_place_is_also_counted_the_way_the_editor_counts() {
+        let s = spots_on("\u{1F600} needle", 1, &matcher(&ask("needle")).unwrap(), 10);
+        assert_eq!((s[0].col, s[0].col16), (3, 4), "a face is one character, and two for the editor");
+    }
+
+    #[test]
+    fn file_patterns_are_written_for_another_machine_the_same_way() {
+        let re = posix_paths("src/**, *.min.js").unwrap();
+        assert!(re.contains("^(\\./)?src/.*(/|$)") || re.contains("^(\\./)?src/(.*/)?"), "{re}");
+        assert!(re.contains("(^|/)[^/]*\\.min\\.js(/|$)"), "{re}");
+        assert!(posix_paths(" , ").is_none());
+        let cmd = far::spots_command("/w", &Ask { include: "src/**".into(), exclude: "dist".into(), ..ask("x") }, 10);
+        assert!(cmd.contains("grep -z -E") && cmd.contains("grep -zv -E") && cmd.contains("|| exit 3"), "{cmd}");
+        assert!(cmd.contains("head -c"), "what comes back is bounded in bytes: {cmd}");
+    }
+
+    #[test]
+    fn a_file_too_big_to_open_is_said_rather_than_lost() {
+        let dir = std::env::temp_dir().join(format!("sk-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut big = String::from("needle\n");
+        big.push_str(&"x".repeat(READ_LIMIT as usize));
+        std::fs::write(dir.join("big.txt"), big).unwrap();
+        let found = search(&dir, &ask("needle"), &|| false).unwrap();
+        assert_eq!((found.total, found.too_big), (0, 1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1012,7 +1191,7 @@ mod tests {
         let cut = far::spots(out, &ask("hit"), 1).unwrap();
         assert!(cut.capped, "a list that went past the limit says so");
         let cmd = far::spots_command("/w", &Ask { word: true, regex: true, case: true, ..ask("a b") }, 10);
-        assert!(cmd.contains(" -w") && cmd.contains(" -E") && !cmd.contains(" -i") && cmd.contains("head -n 11"), "{cmd}");
+        assert!(cmd.contains(" -w") && cmd.contains(" $R ") && cmd.contains("R=-P") && !cmd.contains(" -i") && cmd.contains("head -n 11"), "{cmd}");
     }
 
     /// A new name stays in the folder the file is in, and a name that would
@@ -1203,7 +1382,7 @@ mod tests {
         assert!(line.starts_with("cd '/home/user/it'\\''s' && "), "{line}");
         assert!(line.contains("-e '$(rm -rf ~); '\\''x'\\''' --"), "{line}");
         assert!(line.ends_with("| head -n 301"), "{line}");
-        assert!(far::names_command("/srv/p").starts_with("cd '/srv/p' && "));
+        assert!(far::names_command("/srv/p").starts_with("cd '/srv/p' || exit 3; "));
     }
 
     #[test]
@@ -1213,3 +1392,4 @@ mod tests {
         assert!(by_text(&at, "needle", 50).hits.is_empty(), "binary files are not searched by contents");
     }
 }
+

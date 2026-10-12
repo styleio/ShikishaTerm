@@ -16878,7 +16878,9 @@ const FS = {
   // what came back (every place, by file), the number of the newest search
   // asked, and the files whose places are folded away
   opt: {case: false, word: false, regex: false, include: "", exclude: ""},
-  spots: null, seq: 0, fold: {},
+  // Numbered from the clock, so a page loaded again goes on past the
+  // numbers it used before rather than starting under them
+  spots: null, seq: Date.now(), fold: {},
   // Bumped by everything that changes what the list would say. The page is
   // redrawn several times a second; a tree of a thousand rows rebuilt that
   // often costs the window its smoothness, and takes the row out from under
@@ -17092,9 +17094,11 @@ function filesNewMdHeard(d) {
   filesChanged({act: "mkdir", path: d.path});
   filesOpen(d.path);
 }
-// A file opened where there is room to read it
-function filesOpen(path) {
-  const t = folderTab();
+// A file opened where there is room to read it. `panel`: the tab of the
+// folder it is in, when it was found in one that may not be in front now
+function filesOpen(path, panel) {
+  const t = panel ? ((S && S.tabs) || []).find(x => (x.id || x.name) === panel) : folderTab();
+  if (!t) { if (panel) toast(T["quick.files.gone"] || "", true); return; }
   if (t) { send({kind: "editopen", panel: t.id || t.name || "", path}); quickRemember(t, path); }
   // On a phone the list is covering the very thing it just opened
   if (phoneWidth()) { sideStoodAside = true; drawSide(); }
@@ -17125,7 +17129,7 @@ function filesSearchNow() {
   clearTimeout(fsTimer);
   if (!FS.q) { FS.hits = null; FS.spots = null; FS.capped = false; FS.rev++; drawFiles(); return; }
   if (FS.mode === "name") { filesAsk("find", {q: FS.q}); return; }
-  FS.seq++;
+  FS.seq = Math.max(FS.seq + 1, Date.now());
   filesAsk("spots", Object.assign({q: FS.q, seq: FS.seq}, FS.opt));
 }
 function filesBuild(box) {
@@ -17220,15 +17224,20 @@ function filesSpots(into) {
         chars.slice(0, s.at).join(""),
         el("mark", {}, chars.slice(s.at, s.at + s.len).join("")),
         chars.slice(s.at + s.len).join(""));
-      into.append(el("div", {class: "fspot", title: s.text, onclick: () => filesOpenAt(f.path, s.line, s.col)},
+      into.append(el("div", {class: "fspot", title: s.text, onclick: () => filesOpenAt(f.path, s.line, s.col16 || s.col)},
         el("span", {class: "ln"}, String(s.line)), tx));
     }
   }
 }
-// A file opened at a place in it: the line, and where on it
-function filesOpenAt(path, line, col) {
+// A file opened at a place in it: the line, and where on it (counted as the
+// editor counts, in UTF-16 units). `panel`: the folder's tab it was found
+// in, when that may no longer be the one in front. A Markdown file is shown
+// as its text for it -- the drawn view has no lines to go to -- as a line
+// pressed in a terminal does
+function filesOpenAt(path, line, col, panel) {
   ED.goto = line ? {path, line, col: col || 1} : null;
-  filesOpen(path);
+  if (line && /\.(md|markdown)$/i.test(path)) MD.view[path] = "source";
+  filesOpen(path, panel);
   edGotoNow();
 }
 // One row of the tree. `depth` is how far in it sits; the step is the tab
@@ -17304,12 +17313,16 @@ function drawFiles() {
   // What the list cannot say for itself: nothing matched, a search that
   // stopped early, or -- with nothing else to say -- what a press does
   const inside = FS.mode === "text" && FS.q;
+  // Files too big to look in are said whether or not anything matched: a
+  // "nothing" that left files out is not a nothing
+  const big = inside && FS.spots && FS.spots.too_big
+    ? " " + (T["files.spots.too_big"] || "").replaceAll("{n}", FS.spots.too_big.toLocaleString()) : "";
   const empty = inside ? !!FS.spots && !FS.spots.total : FS.hits ? !FS.hits.length : !((FS.rows[""] || []).length);
   u.say.textContent = FS.said ? FS.said
     : inside && !FS.spots ? (T["files.spots.looking"] || "")
-    : empty ? (FS.hits || inside ? (T["files.none"] || "") : (T["files.empty"] || ""))
+    : empty ? (FS.hits || inside ? (T["files.none"] || "") + big : (T["files.empty"] || ""))
     : inside ? (T[FS.spots.capped ? "files.spots.capped" : "files.spots.count"] || "")
-      .replaceAll("{n}", FS.spots.total.toLocaleString()).replaceAll("{files}", FS.spots.files.length.toLocaleString())
+      .replaceAll("{n}", FS.spots.total.toLocaleString()).replaceAll("{files}", FS.spots.files.length.toLocaleString()) + big
     : FS.capped ? (T["files.capped"] || "")
     : (T["files.hint"] || "");
   u.say.style.color = FS.bad ? "var(--stop)" : "";
@@ -21612,7 +21625,8 @@ window.__openPalette = function (mode) {
 // list and says which files fit best (`files::best_fits`); the files opened
 // here last are kept on this device, per folder, and come first
 const QUICK_KEPT = 30;
-const palQuick = {seq: 0, line: 0, col: 0};
+// Numbered from the clock, as the search inside the files is
+const palQuick = {seq: Date.now(), panel: ""};
 function quickFolderKey(t) {
   const g = t ? ((S && S.groups) || [])[t.group] : null;
   return g ? (g.key || g.folder || "") : "";
@@ -21626,10 +21640,12 @@ function quickRemember(t, path) {
   const list = [path].concat(quickRecent(t).filter(p => p !== path)).slice(0, QUICK_KEPT);
   try { localStorage.setItem("sk.quick." + key, JSON.stringify(list)); } catch {}
 }
-function quickItem(path, recent) {
+// One file to open, bound to the folder it was listed for and to the line
+// asked for when it was listed: what Enter opens is what the row says
+function quickItem(path, recent, panel, line, col) {
   const cut = path.lastIndexOf("/");
   return {grp: recent ? "recent" : "file", label: path.slice(cut + 1), sub: cut < 0 ? "" : path.slice(0, cut),
-    run: () => filesOpenAt(path, palQuick.line, palQuick.col)};
+    run: () => filesOpenAt(path, line, col, panel)};
 }
 function quickAsk(query) {
   const t = folderTab();
@@ -21642,27 +21658,32 @@ function quickAsk(query) {
   // "name:12" or "name:12:5" opens at that line, and that place on it
   const m = /^(.*?)(?::(\d+))?(?::(\d+))?$/.exec(query.trim()) || [];
   const q = (m[1] || "").trim();
-  palQuick.line = +(m[2] || 0);
-  palQuick.col = +(m[3] || 0);
-  palQuick.seq++;
+  const panel = t.id || t.name || "";
+  Object.assign(palQuick, {seq: Math.max(palQuick.seq + 1, Date.now()), panel, line: +(m[2] || 0), col: +(m[3] || 0)});
   if (!q) {
-    palItems = quickRecent(t).map(p => quickItem(p, true));
+    palItems = quickRecent(t).map(p => quickItem(p, true, panel, palQuick.line, palQuick.col));
     palSel = 0;
     renderPalette();
     return;
   }
-  send({kind: "files", panel: t.id || t.name || "", act: "quick", args: {q, seq: palQuick.seq}});
+  // What was listed for the last letters is not what these ask for: nothing
+  // is there for Enter to open until the answer comes
+  palItems = [];
+  renderPalette();
+  send({kind: "files", panel, act: "quick", args: {q, seq: palQuick.seq}});
 }
 function palQuickHeard(d) {
-  if (palMode !== "files" || d.seq !== palQuick.seq) return;
+  // An answer for other letters, or for a folder no longer in front
+  if (palMode !== "files" || d.seq !== palQuick.seq || d.panel !== palQuick.panel) return;
+  const {panel, line, col} = palQuick;
   if (!d.ok) {
     palItems = [{grp: "", label: d.error || "", run: () => {}}];
   } else {
     // What was opened here lately first, in the order the fit put it
     const recent = new Set(quickRecent(folderTab()));
     const paths = d.paths || [];
-    palItems = paths.filter(p => recent.has(p)).map(p => quickItem(p, true))
-      .concat(paths.filter(p => !recent.has(p)).map(p => quickItem(p, false)));
+    palItems = paths.filter(p => recent.has(p)).map(p => quickItem(p, true, panel, line, col))
+      .concat(paths.filter(p => !recent.has(p)).map(p => quickItem(p, false, panel, line, col)));
     if (!palItems.length) palItems = [{grp: "", label: T["quick.files.none"] || "", run: () => {}}];
   }
   palSel = 0;

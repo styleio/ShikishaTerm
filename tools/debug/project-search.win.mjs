@@ -61,6 +61,8 @@ fs.writeFileSync(path.join(WORK, 'src', 'routine.rs'), 'fn start() {}\nlet total
 fs.writeFileSync(path.join(WORK, 'src', 'deep', 'runtime.rs'), 'pub fn Total() -> u32 { 0 }\n');
 fs.writeFileSync(path.join(WORK, 'dist', 'bundle.js'), 'var total=1;\n');
 fs.writeFileSync(path.join(WORK, 'notes.md'), '# Notes\n\nNothing here.\n');
+// Bigger than the editor opens: not looked in, and said so
+fs.writeFileSync(path.join(WORK, 'huge.log'), 'total\n' + 'x'.repeat(5 * 1024 * 1024));
 spawnSync('git', ['init', '-q'], { cwd: WORK });
 
 fs.writeFileSync(path.join(APP, 'config', 'config.json'), JSON.stringify({
@@ -109,6 +111,7 @@ try {
   check(s.files.length === 3 && s.files.includes('src/routine.rs#3'), `every file with the words, with how many places (${s.files.join(', ')})`);
   check(s.spots.includes('2:total') && s.spots.filter((x) => x.startsWith('2:')).length === 2, `two places on one line are two rows, the words lit (${s.spots.join(', ')})`);
   check(/5 places in 3 files/.test(s.say), `the foot says how many places in how many files (${s.say})`);
+  check(/Files over 4 MB, not looked in: 1/.test(s.say), `a file too big to look in is said (${s.say})`);
 
   // Whole word: not inside "subtotal"; case: only "Total"
   await run(`fsUi.optBtn.word.click()`);
@@ -168,6 +171,18 @@ try {
   await run(`(() => { const q = document.getElementById("pq"); q.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); })()`);
   const at = await until(() => run(`(ED.path === "src/deep/runtime.rs" && edAce && !ED.loading) ? edAce.getCursorPosition().row + 1 : 0`), 'the file opened by name', 20000).catch(() => 0);
   check(at === 1 && await run(`document.getElementById("palette").hidden`), `Enter opens it at the line asked, and the list goes (line ${at})`);
+  // Enter before the answer for new letters has come opens nothing old
+  await run(`window.__openPalette("files")`);
+  await type('rout');
+  await until(() => run(`palItems.length && palItems[0].label === "routine.rs"`), 'the first answer', 10000);
+  const stale = await run(`(() => { const q = document.getElementById("pq"); q.value = "notes:3"; q.dispatchEvent(new Event("input"));
+    const before = palItems.length; q.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); return {before, path: ED.path}; })()`);
+  check(stale.before === 0 && stale.path !== 'src/routine.rs:3', `Enter while the new letters are being looked up opens nothing old (${JSON.stringify(stale)})`);
+  // A Markdown file opened at a line is shown as its text there
+  await until(() => run(`palItems.length && palItems[0].label === "notes.md"`), 'notes.md', 10000);
+  await run(`(() => { const q = document.getElementById("pq"); q.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true})); })()`);
+  const md = await until(async () => { const r = await run(`(ED.path === "notes.md" && edAce && !ED.loading) ? {view: MD.view["notes.md"], row: edAce.getCursorPosition().row + 1} : null`); return r && r.row === 3 && r; }, 'notes.md at line 3', 20000).catch(() => null);
+  check(md && md.view === 'source', `a Markdown file opened at a line shows its text at that line (${JSON.stringify(md)})`);
   if (at !== 1) console.log("   debug", await run(`JSON.stringify({goto: ED.goto, path: ED.path, key: ED.key, loading: ED.loading, reading: ED.reading, lines: edAce && edAce.session.getLength(), row: edAce && edAce.getCursorPosition().row})`));
   check(chrome.thrown.length === 0, `the page threw nothing (${chrome.thrown.join(' | ')})`);
   if (process.env.SHOT) {

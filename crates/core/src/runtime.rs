@@ -18030,8 +18030,11 @@ fn files_look(
                 FilesAt::Here(root) => crate::files::search(root, &ask, &gone),
                 FilesAt::There { at, root } => crate::files::matcher(&ask).and_then(|_| {
                     let command = crate::files::far::spots_command(root, &ask, crate::files::SPOTS_CAP);
+                    // The pipeline ends in `head`, so what it ends with is said
+                    // by `head` -- unless the folder was not there to stand in
                     match crate::elsewhere::exec(at, &command, FAR_SEARCH_WAIT_MS) {
-                        Ok(ran) if ran.ok() || ran.out.trim().is_empty() => crate::files::far::spots(&ran.out, &ask, crate::files::SPOTS_CAP),
+                        Ok(ran) if ran.code == crate::files::far::GONE => Err(i18n::tp("err.files.far_gone", &[("path", root)])),
+                        Ok(ran) if ran.ok() => crate::files::far::spots(&ran.out, &ask, crate::files::SPOTS_CAP),
                         Ok(ran) => Err(ran.said()),
                         Err(e) => Err(format!("{e:#}")),
                     }
@@ -18041,7 +18044,7 @@ fn files_look(
                 return;
             }
             send(match found {
-                Ok(s) => serde_json::json!({"act": act, "panel": panel, "ok": true, "seq": seq, "files": s.files, "total": s.total, "capped": s.capped}),
+                Ok(s) => serde_json::json!({"act": act, "panel": panel, "ok": true, "seq": seq, "files": s.files, "total": s.total, "capped": s.capped, "too_big": s.too_big}),
                 Err(e) => serde_json::json!({"act": act, "panel": panel, "ok": false, "seq": seq, "error": e}),
             });
         });
@@ -18050,23 +18053,18 @@ fn files_look(
     let q = args.get("q").and_then(serde_json::Value::as_str).unwrap_or_default().trim().to_string();
     std::thread::spawn(move || {
         let listed = match &place {
-            FilesAt::Here(root) => Ok(crate::files::quick_list(root)),
+            FilesAt::Here(root) => crate::files::quick_list(root),
             FilesAt::There { at, root } => {
                 let key = format!("{}\0{root}", at.address());
                 let command = crate::files::far::names_command(root);
-                // Read there once for the few seconds a name is typed in
-                let mut failed = None;
-                let l = crate::files::listing(&key, || match crate::elsewhere::exec(at, &command, FAR_SEARCH_WAIT_MS) {
-                    Ok(ran) => crate::files::far::listed(&ran.out, crate::files::QUICK_FILES_CAP),
-                    Err(e) => {
-                        failed = Some(format!("{e:#}"));
-                        (Vec::new(), false)
-                    }
-                });
-                match failed {
-                    Some(e) => Err(e),
-                    None => Ok(l),
-                }
+                // Read there once for the few seconds a name is typed in; a
+                // reading that failed is said, and not kept as an empty folder
+                crate::files::listing(&key, || match crate::elsewhere::exec(at, &command, FAR_SEARCH_WAIT_MS) {
+                    Ok(ran) if ran.code == crate::files::far::GONE => Err(i18n::tp("err.files.far_gone", &[("path", root)])),
+                    Ok(ran) if ran.ok() => Ok(crate::files::far::listed(&ran.out, crate::files::QUICK_FILES_CAP)),
+                    Ok(ran) => Err(ran.said()),
+                    Err(e) => Err(format!("{e:#}")),
+                })
             }
         };
         if gone() {
