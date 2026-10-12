@@ -69,6 +69,17 @@ pub struct Kind {
     pub share_files: &'static [&'static str],
     /// Files copied from the usual folder into a new account's, once
     pub copy: &'static [&'static str],
+    /// Variables that sign the CLI in by themselves, ahead of anything in
+    /// its folder: taken out of a tab running as an account, or every
+    /// account would quietly be the one the variable names
+    pub strip: &'static [&'static str],
+    /// What the account's own sign-in is kept in, and is never copied, in
+    /// the folder it is about: the conversations it kept for itself,
+    /// carried into the usual folder when the account is taken away
+    pub own_records: &'static [&'static str],
+    /// The CLI's own command that signs it in and ends, which a tab opened
+    /// to sign an account in runs
+    pub login: &'static str,
 }
 
 /// Claude Code. What it writes conversations and their pieces into is
@@ -96,6 +107,9 @@ pub const CLAUDE: Kind = Kind {
     ],
     share_files: &[],
     copy: &["settings.json", "keybindings.json"],
+    strip: &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_CUSTOM_HEADERS"],
+    own_records: &[],
+    login: "claude auth login",
 };
 
 /// Codex. Its records stay in each account's folder (see the module's notes)
@@ -109,6 +123,9 @@ pub const CODEX: Kind = Kind {
     // Its hooks file with the rest: this app's hooks in it are approved for
     // the new folder by Codex itself once the folder is made (`take_fresh`)
     copy: &["config.toml", "hooks.json"],
+    strip: &["OPENAI_API_KEY", "CODEX_API_KEY"],
+    own_records: &["sessions", "archived_sessions"],
+    login: "codex login",
 };
 
 pub const KINDS: [&Kind; 2] = [&CLAUDE, &CODEX];
@@ -164,9 +181,15 @@ pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// Where every account's folder is
+/// Where every account's folder is: this machine's own data folder, which
+/// nothing syncs. Never the app's folder: a copy of the app kept in a synced
+/// folder would carry every account's sign-in to the cloud and to every PC
+/// that syncs it -- and a sign-in is this PC's, made on it
 pub fn root() -> PathBuf {
-    crate::config::state_path("ai-accounts")
+    match crate::machine_data_dir() {
+        Some(d) => d.join("ShikishaTerm").join("ai-accounts"),
+        None => crate::config::state_path("ai-accounts"),
+    }
 }
 
 /// The folder an account's CLI is pointed at
@@ -174,19 +197,89 @@ pub fn dir_of(id: &str) -> PathBuf {
     root().join(id).join("home")
 }
 
+/// An account made by a version that kept its folder in the app's own data
+/// folder, moved to where it is kept now -- once, and only one with its mark.
+/// Its sign-in and its records come with it, and nothing of it is left in a
+/// folder that may be synced. Moved whole (a rename), so its links stay as
+/// they were and are pointed again as it is made up
+pub fn bring_over(id: &str) {
+    if !valid_id(id) {
+        return;
+    }
+    let old = crate::config::state_path("ai-accounts").join(id);
+    let new = root().join(id);
+    if old == new || !old.join(MARK).is_file() || new.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => crate::append_hook_log(&format!("account {id}: moved from {} to {}", old.display(), new.display())),
+        Err(e) => crate::append_hook_log(&format!("account {id}: could not be moved from {} ({e}); it is used where it is until it can", old.display())),
+    }
+}
+
+/// The accounts the board runs a tab as this moment, or that the desks it
+/// has read name for a tab: what an account cannot be deleted while it is
+static IN_USE: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// What the board says is in use now; called as it changes
+pub fn set_in_use(ids: Vec<String>) {
+    if let Ok(mut w) = IN_USE.write()
+        && *w != ids
+    {
+        *w = ids;
+    }
+}
+
+/// Whether a tab runs as account `id`, or a desk names it for one
+pub fn in_use(id: &str) -> bool {
+    IN_USE.read().is_ok_and(|w| w.iter().any(|x| x == id))
+}
+
 /// What tells a folder under [`root`] is an account's, written beside its
 /// `home` once that is made up. Nothing is removed from a folder without it
 const MARK: &str = "account.json";
 
-/// The variable and the folder a tab started with account `id` is given,
-/// with the folder made up for it. `profile` is the profile of what the tab
-/// runs: an account of another CLI is refused rather than handed to a
-/// program that would not read it
-pub fn prepare(id: &str, profile: &str) -> Result<(&'static str, PathBuf), String> {
+/// Written beside `home` once it has been made up whole, the last thing:
+/// a making that stopped halfway is made again, copies and all, rather than
+/// taken for one that was finished
+const MADE: &str = "made";
+
+/// What a tab started as an account is given: the variable and the folder
+/// it names, made up for it, and the variables to take out of its
+/// environment
+pub struct Prepared {
+    pub var: &'static str,
+    pub dir: PathBuf,
+    pub strip: &'static [&'static str],
+}
+
+/// The program a command runs: its first word without folder or extension,
+/// or the word after `env` and the variables `env` is given
+pub fn program_of(argv: &[String]) -> String {
+    let stem = |w: &str| {
+        Path::new(w).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
+    };
+    let mut words = argv.iter().map(String::as_str);
+    let first = words.next().unwrap_or_default();
+    if stem(first) != "env" {
+        return stem(first);
+    }
+    words.find(|w| !w.starts_with('-') && !w.contains('=')).map(stem).unwrap_or_default()
+}
+
+/// What a tab started with account `id` is given, with the folder made up
+/// for it. `argv` is what the tab runs: an account of another CLI is
+/// refused rather than handed to a program that would not read it
+pub fn prepare(id: &str, argv: &[String]) -> Result<Prepared, String> {
     let account = find(id).ok_or_else(|| crate::i18n::tp("msg.account.gone", &[("id", id)]))?;
     let k = kind(&account.cli).ok_or_else(|| crate::i18n::tp("msg.account.gone", &[("id", id)]))?;
-    if kind_of_profile(profile).map(|t| t.cli) != Some(k.cli) {
-        return Err(crate::i18n::tp("msg.account.other_cli", &[("name", &account.shown()), ("cli", profile)]));
+    bring_over(&account.id);
+    let program = program_of(argv);
+    if program != k.cli {
+        return Err(crate::i18n::tp("msg.account.other_cli", &[("name", &account.shown()), ("cli", &program)]));
     }
     let dir = dir_of(&account.id);
     let usual = usual_dir(k).ok_or_else(|| crate::i18n::t("msg.account.no_home"))?;
@@ -194,14 +287,15 @@ pub fn prepare(id: &str, profile: &str) -> Result<(&'static str, PathBuf), Strin
         crate::append_hook_log(&format!("account {}: {e:#}", account.id));
         crate::i18n::tp("msg.account.not_made", &[("name", &account.shown()), ("why", &format!("{e:#}"))])
     })?;
-    Ok((k.env, dir))
+    Ok(Prepared { var: k.env, dir, strip: k.strip })
 }
 
 /// An account's folder, made up as the module's notes say. Each step is one
 /// that may be taken again: a folder made up before is checked and left as
 /// it is, and whatever the person put in its place is never replaced
 fn make_up(k: &Kind, usual: &Path, dir: &Path, account: &crate::config::AiAccountSpec) -> Result<()> {
-    let first = !dir.is_dir();
+    let made = dir.parent().map(|above| above.join(MADE)).unwrap_or_default();
+    let first = !made.is_file();
     std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
     if let Some(above) = dir.parent()
         && !above.join(MARK).is_file()
@@ -236,6 +330,7 @@ fn make_up(k: &Kind, usual: &Path, dir: &Path, account: &crate::config::AiAccoun
         claude_extras(usual, dir)?;
     }
     if first {
+        crate::crypto::write_atomic(&made, "")?;
         FRESH.store(true, Ordering::Relaxed);
     }
     Ok(())
@@ -248,9 +343,18 @@ fn make_up(k: &Kind, usual: &Path, dir: &Path, account: &crate::config::AiAccoun
 /// beside it in the home folder when not: copied in once, without what
 /// belongs to the account it came from
 fn claude_extras(usual: &Path, dir: &Path) -> Result<()> {
+    // The usual folder in the home folder is read in by the one spelling an
+    // import surely takes; anywhere else, a path with a drive letter or a
+    // space in it may not be, and the memory is copied, kept up when the
+    // usual one is newer
     let memory = dir.join("CLAUDE.md");
-    if usual.join("CLAUDE.md").is_file() && !memory.exists() {
-        std::fs::write(&memory, format!("@{}\n", usual.join("CLAUDE.md").display()))?;
+    let in_home = crate::home_dir().is_some_and(|h| crate::same_folder(&h.join(CLAUDE.dir), usual));
+    if usual.join("CLAUDE.md").is_file() {
+        match in_home {
+            true if !memory.exists() => std::fs::write(&memory, "@~/.claude/CLAUDE.md\n")?,
+            true => {}
+            false => link_file(&usual.join("CLAUDE.md"), &memory)?,
+        }
     }
     let state = dir.join(".claude.json");
     if !state.exists() {
@@ -273,24 +377,49 @@ fn claude_extras(usual: &Path, dir: &Path) -> Result<()> {
 /// in, or are its readings of that account: carried into another account,
 /// they would say it is someone else, or outrank its own sign-in
 fn belongs_to_the_account(key: &str) -> bool {
-    matches!(key, "oauthAccount" | "userID" | "machineID" | "primaryApiKey" | "customApiKeyResponses")
+    matches!(
+        key,
+        "oauthAccount"
+            | "userID"
+            | "machineID"
+            | "primaryApiKey"
+            | "customApiKeyResponses"
+            | "hasAvailableSubscription"
+            | "subscriptionNoticeCount"
+            | "claudeCodeFirstTokenDate"
+            | "firstStartTime"
+            | "lastSeenOrgDefaultUpdatedAt"
+            | "artifactRosterDenied"
+            | "additionalModelOptionsAnsweredAt"
+            | "startupPrefetchedAt"
+    )
         || key.contains("Cache")
         || key.starts_with("cached")
         || key.starts_with("passes")
         || key.starts_with("s1m")
 }
 
-/// `link` made to point at the folder `target`, unless something is there
-/// already: a link to the same place is left, and anything else -- a real
-/// folder with something in it, a link somewhere else -- is the person's and
-/// is left too. An empty folder is taken for one the CLI made before the
-/// link was, and replaced
+/// `link` made to point at the folder `target`. A link already there is
+/// left when it points there and pointed again when it does not; a real
+/// folder with something in it is the person's and is left as it is. An
+/// empty one is taken for one the CLI made before the link was, and replaced
 fn link_dir(target: &Path, link: &Path) -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(link) {
         if meta.file_type().is_symlink() || is_junction(link) {
-            return Ok(());
-        }
-        if meta.is_dir() && std::fs::read_dir(link).map(|mut d| d.next().is_none()).unwrap_or(false) {
+            // Ours, made when the usual folder was elsewhere (the person has
+            // set the CLI's variable since): pointed at where it is now
+            let same = match (std::fs::canonicalize(link), std::fs::canonicalize(target)) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => false,
+            };
+            if same {
+                return Ok(());
+            }
+            if std::fs::remove_dir(link).is_err() {
+                std::fs::remove_file(link).with_context(|| format!("re-point {}", link.display()))?;
+            }
+            crate::append_hook_log(&format!("account folder: {} pointed again at {}", link.display(), target.display()));
+        } else if meta.is_dir() && std::fs::read_dir(link).map(|mut d| d.next().is_none()).unwrap_or(false) {
             std::fs::remove_dir(link).with_context(|| format!("replace {}", link.display()))?;
         } else {
             crate::append_hook_log(&format!("account folder: {} is somebody's own, left as it is", link.display()));
@@ -388,8 +517,9 @@ fn token_claims(token: &str) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// An account's folder taken away, with what it was signed in as. The links
-/// go first: a removal that walked into one would take the usual folder's
+/// An account's folder taken away, with what it was signed in as. Its own
+/// records go to the usual folder first; then the links, before anything is
+/// removed -- a removal that walked into one would take the usual folder's
 /// conversations with it. A folder without the mark is not removed
 pub fn forget(id: &str) -> Result<()> {
     anyhow::ensure!(valid_id(id), "not an account's id: {id}");
@@ -398,8 +528,82 @@ pub fn forget(id: &str) -> Result<()> {
         return Ok(());
     }
     anyhow::ensure!(above.join(MARK).is_file(), "{} is not an account's folder", above.display());
+    // Which CLI it is an account of, as the mark wrote it when it was made
+    let mark: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(above.join(MARK))?).unwrap_or_default();
+    let cli = mark.get("cli").and_then(|c| c.as_str()).unwrap_or_default().to_string();
+    let cli = cli.as_str();
+    let home = above.join("home");
+    // What the account kept for itself goes on being found: its records and
+    // its typed-prompt history carried into the usual folder first
+    if let Some(k) = kind(cli)
+        && let Some(usual) = usual_dir(k)
+    {
+        carry_records(k, &home, &usual)?;
+    }
     crate::worktree::unhook_links(&above);
+    std::fs::remove_dir_all(&home).with_context(|| format!("remove {}", home.display()))?;
+    // The mark goes last: a removal that stopped halfway leaves a folder
+    // that is still known for an account's, to be removed again
+    for e in std::fs::read_dir(&above).into_iter().flatten().flatten() {
+        if e.file_name() != MARK {
+            let p = e.path();
+            let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+        }
+    }
     std::fs::remove_dir_all(&above).with_context(|| format!("remove {}", above.display()))
+}
+
+/// The records an account kept in its own folder, moved into the usual
+/// folder (a file already there of the same name is left, and so is the
+/// account's), and its prompt history added to the end of the usual one
+fn carry_records(k: &Kind, home: &Path, usual: &Path) -> Result<()> {
+    // A record of the same name already in the usual folder: the same file
+    // is dropped, and a different one is kept beside it under a name of its
+    // own -- the account's folder is removed next, and what is left in it
+    // goes with it
+    fn beside(dst: &Path) -> PathBuf {
+        let stem = dst.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let ext = dst.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        (1..).map(|n| dst.with_file_name(format!("{stem}.account-{n}{ext}"))).find(|p| !p.exists()).unwrap_or_else(|| dst.to_path_buf())
+    }
+    fn move_tree(from: &Path, to: &Path) -> Result<()> {
+        if std::fs::symlink_metadata(from).is_ok_and(|m| m.file_type().is_symlink()) || is_junction(from) {
+            return Ok(());
+        }
+        let Ok(entries) = std::fs::read_dir(from) else { return Ok(()) };
+        std::fs::create_dir_all(to)?;
+        for e in entries.flatten() {
+            let (src, dst) = (e.path(), to.join(e.file_name()));
+            if src.is_dir() {
+                move_tree(&src, &dst)?;
+                continue;
+            }
+            let dst = match dst.exists() {
+                false => dst,
+                true if std::fs::read(&src).ok() == std::fs::read(&dst).ok() => continue,
+                true => beside(&dst),
+            };
+            if std::fs::rename(&src, &dst).is_err() {
+                std::fs::copy(&src, &dst).with_context(|| format!("carry {}", src.display()))?;
+            }
+        }
+        Ok(())
+    }
+    for name in k.own_records {
+        move_tree(&home.join(name), &usual.join(name))?;
+    }
+    let history = home.join("history.jsonl");
+    if let Ok(text) = std::fs::read_to_string(&history)
+        && !text.trim().is_empty()
+    {
+        use std::io::Write as _;
+        let mut out = std::fs::OpenOptions::new().create(true).append(true).open(usual.join("history.jsonl"))?;
+        out.write_all(text.as_bytes())?;
+        if !text.ends_with('\n') {
+            out.write_all(b"\n")?;
+        }
+    }
+    Ok(())
 }
 
 /// Every place a record a profile names with `pattern` may be: the CLI's own
@@ -423,6 +627,24 @@ pub fn patterns(pattern: &str) -> Vec<String> {
             out.push(format!("{}{rest}", dir_of(&a.id).display()));
         }
         return out;
+    }
+    vec![pattern.to_string()]
+}
+
+/// Where a tab running as `account` -- or, with none, as the CLI is signed
+/// in -- can resume a record `pattern` names from: the one folder the CLI
+/// is pointed at, which is the only one it looks in. A record in another
+/// account's folder is that account's to resume, not this tab's. Records
+/// the accounts share are in the usual folder whoever had them
+pub fn patterns_for(pattern: &str, account: Option<&str>) -> Vec<String> {
+    for k in KINDS {
+        let Some(rest) = under(pattern, k) else { continue };
+        let first = rest.trim_start_matches(['/', '\\']).split(['/', '\\']).next().unwrap_or("");
+        let own =account.and_then(find).filter(|a| a.cli == k.cli && !k.share.contains(&first));
+        return match own {
+            Some(a) => vec![format!("{}{rest}", dir_of(&a.id).display())],
+            None => usual_dir(k).map(|u| vec![format!("{}{rest}", u.display())]).unwrap_or_default(),
+        };
     }
     vec![pattern.to_string()]
 }
@@ -477,6 +699,10 @@ mod tests {
         }
     }
 
+    /// The accounts known are one list for the whole program: a test that
+    /// sets it holds this while it does
+    static KNOWN_HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn account(id: &str, cli: &str) -> crate::config::AiAccountSpec {
         crate::config::AiAccountSpec { id: id.into(), cli: cli.into(), name: String::new() }
     }
@@ -504,6 +730,7 @@ mod tests {
 
     #[test]
     fn a_pattern_under_a_clis_folder_is_looked_for_in_every_account_of_it() {
+        let _held = KNOWN_HELD.lock().unwrap_or_else(|e| e.into_inner());
         set_known(&[account("work", "codex"), account("home", "claude"), account("bad id!", "codex")]);
         let codex = patterns("{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl");
         assert_eq!(codex.len(), 2, "{codex:?}");
@@ -542,7 +769,9 @@ mod tests {
         // Settings start from the usual ones; the sign-in is not carried
         assert_eq!(std::fs::read_to_string(dir.join("settings.json")).unwrap(), r#"{"model":"opus"}"#);
         assert!(!dir.join(".credentials.json").exists(), "the sign-in was carried into another account");
-        assert!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap().starts_with('@'));
+        // Outside the home folder the memory is copied, not imported by a
+        // path an import may not take
+        assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "be kind");
         assert!(dir.parent().unwrap().join(MARK).is_file());
         // Made up again, nothing changes and nothing breaks
         std::fs::write(dir.join("settings.json"), r#"{"model":"sonnet"}"#).unwrap();
@@ -601,6 +830,72 @@ mod tests {
         assert_eq!(signed_in_as(&CLAUDE, &s.0).as_deref(), Some("b@example.invalid"));
         let none = Scratch::new("none");
         assert_eq!(signed_in_as(&CLAUDE, &none.0), None);
+    }
+
+    #[test]
+    fn the_program_a_command_runs_is_read_through_env() {
+        let argv = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(program_of(&argv("claude --resume x")), "claude");
+        assert_eq!(program_of(&argv("/usr/local/bin/codex")), "codex");
+        #[cfg(windows)]
+        assert_eq!(program_of(&argv("C:\\tools\\codex.cmd")), "codex");
+        assert_eq!(program_of(&argv("env claude auth login")), "claude");
+        assert_eq!(program_of(&argv("env -i FOO=1 codex login")), "codex");
+        assert_eq!(program_of(&argv("npx claude")), "npx");
+    }
+
+    #[test]
+    fn a_tab_resumes_only_from_the_folder_its_cli_looks_in() {
+        let _held = KNOWN_HELD.lock().unwrap_or_else(|e| e.into_inner());
+        set_known(&[account("work", "codex"), account("home", "claude")]);
+        let codex = "{home}/.codex/sessions/*/*/*/rollout-*-{id}.jsonl";
+        let own = patterns_for(codex, Some("work"));
+        assert_eq!(own.len(), 1);
+        assert!(own[0].starts_with(&dir_of("work").display().to_string()), "{own:?}");
+        let usual = patterns_for(codex, None);
+        assert_eq!(usual.len(), 1);
+        assert!(!usual[0].starts_with(&dir_of("work").display().to_string()));
+        // Shared records are in the usual folder, whichever account
+        let claude = patterns_for("{home}/.claude/projects/*/{id}.jsonl", Some("home"));
+        assert!(!claude[0].starts_with(&dir_of("home").display().to_string()));
+        // An account of another CLI is not this tab's
+        assert_eq!(patterns_for(codex, Some("home")), usual);
+        set_known(&[]);
+    }
+
+    #[test]
+    fn a_making_that_stopped_halfway_is_made_again_whole() {
+        let s = Scratch::new("half");
+        let usual = s.0.join("usual");
+        std::fs::create_dir_all(&usual).unwrap();
+        std::fs::write(usual.join("settings.json"), "{}").unwrap();
+        let dir = s.0.join("acct").join("home");
+        // A folder from a making that stopped before its copies
+        std::fs::create_dir_all(&dir).unwrap();
+        make_up(&CLAUDE, &usual, &dir, &account("acct", "claude")).unwrap();
+        assert!(dir.join("settings.json").is_file(), "the copies of a half-made folder were never made");
+        assert!(dir.parent().unwrap().join(MADE).is_file());
+    }
+
+    #[test]
+    fn records_an_account_kept_go_to_the_usual_folder_before_it_goes() {
+        let s = Scratch::new("carry");
+        let usual = s.0.join("usual");
+        let home = s.0.join("acct").join("home");
+        std::fs::create_dir_all(home.join("sessions").join("2026").join("10")).unwrap();
+        std::fs::write(home.join("sessions").join("2026").join("10").join("rollout-a.jsonl"), "{}").unwrap();
+        std::fs::write(home.join("history.jsonl"), "{\"t\":1}\n").unwrap();
+        std::fs::create_dir_all(usual.join("sessions").join("2026").join("10")).unwrap();
+        std::fs::write(usual.join("sessions").join("2026").join("10").join("rollout-a.jsonl"), "usual").unwrap();
+        std::fs::write(usual.join("history.jsonl"), "{\"t\":0}\n").unwrap();
+        carry_records(&CODEX, &home, &usual).unwrap();
+        assert_eq!(std::fs::read_to_string(usual.join("history.jsonl")).unwrap(), "{\"t\":0}\n{\"t\":1}\n");
+        let day = usual.join("sessions").join("2026").join("10");
+        assert_eq!(std::fs::read_to_string(day.join("rollout-a.jsonl")).unwrap(), "usual", "a record already there was overwritten");
+        assert_eq!(std::fs::read_to_string(day.join("rollout-a.account-1.jsonl")).unwrap(), "{}", "the account's own was lost to the clash");
+        std::fs::write(home.join("sessions").join("2026").join("10").join("rollout-b.jsonl"), "{}").unwrap();
+        carry_records(&CODEX, &home, &usual).unwrap();
+        assert!(usual.join("sessions").join("2026").join("10").join("rollout-b.jsonl").is_file());
     }
 
     #[test]

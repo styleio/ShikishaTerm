@@ -244,7 +244,7 @@ pub fn apply_ws_config(
                 // starting is part of what it comes up as: a tab that lost the
                 // conversation it was having keeps the offer of the way back
                 let carried = match ft.cfg.id.as_deref().and_then(|id| resume.remove(id)) {
-                    Some(s) if tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far_opts(&said)) => {
+                    Some(s) if tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far_opts(&said), ft.cfg.ai_account.as_deref()) => {
                         Carried { plan: tab::Resume::Id(s), lost: false }
                     }
                     _ => launch_plan(carry, desk, &argv, &ft.cfg, &said.place(), &title, far_opts(&said)),
@@ -1496,7 +1496,7 @@ pub fn carried_conversation(
             title,
         );
     };
-    match tab::resumable_at(argv, &cfg.profile, &session.id, far) {
+    match tab::resumable_at(argv, &cfg.profile, &session.id, far, cfg.ai_account.as_deref()) {
         true => Carried { plan: tab::Resume::Id(session), lost: false },
         false => Carried::lost(
             format!("{} is not on this computer any more", session.short()),

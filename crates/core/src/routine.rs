@@ -289,25 +289,49 @@ fn book_path() -> std::path::PathBuf {
 }
 
 impl Book {
-    /// The book as it was left. A run that was still going when the app last
-    /// stopped can never be answered now: it is written down as cut short
-    pub fn load() -> Book {
-        let mut book: Book = std::fs::read_to_string(book_path())
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
-        book.cut_short();
-        book
+    /// The book as it was left, and whether anything in it changed in the
+    /// reading. A run that was still going when the app last stopped can
+    /// never be answered now: it is written down as cut short.
+    ///
+    /// Read a row at a time: a row this version cannot read (written by a
+    /// later one, or by hand) is left out, not the whole book with it. A file
+    /// that cannot be read at all is kept aside as `.bak` before anything is
+    /// written over it
+    pub fn load() -> (Book, bool) {
+        let path = book_path();
+        let Ok(text) = std::fs::read_to_string(&path) else { return (Book::default(), false) };
+        let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) else {
+            let kept = path.with_extension("json.bak");
+            let _ = std::fs::copy(&path, &kept);
+            crate::append_hook_log(&format!("scheduled prompts: {} could not be read; kept aside as {}", path.display(), kept.display()));
+            return (Book::default(), false);
+        };
+        let mut book = Book::default();
+        if let Some(runs) = raw.get("runs").and_then(|r| r.as_object()) {
+            for (id, rows) in runs {
+                let rows: Vec<Run> = rows.as_array().into_iter().flatten().filter_map(|r| serde_json::from_value(r.clone()).ok()).collect();
+                book.runs.insert(id.clone(), rows);
+            }
+        }
+        if let Some(next) = raw.get("next").and_then(|n| serde_json::from_value(n.clone()).ok()) {
+            book.next = next;
+        }
+        let cut = book.cut_short();
+        (book, cut)
     }
 
-    /// Every run still going, written down as cut short by the app closing
-    fn cut_short(&mut self) {
+    /// Every run still going, written down as cut short by the app closing;
+    /// whether there was any
+    fn cut_short(&mut self) -> bool {
+        let mut any = false;
         for run in self.runs.values_mut().flatten() {
             if run.how == How::Going {
                 run.how = How::Cut;
                 run.why = Some("routine.why.app_closed".into());
+                any = true;
             }
         }
+        any
     }
 
     /// Read as the settings page reads it, without touching a run
@@ -315,8 +339,10 @@ impl Book {
         std::fs::read_to_string(book_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
+    /// Written whole, and small: a reply can be long, and the book is written
+    /// at every run's beginning and end
     pub fn save(&self) {
-        if let Ok(text) = serde_json::to_string_pretty(self) {
+        if let Ok(text) = serde_json::to_string(self) {
             let _ = crate::crypto::write_atomic(&book_path(), &text);
         }
     }
@@ -375,6 +401,36 @@ impl Book {
         before != self.runs.len() + self.next.len()
     }
 }
+
+/// The ids of the prompts the settings file holds, read off the file as it
+/// is -- every entry with an id, whether or not it can be run. What decides
+/// whose history is let go: a prompt left out for a mistake in it is still
+/// the person's, and so is its history
+pub fn ids_in_settings() -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(crate::config::config_file_path()).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    Some(
+        doc.get("routines")
+            .and_then(|r| r.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r.get("id").and_then(|i| i.as_str()).map(str::to_string))
+            .collect(),
+    )
+}
+
+/// The start of an answer, for a list: the whole is asked for by itself
+pub fn excerpt(reply: &str) -> String {
+    let short: String = reply.chars().take(EXCERPT).collect();
+    match short.len() < reply.len() {
+        true => format!("{short}…"),
+        false => short,
+    }
+}
+
+/// How much of an answer the list of runs carries; the rest is read when the
+/// run is opened
+const EXCERPT: usize = 400;
 
 /// An answer cut to what a run keeps, at a character boundary
 pub fn kept_reply(reply: &str) -> String {
@@ -542,7 +598,8 @@ mod tests {
         let n = book.begin("r1", Some(5), 5);
         book.note("r1", None, 6, How::Skipped, "routine.why.last_going");
         let mut read: Book = serde_json::from_str(&serde_json::to_string(&book).unwrap()).unwrap();
-        read.cut_short();
+        assert!(read.cut_short());
+        assert!(!read.cut_short(), "cut twice");
         let run = read.run_mut("r1", n).unwrap();
         assert_eq!((run.how, run.why.as_deref()), (How::Cut, Some("routine.why.app_closed")));
         assert_eq!(read.runs["r1"][1].how, How::Skipped);

@@ -11549,7 +11549,11 @@ function drawLogin() {
   // The checkout's AI tab is brought in front once it is there: that is
   // where keys typed here go (the pane behind, or a phone's input bar)
   const tab = checkoutAiTab(st.key, st.ai, st.tab);
-  const mark = st.folder + "\u001f" + st.seq + "\u001f" + (st.tab || "");
+  // Whether the tab the step names was the one found: a sign-in tab is put
+  // on the desk as the step opens and is there a moment later, and until
+  // then the AI's own tab stands in -- so the step selects again once it is
+  const named = !!(tab && st.tab && tab.name === st.tab);
+  const mark = st.folder + "\u001f" + st.seq + "\u001f" + (named ? st.tab : "");
   if (tab && loginSelected !== mark) {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
     else loginSelected = mark;

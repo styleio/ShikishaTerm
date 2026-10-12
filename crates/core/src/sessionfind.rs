@@ -168,6 +168,12 @@ pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
     crate::accounts::patterns(pattern).iter().find_map(|p| locate_one(p, id))
 }
 
+/// Whether the record is in one of these places exactly, `{home}` and all
+/// already put in by the caller (`crate::accounts::patterns_for`)
+pub fn exists_in(patterns: &[String], id: &str) -> bool {
+    !id.is_empty() && patterns.iter().any(|p| locate_one(p, id).is_some())
+}
+
 fn locate_one(pattern: &str, id: &str) -> Option<PathBuf> {
     // A profile's pattern is written with whichever separator its author had
     // in mind. Windows takes either, so both are folded to one there; anywhere

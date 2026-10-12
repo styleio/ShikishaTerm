@@ -756,8 +756,12 @@ fn make_on_microvm(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> boo
                 // Kept up through the clone and the install (see e2b::busy)
                 let _busy = crate::e2b::busy(here.host.as_ref().expect("named just above"));
                 // The clone, then what the machine is prepared with: said on
-                // the row as each, since the second takes minutes
-                for (n, argv) in plan.checking_out().into_iter().enumerate() {
+                // the row as each, since the second takes minutes. Asked of
+                // the plan without the machine it named: a checkout made
+                // again after its machine was gone still names the gone one,
+                // and a plan that names a machine has nothing to check out
+                let fresh = Plan { host: Some(host.with_instance(None)), ..plan.clone() };
+                for (n, argv) in fresh.checking_out().into_iter().enumerate() {
                     at_stage(if n == 0 { Stage::Creating } else { Stage::Installing });
                     if let Err(e) = run_for(&here, &argv) {
                         // A machine the project could not be put on is no checkout

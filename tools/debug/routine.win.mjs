@@ -39,6 +39,8 @@ const ROOT = path.resolve(import.meta.dirname, '..', '..');
 const RUN = path.join(os.tmpdir(), 'sk-routine');
 const APP = path.join(RUN, 'app');
 const WORK = path.join(RUN, 'work');
+const WORK2 = path.join(RUN, 'other');
+const DESK2 = '7a2b3c4d-1e5f-4a6b-9c7d-0e1f2a3b4c5d';
 const PORT = 9479;
 const TOKEN = 'routine-token-0123456789';
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -62,6 +64,7 @@ await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
 fs.mkdirSync(path.join(APP, 'config'), { recursive: true });
 fs.mkdirSync(WORK, { recursive: true });
+fs.mkdirSync(WORK2, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -104,6 +107,8 @@ const config = (routines) => ({
   desks: [{ name: 'Clock', id: 'clock', uid: DESK, folders: [{ cwd: WORK, tabs: [
     { name: 'shell', id: 'shell', command: ['cmd.exe'] },
     { name: 'helper', id: 'helper', uid: HELPER, command: ['claude'] },
+  ] }] }, { name: 'Other', id: 'other', uid: DESK2, folders: [{ cwd: WORK2, tabs: [
+    { name: 'shell2', id: 'shell2', command: ['cmd.exe'] },
   ] }] }],
   routines,
 });
@@ -114,6 +119,10 @@ const routines = [
   { id: 'hold', name: 'Hold', on: true, prompt: 'SLOW work for the helper', desk: DESK, folder: WORK, tab: HELPER, when: far, late: 60 },
   { id: 'slow', name: 'Slow', on: true, prompt: 'SLOW work alone', ai: 'claude', desk: DESK, folder: WORK, when: far, late: 60, tidy: false },
   { id: 'blank', name: 'Blank', on: true, prompt: '', desk: DESK, folder: WORK, when: far, late: 60 },
+  // On the other desk, not on screen
+  { id: 'away', name: 'Away', on: true, prompt: 'hello from the other desk', ai: 'claude', desk: DESK2, folder: WORK2, when: far, late: 60, tidy: true },
+  // An answer longer than the list carries
+  { id: 'long', name: 'Long', on: true, prompt: 'long ' + 'x'.repeat(700), desk: DESK, folder: WORK, tab: HELPER, when: far, late: 60 },
 ];
 const configFile = path.join(APP, 'config', 'config.json');
 fs.writeFileSync(configFile, JSON.stringify(config(routines), null, 2));
@@ -199,6 +208,33 @@ try {
   const typed = log().split('\n').filter((l) => /scheduled prompt "Check" run/.test(l)).length;
   check(typed === 1, `nothing was typed into the busy tab (${typed} run(s) of Check went in)`);
 
+  // A desk not opened since the app started is not started for a prompt
+  check((await post('/api/routines/run', { id: 'away' })).ok === true, 'the prompt for the other desk is taken');
+  const notOpen = await until(() => runs('away').at(-1), 'the run for the desk not opened', 15000).catch(() => null);
+  check(notOpen && notOpen.how === 'skipped' && notOpen.why === 'routine.why.desk_not_open', `a prompt for a desk not opened yet is skipped, saying why (${notOpen && notOpen.why})`);
+  // Opened once, then left: its prompt runs there with another desk on screen
+  const intent = (body) => send(`/api/intent?t=${TOKEN}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  await intent({ kind: 'opendesk' }); await sleep(500); await intent({ kind: 'key', text: '2' });
+  await until(async () => (await tabs()).some((t) => t.name === 'shell2'), 'the other desk on screen', 20000);
+  await intent({ kind: 'opendesk' }); await sleep(500); await intent({ kind: 'key', text: '1' });
+  await until(async () => (await tabs()).some((t) => t.name === 'helper'), 'the first desk on screen again', 20000);
+  check((await post('/api/routines/run', { id: 'away' })).ok === true, 'the prompt for the other desk is taken again');
+  const away = await until(() => runs('away').find((r) => r.how === 'answered'), 'the other desk\'s prompt to be answered', 120000).catch(() => null);
+  check(away && /ANSWER: hello from the other desk/.test(away.reply || ''), `with another desk on screen, a prompt runs on its own desk and is answered (${away && away.how})`);
+  const otherTabs = () => (JSON.parse(fs.readFileSync(configFile, 'utf8')).desks[1].folders[0].tabs || []).map((t) => t.name);
+  await until(() => !otherTabs().includes('Away'), 'its tab to be closed', 30000).catch(() => {});
+  check(!otherTabs().includes('Away'), `its tab is closed once answered, on the desk not on screen (${otherTabs().join(', ')})`);
+
+  // A long answer: the list carries its start, the whole is read by itself
+  await until(async () => (await tabs()).some((t) => t.name === 'helper' && t.state !== 'BUSY'), 'the helper to be free', 60000);
+  check((await post('/api/routines/run', { id: 'long' })).ok === true, 'the long prompt is taken');
+  const longRun = await until(() => runs('long').find((r) => r.how === 'answered'), 'the long answer', 60000).catch(() => null);
+  const listedNow = await (await send('/api/routines')).json();
+  const shortReply = ((listedNow.runs.long || []).find((r) => r.n === (longRun || {}).n) || {}).reply || '';
+  const whole = longRun ? (await (await send(`/api/routines/reply?id=long&n=${longRun.n}`)).json()).reply : '';
+  check(shortReply.length <= 401 + 1 && shortReply.endsWith('…') && whole.length > 600 && whole.startsWith(shortReply.slice(0, -1)),
+    `the list carries the start of a long answer (${shortReply.length}), and the whole is read by itself (${whole.length})`);
+
   // The brake: nothing by the clock, Run now still
   const lit = JSON.parse(fs.readFileSync(configFile, 'utf8'));
   lit.routines.find((r) => r.id === 'ping').on = true;
@@ -222,13 +258,24 @@ try {
   const drawn = await until(() => chrome.run(`(() => { const r = document.querySelectorAll(".rt"); return r.length ? JSON.stringify([...r].map(x => x.querySelector(".rtname").textContent + " | " + x.querySelector(".rtsum").textContent + " | " + ((x.querySelector(".rtstate") || {}).textContent || ""))) : ""; })()`), 'the list', 30000).catch(() => '');
   console.log('    ' + drawn);
   const rows = drawn ? JSON.parse(drawn) : [];
-  check(rows.length === 5, `the page lists every prompt (${rows.length})`);
+  check(rows.length === 7, `the page lists every prompt (${rows.length})`);
   check(rows.some((r) => r.startsWith('Check | ') && /Answered$/.test(r)), 'a prompt\'s line says how it last went');
   check(rows.some((r) => r.startsWith('Ping | Every 1 min')), 'a prompt\'s line says when it comes round');
   const history = await chrome.run(`(() => { const row = [...document.querySelectorAll(".rt")].find(x => x.querySelector(".rtname").textContent === "Check"); [...row.querySelectorAll("button")].find(b => b.textContent.startsWith("History")).click(); return new Promise(ok => setTimeout(() => ok(JSON.stringify([...document.querySelectorAll(".rtrun")].map(x => x.textContent.slice(0, 80)))), 300)); })()`);
   check(/ANSWER: status please/.test(history) && /busy/.test(history), `the history shows the answers and the reasons (${history.slice(0, 200)})`);
   const form = await chrome.run(`(() => { const row = [...document.querySelectorAll(".rt")].find(x => x.querySelector(".rtname").textContent === "Blank"); [...row.querySelectorAll("button")].find(b => b.textContent === "Edit").click(); return new Promise(ok => setTimeout(() => ok(!!document.querySelector(".rtform textarea") && !!document.querySelector(".rt .rtwarn")), 300)); })()`);
   check(form, 'the form opens, and a prompt that cannot run says why');
+  const checksBefore = runs('check').length;
+  const stopped = await chrome.run(`(() => {
+    const row = [...document.querySelectorAll(".rt")].find(x => x.querySelector(".rtname").textContent === "Check");
+    const name = row.querySelector(".rtform input[type=text]") || null;
+    current.routines.find(r => r.id === "check").name = "Check changed";
+    refreshSave();
+    [...row.querySelectorAll("button")].find(b => b.textContent === "Run now").click();
+    return new Promise(ok => setTimeout(() => ok(document.body.innerText.includes(T["settings.routine.run.unsaved"])), 800));
+  })()`);
+  await sleep(3000);
+  check(stopped && runs('check').length === checksBefore, 'with changes not saved, Run now does not run, and says to save first');
   const wide = await chrome.run(`document.documentElement.scrollWidth <= window.innerWidth + 1`);
   check(wide, 'nothing runs off the side of a phone\'s screen');
   check(chrome.thrown.length === 0, `the page threw nothing (${chrome.thrown.join(' | ')})`);

@@ -313,6 +313,16 @@ struct Shared {
     want: bool,
     last: Option<(Limits, Instant)>,
     asked: Option<Instant>,
+    /// The meter is gone: its thread ends
+    stop: bool,
+}
+
+impl Drop for Meter {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.stop = true;
+        }
+    }
 }
 
 impl Meter {
@@ -324,7 +334,7 @@ impl Meter {
     /// The same, for one account of the AI: its own folder (`at`) is where
     /// its sign-in and its records are read from
     pub fn start_in(source: Source, at: Option<std::path::PathBuf>) -> Self {
-        let shared = Arc::new(Mutex::new(Shared { want: false, last: None, asked: None }));
+        let shared = Arc::new(Mutex::new(Shared { want: false, last: None, asked: None, stop: false }));
         let mine = Arc::clone(&shared);
         std::thread::Builder::new()
             .name(format!("{}-limits", source.key()))
@@ -334,6 +344,9 @@ impl Meter {
                     std::thread::sleep(Duration::from_secs(1));
                     let due = {
                         let Ok(s) = mine.lock() else { break };
+                        if s.stop {
+                            break;
+                        }
                         s.want && s.asked.is_none_or(|t| t.elapsed() >= source.every())
                     };
                     if !due {
@@ -696,7 +709,7 @@ mod tests {
     /// outlives a silence only for a while.
     #[test]
     fn the_meter_is_quiet_until_wanted_and_forgets_when_told_to() {
-        let m = Meter { shared: Arc::new(Mutex::new(Shared { want: false, last: None, asked: None })) };
+        let m = Meter { shared: Arc::new(Mutex::new(Shared { want: false, last: None, asked: None, stop: false })) };
         assert_eq!(m.current(), None);
         let l = Limits::of(vec![Allowance::whole(Span::Hours5, Window { pct: 5, resets_at: None })], None).unwrap();
         m.shared.lock().unwrap().last = Some((l.clone(), Instant::now()));

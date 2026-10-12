@@ -119,7 +119,7 @@ fn main() {
                 Some(s) => {
                     // On another machine its record is there, looked for as
                     // the tab starts, and not on this PC
-                    let ok = tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far);
+                    let ok = tab::resumable_at(&argv, &ft.cfg.profile, &s.id, far, ft.cfg.ai_account.as_deref());
                     // The hash beside it is what the log calls this same
                     // conversation (`Session::short`). Printed together so a
                     // line in hooks.log can be matched to a record on the disk

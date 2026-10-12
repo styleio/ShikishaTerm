@@ -7169,6 +7169,58 @@ pub fn add_tab_at(
 /// [`add_tab_at`], answering who the tab is as well as what it is called:
 /// for what keeps something about it from the moment it is made, before the
 /// settings are read again (a job that opened it)
+/// Take out every tab written with the key `mark` -- with the value `value`,
+/// or with any value when that is `None` -- wherever in the settings it was
+/// written, and say how many went. `folder` (a path and a machine's name)
+/// takes out any marked tab in that folder as well, whatever its value: one
+/// put there for an earlier step and used again by this one. For a tab the app put on the desk for a
+/// while (a sign-in's), which is not anybody's to keep: taken out when its
+/// work is done, and at the next start if the app was gone before that
+pub fn drop_marked_tabs_at(path: &Path, mark: &str, value: Option<&str>, folder: Option<(&str, &str)>) -> Result<usize> {
+    fn walk(v: &mut serde_json::Value, mark: &str, value: Option<&str>, folder: Option<(&str, &str)>, inside: bool) -> usize {
+        let mut gone = 0;
+        match v {
+            serde_json::Value::Object(map) => {
+                // Whether this is the folder named, or a tab inside it
+                let here = inside
+                    || folder.is_some_and(|(cwd, host)| {
+                        map.get("cwd").and_then(|c| c.as_str()) == Some(cwd) && map.get("host").and_then(|h| h.as_str()) == Some(host)
+                    });
+                // A folder's tabs, and a tab's own children
+                for list in ["tabs", "children"] {
+                    if let Some(serde_json::Value::Array(tabs)) = map.get_mut(list) {
+                        let before = tabs.len();
+                        tabs.retain(|t| match (t.get(mark), value) {
+                            (None, _) => true,
+                            (Some(_), _) if here => false,
+                            (Some(_), None) => false,
+                            (Some(v), Some(want)) => v.as_str() != Some(want),
+                        });
+                        gone += before - tabs.len();
+                    }
+                }
+                for child in map.values_mut() {
+                    gone += walk(child, mark, value, folder, here);
+                }
+            }
+            serde_json::Value::Array(list) => {
+                for child in list {
+                    gone += walk(child, mark, value, folder, inside);
+                }
+            }
+            _ => {}
+        }
+        gone
+    }
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(0) };
+    let mut doc: serde_json::Value = serde_json::from_str(without_bom(&text))?;
+    let gone = walk(&mut doc, mark, value, folder, false);
+    if gone > 0 {
+        crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
+    }
+    Ok(gone)
+}
+
 pub fn add_tab_with_uid_at(
     path: &Path,
     desk: &str,
@@ -8009,6 +8061,40 @@ pub fn load() -> Option<Config> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod marked_tab_tests {
+    /// A tab the app put on the desk for a while comes out by its mark,
+    /// wherever it was written, and nothing else does
+    #[test]
+    fn a_marked_tab_comes_out_and_nothing_else_does() {
+        let path = std::env::temp_dir().join(format!("sk-marked-{}.json", std::process::id()));
+        let doc = serde_json::json!({"desks": [{"name": "A", "folders": [
+            {"cwd": "/w", "tabs": [
+                {"name": "codex", "command": "codex"},
+                {"name": "codex sign-in", "command": "env codex login", "sign_in_for": "3"},
+                {"name": "other sign-in", "command": "env x", "sign_in_for": "4", "children": []},
+            ]},
+            {"cwd": "/v", "tabs": [{"name": "kept", "command": "sh", "children": [{"name": "child", "sign_in_for": "3"}]}]},
+        ]}]});
+        std::fs::write(&path, doc.to_string()).unwrap();
+        assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", Some("3"), None).unwrap(), 2);
+        let left = std::fs::read_to_string(&path).unwrap();
+        assert!(left.contains("\"codex\"") && left.contains("other sign-in") && left.contains("\"kept\""));
+        assert!(!left.contains("\"child\"") && !left.contains("codex sign-in"));
+        assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", None, None).unwrap(), 1, "every one left at a start");
+        assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", None, None).unwrap(), 0);
+        // One of an earlier step, in the folder of this one, goes with it
+        let doc = serde_json::json!({"desks": [{"name": "A", "folders": [
+            {"cwd": "/w", "host": "vm", "tabs": [{"name": "codex sign-in", "sign_in_for": "1"}, {"name": "codex"}]},
+            {"cwd": "/w", "host": "other", "tabs": [{"name": "codex sign-in", "sign_in_for": "1"}]},
+        ]}]});
+        std::fs::write(&path, doc.to_string()).unwrap();
+        assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", Some("7"), Some(("/w", "vm"))).unwrap(), 1, "only the folder named");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(super::drop_marked_tabs_at(&path, "sign_in_for", None, None).unwrap(), 0, "no settings, nothing to do");
+    }
 }
 
 #[cfg(test)]
