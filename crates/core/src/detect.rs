@@ -32,13 +32,11 @@ pub fn question_region(screen: &str, at: usize) -> String {
     // up to a blank line or the next choice
     let mut above: Vec<String> = Vec::new();
     let mut rows = screen[..start].lines().rev().map(bare).skip_while(|l| l.is_empty() || choice_line(l));
-    for l in rows.by_ref().take(QUESTION_ABOVE) {
+    for l in rows.by_ref().filter(|l| !rule(l)).take(QUESTION_ABOVE) {
         if l.is_empty() || choice_line(&l) {
             break;
         }
-        if !rule(&l) {
-            above.push(l);
-        }
+        above.push(l);
     }
     above.reverse();
     let mut below = String::new();
@@ -57,7 +55,7 @@ pub fn question_region(screen: &str, at: usize) -> String {
 /// How many rows above and below a question are looked at for what it is
 /// about ([`question_region`]): a block wrapped at a phone's width, with
 /// room to spare, so a narrower terminal does not cut it in another place
-const QUESTION_ABOVE: usize = 24;
+const QUESTION_ABOVE: usize = 60;
 
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;

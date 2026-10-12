@@ -255,6 +255,13 @@ pub struct Ask {
     /// Another ask went into the same tab after this one: what is said after
     /// this one's turn is that ask's, not the person's other words
     pub superseded: bool,
+    /// Who the words went to (`Tab::uid`), however the tab was named
+    pub sent_to: Option<String>,
+    /// The person's last key into that tab as the words went in
+    /// (`Tab::last_manual_ms`): words after a stop count as the person's
+    /// only if the person has typed since -- an orchestration's brief or a
+    /// script's words typed in are not
+    pub manual_before: Option<u64>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -544,6 +551,8 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         stopped_since: None,
         redirected: false,
         superseded: false,
+        sent_to: None,
+        manual_before: None,
     }
 }
 
@@ -1025,12 +1034,20 @@ impl Ask {
             Source::Far(_) => self.far.moved_on,
             Source::Screen => None,
         };
-        // Another ask put in after this one is no word of the person's: the
-        // stopped turn came to nothing, once the tab is not at work on it
-        if self.superseded && !self.redirected {
-            return quiet(t.state).then(|| Step::Answer(stopped(self, same_folder)));
+        // Words after it that the person did not type -- another ask, an
+        // orchestration's brief, a script -- are not theirs: the stopped turn
+        // came to nothing (see `Ask::foreign`)
+        let typed = t.last_manual_ms != self.manual_before;
+        if !self.redirected && (moved == Some(true) || self.overtaken) {
+            if typed && !self.superseded {
+                self.redirected = true;
+            } else {
+                self.superseded = true;
+            }
         }
-        self.redirected |= moved == Some(true) || self.overtaken;
+        if self.superseded && !self.redirected {
+            return Some(Step::Answer(stopped(self, same_folder)));
+        }
         if self.redirected {
             if !quiet(t.state) || t.reply_settling() {
                 return None;
@@ -1156,7 +1173,12 @@ pub fn step(
         }
         return Step::Nothing;
     }
-    // Sent: watch it work
+    // Sent: watch it work. A stopped ask that other words not the person's
+    // came after is over, whatever those words are doing to the tab now: its
+    // question, its failure, its answer are theirs
+    if a.superseded && a.stopped_since.is_some() && !a.redirected {
+        return Step::Answer(stopped(a, same_folder));
+    }
     if t.state != TabState::Busy {
         a.busy_since = None;
     }
@@ -2092,9 +2114,11 @@ mod tests {
         let Some(Step::Answer(v)) = a.on_stopped(&t, None) else { panic!("left quiet, it is never said") };
         assert_eq!((v["state"].as_str(), v["by_person"].as_bool()), (Some("STOPPED"), Some(true)));
         // Seen to settle and take up work again (the record has nothing to
-        // say for a tab that keeps none): the other words are followed
+        // say for a tab that keeps none), the person having typed into it:
+        // the other words are followed
         let mut b = sent_ask();
         b.overtaken = true;
+        t.last_manual_ms = Some(42_000);
         t.state = TabState::Busy;
         assert!(b.on_stopped(&t, None).is_none());
         assert!(b.redirected, "the person's other words are not followed");
@@ -2109,10 +2133,22 @@ mod tests {
         c.superseded = true;
         c.overtaken = true;
         t.state = TabState::Busy;
-        assert!(c.on_stopped(&t, None).is_none(), "answered while the other ask is worked on");
-        t.state = TabState::Done;
         let Some(Step::Answer(v)) = c.on_stopped(&t, None) else { panic!("superseded, it is never answered") };
         assert_eq!(v["state"], "STOPPED", "another ask's answer was handed over as this one's");
+        // ...and words nobody typed -- an orchestration's brief, a script --
+        // are not the person's either
+        let mut d = sent_ask();
+        d.overtaken = true;
+        d.manual_before = Some(42_000);
+        let Some(Step::Answer(v)) = d.on_stopped(&t, None) else { panic!("words nobody typed taken for the person's") };
+        assert_eq!(v["state"], "STOPPED");
+        // Over before any arm can take what those words do for its own
+        let mut e = sent_ask();
+        e.superseded = true;
+        e.stopped_since = Some(Instant::now());
+        t.state = TabState::Question;
+        let Step::Answer(v) = step(&mut e, Some(&t), false, None, true) else { panic!("the next ask's question taken for this one's") };
+        assert_eq!(v["state"], "STOPPED");
     }
 
     /// The words the person gave after stopping an ask, and the answer to
