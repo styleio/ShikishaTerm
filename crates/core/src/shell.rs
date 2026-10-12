@@ -6636,6 +6636,17 @@ function drawHolding(t) {
         el("button", {class:"go", onclick:() => send({kind:"restart"})}, T["tui.hold.start"] || ""))));
     return;
   }
+  // A tab running as an account of its AI the settings no longer hold
+  // (`tab::Held::NoAccount`): what settles it is in the settings -- the
+  // account made again, or the tab set to another
+  if (h.kind === "account") {
+    box.append(el("div", {class:"box"},
+      el("h3", {}, el("span", {class:"dot"}), h.head || ""),
+      el("div", {class:"why"}, h.say || ""),
+      el("div", {class:"acts"},
+        el("button", {class:"go", onclick:() => openSettings("aiaccounts")}, T["tui.hold.accounts"] || ""))));
+    return;
+  }
   const move = path => { if (path) send({kind:"tabfolder", tab:t.index, folder:path}); };
   const acts = el("div", {class:"acts"});
   if (places.length) {
@@ -13207,10 +13218,12 @@ function limitPill() {
 // What the subscription of the AI in view has left: Claude's over a Claude
 // tab, Codex's over a Codex tab. The number is the account's, not the tab's,
 // but it is the tab that makes it the question -- Claude's over a Codex tab
-// would be an answer to nothing
+// would be an answer to nothing. A tab running as another account of its AI
+// draws on that account's, kept under a key of its own (`t.usage`)
 function usagePill() {
   const t = (S && S.tabs || []).find(t => t.index === S.active);
-  const u = t && t.ai && S.usage && Object.prototype.hasOwnProperty.call(S.usage, t.ai) ? S.usage[t.ai] : null;
+  const key = t && (t.usage || t.ai);
+  const u = key && S.usage && Object.prototype.hasOwnProperty.call(S.usage, key) ? S.usage[key] : null;
   if (!u) return null;
   // One bar per window, the number as its length and the words beside it.
   // The bar's colour says how close to the end it is; nothing here moves
@@ -28955,7 +28968,7 @@ mod tests {
     #[test]
     fn the_usage_reading_follows_the_ai_in_view() {
         assert!(
-            PAGE.contains("const u = t && t.ai && S.usage && Object.prototype.hasOwnProperty.call(S.usage, t.ai) ? S.usage[t.ai] : null;\n  if (!u) return null;"),
+            PAGE.contains("const key = t && (t.usage || t.ai);\n  const u = key && S.usage && Object.prototype.hasOwnProperty.call(S.usage, key) ? S.usage[key] : null;\n  if (!u) return null;"),
             "it is not the reading of the AI in view"
         );
         assert!(PAGE.contains(r#"el("span", {class:"who"}, u.who),"#), "the name is not the AI's own");

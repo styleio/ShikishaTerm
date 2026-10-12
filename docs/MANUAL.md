@@ -446,6 +446,19 @@ as well. What each box decides is in the [settings reference](SETTINGS.md).
 
 Listing, changing and deleting happen on that same screen. Press a row to open it.
 
+### More than one Claude Code or Codex account
+
+The CLI is installed once; an account lives in the folder it keeps its settings in. Under
+**Settings → AI accounts**, add an account, then press **Sign in**: a tab opens as that
+account, and the CLI asks you to sign in in its own screen. This app never sees the password
+or the token. In an AI tab's settings, **Account** chooses which one the tab runs as.
+
+Conversations, skills, commands and plugins are shared with your usual sign-in, so a
+conversation had as either account is found, resumed and searched as always. Each account's
+settings start as a copy of your usual ones. Deleting an account removes its folder and its
+sign-in; the conversations stay. Accounts are for tabs on this PC: a tab on a server or a
+MicroVM runs as that machine's CLI is signed in.
+
 ## 7. Automation
 
 ### Scheduled prompts
@@ -491,6 +504,7 @@ settings screen, so it cannot fall behind.
 - **Update** — Newer versions, and going back
 - **Basic** — Tab width, chaining, language
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
+- **AI accounts** — More than one Claude Code or Codex account
 - **GitHub / Git** — Personal access tokens, SSH keys and sign-ins
 - **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR

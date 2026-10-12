@@ -60,6 +60,12 @@ Assistant AI, deciding AI, connections, agreements
 
 - **Model**
 
+### AI accounts
+
+More than one Claude Code or Codex account
+
+- **Name** — Work
+
 ### GitHub / Git
 
 Personal access tokens, SSH keys and sign-ins

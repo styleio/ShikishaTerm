@@ -213,7 +213,9 @@ finished.
 pub fn folder_of(ai: &str) -> Option<PathBuf> {
     let p = crate::profile::load_by_name(ai);
     let dir = p.skills.as_deref()?;
-    Some(expand(dir))
+    // In the CLI's folder as it finds it: the person's own variable when they
+    // set one. Its accounts' folders link to this one (`crate::accounts`)
+    Some(expand(&crate::accounts::in_usual(dir)))
 }
 
 use crate::with_home as expand;

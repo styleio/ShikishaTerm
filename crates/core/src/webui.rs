@@ -3118,6 +3118,61 @@ fn handle(
             let gone = crate::push::forget(endpoint);
             req.respond(json_resp(serde_json::json!({ "ok": gone })))?;
         }
+        // The accounts of an AI's CLI (`crate::accounts`), as the settings on
+        // disk hold them, each with who it is signed in as -- read off what the
+        // CLI wrote in its folder, never a token
+        ("GET", "/api/ai-accounts") => {
+            let list: Vec<serde_json::Value> = crate::config::load()
+                .map(|c| c.ai_accounts)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|a| {
+                    let dir = crate::accounts::dir_of(&a.id);
+                    let who = crate::accounts::kind(&a.cli).and_then(|k| crate::accounts::signed_in_as(k, &dir));
+                    serde_json::json!({"id": a.id, "cli": a.cli, "made": dir.is_dir(), "who": who, "dir": dir.display().to_string()})
+                })
+                .collect();
+            req.respond(json_resp(serde_json::json!({"accounts": list})))?;
+        }
+        // Signing an account in: a tab of its AI opened as it, where the CLI
+        // asks for the sign-in itself. The board opens it, in the folder in
+        // front, so this is the same from a phone
+        ("POST", "/api/ai-accounts/login") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let id = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let saved = crate::config::load().is_some_and(|c| c.ai_accounts.iter().any(|a| a.id == id));
+            let body = match saved {
+                false => serde_json::json!({"error": crate::i18n::t("msg.account.unsaved")}),
+                true => {
+                    crate::accounts::want_login(&id);
+                    serde_json::json!({"ok": true})
+                }
+            };
+            req.respond(json_resp(body))?;
+        }
+        // An account's folder taken away, sign-in and all. The page takes the
+        // account out of its list after, for the person to save
+        ("POST", "/api/ai-accounts/forget") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                return Ok(req.respond(json_resp(serde_json::json!({"error": "too big"})))?);
+            };
+            let id = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("id").and_then(|s| s.as_str()).map(str::to_string))
+                .unwrap_or_default();
+            let body = match crate::accounts::forget(&id) {
+                Ok(()) => serde_json::json!({"ok": true}),
+                Err(e) => serde_json::json!({"error": format!("{e:#}")}),
+            };
+            req.respond(json_resp(body))?;
+        }
         // Scheduled prompts: what came of each run, and when each comes next,
         // as the settings hold them on disk -- a form not yet saved has
         // neither. Read off the files the board's loop writes, so a phone's
@@ -9067,6 +9122,121 @@ function quickSecretNames(body) {
 // because a pair of braces in this page's source is where its words go
 const quickSecretRef = name => "{" + "{secrets." + name + "}" + "}";
 
+// ── AI accounts ────────────────────────────────────────────
+// More than one account of an AI's CLI (accounts.rs): each a settings folder
+// of its own, chosen on an AI tab. The sign-in is the CLI's own, in a tab
+// opened as the account; this page never sees a password or a token
+const ACCOUNT_CLIS = [{cmd:"claude", label:"Claude Code"}, {cmd:"codex", label:"Codex CLI"}];
+let accountsSeen = null;   // what /api/ai-accounts last said, by id
+let accountDropping = null; // the account whose delete is being confirmed
+
+function aiAccountsList() {
+  if (!Array.isArray(current.ai_accounts)) current.ai_accounts = [];
+  return current.ai_accounts;
+}
+
+function aiAccountsCard() {
+  const list = el("div", {class:"rtlist"});
+  const draw = () => drawAccounts(list, draw);
+  const cli = el("select", {});
+  for (const c of ACCOUNT_CLIS) cli.append(el("option", {value:c.cmd}, c.label));
+  const name = el("input", {type:"text", maxlength:"40", placeholder:T["settings.account.name.ph"]});
+  const add = el("button", {onclick:() => {
+    aiAccountsList().push({id: "a" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      cli: cli.value, name: name.value.trim()});
+    name.value = "";
+    refreshSave(); draw();
+  }}, T["settings.account.add"]);
+  const box = card(T["settings.account.title"],
+    el("div", {class:"hint"}, T["settings.account.intro"]),
+    list,
+    el("div", {class:"row2", style:"margin-top:var(--s3)"}, cli, name, add),
+    el("div", {class:"hint", style:"margin-top:var(--s2)"}, T["settings.account.shared"]));
+  draw();
+  accountsFetch(draw);
+  // Signed in from a tab while this page is open: said here when it is
+  const timer = setInterval(() => {
+    if (!document.body.contains(box)) { clearInterval(timer); return; }
+    accountsFetch(draw);
+  }, 10000);
+  return box;
+}
+
+async function accountsFetch(draw) {
+  const j = await settingsApi("/api/ai-accounts").catch(() => null);
+  if (!j) return;
+  const seen = Object.fromEntries((j.accounts || []).map(a => [a.id, a]));
+  const same = JSON.stringify(seen) === JSON.stringify(accountsSeen);
+  accountsSeen = seen;
+  if (!same) draw();
+}
+
+function drawAccounts(list, draw) {
+  list.textContent = "";
+  const all = aiAccountsList();
+  if (!all.length) {
+    list.append(el("div", {class:"empty"}, T["settings.account.none"]));
+    return;
+  }
+  for (const a of all) {
+    const seen = accountsSeen && accountsSeen[a.id];
+    const cli = ACCOUNT_CLIS.find(c => c.cmd === a.cli);
+    const state = !seen ? T["settings.account.unsaved"]
+      : seen.who ? fill(T["settings.account.who"], {who: seen.who})
+      : T["settings.account.not_signed_in"];
+    const nameIn = el("input", {type:"text", maxlength:"40", value:a.name || "", placeholder:T["settings.account.name.ph"]});
+    nameIn.addEventListener("input", () => { a.name = nameIn.value; refreshSave(); });
+    const login = el("button", {disabled: seen ? null : "", onclick: async () => {
+      login.disabled = true;
+      const j = await settingsApi("/api/ai-accounts/login", {id: a.id}).catch(e => ({error: e.message}));
+      login.disabled = false;
+      if (j && j.ok) result(T["settings.account.login.sent"]);
+      else result((j && j.error) || T["settings.account.login.failed"], true);
+    }}, T[seen && seen.who ? "settings.account.login.again" : "settings.account.login"]);
+    const sure = accountDropping === a.id;
+    const drop = el("button", {class:"danger", onclick: async () => {
+      if (!sure) { accountDropping = a.id; draw(); return; }
+      accountDropping = null;
+      if (seen && seen.made) {
+        const j = await settingsApi("/api/ai-accounts/forget", {id: a.id}).catch(e => ({error: e.message}));
+        if (!j || !j.ok) { result((j && j.error) || T["settings.account.delete.failed"], true); draw(); return; }
+      }
+      const all = aiAccountsList();
+      all.splice(all.indexOf(a), 1);
+      refreshSave(); draw();
+    }}, T[sure ? "settings.account.delete.sure" : "settings.account.delete"]);
+    const row = el("div", {class:"rt", "data-account":a.id},
+      el("div", {class:"rthead"},
+        el("span", {class:"rtname"}, (a.name || "").trim() || (cli ? cli.label : a.cli)),
+        el("span", {class:"rtstate" + (seen && seen.who ? " answered" : "")}, state),
+        el("div", {class:"rtbtns"}, login, drop)),
+      el("div", {class:"rtsum"}, (cli ? cli.label : a.cli) + (seen ? " · " + seen.dir : "")),
+      el("div", {class:"field"}, el("label", {}, T["settings.account.name"]), el("div", {class:"fieldctl"}, nameIn)));
+    if (sure) row.append(el("div", {class:"site-warn rtwarn"}, T["settings.account.delete.warn"]));
+    list.append(row);
+  }
+}
+
+// The accounts an AI tab of this CLI can run as, for its form: the CLI as
+// it is signed in, then each account of it
+function accountSelect(t, cmd, changed) {
+  const s = el("select", {});
+  s.append(el("option", {value:""}, T["settings.account.usual"]));
+  for (const a of aiAccountsList().filter(a => a.cli === cmd)) {
+    s.append(el("option", {value:a.id}, (a.name || "").trim() || a.id));
+  }
+  if (t.ai_account && !aiAccountsList().some(a => a.id === t.ai_account)) {
+    s.append(el("option", {value:t.ai_account}, T["settings.account.gone"]));
+  }
+  s.value = t.ai_account || "";
+  s.addEventListener("change", () => {
+    if (s.value) t.ai_account = s.value; else delete t.ai_account;
+    refreshSave();
+    if (changed) changed();
+  });
+  return s;
+}
+
 // ── Scheduled prompts ──────────────────────────────────────
 // A prompt handed to an AI at a time (routine.rs). This form is the front
 // door; a script named after a time is the door for what a form cannot say,
@@ -10085,6 +10255,8 @@ function globalSections() {
     // The AIs this app asks, the connections they are reached on, and what
     // each was agreed to receive: one place for the whole app
     {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
+    // More than one account of Claude Code or Codex, each chosen on a tab
+    {id:"aiaccounts", label:T["settings.sec.aiaccounts"], sub:T["settings.sec.aiaccounts.sub"], build:aiAccountsCard},
     // The git accounts, and beside them the sign-ins this PC's git and GitHub
     // CLI hold: everything a project can sign in as, in one place for the app
     {id:"gitaccounts", label:T["settings.sec.gitaccounts"], sub:T["settings.sec.gitaccounts.sub"], build:() => [gitAccountsCard(), pcSignInsCard(), ghSignInsCard()]},
@@ -16762,7 +16934,15 @@ function aiPanel(t, cmdInput, rebuild, real) {
       // as an explicit, explained checkbox — required for work handed over by
       // another tab / automation, but it lets the AI edit files and run commands unattended.
       // Toggling only adds/removes that one token, so other args are preserved.
-      const flag = cliFlagOf(headOf(t.command));
+      // Which account of its AI it runs as, for a CLI that has accounts and a
+      // tab on this PC: an account is a folder of this PC's
+      const head = headOf(t.command);
+      if (ACCOUNT_CLIS.some(c => c.cmd === head) && !far) {
+        detail.append(el("div", {class:"row"}, el("label", {}, T["settings.account.tab"]), accountSelect(t, head)),
+          el("div", {class:"row"}, el("label", {}, ""), el("span", {class:"hint"},
+            aiAccountsList().some(a => a.cli === head) ? T["settings.account.tab.hint"] : T["settings.account.tab.none"])));
+      }
+      const flag = cliFlagOf(head);
       if (!flag) return;
       const cb = el("input", {type:"checkbox"});
       cb.checked = (t.command || "").split(/\s+/).includes(flag);
@@ -16810,6 +16990,8 @@ function aiPanel(t, cmdInput, rebuild, real) {
     }
     if (v.startsWith("cli:")) { const h = v.slice(4); const f = cliFlagOf(h); setCommand(t, cmdInput, f ? h + " " + f : h); }
     else if (v.startsWith("prov:")) setCommand(t, cmdInput, "model " + v.slice(5) + "/");
+    // An account of the AI it ran before is not one of this AI's
+    if (t.ai_account && !aiAccountsList().some(a => a.id === t.ai_account && a.cli === headOf(t.command))) delete t.ai_account;
     drawDetail();
   });
 
@@ -17870,7 +18052,7 @@ function readFolders(desk, w) {
 // there itself: the arrangement of a split, a conversation to resume, the
 // answers the app keeps per tab -- is the line's own and goes back as it came
 const TAB_KEYS_SHOWN = new Set(["name", "id", "uid", "command", "profile", "automation", "lua",
-  "git_account", "browser_profile", "private", "user_agent", ...WORDS_KEYS, "locked", "auto_restart",
+  "git_account", "ai_account", "browser_profile", "private", "user_agent", ...WORDS_KEYS, "locked", "auto_restart",
   "encoding", "scrollback", "log", "notify_on_done", "notify_reply", "nav", "server", "ask",
   "restore_conversation", "children"]);
 
@@ -17879,6 +18061,7 @@ function flatten(tabs, depth, group, out) {
     out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: cmdToText(t.command),
                profile: t.profile || "", automation: t.automation || t.lua || "",
                git_account: t.git_account || "",
+               ai_account: t.ai_account || "",
                browser_profile: t.browser_profile || "", private: !!t.private,
                user_agent: t.user_agent || "",
                choose_model: t.choose_model || "", words_model: t.words_model || "",
@@ -17908,6 +18091,7 @@ function nest(flat) {
     if (f.profile) node.profile = f.profile;
     if (f.automation) node.automation = f.automation;
     if ((f.git_account || "").trim()) node.git_account = f.git_account.trim();
+    if ((f.ai_account || "").trim()) node.ai_account = f.ai_account.trim();
     if (f.browser_profile) node.browser_profile = f.browser_profile;
     if (f.private) node.private = true;
     if (f.user_agent) node.user_agent = f.user_agent;
@@ -18151,6 +18335,8 @@ function payload() {
   const agreed = Object.fromEntries(Object.entries(out.agreed || {})
     .filter(([, kinds]) => Array.isArray(kinds) && kinds.length));
   if (Object.keys(agreed).length) out.agreed = agreed; else delete out.agreed;
+  // Accounts of an AI: none is no key at all
+  if (Array.isArray(out.ai_accounts) && !out.ai_accounts.length) delete out.ai_accounts;
   // Scheduled prompts: none is no key at all
   if (Array.isArray(out.routines) && !out.routines.length) delete out.routines;
   // Quick actions: drop rows left without a label, and omit the key entirely if none remain.

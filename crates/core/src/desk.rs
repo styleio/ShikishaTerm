@@ -812,6 +812,7 @@ pub fn resolve_launch(
     if let Some(w) = desk {
         opts.git = w.git_use_here(cfg.git_account.as_deref(), opts.cwd.as_deref());
     }
+    opts.ai_account = cfg.ai_account.clone().filter(|id| !id.trim().is_empty());
     // Everything the answer needs is in now -- the folder from the group, the
     // machine and the connection from the command -- so the one question is
     // asked once, here, for every launch site at once
@@ -891,6 +892,7 @@ pub fn tab_options(cfg: &config::TabConfig, folder: Option<&config::Folder>) -> 
         // Filled in by `resolve_launch`, which is where the desk holding the
         // accounts is known
         git: crate::config::GitUse::Unset,
+        ai_account: None,
         // Filled in where the launch is planned: whether this tab is starting
         // clean although something was written down for it is not a thing the
         // folder knows

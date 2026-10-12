@@ -1159,6 +1159,11 @@ fn read_some(path: &Path, cap: usize) -> Option<String> {
 /// are trying to find, so it becomes a wildcard like `*`. Both live only in
 /// file and folder names, never spanning a separator
 fn list(pattern: &str) -> Vec<PathBuf> {
+    // The CLI's own folder and every account's of it (`crate::accounts`)
+    crate::accounts::patterns(pattern).iter().flat_map(|p| list_one(p)).collect()
+}
+
+fn list_one(pattern: &str) -> Vec<PathBuf> {
     // A pattern is written by whoever wrote the profile, with whichever
     // separator they had in mind. Windows takes either, so both are folded
     // to one there; everywhere else a backslash is an ordinary character in

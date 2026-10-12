@@ -31,6 +31,20 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+thread_local! {
+    /// The account folder this thread reads for (`crate::accounts`), on the
+    /// thread of a meter started for one ([`Meter::start_in`]). None is the
+    /// CLI as it is signed in anyway. Kept per thread because each meter is a
+    /// thread of its own, so every reader below finds its folder in one place
+    /// without each of them being handed it
+    static AT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The account folder this thread reads for, if it reads for one
+fn account_dir() -> Option<std::path::PathBuf> {
+    AT.with(|a| a.borrow().clone())
+}
+
 mod claude;
 mod codex;
 mod cursor;
@@ -304,34 +318,43 @@ struct Shared {
 impl Meter {
     /// Starts the thread. It reads nothing until `want(true)`.
     pub fn start(source: Source) -> Self {
+        Self::start_in(source, None)
+    }
+
+    /// The same, for one account of the AI: its own folder (`at`) is where
+    /// its sign-in and its records are read from
+    pub fn start_in(source: Source, at: Option<std::path::PathBuf>) -> Self {
         let shared = Arc::new(Mutex::new(Shared { want: false, last: None, asked: None }));
         let mine = Arc::clone(&shared);
         std::thread::Builder::new()
             .name(format!("{}-limits", source.key()))
-            .spawn(move || loop {
-                std::thread::sleep(Duration::from_secs(1));
-                let due = {
-                    let Ok(s) = mine.lock() else { break };
-                    s.want && s.asked.is_none_or(|t| t.elapsed() >= source.every())
-                };
-                if !due {
-                    continue;
-                }
-                // A remembered reading stands on the status line only while
-                // it is still roughly true (the settings screen shows it
-                // longer, with its time on it)
-                let got = source.read().filter(|l| match (source.stale_after(), l.as_of) {
-                    (Some(max), Some(at)) => now_ms() / 1000 - at <= max,
-                    _ => true,
-                });
-                let Ok(mut s) = mine.lock() else { break };
-                s.asked = Some(Instant::now());
-                match got {
-                    Some(l) => s.last = Some((l, Instant::now())),
-                    // Kept a while, then let go: see KEEP
-                    None => {
-                        if s.last.as_ref().is_some_and(|(_, at)| at.elapsed() > KEEP) {
-                            s.last = None;
+            .spawn(move || {
+                AT.with(|a| *a.borrow_mut() = at);
+                loop {
+                    std::thread::sleep(Duration::from_secs(1));
+                    let due = {
+                        let Ok(s) = mine.lock() else { break };
+                        s.want && s.asked.is_none_or(|t| t.elapsed() >= source.every())
+                    };
+                    if !due {
+                        continue;
+                    }
+                    // A remembered reading stands on the status line only while
+                    // it is still roughly true (the settings screen shows it
+                    // longer, with its time on it)
+                    let got = source.read().filter(|l| match (source.stale_after(), l.as_of) {
+                        (Some(max), Some(at)) => now_ms() / 1000 - at <= max,
+                        _ => true,
+                    });
+                    let Ok(mut s) = mine.lock() else { break };
+                    s.asked = Some(Instant::now());
+                    match got {
+                        Some(l) => s.last = Some((l, Instant::now())),
+                        // Kept a while, then let go: see KEEP
+                        None => {
+                            if s.last.as_ref().is_some_and(|(_, at)| at.elapsed() > KEEP) {
+                                s.last = None;
+                            }
                         }
                     }
                 }
@@ -532,7 +555,10 @@ impl Book {
     }
 }
 
-static BOOKS: Mutex<Vec<(Source, Book)>> = Mutex::new(Vec::new());
+/// One book per service, and per account of it (`account_dir`): an account
+/// is another sign-in, with its own allowance and its own refusals
+#[allow(clippy::type_complexity)]
+static BOOKS: Mutex<Vec<((Source, Option<std::path::PathBuf>), Book)>> = Mutex::new(Vec::new());
 
 /// A service's reading through its [`Book`]: `fetch` is called only when
 /// the book says to ask, and a panic in it is one more "no answer". `account`
@@ -540,12 +566,13 @@ static BOOKS: Mutex<Vec<(Source, Book)>> = Mutex::new(Vec::new());
 /// another account is never handed out as this one's
 fn asked(source: Source, now: i64, fetch: fn() -> Option<Limits>, account: fn() -> Option<String>) -> Option<Limits> {
     let who = std::panic::catch_unwind(account).ok().flatten().map(|id| account_mark(&id));
+    let key = (source, account_dir());
     let with = |f: &mut dyn FnMut(&mut Book)| {
         let Ok(mut books) = BOOKS.lock() else { return };
-        if !books.iter().any(|(s, _)| *s == source) {
-            books.push((source, Book::EMPTY));
+        if !books.iter().any(|(s, _)| *s == key) {
+            books.push((key.clone(), Book::EMPTY));
         }
-        if let Some((_, b)) = books.iter_mut().find(|(s, _)| *s == source) {
+        if let Some((_, b)) = books.iter_mut().find(|(s, _)| *s == key) {
             f(b);
         }
     };

@@ -8,6 +8,7 @@
 
 pub mod ace;
 pub mod addproject;
+pub mod accounts;
 pub mod agenthook;
 pub mod api;
 pub mod asking;

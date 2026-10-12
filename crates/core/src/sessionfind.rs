@@ -28,10 +28,12 @@ use crate::profile::RecordSpec;
 /// `since` is when the tab was launched; records older than that belong to
 /// earlier runs, whoever made them.
 pub fn find(spec: &RecordSpec, cwd: Option<&Path>, since: SystemTime) -> Option<String> {
-    let dir = expand(&spec.dir);
     let cwd = cwd?;
     let mut best: Option<(SystemTime, String)> = None;
-    for file in walk(&dir, 0, since) {
+    // The CLI's own folder and every account's of it (`crate::accounts`):
+    // a tab running as one writes its records there
+    let files = crate::accounts::patterns(&spec.dir).into_iter().flat_map(|dir| walk(&expand(&dir), 0, since));
+    for file in files {
         let Ok(meta) = std::fs::metadata(&file) else {
             continue;
         };
@@ -160,6 +162,13 @@ pub fn locate(pattern: &str, id: &str) -> Option<PathBuf> {
     if id.is_empty() {
         return None;
     }
+    // The CLI's own folder first, as it finds it, then every account's of it
+    // (`crate::accounts::patterns`): a conversation had as another account is
+    // that account's record, and still this one
+    crate::accounts::patterns(pattern).iter().find_map(|p| locate_one(p, id))
+}
+
+fn locate_one(pattern: &str, id: &str) -> Option<PathBuf> {
     // A profile's pattern is written with whichever separator its author had
     // in mind. Windows takes either, so both are folded to one there; anywhere
     // else a backslash is an ordinary character in a name and folding it would

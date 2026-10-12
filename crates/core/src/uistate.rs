@@ -87,6 +87,11 @@ pub struct TabState {
     /// colour so the "run several AIs side by side" story reads at a glance.
     #[serde(default)]
     pub ai: Option<String>,
+    /// Whose allowance the status line shows for it, when that is not its
+    /// AI's as a whole: one account's of it (`claude@<id>`, see
+    /// `Tab::usage_key`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<String>,
     /// Whether this tab came up on a conversation of nobody's while its folder
     /// has been worked in before. The caption offers the way back while it is
     /// true, which is until somebody speaks here: from then on this tab has a
@@ -2714,6 +2719,7 @@ impl TabState {
             busy: t.is_generating(),
             settings: false,
             ai: t.ai_kind(),
+            usage: t.usage_key().filter(|k| t.ai_kind().as_ref() != Some(k)),
             limit: t.limit_note().map(str::to_string),
             status: t.status_line(),
             progress: t.progress.as_ref().map(|(p, _)| *p),
@@ -2721,6 +2727,7 @@ impl TabState {
             // is the runtime's business, not the tab's
             sending: None,
             timed: None,
+
             place: (t.place != crate::repo::Place::default()).then(|| PlaceState {
                 branch: t.place.branch.clone(),
                 pr: t.place.pr.clone(),
@@ -2866,6 +2873,8 @@ impl TabState {
             // Nothing is typed into a page by this road
             sending: None,
             timed: None,
+
+            usage: None,
             // A browser is not in a folder and starts nothing, so it has
             // nowhere to be, and nothing of its own to cost
             place: None,
@@ -3410,6 +3419,8 @@ mod tests {
             progress: None,
             sending: None,
             timed: None,
+
+            usage: None,
             place: None,
             cost: None,
             readable: false,

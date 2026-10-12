@@ -85,6 +85,9 @@ pub struct TabOptions {
     /// the program follows, so a tab's settings can be read, written, exported
     /// and looked at without a credential being in them
     pub git: crate::config::GitUse,
+    /// Which account of its AI it runs as, by id (`crate::accounts`). None
+    /// is the CLI as it is signed in on this PC
+    pub ai_account: Option<String>,
     /// Whether this tab is starting clean although a conversation was written
     /// down for it. Decided where the launch is planned
     /// (`desk::carried_conversation`) and carried in here because it is a fact
@@ -153,6 +156,13 @@ impl TabOptions {
         if self.model.is_some() || self.remote.is_some() || self.cloud.is_some() {
             return None;
         }
+        // An account that is not in the settings any more: started anyway, it
+        // would run as somebody else without a word on screen
+        if let Some(id) = self.ai_account.as_deref()
+            && crate::accounts::find(id).is_none()
+        {
+            return Some(Held::NoAccount { id: id.to_string() });
+        }
         match self.cwd.as_deref() {
             Some(cwd) => Held::of(Some(cwd)),
             None => Some(Held::NoFolder),
@@ -191,6 +201,8 @@ pub enum Held {
     /// Starting every AI again by itself may be what stops it, so this one
     /// waits until the person starts it
     AfterCrash,
+    /// The tab runs as an account of its AI that the settings no longer hold
+    NoAccount { id: String },
 }
 
 impl Held {
@@ -225,6 +237,7 @@ impl Held {
             Held::NoFolder => "msg.folder.none_head",
             Held::Paced { .. } => "msg.start.paced_head",
             Held::AfterCrash => "msg.start.after_crash_head",
+            Held::NoAccount { .. } => "msg.account.held_head",
             _ => "msg.folder.held",
         })
     }
@@ -242,6 +255,7 @@ impl Held {
             Held::NoDrive { .. } | Held::Missing { .. } => "folder",
             Held::NoFolder => "nofolder",
             Held::Paced { .. } | Held::AfterCrash => "wait",
+            Held::NoAccount { .. } => "account",
         }
     }
 
@@ -259,6 +273,7 @@ impl Held {
             Held::NoFolder => crate::i18n::t("msg.folder.none"),
             Held::Paced { .. } => crate::i18n::t("msg.start.paced"),
             Held::AfterCrash => crate::i18n::t("msg.start.after_crash"),
+            Held::NoAccount { id } => crate::i18n::tp("msg.account.gone", &[("id", id)]),
         }
     }
 
@@ -267,7 +282,7 @@ impl Held {
     pub fn folder(&self) -> Option<&std::path::Path> {
         match self {
             Held::NoDrive { cwd, .. } | Held::Missing { cwd } => Some(cwd),
-            Held::NoFolder | Held::Paced { .. } | Held::AfterCrash => None,
+            Held::NoFolder | Held::Paced { .. } | Held::AfterCrash | Held::NoAccount { .. } => None,
         }
     }
 
@@ -279,6 +294,7 @@ impl Held {
             Held::NoFolder => "nofolder".into(),
             Held::Paced { .. } => "paced".into(),
             Held::AfterCrash => "aftercrash".into(),
+            Held::NoAccount { id } => format!("noaccount:{id}"),
         }
     }
 }
@@ -305,6 +321,7 @@ impl Default for TabOptions {
             model: None,
             held: None,
             git: crate::config::GitUse::Unset,
+            ai_account: None,
             lost: false,
         }
     }
@@ -4231,6 +4248,14 @@ impl Tab {
         for (k, v) in git_env(&opts.git, &title) {
             cmd.env(k, v);
         }
+        // ...and which account of its AI it runs as, for a tab that chose one
+        // (`crate::accounts`): its folder made up, and the CLI pointed at it.
+        // Only a program started on this PC -- an account is a folder of this
+        // PC's, and a CLI on a server is signed in as that server's
+        if runs_here && let Some(id) = opts.ai_account.as_deref() {
+            let (var, dir) = crate::accounts::prepare(id, &profile.name).map_err(anyhow::Error::msg)?;
+            cmd.env(var, dir);
+        }
         // Where it runs. A folder that is not there is NOT quietly swapped for
         // another one: the folder is the job, and a command that lands
         // somewhere else is doing a different job than the one it was given.
@@ -5167,6 +5192,22 @@ impl Tab {
     /// what makes "the newest conversation here" ambiguous
     pub fn program(&self) -> &str {
         self.argv.first().map(String::as_str).unwrap_or_default()
+    }
+
+    /// Which account of its AI this tab runs as (`crate::accounts`), when
+    /// it chose one
+    pub fn ai_account(&self) -> Option<&str> {
+        self.opts.ai_account.as_deref()
+    }
+
+    /// Whose allowance this tab draws on: its AI's, or one account's of it
+    /// (`claude@<id>`) -- the key the status line's reading is kept under
+    pub fn usage_key(&self) -> Option<String> {
+        let kind = self.ai_kind()?;
+        match self.ai_account() {
+            Some(id) if crate::accounts::kind(&kind).is_some() && self.guest.who().is_none() => Some(format!("{kind}@{id}")),
+            _ => Some(kind),
+        }
     }
 
     pub fn ai_kind(&self) -> Option<String> {

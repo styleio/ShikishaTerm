@@ -261,6 +261,21 @@ impl BringRule {
 /// out from the desk and this name, so the settings can be read and copied
 /// without carrying a credential; an SSH key is named by its path, the way a
 /// server tab names its key.
+/// One more account of an AI's CLI (`accounts.rs`). Nothing secret is
+/// here either: what it is signed in as is in its own folder, written there by
+/// the CLI itself
+#[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
+pub struct AiAccountSpec {
+    /// Its folder's name, made by the settings page: letters, digits and dashes
+    pub id: String,
+    /// Which CLI it is an account of, by the command that starts it
+    /// (`claude`, `codex`)
+    pub cli: String,
+    /// What it is called in the pickers
+    #[serde(default)]
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Deserialize, serde::Serialize, Default, PartialEq, Eq)]
 pub struct GitAccountSpec {
     /// What it is called in the pickers. One word, because it is also part of
@@ -1186,6 +1201,11 @@ pub struct Config {
     /// tokens are in the secret store (see [`git_token_key`])
     #[serde(default)]
     pub git_accounts: Vec<GitAccountSpec>,
+    /// Further accounts of an AI's CLI on this PC, each a settings folder of
+    /// its own (see `accounts.rs`). Which one an AI tab runs as is chosen on
+    /// the tab; a tab that chooses none runs as the CLI is signed in anyway
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_accounts: Vec<AiAccountSpec>,
     /// What the sign-ins this PC holds are called on screen, by the choice
     /// that names them: `@pc:<login>` for one of git's, `@gh:<host>/<login>`
     /// for one of GitHub CLI's. Neither program has a name for its accounts
@@ -3329,6 +3349,10 @@ pub struct TabConfig {
     /// tab and never worked out for it
     #[serde(default)]
     pub git_account: Option<String>,
+    /// For a Claude Code or Codex tab on this PC: which of the app's
+    /// `ai_accounts` it runs as, by id. Absent is the CLI as it is signed in
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_account: Option<String>,
     /// Child tabs for display purposes (forwarding relationships are decided by Lua; this is display hierarchy only)
     #[serde(default)]
     pub children: Vec<TabConfig>,

@@ -8,15 +8,50 @@ use super::{Allowance, Limits, Span, Window};
 /// Read, never written: renewing it is Claude Code's business, and a token
 /// past its time is simply "no pill" until Claude Code has renewed it
 fn token() -> Option<String> {
-    let path = super::home()?.join(".claude").join(".credentials.json");
+    let path = folder()?.join(".credentials.json");
     if let Ok(text) = std::fs::read_to_string(path) {
         return token_in(&text, super::now_ms());
     }
     #[cfg(target_os = "macos")]
-    if let Some(text) = keychain::credentials() {
+    if let Some(text) = keychain::credentials(&service()) {
         return token_in(&text, super::now_ms());
     }
     None
+}
+
+/// Claude Code's folder, for the account this thread reads for, or as
+/// Claude Code finds its own: `CLAUDE_CONFIG_DIR` when the person set it
+fn folder() -> Option<std::path::PathBuf> {
+    super::account_dir().or_else(|| crate::accounts::usual_dir(&crate::accounts::CLAUDE))
+}
+
+/// The folder Claude Code was pointed at with its variable, when it was:
+/// the account's, or the person's own setting
+fn pointed_at() -> Option<String> {
+    match super::account_dir() {
+        Some(d) => Some(d.display().to_string()),
+        None => std::env::var(crate::accounts::CLAUDE.env).ok().filter(|v| !v.is_empty()),
+    }
+}
+
+/// The keychain item a Mac's Claude Code keeps its sign-in under. Pointed
+/// at a folder, it keeps one item per folder, named after the first eight
+/// hex digits of the folder's SHA-256 as it was spelled
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn service() -> String {
+    service_for(pointed_at().as_deref())
+}
+
+fn service_for(dir: Option<&str>) -> String {
+    use sha2::Digest as _;
+    match dir {
+        None => "Claude Code-credentials".to_string(),
+        Some(d) => {
+            let hash = sha2::Sha256::digest(d.as_bytes());
+            let hex: String = hash.iter().take(4).map(|b| format!("{b:02x}")).collect();
+            format!("Claude Code-credentials-{hex}")
+        }
+    }
 }
 
 /// A Mac's Claude Code keeps its sign-in in the login keychain, not in a file:
@@ -33,22 +68,23 @@ mod keychain {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    /// What the keychain last said, and when
-    static LAST: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+    /// What the keychain last said of each item, and when
+    #[allow(clippy::type_complexity)]
+    static LAST: Mutex<Vec<(String, Instant, Option<String>)>> = Mutex::new(Vec::new());
 
     const KEPT: Duration = Duration::from_secs(60);
     const NOT_ASKED_AGAIN: Duration = Duration::from_secs(600);
 
-    pub(super) fn credentials() -> Option<String> {
+    pub(super) fn credentials(service: &str) -> Option<String> {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, said)) = last.as_ref() {
+        if let Some((_, at, said)) = last.iter().find(|(s, _, _)| s == service) {
             let wait = if said.is_some() { KEPT } else { NOT_ASKED_AGAIN };
             if at.elapsed() < wait {
                 return said.clone();
             }
         }
         let out = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+            .args(["find-generic-password", "-s", service, "-w"])
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .output()
@@ -57,7 +93,8 @@ mod keychain {
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        *last = Some((Instant::now(), out.clone()));
+        last.retain(|(s, _, _)| s != service);
+        last.push((service.to_string(), Instant::now(), out.clone()));
         out
     }
 }
@@ -155,14 +192,25 @@ fn capitalised(s: &str) -> String {
 
 /// Where the last good reading is kept between starts
 fn file() -> std::path::PathBuf {
-    crate::config::state_path("claude-usage.json")
+    // An account's, by its id: the name of the folder its home is in
+    let id = super::account_dir().and_then(|d| d.parent()?.file_name().map(|n| n.to_string_lossy().to_string()));
+    match id {
+        Some(id) => crate::config::state_path(&format!("claude-usage-{id}.json")),
+        None => crate::config::state_path("claude-usage.json"),
+    }
 }
 
 /// The account Claude Code is signed in as: its id, from Claude Code's own
 /// settings file (written at every sign-in). `None` when that file does not
 /// say, which leaves "which account" as unknown
 pub(super) fn account() -> Option<String> {
-    let v = super::read_json(&super::home()?.join(".claude.json"))?;
+    // In the folder when Claude Code was pointed at one, beside it in the
+    // home folder when not
+    let state = match pointed_at() {
+        Some(d) => std::path::PathBuf::from(d).join(".claude.json"),
+        None => super::home()?.join(".claude.json"),
+    };
+    let v = super::read_json(&state)?;
     let id = v.get("oauthAccount")?.get("accountUuid")?.as_str()?.trim();
     (!id.is_empty()).then(|| id.to_string())
 }
@@ -232,6 +280,21 @@ fn book_of(v: &serde_json::Value) -> Option<(Limits, i64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pointed at a folder, Claude Code keeps its sign-in under an item of
+    /// its own: the usual name, a dash, and eight hex digits of the folder's
+    /// SHA-256 as it was spelled. Not pointed at one, the usual name alone
+    #[test]
+    fn the_keychain_item_follows_the_folder_claude_was_pointed_at() {
+        assert_eq!(service_for(None), "Claude Code-credentials");
+        let one = service_for(Some("/Users/me/Library/Application Support/x/ai-accounts/work/home"));
+        let (head, hex) = one.rsplit_once('-').unwrap();
+        assert_eq!(head, "Claude Code-credentials");
+        assert!(hex.len() == 8 && hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{one}");
+        // sha256("abc") begins ba7816bf
+        assert_eq!(service_for(Some("abc")), "Claude Code-credentials-ba7816bf");
+        assert_ne!(one, service_for(Some("/Users/me/other")), "two folders share one item");
+    }
 
     /// The body as the service wrote it on 2026-09-08, with the fields this
     /// app does not read left in, since they are in the real thing.

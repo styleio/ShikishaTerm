@@ -95,7 +95,8 @@ pub(super) fn newest(live: Option<Limits>, record: Option<Limits>) -> Option<Lim
 /// Where Codex keeps its things: `CODEX_HOME` when it is set, as Codex
 /// itself reads it, and `.codex` in the home folder otherwise.
 fn codex_home() -> Option<std::path::PathBuf> {
-    super::home_or("CODEX_HOME", &[".codex"])
+    // The account this thread reads for keeps its own
+    super::account_dir().or_else(|| super::home_or("CODEX_HOME", &[".codex"]))
 }
 
 pub(super) fn used_here() -> bool {

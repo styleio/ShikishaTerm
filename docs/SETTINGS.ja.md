@@ -60,6 +60,12 @@
 
 - **モデル**
 
+### AI のアカウント
+
+Claude Code と Codex の複数のアカウント
+
+- **名前** — 仕事用
+
 ### GitHub / Git
 
 Personal access tokens・SSH keys・サインイン

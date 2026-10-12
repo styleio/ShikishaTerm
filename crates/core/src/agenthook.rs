@@ -87,6 +87,10 @@ pub struct Target {
     pub entries: Vec<Entry>,
     /// How the CLI is told a hook written for it is agreed to ([`approve`])
     pub trust: Option<HookTrust>,
+    /// The account of the CLI this file is in (`crate::accounts`), by id;
+    /// None for the CLI's own folder. Agreed to with the CLI: the same hook
+    /// for the same program, in another of its folders
+    pub account: Option<String>,
 }
 
 /// Where the target stands right now.
@@ -148,16 +152,31 @@ pub fn targets() -> Vec<Target> {
             if let Some(event) = hook.turn_start.as_ref() {
                 entries.push(Entry { event: event.clone(), arg: NOTICE_ARG.to_string() });
             }
-            Some(Target {
+            // In the CLI's folder as it finds it -- the person's own variable,
+            // when they set one -- and in each account's folder of it: a tab
+            // running as an account reads its hooks from there
+            let own = Target {
                 name: p.name.clone(),
-                file: expand(&hook.file),
+                file: expand(&crate::accounts::in_usual(&hook.file)),
                 format: hook.format,
                 timeout: hook.timeout_unit.from_seconds(TIMEOUT_S),
                 line_timeout: hook.timeout_unit.from_seconds(LINE_TIMEOUT_S),
                 entries,
                 trust: hook.trust,
-            })
+                account: None,
+            };
+            let mut all = vec![];
+            if let Some(k) = crate::accounts::kind_of_profile(&p.name) {
+                for a in crate::accounts::known().into_iter().filter(|a| a.cli == k.cli) {
+                    if let Some(file) = crate::accounts::in_account(&hook.file, k, &crate::accounts::dir_of(&a.id)) {
+                        all.push(Target { file: expand(&file), account: Some(a.id), ..own.clone() });
+                    }
+                }
+            }
+            all.insert(0, own);
+            Some(all)
         })
+        .flatten()
         .collect()
 }
 
@@ -650,6 +669,12 @@ pub fn agreed_split(answers: &std::collections::BTreeMap<String, String>) -> (Ve
 /// back, whatever this version adds to it, would be writing what was never
 /// shown
 fn asked_again(t: &Target) -> bool {
+    // An account's folder is made by this app, from the folder the person
+    // agreed for: writing the hook there is the same hook for the same
+    // program, not one taken out by somebody
+    if t.account.is_some() {
+        return !new_events(t).is_empty();
+    }
     !new_events(t).is_empty() || matches!(status(t), Status::Absent | Status::NoConfig)
 }
 
@@ -1899,6 +1924,8 @@ mod tests {
             timeout: TIMEOUT_S,
             line_timeout: LINE_TIMEOUT_S,
             trust: None,
+
+            account: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
@@ -2027,6 +2054,8 @@ mod tests {
             timeout: TIMEOUT_S,
             line_timeout: LINE_TIMEOUT_S,
             trust: None,
+
+            account: None,
             entries: events.iter().map(|(e, a)| Entry { event: (*e).into(), arg: (*a).into() }).collect(),
         }
     }
@@ -2133,6 +2162,8 @@ mod tests {
             timeout: TIMEOUT_S,
             line_timeout: LINE_TIMEOUT_S,
             trust: None,
+
+            account: None,
             entries: vec![Entry { event: "SessionStart".into(), arg: "session".into() }],
         }
     }
@@ -2157,6 +2188,8 @@ mod tests {
             timeout: TIMEOUT_S,
             line_timeout: LINE_TIMEOUT_S,
             trust: None,
+
+            account: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "Stop".into(), arg: "state:DONE".into() },
@@ -2345,6 +2378,8 @@ mod tests {
             timeout: 3_000,
             line_timeout: 10_000,
             trust: None,
+
+            account: None,
             entries: vec![
                 Entry { event: "BeforeAgent".into(), arg: "session".into() },
                 Entry { event: "BeforeAgent".into(), arg: "state:BUSY".into() },
@@ -2415,6 +2450,8 @@ mod tests {
             timeout: TIMEOUT_S,
             line_timeout: LINE_TIMEOUT_S,
             trust: None,
+
+            account: None,
             entries: vec![
                 Entry { event: "SessionStart".into(), arg: "session".into() },
                 Entry { event: "UserPromptSubmit".into(), arg: "state:BUSY".into() },

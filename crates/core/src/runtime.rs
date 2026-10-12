@@ -2019,6 +2019,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut startup_errors: Vec<String> = Vec::new();
     let mut desks: Vec<config::Desk> = Vec::new();
     if let Some(c) = &cfg {
+        // Which accounts of an AI there are, before any tab starts as one
+        crate::accounts::set_known(&c.ai_accounts);
         let (desk, errs) = c.resolve_desks();
         desks = desk;
         startup_errors.extend(errs);
@@ -2615,6 +2617,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .into_iter()
         .map(|s| (s, crate::limits::Meter::start(s)))
         .collect();
+    // ...and each account of an AI (`crate::accounts`), its own sign-in and
+    // its own allowance: one meter per account, keyed the way a tab running
+    // as it asks (`Tab::usage_key`). Started when an account first appears
+    let mut account_meters: Vec<(String, crate::limits::Source, crate::limits::Meter)> = Vec::new();
     let mut ai_usage_on = cfg.as_ref().and_then(|c| c.ai_usage).unwrap_or(true);
     // The last time a human touched the screen. Don't auto-follow right after that.
     let mut view_touched_ms: u64 = 0;
@@ -3610,6 +3616,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // Reload and apply once the config is saved (no app restart needed)
         if watcher.changed()
             && let Some(newcfg) = config::load() {
+                crate::accounts::set_known(&newcfg.ai_accounts);
                 // What each held terminal does while the app is away follows the
                 // machine's setting as it is now (far-keep plan §4.3)
                 for t in tabs.iter().chain(desk_tabs.iter().flatten()) {
@@ -6715,12 +6722,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        for a in crate::accounts::known() {
+            let key = format!("{}@{}", a.cli, a.id);
+            let source = crate::limits::Source::ALL.into_iter().find(|s| s.key() == a.cli);
+            if let Some(source) = source
+                && !account_meters.iter().any(|(k, _, _)| *k == key)
+            {
+                account_meters.push((key, source, crate::limits::Meter::start_in(source, Some(crate::accounts::dir_of(&a.id)))));
+            }
+        }
         let usage = limits
             .iter()
-            .filter_map(|(source, meter)| {
-                meter.want(ai_usage_on && tabs.iter().any(|t| t.ai_kind().as_deref() == Some(source.key())));
+            .map(|(source, meter)| (source.key().to_string(), *source, meter))
+            .chain(account_meters.iter().map(|(key, source, meter)| (key.clone(), *source, meter)))
+            .filter_map(|(key, source, meter)| {
+                meter.want(ai_usage_on && tabs.iter().any(|t| t.usage_key().as_deref() == Some(key.as_str())));
                 let l = meter.current()?;
-                Some((source.key().to_string(), crate::uistate::UsageState::of(source.name(), &l, now)))
+                Some((key, crate::uistate::UsageState::of(source.name(), &l, now)))
             })
             .collect();
         // Where the view has come to rest, asked once, after everything that
@@ -7985,6 +8003,38 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             }
             pending_quicks = still;
+        }
+
+        // An account of an AI to sign in (`crate::accounts`): a tab of its AI
+        // opened as it, in the folder in front -- the desk's first when there
+        // is none -- where the CLI asks for the sign-in in its own way. The
+        // tab is an ordinary one afterwards, running as that account
+        for id in crate::accounts::take_logins() {
+            let Some(account) = crate::accounts::find(&id) else {
+                flash = Some(i18n::t("msg.account.unsaved"));
+                continue;
+            };
+            let Some(desk) = desks.get(desk_index) else { continue };
+            let here = (!board_open && !settings_open).then(|| surface_place_at(&surfaces, &tabs, active)).flatten();
+            let folder = here
+                .filter(|at| crate::uistate::place_of(at).0.is_none())
+                .or_else(|| desk.folders.iter().filter(|f| f.host.is_none()).find_map(|f| f.cwd.clone()));
+            let Some(at) = folder else {
+                flash = Some(i18n::t("msg.account.no_folder"));
+                continue;
+            };
+            let label = crate::accounts::kind(&account.cli).map(|k| k.profile).unwrap_or("AI");
+            let (title, tab_id) = quick_tab_names(&format!("{label} · {}", account.shown()), label, &tabs);
+            let line = serde_json::json!({"name": title, "id": tab_id, "command": account.cli, "ai_account": account.id});
+            let (_, cwd) = crate::uistate::place_of(&at);
+            match config::add_tab_with_uid_at(&config_file, &desk.uid, line, Some(&cwd), None, config::NewFolder::Allowed) {
+                Ok((tab_id, _)) => {
+                    append_hook_log(&format!("account {}: a tab opened to sign in, in {}", account.id, cwd.display()));
+                    reveal = Some((tab_id, Instant::now() + Duration::from_secs(20)));
+                    watcher.poke();
+                }
+                Err(e) => flash = Some(format!("{e:#}")),
+            }
         }
 
         // Scheduled prompts (`crate::routine`): the ones whose time has come
@@ -13804,6 +13854,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
             skill_view = crate::skill::statuses();
             skill_seen = std::time::Instant::now();
+        }
+        // An account's folder just made (`crate::accounts`): its hooks put
+        // right as its CLI's were agreed to, off this thread. Codex has to be
+        // asked to approve them there before it runs them
+        if crate::accounts::take_fresh() {
+            let answers = cfg.as_ref().map(|c| c.agent_hooks.clone()).unwrap_or_default();
+            let (keep, _) = crate::agenthook::agreed_split(&answers);
+            let fresh: Vec<_> = keep.into_iter().filter(|t| t.account.is_some()).collect();
+            if !fresh.is_empty() {
+                keep_hooks_right(fresh, hooks_tx.clone());
+            }
         }
         // The AI CLIs' hooks, as the person answered about each. Once, as the
         // program starts: the ones agreed to are put right off this thread,
