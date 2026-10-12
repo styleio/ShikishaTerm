@@ -824,6 +824,29 @@ mod tests {
         assert!(d.working_shown(), "it misses the real working indicator");
     }
 
+    /// Measured 2026-10-12: a review asked of Codex said "sales agents ...
+    /// approve or object". The words asked stood on its screen as it began,
+    /// and the one word "approve" read them as Codex asking a person: the ask
+    /// was answered "waiting for approval" in 3 s, the asker told the person
+    /// so, and the review Codex went on to write reached nobody. A question is
+    /// Codex's own dialog, never a word in what it was asked
+    #[test]
+    fn what_codex_was_asked_is_not_codex_asking() {
+        let profile = crate::profile::load_for_command("codex");
+        let mut d = Detector::new(profile);
+        let asked = "› Code review (correctness) on branch fix-ui. Payment statements: sales agents \
+                     see delivered payment statements and approve or object.\n\n• Working (0s • esc to interrupt)";
+        assert_eq!(d.tick(asked, 100, 0), TabState::Busy, "the words it was asked read as a question");
+        for dialog in [
+            "  Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)\n  3. No, and tell Codex what to do differently (esc)",
+            "  Would you like to make the following edits?\n\n› 1. Yes, proceed (y)",
+            "  Would you like to grant these permissions?\n\n› 1. Yes",
+        ] {
+            let mut d = Detector::new(crate::profile::load_for_command("codex"));
+            assert_eq!(d.tick(dialog, 100, 0), TabState::Question, "Codex's own dialog is missed: {dialog}");
+        }
+    }
+
     /// The real profile, read from `profiles/claude.json`, against the prompt
     /// Claude Code stops on the first time it is started in a folder -- a new
     /// worktree always is one. The choice under the cursor is "No, exit", so a
