@@ -673,6 +673,14 @@ fn put_login_tab(desks: &[config::Desk], desk_index: usize, tabs: &[Tab], p: &Lo
     }
 }
 
+/// The desks not on screen with the step's folder on them: a sign-in tab put
+/// on or taken off one of them is brought in line there at the next reading
+/// of the settings, as a scheduled prompt's tab is (`routine_apply`)
+fn login_desks_away(desks: &[config::Desk], desk_index: usize, p: &LoginPending) -> Vec<String> {
+    let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)));
+    desks.iter().enumerate().filter(|(i, d)| *i != desk_index && d.folder_at(&key).is_some()).map(|(_, d)| d.uid.clone()).collect()
+}
+
 /// A sign-in step done with. The tab put on the desk for its sign-in
 /// command comes out of the settings, which takes it off the desk whether or
 /// not it had started yet; answered whether anything was written, for the
@@ -2690,6 +2698,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // off: brought in line with the settings at the next reading of them,
     // which a desk not on screen otherwise is only when it is switched to
     let mut routine_apply: Vec<String> = Vec::new();
+    // Runs given up on for taking too long, by prompt and tab: while that
+    // tab is still at work, the prompt's next run would be the same work a
+    // second time beside it, and is skipped
+    let mut routine_lingering: Vec<(String, String)> = Vec::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
     let mut ball = ball::Ball::default();
@@ -6874,6 +6886,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        // Which accounts are in use: a tab running as one on any desk, and
+        // the desks as read (a desk kept in a file of its own included). The
+        // settings page refuses to delete one of these
+        let mut used: Vec<String> = tabs
+            .iter()
+            .chain(desk_tabs.iter().flatten())
+            .filter_map(|t| t.ai_account().map(str::to_string))
+            .chain(desks.iter().flat_map(|d| d.tabs.iter().filter_map(|f| f.cfg.ai_account.clone())))
+            .collect();
+        used.sort();
+        used.dedup();
+        crate::accounts::set_in_use(used);
         // A meter for an account no longer in the settings is let go, its
         // thread with it
         let known_accounts = crate::accounts::known();
@@ -8114,6 +8138,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let now_ms = start.elapsed().as_millis() as u64;
             let now = crate::hooks::epoch_ms() / 1000;
             let mut still = Vec::new();
+            // The tabs in a pane on screen, which nothing here closes
+            let seen_now: Vec<String> = std::iter::once(active)
+                .chain(pane_layout.leaves().into_iter().map(|(_, s)| s))
+                .filter_map(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                .map(|t| t.uid().to_string())
+                .collect();
             for p in std::mem::take(&mut pending_quicks) {
                 let owner = tab_owner(&p.uid, desk_index, &tabs, &desk_tabs);
                 let away_surfaces: Vec<Surface>;
@@ -8136,6 +8166,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .is_some_and(|t| quick_ready(t, now_ms));
                 // The run of a scheduled prompt this tab was opened for
                 let flight = p.routine.as_ref().and_then(|(id, n)| routine_flights.iter().position(|f| &f.id == id && f.n == *n));
+                // A tab opened for a scheduled prompt that somebody has typed
+                // into while it was getting ready is theirs now: the prompt
+                // is not put on top of what they wrote, nor sent with it
+                let taken_over = flight.is_some()
+                    && at.and_then(|s| session_at(surf, s)).and_then(|i| list.get(i)).is_some_and(|t| t.last_manual_ms.is_some());
+                if taken_over && let Some(i) = flight {
+                    let f = routine_flights.remove(i);
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Skipped, "routine.why.in_use", None);
+                    append_hook_log(&format!("scheduled prompt run {} of {}: its tab was typed into before it was ready; not sent", f.n, f.id));
+                    continue;
+                }
                 match (at, ready) {
                     (Some(s), true) => {
                         let said = p.text.clone();
@@ -8177,6 +8218,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     && let Some(t) = list.get(i)
                                     && f.tidy
                                     && t.last_manual_ms.is_none_or(|ms| ms <= f.sent_ms)
+                                    && !t.locked
+                                    && !seen_now.iter().any(|u| u == t.uid())
                                 {
                                     close_requests.push(CloseRequest {
                                         desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
@@ -8296,14 +8339,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     routine_book.save();
                 }
             }
-            // "Run now" for a prompt saved a moment ago, before the board read
-            // the settings again: read from disk rather than said to be gone
-            let fresh: Vec<crate::routine::Routine> = match wanted.iter().any(|(id, _)| !routines.iter().any(|r| &r.id == id)) {
+            // "Run now" runs the prompt as it is saved on disk this moment: the
+            // page checked that one, and the board may not have read it yet
+            let fresh: Vec<crate::routine::Routine> = match wanted.iter().any(|(_, due)| due.is_none()) {
                 true => config::load().map(|c| c.routines).unwrap_or_default(),
                 false => Vec::new(),
             };
             for (id, due) in wanted {
-                let Some(r) = routines.iter().chain(&fresh).find(|r| r.id == id) else {
+                let found = match due {
+                    None => fresh.iter().chain(&routines).find(|r| r.id == id),
+                    Some(_) => routines.iter().chain(&fresh).find(|r| r.id == id),
+                };
+                let Some(r) = found else {
                     append_hook_log(&format!("scheduled prompt {id} asked to run, but the settings hold no such prompt"));
                     continue;
                 };
@@ -8314,8 +8361,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     routine_book.save();
                     continue;
                 }
+                // A run given up on whose tab is still at work counts as going;
+                // one whose tab has finished or gone is let go
+                routine_lingering.retain(|(_, uid)| {
+                    tabs.iter().chain(desk_tabs.iter().flatten()).any(|t| t.uid() == uid && !t.exited() && !crate::asktab::turn_over(t.state))
+                });
+                let lingering = routine_lingering.iter().any(|(id, _)| id == &r.id);
                 // One run at a time: the last one's answer has not come
-                if routine_flights.iter().any(|f| f.id == r.id) {
+                if lingering || routine_flights.iter().any(|f| f.id == r.id) {
                     append_hook_log(&format!("scheduled prompt \"{name}\" skipped: its last run has not been answered yet"));
                     routine_book.note(&r.id, due, now, crate::routine::How::Skipped, "routine.why.last_going");
                     routine_book.save();
@@ -8452,6 +8505,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if now_ms.saturating_sub(f.sent_ms) > ROUTINE_LONGEST_MS {
                     append_hook_log(&format!("scheduled prompt run {} of {}: no answer in {} h, left as it is", f.n, f.id, ROUTINE_LONGEST_MS / 3_600_000));
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.too_long", None);
+                    routine_lingering.push((f.id.clone(), f.uid.clone()));
                     continue;
                 }
                 if matches!(t.state, TabState::Busy | TabState::Question) {
@@ -12149,7 +12203,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     match found {
                         Some(l) => {
-                            if login_done(&l, true, &mut tabs, rows, cols) {
+                            if (login_done(&l, true, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, &l));
+                    true
+                }) {
                 watcher.poke();
             }
                             l.go_on();
@@ -13998,6 +14055,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         p.login_tried = true;
                         p.login_tab = put_login_tab(&desks, desk_index, &tabs, p, &line);
                         if p.login_tab.is_some() {
+                            routine_apply.extend(login_desks_away(&desks, desk_index, p));
+                        }
+                        if p.login_tab.is_some() {
                             watcher.poke();
                         }
                     }
@@ -14051,7 +14111,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             if go_on {
-                if login_done(p, true, &mut tabs, rows, cols) {
+                if (login_done(p, true, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, p));
+                    true
+                }) {
                 watcher.poke();
             }
                 p.go_on();
@@ -14075,13 +14138,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 std::sync::Arc::ptr_eq(&m.making.sign_in_gate(), gate) && m.error.is_none() && !m.gone && !m.making.stopped()
             });
             if !alive {
-                reread |= login_done(p, false, &mut tabs, rows, cols);
+                reread |= (login_done(p, false, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, p));
+                    true
+                });
                 return false;
             }
             let note = crate::microvm::ai_sign_in_note(&p.host, Some(&p.home), Some(&p.ai), LOGIN_FRESH);
             let yes = note.as_ref().is_some_and(|n| n.state == "yes");
             if yes {
-                reread |= login_done(p, true, &mut tabs, rows, cols);
+                reread |= (login_done(p, true, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, p));
+                    true
+                });
                 p.go_on();
             }
             !yes
@@ -14379,7 +14448,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(p) = login_pending.take() {
                     match act.as_str() {
                         "next" => {
-                            if login_done(&p, true, &mut tabs, rows, cols) {
+                            if (login_done(&p, true, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, &p));
+                    true
+                }) {
                 watcher.poke();
             }
                             p.go_on();
@@ -14395,7 +14467,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         "terminal" if matches!(p.after, LoginAfter::Copying(_)) => login_parked.push(p),
                         "terminal" => p.leave(),
                         _ => {
-                            if login_done(&p, false, &mut tabs, rows, cols) {
+                            if (login_done(&p, false, &mut tabs, rows, cols) && {
+                    routine_apply.extend(login_desks_away(&desks, desk_index, &p));
+                    true
+                }) {
                 watcher.poke();
             }
                             p.leave();

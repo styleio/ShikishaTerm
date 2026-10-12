@@ -1288,6 +1288,7 @@
   "msg.account.not_made": "The folder of the account \"{name}\" could not be made ready: {why}",
   "msg.account.unsaved": "Save the settings first: this account is not saved yet.",
   "msg.account.in_use": "These tabs run as this account: {tabs}. Choose another account for them in their settings, then delete it.",
+  "msg.account.in_use_live": "A tab is running as this account now, or a desk kept in a file of its own names it. Stop that tab, or choose another account for it, then delete it.",
   "msg.account.no_folder": "Open a folder on this PC first: the sign-in tab is opened in one.",
   "tui.hold.accounts": "Open AI accounts",
   "settings.sec.gitaccounts": "GitHub / Git",

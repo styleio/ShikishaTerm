@@ -3075,13 +3075,15 @@ pub fn carries_conversations(argv: &[String], profile_spec: &Option<String>) -> 
 }
 
 pub fn resumable(argv: &[String], profile_spec: &Option<String>, id: &str) -> bool {
-    resumable_at(argv, profile_spec, id, false)
+    resumable_at(argv, profile_spec, id, false, None)
 }
 
 /// The same, for a tab whose terminal is on this PC or -- `far` -- on another
 /// machine. Over there the record is not this PC's to look for: the line typed
 /// there looks for it as it starts (see [`far_launch`])
-pub fn resumable_at(argv: &[String], profile_spec: &Option<String>, id: &str, far: bool) -> bool {
+/// `account` is the account of the CLI the tab runs as (`crate::accounts`):
+/// a record is resumable where that CLI will look for it, and nowhere else
+pub fn resumable_at(argv: &[String], profile_spec: &Option<String>, id: &str, far: bool, account: Option<&str>) -> bool {
     let Some(spec) = Tab::resolve_profile(argv, profile_spec).resume else {
         return false;
     };
@@ -3090,7 +3092,7 @@ pub fn resumable_at(argv: &[String], profile_spec: &Option<String>, id: &str, fa
     }
     far || spec.verify
         .as_ref()
-        .is_none_or(|v| crate::sessionfind::exists(v, id))
+        .is_none_or(|v| crate::sessionfind::exists_in(&crate::accounts::patterns_for(v, account), id))
 }
 
 /// The command line a launch will really run, written out for a person to read.

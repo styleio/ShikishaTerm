@@ -145,6 +145,41 @@ fn tabs_running_as(doc: &serde_json::Value, id: &str) -> Vec<String> {
     out
 }
 
+/// The values of key `mark` on every tab written anywhere in `doc`
+fn marks_in(doc: &serde_json::Value, mark: &str) -> Vec<String> {
+    fn walk(v: &serde_json::Value, mark: &str, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(m) = map.get(mark).and_then(|m| m.as_str()) {
+                    out.push(m.to_string());
+                }
+                map.values().for_each(|c| walk(c, mark, out));
+            }
+            serde_json::Value::Array(list) => list.iter().for_each(|c| walk(c, mark, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(doc, mark, &mut out);
+    out
+}
+
+/// Every tab in `doc` carrying key `mark` with a value not in `keep` taken out
+fn drop_marks_not_in(doc: &mut serde_json::Value, mark: &str, keep: &[String]) {
+    match doc {
+        serde_json::Value::Object(map) => {
+            for list in ["tabs", "children"] {
+                if let Some(serde_json::Value::Array(tabs)) = map.get_mut(list) {
+                    tabs.retain(|t| t.get(mark).and_then(|m| m.as_str()).is_none_or(|m| keep.iter().any(|k| k == m)));
+                }
+            }
+            map.values_mut().for_each(|c| drop_marks_not_in(c, mark, keep));
+        }
+        serde_json::Value::Array(list) => list.iter_mut().for_each(|c| drop_marks_not_in(c, mark, keep)),
+        _ => {}
+    }
+}
+
 /// Account `id` taken out of the app's list in the settings file
 fn forget_account_in_settings(path: &std::path::Path, id: &str) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(path)?;
@@ -3163,6 +3198,7 @@ fn handle(
                 .unwrap_or_default()
                 .into_iter()
                 .map(|a| {
+                    crate::accounts::bring_over(&a.id);
                     let dir = crate::accounts::dir_of(&a.id);
                     let who = crate::accounts::kind(&a.cli).and_then(|k| crate::accounts::signed_in_as(k, &dir));
                     serde_json::json!({"id": a.id, "cli": a.cli, "made": dir.is_dir(), "who": who, "dir": dir.display().to_string()})
@@ -3214,6 +3250,11 @@ fn handle(
             let users = tabs_running_as(&doc, &id);
             let body = if !users.is_empty() {
                 serde_json::json!({"error": crate::i18n::tp("msg.account.in_use", &[("tabs", &users.join(", "))])})
+            } else if crate::accounts::in_use(&id) {
+                // A tab still running as it although the settings no longer
+                // say so (started before another account was chosen for it),
+                // or a desk kept in a file of its own that names it
+                serde_json::json!({"error": crate::i18n::t("msg.account.in_use_live")})
             } else {
                 match crate::accounts::forget(&id).and_then(|()| forget_account_in_settings(&path, &id)) {
                     Ok(()) => serde_json::json!({"ok": true}),
@@ -5108,9 +5149,18 @@ fn handle(
                     // text editor, or read from a file that had none -- is
                     // written with the one reading it gives, so renaming it
                     // later does not make it another tab
-                    let before = doc.clone();
+                    let as_sent = doc.clone();
+                    // A sign-in tab the app put on a desk and has since taken
+                    // off is not this page's to bring back: a page opened
+                    // while it was there still holds it
+                    let on_disk: serde_json::Value = std::fs::read_to_string(config_path)
+                        .ok()
+                        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+                        .unwrap_or_default();
+                    let mark = crate::runtime::SIGN_IN_MARK;
+                    drop_marks_not_in(&mut doc, mark, &marks_in(&on_disk, mark));
                     crate::config::fill_tab_uids(&mut doc);
-                    let body = match doc == before {
+                    let body = match doc == as_sent {
                         true => body,
                         false => serde_json::to_string_pretty(&doc).unwrap_or(body),
                     };
@@ -19723,6 +19773,22 @@ fn picker() -> Option<&'static dyn shikisha_shared::FilePicker> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A page opened while a sign-in tab was on the desk, saved after the app
+    /// took it off, does not bring it back; one still there is kept, and so
+    /// is everything else on the page
+    #[test]
+    fn a_saved_page_does_not_bring_back_a_sign_in_tab_taken_off() {
+        let disk = serde_json::json!({"desks": [{"folders": [{"tabs": [
+            {"name": "codex"}, {"name": "claude sign-in", "sign_in_for": "4"}]}]}]});
+        let mut page = serde_json::json!({"desks": [{"folders": [{"tabs": [
+            {"name": "codex"}, {"name": "codex sign-in", "sign_in_for": "3"}, {"name": "claude sign-in", "sign_in_for": "4"},
+            {"name": "mine", "children": [{"name": "old", "sign_in_for": "2"}]}]}]}]});
+        super::drop_marks_not_in(&mut page, "sign_in_for", &super::marks_in(&disk, "sign_in_for"));
+        let names: Vec<String> = page["desks"][0]["folders"][0]["tabs"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(names, ["codex", "claude sign-in", "mine"]);
+        assert!(page["desks"][0]["folders"][0]["tabs"][2]["children"].as_array().unwrap().is_empty());
+    }
 
     #[test]
     fn standalone_settings_keep_pinned_and_shared_folders() {

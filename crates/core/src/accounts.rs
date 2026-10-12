@@ -197,6 +197,47 @@ pub fn dir_of(id: &str) -> PathBuf {
     root().join(id).join("home")
 }
 
+/// An account made by a version that kept its folder in the app's own data
+/// folder, moved to where it is kept now -- once, and only one with its mark.
+/// Its sign-in and its records come with it, and nothing of it is left in a
+/// folder that may be synced. Moved whole (a rename), so its links stay as
+/// they were and are pointed again as it is made up
+pub fn bring_over(id: &str) {
+    if !valid_id(id) {
+        return;
+    }
+    let old = crate::config::state_path("ai-accounts").join(id);
+    let new = root().join(id);
+    if old == new || !old.join(MARK).is_file() || new.exists() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => crate::append_hook_log(&format!("account {id}: moved from {} to {}", old.display(), new.display())),
+        Err(e) => crate::append_hook_log(&format!("account {id}: could not be moved from {} ({e}); it is used where it is until it can", old.display())),
+    }
+}
+
+/// The accounts the board runs a tab as this moment, or that the desks it
+/// has read name for a tab: what an account cannot be deleted while it is
+static IN_USE: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// What the board says is in use now; called as it changes
+pub fn set_in_use(ids: Vec<String>) {
+    if let Ok(mut w) = IN_USE.write()
+        && *w != ids
+    {
+        *w = ids;
+    }
+}
+
+/// Whether a tab runs as account `id`, or a desk names it for one
+pub fn in_use(id: &str) -> bool {
+    IN_USE.read().is_ok_and(|w| w.iter().any(|x| x == id))
+}
+
 /// What tells a folder under [`root`] is an account's, written beside its
 /// `home` once that is made up. Nothing is removed from a folder without it
 const MARK: &str = "account.json";
@@ -235,6 +276,7 @@ pub fn program_of(argv: &[String]) -> String {
 pub fn prepare(id: &str, argv: &[String]) -> Result<Prepared, String> {
     let account = find(id).ok_or_else(|| crate::i18n::tp("msg.account.gone", &[("id", id)]))?;
     let k = kind(&account.cli).ok_or_else(|| crate::i18n::tp("msg.account.gone", &[("id", id)]))?;
+    bring_over(&account.id);
     let program = program_of(argv);
     if program != k.cli {
         return Err(crate::i18n::tp("msg.account.other_cli", &[("name", &account.shown()), ("cli", &program)]));
@@ -515,6 +557,15 @@ pub fn forget(id: &str) -> Result<()> {
 /// folder (a file already there of the same name is left, and so is the
 /// account's), and its prompt history added to the end of the usual one
 fn carry_records(k: &Kind, home: &Path, usual: &Path) -> Result<()> {
+    // A record of the same name already in the usual folder: the same file
+    // is dropped, and a different one is kept beside it under a name of its
+    // own -- the account's folder is removed next, and what is left in it
+    // goes with it
+    fn beside(dst: &Path) -> PathBuf {
+        let stem = dst.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let ext = dst.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        (1..).map(|n| dst.with_file_name(format!("{stem}.account-{n}{ext}"))).find(|p| !p.exists()).unwrap_or_else(|| dst.to_path_buf())
+    }
     fn move_tree(from: &Path, to: &Path) -> Result<()> {
         if std::fs::symlink_metadata(from).is_ok_and(|m| m.file_type().is_symlink()) || is_junction(from) {
             return Ok(());
@@ -525,7 +576,14 @@ fn carry_records(k: &Kind, home: &Path, usual: &Path) -> Result<()> {
             let (src, dst) = (e.path(), to.join(e.file_name()));
             if src.is_dir() {
                 move_tree(&src, &dst)?;
-            } else if !dst.exists() && std::fs::rename(&src, &dst).is_err() {
+                continue;
+            }
+            let dst = match dst.exists() {
+                false => dst,
+                true if std::fs::read(&src).ok() == std::fs::read(&dst).ok() => continue,
+                true => beside(&dst),
+            };
+            if std::fs::rename(&src, &dst).is_err() {
                 std::fs::copy(&src, &dst).with_context(|| format!("carry {}", src.display()))?;
             }
         }
@@ -832,11 +890,9 @@ mod tests {
         std::fs::write(usual.join("history.jsonl"), "{\"t\":0}\n").unwrap();
         carry_records(&CODEX, &home, &usual).unwrap();
         assert_eq!(std::fs::read_to_string(usual.join("history.jsonl")).unwrap(), "{\"t\":0}\n{\"t\":1}\n");
-        assert_eq!(
-            std::fs::read_to_string(usual.join("sessions").join("2026").join("10").join("rollout-a.jsonl")).unwrap(),
-            "usual",
-            "a record already there was overwritten"
-        );
+        let day = usual.join("sessions").join("2026").join("10");
+        assert_eq!(std::fs::read_to_string(day.join("rollout-a.jsonl")).unwrap(), "usual", "a record already there was overwritten");
+        assert_eq!(std::fs::read_to_string(day.join("rollout-a.account-1.jsonl")).unwrap(), "{}", "the account's own was lost to the clash");
         std::fs::write(home.join("sessions").join("2026").join("10").join("rollout-b.jsonl"), "{}").unwrap();
         carry_records(&CODEX, &home, &usual).unwrap();
         assert!(usual.join("sessions").join("2026").join("10").join("rollout-b.jsonl").is_file());

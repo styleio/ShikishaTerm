@@ -1290,6 +1290,7 @@
   "msg.account.not_made": "アカウント「{name}」のフォルダを準備できませんでした: {why}",
   "msg.account.unsaved": "先に設定を保存してください。このアカウントはまだ保存されていません。",
   "msg.account.in_use": "次のタブがこのアカウントで動く設定です: {tabs}。先に各タブの設定で別のアカウントを選んでから、削除してください。",
+  "msg.account.in_use_live": "このアカウントで今動いているタブがあるか、別ファイルのデスクがこのアカウントを使う設定です。そのタブを止めるか、タブに別のアカウントを選んでから、削除してください。",
   "msg.account.no_folder": "先にこの PC のフォルダを開いてください。ログイン用のタブは、フォルダの中に開きます。",
   "tui.hold.accounts": "AI のアカウントを開く",
   "settings.sec.gitaccounts": "GitHub / Git",
