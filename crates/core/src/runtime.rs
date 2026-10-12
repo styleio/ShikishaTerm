@@ -8153,7 +8153,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if let Some(i) = flight {
                             if landed {
                                 let f = &mut routine_flights[i];
-                                (f.handed, f.from, f.sent_ms) = (true, from, now_ms);
+                                (f.handed, f.from, f.sent_ms, f.typed_ms) = (true, from, now_ms, None);
                             } else {
                                 let f = routine_flights.remove(i);
                                 routine_end(&mut routine_book, &f, now, crate::routine::How::Failed, "routine.why.locked", None);
@@ -8380,6 +8380,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             text: r.prompt.clone(),
                             from: begun.from,
                             sent_ms: now_ms,
+                            typed_ms: None,
                             busy_seen: false,
                             handed: !begun.opened,
                             tidy: begun.opened && r.tidy,
@@ -8461,13 +8462,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // screen says what went wrong. Told by the record, which
                 // speaks of this prompt's own turn whenever it was looked at;
                 // or by the tab, once it has been seen at work on the prompt
-                // or long enough has passed for it to have been -- a turn
-                // that failed at once can end between two looks, and a tab
-                // that reads as failed from before the prompt is not taken
-                // for this run's failure
+                // or long enough has passed since the last of the prompt went
+                // in for it to have been -- a turn that failed at once can end
+                // between two looks, and a tab that reads as failed from
+                // before the prompt is not taken for this run's failure
+                if f.typed_ms.is_none() && !pending_send.iter().any(|p| p.serial == t.serial()) {
+                    f.typed_ms = Some(now_ms);
+                }
                 let failed = record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some()
                     || (t.state == TabState::Failed
-                        && (f.busy_seen || now_ms.saturating_sub(f.sent_ms) >= ROUTINE_FAILED_AFTER_MS));
+                        && (f.busy_seen
+                            || f.typed_ms.is_some_and(|at| now_ms.saturating_sub(at) >= ROUTINE_FAILED_AFTER_MS)));
                 if failed {
                     let screen = screen_tail(t, ROUTINE_SCREEN_LINES);
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_failed", Some(&screen));
@@ -19923,6 +19928,9 @@ pub struct RoutineFlight {
     /// ([`crate::asktab::record_len`])
     pub from: u64,
     pub sent_ms: u64,
+    /// When the last of the words had been typed in, as first seen: a long
+    /// prompt goes in a piece at a time, and the turn starts only after it
+    pub typed_ms: Option<u64>,
     /// The tab has been seen at work since: a quiet screen means the turn is
     /// over only after it was busy
     pub busy_seen: bool,
@@ -19962,7 +19970,7 @@ fn routine_tidy(f: &RoutineFlight, t: &Tab, index: usize, list: &[Tab], desk: &s
 /// How long the screen of a tab whose CLI keeps no record must hold still
 /// after its work, before the turn is taken to be over
 const ROUTINE_SETTLE_MS: u64 = 3000;
-/// How long after a scheduled prompt went in a tab that reads as failed is
+/// How long after the last of a scheduled prompt went in a tab that reads as failed is
 /// taken to have failed on it, though it was never seen at work: a CLI starts
 /// on what it is given within a few seconds, and one that read as failed
 /// before the prompt reads as working by then

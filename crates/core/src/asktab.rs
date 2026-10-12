@@ -323,7 +323,7 @@ pub struct FarRead {
     /// A look out on its thread, and whether it asked for the turn to be over
     /// too (see [`FarRead::reply`]). An answer to the other kind of look is
     /// not this one's
-    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<bool>)>, bool)>,
+    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<bool>, Option<(u64, u64)>)>, bool)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
@@ -333,6 +333,9 @@ pub struct FarRead {
     /// What the last look found of the tab going on to somebody else's turn
     /// (see [`moved_on_in`]): `None` while not known
     moved_on: Option<bool>,
+    /// How far the end of the turn asked in has been looked for without
+    /// being found: where that turn begins, and where the next look resumes
+    scanned: Option<(u64, u64)>,
 }
 
 /// What one look at a far record found
@@ -357,10 +360,18 @@ impl FarRead {
         if let Some((rx, kind)) = &self.pending {
             let kind = *kind;
             let got = rx.try_recv();
-            if let Ok((_, Some(moved))) = &got {
-                self.moved_on = Some(*moved);
+            // Every look says it anew, not knowing included: an ask the record
+            // no longer shows is not still known to be alone
+            if let Ok((_, moved, scanned)) = &got {
+                self.moved_on = *moved;
+                if scanned.is_some() {
+                    self.scanned = *scanned;
+                }
+                // The next look waits from when this one came back: a look
+                // that took longer than the pause is not followed at once
+                self.last = Some(Instant::now());
             }
-            match got.map(|(found, _)| found) {
+            match got.map(|(found, _, _)| found) {
                 Ok(Found::Is(outcome)) => {
                     self.pending = None;
                     // A failure is one whichever kind of look found it
@@ -379,9 +390,9 @@ impl FarRead {
             return None;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let (record, sent) = (record.clone(), sent.to_string());
+        let (record, sent, scanned) = (record.clone(), sent.to_string(), self.scanned);
         std::thread::spawn(move || {
-            let mut moved = None;
+            let (mut moved, mut read_to) = (None, None);
             let found = match record.page(u64::MAX, REPLY_TURNS) {
                 None => Found::Missing,
                 Some(Ok(page)) => match asked_in(&page, &sent, from) {
@@ -391,7 +402,12 @@ impl FarRead {
                     // last -- a later turn's failure is not this one's
                     Some(asked) => {
                         moved = Some(moved_on(&page, asked));
-                        let end = page.turns[asked].at.and_then(|begun| record.turn_end_after(begun));
+                        let end = page.turns[asked].at.and_then(|begun| {
+                            let resume = scanned.filter(|(b, _)| *b == begun).map_or(begun, |(_, to)| to);
+                            let (end, to) = record.turn_end_after(begun, resume);
+                            read_to = Some((begun, to));
+                            end
+                        });
                         let last_over = || {
                             record.standing().and_then(|s| s.mark).map(|(m, _)| m) == Some(crate::reader::TurnMark::Over)
                         };
@@ -400,7 +416,7 @@ impl FarRead {
                 },
                 Some(Err(_)) => Found::NotYet,
             };
-            let _ = tx.send((found, moved));
+            let _ = tx.send((found, moved, read_to));
         });
         self.pending = Some((rx, over));
         self.last = Some(Instant::now());
