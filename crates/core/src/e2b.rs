@@ -2665,7 +2665,7 @@ fn entry_of(v: &serde_json::Value) -> Option<crate::ssh::Entry> {
 /// `2026-09-12T14:22:01.5Z`, or the same with an offset on the end. Done by
 /// hand because the answer is arithmetic, not a calendar: no library is worth
 /// carrying to turn one fixed shape into one number
-fn epoch_of(said: &str) -> u64 {
+pub(crate) fn epoch_of(said: &str) -> u64 {
     let num = |s: &str| s.parse::<i64>().unwrap_or(0);
     let (date, rest) = match said.split_once(['T', 't', ' ']) {
         Some(pair) => pair,

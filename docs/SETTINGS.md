@@ -66,6 +66,12 @@ More than one Claude Code or Codex account
 
 - **Name** — Work
 
+### Tokens and cost
+
+What Claude Code and Codex used on this PC
+
+This screen has nothing to fill in. What it shows depends on what is set elsewhere.
+
 ### GitHub / Git
 
 Personal access tokens, SSH keys and sign-ins

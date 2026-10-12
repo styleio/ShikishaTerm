@@ -482,6 +482,18 @@ folder is kept in this PC's own data folder, which nothing syncs, so each PC sig
 refused while a tab still runs as the account. Accounts are for tabs on this PC: a tab on a server or a
 MicroVM runs as that machine's CLI is signed in.
 
+### Tokens and cost
+
+**Settings → Tokens and cost** adds up the tokens Claude Code and Codex used on this PC, read from
+their own conversation records (the accounts added in the settings included): for a period (the
+last 7, 30 or 90 days, or the last year) and an AI, the totals, a bar for each day, and lists by
+model, by folder and of the latest conversations. The cost is what the same tokens would cost bought
+through each maker's API, at the prices they publish; a subscription does not bill this way. Calls
+to a model with no known price are counted and left out of the cost, and the card says how many.
+The first look reads every record, which takes a while; after that only what was added is read.
+The counts are kept for a little over a year, even after a CLI deletes its own records. Servers and
+MicroVMs are not counted.
+
 ## 7. Automation
 
 ### Scheduled prompts
@@ -530,6 +542,7 @@ settings screen, so it cannot fall behind.
 - **Basic** — Tab width, chaining, language
 - **AI agents** — Assistant AI, deciding AI, connections, agreements
 - **AI accounts** — More than one Claude Code or Codex account
+- **Tokens and cost** — What Claude Code and Codex used on this PC
 - **GitHub / Git** — Personal access tokens, SSH keys and sign-ins
 - **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR

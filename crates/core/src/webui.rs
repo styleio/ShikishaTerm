@@ -3189,6 +3189,22 @@ fn handle(
             let gone = crate::push::forget(endpoint);
             req.respond(json_resp(serde_json::json!({ "ok": gone })))?;
         }
+        // How many tokens the AIs on this PC used, and what that would cost
+        // by the token (`crate::tokens`). Asking starts a look at the
+        // records when the last is not recent (`again`: whatever its age);
+        // the answer is what is counted so far, and how the look stands --
+        // the card asks again until it has ended
+        ("GET", "/api/tokens") => {
+            let url = req.url().to_string();
+            let days = query_param(&url, "days").and_then(|d| d.parse::<u32>().ok()).unwrap_or(30).clamp(1, crate::tokens::DAYS_KEPT as u32);
+            let cli = query_param(&url, "cli").filter(|c| c == "claude" || c == "codex");
+            crate::tokens::look(query_param(&url, "again").is_some());
+            let body = match crate::tokens::report(&crate::tokens::path(), days, cli.as_deref()) {
+                Ok(report) => serde_json::json!({"looking": crate::tokens::looking(), "report": report}),
+                Err(e) => serde_json::json!({"looking": crate::tokens::looking(), "error": format!("{e:#}")}),
+            };
+            req.respond(json_resp(body))?;
+        }
         // The accounts of an AI's CLI (`crate::accounts`), as the settings on
         // disk hold them, each with who it is signed in as -- read off what the
         // CLI wrote in its folder, never a token
@@ -6041,6 +6057,28 @@ const PAGE: &str = r##"<!doctype html>
  /* A list of things, boxed. The border round the whole makes it one object
     instead of a stack of loose lines */
  .rows { border:1px solid var(--line); border-radius:var(--r-ctl); overflow:hidden; }
+ /* Tokens and cost: what each number is, over it; the days as bars, the
+    span's first and last day under them */
+ .tkctl { align-items:flex-end; margin-top:var(--s3); }
+ .tkpick { display:flex; flex-direction:column; gap:var(--s1); font-size:12px; color:var(--text); }
+ .tkstatus { margin-top:var(--s2); }
+ .tkstatus.warn { color:var(--warn); }
+ .tkstats { display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:var(--s2); margin-top:var(--s3); }
+ .tkstat { border:1px solid var(--line); border-radius:var(--r-ctl); padding:var(--s2) var(--s3); min-width:0; }
+ .tkstat .k { font-size:11.5px; color:var(--dim); }
+ .tkstat .v { font-size:14px; color:var(--text); font-variant-numeric:tabular-nums; margin-top:2px; }
+ .tkhead { font-size:12px; color:var(--text); margin:var(--s4) 0 var(--s2); }
+ .tkbars { display:flex; align-items:flex-end; gap:2px; height:72px; border-bottom:1px solid var(--line); }
+ .tkbars i { flex:1 1 0; min-width:2px; background:var(--brand); border-radius:2px 2px 0 0; }
+ .tkaxis { display:flex; justify-content:space-between; font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums; margin-top:var(--s1); }
+ .rows > .listrow.tkrow { display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:var(--s3); row-gap:2px; padding:7px var(--s3); }
+ .tkrow .nm { display:flex; gap:var(--s2); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+ .tkrow .nm > * { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+ .tkrow .when { flex:none; font-variant-numeric:tabular-nums; color:var(--dim); }
+ .tkrow .amt { font-variant-numeric:tabular-nums; color:var(--text); text-align:right; }
+ .tkrow .meta { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); min-width:0; }
+ /* Beside its tag even on a phone, where a hint otherwise takes a line */
+ .tkrow .meta .hint { flex-basis:auto; }
  .rows > * { border-bottom:1px solid var(--line); }
  .rows > *:last-child { border-bottom:0; }
  /* The lines of a list that is not pressed as a whole -- an ignore file's lines,
@@ -9282,6 +9320,126 @@ function aiAccountsCard() {
   return box;
 }
 
+// How many tokens Claude Code and Codex used on this PC, by day, model,
+// folder and conversation, and what that would cost by the token. The app
+// reads the records when asked (tokens/), and this asks again while it reads
+const tokensView = {days: 30, cli: ""};
+function tokensCard() {
+  const status = el("div", {class:"hint tkstatus"});
+  const body = el("div", {class:"tkbody"});
+  const days = el("select", {}, ...[7, 30, 90, 365].map(n => el("option", {value: String(n)}, T["settings.tokens.days." + n])));
+  days.value = String(tokensView.days);
+  const cli = el("select", {},
+    el("option", {value: ""}, T["settings.tokens.cli.all"]),
+    el("option", {value: "claude"}, "Claude Code"),
+    el("option", {value: "codex"}, "Codex"));
+  cli.value = tokensView.cli;
+  let timer = null;
+  const ask = async (again) => {
+    clearTimeout(timer);
+    const q = "/api/tokens?days=" + days.value + "&cli=" + cli.value + (again ? "&again=1" : "");
+    const j = await settingsApi(q).catch(e => ({error: e.message}));
+    if (!document.body.contains(box)) return;
+    drawTokens(j || {}, status, body);
+    if (j && j.looking && j.looking.running) timer = setTimeout(() => ask(false), 1500);
+  };
+  const again = el("button", {onclick: () => ask(true)}, T["settings.tokens.again"]);
+  days.addEventListener("change", () => { tokensView.days = +days.value; ask(false); });
+  cli.addEventListener("change", () => { tokensView.cli = cli.value; ask(false); });
+  const box = card(T["settings.tokens.title"],
+    el("div", {class:"hint"}, T["settings.tokens.intro"]),
+    el("div", {class:"row2 tkctl"},
+      el("label", {class:"tkpick"}, el("span", {}, T["settings.tokens.span"]), days),
+      el("label", {class:"tkpick"}, el("span", {}, T["settings.tokens.cli"]), cli),
+      again),
+    status, body);
+  ask(false);
+  return box;
+}
+
+// Counts the way a person reads them: 1.2M, 34K
+function tokensShort(n) {
+  const v = Number(n) || 0;
+  if (v >= 1e9) return (v / 1e9).toFixed(1) + "B";
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return String(v);
+}
+function dollars(v) {
+  const n = Number(v) || 0;
+  if (n === 0) return "$0";
+  if (n < 0.01) return "<$0.01";
+  return "$" + n.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+// The end of a path, which is what tells two folders apart; the whole of it
+// goes in the row's tooltip
+function folderShort(p) {
+  const parts = String(p || "").split(/[\\/]+/).filter(Boolean);
+  return parts.slice(-2).join("/") || T["settings.tokens.no_folder"];
+}
+
+function drawTokens(j, status, body) {
+  const l = j.looking || {};
+  status.classList.toggle("warn", !!(j.error || l.error));
+  status.textContent = j.error || l.error
+    ? fill(T["settings.tokens.failed"], {why: j.error || l.error})
+    : l.running
+      ? fill(T["settings.tokens.reading"], {done: (l.done || 0).toLocaleString(), total: (l.total || 0).toLocaleString()})
+      : l.ended ? fill(T["settings.tokens.read_at"], {time: new Date(l.ended * 1000).toLocaleString()}) : "";
+  const r = j.report;
+  body.textContent = "";
+  if (!r) return;
+  const t = r.total || {};
+  if (!t.calls) {
+    if (!l.running) body.append(el("div", {class:"empty"}, T["settings.tokens.none"]));
+    return;
+  }
+  const input = t.fresh_in + t.cache_read + t.cache_write;
+  const stat = (name, value) => el("div", {class:"tkstat"}, el("div", {class:"k"}, name), el("div", {class:"v"}, value));
+  body.append(el("div", {class:"tkstats"},
+    stat(T["settings.tokens.cost"], dollars(t.cost)),
+    stat(T["settings.tokens.calls"], (t.calls || 0).toLocaleString()),
+    stat(T["settings.tokens.fresh_in"], tokensShort(t.fresh_in)),
+    stat(T["settings.tokens.cache_read"], tokensShort(t.cache_read)),
+    stat(T["settings.tokens.cache_write"], tokensShort(t.cache_write)),
+    stat(T["settings.tokens.out"], tokensShort(t.out)),
+    stat(T["settings.tokens.reuse"], input ? Math.round(t.cache_read * 100 / input) + "%" : "-")));
+  if (t.unpriced) body.append(el("div", {class:"hint"}, fill(T["settings.tokens.unpriced"], {n: t.unpriced.toLocaleString()})));
+  // One bar a day: what it would have cost, or -- with nothing priced -- how
+  // many tokens went through
+  const byCost = t.cost > 0;
+  const size = d => byCost ? d.cost : d.fresh_in + d.cache_read + d.cache_write + d.out;
+  const top = Math.max(...r.days.map(size), 0);
+  const bars = el("div", {class:"tkbars"});
+  for (const d of r.days) {
+    const bar = el("i", {title: d.name + ": " + (byCost ? dollars(d.cost) : tokensShort(size(d)))});
+    bar.style.height = (top ? Math.max(size(d) ? 2 : 0, size(d) * 100 / top) : 0) + "%";
+    bars.append(bar);
+  }
+  body.append(el("div", {class:"tkhead"}, fill(T[byCost ? "settings.tokens.daily.cost" : "settings.tokens.daily.tokens"], {top: byCost ? dollars(top) : tokensShort(top)})),
+    bars, el("div", {class:"tkaxis"}, el("span", {}, r.from), el("span", {}, r.to)));
+  const used = s => fill(T["settings.tokens.used"], {in: tokensShort(s.fresh_in + s.cache_read + s.cache_write), out: tokensShort(s.out)});
+  const price = s => s.unpriced && !s.cost ? T["settings.tokens.no_price"] : dollars(s.cost);
+  const list = (title, rows) => {
+    if (!rows.length) return;
+    body.append(el("div", {class:"tkhead"}, title), el("div", {class:"rows"}, ...rows));
+  };
+  // A row is two lines: what it is and what it cost, then how much went
+  // in and out -- the same on a phone, where three columns would not fit
+  const row = (title, name, amount, ...meta) => el("div", {class:"listrow tkrow", title: title || ""},
+    el("span", {class:"nm"}, ...name), el("span", {class:"amt"}, amount), el("span", {class:"meta"}, ...meta));
+  list(T["settings.tokens.by_model"], r.models.slice(0, 12).map(m => row("",
+    [el("span", {class:"mono"}, m.name || T["settings.tokens.no_model"])], price(m),
+    el("span", {class:"chip"}, m.cli === "codex" ? "Codex" : "Claude Code"), el("span", {class:"hint"}, used(m)))));
+  list(T["settings.tokens.by_folder"], r.folders.slice(0, 12).map(f => row(f.name,
+    [el("span", {class:"mono"}, folderShort(f.name))], price(f),
+    el("span", {class:"hint"}, used(f)))));
+  list(T["settings.tokens.recent"], r.sessions.map(s => row(s.folder + "\n" + s.name,
+    [el("span", {class:"when"}, new Date(s.last * 1000).toLocaleString([], {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"})),
+     el("span", {class:"mono"}, folderShort(s.folder))], price(s),
+    el("span", {class:"hint"}, [s.model, fill(T["settings.tokens.calls_n"], {n: s.calls.toLocaleString()}), used(s)].filter(Boolean).join(" · ")))));
+}
+
 async function accountsFetch(draw) {
   const j = await settingsApi("/api/ai-accounts").catch(() => null);
   if (!j) return;
@@ -10387,6 +10545,8 @@ function globalSections() {
     {id:"ai",        label:T["settings.sec.ai"],        sub:T["settings.sec.ai.sub"],        build:aiAgentsCard},
     // More than one account of Claude Code or Codex, each chosen on a tab
     {id:"aiaccounts", label:T["settings.sec.aiaccounts"], sub:T["settings.sec.aiaccounts.sub"], build:aiAccountsCard},
+    // What the AIs on this PC used, and what it would cost by the token
+    {id:"tokens", label:T["settings.sec.tokens"], sub:T["settings.sec.tokens.sub"], build:tokensCard},
     // The git accounts, and beside them the sign-ins this PC's git and GitHub
     // CLI hold: everything a project can sign in as, in one place for the app
     {id:"gitaccounts", label:T["settings.sec.gitaccounts"], sub:T["settings.sec.gitaccounts.sub"], build:() => [gitAccountsCard(), pcSignInsCard(), ghSignInsCard()]},

@@ -153,6 +153,7 @@ pub mod tailscale;
 pub mod termlink;
 pub mod theme;
 pub mod toast;
+pub mod tokens;
 /// The icon in the notification area. Windows' own, and the only place a
 /// runtime with no window of its own can be seen or ended from
 #[cfg(windows)]

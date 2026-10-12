@@ -275,7 +275,7 @@ fn dotted<'a>(v: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Va
 /// `2026/08` still says "last touched when the 25th was created" and pruning on
 /// that would skip today's records entirely. Listing a folder is cheap; it is
 /// opening and parsing files that is not, and the age test on files spares that.
-fn walk(dir: &Path, depth: usize, since: SystemTime) -> Vec<PathBuf> {
+pub(crate) fn walk(dir: &Path, depth: usize, since: SystemTime) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if depth > 6 {
         return out;

@@ -66,6 +66,12 @@ Claude Code と Codex の複数のアカウント
 
 - **名前** — 仕事用
 
+### トークンと費用
+
+この PC の Claude Code と Codex が使った量
+
+この画面に書き込む欄はありません。出るものは、ほかで決めたことによって変わります。
+
 ### GitHub / Git
 
 Personal access tokens・SSH keys・サインイン
