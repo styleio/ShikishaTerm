@@ -111,6 +111,10 @@ pub struct CodexCarry {
     /// included), cached, output, reasoning
     #[serde(default)]
     pub total: [u64; 4],
+    /// The running total of input written to the cache, beside it. A field
+    /// of its own so a carry kept before it was read still reads
+    #[serde(default)]
+    pub written: u64,
 }
 
 /// A line of a Codex record: a call when it is a count of one, and the
@@ -157,34 +161,42 @@ pub fn codex_line(line: &[u8], carry: &mut CodexCarry) -> Option<Call> {
     // A count with no numbers only says how much of the plan is left
     let info = p.get("info").filter(|i| !i.is_null())?;
     let read = |u: &Value| [n(u, "/input_tokens"), n(u, "/cached_input_tokens").max(n(u, "/cache_read_input_tokens")), n(u, "/output_tokens"), n(u, "/reasoning_output_tokens")];
-    let total = info.get("total_token_usage").map(read);
-    let last = match info.get("last_token_usage").filter(|u| !u.is_null()) {
-        Some(u) => read(u),
+    let total = info.get("total_token_usage").filter(|u| !u.is_null());
+    let total = total.map(|u| (read(u), n(u, "/cache_write_input_tokens")));
+    // The same total counted again is not another call. Codex says it again
+    // when only what is left of the plan changed -- with the last call's
+    // numbers beside it, under a new time
+    if let Some((t, w)) = total {
+        if t == carry.total && w == carry.written {
+            return None;
+        }
+    }
+    let (last, written) = match info.get("last_token_usage").filter(|u| !u.is_null()) {
+        Some(u) => (read(u), n(u, "/cache_write_input_tokens")),
         // Only the total: the call is what it grew by. A total that went
         // down began again (the conversation was compacted or forked), so
         // all of it is this call's
         None => {
-            let t = total?;
-            if t.iter().zip(carry.total.iter()).all(|(a, b)| a >= b) {
-                [t[0] - carry.total[0], t[1] - carry.total[1], t[2] - carry.total[2], t[3] - carry.total[3]]
+            let (t, w) = total?;
+            if t.iter().zip(carry.total.iter()).all(|(a, b)| a >= b) && w >= carry.written {
+                ([t[0] - carry.total[0], t[1] - carry.total[1], t[2] - carry.total[2], t[3] - carry.total[3]], w - carry.written)
             } else {
-                t
+                (t, w)
             }
         }
     };
-    if let Some(t) = total {
-        // The same total counted again is not another call
-        if t == carry.total && info.get("last_token_usage").is_none_or(Value::is_null) {
-            return None;
-        }
-        carry.total = t;
+    if let Some((t, w)) = total {
+        (carry.total, carry.written) = (t, w);
     }
     let stamp = v.get("timestamp").and_then(Value::as_str)?;
     let at = crate::e2b::epoch_of(stamp);
     if at == 0 {
         return None;
     }
+    // Input counts all that went in: what was read from the cache, what was
+    // written to it, and the rest
     let cached = last[1].min(last[0]);
+    let written = written.min(last[0] - cached);
     let call = Call {
         // Codex's own records give a call no id. When it was counted and what
         // it counted is the same wherever the line is copied to -- a resumed
@@ -195,9 +207,9 @@ pub fn codex_line(line: &[u8], carry: &mut CodexCarry) -> Option<Call> {
         model: carry.model.clone(),
         folder: carry.folder.clone(),
         session: carry.session.clone(),
-        fresh_in: last[0] - cached,
+        fresh_in: last[0] - cached - written,
         cache_read: cached,
-        cache_write: 0,
+        cache_write: written,
         cache_write_hour: 0,
         out: last[2],
         reasoning: last[3],
@@ -241,6 +253,21 @@ mod tests {
         assert_eq!((c.model.as_str(), c.folder.as_str(), c.session.as_str()), ("gpt-6-astra", r"D:\work\app", "sess-9"));
         assert_eq!(carry.total, [16116, 16000, 286, 10]);
         assert!(codex_line(br#"{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}}}"#, &mut carry).is_none(), "a count of the plan alone is no call");
+        // Said again when the plan changed: the same total, the same last
+        // call, a new time
+        let again = String::from_utf8_lossy(line).replace("01:07:00.091Z", "01:07:05.000Z");
+        assert!(codex_line(again.as_bytes(), &mut carry).is_none(), "the same total under a new time is not another call");
+    }
+
+    #[test]
+    fn a_codex_cache_write_is_its_own_part_of_the_input() {
+        let mut carry = CodexCarry::default();
+        let line = br#"{"timestamp":"2026-10-09T01:07:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":300,"cache_write_input_tokens":200,"output_tokens":5},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":300,"cache_write_input_tokens":200,"output_tokens":5}}}}"#;
+        let c = codex_line(line, &mut carry).unwrap();
+        assert_eq!((c.fresh_in, c.cache_read, c.cache_write), (500, 300, 200));
+        // A carry kept before writes were read still reads
+        let old: CodexCarry = serde_json::from_str(r#"{"session":"s","folder":"f","model":"m","total":[1,2,3,4]}"#).unwrap();
+        assert_eq!((old.total, old.written), ([1, 2, 3, 4], 0));
     }
 
     #[test]

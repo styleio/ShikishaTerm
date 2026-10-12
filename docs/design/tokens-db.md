@@ -20,9 +20,11 @@ The numbers are copied into an SQLite file, `tokens.db` in the app's state folde
 
 ## The same call is one row
 
-- Claude Code writes an assistant message again while it streams, with larger numbers, under the same message id and request id. The key is `c:<message id>:<request id>`, and a second sighting keeps the largest of each number.
+- Claude Code writes an assistant message again while it streams, with larger numbers, under the same message id and request id. The key is `c:<message id>:<request id>`, and the larger of two sightings is kept whole -- its kinds of token and how it was billed together, not the largest of each from two readings.
 - A conversation resumed or forked copies its earlier lines into a new record. The copies have the same keys, so they are the same rows.
 - Codex gives a call no id. Its key is the time it was counted and the four numbers counted (`x:<time>:<input>:<cached>:<output>:<reasoning>`): the same wherever the line is copied to. Its conversation id is left out, since a resumed conversation is written under another one.
+- Codex says its count again, under a new time, when only what is left of the plan changed. A count whose running total has not moved is not a call. (The first version counted these; step 2 had Codex's records read again.)
+- Codex's records are in `sessions`, and in `archived_sessions` once a conversation is archived; both are read.
 
 ## Prices
 

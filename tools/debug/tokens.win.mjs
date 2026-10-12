@@ -9,7 +9,10 @@
  * through the settings page at a phone's width:
  *   - the card reads the records and shows the calls, the tokens and the
  *     cost at API prices, worked out here by hand from the price lists
- *   - a call written twice is counted once
+ *   - a call written twice is counted once, and so is a Codex count said
+ *     again when only the plan's numbers changed
+ *   - an archived Codex conversation is counted, its cache writes priced as
+ *     writes
  *   - by model, by folder and the latest conversations are listed
  *   - "Read again" after a record grew counts the new call, and only it
  *   - choosing one AI shows that AI's alone
@@ -52,7 +55,8 @@ await sleep(800);
 fs.rmSync(RUN, { recursive: true, force: true });
 const claudeDir = path.join(HOME, '.claude', 'projects', 'C--work');
 const codexDir = path.join(HOME, '.codex', 'sessions', '2026', '10', '12');
-for (const d of [path.join(APP, 'config'), WORK, claudeDir, codexDir]) fs.mkdirSync(d, { recursive: true });
+const archivedDir = path.join(HOME, '.codex', 'archived_sessions');
+for (const d of [path.join(APP, 'config'), WORK, claudeDir, codexDir, archivedDir]) fs.mkdirSync(d, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 const appExe = path.join(APP, 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(appExe)) die('staging failed:\n' + staged.stdout + staged.stderr);
@@ -78,14 +82,27 @@ fs.writeFileSync(codexFile, [
     total_token_usage: { input_tokens: 10000, cached_input_tokens: 4000, output_tokens: 2000, reasoning_output_tokens: 100 },
     last_token_usage: { input_tokens: 10000, cached_input_tokens: 4000, output_tokens: 2000, reasoning_output_tokens: 100 } } } },
   { timestamp: now, type: 'event_msg', payload: { type: 'token_count', info: null } },
+  // Said again when only the plan changed: the same numbers, a new time
+  { timestamp: new Date(Date.now() + 5000).toISOString(), type: 'event_msg', payload: { type: 'token_count', info: {
+    total_token_usage: { input_tokens: 10000, cached_input_tokens: 4000, output_tokens: 2000, reasoning_output_tokens: 100 },
+    last_token_usage: { input_tokens: 10000, cached_input_tokens: 4000, output_tokens: 2000, reasoning_output_tokens: 100 } } } },
+].map((l) => JSON.stringify(l)).join('\n') + '\n');
+fs.writeFileSync(path.join(archivedDir, 'rollout-2026-10-12T00-00-00-codex-conv-2.jsonl'), [
+  { timestamp: now, type: 'session_meta', payload: { id: 'codex-conv-2', cwd: WORK } },
+  { timestamp: now, type: 'turn_context', payload: { model: 'gpt-6-astra', cwd: WORK } },
+  { timestamp: now, type: 'event_msg', payload: { type: 'token_count', info: {
+    total_token_usage: { input_tokens: 1000, cached_input_tokens: 0, cache_write_input_tokens: 200, output_tokens: 100, reasoning_output_tokens: 0 },
+    last_token_usage: { input_tokens: 1000, cached_input_tokens: 0, cache_write_input_tokens: 200, output_tokens: 100, reasoning_output_tokens: 0 } } } },
 ].map((l) => JSON.stringify(l)).join('\n') + '\n');
 // By hand, from the price lists ($ per million tokens):
 //   Opus 5.5: 1000 in x 4 + 2000 cache read x 0.2 + 2000 five-minute writes x 5
 //             + 1000 hour writes x 8 + 500 out x 20                 = 0.0324
 //   Opus 5.5 fast: (1000 x 4 + 1000 x 20) x 2                       = 0.048
 //   GPT-5.5: 6000 in x 5 + 4000 cached x 0.5 + 2000 out x 30        = 0.092
+//   GPT-6 Astra (archived): 800 in x 10 + 200 cache writes x 12.5
+//             + 100 out x 50                                        = 0.0155
 const claudeCost = 0.0324 + 0.048;
-const codexCost = 0.092;
+const codexCost = 0.092 + 0.0155;
 
 fs.writeFileSync(path.join(APP, 'config', 'config.json'), JSON.stringify({
   language: 'en',
@@ -125,16 +142,17 @@ try {
   }, 'the records to be read', 60000);
   const first = await settled('days=7');
   const t = first.report.total;
-  check(t.calls === 3, `three calls are counted, the one written twice once (${t.calls})`);
-  check(t.out === 500 + 1000 + 2000 && t.fresh_in === 1000 + 1000 + 6000 && t.cache_read === 2000 + 4000 && t.cache_write === 3000,
+  check(t.calls === 4, `four calls are counted, each written twice once (${t.calls})`);
+  check(t.out === 500 + 1000 + 2000 + 100 && t.fresh_in === 1000 + 1000 + 6000 + 800 && t.cache_read === 2000 + 4000 && t.cache_write === 3000 + 200,
     `each kind of token is added up (${JSON.stringify({ fresh_in: t.fresh_in, cache_read: t.cache_read, cache_write: t.cache_write, out: t.out })})`);
   check(near(t.cost, claudeCost + codexCost), `the cost is what the price lists say, fast mode doubled (${t.cost})`);
-  check(first.report.models.length === 2 && first.report.models.some((m) => m.name === 'gpt-5.5' && m.cli === 'codex'), 'by model lists both');
+  check(first.report.models.length === 3 && first.report.models.some((m) => m.name === 'gpt-5.5' && m.cli === 'codex') && first.report.models.some((m) => m.name === 'gpt-6-astra'),
+    'by model lists every model, the archived conversation\'s too');
   check(first.report.folders.length === 1 && path.resolve(first.report.folders[0].name) === path.resolve(WORK), 'by folder names the folder they worked in');
-  check(first.report.sessions.length === 2, 'both conversations are among the latest');
+  check(first.report.sessions.length === 3, 'every conversation is among the latest');
   check(fs.existsSync(path.join(APP, 'data', 'tokens.db')), 'the record is in the app\'s data folder');
   const one = (await (await send('/api/tokens?days=7&cli=codex')).json()).report.total;
-  check(one.calls === 1 && near(one.cost, codexCost), `one AI alone is that AI's (${one.calls}, ${one.cost})`);
+  check(one.calls === 2 && near(one.cost, codexCost), `one AI alone is that AI's (${one.calls}, ${one.cost})`);
 
   // Grown: read again, only the new call is added
   fs.appendFileSync(claudeFile, claude('msg-c', { input_tokens: 0, output_tokens: 100000 }, 'claude-haiku-5-5'));
@@ -142,7 +160,7 @@ try {
   await send('/api/tokens?days=7&again=1');
   const grown = await until(async () => {
     const j = await (await send('/api/tokens?days=7')).json();
-    return !j.looking.running && j.looking.ended >= before && j.report.total.calls === 4 && j;
+    return !j.looking.running && j.looking.ended >= before && j.report.total.calls === 5 && j;
   }, 'the new call', 30000).catch(() => null);
   check(!!grown && near(grown.report.total.cost, claudeCost + codexCost + 0.05), `"Read again" counts the call added, and nothing twice (${grown && grown.report.total.cost})`);
 
@@ -153,13 +171,19 @@ try {
   await until(() => chrome.run(`typeof S !== "undefined" && !!S`), 'the board in the browser', 30000);
   await chrome.send('Page.navigate', { url: `${BASE}/cfg?section=tokens` });
   const shown = await until(() => chrome.run(`(() => { const s = document.querySelector(".tkstats"); return s ? s.innerText : ""; })()`), 'the card', 30000).catch(() => '');
-  check(/\$0\.22/.test(shown) && /\b4\b/.test(shown), `the card shows the cost and the calls (${shown.replace(/\s+/g, ' ').slice(0, 160)})`);
+  check(/\$0\.24/.test(shown) && /\b5\b/.test(shown), `the card shows the cost and the calls (${shown.replace(/\s+/g, ' ').slice(0, 160)})`);
   const lists = await chrome.run(`[...document.querySelectorAll(".tkhead")].map(h => h.textContent).join(" | ")`);
   check(/By model/.test(lists) && /By folder/.test(lists) && /Latest conversations/.test(lists) && /by day/.test(lists), `the card lists by day, model, folder and conversation (${lists})`);
   const bars = await chrome.run(`document.querySelectorAll(".tkbars i").length`);
   check(bars === 30, `one bar a day of the period (${bars})`);
   const wide = await chrome.run(`document.documentElement.scrollWidth <= innerWidth`);
   check(wide, 'nothing runs off the side at a phone\'s width');
+  // A year: 365 bars, all within the card
+  await chrome.run(`(() => { const s = document.querySelector(".tkctl select"); s.value = "365"; s.dispatchEvent(new Event("change")); })()`);
+  const year = await until(() => chrome.run(`(() => { const b = document.querySelector(".tkbars"); if (!b || b.children.length !== 365) return null;
+    const box = b.getBoundingClientRect(), last = b.lastElementChild.getBoundingClientRect();
+    return {fits: last.right <= box.right + 0.5 && b.scrollWidth <= b.clientWidth + 1}; })()`), 'the year', 20000).catch(() => null);
+  check(year && year.fits, 'a year of bars fits the card, the newest day in sight');
   if (process.env.SHOT) {
     const shot = await chrome.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     fs.writeFileSync(path.join(process.env.SHOT, 'tokens-card.png'), Buffer.from(shot.data, 'base64'));

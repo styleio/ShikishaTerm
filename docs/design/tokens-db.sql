@@ -1,4 +1,4 @@
--- The record of tokens used (data/tokens.db), version 1.
+-- The record of tokens used (data/tokens.db), version 2.
 -- Written by a test from the steps in crates/core/src/tokens/migrations;
 -- what each table is for is in tokens-db.md. Write it again with
 --     SHIKISHA_WRITE_DOCS=1 cargo test -p shikisha-core tokens_db

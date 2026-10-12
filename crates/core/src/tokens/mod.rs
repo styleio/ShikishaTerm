@@ -27,7 +27,10 @@ const WHAT: &str = "the record of tokens used";
 
 /// Every change to the tables, in order. A step is never edited once it has
 /// shipped
-pub const STEPS: &[(i64, &str, Step)] = &[(1, "first", Step::Sql(include_str!("migrations/0001_first.sql")))];
+pub const STEPS: &[(i64, &str, Step)] = &[
+    (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
+    (2, "codex_again", Step::Sql(include_str!("migrations/0002_codex_again.sql"))),
+];
 
 /// How long a call is kept: a year, and a month over it, so the year view
 /// always has a whole year to show
@@ -48,6 +51,8 @@ const FRESH_SECS: u64 = 60;
 const PLACES: &[(&str, &str, &str)] = &[
     ("claude", "{home}/.claude/projects", ".jsonl"),
     ("codex", "{home}/.codex/sessions", ".jsonl"),
+    // Where Codex moves a conversation archived from its list
+    ("codex", "{home}/.codex/archived_sessions", ".jsonl"),
 ];
 
 /// Where the record is kept
@@ -66,9 +71,12 @@ pub struct Looking {
     pub ended: u64,
     /// Why the last look failed, when it did
     pub error: Option<String>,
+    /// Records that could not be read: what is counted leaves them out until
+    /// a look reads them
+    pub failed: usize,
 }
 
-static LOOKING: Mutex<Looking> = Mutex::new(Looking { running: false, done: 0, total: 0, ended: 0, error: None });
+static LOOKING: Mutex<Looking> = Mutex::new(Looking { running: false, done: 0, total: 0, ended: 0, error: None, failed: 0 });
 
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
@@ -125,10 +133,13 @@ fn look_now(db: &Path) -> Result<()> {
     let files = records();
     LOOKING.lock().unwrap_or_else(|e| e.into_inner()).total = files.len();
     for (i, (cli, file)) in files.iter().enumerate() {
-        if let Err(e) = read_one(&mut conn, cli, file) {
+        let failed = read_one(&mut conn, cli, file).err();
+        if let Some(e) = &failed {
             crate::append_hook_log(&format!("tokens: {} could not be read: {e:#}", file.display()));
         }
-        LOOKING.lock().unwrap_or_else(|e| e.into_inner()).done = i + 1;
+        let mut l = LOOKING.lock().unwrap_or_else(|e| e.into_inner());
+        l.done = i + 1;
+        l.failed += usize::from(failed.is_some());
     }
     let oldest = now().saturating_sub(DAYS_KEPT * 86_400) as i64 * 1000;
     conn.execute("DELETE FROM calls WHERE at < ?1", params![oldest])?;
@@ -182,10 +193,15 @@ fn read_one(conn: &mut Connection, cli: &'static str, path: &Path) -> Result<()>
             "INSERT INTO calls (key, cli, at, day, model, folder, session, fresh_in, cache_read, cache_write, cache_write_hour, out, reasoning, is_fast, is_us)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(key) DO UPDATE SET
-               fresh_in = max(fresh_in, excluded.fresh_in), cache_read = max(cache_read, excluded.cache_read),
-               cache_write = max(cache_write, excluded.cache_write), cache_write_hour = max(cache_write_hour, excluded.cache_write_hour),
-               out = max(out, excluded.out), reasoning = max(reasoning, excluded.reasoning),
-               model = CASE WHEN excluded.model <> '' THEN excluded.model ELSE model END",
+               fresh_in = excluded.fresh_in, cache_read = excluded.cache_read, cache_write = excluded.cache_write,
+               cache_write_hour = excluded.cache_write_hour, out = excluded.out, reasoning = excluded.reasoning,
+               is_fast = excluded.is_fast, is_us = excluded.is_us,
+               model = CASE WHEN excluded.model <> '' THEN excluded.model ELSE calls.model END
+             -- The same call written again as it streamed: the larger of the
+             -- two, taken whole, so its kinds of token and how it was billed
+             -- stay one reading rather than the largest of each from two
+             WHERE excluded.fresh_in + excluded.cache_read + excluded.cache_write + excluded.cache_write_hour + excluded.out
+                >= calls.fresh_in + calls.cache_read + calls.cache_write + calls.cache_write_hour + calls.out",
         )?;
         loop {
             line.clear();
@@ -221,7 +237,9 @@ fn read_one(conn: &mut Connection, cli: &'static str, path: &Path) -> Result<()>
             }
         }
     }
-    let mut file = std::fs::File::open(path)?;
+    // Through the file that was read, not the name: a record replaced under
+    // it meanwhile is not taken for the one that was read
+    let mut file = lines.into_inner();
     let edge = sample(&mut file, read_to - read_to.min(SAMPLE), read_to.min(SAMPLE))?;
     tx.execute(
         "INSERT INTO read_files (path, cli, size, read_to, head, edge, carry, read_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -309,14 +327,15 @@ const SESSIONS_SHOWN: usize = 20;
 /// What the last `days` days used (today among them), of `cli` alone when one
 /// is named. Read over a connection of its own, beside a look going on
 pub fn report(db: &Path, days: u32, cli: Option<&str>) -> Result<Report> {
-    let today = now();
-    let span: Vec<String> = (0..days.max(1) as u64).rev().map(|back| local_day(today.saturating_sub(back * 86_400))).collect();
+    let span = last_days(now(), days.max(1));
     let mut out = Report { from: span[0].clone(), to: span[span.len() - 1].clone(), ..Default::default() };
-    if !db.exists() {
+    let Some(mut conn) = open_read(db)? else {
         out.days = span.iter().map(|d| Line { name: d.clone(), ..Default::default() }).collect();
         return Ok(out);
-    }
-    let conn = crate::sqlite::open(db, STEPS, WHAT)?;
+    };
+    // One reading of the file for every part of the answer, while a look
+    // may be adding to it
+    let conn = conn.transaction()?;
     let band = format!(
         "CASE WHEN fresh_in + cache_read + cache_write + cache_write_hour > {} THEN 2 WHEN fresh_in + cache_read + cache_write + cache_write_hour > {} THEN 1 ELSE 0 END",
         price::BANDS[1],
@@ -376,6 +395,57 @@ pub fn report(db: &Path, days: u32, cli: Option<&str>) -> Result<Report> {
     Ok(out)
 }
 
+/// A connection that only reads, beside a look writing: the look alone makes
+/// and brings the file up to date. `None` while there is no file yet, or one
+/// a look has not finished making
+fn open_read(db: &Path) -> Result<Option<Connection>> {
+    if !db.exists() {
+        return Ok(None);
+    }
+    let conn = crate::sqlite::peek(db)?;
+    let have: Option<i64> = match conn.query_row("SELECT value FROM meta WHERE key = 'schema'", [], |r| r.get::<_, String>(0)) {
+        Ok(v) => v.parse().ok(),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        // No table to say a version yet: the look is making the file
+        Err(rusqlite::Error::SqliteFailure(_, Some(m))) if m.contains("no such table") => None,
+        Err(e) => return Err(e.into()),
+    };
+    match have {
+        Some(v) if v == STEPS.len() as i64 => Ok(Some(conn)),
+        Some(v) if v > STEPS.len() as i64 => anyhow::bail!("{WHAT} is at version {v}; this build reads version {}", STEPS.len()),
+        _ => Ok(None),
+    }
+}
+
+/// The last `days` dates by this PC's calendar, oldest first, today last.
+/// Counted in dates, not in spans of 24 hours: a day the clocks change on is
+/// 23 or 25 hours long
+pub fn last_days(now: u64, days: u32) -> Vec<String> {
+    let (y, m, d, _, _) = crate::hooks::local_at(now);
+    let today = crate::e2b::days_from_civil(i64::from(y), i64::from(m), i64::from(d));
+    (0..i64::from(days))
+        .rev()
+        .map(|back| {
+            let (y, m, d) = civil_from_days(today - back);
+            format!("{y:04}-{m:02}-{d:02}")
+        })
+        .collect()
+}
+
+/// The date a count of days since 1970-01-01 falls on (the inverse of
+/// `e2b::days_from_civil`, by the same method)
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
 /// One group of calls of one model, priced. `col(i)` reads the i-th of the
 /// sums in the order the queries give them
 fn priced(model: &str, fast: bool, us: bool, band: usize, col: impl Fn(usize) -> rusqlite::Result<u64>) -> rusqlite::Result<Sum> {
@@ -410,20 +480,53 @@ mod tests {
     fn today_at() -> String {
         let at = now();
         let secs = at % 86_400;
-        let (y, m, d) = civil(at / 86_400);
+        let (y, m, d) = civil_from_days((at / 86_400) as i64);
         format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", secs / 3600, secs % 3600 / 60, secs % 60)
     }
 
-    fn civil(days: u64) -> (i64, u32, u32) {
-        let z = days as i64 + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-        (yoe + era * 400 + i64::from(m <= 2), m, d)
+    #[test]
+    fn days_are_counted_by_the_calendar() {
+        for days in [0i64, 59, 60, 365, 20_000, 20_514] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(crate::e2b::days_from_civil(y, i64::from(m), i64::from(d)), days);
+        }
+        let week = last_days(now(), 7);
+        assert_eq!(week.len(), 7);
+        assert_eq!(week[6], local_day(now()));
+        let mut sorted = week.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted, week, "seven dates, each once, oldest first");
+    }
+
+    #[test]
+    fn a_call_written_again_is_taken_whole() {
+        let dir = scratch("whole");
+        let db = dir.join("tokens.db");
+        let rec = dir.join("a.jsonl");
+        let at = today_at();
+        // First written with its cache writes as five-minute ones and no
+        // fast mode; then, larger, as hour-long writes in fast mode
+        let early = claude_call("m1", &at, 10).replace(r#""cache_creation_input_tokens":0"#, r#""cache_creation_input_tokens":100"#);
+        let late = claude_call("m1", &at, 20)
+            .replace(r#""cache_creation_input_tokens":0"#, r#""cache_creation_input_tokens":100,"cache_creation":{"ephemeral_1h_input_tokens":100},"speed":"fast""#);
+        std::fs::write(&rec, early + &late).unwrap();
+        let mut conn = crate::sqlite::open(&db, STEPS, WHAT).unwrap();
+        read_one(&mut conn, "claude", &rec).unwrap();
+        let (five, hour, fast): (i64, i64, i64) = conn.query_row("SELECT cache_write, cache_write_hour, is_fast FROM calls", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((five, hour, fast), (0, 100, 1), "the later reading whole, not the largest of each");
+    }
+
+    #[test]
+    fn the_report_waits_for_a_file_the_look_has_not_made() {
+        let dir = scratch("early");
+        let db = dir.join("tokens.db");
+        assert_eq!(report(&db, 7, None).unwrap().total.calls, 0, "no file yet");
+        // A file a look has only begun: nothing to say, and nothing written
+        rusqlite::Connection::open(&db).unwrap();
+        assert_eq!(report(&db, 7, None).unwrap().total.calls, 0);
+        assert!(crate::sqlite::peek(&db).unwrap().query_row("SELECT name FROM sqlite_master", [], |r| r.get::<_, String>(0)).is_err(), "reading made no tables");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -483,6 +586,28 @@ mod tests {
         assert_eq!(r.sessions.len(), 1);
         assert_eq!(r.sessions[0].sum.calls, 2);
         assert_eq!(report(&db, 7, Some("codex")).unwrap().total.calls, 0, "one AI alone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A record the first version wrote: copied aside, then brought up to
+    /// date with Claude's calls kept and Codex's left to be read again
+    #[test]
+    fn a_first_version_record_keeps_claude_and_reads_codex_again() {
+        let dir = scratch("upgrade");
+        let db = dir.join("tokens.db");
+        {
+            let conn = crate::sqlite::open(&db, &STEPS[..1], WHAT).unwrap();
+            for (key, cli) in [("c:1", "claude"), ("x:1", "codex")] {
+                conn.execute("INSERT INTO calls (key, cli, at, day) VALUES (?1, ?2, 0, '2026-10-12')", params![key, cli]).unwrap();
+                conn.execute("INSERT INTO read_files (path, cli, size, read_to, head, edge, read_at) VALUES (?1, ?2, 1, 1, '', '', 0)", params![key, cli]).unwrap();
+            }
+        }
+        let conn = crate::sqlite::open(&db, STEPS, WHAT).unwrap();
+        let left: Vec<String> = conn.prepare("SELECT cli FROM calls UNION ALL SELECT cli FROM read_files").unwrap()
+            .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(left, ["claude", "claude"]);
+        assert!(dir.join("tokens.v1.bak").exists() || std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".bak")), "copied aside first");
+        drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

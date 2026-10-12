@@ -3199,9 +3199,13 @@ fn handle(
             let days = query_param(&url, "days").and_then(|d| d.parse::<u32>().ok()).unwrap_or(30).clamp(1, crate::tokens::DAYS_KEPT as u32);
             let cli = query_param(&url, "cli").filter(|c| c == "claude" || c == "codex");
             crate::tokens::look(query_param(&url, "again").is_some());
+            // How the look stood before the counts were read: one that ended
+            // while they were being read says it is still going, so the card
+            // asks once more rather than showing a count from before its end
+            let looking = crate::tokens::looking();
             let body = match crate::tokens::report(&crate::tokens::path(), days, cli.as_deref()) {
-                Ok(report) => serde_json::json!({"looking": crate::tokens::looking(), "report": report}),
-                Err(e) => serde_json::json!({"looking": crate::tokens::looking(), "error": format!("{e:#}")}),
+                Ok(report) => serde_json::json!({"looking": looking, "report": report}),
+                Err(e) => serde_json::json!({"looking": looking, "error": format!("{e:#}")}),
             };
             req.respond(json_resp(body))?;
         }
@@ -6069,7 +6073,11 @@ const PAGE: &str = r##"<!doctype html>
  .tkstat .v { font-size:14px; color:var(--text); font-variant-numeric:tabular-nums; margin-top:2px; }
  .tkhead { font-size:12px; color:var(--text); margin:var(--s4) 0 var(--s2); }
  .tkbars { display:flex; align-items:flex-end; gap:2px; height:72px; border-bottom:1px solid var(--line); }
- .tkbars i { flex:1 1 0; min-width:2px; background:var(--brand); border-radius:2px 2px 0 0; }
+ .tkbars i { flex:1 1 0; min-width:0; background:var(--brand); border-radius:2px 2px 0 0; }
+ .tkbars.close { gap:1px; }
+ .tkbars.dense { gap:0; }
+ .tkbars.dense i { border-radius:0; }
+ .hint.warn { color:var(--warn); }
  .tkaxis { display:flex; justify-content:space-between; font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums; margin-top:var(--s1); }
  .rows > .listrow.tkrow { display:grid; grid-template-columns:minmax(0, 1fr) auto; column-gap:var(--s3); row-gap:2px; padding:7px var(--s3); }
  .tkrow .nm { display:flex; gap:var(--s2); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -9388,6 +9396,7 @@ function drawTokens(j, status, body) {
       : l.ended ? fill(T["settings.tokens.read_at"], {time: new Date(l.ended * 1000).toLocaleString()}) : "";
   const r = j.report;
   body.textContent = "";
+  if (!l.running && l.failed) body.append(el("div", {class:"hint warn"}, fill(T["settings.tokens.failed_some"], {n: l.failed.toLocaleString()})));
   if (!r) return;
   const t = r.total || {};
   if (!t.calls) {
@@ -9410,7 +9419,9 @@ function drawTokens(j, status, body) {
   const byCost = t.cost > 0;
   const size = d => byCost ? d.cost : d.fresh_in + d.cache_read + d.cache_write + d.out;
   const top = Math.max(...r.days.map(size), 0);
-  const bars = el("div", {class:"tkbars"});
+  // A year of days is more bars than a phone has pixels for two: they
+  // close up, and narrow, rather than run off the side
+  const bars = el("div", {class:"tkbars" + (r.days.length > 90 ? " dense" : r.days.length > 31 ? " close" : "")});
   for (const d of r.days) {
     const bar = el("i", {title: d.name + ": " + (byCost ? dollars(d.cost) : tokensShort(size(d)))});
     bar.style.height = (top ? Math.max(size(d) ? 2 : 0, size(d) * 100 / top) : 0) + "%";

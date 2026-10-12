@@ -2705,7 +2705,7 @@ pub(crate) fn epoch_of(said: &str) -> u64 {
 /// Days between a date and 1970-01-01, by Howard Hinnant's method: the leap
 /// year rule repeats every 400 years, so counting whole eras and the days
 /// inside one needs no table and no loop
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;

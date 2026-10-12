@@ -46,10 +46,11 @@ const fn claude(input: f64, cache_write: f64, cache_write_hour: f64, cache_read:
     Rate { input, cache_read, cache_write, cache_write_hour, out }
 }
 
-/// OpenAI writes no separate price for a cache write; cached input is read
-/// at its own price, or at the input price where none is listed (`-`)
-const fn openai(input: f64, cached: f64, out: f64) -> Rate {
-    Rate { input, cache_read: cached, cache_write: input, cache_write_hour: input, out }
+/// OpenAI's prices: input, cached input, a cache write and output. Where
+/// the list gives no price for cached input or a cache write (`-`), it is
+/// billed as input, which is how these are passed here
+const fn openai(input: f64, cached: f64, write: f64, out: f64) -> Rate {
+    Rate { input, cache_read: cached, cache_write: write, cache_write_hour: write, out }
 }
 
 const fn plain(rate: Rate) -> Price {
@@ -79,25 +80,25 @@ fn listed(model: &str) -> Option<Price> {
         },
         "claude-haiku-4-5" => plain(claude(1.0, 1.25, 2.0, 0.1, 5.0)),
         "claude-haiku-3-5" => plain(claude(0.8, 1.0, 1.6, 0.08, 4.0)),
-        "gpt-6-astra" => long_openai(openai(10.0, 1.0, 50.0), openai(20.0, 2.0, 75.0)),
-        "gpt-6.1-sol" => long_openai(openai(2.0, 0.1, 10.0), openai(4.0, 0.2, 15.0)),
-        "gpt-6-sol" => long_openai(openai(2.0, 0.2, 10.0), openai(4.0, 0.4, 15.0)),
-        "gpt-6-luna" => long_openai(openai(0.1, 0.01, 0.5), openai(0.2, 0.02, 0.75)),
-        "gpt-5.6-sol" => long_openai(openai(4.0, 0.4, 20.0), openai(8.0, 0.8, 30.0)),
-        "gpt-5.6-terra" => long_openai(openai(2.0, 0.2, 12.0), openai(4.0, 0.4, 18.0)),
-        "gpt-5.6-luna" => long_openai(openai(0.2, 0.02, 1.2), openai(0.4, 0.04, 1.8)),
-        "gpt-5.5" => long_openai(openai(5.0, 0.5, 30.0), openai(10.0, 1.0, 45.0)),
-        "gpt-5.5-pro" => long_openai(openai(30.0, 30.0, 180.0), openai(60.0, 60.0, 270.0)),
-        "gpt-5.4" => long_openai(openai(2.5, 0.25, 15.0), openai(5.0, 0.5, 22.5)),
-        "gpt-5.4-pro" => long_openai(openai(30.0, 30.0, 180.0), openai(60.0, 60.0, 270.0)),
-        "gpt-5.4-mini" => plain(openai(0.75, 0.075, 4.5)),
-        "gpt-5.4-nano" => plain(openai(0.2, 0.02, 1.25)),
-        "gpt-5.3-codex" | "gpt-5.2" => plain(openai(1.75, 0.175, 14.0)),
-        "gpt-5.2-pro" => plain(openai(21.0, 21.0, 168.0)),
-        "gpt-5.1" | "gpt-5" => plain(openai(1.25, 0.125, 10.0)),
-        "gpt-5-mini" => plain(openai(0.25, 0.025, 2.0)),
-        "gpt-5-nano" => plain(openai(0.05, 0.005, 0.4)),
-        "gpt-5-pro" => plain(openai(15.0, 15.0, 120.0)),
+        "gpt-6-astra" => long_openai(openai(10.0, 1.0, 12.5, 50.0), openai(20.0, 2.0, 25.0, 75.0)),
+        "gpt-6.1-sol" => long_openai(openai(2.0, 0.1, 2.5, 10.0), openai(4.0, 0.2, 5.0, 15.0)),
+        "gpt-6-sol" => long_openai(openai(2.0, 0.2, 2.5, 10.0), openai(4.0, 0.4, 5.0, 15.0)),
+        "gpt-6-luna" => long_openai(openai(0.1, 0.01, 0.125, 0.5), openai(0.2, 0.02, 0.25, 0.75)),
+        "gpt-5.6-sol" => long_openai(openai(4.0, 0.4, 5.0, 20.0), openai(8.0, 0.8, 10.0, 30.0)),
+        "gpt-5.6-terra" => long_openai(openai(2.0, 0.2, 2.5, 12.0), openai(4.0, 0.4, 5.0, 18.0)),
+        "gpt-5.6-luna" => long_openai(openai(0.2, 0.02, 0.25, 1.2), openai(0.4, 0.04, 0.5, 1.8)),
+        "gpt-5.5" => long_openai(openai(5.0, 0.5, 5.0, 30.0), openai(10.0, 1.0, 10.0, 45.0)),
+        "gpt-5.5-pro" => long_openai(openai(30.0, 30.0, 30.0, 180.0), openai(60.0, 60.0, 60.0, 270.0)),
+        "gpt-5.4" => long_openai(openai(2.5, 0.25, 2.5, 15.0), openai(5.0, 0.5, 5.0, 22.5)),
+        "gpt-5.4-pro" => long_openai(openai(30.0, 30.0, 30.0, 180.0), openai(60.0, 60.0, 60.0, 270.0)),
+        "gpt-5.4-mini" => plain(openai(0.75, 0.075, 0.75, 4.5)),
+        "gpt-5.4-nano" => plain(openai(0.2, 0.02, 0.2, 1.25)),
+        "gpt-5.3-codex" | "gpt-5.2-codex" | "gpt-5.2" => plain(openai(1.75, 0.175, 1.75, 14.0)),
+        "gpt-5.2-pro" => plain(openai(21.0, 21.0, 21.0, 168.0)),
+        "gpt-5.1" | "gpt-5" | "gpt-5.1-codex" | "gpt-5.1-codex-max" | "gpt-5-codex" => plain(openai(1.25, 0.125, 1.25, 10.0)),
+        "gpt-5.1-codex-mini" | "gpt-5-mini" => plain(openai(0.25, 0.025, 0.25, 2.0)),
+        "gpt-5-nano" => plain(openai(0.05, 0.005, 0.05, 0.4)),
+        "gpt-5-pro" => plain(openai(15.0, 15.0, 15.0, 120.0)),
         _ => return None,
     })
 }
@@ -131,15 +132,12 @@ pub fn tidy(model: &str) -> String {
     m
 }
 
-/// The price of a model by the name its CLI wrote down, if it is listed. A
-/// Codex variant without a price of its own (`gpt-5.1-codex`) is the model
-/// it is a variant of
+/// The price of a model by the name its CLI wrote down, if it is listed.
+/// Every variant is listed by its own name: a variant priced like its model
+/// today (`gpt-5.1-codex`) is not a promise that the next one will be --
+/// `gpt-5.1-codex-mini` costs a fifth of `gpt-5.1`
 pub fn of(model: &str) -> Option<Price> {
-    let m = tidy(model);
-    listed(&m).or_else(|| {
-        let base = m.split("-codex").next().filter(|b| *b != m)?;
-        listed(base)
-    })
+    listed(&tidy(model))
 }
 
 /// What a group of calls of one model cost, in US dollars. `band` is how
@@ -177,7 +175,10 @@ mod tests {
         assert_eq!(tidy("Claude-Sonnet-5-5[1m]"), "claude-sonnet-5-5");
         assert_eq!(tidy("anthropic/claude-haiku-4-5@20251001"), "claude-haiku-4-5");
         assert_eq!(tidy("gpt-5.4"), "gpt-5.4", "OpenAI's dots are part of the name");
-        assert!(of("gpt-5.1-codex-max").is_some(), "a Codex variant is its model's price");
+        assert!(of("gpt-5.1-codex-max").is_some(), "a Codex variant listed by its own name");
+        let mini = of("gpt-5.1-codex-mini").unwrap();
+        assert!((mini.rate.input - 0.25).abs() < 1e-9, "not the model it is a variant of");
+        assert!(of("gpt-5.9-codex").is_none(), "a variant not listed is not given its model's price");
         assert!(of("claude-opus-4-9").is_none(), "an unlisted model has no price, not a neighbour's");
         assert!(of("<synthetic>").is_none());
     }

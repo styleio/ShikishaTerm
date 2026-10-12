@@ -1299,6 +1299,7 @@
   "settings.tokens.reading": "Reading the records… {done} of {total}",
   "settings.tokens.read_at": "Records read at {time}",
   "settings.tokens.failed": "The records could not be read: {why}",
+  "settings.tokens.failed_some": "{n} records could not be read, and are not counted yet. Read again to try them once more.",
   "settings.tokens.none": "Nothing was used in this period.",
   "settings.tokens.cost": "Cost at API prices",
   "settings.tokens.calls": "Calls to a model",

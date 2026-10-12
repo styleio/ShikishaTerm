@@ -1301,6 +1301,7 @@
   "settings.tokens.reading": "記録を読んでいます… {total} 件中 {done} 件",
   "settings.tokens.read_at": "{time} に記録を読みました",
   "settings.tokens.failed": "記録を読めませんでした: {why}",
+  "settings.tokens.failed_some": "{n} 件の記録を読めなかったため、まだ数に入っていません。もう一度読むには「読み直す」を押してください。",
   "settings.tokens.none": "この期間に使った記録はありません。",
   "settings.tokens.cost": "API 料金での費用",
   "settings.tokens.calls": "モデルの呼び出し回数",
