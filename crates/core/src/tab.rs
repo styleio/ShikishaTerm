@@ -5685,6 +5685,12 @@ impl Tab {
         }
     }
 
+    /// The question on screen, as the dialog asks it (see
+    /// `detect::question_region`)
+    pub fn question_matched(&self) -> Option<&str> {
+        self.detector.question_matched()
+    }
+
     /// What the program last said about itself, while it still stands
     pub fn hook_word(&self) -> Option<TabState> {
         self.detector.hook_word()

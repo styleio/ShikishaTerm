@@ -4,6 +4,28 @@
 
 use crate::profile::Profile;
 
+/// The question a dialog asks, from the screen where a question pattern
+/// matched at byte `at`: the line it begins on and the lines after it, up to
+/// the first that offers a choice (`›`/`❯` or `1.`). Which choice the cursor
+/// is on, a spinner or a clock elsewhere on screen, a redraw at a new width:
+/// none of it changes which question is being asked
+pub fn question_region(screen: &str, at: usize) -> String {
+    let start = screen[..at].rfind('\n').map_or(0, |i| i + 1);
+    let choice = |l: &str| {
+        let l = l.trim_start();
+        l.starts_with('›') || l.starts_with('❯') || l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    };
+    let mut lines = Vec::new();
+    for (i, l) in screen[start..].lines().enumerate() {
+        if i > 0 && choice(l) || i >= 8 {
+            break;
+        }
+        lines.push(l.split_whitespace().collect::<Vec<_>>().join(" "));
+    }
+    lines.retain(|l| !l.is_empty());
+    lines.join("\n")
+}
+
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
 
@@ -272,6 +294,10 @@ pub struct Detector {
     working_shown: bool,
     /// The string that actually matched (to trace false positives)
     working_matched: Option<String>,
+    /// The question on screen at the last tick, as the dialog says it: the
+    /// line it begins on and what follows it up to its first choice (see
+    /// [`question_region`]). `None` while no question pattern matches
+    question_matched: Option<String>,
     last_bell: u64,
     /// The last thing the program said about itself, while it still stands
     word: Option<Word>,
@@ -298,6 +324,7 @@ impl Detector {
             was_active: false,
             working_shown: false,
             working_matched: None,
+            question_matched: None,
             last_bell: 0,
             word: None,
             title_busy: false,
@@ -351,6 +378,13 @@ impl Detector {
     /// Whether the "working" indicator was showing at the last tick
     pub fn working_shown(&self) -> bool {
         self.working_shown
+    }
+
+    /// The question on screen at the last tick, as the dialog says it
+    /// (`None` when none matched -- a question the program reported by its
+    /// hook may be one the screen has not drawn yet)
+    pub fn question_matched(&self) -> Option<&str> {
+        self.question_matched.as_deref()
     }
 
     /// The string that triggered the "working" judgment (to trace false positives)
@@ -515,7 +549,13 @@ impl Detector {
         let bell_rang = bell_count > self.last_bell;
         self.last_bell = bell_count;
 
-        if self.profile.question.iter().any(|r| r.is_match(screen_text)) {
+        self.question_matched = self
+            .profile
+            .question
+            .iter()
+            .find_map(|r| r.find(screen_text))
+            .map(|m| question_region(screen_text, m.start()));
+        if self.question_matched.is_some() {
             self.state = TabState::Question;
             return self.state;
         }
@@ -822,6 +862,31 @@ mod tests {
         let spinner = "• Working (0s • esc to interrupt)";
         d.tick(spinner, 100, 0);
         assert!(d.working_shown(), "it misses the real working indicator");
+    }
+
+    /// Which question a dialog asks is its own words, whichever choice the
+    /// cursor is on; another command is another question; the dialog's
+    /// sentence written on one line in code is no dialog
+    #[test]
+    fn a_question_is_the_dialogs_words_and_its_choice_starts_a_line() {
+        let dialog = |cmd: &str, cursor: usize| {
+            let mark = |n: usize| if n == cursor { "›" } else { " " };
+            format!("• Ran git status\n\n  Would you like to run the following command?\n\n  $ {cmd}\n\n{} 1. Yes, proceed (y)\n{} 2. Yes, and don't ask again\n{} 3. No, and tell Codex what to do differently (esc)\n\n  Press enter to confirm or esc to cancel",
+                mark(1), mark(2), mark(3))
+        };
+        let read = |screen: &str| {
+            let mut d = Detector::new(crate::profile::load_for_command("codex"));
+            let state = d.tick(screen, 100, 0);
+            (state, d.question_matched().map(str::to_string))
+        };
+        let (on_yes, asked) = read(&dialog("pnpm test", 1));
+        let (on_no, asked_no) = read(&dialog("pnpm test", 3));
+        assert_eq!((on_yes, on_no), (TabState::Question, TabState::Question), "the cursor on No ended the question");
+        assert_eq!(asked, asked_no, "the cursor moving made it another question");
+        assert!(asked.as_deref().is_some_and(|q| q.contains("Would you like to run") && q.contains("pnpm test") && !q.contains("Yes")), "{asked:?}");
+        assert_ne!(read(&dialog("cargo build", 1)).1, asked, "another command, the same question");
+        let code = r#"let dialog = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)";"#;
+        assert_ne!(read(code).0, TabState::Question, "a line of code read as a dialog");
     }
 
     /// Measured 2026-10-12: a review asked of Codex said "sales agents ...

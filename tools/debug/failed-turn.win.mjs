@@ -292,7 +292,18 @@ try {
   check(/Would you like to/.test(dialog), 'Codex stopped at its own approval dialog');
   check(asks.some((r) => r.test(dialog)), 'the profile reads that screen as a question', dialog.slice(-600));
   check((await state('codex-ask')) === 'QUESTION', 'the tab reads as waiting for a person', await state('codex-ask'));
+  // The cursor moved to No is the same question
+  await call('send', 'codex-ask', '\x1b[B'); await sleep(400); await call('send', 'codex-ask', '\x1b[B'); await sleep(3500);
+  const onNo = await screen('codex-ask');
+  check(/›\s*3\./.test(onNo) && asks.some((r) => r.test(onNo)), 'with the cursor on No it is still read as a question', onNo.split('\n').filter((l) => /\d\./.test(l)).join(' | '));
+  check((await state('codex-ask')) === 'QUESTION', 'and the tab still reads as waiting', await state('codex-ask'));
+  // Refused with Esc: Codex files the turn as one the person stopped
   await call('send', 'codex-ask', '\x1b');
+  const rollouts = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? rollouts(path.join(dir, e.name)) : e.name.startsWith('rollout-') ? [path.join(dir, e.name)] : []);
+  const kinds = () => rollouts(path.join(HOME, '.codex', 'sessions')).flatMap((f) => fs.readFileSync(f, 'utf8').split('\n'))
+    .filter((l) => l.includes('"event_msg"')).map((l) => { try { return JSON.parse(l).payload.type; } catch { return ''; } });
+  await until(() => kinds().includes('turn_aborted'), 'the refusal in the record', 30000).catch(() => {});
+  check(kinds().includes('turn_aborted'), 'refused, the record says the person stopped the turn (turn_aborted)', kinds().slice(-6));
 } catch (e) {
   console.error(e.stack || e.message);
   checks.push(false);
