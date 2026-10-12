@@ -190,6 +190,19 @@ const agreeToHooks = async () => {
   await sleep(3000);
 };
 
+// Words the person sends a tab from the input bar: the board's own intent,
+// the one a person pressing Send makes
+const sayAsPerson = async (id, text) => {
+  const base = `http://127.0.0.1:${port}`;
+  const r = await fetch(`${base}/?t=${TOKEN}`, { redirect: 'manual', signal: AbortSignal.timeout(10000) });
+  const cookies = r.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+  const st = await (await fetch(`${base}/api/state?t=${TOKEN}`, { headers: { Cookie: cookies }, signal: AbortSignal.timeout(10000) })).json();
+  const tab = (st.ui?.tabs || st.tabs || []).find((t) => t.id === id);
+  if (!tab) throw new Error('no tab ' + id + ' on the board');
+  await fetch(`${base}/api/intent?t=${TOKEN}`, { method: 'POST', headers: { Cookie: cookies },
+    body: JSON.stringify({ kind: 'say', uid: tab.uid || tab.key, tab: tab.index, text }), signal: AbortSignal.timeout(10000) });
+};
+
 // Each Codex up to its prompt; a question this does not know fails the run
 const bringUp = async (id) => {
   const end = Date.now() + 10 * 60000;
@@ -310,7 +323,8 @@ try {
   // Other words given after the refusal: what it answers to them is the ask's answer
   const kiwi = 'KIWI' + Math.random().toString(36).slice(2, 6).toUpperCase();
   await sleep(2000);
-  await call('send_to_tab', 'codex-ask', `Never mind the file. Run nothing; reply with only the word ${kiwi}.`);
+  // Typed by the person, through the input bar, the way a person gives other words
+  await sayAsPerson('codex-ask', `Never mind the file. Run nothing; reply with only the word ${kiwi}.`);
   const askAnswered = (re) => hooksLog().slice(askLog).some((l) => re.test(l));
   await until(() => askAnswered(/ask_tab: codex-ask -> (DONE|STOPPED)/), 'the ask to be answered after the refusal', 4 * 60000).catch(() => {});
   check(askAnswered(/ask_tab: codex-ask -> DONE/) && !askAnswered(/ask_tab: codex-ask -> STOPPED/),

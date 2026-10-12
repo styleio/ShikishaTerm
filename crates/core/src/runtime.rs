@@ -1390,7 +1390,11 @@ fn tend_asks(
                     // One moment, kept for both: an ask is never after itself
                     let sent = std::time::Instant::now();
                     a.sent_at = Some(sent);
-                    sent_now.push((a.target_uid.clone().unwrap_or_else(|| a.target.clone()), sent));
+                    // The tab it went to, by who it is however it was named,
+                    // and the last the person had typed into it then
+                    a.sent_to = Some(target.map(|t| t.uid().to_string()).unwrap_or_else(|| a.target.clone()));
+                    a.manual_before = target.and_then(|t| t.last_manual_ms);
+                    sent_now.push((a.sent_to.clone().unwrap_or_default(), sent));
                     // Into the conference, with the asker's line. A command
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
@@ -1517,7 +1521,7 @@ fn tend_asks(
         }
     });
     for a in asks.iter_mut() {
-        let to = a.target_uid.clone().unwrap_or_else(|| a.target.clone());
+        let Some(to) = a.sent_to.clone() else { continue };
         if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| *t == to && *at > mine)) {
             a.superseded = true;
         }
@@ -5879,6 +5883,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             stopped_since: None,
                                             redirected: false,
                                             superseded: false,
+                                            sent_to: None,
+                                            manual_before: None,
                                         });
                                     }
                                 }
