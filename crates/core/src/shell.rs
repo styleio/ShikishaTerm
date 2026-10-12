@@ -746,7 +746,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border:1px solid var(--line); border-radius:var(--r-ctl); white-space:pre-wrap; word-break:break-all; }
   #login .lhelp { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px dashed var(--line);
     border-radius:var(--r-ctl); }
-  #login .lurlrow, #login .lcoderow { display:flex; align-items:center; gap:var(--s2); min-width:0; }
+  #login .lurlrow, #login .lcoderow, #login .ldevrow { display:flex; align-items:center; gap:var(--s2); min-width:0; flex-wrap:wrap; }
+  #login .ldev { font-family:var(--mono); font-size:15px; font-weight:600; letter-spacing:.06em; padding:2px 8px; border:1px solid var(--line); border-radius:var(--r-ctl, 6px); }
   #login .lkeys { display:flex; flex-wrap:wrap; align-items:center; gap:var(--s2); margin:var(--s2) 0; }
   #login .lkeyssay { font-size:12px; color:var(--dim); }
   #login .lkey { min-width:44px; font-family:var(--mono); }
@@ -8089,6 +8090,14 @@ function makingRow(m) {
       el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"dismiss"})}, T["worktree.nolink.leave"] || "")));
     return row;
   }
+  // Waiting on the checkout's sign-in: its step brought back, or the
+  // person saying it is done -- the way on when the machine cannot tell
+  if (m.stage === "signing_in") {
+    row.append(el("div", {class:"mbtns"},
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"signin_show"})}, T["tui.making.signin.show"] || ""),
+      el("button", {type:"button", onclick:() => send({kind:"making", id:m.id, act:"signed_in"})}, T["tui.making.signin.done"] || "")));
+    return row;
+  }
   if (unremoved) {
     row.append(el("div", {class:"mbtns"},
       el("button", {type:"button", onclick:() => { leftAsked.delete(m.id); send({kind:"making", id:m.id, act:"retry"}); }}, T["tui.making.retry"] || ""),
@@ -11506,9 +11515,13 @@ function warnBox(text, ...acts) {
 // folder's terminal (a server's, put there for its git sign-in)
 // `key` is the checkout's place key: its machine and its path, since two
 // machines can have a folder at the same path
-function checkoutAiTab(key, ai) {
+function checkoutAiTab(key, ai, name) {
   const gi = ((S && S.groups) || []).findIndex(g => g.key === key);
   const tabs = ((S && S.tabs) || []).filter(t => t.group === gi);
+  // The tab the step names, when it names one: the one put there to run the
+  // AI's sign-in command, which is the same AI's and would not be told apart
+  const named = name ? tabs.find(t => t.name === name) : null;
+  if (named) return named;
   // No tab of that AI there (one given to the machine after the checkout was
   // made): the folder's terminal, where its quick AI button starts it
   return gi < 0 ? null : (tabs.find(t => ai ? t.ai === ai : t.kind === "pty") || (ai ? tabs.find(t => t.kind === "pty") : null) || null);
@@ -11535,8 +11548,8 @@ function drawLogin() {
   }
   // The checkout's AI tab is brought in front once it is there: that is
   // where keys typed here go (the pane behind, or a phone's input bar)
-  const tab = checkoutAiTab(st.key, st.ai);
-  const mark = st.folder + "\u001f" + st.seq;
+  const tab = checkoutAiTab(st.key, st.ai, st.tab);
+  const mark = st.folder + "\u001f" + st.seq + "\u001f" + (st.tab || "");
   if (tab && loginSelected !== mark) {
     if (tab.index !== S.active) send({kind:"select", tab: tab.index});
     else loginSelected = mark;
@@ -11578,6 +11591,14 @@ function drawLogin() {
         ])),
       el("div", {class:"sfoot"},
         el("button", {type:"button", class:"quiet", onclick:later}, T["tui.login.later"] || ""),
+        // The way when the step cannot help: the terminal itself, in front,
+        // with nothing over it. The step goes on by itself once the machine
+        // says the AI is signed in, and the worktree's row brings it back
+        ...(git ? [] : [el("button", {type:"button", class:"quiet", onclick:() => {
+          const t = checkoutAiTab(st.key, st.ai, st.tab);
+          if (t && t.index !== S.active) send({kind:"select", tab: t.index});
+          send({kind:"login", folder: st.folder, act:"terminal"});
+        }}, T["tui.login.terminal"] || "")]),
         // Pressable all along, and blue only once the sign-in is done: a
         // blue button is pressed without reading
         el("button", {type:"button", class:"quiet", id:"loginnext",
@@ -11724,8 +11745,19 @@ function loginHelp(st) {
   code.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); sendCode(); } e.stopPropagation(); });
   code.addEventListener("keyup", e => e.stopPropagation());
   code.addEventListener("keypress", e => e.stopPropagation());
+  // A code the terminal printed for the person to enter on the page above
+  // (a sign-in from another device), with a press that copies it
+  const shown = el("code", {class:"ldev"});
+  const copyCode = el("button", {type:"button", class:"quiet", onclick:() => {
+    const v = shown.textContent || "";
+    if (!v) return;
+    copyToClipboard(v);
+    copyCode.textContent = T["tui.login.copied"] || "";
+    setTimeout(() => { copyCode.textContent = T["tui.login.code.copy"] || ""; }, 2000);
+  }}, T["tui.login.code.copy"] || "");
   const help = el("div", {class:"lhelp"},
     el("div", {class:"lurlrow"}, url, copy),
+    el("div", {class:"ldevrow", hidden:""}, el("span", {}, T["tui.login.code.enter"] || ""), shown, copyCode),
     el("div", {class:"lcoderow"}, code, el("button", {type:"button", class:"quiet", id:"logincodesend", onclick:sendCode}, T["tui.login.code.send"] || "")));
   help.hidden = true;
   return help;
@@ -11744,6 +11776,13 @@ function loginHelpDraw(box, st) {
     url.title = at;
   }
   help.hidden = !at;
+  const row = box.querySelector(".ldevrow");
+  const shown = box.querySelector(".ldev");
+  const code = st.state === "no" ? st.code || "" : "";
+  if (row && shown) {
+    if (shown.textContent !== code) shown.textContent = code;
+    row.hidden = !code;
+  }
 }
 // Text into the clipboard of whoever is looking: this machine's at the
 // window (the runtime does it), the browser's from afar -- by the older

@@ -487,6 +487,10 @@ struct LoginPending {
     ai: String,
     name: String,
     shown: bool,
+    /// The tab put on the desk to run the CLI's sign-in command, by its
+    /// title, for a CLI whose first run cannot sign it in on a machine with
+    /// no browser (`MachineAi::login`). Taken off again when the step is done
+    login_tab: Option<String>,
     /// Where the step goes on to: a project just cloned goes through its
     /// rules; an AI given to a checkout already in use goes back to the
     /// worktree dialog the page was on its way to, or nowhere
@@ -602,6 +606,91 @@ pub fn web_address_in(text: &str) -> String {
         .unwrap_or_default()
         .trim_end_matches(['.', ',', ')', ']'])
         .to_string()
+}
+
+/// A code a terminal printed for the person to enter on another device: a
+/// run of capitals and digits in groups joined by dashes (`ABCD-1234`), with a
+/// letter and a digit somewhere in it so a word in capitals or a date is not
+/// taken for one. The last such on the screen, which is the newest. Empty when
+/// there is none
+pub fn device_code_in(text: &str) -> String {
+    let is_code = |w: &str| {
+        let groups: Vec<&str> = w.split('-').collect();
+        groups.len() >= 2
+            && groups.iter().all(|g| (4..=8).contains(&g.len()) && g.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+            && w.bytes().any(|b| b.is_ascii_uppercase())
+            && w.bytes().any(|b| b.is_ascii_digit())
+            && w.len() <= 20
+    };
+    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ':' | '(' | ')' | '[' | ']'))
+        .map(|w| w.trim_end_matches(['.', ',']))
+        .filter(|w| is_code(w))
+        .last()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Put a tab on the desk that runs the sign-in command of the step's AI, in
+/// the checkout's folder on its machine; its title back, or `None` when it
+/// could not be written. One already there under that title is used again
+fn put_login_tab(desks: &[config::Desk], tabs: &[Tab], p: &LoginPending, line: &str) -> Option<String> {
+    let title = format!("{} sign-in", p.ai);
+    if tabs.iter().any(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == title) {
+        return Some(title);
+    }
+    let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)));
+    let desk = desks.iter().find(|d| d.folder_at(&key).is_some())?;
+    let tab = serde_json::json!({"name": title, "command": line});
+    match config::append_tab_on(&desk.uid, tab, Some(std::path::Path::new(&p.folder)), Some(&p.host.name)) {
+        true => {
+            append_hook_log(&format!("sign-in of {} on {}: `{line}` in a tab of its own", p.ai, p.host.name));
+            Some(title)
+        }
+        false => {
+            append_hook_log(&format!("could not put a sign-in tab for {} on {}", p.ai, p.host.name));
+            None
+        }
+    }
+}
+
+/// A sign-in step done with. The tab put on the desk for its sign-in
+/// command comes off again; and once signed in, the AI's own tab, started
+/// before there was a sign-in to read, is started again so it reads it
+#[allow(clippy::too_many_arguments)]
+fn login_done(
+    p: &LoginPending,
+    signed_in: bool,
+    desks: &[config::Desk],
+    desk_index: usize,
+    tabs: &mut [Tab],
+    desk_tabs: &[Vec<Tab>],
+    close_requests: &mut Vec<CloseRequest>,
+    rows: u16,
+    cols: u16,
+) {
+    let Some(title) = p.login_tab.as_deref() else { return };
+    let here = |t: &Tab, name: &str| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == name;
+    let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)));
+    let owner = desks.iter().position(|d| d.folder_at(&key).is_some());
+    let list: &[Tab] = match owner {
+        Some(o) if o != desk_index => desk_tabs.get(o).map_or(&[][..], |l| l.as_slice()),
+        _ => tabs,
+    };
+    if let Some(at) = list.iter().position(|t| here(t, title)) {
+        close_requests.push(CloseRequest {
+            desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
+            at: 0,
+            key: crate::view::surface_key(&Surface::Session(at), list),
+            sure: true,
+            reply: None,
+        });
+    }
+    if signed_in && owner.is_none_or(|o| o == desk_index) {
+        if let Some(t) = tabs.iter_mut().find(|t| here(t, &p.ai)) {
+            append_hook_log(&format!("sign-in of {} on {} done: its tab is started again to read it", p.ai, p.host.name));
+            restart_tab(t, false, false, rows, cols);
+        }
+    }
 }
 
 /// Delete a machine a row made and is putting away unwritten, unless the
@@ -2855,6 +2944,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The sign-in step of a project just cloned onto a MicroVM: the checkout
     // whose AI is to be signed in to, before its first worktree is cut
     let mut login_pending: Option<LoginPending> = None;
+    // Sign-in steps put away while the person signs in in the terminal
+    let mut login_parked: Vec<LoginPending> = Vec::new();
     // The sign-in steps waiting their turn: two projects cloned one after the
     // other each have one, and the second must not take the first one's place
     let mut login_queue: std::collections::VecDeque<LoginPending> = Default::default();
@@ -11880,6 +11971,40 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             let Some(p) = makings.iter_mut().find(|p| p.id == id) else { continue };
+            // The sign-in a worktree waits on, from its row: the step brought
+            // back, or said to be done -- the way on when the machine cannot
+            // tell (a CLI that keeps its sign-in somewhere new)
+            let gate = p.making.sign_in_gate();
+            let waits_on = |l: &LoginPending| matches!(&l.after, LoginAfter::Copying(g) if std::sync::Arc::ptr_eq(g, &gate));
+            match act.as_str() {
+                "signin_show" => {
+                    if let Some(at) = login_parked.iter().position(waits_on) {
+                        let l = login_parked.remove(at);
+                        login_queue.push_front(l);
+                    }
+                    continue;
+                }
+                "signed_in" => {
+                    let found = match login_parked.iter().position(waits_on) {
+                        Some(at) => Some(login_parked.remove(at)),
+                        None if login_pending.as_ref().is_some_and(waits_on) => {
+                            login_view = None;
+                            login_pending.take()
+                        }
+                        None => login_queue.iter().position(waits_on).and_then(|at| login_queue.remove(at)),
+                    };
+                    match found {
+                        Some(l) => {
+                            login_done(&l, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            l.go_on();
+                        }
+                        None => gate.store(true, std::sync::atomic::Ordering::Relaxed),
+                    }
+                    append_hook_log(&format!("worktree {id}: the person said the checkout's AI is signed in"));
+                    continue;
+                }
+                _ => {}
+            }
             match act.as_str() {
                 "stop" if p.error.is_none() && !p.made && p.written.is_none() => p.making.stop(),
                 "retry" if p.error.is_some() => {
@@ -11963,6 +12088,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 ai: known.key,
                                 name: known.name,
                                 shown: false,
+                                login_tab: None,
                                 after: LoginAfter::Copying(p.making.sign_in_gate()),
                             });
                         }
@@ -12675,6 +12801,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                                 ai: known.key,
                                                 name: known.name,
                                                 shown: false,
+                                                login_tab: None,
                                                 after: LoginAfter::Rules,
                                             });
                                         }
@@ -12725,6 +12852,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             ai: known.key,
                                             name: known.name,
                                             shown: false,
+                                            login_tab: None,
                                             // A project already in use: back
                                             // where the page was going, never
                                             // through the rules a new one has
@@ -13688,12 +13816,30 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Some("yes") if !p.shown => true,
                 Some("asking") if !p.shown => false,
                 Some(state) => {
+                    // A CLI whose own first run cannot sign it in on a
+                    // machine with no browser (Codex's sign-in waits for a
+                    // browser on the machine itself): its sign-in command,
+                    // in a tab of its own beside the AI's, which the step
+                    // shows instead. Whatever the command prints is on the
+                    // screen as it is -- the address and the code are only
+                    // picked out of it to be handed over with a press
+                    if !p.shown
+                        && state == "no"
+                        && p.login_tab.is_none()
+                        && let Some(line) = crate::profile::machine_ai(&p.ai).and_then(|m| m.login)
+                    {
+                        p.login_tab = put_login_tab(&desks, &tabs, p, &line);
+                        if p.login_tab.is_some() {
+                            watcher.poke();
+                        }
+                    }
                     p.shown = true;
-                    // The checkout's AI terminal, as the tab standing in that
-                    // folder on that machine draws it now
-                    let (screen, url) = tabs
+                    // The terminal the sign-in happens in, as the tab standing
+                    // in that folder on that machine draws it now
+                    let mirrored = p.login_tab.clone().unwrap_or_else(|| p.ai.clone());
+                    let (screen, url, code) = tabs
                         .iter()
-                        .find(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
+                        .find(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == mirrored)
                         .map(|t| {
                             let parser = t.parser.lock().unwrap_or_else(|e| e.into_inner());
                             let s = parser.screen();
@@ -13703,8 +13849,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // address is whole again
                             let rows: Vec<(String, bool)> =
                                 s.rows(0, cols).enumerate().map(|(i, r)| (r, s.row_wrapped(i as u16))).collect();
-                            let url = web_address_in(&join_rows(&rows, cols));
-                            (crate::shell::screen_html(s), url)
+                            let text = join_rows(&rows, cols);
+                            (crate::shell::screen_html(s), web_address_in(&text), device_code_in(&text))
                         })
                         .unwrap_or_default();
                     let v = crate::uistate::LoginStepState {
@@ -13718,6 +13864,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         error: note.as_ref().map(|n| n.error.clone()).unwrap_or_default(),
                         screen,
                         url,
+                        code,
+                        tab: mirrored,
                         ..Default::default()
                     };
                     if login_view.as_ref() != Some(&v) {
@@ -13727,11 +13875,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             if go_on {
+                login_done(p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
                 p.go_on();
                 login_pending = None;
                 login_view = None;
             }
         }
+        // Steps put away for the terminal ("Sign in in the terminal"): the
+        // person signs in there, the machine is asked as before, and the
+        // step goes on by itself once it says so. The row of the worktree
+        // waiting on it brings the step back, or says it is done
+        let mut parked = std::mem::take(&mut login_parked);
+        parked.retain(|p| {
+            let note = crate::microvm::ai_sign_in_note(&p.host, Some(&p.home), Some(&p.ai), LOGIN_FRESH);
+            let yes = note.as_ref().is_none_or(|n| n.state == "yes");
+            if yes {
+                login_done(p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                p.go_on();
+            }
+            !yes
+        });
+        login_parked = parked;
         // The sign-in step for a server's git. Drawn once the server has been
         // looked at: the commands drafted for it, its terminal, and whether
         // the server's git can read the repository yet
@@ -14018,13 +14182,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             if login_pending.as_ref().is_some_and(|p| p.folder == folder) {
-                if let Some(p) = login_pending.as_ref() {
-                    match act == "next" {
-                        true => p.go_on(),
-                        false => p.leave(),
+                if let Some(p) = login_pending.take() {
+                    match act.as_str() {
+                        "next" => {
+                            login_done(&p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            p.go_on();
+                        }
+                        // Signed in in the terminal instead: the step is put
+                        // away, and goes on by itself once the machine says
+                        // the AI is signed in. The terminal it was showing
+                        // stays, in front (the page selects it)
+                        "terminal" => login_parked.push(p),
+                        _ => {
+                            login_done(&p, false, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            p.leave();
+                        }
                     }
                 }
-                login_pending = None;
                 login_view = None;
             }
         }
@@ -21592,6 +21766,7 @@ mod tests {
             ai: "claude".into(),
             name: "Claude Code".into(),
             shown: true,
+            login_tab: None,
             after: LoginAfter::Copying(gate.clone()),
         };
         let next = std::sync::Arc::new(AtomicBool::new(false));
@@ -21713,6 +21888,25 @@ mod tests {
         assert_eq!(super::web_address_in(&text), "https://example.test/a?b=1&c=2&d=3");
         assert_eq!(super::web_address_in("nothing here"), "");
         assert_eq!(super::web_address_in("see \"https://a.test/x\"."), "https://a.test/x");
+    }
+
+    /// A code printed for the person to enter on another device is picked out
+    /// of the screen; words in capitals, dates, versions and ids are not
+    #[test]
+    fn a_device_code_is_picked_out_of_the_screen_and_nothing_else_is() {
+        let screen = "Welcome to Codex v0.47.0\n\n1. Open this link in your browser\n   https://auth.example.test/codex/device\n\n2. Enter this one-time code (expires in 15 minutes)\n   7KQX-M3PD\n\nDevice codes are a common phishing target. Never share this code.\n";
+        assert_eq!(super::device_code_in(screen), "7KQX-M3PD");
+        assert_eq!(super::device_code_in("code: ABCD-12EF."), "ABCD-12EF");
+        for not in [
+            "2026-10-12 and 14:30",
+            "READ-ONLY mode",
+            "SHA-256 of the file",
+            "run 0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
+            "UTF-8",
+            "ISO-8601",
+        ] {
+            assert_eq!(super::device_code_in(not), "", "{not} was taken for a code");
+        }
     }
 
     use super::*;

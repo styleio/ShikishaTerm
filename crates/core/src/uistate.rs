@@ -1142,6 +1142,15 @@ pub struct LoginStepState {
     /// terminal itself, which is the way
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub url: String,
+    /// A code that terminal printed for the person to enter on the page at
+    /// `url` (a sign-in from another device). The same kind of help as the
+    /// address: copied with a press, never the only way to read it
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
+    /// The title of the tab the step shows: the AI's own, or the one put on
+    /// the desk to run its sign-in command. The page brings it in front
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tab: String,
     /// What is being signed in to: empty for an AI on a MicroVM, `git` for a
     /// server's git to GitHub, which a clone there could not read without
     #[serde(default, skip_serializing_if = "String::is_empty")]

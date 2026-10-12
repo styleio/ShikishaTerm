@@ -575,6 +575,7 @@ mod tests {
             install_on_linux: None,
             signed_in_on_linux: None,
             set_up_on_linux: None,
+            login_on_linux: None,
             name: "test".into(),
             command_match: vec![],
             script_match: vec![],

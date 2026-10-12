@@ -3,6 +3,7 @@
   "install_url": "https://github.com/openai/codex",
   "install_on_linux": "npm install -g @openai/codex",
   "signed_in_on_linux": "test -s \"$HOME/.codex/auth.json\" || test -n \"$OPENAI_API_KEY\"",
+  "login_on_linux": "codex login --device-auth",
   "command_match": [
     "codex"
   ],

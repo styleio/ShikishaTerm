@@ -434,6 +434,15 @@ running is billed for the time chosen, and no longer than your E2B plan lets it 
 machine, run as one user, are not kept apart by what each tab is allowed: to keep AIs apart, put them on
 separate machines.
 
+**Signing the AI in on a MicroVM.** A MicroVM's AI is signed in once, on the project's
+checkout; every worktree is a copy of that machine, sign-in included. The sign-in step shows the
+AI's own screen. Where the AI prints an address and a code to enter on another device (Codex runs
+its sign-in for that in a tab of its own), the address and the code each have a button that copies
+them, and you approve in the browser on this PC. If the step cannot help -- an AI that signs in some
+new way -- press **Sign in in the terminal**: the terminal is left in front for you to follow what it
+says, and the step goes on by itself once the machine is signed in. A worktree waiting for the
+sign-in has **Open the sign-in step** and **I have signed in** on its row.
+
 A tab that runs the `ssh` command itself still works as before (the kind is
 "SSH (ssh.exe)").
 
