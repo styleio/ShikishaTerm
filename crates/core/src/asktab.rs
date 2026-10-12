@@ -257,11 +257,6 @@ pub struct Ask {
     pub superseded: bool,
     /// Who the words went to (`Tab::uid`), however the tab was named
     pub sent_to: Option<String>,
-    /// The person's last key into that tab as the words went in
-    /// (`Tab::last_manual_ms`): words after a stop count as the person's
-    /// only if the person has typed since -- an orchestration's brief or a
-    /// script's words typed in are not
-    pub manual_before: Option<u64>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -345,7 +340,7 @@ pub struct FarRead {
     /// A look out on its thread, and whether it asked for the turn to be over
     /// too (see [`FarRead::reply`]). An answer to the other kind of look is
     /// not this one's
-    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<bool>, Option<(u64, u64)>)>, bool)>,
+    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<After>, Option<(u64, u64)>)>, bool)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
@@ -354,10 +349,13 @@ pub struct FarRead {
     missing: bool,
     /// What the last look found of the tab going on to somebody else's turn
     /// (see [`moved_on_in`]): `None` while not known
-    moved_on: Option<bool>,
+    moved_on: Option<After>,
     /// How far the end of the turn asked in has been looked for without
     /// being found: where that turn begins, and where the next look resumes
     scanned: Option<(u64, u64)>,
+    /// The tab it is read for (by uid), to tell its person's words from the
+    /// app's ([`After`])
+    pub tab: Option<String>,
 }
 
 /// What one look at a far record found
@@ -412,7 +410,7 @@ impl FarRead {
             return None;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let (record, sent, scanned) = (record.clone(), sent.to_string(), self.scanned);
+        let (record, sent, scanned, tab) = (record.clone(), sent.to_string(), self.scanned, self.tab.clone());
         std::thread::spawn(move || {
             let (mut moved, mut read_to) = (None, None);
             let found = match record.page(u64::MAX, REPLY_TURNS) {
@@ -423,7 +421,7 @@ impl FarRead {
                     // in ended, from that turn's own end, never the record's
                     // last -- a later turn's failure is not this one's
                     Some(asked) => {
-                        moved = Some(moved_on(&page, asked));
+                        moved = Some(after(&page, asked, tab.as_deref()));
                         let end = page.turns[asked].at.and_then(|begun| {
                             let resume = scanned.filter(|(b, _)| *b == begun).map_or(begun, |(_, to)| to);
                             let (end, to) = record.turn_end_after(begun, resume);
@@ -493,6 +491,7 @@ impl Ask {
     /// has not been found (yet)
     fn outcome(&mut self, t: &Tab, over: bool) -> Option<Outcome> {
         let from = self.record_from.unwrap_or(0);
+        self.far.tab = Some(t.uid().to_string());
         match self.source(t) {
             Source::Here(path) if over => outcome_when_over(&path, &self.text, from),
             Source::Here(path) => outcome_in(&path, &self.text, from),
@@ -552,7 +551,6 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         redirected: false,
         superseded: false,
         sent_to: None,
-        manual_before: None,
     }
 }
 
@@ -839,23 +837,40 @@ fn decide(
     reply_after(page, asked, end.map(|e| e.at)).map(Outcome::Reply)
 }
 
-/// Whether the record shows the person saying something after the turn
-/// `sent` was given in: the tab has gone on to somebody else's turn, and its
+/// Whether the record shows anything said in the person's place after the
+/// turn `sent` was given in: the tab has gone on to another turn, and its
 /// screen is that turn's. `None` when the turn asked in is not found in the
 /// part of the record read (cut off by later turns, or a conversation begun
 /// anew), which says nothing either way
 pub fn moved_on_in(path: &Path, sent: &str, from: u64) -> Option<bool> {
-    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
-    let asked = asked_in(&page, sent, from)?;
-    Some(moved_on(&page, asked))
+    after_in(path, sent, from, None).map(|a| a.person || a.app)
 }
 
-/// What the AI answered to the last thing the person said, once that turn is
-/// over in the record (`None` while it goes on, and for one that failed or
-/// was stopped too): the answer to words given after an ask was stopped
-pub fn latest_reply(path: &Path) -> Option<String> {
+/// What was said in the person's place after an ask's turn, told apart
+/// by who typed it: the person, or this app (an ask, a brief, a script, a
+/// scheduled prompt -- `orch::glue::from_app`)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct After {
+    pub person: bool,
+    pub app: bool,
+}
+
+/// [`After`] in the record at `path`, for the ask `sent` at `from` into the
+/// tab `tab` (by uid; `None`: every word counts as the person's)
+pub fn after_in(path: &Path, sent: &str, from: u64, tab: Option<&str>) -> Option<After> {
     let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
-    let last = page.turns.iter().rposition(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text))?;
+    let asked = asked_in(&page, sent, from)?;
+    Some(after(&page, asked, tab))
+}
+
+/// What the AI answered to the last thing the person typed into `tab` (by
+/// uid; words this app typed there are passed over), once that turn is over
+/// in the record (`None` while it goes on, and for one that failed or was
+/// stopped too): the answer to words given after an ask was stopped -- not
+/// the answer to another ask put in after them
+pub fn latest_reply(path: &Path, tab: Option<&str>) -> Option<String> {
+    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+    let last = page.turns.iter().rposition(|t| person_said(t, tab))?;
     let end = crate::reader::turn_end_after(path, page.turns[last].at?)?;
     if end.mark != crate::reader::TurnMark::Over || end.stopped {
         return None;
@@ -863,8 +878,22 @@ pub fn latest_reply(path: &Path) -> Option<String> {
     reply_after(&page, last, Some(end.at))
 }
 
-fn moved_on(page: &crate::reader::Page, asked: usize) -> bool {
-    page.turns[asked + 1..].iter().any(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text))
+/// Whether a turn is the person typing: in the person's place, put there by
+/// neither a hook nor this app
+fn person_said(t: &crate::reader::Turn, tab: Option<&str>) -> bool {
+    t.who == Who::You && !crate::reader::from_a_hook(&t.text) && !tab.is_some_and(|tab| crate::orch::glue::from_app(tab, &t.text))
+}
+
+fn after(page: &crate::reader::Page, asked: usize, tab: Option<&str>) -> After {
+    let mut a = After::default();
+    for t in page.turns[asked + 1..].iter().filter(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text)) {
+        if person_said(t, tab) {
+            a.person = true;
+        } else {
+            a.app = true;
+        }
+    }
+    a
 }
 
 /// Where in a page of the record `sent` was given: the last turn of the
@@ -1029,21 +1058,19 @@ impl Ask {
         // have passed through a state between two looks
         let from = self.record_from.unwrap_or(0);
         let source = self.source(t);
-        let moved = match &source {
-            Source::Here(path) => moved_on_in(path, &self.text, from),
+        let after = match &source {
+            Source::Here(path) => after_in(path, &self.text, from, Some(t.uid())),
             Source::Far(_) => self.far.moved_on,
             Source::Screen => None,
         };
-        // Words after it that the person did not type -- another ask, an
-        // orchestration's brief, a script -- are not theirs: the stopped turn
-        // came to nothing (see `Ask::foreign`)
-        let typed = t.last_manual_ms != self.manual_before;
-        if !self.redirected && (moved == Some(true) || self.overtaken) {
-            if typed && !self.superseded {
-                self.redirected = true;
-            } else {
-                self.superseded = true;
-            }
+        // The person's own words after it are followed. Words this app typed
+        // -- another ask, an orchestration's brief, a script, a scheduled
+        // prompt -- are not theirs, and neither is work seen with no record
+        // to say whose words began it: the stopped turn came to nothing
+        if after.is_some_and(|a| a.person) {
+            self.redirected = true;
+        } else if after.is_some_and(|a| a.app) || self.overtaken {
+            self.superseded = true;
         }
         if self.superseded && !self.redirected {
             return Some(Step::Answer(stopped(self, same_folder)));
@@ -1054,7 +1081,7 @@ impl Ask {
             }
             // What it answered to those words, once their turn is over
             let (reply, read) = match &source {
-                Source::Here(path) => (latest_reply(path), "record"),
+                Source::Here(path) => (latest_reply(path, Some(t.uid())), "record"),
                 _ => (t.last_response.clone(), "screen"),
             };
             return match reply {
@@ -1408,7 +1435,7 @@ pub fn step(
                 if since.elapsed() >= RECORD_GIVES_NONE {
                     let record_says = match &source {
                         Source::Here(path) => moved_on_in(path, &a.text, a.record_from.unwrap_or(0)),
-                        _ => a.far.moved_on,
+                        _ => a.far.moved_on.map(|m| m.person || m.app),
                     };
                     if a.overtaken || record_says != Some(false) {
                         return Step::Answer(answer(
@@ -2113,15 +2140,12 @@ mod tests {
         a.stopped_since = Some(Instant::now() - RECORD_GIVES_NONE);
         let Some(Step::Answer(v)) = a.on_stopped(&t, None) else { panic!("left quiet, it is never said") };
         assert_eq!((v["state"].as_str(), v["by_person"].as_bool()), (Some("STOPPED"), Some(true)));
-        // Seen to settle and take up work again (the record has nothing to
-        // say for a tab that keeps none), the person having typed into it:
-        // the other words are followed
+        // The person's other words found (read off a record, below): the
+        // answer to them is waited for while the tab works on them
         let mut b = sent_ask();
-        b.overtaken = true;
-        t.last_manual_ms = Some(42_000);
+        b.redirected = true;
         t.state = TabState::Busy;
-        assert!(b.on_stopped(&t, None).is_none());
-        assert!(b.redirected, "the person's other words are not followed");
+        assert!(b.on_stopped(&t, None).is_none(), "answered while it works on the person's words");
         t.state = TabState::Done;
         t.last_response = Some("Reviewed with the tests skipped: one finding.".into());
         let Some(Step::Answer(v)) = b.on_stopped(&t, None) else { panic!("the answer to the other words did not come") };
@@ -2135,12 +2159,11 @@ mod tests {
         t.state = TabState::Busy;
         let Some(Step::Answer(v)) = c.on_stopped(&t, None) else { panic!("superseded, it is never answered") };
         assert_eq!(v["state"], "STOPPED", "another ask's answer was handed over as this one's");
-        // ...and words nobody typed -- an orchestration's brief, a script --
-        // are not the person's either
+        // ...and work seen with no record to say whose words began it is not
+        // taken for the person's
         let mut d = sent_ask();
         d.overtaken = true;
-        d.manual_before = Some(42_000);
-        let Some(Step::Answer(v)) = d.on_stopped(&t, None) else { panic!("words nobody typed taken for the person's") };
+        let Some(Step::Answer(v)) = d.on_stopped(&t, None) else { panic!("work of unknown words taken for the person's") };
         assert_eq!(v["state"], "STOPPED");
         // Over before any arm can take what those words do for its own
         let mut e = sent_ask();
@@ -2167,15 +2190,22 @@ mod tests {
         ];
         let stopped = record(&lines);
         assert_eq!(moved_on_in(stopped.path(), q, 0), Some(false));
-        assert_eq!(latest_reply(stopped.path()), None, "the stopped turn's words are no answer");
+        assert_eq!(latest_reply(stopped.path(), None), None, "the stopped turn's words are no answer");
         lines.push(codex_said("user", "input_text", "Skip the tests and just read the diff."));
         let going = record(&lines);
         assert_eq!(moved_on_in(going.path(), q, 0), Some(true), "the person's words after the stop are missed");
-        assert_eq!(latest_reply(going.path()), None, "answered before the turn ended");
+        assert_eq!(latest_reply(going.path(), None), None, "answered before the turn ended");
         lines.push(codex_said("assistant", "output_text", "One finding: the parser drops the tail."));
         lines.push(json!({"type": "event_msg", "payload": {"type": "task_complete", "error": null}}));
         let done = record(&lines);
-        assert_eq!(latest_reply(done.path()).as_deref(), Some("One finding: the parser drops the tail."));
+        assert_eq!(latest_reply(done.path(), None).as_deref(), Some("One finding: the parser drops the tail."));
+        assert_eq!(after_in(done.path(), q, 0, Some("tab-person")), Some(After { person: true, app: false }));
+        // The same words typed by this app -- another ask, a brief, a script,
+        // a scheduled prompt -- are not the person's: nothing to follow, and
+        // their answer is not handed over as the answer to the person
+        crate::orch::glue::note_from_app("tab-app", "Skip the tests and just read the diff.");
+        assert_eq!(after_in(done.path(), q, 0, Some("tab-app")), Some(After { person: false, app: true }));
+        assert_eq!(latest_reply(done.path(), Some("tab-app")), None, "the app's words' answer taken for the person's");
         assert_eq!(outcome_in(done.path(), q, 0), Some(Outcome::Stopped), "the asked turn itself is still the one stopped");
     }
 

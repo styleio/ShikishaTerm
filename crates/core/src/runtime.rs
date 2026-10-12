@@ -1393,8 +1393,13 @@ fn tend_asks(
                     // The tab it went to, by who it is however it was named,
                     // and the last the person had typed into it then
                     a.sent_to = Some(target.map(|t| t.uid().to_string()).unwrap_or_else(|| a.target.clone()));
-                    a.manual_before = target.and_then(|t| t.last_manual_ms);
+                    if let Some(t) = target {
+                        crate::orch::glue::note_from_app(t.uid(), &a.text);
+                    }
+                    // By who it is and by the name it was asked by: an ask that
+                    // found the tab and one that went by its name are to one tab
                     sent_now.push((a.sent_to.clone().unwrap_or_default(), sent));
+                    sent_now.push((a.target.clone(), sent));
                     // Into the conference, with the asker's line. A command
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
@@ -1522,7 +1527,7 @@ fn tend_asks(
     });
     for a in asks.iter_mut() {
         let Some(to) = a.sent_to.clone() else { continue };
-        if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| *t == to && *at > mine)) {
+        if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| (*t == to || *t == a.target) && *at > mine)) {
             a.superseded = true;
         }
     }
@@ -5939,7 +5944,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             redirected: false,
                                             superseded: false,
                                             sent_to: None,
-                                            manual_before: None,
                                         });
                                     }
                                 }
@@ -8291,6 +8295,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let from = session_at(surf, s).and_then(|i| list.get(i)).and_then(crate::asktab::record_len).unwrap_or(0);
                         // Counted before the words go, so their own Enter is the one after
                         let submits_before = session_at(surf, s).and_then(|i| list.get(i)).map_or(0, Tab::submits);
+                        if p.routine.is_some()
+                            && let Some(t) = session_at(surf, s).and_then(|i| list.get(i))
+                        {
+                            crate::orch::glue::note_from_app(t.uid(), &p.text);
+                        }
                         let landed = hand_over(list, surf, s, p.text, p.submit, now_ms, &mut pending_send, held);
                         // A desk not on screen: no place on this one is its
                         if owner.is_some_and(|o| o != desk_index) && landed && let Some(q) = pending_send.last_mut() {
@@ -20758,6 +20767,7 @@ fn routine_hand(
     }
     let (uid, title, before, submits) =
         (t.uid().to_string(), t.title.clone(), crate::asktab::record_len(t).unwrap_or(0), t.submits());
+    crate::orch::glue::note_from_app(&uid, &r.prompt);
     if !hand_line(list, surf, at, r.prompt.clone(), now_ms, pending_send, held) {
         return Err("routine.why.locked");
     }
@@ -21845,6 +21855,9 @@ pub fn exec_commands(
                 // does not let this tab drive anything (see orch::glue::named_for)
                 if origin != 0 && from.is_some() {
                     crate::orch::glue::note_typed(t.uid(), &text);
+                } else if origin != 0 {
+                    // A script's: still the person's to name, but not typed by them
+                    crate::orch::glue::note_from_app(t.uid(), &text);
                 }
                 if t.is_model() {
                     // model bridge: a turn of the tab's own conversation, shown
