@@ -1552,6 +1552,60 @@ pub fn lines_with<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, needle: &str,
     hits
 }
 
+/// The newest stretch of the history and the screen as text, oldest line
+/// first, stopping once about `most` characters are read: what a terminal
+/// said lately, for somebody who was not watching it. Blank runs are kept to
+/// one blank line, and trailing blanks on a line are dropped -- a full-screen
+/// program pads every row out to the width.
+///
+/// Read a screen at a time, like [`lines_with`], and the view put back where
+/// it stood
+pub fn recent_text<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, most: usize, cols: u16) -> String {
+    let saved = p.screen().scrollback();
+    let max = furthest_back(p);
+    let rows = p.screen().size().0.max(1) as usize;
+    let top = max + rows - 1;
+    // Newest first while reading, so the budget is spent on the latest lines
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    let mut taken = 0usize;
+    let mut next = 0usize;
+    'screens: while next <= top {
+        p.screen_mut().set_scrollback(next.min(max));
+        let at = p.screen().scrollback();
+        let view: Vec<String> = p.screen().rows(0, cols).collect();
+        for (r, text) in view.into_iter().enumerate().rev() {
+            let d = at + rows - 1 - r;
+            if d < next {
+                continue;
+            }
+            let text = text.trim_end().to_string();
+            taken += text.chars().count() + 1;
+            lines.push((d, text));
+            if taken >= most {
+                break 'screens;
+            }
+        }
+        next = at + rows;
+    }
+    p.screen_mut().set_scrollback(saved);
+    lines.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let mut out = String::new();
+    let mut blank = false;
+    for (_, text) in lines {
+        if text.is_empty() {
+            if !blank && !out.is_empty() {
+                out.push('\n');
+            }
+            blank = true;
+            continue;
+        }
+        blank = false;
+        out.push_str(&text);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
 /// The nearest line containing `needle`, starting from `from` and moving in
 /// one direction, then wrapping once.
 ///
@@ -1872,6 +1926,28 @@ mod tests {
         assert_eq!(said, ["line 0 NEEDLE", "line 7 NEEDLE", "line 14 NEEDLE", "line 21 NEEDLE", "line 28 NEEDLE"], "{hits:?}");
         assert!(super::lines_with(&mut p, "  ", 20).is_empty(), "blanks are not a search");
         assert!(super::lines_with(&mut p, "haystack", 20).is_empty());
+    }
+
+    /// The newest of the history and the screen, oldest line first, within
+    /// the budget -- and the view left where the person had it
+    #[test]
+    fn the_recent_text_is_the_newest_lines_in_order() {
+        let mut p = vt100::Parser::new(4, 20, 200);
+        for i in 0..30 {
+            p.process(format!("line {i}\r\n").as_bytes());
+            if i == 10 {
+                p.process(b"\r\n\r\n\r\n");
+            }
+        }
+        p.screen_mut().set_scrollback(5);
+        let all = super::recent_text(&mut p, 100_000, 20);
+        assert_eq!(p.screen().scrollback(), 5, "reading moved what the person was looking at");
+        assert!(all.starts_with("line 0\nline 1\n"), "{all}");
+        assert!(all.contains("line 10\n\nline 11"), "a run of blank lines is one blank line: {all}");
+        assert!(all.ends_with("line 29"), "{all}");
+        let some = super::recent_text(&mut p, 30, 20);
+        assert!(some.ends_with("line 29") && !some.contains("line 20"), "only the newest: {some}");
+        assert!(some.starts_with("line 2"), "{some}");
     }
 
     #[test]
@@ -5107,6 +5183,14 @@ impl Tab {
         if !value.trim().is_empty() {
             self.status.push((key.to_string(), value.trim().to_string()));
         }
+    }
+
+    /// What this tab's terminal said lately, as text: about `most`
+    /// characters of the newest history and screen (see [`recent_text`])
+    pub fn recent_text(&self, most: usize) -> String {
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+        let cols = p.screen().size().1;
+        recent_text(&mut p, most, cols)
     }
 
     /// Lines in this tab's scrollback that contain `needle`, newest first.

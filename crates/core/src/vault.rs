@@ -763,6 +763,13 @@ fn sources() -> Vec<Source> {
         .collect()
 }
 
+/// The pattern the records of the CLI `program` starts are found by, with
+/// `{id}` for a conversation's id: where a conversation a search found is
+/// kept, for the AI it is handed on to (`crate::handover`)
+pub fn record_glob(program: &str) -> Option<String> {
+    sources().into_iter().find(|s| s.program == program).map(|s| s.verify)
+}
+
 /// Indirection so tests can supply their own.
 fn profiles() -> Vec<ProfileFile> {
     crate::profile::files()

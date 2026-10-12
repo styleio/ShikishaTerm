@@ -660,9 +660,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #setup .sfoot, #addproj .sfoot { display:flex; justify-content:flex-end; gap:var(--s2); padding:12px 20px;
     border-top:1px solid var(--line); }
   /* One question: its name, what answers it, a line saying what it does */
-  #setup .sfield, #addproj .sfield { display:flex; flex-direction:column; gap:var(--s2); }
-  #setup .slabel, #addproj .slabel { font-size:12px; font-weight:500; color:var(--text); }
-  #setup .shint, #addproj .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
+  #setup .sfield, #addproj .sfield, #sask.sform .sfield { display:flex; flex-direction:column; gap:var(--s2); }
+  #setup .slabel, #addproj .slabel, #sask.sform .slabel { font-size:12px; font-weight:500; color:var(--text); }
+  #setup .shint, #addproj .shint, #sask.sform .shint { font-size:11.5px; color:var(--faint); line-height:1.5; }
+  /* A question that is a small form (askQuestion with `sform`): its fields
+     stand in the place of the list, unframed, one under the other */
+  #sask.sform .blist, #sask.sform .hbody { display:flex; flex-direction:column; gap:var(--s5); border:0; max-height:none; overflow:visible; }
+  #sask.sform .sval { font-size:13px; color:var(--text); overflow-wrap:anywhere; }
+  #sask.sform .shint.mono { font-family:var(--mono); color:var(--dim); overflow-wrap:anywhere; }
   .vmvis { display:flex; flex-direction:column; gap:var(--s1); border-radius:6px; }
   .vmvis.need { outline:2px solid var(--warn, #d9822b); outline-offset:3px; }
   .vmvis .vmlabel { font-size:12px; color:var(--dim); }
@@ -794,11 +799,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A field of this dialog (5.1): 36px, the edge that says "type here", a ring
      rather than a thicker border on focus */
   #addproj .aprow .apin { flex:1; }
-  #addproj .apin { width:100%; min-width:0; height:36px; box-sizing:border-box; padding:0 12px; font:inherit;
+  #addproj .apin, #sask.sform .apin { width:100%; min-width:0; height:36px; box-sizing:border-box; padding:0 12px; font:inherit;
     font-size:13px; color:var(--text); background:var(--bg); border:1px solid var(--edge);
     border-radius:var(--r-ctl); outline:none; }
   #addproj .apin.mono { font-family:var(--mono); }
-  #addproj .apin:focus { border-color:var(--brand);
+  #addproj .apin:focus, #sask.sform .apin:focus { border-color:var(--brand);
     box-shadow:0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent); }
   #addproj .apin.ring { animation:apring .9s 2; }
   @keyframes apring { 0%,100% { box-shadow:0 0 0 0 transparent } 50% {
@@ -3153,6 +3158,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .pill.limit { color:var(--warn, #e0a80a); border-color:var(--warn, #e0a80a); cursor:pointer;
     max-width:38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap !important; }
   .pill.limit:hover { background:var(--tint); }
+  /* Beside the limit notice: the way on, to another AI or account */
+  .pill.handon { color:var(--brand); border-color:var(--brand); cursor:pointer; white-space:nowrap !important; }
+  .pill.handon:hover { background:var(--tint); }
   /* Keeping the PC awake. Not a state colour: holding the PC up is not an AI
      at work (the "always" choice holds it with nothing running), so held is
      plain text and waiting is dim, the way AUTO OFF is */
@@ -4182,6 +4190,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #convopanel #convoHead .hback { border:0; background:transparent; }
   #convopanel #convoHead .hback:hover { background:var(--hover); }
   #convopanel #convoHead .hgo { margin-left:auto; border:1px solid var(--edge); background:var(--panel2); }
+  /* Continuing with another AI, quiet, at the right beside "Resume" */
+  #convopanel #convoHead .hon { margin-left:auto; }
+  #convopanel #convoHead .hon + .hgo { margin-left:0; }
   #convopanel #convoHead .hgo:hover { border-color:var(--edge-hi); }
   #convopanel .vrnote { color:var(--dim); font-size:12px; margin:0 0 var(--s4); }
   #convopanel .vrnote.bad { color:var(--text); background:color-mix(in srgb, var(--warn) 9%, transparent);
@@ -8995,6 +9006,9 @@ function tabMenu(anchor, t, where, e) {
       : null,
     // A terminal's history, searched: the way in on a phone, which has no
     // keys to press for it
+    // The conversation picked up by another AI, or by this one afresh, in a
+    // new tab in the same folder (handover.rs)
+    t.id && t.ai && !t.hold ? item(T["tui.menu.handover"] || "", () => openHandOver({tab:t.id})) : null,
     t.kind === "pty" && !t.hold ? item(T["tui.menu.find_terminal"] || "", () => {
       if (!S || S.active !== t.index) send({kind:"select", tab:t.index});
       send({kind:"seek", what:"open"});
@@ -9004,6 +9018,72 @@ function tabMenu(anchor, t, where, e) {
     // The Develop list's own rows, the page's tools, the same as over the page
     ...(t.kind === "browser" ? devRows(t, false) : []),
   ], false, e);
+}
+// Carrying a conversation on with another AI (handover.rs): a new tab in the
+// same folder, told where the conversation's record is. `from` names the
+// conversation: {tab} for a tab of this desk, or a past one's {program, id,
+// cwd, host, title}. What it can be carried on with is the folder's -- a
+// server or a MicroVM has AIs of its own -- so it is asked of the app as the
+// dialog opens, and the dialog fills in when the answer comes
+const handAsks = new Map();
+const handReq = () => "h" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+window.__handOver = function (d) {
+  const f = d && handAsks.get(d.req);
+  if (!f) return;
+  handAsks.delete(d.req);
+  f(d);
+};
+function openHandOver(from) {
+  const req = handReq();
+  const body = el("div", {class:"hbody"}, el("div", {class:"shint"}, T["tui.handover.asking"] || ""));
+  let answer = null, pick = null, depth = null;
+  askQuestion({
+    title: T["tui.handover.title"] || "",
+    say: T["tui.handover.say"] || "",
+    rows: [body],
+    label: T["tui.handover.go"] || "",
+    // Not until the folder's AIs are known, and not when there are none
+    check: () => !answer ? (T["tui.handover.asking"] || "") : answer.ok ? "" : (answer.error || ""),
+    go: () => {
+      const c = answer.choices[+pick.value];
+      const start = handReq();
+      handAsks.set(start, d => toast(d.ok ? (T["msg.handover.opened"] || "").replaceAll("{tab}", d.opened || "") : (d.error || ""), !d.ok));
+      send({kind:"handover", ...from, key:c.key, account:c.account || "", whole:!!depth && depth.value === "whole", req:start});
+    },
+  });
+  document.getElementById("sask").classList.add("sform");
+  handAsks.set(req, d => {
+    answer = d;
+    if (!d.ok) { body.replaceChildren(warnBox(d.error || "")); return; }
+    const named = c => {
+      const ai = c.account ? (T["tui.handover.as_account"] || "{ai} ({account})").replaceAll("{ai}", c.name).replaceAll("{account}", c.account_name || c.account) : c.name;
+      const same = c.key === d.key && (c.account || "") === (d.account || "");
+      return same ? (T["tui.handover.same"] || "{ai}").replaceAll("{ai}", ai) : ai;
+    };
+    pick = el("select", {class:"apin"}, ...d.choices.map((c, i) => el("option", {value:String(i)}, named(c))));
+    pick.value = String(d.pick || 0);
+    const field = (label, ...kids) => el("div", {class:"sfield"}, el("label", {class:"slabel"}, label), ...kids);
+    const rows = [
+      field(T["tui.handover.from"] || "",
+        el("div", {class:"sval"}, [d.title, d.ai].filter(Boolean).join(" · ")),
+        el("div", {class:"shint mono"}, (d.host ? d.host + ": " : "") + (d.folder || ""))),
+      field(T["tui.handover.ai"] || "", pick),
+    ];
+    if (d.record) {
+      depth = el("select", {class:"apin"},
+        el("option", {value:"brief"}, T["tui.handover.brief"] || ""),
+        el("option", {value:"whole"}, T["tui.handover.whole"] || ""));
+      const say = el("div", {class:"shint"});
+      const paint = () => { say.textContent = T[depth.value === "whole" ? "tui.handover.whole.say" : "tui.handover.brief.say"] || ""; };
+      depth.addEventListener("change", paint);
+      paint();
+      rows.push(field(T["tui.handover.depth"] || "", depth, say));
+    } else {
+      rows.push(el("div", {class:"shint"}, T["tui.handover.no_record"] || ""));
+    }
+    body.replaceChildren(...rows);
+  });
+  send({kind:"handoverask", ...from, req});
 }
 // A page saved as a PDF, beside what it downloads. The list opens where the
 // file will appear; a phone's list would cover the page, so a phone is told
@@ -13254,9 +13334,16 @@ function limitPill() {
   const t = (S && S.tabs || []).find(t => t.index === S.active);
   if (!t || !t.limit) return null;
   const who = t.profile || t.name || "";
-  return el("span", {class:"pill limit", title:(who ? who + ": " : "") + t.limit,
+  const both = document.createDocumentFragment();
+  // The work need not wait for the limit to lift: another AI, or another
+  // account of this one, picks the conversation up in a tab of its own.
+  // Before the notice, whose words are long: on a phone this row scrolls
+  // sideways, and the way on would be out of sight behind them
+  both.append(t.id && t.ai ? el("span", {class:"pill handon", onclick:() => openHandOver({tab:t.id})}, T["tui.handover.limit"] || "") : "",
+    el("span", {class:"pill limit", title:(who ? who + ": " : "") + t.limit,
       onclick:() => send({kind:"limit_ack", tab:t.index})},
-    (who ? who + ": " : "") + t.limit);
+    (who ? who + ": " : "") + t.limit));
+  return both;
 }
 // What the subscription of the AI in view has left: Claude's over a Claude
 // tab, Codex's over a Codex tab. The number is the account's, not the tab's,
@@ -20073,6 +20160,7 @@ if (REMOTE) {
     if ("luadone" in d) window.__luaDone(d.luadone);
     if ("suggested" in d) window.__suggested(d.suggested);
     if (d.vaultwhere) window.__vaultWhere(d.vaultwhere);
+    if (d.handover) window.__handOver(d.handover);
     if ("surveyed" in d) window.__surveyed(d.surveyed);
   };
   const connectState = () => {
@@ -21239,7 +21327,11 @@ function drawHead() {
     }
     openList(go, resumeRows(here, past), true);
   };
-  head.append(go);
+  // Or picked up by another AI, in a new tab in its folder (handover.rs)
+  const on = gone ? null : el("button", {type:"button", class:"hback hon", onclick:() => openHandOver({
+    program:past.program, id:past.id, cwd:here.folder || "", host:past.host || "", title:tabTitleOf(past, here)})},
+    T["tui.menu.handover"] || "");
+  head.append(...[on, go].filter(Boolean));
 }
 // What a conversation is called as a tab: the folder it was had in
 function tabTitleOf(past, here) {
@@ -24934,7 +25026,7 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const box = document.getElementById("sask");
   box.hidden = false;
   // Whatever a form put on the frame last time is its own, not this question's
-  box.classList.remove("adrform");
+  box.classList.remove("adrform", "sform");
   const refused = () => {
     const why = check ? check() : "";
     if (!why) return false;

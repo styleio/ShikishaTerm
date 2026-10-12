@@ -217,6 +217,9 @@ pub trait Shell {
     /// JSON-encoded; see `shikisha_shared::Ev::LinkPress`)
     fn push_link(&self, json: &str);
     fn push_folder_review(&self, json: &str) { let _ = json; }
+    /// An answer for the dialog that carries a conversation on with another
+    /// AI (already JSON-encoded; see `crate::handover`)
+    fn push_hand_over(&self, json: &str) { let _ = json; }
     fn push_recorded(&self, line_json: &str);
     /// A line about the run being driven from words, for the strip under
     /// the page it is driving

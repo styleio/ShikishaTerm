@@ -656,6 +656,12 @@ impl WinSurface {
         let _ = self.win.eval(&format!("window.__folderReview && window.__folderReview({json});"));
     }
 
+    /// Hand one answer back to the dialog that carries a conversation on
+    /// with another AI (already JSON-encoded)
+    fn push_hand_over(&self, json: &str) {
+        let _ = self.win.eval(&format!("window.__handOver && window.__handOver({json});"));
+    }
+
     fn push_link(&self, json: &str) {
         let _ = self.win.eval(&format!("window.__linkSaid && window.__linkSaid({json});"));
     }
@@ -2307,6 +2313,7 @@ impl shikisha_core::host::Shell for WinSurface {
     fn push_sftp(&self, json: &str) { WinSurface::push_sftp(self, json) }
     fn push_link(&self, json: &str) { WinSurface::push_link(self, json) }
     fn push_folder_review(&self, json: &str) { WinSurface::push_folder_review(self, json) }
+    fn push_hand_over(&self, json: &str) { WinSurface::push_hand_over(self, json) }
     fn push_recorded(&self, line_json: &str) { WinSurface::push_recorded(self, line_json) }
     fn push_words_note(&self, json: &str) { WinSurface::push_words_note(self, json) }
     fn queue_ui(&mut self, ev: shikisha_shared::Ev) { WinSurface::queue_ui(self, ev) }

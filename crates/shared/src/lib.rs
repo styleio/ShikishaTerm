@@ -539,6 +539,16 @@ pub enum Ev {
     /// Put one tab back into a conversation from its folder's past. The tab is
     /// relaunched resuming that id -- the same resume every other road uses
     PastResume { tab: u32, id: String },
+    /// What a conversation can be carried on with in a new tab: the AIs and
+    /// accounts its folder can start, which one is chosen to begin with, and
+    /// whether its record can be found. Asked when the dialog opens; answered
+    /// once, with `req` in it
+    HandOverAsk { from: HandFrom, req: serde_json::Value },
+    /// Carry a conversation on with `key` (a CLI's command), as `account`
+    /// of it when that is one the settings added, in a new tab in the same
+    /// folder. `whole`: the new AI reads the whole record before anything
+    /// else. Answered once, with `req` in it
+    HandOver { from: HandFrom, key: String, account: Option<String>, whole: bool, req: serde_json::Value },
     /// Emergency stop
     Stop,
     /// Relaunch the tab being viewed. `keys_for` turns it into the Ctrl+B r that
@@ -1279,6 +1289,27 @@ pub trait BrowserHost {
     }
 }
 
+/// The conversation a hand-over carries on
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HandFrom {
+    /// The one in a tab of the desk in view, by the tab's automation name
+    Tab(String),
+    /// A past one a search found, by the values its hit carries (as
+    /// `Ev::VaultOpen`). `host`: the machine it was had on, by its
+    /// settings entry; none is this PC
+    Past { program: String, id: String, cwd: Option<String>, host: Option<String>, title: String },
+}
+
+/// Which conversation an intent names: `tab`, or a past one's `program`
+/// and `id`. Neither is no intent at all
+fn hand_from(v: &serde_json::Value) -> Option<HandFrom> {
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
+    if let Some(tab) = s("tab") {
+        return Some(HandFrom::Tab(tab));
+    }
+    Some(HandFrom::Past { program: s("program")?, id: s("id")?, cwd: s("cwd"), host: s("host"), title: s("title").unwrap_or_default() })
+}
+
 /// Read one intent from the screen.
 ///
 /// Arrives in the same shape whether from the window (ipc) or a phone
@@ -1551,6 +1582,14 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("pastlist") => Ev::PastList {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             wake: v.get("wake").and_then(|x| x.as_bool()).unwrap_or(false),
+        },
+        Some("handoverask") => Ev::HandOverAsk { from: hand_from(v)?, req: v.get("req").cloned().unwrap_or_default() },
+        Some("handover") => Ev::HandOver {
+            from: hand_from(v)?,
+            key: v.get("key").and_then(|x| x.as_str()).map(str::trim).filter(|k| !k.is_empty())?.to_string(),
+            account: v.get("account").and_then(|x| x.as_str()).map(str::trim).filter(|a| !a.is_empty()).map(str::to_string),
+            whole: v.get("whole").and_then(|x| x.as_bool()).unwrap_or(false),
+            req: v.get("req").cloned().unwrap_or_default(),
         },
         Some("pastresume") => Ev::PastResume {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
@@ -2210,6 +2249,22 @@ mod tests {
             let ev = parse_intent(&serde_json::json!({"kind": "vaultwhere", "program": "codex", "id": "r", "req": req})).unwrap();
             assert!(matches!(ev, Ev::VaultWhere { req: found, .. } if found == req));
         }
+    }
+
+    #[test]
+    fn a_hand_over_names_a_tab_or_a_past_conversation_and_an_ai() {
+        let ev = parse_intent(&serde_json::json!({"kind": "handoverask", "tab": "fix-login", "req": "h1"})).unwrap();
+        assert!(matches!(ev, Ev::HandOverAsk { from: HandFrom::Tab(t), .. } if t == "fix-login"));
+        let ev = parse_intent(&serde_json::json!({
+            "kind": "handover", "program": "claude", "id": "abc", "cwd": "/work/app", "host": "", "title": "app",
+            "key": "codex", "account": "", "whole": true, "req": "h2"
+        }))
+        .unwrap();
+        let Ev::HandOver { from, key, account, whole, .. } = ev else { panic!("not a hand-over") };
+        assert_eq!(from, HandFrom::Past { program: "claude".into(), id: "abc".into(), cwd: Some("/work/app".into()), host: None, title: "app".into() });
+        assert_eq!((key.as_str(), account, whole), ("codex", None, true));
+        assert!(parse_intent(&serde_json::json!({"kind": "handover", "tab": "x", "key": " "})).is_none(), "no AI is no hand-over");
+        assert!(parse_intent(&serde_json::json!({"kind": "handoverask", "program": "claude"})).is_none(), "a past one needs its id");
     }
 
     #[test]

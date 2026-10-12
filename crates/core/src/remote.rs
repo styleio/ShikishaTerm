@@ -273,6 +273,11 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // Asking where one of those conversations was had is a read of the
         // same records the search already reads
         Ev::VaultWhere { .. } => true,
+        // Carrying a conversation on with another AI opens a tab in the same
+        // folder and types into it -- what a quick action does, which the
+        // phone can already press -- and asking what it could be carried on
+        // with is a read
+        Ev::HandOverAsk { .. } | Ev::HandOver { .. } => true,
         // The column's conversation panel: reading what was said in a tab, the
         // same records; and a pin or a note, which is the person's own
         // writing about their own conversation

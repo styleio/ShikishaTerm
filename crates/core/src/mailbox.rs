@@ -280,6 +280,9 @@ pub struct Mailbox {
     pub vault_opens: Vec<shikisha_shared::Ev>,
     /// Past conversations asked where they were had, to be picked back up
     pub vault_wheres: Vec<shikisha_shared::Ev>,
+    /// Conversations to be carried on with another AI, and the dialogs asking
+    /// what they could be carried on with (`crate::handover`)
+    pub hand_overs: Vec<shikisha_shared::Ev>,
     /// Tabs asked what was said in their folder before, by the number a person
     /// presses. The loop reads the records and puts the list into state
     /// (the tab, whether a paused MicroVM may be started to read it)
@@ -713,6 +716,7 @@ impl Mailbox {
             }),
             ev @ Ev::VaultOpen { .. } => self.vault_opens.push(ev),
             ev @ Ev::VaultWhere { .. } => self.vault_wheres.push(ev),
+            ev @ (Ev::HandOverAsk { .. } | Ev::HandOver { .. }) => self.hand_overs.push(ev),
             ev @ Ev::Convo { .. } => self.convos.push(ev),
             Ev::PastList { tab, wake } => self.past_lists.push((tab, wake)),
             Ev::PastResume { tab, id } => self.past_resumes.push((tab, id)),
@@ -729,6 +733,9 @@ impl Mailbox {
     }
     pub fn take_vault_wheres(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.vault_wheres)
+    }
+    pub fn take_hand_overs(&mut self) -> Vec<shikisha_shared::Ev> {
+        std::mem::take(&mut self.hand_overs)
     }
     pub fn take_convos(&mut self) -> Vec<shikisha_shared::Ev> {
         std::mem::take(&mut self.convos)

@@ -91,6 +91,17 @@ be opened again from the ▾ at the end of the row; with a CLI that can resume a
 conversation by name (Claude Code, Codex) the conversation comes back with it.
 What was on its screen does not.
 
+**Continue with another AI…**, in an AI tab's right-click menu (a long press on a
+phone), hands its conversation on to a new tab in the same folder. The AIs this
+folder can start are offered, with the accounts added in the settings: another
+account of the same AI, or the same AI in a new conversation, are choices too.
+The new tab is told where the old conversation's record is, and asked to check
+where it stopped before going on. **How much it reads first** chooses between
+starting from the end of the conversation and reading all of it first. With a
+CLI whose record cannot be found, the last part of the old tab's screen is
+passed on instead. The old tab stays as it is. A past conversation opened from
+**Every conversation** has the same button beside **Resume**.
+
 **The column on the right** (◨ in the title bar brings it out and puts it away) holds only what
 the tab in view is used with: Files, Git and Chat beside an AI tab, Files and Git beside a
 terminal or an editor, and Console beside a web page. A folder git does not hold has no Git.
@@ -218,7 +229,8 @@ it is the only way in.
 automation is on, whether a phone is connected, the build, and a stop button that
 halts every hand-over and every working AI at once. While you are looking at a tab whose AI has said
 something about its usage limit, that line is shown here too; press it to put it
-away.
+away. **Continue with another AI** beside it carries on with another AI or another
+account, without waiting for the limit to lift.
 
 ## 2. Keys
 
