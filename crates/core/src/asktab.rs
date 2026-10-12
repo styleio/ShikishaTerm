@@ -252,6 +252,9 @@ pub struct Ask {
     /// words in place of the refused request, and what it answers to them
     /// is what comes back
     pub redirected: bool,
+    /// Another ask went into the same tab after this one: what is said after
+    /// this one's turn is that ask's, not the person's other words
+    pub superseded: bool,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -540,6 +543,7 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         question_told: None,
         stopped_since: None,
         redirected: false,
+        superseded: false,
     }
 }
 
@@ -1021,6 +1025,11 @@ impl Ask {
             Source::Far(_) => self.far.moved_on,
             Source::Screen => None,
         };
+        // Another ask put in after this one is no word of the person's: the
+        // stopped turn came to nothing, once the tab is not at work on it
+        if self.superseded && !self.redirected {
+            return quiet(t.state).then(|| Step::Answer(stopped(self, same_folder)));
+        }
         self.redirected |= moved == Some(true) || self.overtaken;
         if self.redirected {
             if !quiet(t.state) || t.reply_settling() {
@@ -1086,6 +1095,11 @@ pub fn step(
     }
     if a.answered {
         return line_step(a, target);
+    }
+    // A turn of this ask's stopped: the wait for words given after it runs
+    // from the last the tab was seen at work, every tick (see `on_stopped`)
+    if a.stopped_since.is_some() && target.is_some_and(|t| matches!(t.state, TabState::Busy | TabState::Background)) {
+        a.stopped_since = Some(now);
     }
     // The tab gave its answer and is saying its line. The answer is the reply
     // kept as its turn first ended, whatever it says next -- its line said
@@ -2089,6 +2103,16 @@ mod tests {
         let Some(Step::Answer(v)) = b.on_stopped(&t, None) else { panic!("the answer to the other words did not come") };
         assert_eq!(v["state"], "DONE");
         assert!(v["reply"].as_str().is_some_and(|r| r.contains("one finding")), "{v}");
+        // Another ask put in after it is no word of the person's: the stopped
+        // turn came to nothing, and that ask's answer is not this one's
+        let mut c = sent_ask();
+        c.superseded = true;
+        c.overtaken = true;
+        t.state = TabState::Busy;
+        assert!(c.on_stopped(&t, None).is_none(), "answered while the other ask is worked on");
+        t.state = TabState::Done;
+        let Some(Step::Answer(v)) = c.on_stopped(&t, None) else { panic!("superseded, it is never answered") };
+        assert_eq!(v["state"], "STOPPED", "another ask's answer was handed over as this one's");
     }
 
     /// The words the person gave after stopping an ask, and the answer to

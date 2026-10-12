@@ -13,47 +13,51 @@ pub fn choice_line(l: &str) -> bool {
 }
 
 /// What question a dialog asks, from the screen where a question pattern
-/// matched at byte `at`: what it is about -- the text just above the line it
-/// matched on, where a CLI shows the command or the file (Claude Code puts
-/// them above "Do you want to proceed?") -- that line, and the lines after
-/// it up to the first that offers a choice ([`choice_line`]).
+/// matched at byte `at`: what it is about -- the block of lines just above
+/// the one it matched on, up to the blank line or the choice before it,
+/// where a CLI shows the command or the file (Claude Code puts them above
+/// "Do you want to proceed?") -- that line, and the lines after it up to
+/// the first that offers a choice ([`choice_line`]).
 ///
 /// A mark to tell questions apart, not a text to read: all space is taken
-/// out, and what is taken from above is its last [`QUESTION_ABOVE`]
-/// characters. Which choice the cursor is on, a redraw, the same lines
+/// out, and so are rules (lines drawn of `─`, `╌` and the like, as wide as
+/// the terminal). Which choice the cursor is on, a redraw, the same lines
 /// wrapped at another width (a phone sizing the terminal): none of it
-/// changes it. Another command is another question
+/// changes it. Another command is another question, wherever they differ
 pub fn question_region(screen: &str, at: usize) -> String {
     let start = screen[..at].rfind('\n').map_or(0, |i| i + 1);
     let bare = |l: &str| l.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let rule = |l: &str| !l.is_empty() && l.chars().all(|c| matches!(c, '─' | '━' | '╌' | '┄' | '┈' | '═' | '-' | '_' | '=' | '│' | '╭' | '╮' | '╰' | '╯'));
     // Above: back past the choices just above (the cursor on a later one),
-    // up to the next choice, until enough has been taken
+    // up to a blank line or the next choice
     let mut above: Vec<String> = Vec::new();
-    let mut taken = 0;
-    for l in screen[..start].lines().rev().map(bare).filter(|l| !l.is_empty()).skip_while(|l| choice_line(l)) {
-        if choice_line(&l) || taken >= QUESTION_ABOVE {
+    let mut rows = screen[..start].lines().rev().map(bare).skip_while(|l| l.is_empty() || choice_line(l));
+    for l in rows.by_ref().take(QUESTION_ABOVE) {
+        if l.is_empty() || choice_line(&l) {
             break;
         }
-        taken += l.chars().count();
-        above.push(l);
+        if !rule(&l) {
+            above.push(l);
+        }
     }
     above.reverse();
-    let above: String = above.concat();
-    let above: String = above.chars().skip(above.chars().count().saturating_sub(QUESTION_ABOVE)).collect();
     let mut below = String::new();
     for (i, l) in screen[start..].lines().enumerate() {
-        if choice_line(l) || i >= 8 {
+        if choice_line(l) || i >= QUESTION_ABOVE {
             break;
         }
-        below.push_str(&bare(l));
+        let l = bare(l);
+        if !rule(&l) {
+            below.push_str(&l);
+        }
     }
-    format!("{above}\n{below}")
+    format!("{}\n{below}", above.concat())
 }
 
-/// How much of what stands above a question goes into telling it apart
-/// ([`question_region`]), in characters other than space: a command and its
-/// description, a file and the first lines of the edit
-const QUESTION_ABOVE: usize = 160;
+/// How many rows above and below a question are looked at for what it is
+/// about ([`question_region`]): a block wrapped at a phone's width, with
+/// room to spare, so a narrower terminal does not cut it in another place
+const QUESTION_ABOVE: usize = 24;
 
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
@@ -978,8 +982,13 @@ mod tests {
             .replace("   2. Yes, and always allow access to D:\\work\\site from this project", "   2. Yes, and always allow access to\n      D:\\work\\site from this project")
             .replace("   3. Yes, and switch to auto mode · auto mode handles these prompts for you", "   3. Yes, and switch to auto mode · auto\n      mode handles these prompts for you")
             .replace(" Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below", " Tip: auto mode handles these prompts for\n you — choose \"switch to auto mode\" below")
-            .replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No");
+            .replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No")
+            .replace(&"╌".repeat(20), &"╌".repeat(38));
         assert_eq!(read(&narrow), (TabState::Question, asked.clone()), "wrapped at another width, it is another question");
+        let wide = real.replace(&"╌".repeat(20), &"╌".repeat(200));
+        assert_eq!(read(&wide), (TabState::Question, asked.clone()), "a wider terminal's rules made it another question");
+        let wide_other = wide.replace("echo hi > hello.txt", "rm hello.txt");
+        assert_ne!(read(&wide_other).1, asked, "at a wide terminal two commands read as one question");
         let on_no = real.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No");
         assert_eq!(read(&on_no), (TabState::Question, asked.clone()), "the cursor on No changed the question");
         let other = real.replace("echo hi > hello.txt", "rm hello.txt");
