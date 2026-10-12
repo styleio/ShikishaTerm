@@ -176,6 +176,13 @@ you are on in orange; **Enter** goes to the next match, **Shift+Enter** to the o
 and **Esc** closes the bar. F3 and Shift+F3 move through the matches too. The window and a
 phone watching the same page share one search, and the words stay when the page moves on.
 
+**Search a terminal**: press **Ctrl+Shift+F** in a terminal tab (or **Search this terminal**
+in the tab's menu, which is how a phone opens it) -- not Ctrl+F alone, which the programs in a
+terminal use themselves. It looks through everything that has gone by, brings the newest line
+holding the words to the middle of the view and marks it. **Enter** goes to the match below
+(newer), **Shift+Enter** to the one above (older), and **Esc** closes the bar and puts the view
+back.
+
 **Downloads**: a file a web page saves goes to your Downloads folder, and the
 **Downloads** list opens in the column on the right -- each file with how far it has got
 and where it went. At the PC, open it or show it in its folder (a program is only ever

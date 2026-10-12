@@ -531,6 +531,7 @@
   "tui.nav.menu": "Menu",
   "tui.nav.menu.part": "Menu (⋯)",
   "tui.menu.find": "Find in page",
+  "tui.menu.find_terminal": "Search this terminal",
   "tui.nav.downloads": "Downloads",
   "tui.seek.ph": "Find in page",
   "tui.seek.count": "{at} / {of}",

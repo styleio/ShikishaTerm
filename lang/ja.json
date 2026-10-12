@@ -531,6 +531,7 @@
   "tui.nav.menu": "メニュー",
   "tui.nav.menu.part": "メニュー（⋯）",
   "tui.menu.find": "ページ内を検索",
+  "tui.menu.find_terminal": "この端末の中を検索",
   "tui.nav.downloads": "ダウンロード",
   "tui.seek.ph": "ページ内を検索",
   "tui.seek.count": "{at} / {of}",

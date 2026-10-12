@@ -1499,6 +1499,42 @@ fn furthest_back<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>) -> usize {
     max
 }
 
+/// Every line of the history and the screen holding `needle`, in any case, by
+/// distance from the newest line (as [`find_line`] counts), oldest first.
+///
+/// Read a screen at a time rather than a line at a time: a long history is
+/// thousands of lines, and asking for each one alone moves the viewport and
+/// lays out a whole screen to read one row of it
+pub fn lines_with<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, needle: &str, cols: u16) -> Vec<usize> {
+    let needle = needle.to_lowercase();
+    if needle.trim().is_empty() {
+        return Vec::new();
+    }
+    let saved = p.screen().scrollback();
+    let max = furthest_back(p);
+    let rows = p.screen().size().0.max(1) as usize;
+    let top = max + rows - 1;
+    let mut hits = Vec::new();
+    // The lowest distance not looked at yet. A view stands `at` lines back
+    // and shows the lines from `at` to `at + rows - 1`, newest at the bottom
+    let mut next = 0usize;
+    while next <= top {
+        p.screen_mut().set_scrollback(next.min(max));
+        let at = p.screen().scrollback();
+        for (r, text) in p.screen().rows(0, cols).enumerate() {
+            let d = at + rows - 1 - r;
+            if d >= next && text.to_lowercase().contains(&needle) {
+                hits.push(d);
+            }
+        }
+        next = at + rows;
+    }
+    p.screen_mut().set_scrollback(saved);
+    hits.sort_unstable_by(|a, b| b.cmp(a));
+    hits.dedup();
+    hits
+}
+
 /// The nearest line containing `needle`, starting from `from` and moving in
 /// one direction, then wrapping once.
 ///
@@ -1802,6 +1838,23 @@ mod tests {
         // ...and the two can still be matched up, which is what the mark is
         // worth: the probe prints the id and this beside each other
         assert!(said.ends_with(&s.digest()), "{said} cannot be matched to anything");
+    }
+
+    /// Every line holding the words, from the oldest, each once -- across the
+    /// history and the screen, whatever the screen is scrolled to
+    #[test]
+    fn every_line_holding_the_words_is_found_once() {
+        let mut p = vt100::Parser::new(4, 20, 200);
+        for i in 0..30 {
+            p.process(format!("line {i}{}\r\n", if i % 7 == 0 { " NEEDLE" } else { "" }).as_bytes());
+        }
+        p.screen_mut().set_scrollback(5);
+        let hits = super::lines_with(&mut p, "needle", 20);
+        assert_eq!(p.screen().scrollback(), 5, "looking moved what the person was looking at");
+        let said: Vec<String> = hits.iter().map(|d| super::line_at(&mut p, *d, 20)).collect();
+        assert_eq!(said, ["line 0 NEEDLE", "line 7 NEEDLE", "line 14 NEEDLE", "line 21 NEEDLE", "line 28 NEEDLE"], "{hits:?}");
+        assert!(super::lines_with(&mut p, "  ", 20).is_empty(), "blanks are not a search");
+        assert!(super::lines_with(&mut p, "haystack", 20).is_empty());
     }
 
     #[test]

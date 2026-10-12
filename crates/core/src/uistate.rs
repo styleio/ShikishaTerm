@@ -2311,6 +2311,10 @@ pub struct SeekView {
     /// Counts up each time the bar is opened (Ctrl+F again included), so the
     /// screen knows to put the cursor in it and select the words
     pub opened: u64,
+    /// In a terminal, the row of the screen the line stood on is shown on,
+    /// for the board to mark
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<u16>,
 }
 
 /// One CLI and the skill that teaches it to ask another tab (see `skill`)

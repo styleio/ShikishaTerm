@@ -1580,6 +1580,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      be repaired in one place. A row with nothing on it still has to stand its
      full height, or the rows below would climb up past the cursor */
   #screen .r { min-height:1.25em; }
+  /* The line a search of the terminal stands on */
+  #screen .r.seekhit { background:color-mix(in srgb, var(--brand) 28%, transparent); }
   /* Screen relay. While viewing a browser tab, this shows in place of the
      terminal. Keeps the aspect ratio while fitting the frame.
      touch-action:none stops the default scroll so finger movement can be
@@ -8953,6 +8955,12 @@ function tabMenu(anchor, t, where, e) {
     item(T["tui.menu.rename"] || "", () => startRename(where || "tabs", "t:" + t.index)),
     // A split has no page of its own in the settings yet
     t.kind === "split" ? null : item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),
+    // A terminal's history, searched: the way in on a phone, which has no
+    // keys to press for it
+    t.kind === "pty" && !t.hold ? item(T["tui.menu.find_terminal"] || "", () => {
+      if (!S || S.active !== t.index) send({kind:"select", tab:t.index});
+      send({kind:"seek", what:"open"});
+    }) : null,
     // The page as paper: here too, for a tab whose bar has no menu
     t.kind === "browser" ? item(T["tui.menu.pdf"] || "", () => pagePdf(t)) : null,
     // The Develop list's own rows, the page's tools, the same as over the page
@@ -13622,7 +13630,15 @@ let seekShown = 0;
 // settings) with the search ticked among its controls
 // Where the page's controls offer it -- or every browser tab, where the browser
 // drawing them has no search box of its own (S.board_finds)
-const seekable = t => !!(t && t.kind === "browser" && !t.settings && S && ((S.nav && S.nav.find) || S.board_finds));
+const seekable = t => !!(t && ((t.kind === "browser" && !t.settings && S && ((S.nav && S.nav.find) || S.board_finds))
+  // ...and a terminal, whose history is searched by the app
+  || (t.kind === "pty" && !t.hold)));
+// The line of the terminal a search stands on, marked; and unmarked again
+function markFound(row) {
+  const kids = document.getElementById("screen").children;
+  for (const k of document.querySelectorAll("#screen > .r.seekhit")) k.classList.remove("seekhit");
+  if (row != null && kids[row]) kids[row].classList.add("seekhit");
+}
 function seekOpen() {
   if (!seekable(activeTab()) || covering()) return false;
   send({kind:"seek", what:"open"});
@@ -13656,6 +13672,7 @@ function drawSeek() {
     bar.hidden = !want;
     layout();
   }
+  markFound(want && st.row != null ? st.row : null);
   if (!want) return;
   if (!bar.firstChild) {
     // A search box, so nothing is capitalised or corrected on the way in, and
@@ -13721,8 +13738,13 @@ function drawSeek() {
 // that meaning
 document.addEventListener("keydown", e => {
   if (e.isComposing || e.altKey) return;
-  const find = appKey(e) && !e.shiftKey && e.code === "KeyF";
-  const again = (e.key === "F3" && !e.ctrlKey && !e.metaKey) || (MAC_KEYS && appKey(e) && e.code === "KeyG");
+  // A terminal's programs use Ctrl+F themselves (a character forward, a
+  // page forward), so there it is Ctrl+Shift+F, as other terminals have it,
+  // and F3 only while the bar is up
+  const term = (activeTab() || {}).kind === "pty";
+  const find = appKey(e) && e.shiftKey === term && e.code === "KeyF";
+  const again = ((e.key === "F3" && !e.ctrlKey && !e.metaKey) || (MAC_KEYS && appKey(e) && e.code === "KeyG"))
+    && !(term && !(S && S.seek));
   if (!find && !again) return;
   if (e.target && e.target.closest && e.target.closest("#seek")) return;
   if (!seekable(activeTab()) || covering() || directKeyOf(e)) return;
@@ -14158,7 +14180,10 @@ window.__state = function (json) {
   drawSoundTrouble();
   // While scrolled back through history, say so — clicking jumps back to the present
   const b = document.getElementById("back");
-  const away = !screen.hidden && S.scrolled > 0;
+  // ...except while a search of the terminal holds it there: closing the
+  // search is the way back, and the line would stand over the search's own
+  const seekingHere = !!(S.seek && String(S.seek.page || "").startsWith("term:"));
+  const away = !screen.hidden && S.scrolled > 0 && !seekingHere;
   b.hidden = !away;
   if (away) {
     b.textContent = (T["tui.scrolled"] || "").replaceAll("{lines}", S.scrolled);

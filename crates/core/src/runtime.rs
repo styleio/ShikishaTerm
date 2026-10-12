@@ -6978,17 +6978,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             remote_conn: remote_ui.as_ref().is_some_and(|r| r.has_devices()),
             remote_sticky: cfg.as_ref().is_some_and(|c| c.remote.sticky_token),
             nav,
-            seek: showing.as_ref().and_then(|key| {
-                let s = seeks.get(key).filter(|s| s.opened > 0)?;
-                Some(crate::uistate::SeekView {
-                    page: key.clone(),
-                    text: s.text.clone(),
-                    at: s.at,
-                    of: s.of,
-                    asked: s.asked,
-                    opened: s.opened,
-                })
-            }),
+            // The search over what is in front: the page shown, or the
+            // terminal shown
+            seek: showing
+                .clone()
+                .or_else(|| session_at(&surfaces, active).and_then(|i| tabs.get(i)).map(terminal_seek_key))
+                .and_then(|key| {
+                    let s = seeks.get(&key).filter(|s| s.opened > 0)?;
+                    Some(crate::uistate::SeekView {
+                        page: key.clone(),
+                        text: s.text.clone(),
+                        at: s.at,
+                        of: s.of,
+                        asked: s.asked,
+                        opened: s.opened,
+                        row: s.row,
+                    })
+                }),
             downloads: caps.downloads(),
             download_seq,
             asks: caps.asks_now(),
@@ -14119,6 +14125,44 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // page, so the window and a phone watching the same page are one
         // search, and a page that navigates is searched again for the same words
         for (from, what, text) in shell.mail().take_seek_asks() {
+            // A terminal in front: its history is searched here, and the
+            // line found is brought into view (`seek_terminal`)
+            if from.is_none()
+                && let Some(i) = session_at(&surfaces, active)
+                && let Some(t) = tabs.get_mut(i)
+            {
+                let key = terminal_seek_key(t);
+                let s = seeks.entry(key.clone()).or_default();
+                let step = match what.as_str() {
+                    "open" => {
+                        seek_opened += 1;
+                        s.opened = seek_opened;
+                        None
+                    }
+                    "find" => {
+                        s.text = text;
+                        Some(if s.text.trim().is_empty() { shikisha_shared::Seek::Stop } else { shikisha_shared::Seek::New })
+                    }
+                    "next" | "prev" => {
+                        if s.opened == 0 {
+                            seek_opened += 1;
+                            s.opened = seek_opened;
+                        }
+                        match (s.text.trim().is_empty(), s.searched, what.as_str()) {
+                            (true, _, _) => None,
+                            (false, false, _) => Some(shikisha_shared::Seek::New),
+                            (false, true, "next") => Some(shikisha_shared::Seek::Next),
+                            (false, true, _) => Some(shikisha_shared::Seek::Prev),
+                        }
+                    }
+                    _ => Some(shikisha_shared::Seek::Stop),
+                };
+                seek_terminal(t, s, step);
+                if what == "close" {
+                    seeks.remove(&key);
+                }
+                continue;
+            }
             let Some(Surface::Browser { key, .. }) = surfaces.get(active.wrapping_sub(1)) else {
                 continue;
             };
@@ -16115,12 +16159,58 @@ struct Seeking {
     searched: bool,
     /// Which opening of a bar this is; 0 for a bar that is shut
     opened: u64,
+    /// In a terminal, the row of the view the line stood on is in, for the
+    /// board to mark (a page marks its own matches)
+    row: Option<u16>,
 }
 
 /// Whether a page is one a person reads and may search: every browser tab,
 /// and not the app's own settings and guide, which stand over the board
 fn searchable(key: &str) -> bool {
     key != SETTINGS_TAB && key != "guide"
+}
+
+/// What a terminal's search is kept under among the pages' searches: not a
+/// page's key, so the two can never be taken for each other
+fn terminal_seek_key(t: &Tab) -> String {
+    format!("term:{}", t.uid())
+}
+
+/// One move of the search in a terminal's history: the words found, how many
+/// lines hold them, and the one stood on brought into the middle of the view.
+///
+/// "Next" goes down, towards the newest line, and "previous" up, as on a
+/// page; a new search stands on the newest line holding the words, since
+/// what a person looks for in a terminal is nearly always what just went by
+fn seek_terminal(t: &mut Tab, s: &mut Seeking, step: Option<shikisha_shared::Seek>) {
+    use shikisha_shared::Seek;
+    let Some(step) = step else { return };
+    let mut p = t.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let (rows, cols) = p.screen().size();
+    if step == Seek::Stop {
+        p.screen_mut().set_scrollback(0);
+        (s.at, s.of, s.asked, s.searched, s.row) = (0, 0, false, false, None);
+        return;
+    }
+    let lines = tab::lines_with(&mut p, &s.text, cols);
+    s.of = lines.len() as u32;
+    s.asked = false;
+    s.searched = true;
+    if lines.is_empty() {
+        (s.at, s.row) = (0, None);
+        return;
+    }
+    let of = s.of;
+    s.at = match step {
+        Seek::Next if s.at >= 1 && s.at < of => s.at + 1,
+        Seek::Next => 1,
+        Seek::Prev if s.at > 1 && s.at <= of => s.at - 1,
+        _ => of,
+    };
+    let d = lines[(s.at - 1) as usize];
+    p.screen_mut().set_scrollback(d.saturating_sub((rows / 2) as usize));
+    let at = p.screen().scrollback();
+    s.row = Some((rows as usize).saturating_sub(1).saturating_sub(d.saturating_sub(at)) as u16);
 }
 
 /// One move of the search on a page, and what it changed
