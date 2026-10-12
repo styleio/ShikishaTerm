@@ -543,12 +543,14 @@ pub enum Ev {
     /// accounts its folder can start, which one is chosen to begin with, and
     /// whether its record can be found. Asked when the dialog opens; answered
     /// once, with `req` in it
-    HandOverAsk { from: HandFrom, req: serde_json::Value },
+    HandOverAsk { from: HandFrom, desk: String, req: serde_json::Value },
     /// Carry a conversation on with `key` (a CLI's command), as `account`
     /// of it when that is one the settings added, in a new tab in the same
     /// folder. `whole`: the new AI reads the whole record before anything
-    /// else. Answered once, with `req` in it
-    HandOver { from: HandFrom, key: String, account: Option<String>, whole: bool, req: serde_json::Value },
+    /// else. `desk`: the desk the dialog was opened on, by its id -- a
+    /// conversation is named on the desk in view, and another desk brought
+    /// into view meanwhile is not where it was. Answered once, with `req` in it
+    HandOver { from: HandFrom, desk: String, key: String, account: Option<String>, whole: bool, req: serde_json::Value },
     /// Emergency stop
     Stop,
     /// Relaunch the tab being viewed. `keys_for` turns it into the Ctrl+B r that
@@ -1295,20 +1297,22 @@ pub trait BrowserHost {
 /// The conversation a hand-over carries on
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HandFrom {
-    /// The one in a tab of the desk in view, by the tab's automation name
-    Tab(String),
+    /// The one in a tab of the desk in view: by the tab's automation name,
+    /// and by who the tab is (its uid), so that a tab closed and another
+    /// given its name in the meantime is not taken for it
+    Tab { id: String, uid: String },
     /// A past one a search found, by the values its hit carries (as
     /// `Ev::VaultOpen`). `host`: the machine it was had on, by its
     /// settings entry; none is this PC
     Past { program: String, id: String, cwd: Option<String>, host: Option<String>, title: String },
 }
 
-/// Which conversation an intent names: `tab`, or a past one's `program`
-/// and `id`. Neither is no intent at all
+/// Which conversation an intent names: `tab` and its `uid`, or a past
+/// one's `program` and `id`. Neither is no intent at all
 fn hand_from(v: &serde_json::Value) -> Option<HandFrom> {
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
     if let Some(tab) = s("tab") {
-        return Some(HandFrom::Tab(tab));
+        return Some(HandFrom::Tab { id: tab, uid: s("uid")? });
     }
     Some(HandFrom::Past { program: s("program")?, id: s("id")?, cwd: s("cwd"), host: s("host"), title: s("title").unwrap_or_default() })
 }
@@ -1586,9 +1590,14 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
             tab: v.get("tab").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             wake: v.get("wake").and_then(|x| x.as_bool()).unwrap_or(false),
         },
-        Some("handoverask") => Ev::HandOverAsk { from: hand_from(v)?, req: v.get("req").cloned().unwrap_or_default() },
+        Some("handoverask") => Ev::HandOverAsk {
+            from: hand_from(v)?,
+            desk: v.get("desk").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            req: v.get("req").cloned().unwrap_or_default(),
+        },
         Some("handover") => Ev::HandOver {
             from: hand_from(v)?,
+            desk: v.get("desk").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             key: v.get("key").and_then(|x| x.as_str()).map(str::trim).filter(|k| !k.is_empty())?.to_string(),
             account: v.get("account").and_then(|x| x.as_str()).map(str::trim).filter(|a| !a.is_empty()).map(str::to_string),
             whole: v.get("whole").and_then(|x| x.as_bool()).unwrap_or(false),
@@ -2259,8 +2268,9 @@ mod tests {
 
     #[test]
     fn a_hand_over_names_a_tab_or_a_past_conversation_and_an_ai() {
-        let ev = parse_intent(&serde_json::json!({"kind": "handoverask", "tab": "fix-login", "req": "h1"})).unwrap();
-        assert!(matches!(ev, Ev::HandOverAsk { from: HandFrom::Tab(t), .. } if t == "fix-login"));
+        let ev = parse_intent(&serde_json::json!({"kind": "handoverask", "tab": "fix-login", "uid": "u-1", "desk": "d", "req": "h1"})).unwrap();
+        assert!(matches!(ev, Ev::HandOverAsk { from: HandFrom::Tab { id, uid }, desk, .. } if id == "fix-login" && uid == "u-1" && desk == "d"));
+        assert!(parse_intent(&serde_json::json!({"kind": "handoverask", "tab": "fix-login"})).is_none(), "a tab is named by who it is too");
         let ev = parse_intent(&serde_json::json!({
             "kind": "handover", "program": "claude", "id": "abc", "cwd": "/work/app", "host": "", "title": "app",
             "key": "codex", "account": "", "whole": true, "req": "h2"

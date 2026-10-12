@@ -6387,6 +6387,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteCut) => {
                         shell.mail().remote_cut = true;
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::OpenBoard { name }) => {
+                        shell.mail().open_boards.push(name);
+                    }
                     // A right-click on the terminal: this PC's clipboard, into
                     // the tab in view, the way the window pastes
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Paste) => {
@@ -8190,6 +8193,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // is not put on top of what they wrote, nor sent with it
                 let taken_over = flight.is_some()
                     && at.and_then(|s| session_at(surf, s)).and_then(|i| list.get(i)).is_some_and(|t| t.last_manual_ms.is_some());
+                let typed_into = p.yields
+                    && at.and_then(|s| session_at(surf, s)).and_then(|i| list.get(i)).is_some_and(|t| t.last_manual_ms.is_some());
+                if typed_into {
+                    append_hook_log(&format!("hand-over to tab {}: typed into before it was ready; not sent", p.uid));
+                    flash = Some(i18n::tp("msg.handover.typed_into", &[("tab", &p.title)]));
+                    continue;
+                }
                 if taken_over && let Some(i) = flight {
                     let f = routine_flights.remove(i);
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Skipped, "routine.why.in_use", None);
@@ -11275,39 +11285,40 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // machine, so it is looked for on a thread, and the tab is opened
         // here once it is known
         for ev in shell.mail().take_hand_overs() {
-            let (from, pick, req) = match ev {
-                shikisha_shared::Ev::HandOverAsk { from, req } => (from, None, req),
-                shikisha_shared::Ev::HandOver { from, key, account, whole, req } => (from, Some((key, account, whole)), req),
+            let (from, sent_desk, pick, req) = match ev {
+                shikisha_shared::Ev::HandOverAsk { from, desk, req } => (from, desk, None, req),
+                shikisha_shared::Ev::HandOver { from, desk, key, account, whole, req } => (from, desk, Some((key, account, whole)), req),
                 _ => continue,
             };
             let refuse = |why: String| serde_json::json!({"req": req, "ok": false, "error": why}).to_string();
             let accounts = cfg.as_ref().map(|c| c.ai_accounts.clone()).unwrap_or_default();
             let desk = desks.get(desk_index);
-            let src = match hand_over_source(&from, desk, &tabs) {
-                Ok(src) => src,
-                Err(why) => {
-                    let _ = hand_tx.send(HandDone::Answer(refuse(why)));
-                    continue;
-                }
-            };
-            let choices = match crate::handover::choices(desk, &src.at, &ai_choices, &accounts) {
-                Ok(c) => c,
+            let (src, choices) = match hand_over_settle(&from, &sent_desk, desk, &tabs, &ai_choices, &accounts) {
+                Ok(settled) => settled,
                 Err(why) => {
                     let _ = hand_tx.send(HandDone::Answer(refuse(why)));
                     continue;
                 }
             };
             let tx = hand_tx.clone();
-            let desk_uid = desk.map(|d| d.uid.clone()).unwrap_or_default();
             match pick {
                 None => {
                     let first = crate::handover::first_pick(&choices, &src.key, src.account.as_deref());
                     std::thread::spawn(move || {
-                        let found = src.record.as_ref().and_then(crate::handover::record_path).is_some();
+                        // A record on another machine is not looked for
+                        // until the person starts: looking can wake a paused
+                        // MicroVM, which is billed while it runs, and the
+                        // dialog may well be cancelled. Not known, both ways
+                        // of reading it are offered
+                        let found = match src.record.as_ref() {
+                            Some(r @ crate::reader::Record::Here { .. }) => Some(crate::handover::record_path(r).is_some()),
+                            Some(crate::reader::Record::Far { .. }) => None,
+                            None => Some(false),
+                        };
                         // A past conversation whose record is gone has no
                         // screen to fall back on: said now, not after the
                         // person has chosen
-                        if !found && src.earlier.screen.trim().is_empty() {
+                        if found == Some(false) && src.earlier.screen.trim().is_empty() {
                             let js = serde_json::json!({"req": req, "ok": false, "error": i18n::t("err.handover.nothing")});
                             let _ = tx.send(HandDone::Answer(js.to_string()));
                             return;
@@ -11331,7 +11342,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let mut earlier = src.earlier;
                         earlier.record = src.record.as_ref().and_then(crate::handover::record_path);
                         let done = match crate::handover::prompt(&earlier, whole, &language) {
-                            Some(prompt) => HandDone::Open { req, desk: desk_uid, at: src.at, choice, prompt },
+                            Some(prompt) => HandDone::Open { req, from, desk: sent_desk, at: src.at, choice, prompt },
                             None => HandDone::Answer(serde_json::json!({"req": req, "ok": false, "error": i18n::t("err.handover.nothing")}).to_string()),
                         };
                         let _ = tx.send(done);
@@ -11342,18 +11353,38 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         while let Ok(done) = hand_rx.try_recv() {
             let js = match done {
                 HandDone::Answer(js) => js,
-                HandDone::Open { req, desk, at, choice, prompt } => {
-                    let from = crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "handover", sender: None, job: None };
-                    let label = choice.label();
-                    match open_and_say_as(&config_file, &desk, &at, &choice.key, &choice.name, &label, prompt, true, from, &tabs, &mut pending_quicks, &mut reveal, choice.account.as_deref()) {
-                        Some(title) => {
-                            append_hook_log(&format!("hand-over -> new tab \"{title}\" in {}", crate::uistate::place_said(&at)));
-                            watcher.poke();
-                            // Said by the dialog that asked, on the device
-                            // it was asked from
-                            serde_json::json!({"req": req, "ok": true, "opened": title}).to_string()
+                HandDone::Open { req, from, desk, at, choice, prompt } => {
+                    // Asked again now that the record has been looked for:
+                    // the desk, the tab, the folder and the AI chosen may
+                    // have changed while it was, and the tab is opened only
+                    // where the person was shown it would be
+                    let accounts = cfg.as_ref().map(|c| c.ai_accounts.clone()).unwrap_or_default();
+                    let still = hand_over_settle(&from, &desk, desks.get(desk_index), &tabs, &ai_choices, &accounts).and_then(|(src, choices)| {
+                        let same = crate::uistate::same_folder(&src.at, &at) && choices.contains(&choice);
+                        if same { Ok(()) } else { Err(i18n::t("err.handover.changed")) }
+                    });
+                    let refused = |why: String| serde_json::json!({"req": req, "ok": false, "error": why}).to_string();
+                    match still {
+                        Err(why) => refused(why),
+                        Ok(()) => {
+                            let said = crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "handover", sender: None, job: None };
+                            let label = choice.label();
+                            match open_and_say_as(&config_file, &desk, &at, &choice.key, &choice.name, &label, prompt, true, said, &tabs, &mut pending_quicks, &mut reveal, choice.account.as_deref()) {
+                                Some(title) => {
+                                    // Somebody typing into the new tab before
+                                    // the words go in has it for themselves
+                                    if let Some(p) = pending_quicks.last_mut() {
+                                        p.yields = true;
+                                    }
+                                    append_hook_log(&format!("hand-over -> new tab \"{title}\" in {}", crate::uistate::place_said(&at)));
+                                    watcher.poke();
+                                    // Said by the dialog that asked, on the
+                                    // device it was asked from
+                                    serde_json::json!({"req": req, "ok": true, "opened": title}).to_string()
+                                }
+                                None => refused(i18n::tp("msg.quick.open_failed", &[("label", &label)])),
+                            }
                         }
-                        None => serde_json::json!({"req": req, "ok": false, "error": i18n::tp("msg.quick.open_failed", &[("label", &label)])}).to_string(),
                     }
                 }
             };
@@ -19749,6 +19780,7 @@ fn open_and_say_as(
         from,
         until: Instant::now() + QUICK_WAIT,
         routine: None,
+        yields: false,
     });
     Some(title)
 }
@@ -20033,7 +20065,33 @@ fn resolve_in_tab_knowing(
 /// conversation's record: an answer for the dialog, or the tab to open
 enum HandDone {
     Answer(String),
-    Open { req: serde_json::Value, desk: String, at: std::path::PathBuf, choice: crate::handover::Choice, prompt: String },
+    Open {
+        req: serde_json::Value,
+        from: shikisha_shared::HandFrom,
+        desk: String,
+        at: std::path::PathBuf,
+        choice: crate::handover::Choice,
+        prompt: String,
+    },
+}
+
+/// What a hand-over names and what it can be carried on with, on the desk
+/// `sent_desk` names -- which has to be the one in view, where the dialog
+/// was opened: a conversation is named among that desk's tabs and folders
+fn hand_over_settle(
+    from: &shikisha_shared::HandFrom,
+    sent_desk: &str,
+    desk: Option<&config::Desk>,
+    tabs: &[Tab],
+    ais: &[crate::uistate::AiChoice],
+    accounts: &[config::AiAccountSpec],
+) -> Result<(HandSource, Vec<crate::handover::Choice>), String> {
+    if desk.map(|d| d.uid.as_str()) != Some(sent_desk) {
+        return Err(i18n::t("err.handover.changed"));
+    }
+    let src = hand_over_source(from, desk, tabs)?;
+    let choices = crate::handover::choices(desk, &src.at, ais, accounts)?;
+    Ok((src, choices))
 }
 
 /// The conversation a hand-over names, as far as the board's thread can tell
@@ -20056,8 +20114,8 @@ fn hand_over_source(
     tabs: &[Tab],
 ) -> Result<HandSource, String> {
     match from {
-        shikisha_shared::HandFrom::Tab(id) => {
-            let t = tabs.iter().find(|t| t.id.as_deref() == Some(id.as_str())).ok_or_else(|| i18n::t("err.handover.no_tab"))?;
+        shikisha_shared::HandFrom::Tab { id, uid } => {
+            let t = tabs.iter().find(|t| t.uid() == uid && t.id.as_deref() == Some(id.as_str())).ok_or_else(|| i18n::t("err.handover.no_tab"))?;
             let key = t.ai_kind().filter(|_| !t.is_model()).ok_or_else(|| i18n::t("err.handover.not_ai"))?;
             let at = t.place().ok_or_else(|| i18n::t("err.handover.no_folder"))?;
             let earlier = crate::handover::Earlier {
@@ -20085,6 +20143,12 @@ fn hand_over_source(
                         .ok_or_else(|| i18n::t("err.handover.far_not_here"))?,
                 ),
                 None if !cwd.is_dir() => return Err(i18n::tp("msg.vault.folder_gone", &[("path", &cwd.display().to_string())])),
+                // The same path on another machine is another folder, and
+                // writing the tab down for this one would put it there
+                None if desk.is_some_and(|d| {
+                    !d.folders.iter().any(|f| f.host.is_none() && f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd)))
+                        && d.folders.iter().any(|f| f.host.is_some() && f.cwd.as_deref().is_some_and(|c| crate::uistate::same_folder(c, cwd)))
+                }) => return Err(i18n::t("err.handover.path_elsewhere")),
                 None => None,
             };
             let at = std::path::PathBuf::from(crate::uistate::place_key(host.as_deref(), cwd));
@@ -20227,6 +20291,10 @@ pub struct PendingQuick {
     /// The scheduled prompt and the number of its run the tab was opened
     /// for, when it was opened for one: its run goes on once the words are in
     pub routine: Option<(String, u64)>,
+    /// Given up when somebody types into the tab before the words go in:
+    /// the tab is theirs then, and the words are not put on top of theirs
+    /// nor sent with them (a conversation carried on with another AI)
+    pub yields: bool,
 }
 
 /// A run of a scheduled prompt on its way: handed to its tab (or waiting for
@@ -22288,6 +22356,7 @@ mod survey_tests {
             from: crate::convo::Origin::person(crate::convo::Device::Window, "quick"),
             until: Instant::now() + QUICK_WAIT,
             routine: None,
+            yields: false,
         }];
         assert_eq!(
             opened_for("Resolve conflicts", &here, &[], &pending),

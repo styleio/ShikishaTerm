@@ -5624,14 +5624,17 @@ function drawTabs() {
 // page for them, where they are paired, looked at and removed
 function boardsButton(names) {
   const open = name => send({kind:"openboard", name});
+  // A function, not the name itself: a name holding `$&` would be read as a
+  // pattern of the replacement and come out changed
+  const said = name => (T["tui.boards.open"] || "{name}").replaceAll("{name}", () => name);
   const list = (anchor, point) => openList(anchor, [
     ...names.map(name => el("div", {onclick:() => { closeFolderMenu(); open(name); }},
-      (T["tui.boards.open"] || "{name}").replaceAll("{name}", name))),
+      said(name))),
     el("div", {class:"boardsmanage", onclick:() => { closeFolderMenu(); openSettings("boards"); }},
-      T["tui.boards.manage"] || "")], false, point);
+      T["tui.boards.manage"] || "")], names.length > 8, point);
   const one = names.length === 1;
   return el("span", {class:"sidebtn boardsbtn",
-      title: one ? (T["tui.boards.open"] || "{name}").replaceAll("{name}", names[0]) : (T["tui.boards.title"] || ""),
+      title: one ? said(names[0]) : (T["tui.boards.title"] || ""),
       onclick:e => { e.stopPropagation(); one ? open(names[0]) : list(e.currentTarget); },
       oncontextmenu:e => { e.preventDefault(); e.stopPropagation(); list(e.currentTarget, e); }}, "🖥️");
 }
@@ -9031,7 +9034,8 @@ function tabMenu(anchor, t, where, e) {
     // keys to press for it
     // The conversation picked up by another AI, or by this one afresh, in a
     // new tab in the same folder (handover.rs)
-    t.id && t.ai && !t.hold ? item(T["tui.menu.handover"] || "", () => openHandOver({tab:t.id})) : null,
+    // A model bridge's chat keeps no CLI record and runs in no folder's CLI
+    t.id && t.uid && t.ai && !t.model && !t.hold ? item(T["tui.menu.handover"] || "", () => openHandOver({tab:t.id, uid:t.uid})) : null,
     t.kind === "pty" && !t.hold ? item(T["tui.menu.find_terminal"] || "", () => {
       if (!S || S.active !== t.index) send({kind:"select", tab:t.index});
       send({kind:"seek", what:"open"});
@@ -9058,6 +9062,8 @@ window.__handOver = function (d) {
 };
 function openHandOver(from) {
   const req = handReq();
+  // Named on the desk in view; the app refuses it once another desk is
+  const desk = (S && S.desk_uid) || "";
   const body = el("div", {class:"hbody"}, el("div", {class:"shint"}, T["tui.handover.asking"] || ""));
   let answer = null, pick = null, depth = null;
   askQuestion({
@@ -9071,7 +9077,7 @@ function openHandOver(from) {
       const c = answer.choices[+pick.value];
       const start = handReq();
       handAsks.set(start, d => toast(d.ok ? (T["msg.handover.opened"] || "").replaceAll("{tab}", d.opened || "") : (d.error || ""), !d.ok));
-      send({kind:"handover", ...from, key:c.key, account:c.account || "", whole:!!depth && depth.value === "whole", req:start});
+      send({kind:"handover", ...from, desk, key:c.key, account:c.account || "", whole:!!depth && depth.value === "whole", req:start});
     },
   });
   document.getElementById("sask").classList.add("sform");
@@ -9092,7 +9098,9 @@ function openHandOver(from) {
         el("div", {class:"shint mono"}, (d.host ? d.host + ": " : "") + (d.folder || ""))),
       field(T["tui.handover.ai"] || "", pick),
     ];
-    if (d.record) {
+    // Not known for a record on another machine until it is started (looking
+    // could wake a paused MicroVM): both ways of reading it are offered
+    if (d.record !== false) {
       depth = el("select", {class:"apin"},
         el("option", {value:"brief"}, T["tui.handover.brief"] || ""),
         el("option", {value:"whole"}, T["tui.handover.whole"] || ""));
@@ -9106,7 +9114,7 @@ function openHandOver(from) {
     }
     body.replaceChildren(...rows);
   });
-  send({kind:"handoverask", ...from, req});
+  send({kind:"handoverask", ...from, desk, req});
 }
 // A page saved as a PDF, beside what it downloads. The list opens where the
 // file will appear; a phone's list would cover the page, so a phone is told
@@ -12422,8 +12430,9 @@ function applyCarryLines(b, lines) {
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
     if (typingIME(e)) return;
-    // A box of prose takes Enter as a new line, not as the answer
-    if (e.key === "Enter" && sAskGo && !(e.target && e.target.tagName === "TEXTAREA")) {
+    // A box of prose takes Enter as a new line, not as the answer, and a
+    // drop-down takes it as opening its list
+    if (e.key === "Enter" && sAskGo && !(e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT"))) {
       e.preventDefault();
       const focused = document.activeElement;
       if (focused && focused.tagName === "BUTTON") focused.click(); else sAskGo();
@@ -13365,7 +13374,7 @@ function limitPill() {
   // account of this one, picks the conversation up in a tab of its own.
   // Before the notice, whose words are long: on a phone this row scrolls
   // sideways, and the way on would be out of sight behind them
-  both.append(t.id && t.ai ? el("span", {class:"pill handon", onclick:() => openHandOver({tab:t.id})}, T["tui.handover.limit"] || "") : "",
+  both.append(t.id && t.uid && t.ai && !t.model ? el("span", {class:"pill handon", onclick:() => openHandOver({tab:t.id, uid:t.uid})}, T["tui.handover.limit"] || "") : "",
     el("span", {class:"pill limit", title:(who ? who + ": " : "") + t.limit,
       onclick:() => send({kind:"limit_ack", tab:t.index})},
     (who ? who + ": " : "") + t.limit));
@@ -29420,7 +29429,9 @@ mod tests {
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, gkey(g))),"#), "a folder's menu cannot edit it");
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),"#), "a tab's menu cannot edit it");
         assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},"#), "a tab over the pane has no menu");
-        assert!(PAGE.contains("const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;"), "a right-click menu does not open at the pointer");
+        assert!(PAGE.contains("const x = point ? point.clientX : r.left;"), "a right-click menu does not open at the pointer");
+        assert!(PAGE.contains("const y = point ? point.clientY + 2 : (below + box.height > window.innerHeight - 8 && above >= 8 ? above : below);"),
+            "a right-click menu does not open at the pointer, or a list at the foot of the window is pushed over what opened it");
         assert!(PAGE.contains("tabname = at.name || null;"), "a tab's settings are looked for by position alone");
         assert!(PAGE.contains("input.onblur = () => finish(true);"), "leaving the field does not keep the name");
         assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");

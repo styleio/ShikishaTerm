@@ -6,6 +6,8 @@
  *      window of its own (a ticket asked for with the key this PC was handed)
  *   2. with a second one whose key is not in the secrets, the 🖥️ is a list;
  *      the one without a key says why, on the board, and opens nothing
+ *   3. the program split in two (the window showing the board it serves),
+ *      the 🖥️ opens the board just the same
  *
  *     cargo build
  *     node tools/debug/boards-button.win.mjs
@@ -66,7 +68,7 @@ wsl(`pkill -f '[s]k-target/debug/shikisha-server.*' ; rm -rf ${SRV_HOME} ; mkdir
 const server = spawn('wsl', ['-e', 'bash', '-c', `SHIKISHA_HOME=${SRV_HOME} ${SERVER} > ${SRV_HOME}/out.log 2>&1`], { stdio: 'ignore', env: { ...process.env, MSYS_NO_PATHCONV: '1' } });
 
 let cdp;
-const start = async (boards, tokens) => {
+const start = async (boards, tokens, split = false) => {
   stopOurs();
   await sleep(1000);
   fs.rmSync(RUN, { recursive: true, force: true });
@@ -75,7 +77,7 @@ const start = async (boards, tokens) => {
   if (st.status !== 0) throw new Error('staging failed: ' + st.stdout + st.stderr);
   fs.mkdirSync(path.join(APP, 'config'), { recursive: true });
   fs.writeFileSync(path.join(APP, 'config', 'config.json'), JSON.stringify({
-    language: 'en', remote: { enabled: false }, resident: false, boards,
+    language: 'en', remote: { enabled: false }, resident: false, boards, ...(split ? { split: true } : {}),
     desks: [{ name: 'Here', id: 'here', folders: [{ cwd: RUN, tabs: [{ name: 'sh', id: 'sh', command: ['cmd.exe'] }] }] }],
   }, null, 2));
   fs.writeFileSync(path.join(APP, 'config', 'secrets.json'), JSON.stringify({ tokens }, null, 2));
@@ -125,6 +127,15 @@ try {
   let flash = '';
   await until(async () => (flash = String(await cdp('S && S.flash || ""'))).includes(noKey), 'the reason', 15000).catch(() => {});
   check(flash.includes(noKey) && !/a window opened on http:\/\/127\.0\.0\.1:8797/.test(log()), 'the one without a key says why, and opens nothing: ' + flash);
+
+  console.log('3. split in two: the 🖥️ opens it just the same');
+  stopOurs();
+  await sleep(1500);
+  await start([{ name: 'wsl', url: BOARD }], { 'board/wsl/key': paired.key }, true);
+  const before = log().split('a window opened on').length;
+  await cdp('document.querySelector(".boardsbtn").click(), true');
+  await until(() => log().split('a window opened on').length > before, 'the board\'s window', 30000).catch(() => {});
+  check(log().split('a window opened on').length > before, 'pressed in the split window, the board opens');
 } catch (e) {
   failures += 1;
   console.error('stopped: ' + (e.stack || e));

@@ -39,5 +39,12 @@ export default {
     two: show(['vps1', 'office']) + ' "ok"',
     list: show(['vps1', 'office']) + ' document.querySelector(".boardsbtn").click();'
       + ' [...document.querySelectorAll(".fmenu > div")].map(d => d.textContent).join(" | ")',
+    // Many: the list scrolls inside itself, and its last row can be reached
+    many: show(Array.from({ length: 30 }, (_, i) => 'server-' + (i + 1))) + ' document.querySelector(".boardsbtn").click();'
+      + ' const m = document.querySelector(".fmenu"); m.scrollTop = m.scrollHeight;'
+      + ' (m.getBoundingClientRect().bottom <= innerHeight && m.scrollHeight > m.clientHeight) ? "ok" : "the list runs off the window"',
+    // A name with what a replacement would read as a pattern: shown as it is
+    odd: show(['prod $&', 'b']) + ' document.querySelector(".boardsbtn").click();'
+      + ' [...document.querySelectorAll(".fmenu > div")][0].textContent',
   },
 };
