@@ -25,6 +25,7 @@ fn tab(id: &str, state: TabState) -> TabFact {
         incarnation: Some(1),
         typed_request: id.starts_with("claude"),
         failure: None,
+        refused: false,
     }
 }
 

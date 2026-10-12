@@ -719,8 +719,8 @@ pub enum Outcome {
     /// The turn ended in an error the CLI gave up on (see
     /// [`crate::reader::TurnMark::Failed`]): no answer came of it, whatever
     /// was said on the way. `error` is what the CLI showed, empty when it
-    /// showed nothing; `at_limit` says the error was the usage limit
-    Failed { error: String, at_limit: bool },
+    /// showed nothing; `kind` what kind of failure it was
+    Failed { error: String, kind: crate::reader::FailKind },
 }
 
 /// [`reply_in`], with a turn that failed told as such: one reading of the
@@ -789,7 +789,7 @@ fn decide(
     if let Some(end) = &end
         && end.mark == crate::reader::TurnMark::Failed
     {
-        return Some(Outcome::Failed { error: end.error.clone().unwrap_or_default(), at_limit: end.at_limit });
+        return Some(Outcome::Failed { error: end.error.clone().unwrap_or_default(), kind: end.kind });
     }
     if over {
         end.as_ref()?;
@@ -908,30 +908,33 @@ fn answer(
 /// The answer for a turn that ended in an error: the bottom of the tab's
 /// screen, where the CLI showed it, and what it said went wrong, from its
 /// record where it keeps one (`error`, empty or `None` when it said nothing
-/// there). The words were given and nothing came of them; they can be given
-/// again as they are
-fn failed(a: &Ask, t: &Tab, error: Option<String>, same_folder: Option<bool>) -> Value {
+/// there). The words were given and nothing came of them. What to do next
+/// depends on the kind: an error on the way, ask again as it is; a refusal by
+/// the AI's provider, the same words are refused again (`refused`)
+fn failed(a: &Ask, t: &Tab, error: Option<String>, kind: crate::reader::FailKind, same_folder: Option<bool>) -> Value {
     let screen = tail(&t.last_screen, 12);
-    let mut v = answer(
-        a,
-        "FAILED",
-        Some(&screen),
-        "screen",
-        same_folder,
-        Some("the turn ended in an error and gave no answer; its screen is in reply. Ask again to have it tried again"),
-    );
+    let refused = kind == crate::reader::FailKind::Refused;
+    let note = if refused {
+        "the AI's provider would not answer this request on its own rules, and gave no answer; its screen is in reply. The same words will be refused again: put the request another way, or ask the person"
+    } else {
+        "the turn ended in an error and gave no answer; its screen is in reply. Ask again to have it tried again"
+    };
+    let mut v = answer(a, "FAILED", Some(&screen), "screen", same_folder, Some(note));
     if let Some(error) = error.filter(|e| !e.trim().is_empty()) {
         v["error"] = json!(error);
+    }
+    if refused {
+        v["refused"] = json!(true);
     }
     v
 }
 
 /// The answer for a turn the record says failed: at the usage limit, the
 /// limit's answer (asking again will not help until it lifts); any other
-/// error, [`failed`]
-fn ended_badly(a: &Ask, t: &Tab, error: String, at_limit: bool, same_folder: Option<bool>) -> Value {
-    if !at_limit {
-        return failed(a, t, Some(error), same_folder);
+/// failure, [`failed`]
+fn ended_badly(a: &Ask, t: &Tab, error: String, kind: crate::reader::FailKind, same_folder: Option<bool>) -> Value {
+    if kind != crate::reader::FailKind::Limit {
+        return failed(a, t, Some(error), kind, same_folder);
     }
     let mut v = answer(a, "LIMIT", None, "record", same_folder, Some("the tab hit its usage limit"));
     if !error.trim().is_empty() {
@@ -1055,8 +1058,8 @@ pub fn step(
                             Some("the tab's own record says the turn ended, though its screen still looked busy"),
                         ));
                     }
-                    Some(Outcome::Failed { error, at_limit }) => {
-                        return Step::Answer(ended_badly(a, t, error, at_limit, same_folder));
+                    Some(Outcome::Failed { error, kind }) => {
+                        return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                     }
                     None => {}
                 }
@@ -1119,7 +1122,7 @@ pub fn step(
             // that way until it starts on them: that failure is not this one's
             let sent = a.sent_at.unwrap_or(a.asked_at);
             if a.seen_busy || sent.elapsed() >= NEVER_SEEN_BUSY {
-                return Step::Answer(failed(a, t, t.record_failure().map(str::to_string), same_folder));
+                return Step::Answer(failed(a, t, t.record_failure().map(str::to_string), t.record_fail_kind(), same_folder));
             }
         }
         TabState::Done | TabState::Wait => {
@@ -1174,8 +1177,8 @@ pub fn step(
                         Some(Outcome::Reply(reply)) => {
                             return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
                         }
-                        Some(Outcome::Failed { error, at_limit }) => {
-                            return Step::Answer(ended_badly(a, t, error, at_limit, same_folder));
+                        Some(Outcome::Failed { error, kind }) => {
+                            return Step::Answer(ended_badly(a, t, error, kind, same_folder));
                         }
                         None => {}
                     }
@@ -1793,7 +1796,20 @@ mod tests {
         ]);
         assert_eq!(
             outcome_in(limited.path(), q, 0),
-            Some(Outcome::Failed { error: "You've hit your usage limit.".into(), at_limit: true })
+            Some(Outcome::Failed { error: "You've hit your usage limit.".into(), kind: crate::reader::FailKind::Limit })
+        );
+        // A request the provider would not answer is a failure of its own kind
+        let refused = record(&[
+            codex_said("user", "input_text", q),
+            json!({"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": null, "error":
+                {"message": "This content was flagged for possible cybersecurity risk.", "codex_error_info": "cyber_policy"}}}),
+        ]);
+        assert_eq!(
+            outcome_in(refused.path(), q, 0).map(|o| match o {
+                Outcome::Failed { kind, .. } => kind,
+                Outcome::Reply(_) => panic!("a refusal is not a reply"),
+            }),
+            Some(crate::reader::FailKind::Refused)
         );
     }
 

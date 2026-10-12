@@ -3405,8 +3405,8 @@ struct TurnLook {
     /// this tab's program was): what the CLI said went wrong, empty when it
     /// said nothing. A level like the busy reading, gone once a turn begins
     failed: Option<String>,
-    /// ...and the error was the usage limit
-    at_limit: bool,
+    /// ...and what kind of failure it was
+    kind: crate::reader::FailKind,
 }
 
 /// How often a record is looked at for a turn going on. The record is the
@@ -3887,14 +3887,14 @@ impl Tab {
         // Whether a turn is going on, and whether the last one failed: both
         // only for a turn this tab's program began
         let reading = move |s: Option<crate::reader::Standing>| {
-            let Some(s) = s else { return (false, None, false) };
+            let Some(s) = s else { return (false, None, crate::reader::FailKind::Error) };
             match s.mark {
                 Some((mark, Some(when))) if when >= since => match mark {
-                    crate::reader::TurnMark::Working => (true, None, false),
-                    crate::reader::TurnMark::Failed => (false, Some(s.error.unwrap_or_default()), s.at_limit),
-                    crate::reader::TurnMark::Over => (false, None, false),
+                    crate::reader::TurnMark::Working => (true, None, crate::reader::FailKind::Error),
+                    crate::reader::TurnMark::Failed => (false, Some(s.error.unwrap_or_default()), s.kind),
+                    crate::reader::TurnMark::Over => (false, None, crate::reader::FailKind::Error),
                 },
-                _ => (false, None, false),
+                _ => (false, None, crate::reader::FailKind::Error),
             }
         };
         let now = Instant::now();
@@ -3905,10 +3905,10 @@ impl Tab {
                 match rx.try_recv() {
                     Ok(standing) => {
                         self.turn_look.far = None;
-                        let (busy, failed, at_limit) = reading(standing);
+                        let (busy, failed, kind) = reading(standing);
                         self.detector.record_says(busy);
                         self.turn_look.failed = failed;
-                        self.turn_look.at_limit = at_limit;
+                        self.turn_look.kind = kind;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => self.turn_look.far = None,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -3948,10 +3948,10 @@ impl Tab {
             self.turn_look.found = id.zip(self.record());
         }
         let standing = self.turn_look.found.as_ref().and_then(|(_, path)| crate::reader::standing_of(path));
-        let (busy, failed, at_limit) = reading(standing);
+        let (busy, failed, kind) = reading(standing);
         self.detector.record_says(busy);
         self.turn_look.failed = failed;
-        self.turn_look.at_limit = at_limit;
+        self.turn_look.kind = kind;
     }
 
     /// What the CLI's own record says went wrong in the last turn, when that
@@ -3960,6 +3960,11 @@ impl Tab {
     /// record marks no turns (its failure is told by its hook, if at all)
     pub fn record_failure(&self) -> Option<&str> {
         self.turn_look.failed.as_deref()
+    }
+
+    /// What kind of failure [`Tab::record_failure`] is
+    pub fn record_fail_kind(&self) -> crate::reader::FailKind {
+        self.turn_look.kind
     }
 
     /// The turn has ended and its answer is still being looked for in the
@@ -5541,7 +5546,7 @@ impl Tab {
             // this tab will change that, so it outranks work still running
             // The record names a usage limit where the screen has no line for
             // it (Codex says it in the kind of the error it files)
-            if self.limit_note.is_some() || (self.turn_look.failed.is_some() && self.turn_look.at_limit) {
+            if self.limit_note.is_some() || (self.turn_look.failed.is_some() && self.turn_look.kind == crate::reader::FailKind::Limit) {
                 self.state = TabState::Limit;
             } else if self.turn_look.failed.is_some() {
                 // The turn ended in an error the CLI gave up on, and it says

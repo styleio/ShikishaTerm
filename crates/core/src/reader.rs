@@ -315,15 +315,58 @@ pub fn turn_error(line: &str) -> Option<String> {
     (!said.is_empty()).then(|| said.to_string())
 }
 
-/// Whether a line that ends a turn in an error says the error was the usage
-/// limit: then the thing to wait for is the clock, and asking again will not
-/// help. Codex names the kind of every error it files (`codex_error_info`);
-/// a CLI that names none is left to its screen (`limit_patterns`)
-pub fn turn_at_limit(line: &str) -> bool {
-    turn_mark(line) == Some(TurnMark::Failed)
-        && serde_json::from_str::<Value>(line.trim()).ok().is_some_and(|v| {
-            v.pointer("/payload/error/codex_error_info").and_then(Value::as_str) == Some("usage_limit_exceeded")
-        })
+/// What kind of failure a turn ended in, as it decides what to do next.
+/// Codex names the kind of every error it files (`codex_error_info`); a CLI
+/// that names none files every failure as [`FailKind::Error`], and its usage
+/// limit is left to its screen (`limit_patterns`)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FailKind {
+    /// Something went wrong on the way (the model at capacity, the
+    /// connection): the same words again may well get through
+    #[default]
+    Error,
+    /// The usage limit: the thing to wait for is the clock, and asking again
+    /// will not help until it lifts
+    Limit,
+    /// The provider would not answer what was asked, on its own rules (Codex:
+    /// "This content was flagged ..."). The same words again are refused again;
+    /// they have to be put another way, or a person has to decide
+    Refused,
+}
+
+impl FailKind {
+    /// The name it travels under between the bridge and this PC
+    fn name(self) -> &'static str {
+        match self {
+            FailKind::Error => "error",
+            FailKind::Limit => "limit",
+            FailKind::Refused => "refused",
+        }
+    }
+
+    fn named(name: &str) -> Self {
+        match name {
+            "limit" => FailKind::Limit,
+            "refused" => FailKind::Refused,
+            _ => FailKind::Error,
+        }
+    }
+}
+
+/// The kind of failure a line that ends a turn in an error says it is
+/// ([`FailKind`]); [`FailKind::Error`] for any other line
+pub fn turn_fail_kind(line: &str) -> FailKind {
+    if turn_mark(line) != Some(TurnMark::Failed) {
+        return FailKind::Error;
+    }
+    let info = serde_json::from_str::<Value>(line.trim()).ok().and_then(|v| {
+        v.pointer("/payload/error/codex_error_info").and_then(Value::as_str).map(str::to_string)
+    });
+    match info.as_deref() {
+        Some("usage_limit_exceeded") => FailKind::Limit,
+        Some("cyber_policy") => FailKind::Refused,
+        _ => FailKind::Error,
+    }
 }
 
 /// How a turn ended, as its record says
@@ -335,14 +378,14 @@ pub struct TurnEnd {
     pub mark: TurnMark,
     /// What the CLI said went wrong, for a failure ([`turn_error`])
     pub error: Option<String>,
-    /// The failure was the usage limit ([`turn_at_limit`])
-    pub at_limit: bool,
+    /// What kind of failure ([`turn_fail_kind`])
+    pub kind: FailKind,
 }
 
 impl TurnEnd {
     fn of(line: &str, at: u64) -> Option<Self> {
         let mark = turn_mark(line).filter(|m| m.ended())?;
-        Some(TurnEnd { at, mark, error: turn_error(line), at_limit: turn_at_limit(line) })
+        Some(TurnEnd { at, mark, error: turn_error(line), kind: turn_fail_kind(line) })
     }
 
     /// As it travels between the bridge and this PC
@@ -351,7 +394,7 @@ impl TurnEnd {
             "at": self.at,
             "failed": self.mark == TurnMark::Failed,
             "error": self.error,
-            "limit": self.at_limit,
+            "kind": self.kind.name(),
         })
     }
 
@@ -361,8 +404,18 @@ impl TurnEnd {
             at: v.get("at")?.as_u64()?,
             mark: if failed { TurnMark::Failed } else { TurnMark::Over },
             error: v.get("error").and_then(Value::as_str).map(str::to_string),
-            at_limit: v.get("limit").and_then(Value::as_bool) == Some(true),
+            kind: kind_from_json(v),
         })
+    }
+}
+
+/// [`FailKind`] as the bridge says it: `kind`, or from a bridge that knew
+/// only the usage limit, `limit`
+fn kind_from_json(v: &Value) -> FailKind {
+    match v.get("kind").and_then(Value::as_str) {
+        Some(name) => FailKind::named(name),
+        None if v.get("limit").and_then(Value::as_bool) == Some(true) => FailKind::Limit,
+        None => FailKind::Error,
     }
 }
 
@@ -465,8 +518,8 @@ pub struct Standing {
     /// What the CLI said went wrong, when the last mark is
     /// [`TurnMark::Failed`] and it said anything ([`turn_error`])
     pub error: Option<String>,
-    /// ...and that failure was the usage limit ([`turn_at_limit`])
-    pub at_limit: bool,
+    /// ...and what kind of failure it was ([`turn_fail_kind`])
+    pub kind: FailKind,
 }
 
 /// [`Standing`] of a record on this machine
@@ -488,7 +541,7 @@ fn standing_in(len: u64, tail: &[u8], cut: bool) -> Standing {
         len,
         mark: last.map(|(mark, when, _)| (mark, when)),
         error: last.and_then(|(_, _, line)| turn_error(line)),
-        at_limit: last.is_some_and(|(_, _, line)| turn_at_limit(line)),
+        kind: last.map_or(FailKind::Error, |(_, _, line)| turn_fail_kind(line)),
     }
 }
 
@@ -506,7 +559,9 @@ impl Standing {
         if matches!(self.mark, Some((TurnMark::Failed, _))) {
             v["failed"] = Value::Bool(true);
             v["error"] = self.error.map_or(Value::Null, Value::from);
-            if self.at_limit {
+            v["kind"] = Value::from(self.kind.name());
+            // Read by a PC from before failures had kinds
+            if self.kind == FailKind::Limit {
                 v["limit"] = Value::Bool(true);
             }
         }
@@ -524,8 +579,8 @@ impl Standing {
             _ => None,
         };
         let error = if failed { v.get("error").and_then(Value::as_str).map(str::to_string) } else { None };
-        let at_limit = failed && v.get("limit").and_then(Value::as_bool) == Some(true);
-        Some(Standing { len, mark, error, at_limit })
+        let kind = if failed { kind_from_json(v) } else { FailKind::Error };
+        Some(Standing { len, mark, error, kind })
     }
 }
 
@@ -2567,7 +2622,7 @@ mod tests {
         // and where it is
         let began = r#"{"type":"event_msg","payload":{"type":"task_started"}}"#;
         let bytes = format!("{began}\n{failed}\n{began}\n{answered}\n");
-        let first = TurnEnd { at: began.len() as u64 + 1, mark: TurnMark::Failed, error: turn_error(failed), at_limit: false };
+        let first = TurnEnd { at: began.len() as u64 + 1, mark: TurnMark::Failed, error: turn_error(failed), kind: FailKind::Error };
         assert_eq!(first_end_in(bytes.as_bytes(), 0), Some(first.clone()));
         // Read from a file a piece at a time, the same end is found
         let f = std::env::temp_dir().join(format!("reader-end-{}.jsonl", std::process::id()));
@@ -2602,7 +2657,14 @@ mod tests {
         assert_eq!(end.map(|e| e.mark), Some(TurnMark::Failed), "the end before the old stopping place is found");
         // A Codex at its usage limit says so in the kind of its error
         let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
-        assert!(turn_at_limit(limited) && !turn_at_limit(failed) && !turn_at_limit(answered));
+        assert_eq!(
+            [turn_fail_kind(limited), turn_fail_kind(failed), turn_fail_kind(answered)],
+            [FailKind::Limit, FailKind::Error, FailKind::Error]
+        );
+        // Measured 2026-09-18 and 2026-10-12: a review Codex's provider would
+        // not answer, filed as a completion carrying the refusal
+        let refused = r#"{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request.","codex_error_info":"cyber_policy"}}}"#;
+        assert_eq!((turn_mark(refused), turn_fail_kind(refused)), (Some(TurnMark::Failed), FailKind::Refused));
         // And the end of the record is where the tab stands now
         let now = standing_in(bytes.len() as u64, format!("{began}\n{failed}\n").as_bytes(), false);
         assert_eq!(now.mark.map(|m| m.0), Some(TurnMark::Failed));
@@ -2615,14 +2677,19 @@ mod tests {
     /// failed: a PC that knows no failures still reads it as over
     #[test]
     fn a_failed_standing_travels_as_over_and_failed() {
-        let s = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: Some("at capacity".into()), at_limit: false };
+        let s = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: Some("at capacity".into()), kind: FailKind::Error };
         let v = s.clone().to_json();
         assert_eq!(v["mark"], "over");
         assert_eq!(v["failed"], true);
         assert_eq!(Standing::from_json(&v), Some(s));
-        let limited = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: None, at_limit: true };
-        assert_eq!(Standing::from_json(&limited.clone().to_json()), Some(limited));
-        let over = Standing { len: 9, mark: Some((TurnMark::Over, Some(5))), error: None, at_limit: false };
+        for kind in [FailKind::Limit, FailKind::Refused] {
+            let s = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: None, kind };
+            assert_eq!(Standing::from_json(&s.clone().to_json()), Some(s));
+        }
+        // From a bridge that knew only the usage limit
+        let old = serde_json::json!({"len": 9, "mark": "over", "when": 5, "failed": true, "limit": true});
+        assert_eq!(Standing::from_json(&old).map(|s| s.kind), Some(FailKind::Limit));
+        let over = Standing { len: 9, mark: Some((TurnMark::Over, Some(5))), error: None, kind: FailKind::Error };
         let v = over.clone().to_json();
         assert!(v.get("failed").is_none());
         assert_eq!(Standing::from_json(&v), Some(over));

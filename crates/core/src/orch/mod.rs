@@ -144,6 +144,8 @@ pub struct TabFact {
     /// What its CLI said went wrong, when its last turn ended in an error
     /// and its record says so (`Tab::record_failure`)
     pub failure: Option<String>,
+    /// ...and that error was its AI's provider refusing what was asked
+    pub refused: bool,
 }
 
 impl TabFact {
@@ -2063,11 +2065,16 @@ impl Orchestra {
                             format!("<@{}>'s turn ended in an error", a.tab_name),
                             format!(
                                 "a{} (t{}) is held up: <@{}>'s turn ended in an error{said} and it has stopped. \
-                                 See what it said: {} Then tell it to go on, or assign the task elsewhere: {}",
+                                 See what it said: {} Then {}: {}",
                                 a.id,
                                 a.task,
                                 a.tab_name,
                                 cmd(&["tab_conversation", &a.tab_name]),
+                                if t.refused {
+                                    "its AI's provider refused what was asked and will refuse the same again: tell it to go on another way, ask the person, or assign the task elsewhere"
+                                } else {
+                                    "tell it to go on, or assign the task elsewhere"
+                                },
                                 cmd(&["tell", &format!("a{}", a.id), "\"<carry on with the task>\""])
                             ),
                         ));
