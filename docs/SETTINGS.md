@@ -246,6 +246,7 @@ Name, automation name, automation folder
 Chats, this PC, phones
 
 - **Default destination**
+- **Only while I am away from this PC** — Away is when this PC's screen is locked, or nothing has been typed or moved on it for 3 minutes. Sitting at it, you have this PC's banner already. Test still sends at once.
 - **Chat id**
 - **The main destination**
 
