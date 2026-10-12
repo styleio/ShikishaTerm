@@ -100,6 +100,13 @@ fn flat(s: &str) -> String {
 
 static TYPED: std::sync::Mutex<Option<Typed>> = std::sync::Mutex::new(None);
 
+/// Everything this app typed into a tab, whoever it was for: what another
+/// tab sent (above), and also an ask, a script's words, a scheduled
+/// prompt. Kept apart from [`TYPED`] because what a script or a scheduled
+/// prompt names is still the person's to name (see [`named_for`]); this one
+/// only answers "did the person type this" (see `asktab::Ask::on_stopped`)
+static FROM_APP: std::sync::Mutex<Option<Typed>> = std::sync::Mutex::new(None);
+
 /// Remember that this app typed `text` into `tab` (by uid). Called wherever
 /// words go into a tab that are not a person's: a brief, a line about mail,
 /// what another tab sent with `send_to_tab`
@@ -107,6 +114,22 @@ pub fn note_typed(tab: &str, text: &str) {
     if let Ok(mut g) = TYPED.lock() {
         g.get_or_insert_with(Typed::default).note(tab, text);
     }
+    note_from_app(tab, text);
+}
+
+/// Remember that this app typed `text` into `tab` (by uid), though it may
+/// be the person's own words handed on: an ask, a script's `send_to_tab`,
+/// a scheduled prompt
+pub fn note_from_app(tab: &str, text: &str) {
+    if let Ok(mut g) = FROM_APP.lock() {
+        g.get_or_insert_with(Typed::default).note(tab, text);
+    }
+}
+
+/// Whether `text`, read off `tab`'s record as the person's, was typed there
+/// by this app rather than by the person ([`note_from_app`])
+pub fn from_app(tab: &str, text: &str) -> bool {
+    FROM_APP.lock().ok().is_some_and(|g| g.as_ref().is_some_and(|t| t.is_ours(tab, text)))
 }
 
 fn typed_here(tab: &str, text: &str) -> bool {
