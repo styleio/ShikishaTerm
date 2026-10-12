@@ -285,7 +285,10 @@ try {
   const profile = JSON.parse(fs.readFileSync(path.join(ROOT, 'profiles', 'codex.json'), 'utf8'));
   // The profile's patterns, in the dialect JavaScript shares with them here: (?s) as the s flag
   const asks = profile.question_patterns.map((q) => q.startsWith('(?s)') ? new RegExp(q.slice(4), 's') : new RegExp(q));
-  await call('send_to_tab', 'codex-ask', 'Create a file named hello.txt in this folder containing the word hi, with a shell command. Do nothing else.');
+  // Asked through ask_tab: the question is told at once, and the ask goes on
+  const askLog = hooksLog().length;
+  const asked = await call('ask_tab', 'codex-ask', 'A file, please.', 'Create a file named hello.txt in this folder containing the word hi, with a shell command. Do nothing else.', { timeout_ms: 300000 });
+  check(asked.state === 'QUESTION', 'the ask is told the tab waits for a person', { state: asked.state, note: asked.note });
   let dialog = '';
   await until(async () => /Would you like to/.test(dialog = await screen('codex-ask')), 'the approval dialog', 4 * 60000).catch(() => {});
   console.log('   ' + dialog.split('\n').filter((l) => /Would you like|Yes|No, and/.test(l)).map((l) => l.trim()).join(' | '));
@@ -304,6 +307,14 @@ try {
     .filter((l) => l.includes('"event_msg"')).map((l) => { try { return JSON.parse(l).payload.type; } catch { return ''; } });
   await until(() => kinds().includes('turn_aborted'), 'the refusal in the record', 30000).catch(() => {});
   check(kinds().includes('turn_aborted'), 'refused, the record says the person stopped the turn (turn_aborted)', kinds().slice(-6));
+  // Other words given after the refusal: what it answers to them is the ask's answer
+  const kiwi = 'KIWI' + Math.random().toString(36).slice(2, 6).toUpperCase();
+  await sleep(2000);
+  await call('send_to_tab', 'codex-ask', `Never mind the file. Run nothing; reply with only the word ${kiwi}.`);
+  const askAnswered = (re) => hooksLog().slice(askLog).some((l) => re.test(l));
+  await until(() => askAnswered(/ask_tab: codex-ask -> (DONE|STOPPED)/), 'the ask to be answered after the refusal', 4 * 60000).catch(() => {});
+  check(askAnswered(/ask_tab: codex-ask -> DONE/) && !askAnswered(/ask_tab: codex-ask -> STOPPED/),
+    'stopped and given other words, the ask is answered DONE with them, not STOPPED', hooksLog().slice(askLog).filter((l) => /codex-ask/.test(l)).slice(-6).join(' | '));
 } catch (e) {
   console.error(e.stack || e.message);
   checks.push(false);

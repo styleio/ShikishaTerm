@@ -8627,7 +8627,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // Stopped by the person before it answered: nothing came of
                 // it, once the tab has gone quiet again
                 if outcome == Some(crate::asktab::Outcome::Stopped)
-                    && crate::asktab::quiet(t.state)
+                    && crate::asktab::turn_over(t.state)
                     && t.ms_since_change(now_ms) >= ROUTINE_SETTLE_MS
                 {
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_stopped", None);

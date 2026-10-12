@@ -4,47 +4,56 @@
 
 use crate::profile::Profile;
 
-/// The question a dialog asks, from the screen where a question pattern
-/// matched at byte `at`: what it is about -- the lines just above the one it
-/// matched on, where a CLI shows the command or the file (Claude Code puts
-/// them above "Do you want to proceed?") -- that line, and the lines after
-/// it up to the first that offers a choice. Choice lines are left out:
-/// which one the cursor is on, a redraw at a new width, none of it changes
-/// which question is being asked; another command is another question
-pub fn question_region(screen: &str, at: usize) -> String {
-    let start = screen[..at].rfind('\n').map_or(0, |i| i + 1);
-    let choice = |l: &str| {
-        let l = l.trim_start();
-        let l = l.strip_prefix('›').or_else(|| l.strip_prefix('❯')).unwrap_or(l).trim_start();
-        l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
-    };
-    let flat = |l: &str| l.split_whitespace().collect::<Vec<_>>().join(" ");
-    // Above: the nearest lines with something on them -- past the choices
-    // just above, when the cursor stands on a later one -- up to the next choice
-    let mut above: Vec<String> = screen[..start]
-        .lines()
-        .rev()
-        .map(flat)
-        .filter(|l| !l.is_empty())
-        .skip_while(|l| choice(l))
-        .take_while(|l| !choice(l))
-        .take(QUESTION_ABOVE)
-        .collect();
-    above.reverse();
-    let mut below = Vec::new();
-    for (i, l) in screen[start..].lines().enumerate() {
-        if choice(l) || i >= 8 {
-            break;
-        }
-        below.push(flat(l));
-    }
-    above.into_iter().chain(below).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+/// Whether a line on screen offers a choice: a number and a dot, led by the
+/// cursor (`›`, `❯`) or not
+pub fn choice_line(l: &str) -> bool {
+    let l = l.trim_start();
+    let l = l.strip_prefix('›').or_else(|| l.strip_prefix('❯')).unwrap_or(l).trim_start();
+    l.split_once('.').is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// How many lines above a question are taken as what it is about (see
-/// [`question_region`]): a command and its description, a file and the
-/// edit's first lines -- enough to tell two questions apart
-const QUESTION_ABOVE: usize = 4;
+/// What question a dialog asks, from the screen where a question pattern
+/// matched at byte `at`: what it is about -- the text just above the line it
+/// matched on, where a CLI shows the command or the file (Claude Code puts
+/// them above "Do you want to proceed?") -- that line, and the lines after
+/// it up to the first that offers a choice ([`choice_line`]).
+///
+/// A mark to tell questions apart, not a text to read: all space is taken
+/// out, and what is taken from above is its last [`QUESTION_ABOVE`]
+/// characters. Which choice the cursor is on, a redraw, the same lines
+/// wrapped at another width (a phone sizing the terminal): none of it
+/// changes it. Another command is another question
+pub fn question_region(screen: &str, at: usize) -> String {
+    let start = screen[..at].rfind('\n').map_or(0, |i| i + 1);
+    let bare = |l: &str| l.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    // Above: back past the choices just above (the cursor on a later one),
+    // up to the next choice, until enough has been taken
+    let mut above: Vec<String> = Vec::new();
+    let mut taken = 0;
+    for l in screen[..start].lines().rev().map(bare).filter(|l| !l.is_empty()).skip_while(|l| choice_line(l)) {
+        if choice_line(&l) || taken >= QUESTION_ABOVE {
+            break;
+        }
+        taken += l.chars().count();
+        above.push(l);
+    }
+    above.reverse();
+    let above: String = above.concat();
+    let above: String = above.chars().skip(above.chars().count().saturating_sub(QUESTION_ABOVE)).collect();
+    let mut below = String::new();
+    for (i, l) in screen[start..].lines().enumerate() {
+        if choice_line(l) || i >= 8 {
+            break;
+        }
+        below.push_str(&bare(l));
+    }
+    format!("{above}\n{below}")
+}
+
+/// How much of what stands above a question goes into telling it apart
+/// ([`question_region`]), in characters other than space: a command and its
+/// description, a file and the first lines of the edit
+const QUESTION_ABOVE: usize = 160;
 
 /// If there was output within this many ms, treat it as "active"
 const ACTIVITY_MS: u64 = 500;
@@ -581,9 +590,16 @@ impl Detector {
             .question
             .iter()
             .filter_map(|r| r.find(screen_text))
-            // The match lowest on the screen: a dialog is drawn under what
-            // came before it, and words left above it may say the same
-            .max_by_key(|m| m.start())
+            // The match lowest on the screen -- a dialog is drawn under what
+            // came before it, and words left above it may say the same --
+            // and of those, its question rather than its choice: the line
+            // under the cursor moves, and a choice wrapped onto two rows is
+            // not a question
+            .max_by_key(|m| {
+                let line = screen_text[m.start()..].lines().next().unwrap_or_default();
+                let head = screen_text[..m.start()].rsplit('\n').next().unwrap_or_default();
+                (!choice_line(&format!("{head}{line}")), m.start())
+            })
             .map(|m| question_region(screen_text, m.start()));
         if self.question_matched.is_some() {
             self.state = TabState::Question;
@@ -913,7 +929,7 @@ mod tests {
         let (on_no, asked_no) = read(&dialog("pnpm test", 3));
         assert_eq!((on_yes, on_no), (TabState::Question, TabState::Question), "the cursor on No ended the question");
         assert_eq!(asked, asked_no, "the cursor moving made it another question");
-        assert!(asked.as_deref().is_some_and(|q| q.contains("Would you like to run") && q.contains("pnpm test") && !q.contains("Yes")), "{asked:?}");
+        assert!(asked.as_deref().is_some_and(|q| q.contains("Wouldyouliketorun") && q.contains("pnpmtest") && !q.contains("Yes")), "{asked:?}");
         assert_ne!(read(&dialog("cargo build", 1)).1, asked, "another command, the same question");
         let code = r#"let dialog = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)";"#;
         assert_ne!(read(code).0, TabState::Question, "a line of code read as a dialog");
@@ -936,7 +952,7 @@ mod tests {
         };
         let (state, status) = read(&prompt("git status", 1));
         assert_eq!(state, TabState::Question);
-        assert!(status.as_deref().is_some_and(|q| q.contains("git status") && q.contains("Do you want to proceed?")), "{status:?}");
+        assert!(status.as_deref().is_some_and(|q| q.contains("gitstatus") && q.contains("Doyouwanttoproceed?")), "{status:?}");
         assert_ne!(read(&prompt("git diff", 1)).1, status, "two commands read as one question");
         let (on_two, same) = read(&prompt("git status", 2));
         assert_eq!((on_two, same), (TabState::Question, status), "the cursor on another choice changed the question");
@@ -955,7 +971,15 @@ mod tests {
         };
         let (state, asked) = read(real);
         assert_eq!(state, TabState::Question);
-        assert!(asked.as_deref().is_some_and(|q| q.contains("echo hi > hello.txt") && q.contains("Do you want to proceed?")), "{asked:?}");
+        assert!(asked.as_deref().is_some_and(|q| q.contains("echohi>hello.txt") && q.contains("Doyouwanttoproceed?")), "{asked:?}");
+        // Its choices wrapped at a phone's width, the cursor on the last:
+        // the same question, and the command's lines wrapped too
+        let narrow = real
+            .replace("   2. Yes, and always allow access to D:\\work\\site from this project", "   2. Yes, and always allow access to\n      D:\\work\\site from this project")
+            .replace("   3. Yes, and switch to auto mode · auto mode handles these prompts for you", "   3. Yes, and switch to auto mode · auto\n      mode handles these prompts for you")
+            .replace(" Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below", " Tip: auto mode handles these prompts for\n you — choose \"switch to auto mode\" below")
+            .replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No");
+        assert_eq!(read(&narrow), (TabState::Question, asked.clone()), "wrapped at another width, it is another question");
         let on_no = real.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No");
         assert_eq!(read(&on_no), (TabState::Question, asked.clone()), "the cursor on No changed the question");
         let other = real.replace("echo hi > hello.txt", "rm hello.txt");
