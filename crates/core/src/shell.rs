@@ -9034,7 +9034,8 @@ function tabMenu(anchor, t, where, e) {
     // keys to press for it
     // The conversation picked up by another AI, or by this one afresh, in a
     // new tab in the same folder (handover.rs)
-    t.id && t.ai && !t.hold ? item(T["tui.menu.handover"] || "", () => openHandOver({tab:t.id})) : null,
+    // A model bridge's chat keeps no CLI record and runs in no folder's CLI
+    t.id && t.uid && t.ai && !t.model && !t.hold ? item(T["tui.menu.handover"] || "", () => openHandOver({tab:t.id, uid:t.uid})) : null,
     t.kind === "pty" && !t.hold ? item(T["tui.menu.find_terminal"] || "", () => {
       if (!S || S.active !== t.index) send({kind:"select", tab:t.index});
       send({kind:"seek", what:"open"});
@@ -9061,6 +9062,8 @@ window.__handOver = function (d) {
 };
 function openHandOver(from) {
   const req = handReq();
+  // Named on the desk in view; the app refuses it once another desk is
+  const desk = (S && S.desk_uid) || "";
   const body = el("div", {class:"hbody"}, el("div", {class:"shint"}, T["tui.handover.asking"] || ""));
   let answer = null, pick = null, depth = null;
   askQuestion({
@@ -9074,7 +9077,7 @@ function openHandOver(from) {
       const c = answer.choices[+pick.value];
       const start = handReq();
       handAsks.set(start, d => toast(d.ok ? (T["msg.handover.opened"] || "").replaceAll("{tab}", d.opened || "") : (d.error || ""), !d.ok));
-      send({kind:"handover", ...from, key:c.key, account:c.account || "", whole:!!depth && depth.value === "whole", req:start});
+      send({kind:"handover", ...from, desk, key:c.key, account:c.account || "", whole:!!depth && depth.value === "whole", req:start});
     },
   });
   document.getElementById("sask").classList.add("sform");
@@ -9095,7 +9098,9 @@ function openHandOver(from) {
         el("div", {class:"shint mono"}, (d.host ? d.host + ": " : "") + (d.folder || ""))),
       field(T["tui.handover.ai"] || "", pick),
     ];
-    if (d.record) {
+    // Not known for a record on another machine until it is started (looking
+    // could wake a paused MicroVM): both ways of reading it are offered
+    if (d.record !== false) {
       depth = el("select", {class:"apin"},
         el("option", {value:"brief"}, T["tui.handover.brief"] || ""),
         el("option", {value:"whole"}, T["tui.handover.whole"] || ""));
@@ -9109,7 +9114,7 @@ function openHandOver(from) {
     }
     body.replaceChildren(...rows);
   });
-  send({kind:"handoverask", ...from, req});
+  send({kind:"handoverask", ...from, desk, req});
 }
 // A page saved as a PDF, beside what it downloads. The list opens where the
 // file will appear; a phone's list would cover the page, so a phone is told
@@ -12422,8 +12427,9 @@ function applyCarryLines(b, lines) {
   b.addEventListener("keydown", e => {
     if (e.key === "Escape") { e.preventDefault(); closeAsk(); }
     if (typingIME(e)) return;
-    // A box of prose takes Enter as a new line, not as the answer
-    if (e.key === "Enter" && sAskGo && !(e.target && e.target.tagName === "TEXTAREA")) {
+    // A box of prose takes Enter as a new line, not as the answer, and a
+    // drop-down takes it as opening its list
+    if (e.key === "Enter" && sAskGo && !(e.target && (e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT"))) {
       e.preventDefault();
       const focused = document.activeElement;
       if (focused && focused.tagName === "BUTTON") focused.click(); else sAskGo();
@@ -13365,7 +13371,7 @@ function limitPill() {
   // account of this one, picks the conversation up in a tab of its own.
   // Before the notice, whose words are long: on a phone this row scrolls
   // sideways, and the way on would be out of sight behind them
-  both.append(t.id && t.ai ? el("span", {class:"pill handon", onclick:() => openHandOver({tab:t.id})}, T["tui.handover.limit"] || "") : "",
+  both.append(t.id && t.uid && t.ai && !t.model ? el("span", {class:"pill handon", onclick:() => openHandOver({tab:t.id, uid:t.uid})}, T["tui.handover.limit"] || "") : "",
     el("span", {class:"pill limit", title:(who ? who + ": " : "") + t.limit,
       onclick:() => send({kind:"limit_ack", tab:t.index})},
     (who ? who + ": " : "") + t.limit));

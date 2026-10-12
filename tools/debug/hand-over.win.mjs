@@ -171,6 +171,19 @@ try {
     fs.writeFileSync(path.join(process.env.SHOT, 'hand-over-dialog.png'), Buffer.from(shot.data, 'base64'));
   }
 
+  // Enter on a drop-down opens it; it does not start anything
+  const stays = await run(`(() => { const s = document.querySelector("#sask select"); s.focus();
+    s.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+    return !document.getElementById("sask").hidden; })()`);
+  check(stays, 'Enter on a drop-down does not start it');
+  // Named on another desk than the one in view: refused, not carried out here
+  const refusedDesk = await run(`new Promise(done => { const t = S.tabs.find(t => t.id === "fixer");
+    handAsks.set("x-desk", done); send({kind:"handoverask", tab:t.id, uid:t.uid, desk:"another-desk", req:"x-desk"}); })`);
+  check(refusedDesk && refusedDesk.ok === false && /changed/.test(refusedDesk.error || ''), `a dialog of another desk is refused (${refusedDesk && refusedDesk.error})`);
+  const refusedTab = await run(`new Promise(done => { handAsks.set("x-tab", done);
+    send({kind:"handoverask", tab:"fixer", uid:"not-this-tab", desk:S.desk_uid, req:"x-tab"}); })`);
+  check(refusedTab && refusedTab.ok === false, `a tab given the name of one closed is not taken for it (${refusedTab && refusedTab.error})`);
+
   // Started: a Codex tab as Spare, in the same folder, told the record's path
   check(await choose('Codex CLI (Spare)', 'brief'), 'the account is chosen and the dialog started');
   const opened = await until(async () => run(`(S.tabs || []).find(t => /Spare/.test(t.name)) || null`), 'the new tab', 30000).catch(() => null);
@@ -223,6 +236,18 @@ try {
   const past = await until(async () => run(`(S.tabs || []).find(t => t.name === "Codex CLI") || null`), 'the tab for the past one', 30000).catch(() => null);
   const typedPast = past ? await until(() => { const s = said(past.id || past.name); return s.includes('Reply in') && s; }, 'the prompt for the past one', 120000).catch(() => '') : '';
   check(typedPast.includes(record) && typedPast.includes('Read all of it'), 'the past one\'s prompt names its record and says to read all of it');
+
+  // Typed into before it was ready: the tab is the person's, and the
+  // request is not put on top of what they wrote
+  await run(`openHandOver({program:"claude", id:${JSON.stringify(id)}, cwd:${JSON.stringify(WORK)}, host:"", title:"work"})`);
+  await until(async () => { const d = await dialog(); return d && d.ais.length && d; }, 'the dialog once more', 20000).catch(() => null);
+  const before = await run(`S.tabs.map(t => t.uid)`);
+  await choose('Codex CLI (Spare)', 'brief');
+  const fresh = await until(async () => run(`(S.tabs || []).find(t => !${JSON.stringify(before)}.includes(t.uid)) || null`), 'the tab to type into', 30000).catch(() => null);
+  if (fresh) await run(`send({kind:"say", tab:${fresh.index}, uid:${JSON.stringify(fresh.uid)}, text:"my own words"})`);
+  await sleep(9000);
+  const own = fresh ? said(fresh.id || fresh.name) : '';
+  check(own.includes('my own words') && !own.includes('Reply in'), `a tab typed into before it was ready keeps the person's words alone (${own.slice(0, 80).replace(/\s+/g, ' ')})`);
 
   // A conversation that cannot be continued says why, where the choices go
   await run(`openHandOver({program:"claude", id:"no-such-id", cwd:${JSON.stringify(WORK)}, host:"", title:"gone"})`);
