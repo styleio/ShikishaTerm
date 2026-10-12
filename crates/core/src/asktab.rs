@@ -240,6 +240,9 @@ pub struct Ask {
     /// again: what it shows now may be somebody else's turn, and is not
     /// taken for this ask's answer (see [`RECORD_GIVES_NONE`])
     pub overtaken: bool,
+    /// The caller was told the tab is waiting for a person: said once for
+    /// each time it stops to ask, while the ask goes on for the answer
+    pub question_told: bool,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -525,6 +528,7 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         late_line: None,
         answered: false,
         overtaken: false,
+        question_told: false,
     }
 }
 
@@ -1034,6 +1038,8 @@ pub fn step(
             if a.quiet_since.take().is_some() {
                 a.overtaken = true;
             }
+            // Answered, and at work again: a question it stops at next is told anew
+            a.question_told = false;
             a.background_since = None;
             let busy_since = *a.busy_since.get_or_insert(now);
             // The screen says busy; the record may know better. A record here
@@ -1086,7 +1092,14 @@ pub fn step(
         }
         TabState::Question => {
             // A tab waiting on a person is not going to answer by itself, and
-            // holding the line until the deadline would hide that for an hour
+            // holding the line until the deadline would hide that for an hour.
+            // Said once; the ask then goes on, and the answer the tab gives
+            // once the person has answered it is passed on as any other
+            a.quiet_since = None;
+            if a.question_told {
+                return Step::Nothing;
+            }
+            a.question_told = true;
             let screen = tail(&t.last_screen, 12);
             return Step::Answer(answer(
                 a,
@@ -1827,6 +1840,31 @@ mod tests {
         assert_eq!(reply_in(f.path(), q, 0).as_deref(), Some("Three errors, all in the parser."));
         let none_yet = record(&[said("user", q), said("user", "something else"), said("assistant", "theirs")]);
         assert_eq!(reply_in(none_yet.path(), q, 0), None);
+    }
+
+    /// A tab that stops to ask a person is said to the caller once, and the
+    /// ask goes on: once the person answers and the tab finishes, its answer
+    /// is the caller's like any other (2026-10-12: a review answered "waiting
+    /// for approval" went on to be written, and reached nobody)
+    #[test]
+    fn a_question_is_told_once_and_the_answer_after_it_still_comes() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        let mut a = sent_ask();
+        a.hook_expected = false;
+        t.state = TabState::Question;
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the question is not told") };
+        assert_eq!(v["state"], "QUESTION");
+        a.phase = Phase::Deliver;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "told again while it still waits");
+        t.state = TabState::Busy;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing));
+        t.state = TabState::Question;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "a second question, once answered the first, is told");
+        t.state = TabState::Done;
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "settling");
+        a.quiet_since = Some(Instant::now() - SCREEN_SETTLE - Duration::from_secs(1));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the answer after the question did not come") };
+        assert_eq!(v["state"], "DONE");
     }
 
     /// A failed tab is free to be typed into, and saying it again is the way

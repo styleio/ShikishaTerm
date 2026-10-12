@@ -248,6 +248,13 @@ try {
   const good = await call('ask_tab', 'codex-good', 'A quick check.', `Reply with only the word ${word}.`, { timeout_ms: 300000 });
   console.log(`   ${JSON.stringify({ state: good.state, reply: good.reply, source: good.source })}`);
   check(good.state === 'DONE' && String(good.reply || '').includes(word), 'an answer is DONE with its words', good);
+  // The words asked stand on its screen as it starts: a word in them that a
+  // question would hold is not Codex asking anybody (2026-10-12)
+  const word2 = 'MANGO' + Math.random().toString(36).slice(2, 6).toUpperCase();
+  const prose = await call('ask_tab', 'codex-good', 'Another check.',
+    `Sales agents see delivered statements and approve or object. Do not run anything; reply with only the word ${word2}.`, { timeout_ms: 300000 });
+  console.log(`   ${JSON.stringify({ state: prose.state, reply: prose.reply })}`);
+  check(prose.state === 'DONE' && String(prose.reply || '').includes(word2), 'asked in words that say "approve", it is not taken for a question', prose);
 
   console.log(`4. an AI asks with the shikisha command, lets go after 100 s, and the turn asked fails after that (${HOLD_MS / 1000}s)`);
   const logLetGo = hooksLog().length;

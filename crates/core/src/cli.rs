@@ -260,7 +260,7 @@ pub(crate) fn said(r: &Value) -> String {
             "[shikisha] NOT DONE: the run on <@{tab}> was stopped before it finished{facts}"
         ),
         "QUESTION" => format!(
-            "{reply}\n\n[shikisha] WAITING: <@{tab}> is waiting for a person to approve or choose (its screen is above). Tell the person{facts}"
+            "{reply}\n\n[shikisha] WAITING: <@{tab}> is waiting for a person to approve or choose (its screen is above). Tell the person, and end your turn: once it is answered and <@{tab}> finishes, you will be told here, and shikisha inbox gives you its reply{facts}"
         ),
         "BUSY" => format!(
             "[shikisha] NOT SENT: <@{tab}> stayed busy the whole time, so nothing was typed into it{facts}"

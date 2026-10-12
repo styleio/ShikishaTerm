@@ -1435,7 +1435,12 @@ fn tend_asks(
                     v["seconds"],
                     v["source"].as_str().unwrap_or_default()
                 ));
-                let pending = state == "PENDING";
+                // Answered, but not over: still working, or stopped at a
+                // question for the person -- once it is answered the tab goes
+                // on and finishes, and what it says then is the caller's too
+                // (2026-10-12: a review taken for "waiting for approval" went
+                // on to be written, and the AI that asked for it never heard)
+                let pending = state == "PENDING" || state == "QUESTION";
                 let reply = v["reply"].as_str().map(str::to_string);
                 // How an answer that is not a reply reads in the inbox, should
                 // nobody hold the line for it any more
@@ -1460,6 +1465,12 @@ fn tend_asks(
                 // caller let go was never heard of again)
                 match (state.as_str(), reply) {
                     ("PENDING", _) => {
+                        a.phase = Phase::Deliver;
+                        true
+                    }
+                    ("QUESTION", _) if a.caller.is_some() => {
+                        orchestra.mail_tab(&caller_box, &a.target, &crate::asktab::handed_subject(&a.target), &told);
+                        append_hook_log(&format!("ask_tab: {}'s answer (QUESTION) is in {caller_id}'s inbox", a.target));
                         a.phase = Phase::Deliver;
                         true
                     }
@@ -5851,6 +5862,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             late_line: None,
                                             answered: false,
                                             overtaken: false,
+                                            question_told: false,
                                         });
                                     }
                                 }
