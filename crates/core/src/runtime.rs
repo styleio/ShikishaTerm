@@ -3871,8 +3871,27 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         if last_detect.elapsed() >= Duration::from_millis(200) {
             last_detect = Instant::now();
             let mut transitions = Vec::with_capacity(tabs.len());
+            // The tabs on screen: the one in front, and every pane's when the
+            // screen is divided. What one of them says is read as it is said
+            let shown: Vec<usize> = pane_layout
+                .leaves()
+                .into_iter()
+                .filter_map(|(_, surface)| session_at(&surfaces, surface))
+                .chain(session_at(&surfaces, active))
+                .collect();
             for (i, t) in tabs.iter_mut().enumerate() {
                 let (old, new) = t.tick(start);
+                // An answer, or a question, that came while the person was
+                // looking at another tab is unread until they look at this one
+                if old == TabState::Busy
+                    && matches!(new, TabState::Done | TabState::Question | TabState::Limit)
+                    && !shown.contains(&i)
+                {
+                    t.unread = true;
+                }
+                if shown.contains(&i) {
+                    t.unread = false;
+                }
                 transitions.push((i + 1, old, new));
             }
             // The other desks' tabs are running too, and their state is kept

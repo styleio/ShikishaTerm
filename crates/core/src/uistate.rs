@@ -32,6 +32,10 @@ pub struct TabState {
     pub state: String,
     /// Human-readable state name (translated). Use this one for display
     pub state_label: String,
+    /// It finished, or asked something, while the person was looking at
+    /// another tab, and nobody has looked at it since
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
     /// When that state began, as seconds since 1970, so a row can say how long
     /// ago a tab finished. Absent for what has no state of its own (a page)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2688,6 +2692,7 @@ impl TabState {
             uid: Some(t.uid().to_string()),
             state: t.state.label().to_string(),
             state_label: t.state.display(),
+            unread: t.unread,
             since: t.state_since.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs()),
             profile: t.profile_name().to_string(),
             locked: t.locked,
@@ -2832,6 +2837,7 @@ impl TabState {
             uid: None,
             state: "WEB".into(),
             state_label: crate::i18n::t("tui.state.web"),
+            unread: false,
             since: None,
             profile: String::new(),
             limit: None,
@@ -3375,6 +3381,7 @@ mod tests {
             uid: None,
             state: "WAIT".into(),
             state_label: "WAIT".into(),
+            unread: false,
             since: None,
             profile: "GENERIC".into(),
             past: false,

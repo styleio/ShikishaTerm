@@ -1042,6 +1042,7 @@
   "tui.help.site": "手引き",
   "tui.help.url": "https://shikisha-term.com/ja/manual/",
   "tui.scrolled": "▲ {lines}行前を見ています — 押すと今へ",
+  "tui.unread": "ほかのタブを見ているあいだに返事や質問がありました",
   "tui.qr.title": "スマホから接続",
   "tui.qr.hint": "カメラで読み取ってください（このアドレスに届くスマホからつながります。Tailscale か、同じネットワークにいるスマホです）",
   "tui.status.copy": "[コピー:{mode}] -{offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: 最新へ{hist}",

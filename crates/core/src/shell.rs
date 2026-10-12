@@ -1010,6 +1010,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     min-width:64px; max-width:220px; padding:0 var(--s3); cursor:pointer;
     color:var(--muted);
     border-right:1px solid var(--line); border-bottom:2px solid transparent; }
+  #strip .stab.unread { color:var(--text); font-weight:700; }
+  #strip .stab .unreadmark { flex:none; width:7px; height:7px; border-radius:50%; background:var(--brand); }
   /* No status dot here, and the mark wears the state instead. The dot and the
      mark were saying two things that belong to one phrase -- "this AI, in this
      state" -- from two glyphs and a gap, which on a narrow window is 16px per
@@ -1400,6 +1402,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.aitab .nm.agent { color:var(--text); font-weight:normal; }
   .tab .nm.agent .who { color:var(--dim); font-weight:normal; }
   .tab .ago { flex:none; margin-left:auto; font-size:10px; color:var(--dim); font-variant-numeric:tabular-nums; }
+  /* What a tab said while another was being looked at, not read yet: its
+     name in full weight, and a small mark that goes once the tab is opened */
+  .tab.unread .nm, .tab.unread .nm.agent .who { color:var(--text); font-weight:700; }
+  .tab .unreadmark { flex:none; width:7px; height:7px; border-radius:50%; background:var(--brand); margin-left:var(--s1); }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); padding:6px 8px 8px; max-width:200px; }
@@ -8540,7 +8546,7 @@ function tabRow(t, g, deep, head) {
   // column reads as one line down the sidebar.
   const brand = t.ai ? " aitab ai-" + t.ai : "";
   const row = el("div", {class:"tab intab" + (rowIsFront(t) ? " sel" : "") + brand
-        + (deep ? " deep" : ""),
+        + (deep ? " deep" : "") + (t.unread ? " unread" : ""),
       onclick:() => send({kind:"select", tab:t.index})},
     el("span", {class:"dot " + t.state}),
     el("span", {class:"num"}, String(t.index)),
@@ -8567,6 +8573,7 @@ function tabRow(t, g, deep, head) {
     // thing a person reads this row for before they type into it
     serverMark(t.mark),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
+    t.unread ? el("span", {class:"unreadmark", title:T["tui.unread"] || ""}) : null,
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Its settings are its own page, opened from here: the settings list no
   // longer carries every tab of every folder
@@ -12484,7 +12491,7 @@ function drawStrip() {
     // not an AI has no mark to colour, so it keeps a dot
     const st = " st-" + (t.state || "");
     const one = el("div", {class:"stab" + (rowIsFront(t) ? " sel" : "")
-          + st + (t.ai ? " aitab ai-" + t.ai : ""),
+          + st + (t.ai ? " aitab ai-" + t.ai : "") + (t.unread ? " unread" : ""),
         title:(t.name || "") + (t.state_label ? " — " + t.state_label : ""),
         onclick:() => send({kind:"select", tab:t.index}),
         // The middle button closes, on the release as a click does. Its press
@@ -12495,6 +12502,7 @@ function drawStrip() {
       markFor(t) || el("span", {class:"dot " + t.state}),
       tabName(t, "strip", "nm"),
       serverMark(t.mark),
+      t.unread ? el("span", {class:"unreadmark", title:T["tui.unread"] || ""}) : null,
       el("span", {class:"x", title:T["tui.tab.close"] || "",
           onclick:e => { e.stopPropagation(); closeTab(t); }}, "\u2715"));
     if (rowIsFront(t)) sel = one;

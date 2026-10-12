@@ -3522,6 +3522,9 @@ pub struct Tab {
     pub notify_on_done: Option<String>,
     /// Whether that notification carries a reply link (config's notify_reply)
     pub notify_reply: bool,
+    /// It finished, or asked something, while the person was looking at
+    /// another tab, and nobody has looked at it since (see the loop's tick)
+    pub unread: bool,
     /// Settings changed, but taking effect requires the session to be
     /// recreated
     /// (restart is left to the user so a running AI is never cut off unexpectedly)
@@ -4604,6 +4607,7 @@ impl Tab {
             auto_restart: false,
             notify_on_done: None,
             notify_reply: false,
+            unread: false,
             needs_restart: false,
             depth: 0,
             argv: argv.to_vec(),
