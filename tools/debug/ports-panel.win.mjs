@@ -24,6 +24,9 @@
  *   phone     a phone-sized Chrome on the remote door gets the same rows, with
  *             no way to open this PC's localhost in the phone's own browser,
  *             and pressing a row brings up the page already open, not a second
+ *   cut off   a server whose starting shell ended (what an AI's background run
+ *             leaves) is listed by the folder it works in, saying the tab that
+ *             started it is not known, and its row opens it
  *
  * Needs Windows, Node and Chrome (the phone). Photographs land in
  * target/shots. Nothing of a copy somebody is using is read, written or stopped.
@@ -91,6 +94,12 @@ fs.writeFileSync(path.join(WORK, 'serve.mjs'),
   // The same kind of page on this PC's LAN address alone, when it has one
   (LAN ? `http.createServer((q, s) => { s.writeHead(200, {'content-type': 'text/html'}); s.end('<h1>lan-${WORD}</h1>'); })` +
     `.listen(${LPORT}, '${LAN}');\n` : ''));
+// A server in the quiet folder, started by a shell that then ends (step 8)
+const LOOSE = await freePort();
+fs.writeFileSync(path.join(QUIET, 'loose.mjs'),
+  `import http from 'node:http';
+http.createServer((q, s) => s.end('loose')).listen(${LOOSE}, '127.0.0.1');
+`);
 const PHONE_PORT = await freePort();
 const PHONE_KEY = 'portsphone0123456789abcd';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
@@ -296,12 +305,35 @@ try {
     check(pageTabs().some((t) => t.command === want), 'opened at the address it listens on, not localhost: ' + JSON.stringify(pageTabs().map((t) => t.command)));
     await board.shot('6-lan');
   }
+  console.log('8. a server left running by a shell that ended is found by its folder');
+  // What an AI's background run leaves: a shell starts the server and ends,
+  // so the server's parent is gone and walking down from the tab misses it
+  await board.front('quiet');
+  await door('send', 'quiet', `cmd /c start "" /b node loose.mjs\r`);
+  await until(() => board.run(`((S.tabs.find(t => t.id === "quiet").place || {}).loose || []).includes(${LOOSE})`), 'the cut-off server under the quiet folder', 30000)
+    .catch(async (e) => { console.log('    (the tabs: ' + await board.run('JSON.stringify(S.tabs.map(t => [t.id, t.place]))') + ')'); throw e; });
+  // The page step 7 opened can come back to the front, so the panel is asked
+  // for by the folder rather than for whatever is in front
+  await board.run('showPorts(S.groups[S.tabs.find(t => t.id === "quiet").group])');
+  await until(async () => (await board.panel()).rows.some((r) => r.port === ':' + LOOSE), 'the cut-off server as a row', 15000)
+    .catch(async (e) => { console.log('    (the panel has: ' + JSON.stringify(await board.panel()) + ')'); throw e; });
+  const loose = (await board.panel()).rows.find((r) => r.port === ':' + LOOSE);
+  check(/^node(\.exe)?$/i.test(loose.program), 'with the program holding it: ' + loose.program);
+  check(loose.tab === L['tui.ports.loose'], 'it says which tab started it is not known, not a tab name: ' + loose.tab);
+  check(await board.run(`(S.tabs.find(t => t.id === "quiet").place.loose || []).includes(${LOOSE})`), 'the state marks the port as found by its folder');
+  check(!(await board.run(`(S.tabs.find(t => t.id === "serve").place.loose || []).length`)), 'a server under its tab is not marked so');
+  await board.shot('8-loose');
+  await board.press(`[...document.querySelectorAll("#portpanel .prt")].find(r => r.querySelector(".pp").textContent === ":${LOOSE}")`);
+  await until(() => settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://localhost:${LOOSE}/`), 'a page on the cut-off server', 20000).catch(() => {});
+  check(settings().desks[0].folders[1].tabs.some((t) => t.command === `browser http://localhost:${LOOSE}/`), 'its row opens a browser tab of that folder');
 } catch (e) {
   failures += 1;
   console.error('  FAIL ' + e.message);
 } finally {
   if (chrome && chrome.exitCode === null) spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F']);
   stopApp();
+  // The cut-off server belongs to no copy of the app, so it is ended by its port
+  ps('-Command', `Get-NetTCPConnection -LocalPort ${LOOSE} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }`);
 }
 console.log(failures ? `${failures} failed` : 'all passed');
 process.exit(failures ? 1 : 0);

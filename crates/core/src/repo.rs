@@ -32,6 +32,9 @@ pub struct Place {
     /// The host to open a port at, for a port `localhost` does not reach
     /// (`open_host`). A port not in here opens at `localhost`
     pub hosts: std::collections::BTreeMap<u16, String>,
+    /// The ports among `ports` that were found by this tab's folder rather
+    /// than below the tab (`Held::loose`)
+    pub loose: std::collections::BTreeSet<u16>,
     /// `owner/name` on GitHub, when that is where this folder pushes to
     pub repo: Option<String>,
     /// The folder shared by this checkout and every branch cut from it. Two
@@ -417,16 +420,49 @@ pub struct Held {
     /// By port, the host to open it at, for a port `localhost` does not
     /// reach (see `open_host`). A port missing here opens at `localhost`
     pub hosts: std::collections::BTreeMap<u16, String>,
+    /// The ports among `ports` found by the folder their program works in
+    /// rather than below the tab (see `ports_below`): which tab started them
+    /// is no longer known, only that they run in this tab's folder
+    pub loose: std::collections::BTreeSet<u16>,
 }
 
-/// Every tab's ports, given each tab's own process.
+impl Held {
+    /// A port and what holds it, once: the first to claim a port keeps it
+    fn take(&mut self, port: u16, bound: &[std::net::IpAddr], name: Option<&String>, loose: bool) {
+        if self.ports.contains(&port) {
+            return;
+        }
+        self.ports.push(port);
+        if let Some(n) = name {
+            self.programs.insert(port, n.clone());
+        }
+        if let Some(host) = open_host(bound) {
+            self.hosts.insert(port, host);
+        }
+        if loose {
+            self.loose.insert(port);
+        }
+    }
+}
+
+/// Every tab's ports, given each tab's own process and, for a tab on this
+/// PC, its folder.
 ///
 /// The tab's process is a shell; what listens is whatever it started, however
 /// far down. So this walks the machine's process tree once and gives each tab
 /// the ports of everything below it -- and names the program holding each,
-/// asked only of the few processes that turned out to hold one
-pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Held> {
-    let mut out = HashMap::new();
+/// asked only of the few processes that turned out to hold one.
+///
+/// A program can also be cut off from the tab that started it. An AI that
+/// starts a dev server in the background runs it from a shell of its own,
+/// and that shell ends while the server goes on: the server's parent is gone,
+/// and walking down from the tab no longer reaches it. Such a program -- one
+/// whose line of parents ends in a process that has ended -- is given to the
+/// tab whose folder it works in, the deepest folder when tabs are nested. A
+/// program whose parents are all still running belongs to whoever runs
+/// them, which is not a tab here, and is left alone however its folder reads
+pub fn ports_below(roots: &[(usize, u32)], folders: &[(usize, PathBuf)]) -> HashMap<usize, Held> {
+    let mut out: HashMap<usize, Held> = HashMap::new();
     if roots.is_empty() {
         return out;
     }
@@ -434,32 +470,102 @@ pub fn ports_below(roots: &[(usize, u32)]) -> HashMap<usize, Held> {
     if by_pid.is_empty() {
         return out;
     }
-    let children = child_map();
+    let table = process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    let children = children_in(&table);
     // The same process under two roots is named once
     let mut names: HashMap<u32, Option<String>> = HashMap::new();
+    let mut below_a_tab: HashSet<u32> = HashSet::new();
     for (key, root) in roots {
         let mut held = Held::default();
         for pid in descendants(*root, &children) {
+            below_a_tab.insert(pid);
             let Some(p) = by_pid.get(&pid) else { continue };
             let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
             for (port, bound) in p {
-                if !held.ports.contains(port) {
-                    held.ports.push(*port);
-                    if let Some(n) = &name {
-                        held.programs.insert(*port, n.clone());
-                    }
-                    if let Some(host) = open_host(bound) {
-                        held.hosts.insert(*port, host);
-                    }
-                }
+                held.take(*port, bound, name.as_ref(), false);
             }
         }
-        held.ports.sort_unstable();
         if !held.ports.is_empty() {
             out.insert(*key, held);
         }
     }
+    // The listeners no tab reached, and of those the ones cut off from
+    // whatever started them. Their folders are asked of the system only for
+    // these few: reading where a process works is a look inside it
+    let lines = lines_of(&table);
+    let cut: Vec<u32> = by_pid
+        .keys()
+        .copied()
+        .filter(|pid| !below_a_tab.contains(pid) && cut_off(*pid, &lines))
+        .collect();
+    if !cut.is_empty() && !folders.is_empty() {
+        let kind = sysinfo::ProcessRefreshKind::nothing().with_cwd(sysinfo::UpdateKind::Always);
+        let at = process_table(Some(&cut), kind);
+        let mut cut = cut;
+        cut.sort_unstable();
+        for pid in cut {
+            let Some(cwd) = at.process(sysinfo::Pid::from_u32(pid)).and_then(|p| p.cwd()) else { continue };
+            let Some(key) = folder_holding(cwd, folders) else { continue };
+            let name = names.entry(pid).or_insert_with(|| program_of(pid)).clone();
+            let held = out.entry(key).or_default();
+            for (port, bound) in &by_pid[&pid] {
+                held.take(*port, bound, name.as_ref(), true);
+            }
+        }
+    }
+    for held in out.values_mut() {
+        held.ports.sort_unstable();
+    }
     out
+}
+
+/// The tab whose folder holds `cwd`: the deepest such folder, and of tabs in
+/// the same folder the first
+fn folder_holding(cwd: &Path, folders: &[(usize, PathBuf)]) -> Option<usize> {
+    folders
+        .iter()
+        .filter(|(_, f)| crate::worktree::inside_checkout(f, cwd))
+        .min_by_key(|(key, f)| (std::cmp::Reverse(tidy(f.clone()).components().count()), *key))
+        .map(|(key, _)| *key)
+}
+
+/// Each process's parent and when it started (seconds; 0 when the system
+/// would not say), for `cut_off`
+fn lines_of(table: &sysinfo::System) -> HashMap<u32, (Option<u32>, u64)> {
+    table
+        .processes()
+        .iter()
+        .map(|(pid, p)| (pid.as_u32(), (p.parent().map(|q| q.as_u32()), p.start_time())))
+        .collect()
+}
+
+/// Whether a running process has lost what started it: going up its parents,
+/// one of them has ended.
+///
+/// An ended parent shows in one of three ways. Its id is in no process at
+/// all; or the id has since been given to a process younger than its child,
+/// which cannot be the one that started it; or, on a system that hands an
+/// orphan to the first process (`init`, `launchd`), the parent is that one.
+/// A process the table does not have is not known to be anything
+fn cut_off(pid: u32, lines: &HashMap<u32, (Option<u32>, u64)>) -> bool {
+    let mut seen = HashSet::new();
+    let mut at = pid;
+    loop {
+        // An id that points back down: nothing to say about it
+        if !seen.insert(at) {
+            return false;
+        }
+        let Some(&(parent, born)) = lines.get(&at) else { return false };
+        let Some(parent) = parent else { return false };
+        if cfg!(unix) && parent == 1 {
+            return true;
+        }
+        match lines.get(&parent) {
+            None => return true,
+            Some(&(_, parent_born)) if born != 0 && parent_born > born => return true,
+            Some(_) => at = parent,
+        }
+    }
 }
 
 /// The name of the program a process runs: the file name of its executable
@@ -521,7 +627,11 @@ pub(crate) fn process_table(only: Option<&[u32]>, kind: sysinfo::ProcessRefreshK
 
 /// Parent to children, for every process on the machine.
 pub(crate) fn child_map() -> HashMap<u32, Vec<u32>> {
-    let table = process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    children_in(&process_table(None, sysinfo::ProcessRefreshKind::nothing()))
+}
+
+/// Parent to children, for every process in `table`
+fn children_in(table: &sysinfo::System) -> HashMap<u32, Vec<u32>> {
     let mut out: HashMap<u32, Vec<u32>> = HashMap::new();
     for (pid, p) in table.processes() {
         if let Some(parent) = p.parent() {
@@ -887,6 +997,86 @@ mod tests {
         let mut seen = descendants(1, &children);
         seen.sort_unstable();
         assert_eq!(seen, vec![1, 2, 3]);
+    }
+
+    /// A dev server whose starting shell has ended is cut off; one whose
+    /// parents all still run is not, and neither is one under an id that
+    /// came back round to a younger process only by reuse of the number
+    #[test]
+    fn a_program_whose_starter_ended_is_told_from_one_still_held() {
+        // 10 is the top of the tree; 20 and 30 run under it; 40's parent 99
+        // has ended; 50's parent id is now a process younger than 50 itself
+        let lines = HashMap::from([
+            (10u32, (None, 100u64)),
+            (20, (Some(10), 200)),
+            (30, (Some(20), 300)),
+            (40, (Some(99), 400)),
+            (41, (Some(40), 410)),
+            (60, (Some(10), 900)),
+            (50, (Some(60), 500)),
+        ]);
+        assert!(!cut_off(30, &lines), "a program whose parents all run was taken for cut off");
+        assert!(cut_off(41, &lines), "a program whose starter ended was not found");
+        assert!(cut_off(50, &lines), "a parent id given to a younger process was taken for the parent");
+        // Not in the table at all: nothing is known of it
+        assert!(!cut_off(77, &lines));
+        // A start the system would not say proves nothing about reuse
+        let unknown = HashMap::from([(10u32, (None, 100u64)), (60, (Some(10), 900)), (50, (Some(60), 0))]);
+        assert!(!cut_off(50, &unknown));
+        // Parents that point back round still end
+        let ring = HashMap::from([(1u32, (Some(2u32), 5u64)), (2, (Some(1), 5))]);
+        assert!(!cut_off(1, &ring));
+    }
+
+    /// A cut-off program goes to the tab whose folder it works in: the
+    /// deepest folder when tabs are nested, the first tab of a shared one,
+    /// and no tab at all when it works somewhere none of them is
+    #[test]
+    fn a_cut_off_program_goes_to_the_tab_whose_folder_it_works_in() {
+        let p = |s: &str| PathBuf::from(crate::local_path(s));
+        let folders = vec![(0, p("D:/work/app")), (1, p("D:/work/app/web")), (2, p("D:/work/app/web")), (3, p("D:/other"))];
+        assert_eq!(folder_holding(&p("D:/work/app/web/src"), &folders), Some(1));
+        assert_eq!(folder_holding(&p("D:/work/app/api"), &folders), Some(0));
+        assert_eq!(folder_holding(&p("D:/work/app"), &folders), Some(0));
+        assert_eq!(folder_holding(&p("D:/work/application"), &folders), None, "a folder whose name only starts the same was taken for it");
+        assert_eq!(folder_holding(&p("D:/elsewhere"), &folders), None);
+        assert_eq!(folder_holding(&p("D:/other"), &[]), None);
+    }
+
+    /// The case itself, on the real machine: a shell starts a listener in the
+    /// background and ends. Walking down from any tab no longer reaches the
+    /// listener, and it is found by its folder, marked as found that way
+    #[cfg(windows)]
+    #[test]
+    fn a_server_left_running_by_a_shell_that_ended_is_found_by_its_folder() {
+        let folder = std::env::temp_dir().join(format!("shikisha-loose-port-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        // `start /b` leaves the listener running when cmd ends
+        let listen = "$l=[Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,0);$l.Start();Start-Sleep 20";
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "start", "", "/b", "powershell", "-NoProfile", "-Command", listen])
+            .current_dir(&folder)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let roots = [(0usize, std::process::id())];
+        let folders = [(7usize, folder.clone())];
+        let mut found = None;
+        for _ in 0..100 {
+            if let Some(h) = ports_below(&roots, &folders).remove(&7) {
+                found = Some(h);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let held = found.expect("a listener whose shell ended was not found by its folder");
+        assert!(!held.ports.is_empty());
+        assert!(held.ports.iter().all(|p| held.loose.contains(p)), "it was not marked as found by its folder: {held:?}");
+        // Ended here rather than left for its sleep to run out
+        for (pid, _) in listeners().iter().filter(|(_, ports)| ports.keys().any(|p| held.ports.contains(p))) {
+            let _ = std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
+        }
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

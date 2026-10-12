@@ -4453,7 +4453,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // terminal, agents, embedded browser -- as honestly as it
                 // measures each agent
                 roots.push((usize::MAX, std::process::id()));
-                let ports = crate::repo::ports_below(&roots);
+                // And each tab's folder on this PC, for a program cut off from
+                // the tab that started it (see `repo::ports_below`). A folder
+                // on another machine names nothing here
+                let folders: Vec<(usize, std::path::PathBuf)> = tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| tab_machine(t).is_none())
+                    .filter_map(|(i, t)| t.cwd().map(|c| (i, c.to_path_buf())))
+                    .collect();
+                let ports = crate::repo::ports_below(&roots, &folders);
                 let cost = meter.sample(&roots);
                 self_cost = cost.get(&usize::MAX).and_then(|u| u.line());
                 // Keyed by place: the same path on two machines is two
@@ -4560,6 +4569,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         ports: held.ports,
                         programs: held.programs,
                         hosts: held.hosts,
+                        loose: held.loose,
                         repo,
                         pr,
                         family,

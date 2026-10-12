@@ -9897,16 +9897,18 @@ function drawPorts() {
 }
 // A folder on this PC: every port its tabs' programs opened, by the tab that
 // opened it. The row opens it in a browser tab of the folder -- the way a
-// port is opened from a phone too, as a page the window relays
+// port is opened from a phone too, as a page the window relays. A program
+// whose starter has ended (an AI's background shell) is found by the folder
+// it works in, and its row says so instead of naming a tab it may not be from
 function drawHerePorts(box, g, group) {
   const held = [];
   for (const t of (S && S.tabs) || []) {
     if (t.group !== group || !t.place) continue;
     for (const port of t.place.ports || []) held.push({port, t, program: (t.place.programs || {})[port] || "",
-      host: (t.place.hosts || {})[port] || ""});
+      host: (t.place.hosts || {})[port] || "", loose: (t.place.loose || []).includes(port)});
   }
   held.sort((a, b) => a.port - b.port);
-  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name)].join("|");
+  const sig = ["here", gkey(g), AT_PC, ...held.map(h => h.port + ":" + h.host + ":" + h.program + ":" + h.t.index + ":" + h.t.name + ":" + h.loose)].join("|");
   if (PT.drawn === sig && box.firstChild) return;
   PT.drawn = sig;
   box.textContent = "";
@@ -9938,7 +9940,8 @@ function drawHerePorts(box, g, group) {
         // The address, when it is not this PC's own loopback: the one thing
         // that says why this row opens somewhere other than localhost
         el("span", {class:"po"}, h.host ? el("span", {class:"ph"}, h.host) : null,
-          markFor(h.t) || null, el("span", {}, h.t.name || tab))),
+          ...(h.loose ? [el("span", {}, T["tui.ports.loose"] || "")]
+            : [markFor(h.t) || null, el("span", {}, h.t.name || tab)]))),
       ...acts));
   }
   // Nothing yet is said where the rows would be, not at the foot of an empty

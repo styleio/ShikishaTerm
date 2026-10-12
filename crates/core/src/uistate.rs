@@ -398,6 +398,11 @@ pub struct PlaceState {
     /// (a program listening on one address only, the LAN's say)
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub hosts: std::collections::BTreeMap<u16, String>,
+    /// The ports found by the folder their program works in, not below the
+    /// tab: the program's parent has ended, so which tab started it is not
+    /// known (`repo::Held::loose`)
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub loose: std::collections::BTreeSet<u16>,
     /// `owner/name` on GitHub, when that is where this folder pushes to. What
     /// the screen asks before it asks GitHub anything at all: with this
     /// missing, the git column has no way to tell a folder whose server has
@@ -2747,6 +2752,7 @@ impl TabState {
                 ports: t.place.ports.clone(),
                 programs: t.place.programs.clone(),
                 hosts: t.place.hosts.clone(),
+                loose: t.place.loose.clone(),
                 repo: t.place.repo.clone(),
             }),
             cost: t.usage.line(),
