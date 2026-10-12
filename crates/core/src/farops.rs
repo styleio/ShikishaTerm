@@ -23,6 +23,7 @@ pub const OPS: &[(&str, Op)] = &[
     ("read_page", read_page),
     ("read_after", read_after),
     ("record_standing", record_standing),
+    ("turn_end", turn_end),
     ("read_work", read_work),
     ("put_key", put_key),
     ("drop_key", drop_key),
@@ -90,6 +91,19 @@ fn record_standing(p: &Value) -> Result<Value, String> {
         return Ok(Value::Null);
     };
     Ok(crate::reader::standing_of(&path).map_or(Value::Null, crate::reader::Standing::to_json))
+}
+
+/// How the turn that begins at byte `from` of a conversation record ended
+/// (see `reader::turn_end_after`). Null while it has not, and when the CLI has
+/// not written the record yet
+fn turn_end(p: &Value) -> Result<Value, String> {
+    let glob = text(p, "glob")?;
+    let id = text(p, "id")?;
+    let from = p.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let Some(path) = crate::sessionfind::locate(glob, id) else {
+        return Ok(Value::Null);
+    };
+    Ok(crate::reader::turn_end_after(&path, from).map_or(Value::Null, crate::reader::TurnEnd::to_json))
 }
 
 /// A stretch of a conversation record read forwards from a place in it (see
@@ -231,6 +245,31 @@ mod tests {
         assert_eq!(there.mark.map(|m| m.0), Some(crate::reader::TurnMark::Working));
         assert_eq!(there.len, std::fs::metadata(&file).unwrap().len());
         assert_eq!(run("record_standing", &json!({"glob": glob, "id": "nope"})).unwrap(), Value::Null);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// How a turn ended is said there as it is read here, failure and all --
+    /// that turn's own end, not the record's last
+    #[test]
+    fn how_a_turn_ended_is_said_there_as_it_is_read_here() {
+        let dir = std::env::temp_dir().join(format!("farops-turn-end-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abc.jsonl");
+        let started = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n";
+        let failed = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"error\":{\"message\":\"at capacity\",\"codex_error_info\":\"server_overloaded\"}}}\n";
+        let answered = "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"error\":null}}\n";
+        std::fs::write(&file, format!("{started}{failed}{started}{answered}")).unwrap();
+        let glob = format!("{}/{{id}}.jsonl", dir.display()).replace('\\', "/");
+        let said = run("turn_end", &json!({"glob": glob, "id": "abc", "from": 0})).unwrap();
+        let there = crate::reader::TurnEnd::from_json(&said).expect("an end");
+        assert_eq!(Some(there.clone()), crate::reader::turn_end_after(&file, 0));
+        assert_eq!((there.mark, there.at, there.error.as_deref()), (crate::reader::TurnMark::Failed, started.len() as u64, Some("at capacity")));
+        let later = (started.len() + failed.len()) as u64;
+        let said = run("turn_end", &json!({"glob": glob, "id": "abc", "from": later})).unwrap();
+        assert_eq!(crate::reader::TurnEnd::from_json(&said).map(|e| e.mark), Some(crate::reader::TurnMark::Over));
+        let len = std::fs::metadata(&file).unwrap().len();
+        assert_eq!(run("turn_end", &json!({"glob": glob, "id": "abc", "from": len})).unwrap(), Value::Null, "not ended yet");
+        assert_eq!(run("turn_end", &json!({"glob": glob, "id": "nope"})).unwrap(), Value::Null);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

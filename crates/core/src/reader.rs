@@ -344,6 +344,26 @@ impl TurnEnd {
         let mark = turn_mark(line).filter(|m| m.ended())?;
         Some(TurnEnd { at, mark, error: turn_error(line), at_limit: turn_at_limit(line) })
     }
+
+    /// As it travels between the bridge and this PC
+    pub fn to_json(self) -> Value {
+        serde_json::json!({
+            "at": self.at,
+            "failed": self.mark == TurnMark::Failed,
+            "error": self.error,
+            "limit": self.at_limit,
+        })
+    }
+
+    pub fn from_json(v: &Value) -> Option<Self> {
+        let failed = v.get("failed").and_then(Value::as_bool)?;
+        Some(TurnEnd {
+            at: v.get("at")?.as_u64()?,
+            mark: if failed { TurnMark::Failed } else { TurnMark::Over },
+            error: v.get("error").and_then(Value::as_str).map(str::to_string),
+            at_limit: v.get("limit").and_then(Value::as_bool) == Some(true),
+        })
+    }
 }
 
 /// How the turn that begins at byte `from` of the record ended: the first end
@@ -358,19 +378,34 @@ impl TurnEnd {
 pub fn turn_end_after(path: &Path, from: u64) -> Option<TurnEnd> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
+    turn_end_by(len, from, &mut |start, n| {
+        let mut buf = vec![0u8; n];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf)?;
+        Ok(buf)
+    })
+}
+
+/// [`turn_end_after`] over a record `len` long read a piece at a time by `read_at`
+fn turn_end_by(
+    len: u64,
+    from: u64,
+    read_at: &mut dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
+) -> Option<TurnEnd> {
     if from >= len {
         return None;
     }
     let stop = len.min(from.saturating_add(TURN_READ_MAX));
-    file.seek(SeekFrom::Start(from)).ok()?;
     let mut carried: Vec<u8> = Vec::new();
     let mut carried_at = from;
     let mut at = from;
     while at < stop {
         let n = (stop - at).min(TURN_READ_PIECE) as usize;
-        let start = carried.len();
-        carried.resize(start + n, 0);
-        file.read_exact(&mut carried[start..]).ok()?;
+        let piece = read_at(at, n).ok()?;
+        if piece.len() != n {
+            return None;
+        }
+        carried.extend_from_slice(&piece);
         at += n as u64;
         // Whole lines only; what is left of the last is carried into the next piece
         let Some(last) = carried.iter().rposition(|&b| b == b'\n') else { continue };
@@ -881,6 +916,30 @@ impl Record {
                     }
                 }
                 locate_far(at, glob, id).map(|path| read_back_far(at, &path, before, want))
+            }
+        }
+    }
+
+    /// How the turn that begins at byte `from` ended (see [`turn_end_after`]).
+    /// `None` while it has not, or when that could not be read. On another
+    /// machine this goes over the network, so it is for a thread of its own
+    pub fn turn_end_after(&self, from: u64) -> Option<TurnEnd> {
+        match self {
+            Record::Here { glob, id } => turn_end_after(&crate::sessionfind::locate(glob, id)?, from),
+            Record::Far { at, glob, id } => {
+                // One request to the bridge, when it is there. A bridge from
+                // before this knows no such thing: then the long way
+                if crate::farlink::is_up(at) {
+                    let asked = serde_json::json!({"glob": glob, "id": id, "from": from});
+                    match crate::farlink::call(at, "turn_end", asked) {
+                        Ok(Value::Null) => return None,
+                        Ok(v) => return TurnEnd::from_json(&v),
+                        Err(e) => crate::append_hook_log(&format!("reader: the bridge could not say how the turn ended ({e}); reading it the long way")),
+                    }
+                }
+                let path = locate_far(at, glob, id)?;
+                let (len, mut read_at) = far_pieces(at, &path).ok()?;
+                turn_end_by(len, from, &mut read_at)
             }
         }
     }
