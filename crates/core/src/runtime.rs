@@ -5862,7 +5862,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             late_line: None,
                                             answered: false,
                                             overtaken: false,
-                                            question_told: false,
+                                            question_told: None,
                                         });
                                     }
                                 }

@@ -240,9 +240,11 @@ pub struct Ask {
     /// again: what it shows now may be somebody else's turn, and is not
     /// taken for this ask's answer (see [`RECORD_GIVES_NONE`])
     pub overtaken: bool,
-    /// The caller was told the tab is waiting for a person: said once for
-    /// each time it stops to ask, while the ask goes on for the answer
-    pub question_told: bool,
+    /// The caller was told the tab is waiting for a person, and on what
+    /// screen (`screen_mark`): said once for each question it stops at -- a
+    /// question on a screen of its own is another -- while the ask goes on
+    /// for the answer
+    pub question_told: Option<u64>,
 }
 
 /// How long `t`'s record is now, for [`Ask::record_from`]. A record that
@@ -528,7 +530,7 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         late_line: None,
         answered: false,
         overtaken: false,
-        question_told: false,
+        question_told: None,
     }
 }
 
@@ -1039,7 +1041,7 @@ pub fn step(
                 a.overtaken = true;
             }
             // Answered, and at work again: a question it stops at next is told anew
-            a.question_told = false;
+            a.question_told = None;
             a.background_since = None;
             let busy_since = *a.busy_since.get_or_insert(now);
             // The screen says busy; the record may know better. A record here
@@ -1096,11 +1098,33 @@ pub fn step(
             // Said once; the ask then goes on, and the answer the tab gives
             // once the person has answered it is passed on as any other
             a.quiet_since = None;
-            if a.question_told {
+            let screen = tail(&t.last_screen, 12);
+            let mark = screen_mark(&screen);
+            if a.question_told == Some(mark) {
+                // Told already. The record may know better than the screen:
+                // words on the screen taken for a question while the turn
+                // went on and ended would otherwise hold the answer back
+                // for good
+                let due = match a.source(t) {
+                    Source::Here(_) => a.record_look.is_none_or(|at| at.elapsed() >= RECORD_AGAIN),
+                    _ => true,
+                };
+                if a.run.is_none() && due {
+                    if matches!(a.source(t), Source::Here(_)) {
+                        a.record_look = Some(now);
+                    }
+                    match a.outcome(t, true) {
+                        Some(Outcome::Reply(reply)) => {
+                            return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder,
+                                Some("the tab's own record says the turn ended, though its screen still looked like a question")));
+                        }
+                        Some(Outcome::Failed { error, kind }) => return Step::Answer(ended_badly(a, t, error, kind, same_folder)),
+                        None => {}
+                    }
+                }
                 return Step::Nothing;
             }
-            a.question_told = true;
-            let screen = tail(&t.last_screen, 12);
+            a.question_told = Some(mark);
             return Step::Answer(answer(
                 a,
                 "QUESTION",
@@ -1298,6 +1322,15 @@ fn line_step(a: &mut Ask, target: Option<&Tab>) -> Step {
         return Step::Lined;
     }
     Step::Nothing
+}
+
+/// What tells one screen from another, for a question already told of
+/// ([`Ask::question_told`])
+fn screen_mark(screen: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    screen.hash(&mut h);
+    h.finish()
 }
 
 /// The last `n` lines of a screen with the blank ones at the bottom dropped
@@ -1860,6 +1893,11 @@ mod tests {
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing));
         t.state = TabState::Question;
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "a second question, once answered the first, is told");
+        // ...and one that follows at once, with no work seen between: its own
+        // screen says it is another
+        t.last_screen = "Would you like to run the following command?\n\n  $ pnpm test\n\n› 1. Yes, proceed (y)".into();
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Answer(_)), "a question on a new screen is not told");
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "the same question, told again");
         t.state = TabState::Done;
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "settling");
         a.quiet_since = Some(Instant::now() - SCREEN_SETTLE - Duration::from_secs(1));
