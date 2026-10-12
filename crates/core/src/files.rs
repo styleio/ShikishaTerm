@@ -305,11 +305,15 @@ fn asked_git(root: &Path) -> Option<Vec<String>> {
 /// content. Nothing else is guessed at -- a folder nobody ignores is a folder
 /// somebody wanted.
 fn walked(root: &Path) -> (Vec<String>, bool) {
+    walked_up_to(root, SCAN_CAP)
+}
+
+fn walked_up_to(root: &Path, cap: usize) -> (Vec<String>, bool) {
     let mut out = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
     let mut capped = false;
     while let Some((dir, depth)) = stack.pop() {
-        if out.len() >= SCAN_CAP {
+        if out.len() >= cap {
             capped = true;
             break;
         }
@@ -337,6 +341,371 @@ fn walked(root: &Path) -> (Vec<String>, bool) {
     (out, capped)
 }
 
+// -- Searching inside every file, every match --------------------------------
+//
+// The column's "Inside" search: every place the words are, in every file the
+// folder is made of, grouped by file. Off the board's thread, and given up
+// when a newer search for the same panel starts.
+
+/// What a search inside the files asks for
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Ask {
+    #[serde(default)]
+    pub q: String,
+    /// Upper and lower case told apart
+    #[serde(default)]
+    pub case: bool,
+    /// Only where the words stand as a whole word
+    #[serde(default)]
+    pub word: bool,
+    /// The words are a regular expression
+    #[serde(default)]
+    pub regex: bool,
+    /// Which files to look in and which to leave out, as patterns separated
+    /// by commas (`*.rs, src/**`). Empty is every file
+    #[serde(default)]
+    pub include: String,
+    #[serde(default)]
+    pub exclude: String,
+}
+
+/// One place the words are: the line, where on it (counted in characters,
+/// from 1) and how long, and the line as shown with where the match starts in
+/// what is shown
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Spot {
+    pub line: u32,
+    pub col: u32,
+    pub len: u32,
+    pub text: String,
+    /// Where the match starts in `text`, in characters
+    pub at: u32,
+}
+
+/// Every place in one file
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FileSpots {
+    pub path: String,
+    pub spots: Vec<Spot>,
+}
+
+/// What a search inside the files came back with
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Spots {
+    pub files: Vec<FileSpots>,
+    /// Places found, across every file
+    pub total: usize,
+    /// Whether it stopped before the end: of the files, of the clock or of
+    /// what a list is worth reading
+    pub capped: bool,
+}
+
+/// How many places a search lists before it stops. More than anybody reads
+/// down; past it the answer is narrower words or a pattern of files
+pub const SPOTS_CAP: usize = 1000;
+/// How many files a search inside them looks at: off the board's thread, so
+/// a big repository is looked through rather than given up on
+const SEARCH_FILES_CAP: usize = 60_000;
+/// How long a search inside the files runs before it stops with what it has
+const SEARCH_TIME_CAP: Duration = Duration::from_secs(12);
+/// How much of a line is shown around a match. A minified file is one line
+/// the width of a book
+const SHOWN: usize = 160;
+
+/// The words as the search reads them, or why they cannot be read
+pub fn matcher(ask: &Ask) -> Result<regex::Regex, String> {
+    let q = ask.q.trim();
+    if q.is_empty() {
+        return Err(String::new());
+    }
+    let body = if ask.regex { q.to_string() } else { regex::escape(q) };
+    let body = if ask.word { format!(r"\b(?:{body})\b") } else { body };
+    regex::RegexBuilder::new(&body)
+        .case_insensitive(!ask.case)
+        .size_limit(1 << 22)
+        .build()
+        .map_err(|e| crate::i18n::tp("err.files.bad_pattern", &[("why", &e.to_string())]))
+}
+
+/// File patterns, separated by commas or new lines, each read the way git
+/// and ripgrep read one: `*` is any part of a name, `**` any number of
+/// folders, `?` one character. A pattern with no slash in it names a file
+/// or a folder anywhere (`node_modules`, `*.rs`); one with a slash is a
+/// path from the folder's top (`src/**/*.ts`)
+pub fn patterns(list: &str) -> Vec<(bool, regex::Regex)> {
+    list.split([',', '\n'])
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            let p = p.replace('\\', "/");
+            let anchored = p.trim_end_matches('/').contains('/');
+            let p = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/');
+            let mut re = String::from("^");
+            let mut chars = p.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '*' if chars.peek() == Some(&'*') => {
+                        chars.next();
+                        if chars.peek() == Some(&'/') {
+                            chars.next();
+                            re.push_str("(?:.*/)?");
+                        } else {
+                            re.push_str(".*");
+                        }
+                    }
+                    '*' => re.push_str("[^/]*"),
+                    '?' => re.push_str("[^/]"),
+                    c => re.push_str(&regex::escape(&c.to_string())),
+                }
+            }
+            re.push('$');
+            regex::Regex::new(&re).ok().map(|r| (anchored, r))
+        })
+        .collect()
+}
+
+/// Whether `rel` is one of the files the patterns name: an anchored one is
+/// matched against the whole path or a folder it is under, the others
+/// against any one name along it
+fn named_by(rel: &str, pats: &[(bool, regex::Regex)]) -> bool {
+    pats.iter().any(|(anchored, re)| {
+        if *anchored {
+            // The path itself, or a folder it is under
+            let mut at = rel;
+            loop {
+                if re.is_match(at) {
+                    return true;
+                }
+                match at.rsplit_once('/') {
+                    Some((up, _)) => at = up,
+                    None => return false,
+                }
+            }
+        }
+        rel.split('/').any(|part| re.is_match(part))
+    })
+}
+
+/// Whether a file is looked in, by the patterns asked for
+pub fn kept(rel: &str, include: &[(bool, regex::Regex)], exclude: &[(bool, regex::Regex)]) -> bool {
+    (include.is_empty() || named_by(rel, include)) && !named_by(rel, exclude)
+}
+
+/// The places on one line, each with the line shown around it
+fn spots_on(line: &str, n: u32, re: &regex::Regex) -> Vec<Spot> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    re.find_iter(line)
+        .filter(|m| !m.as_str().is_empty())
+        .map(|m| {
+            let col = line[..m.start()].chars().count();
+            let len = m.as_str().chars().count();
+            let (text, at) = shown_around(line, col, len);
+            Spot { line: n, col: col as u32 + 1, len: len as u32, text, at: at as u32 }
+        })
+        .collect()
+}
+
+/// Enough of a line to recognise the place by, with the match in it: the
+/// line's start trimmed of its indent, and a long line cut around the match.
+/// Says where the match starts in what is shown
+fn shown_around(line: &str, col: usize, len: usize) -> (String, usize) {
+    let chars: Vec<char> = line.chars().collect();
+    let indent = chars.iter().take_while(|c| c.is_whitespace()).count().min(col);
+    let (mut start, mut end) = (indent, chars.len());
+    if end - start > SHOWN {
+        start = col.saturating_sub(SHOWN / 3).max(indent);
+        end = (start + SHOWN).max(col + len).min(chars.len());
+    }
+    let mut out = String::new();
+    let mut at = col - start;
+    if start > indent {
+        out.push('\u{2026}');
+        at += 1;
+    }
+    out.extend(&chars[start..end]);
+    if end < chars.len() {
+        out.push('\u{2026}');
+    }
+    (out, at)
+}
+
+/// Every place in the folder `root` the words are. `gone` says the search
+/// is no longer wanted (a newer one started): it stops at once
+pub fn search(root: &Path, ask: &Ask, gone: &(dyn Fn() -> bool + Sync)) -> Result<Spots, String> {
+    let re = matcher(ask)?;
+    let (include, exclude) = (patterns(&ask.include), patterns(&ask.exclude));
+    let (files, mut capped) = candidates_up_to(root, SEARCH_FILES_CAP);
+    let files: Vec<String> = files.into_iter().filter(|f| kept(f, &include, &exclude)).collect();
+    let started = Instant::now();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found = std::sync::atomic::AtomicUsize::new(0);
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let out = std::sync::Mutex::new(Vec::new());
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| {
+                use std::sync::atomic::Ordering::Relaxed;
+                loop {
+                    let i = next.fetch_add(1, Relaxed);
+                    let Some(rel) = files.get(i) else { break };
+                    if found.load(Relaxed) >= SPOTS_CAP || started.elapsed() > SEARCH_TIME_CAP || gone() {
+                        stopped.store(true, Relaxed);
+                        break;
+                    }
+                    let Some(text) = read_whole(&root.join(rel)) else { continue };
+                    let mut spots = Vec::new();
+                    for (n, line) in text.split('\n').enumerate() {
+                        spots.extend(spots_on(line, n as u32 + 1, &re));
+                    }
+                    if !spots.is_empty() {
+                        found.fetch_add(spots.len(), Relaxed);
+                        out.lock().unwrap_or_else(|e| e.into_inner()).push(FileSpots { path: rel.clone(), spots });
+                    }
+                }
+            });
+        }
+    });
+    capped |= stopped.into_inner();
+    Ok(trimmed(out.into_inner().unwrap_or_else(|e| e.into_inner()), capped))
+}
+
+/// The files in path order, cut at [`SPOTS_CAP`] places
+fn trimmed(mut files: Vec<FileSpots>, mut capped: bool) -> Spots {
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut total = 0;
+    let mut kept = Vec::new();
+    for mut f in files {
+        if total >= SPOTS_CAP {
+            capped = true;
+            break;
+        }
+        if total + f.spots.len() > SPOTS_CAP {
+            f.spots.truncate(SPOTS_CAP - total);
+            capped = true;
+        }
+        total += f.spots.len();
+        kept.push(f);
+    }
+    Spots { files: kept, total, capped }
+}
+
+/// A file's text when it is text and small enough for the editor to open:
+/// what a match is shown in, and opened at
+fn read_whole(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > READ_LIMIT {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    // Binary files have no lines to show, and a match inside one is a
+    // coincidence of bytes rather than something a person wrote
+    if bytes.iter().take(8192).any(|b| *b == 0) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The files under `root` worth looking in, up to `cap`, and whether the
+/// list was cut short: git's, else the walk
+fn candidates_up_to(root: &Path, cap: usize) -> (Vec<String>, bool) {
+    if let Some(mut list) = asked_git(root) {
+        let capped = list.len() > cap;
+        list.truncate(cap);
+        return (list, capped);
+    }
+    walked_up_to(root, cap)
+}
+
+// -- Opening a file by a few letters of its name -------------------------------
+
+/// How many files a list for opening one by name is read up to
+pub const QUICK_FILES_CAP: usize = 100_000;
+/// How long a folder's list of files is used again before it is read anew:
+/// the same few seconds a person types a name in, not long enough to miss a
+/// file they have just made
+const QUICK_FRESH: Duration = Duration::from_secs(15);
+
+type Listed = std::sync::Arc<(Vec<String>, bool)>;
+
+/// A folder's files, read again only when the last reading is older than
+/// [`QUICK_FRESH`]: every letter typed asks
+pub fn listing(key: &str, read: impl FnOnce() -> (Vec<String>, bool)) -> Listed {
+    static KEPT: std::sync::Mutex<Option<std::collections::HashMap<String, (Instant, Listed)>>> = std::sync::Mutex::new(None);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = kept.get_or_insert_with(Default::default);
+    kept.retain(|_, (at, _)| at.elapsed() < QUICK_FRESH);
+    if let Some((_, l)) = kept.get(key) {
+        return l.clone();
+    }
+    let l: Listed = std::sync::Arc::new(read());
+    kept.insert(key.to_string(), (Instant::now(), l.clone()));
+    l
+}
+
+/// This machine's files under `root`, for opening one by name
+pub fn quick_list(root: &Path) -> Listed {
+    listing(&root.display().to_string(), || candidates_up_to(root, QUICK_FILES_CAP))
+}
+
+/// How well the letters typed fit a path: `None` when they do not. Every
+/// word typed has to be in it, its letters in order; a word fits best whole
+/// in the file's name, then with its letters at the starts of words and
+/// side by side, and a shorter path beats a longer one
+pub fn fit(path: &str, query: &str) -> Option<i64> {
+    let low = path.to_lowercase();
+    let name_at = low.rfind('/').map_or(0, |i| i + 1);
+    let mut score = 0i64;
+    for word in query.split_whitespace() {
+        let word = word.to_lowercase();
+        score += fit_word(&low, path, name_at, &word)?;
+    }
+    Some(score - (path.chars().count() as i64) / 4)
+}
+
+fn fit_word(low: &str, orig: &str, name_at: usize, word: &str) -> Option<i64> {
+    let name = &low[name_at..];
+    if let Some(i) = name.find(word) {
+        // Whole in the name, best at its start
+        return Some(1000 + if i == 0 { 200 } else { 0 } - i as i64);
+    }
+    if let Some(i) = low.find(word) {
+        return Some(500 - i as i64 / 8);
+    }
+    // Letters in order, each placed where it fits best going forwards: the
+    // start of a word earns, letters side by side earn, a gap costs
+    let hay: Vec<char> = low.chars().collect();
+    let raw: Vec<char> = orig.chars().collect();
+    let mut at = 0usize;
+    let mut last: Option<usize> = None;
+    let mut score = 0i64;
+    for c in word.chars() {
+        let found = (at..hay.len()).find(|&i| hay[i] == c)?;
+        let starts = found == 0
+            || matches!(hay[found - 1], '/' | '_' | '-' | '.' | ' ')
+            || (raw.get(found).is_some_and(|ch| ch.is_uppercase()) && raw.get(found - 1).is_some_and(|ch| ch.is_lowercase()));
+        score += if starts { 12 } else { 0 };
+        score += match last {
+            Some(l) if l + 1 == found => 8,
+            Some(l) => -((found - l - 1).min(20) as i64),
+            None => 0,
+        };
+        if found >= name_at.min(hay.len()) {
+            score += 3;
+        }
+        last = Some(found);
+        at = found + 1;
+    }
+    Some(score)
+}
+
+/// The paths the letters fit best, best first, at most `limit`
+pub fn best_fits(paths: &[String], query: &str, limit: usize) -> Vec<String> {
+    let mut scored: Vec<(i64, &String)> = paths.iter().filter_map(|p| fit(p, query).map(|s| (s, p))).collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.len().cmp(&b.1.len())).then_with(|| a.1.cmp(b.1)));
+    scored.into_iter().take(limit).map(|(_, p)| p.clone()).collect()
+}
+
 /// The same two searches, on a folder that is on another machine.
 ///
 /// There is no walking a folder over there from here -- one listing is one
@@ -346,7 +715,7 @@ fn walked(root: &Path) -> (Vec<String>, bool) {
 /// set as well: git's, where there is a repository, and every file but git's
 /// own folder where there is not.
 pub mod far {
-    use super::{Found, Hit, SCAN_CAP, WALK_DEPTH, around, named};
+    use super::{Ask, FileSpots, Found, Hit, SCAN_CAP, Spots, WALK_DEPTH, around, kept, matcher, named, patterns, spots_on, trimmed};
     use crate::ssh::sh_quote;
 
     /// How much of the list of files is read back. Enough for `SCAN_CAP` paths
@@ -389,6 +758,13 @@ pub mod far {
         if needle.is_empty() {
             return Found { hits: Vec::new(), capped: false };
         }
+        let (files, capped) = listed(out, SCAN_CAP);
+        named(files, capped, &needle, limit)
+    }
+
+    /// What [`names_command`] printed, as the files there: up to `cap`, and
+    /// whether the list was cut short
+    pub fn listed(out: &str, cap: usize) -> (Vec<String>, bool) {
         let mut files: Vec<String> = out
             .split('\0')
             .filter(|p| !p.is_empty())
@@ -402,11 +778,68 @@ pub mod far {
         if capped {
             files.pop();
         }
-        if files.len() > SCAN_CAP {
-            files.truncate(SCAN_CAP);
+        if files.len() > cap {
+            files.truncate(cap);
             capped = true;
         }
-        named(files, capped, &needle, limit)
+        (files, capped)
+    }
+
+    /// What to run there to find every place the words are: every matching
+    /// line of every file, with the same choices a search here has. One line
+    /// more than `limit` is asked for, which is how a list that went on is
+    /// told from one that ended exactly there. A pattern of files is applied
+    /// to what comes back
+    pub fn spots_command(root: &str, ask: &Ask, limit: usize) -> String {
+        let mut flags = String::from("-I -n -H --null");
+        if !ask.case {
+            flags.push_str(" -i");
+        }
+        if ask.word {
+            flags.push_str(" -w");
+        }
+        flags.push_str(if ask.regex { " -E" } else { " -F" });
+        format!(
+            "cd {} && {} | xargs -0 grep {flags} -e {} -- 2>/dev/null | head -n {}",
+            sh_quote(root),
+            listing(),
+            sh_quote(ask.q.trim()),
+            limit + 1
+        )
+    }
+
+    /// What it printed -- a path, a zero byte, then the line number and the
+    /// line -- as the same places a search here finds. Where on the line is
+    /// worked out here, by the same reading of the words
+    pub fn spots(out: &str, ask: &Ask, limit: usize) -> Result<Spots, String> {
+        let re = matcher(ask)?;
+        let (include, exclude) = (patterns(&ask.include), patterns(&ask.exclude));
+        let mut files: Vec<FileSpots> = Vec::new();
+        let mut lines = 0usize;
+        let mut capped = false;
+        for row in out.lines() {
+            let Some((path, rest)) = row.split_once('\0') else { continue };
+            let Some((n, line)) = rest.split_once(':') else { continue };
+            let Ok(n) = n.parse::<u32>() else { continue };
+            lines += 1;
+            if lines > limit {
+                capped = true;
+                break;
+            }
+            let path = path.strip_prefix("./").unwrap_or(path);
+            if !kept(path, &include, &exclude) {
+                continue;
+            }
+            let spots = spots_on(line, n, &re);
+            if spots.is_empty() {
+                continue;
+            }
+            match files.last_mut().filter(|f| f.path == path) {
+                Some(f) => f.spots.extend(spots),
+                None => files.push(FileSpots { path: path.to_string(), spots }),
+            }
+        }
+        Ok(trimmed(files, capped))
     }
 
     /// What to run there to find files with this text inside them: the first
@@ -487,6 +920,100 @@ fn read_head(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ask(q: &str) -> Ask {
+        Ask { q: q.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn the_words_are_read_as_asked() {
+        let plain = matcher(&ask("a.b")).unwrap();
+        assert!(plain.is_match("A.B") && !plain.is_match("axb"), "plain words, either case");
+        let case = matcher(&Ask { case: true, ..ask("Foo") }).unwrap();
+        assert!(case.is_match("Foo") && !case.is_match("foo"));
+        let word = matcher(&Ask { word: true, ..ask("log") }).unwrap();
+        assert!(word.is_match("a log here") && !word.is_match("catalog"));
+        let re = matcher(&Ask { regex: true, ..ask("fn \\w+_test") }).unwrap();
+        assert!(re.is_match("fn a_test()"));
+        assert!(matcher(&Ask { regex: true, ..ask("(") }).is_err(), "a broken pattern says so");
+        assert!(matcher(&ask("  ")).is_err());
+    }
+
+    #[test]
+    fn file_patterns_name_files_and_folders() {
+        let inc = patterns("*.rs, docs/**");
+        assert!(kept("src/main.rs", &inc, &[]));
+        assert!(kept("docs/a/b.md", &inc, &[]));
+        assert!(!kept("src/a.md", &inc, &[]));
+        let exc = patterns("node_modules\ntarget/");
+        assert!(!kept("web/node_modules/x/index.js", &[], &exc), "a name with no slash is a folder anywhere");
+        assert!(!kept("target/debug/x", &[], &exc));
+        assert!(kept("src/target.rs", &[], &exc), "only the name, not part of one");
+        let deep = patterns("src/**/*.ts");
+        assert!(kept("src/a/b/c.ts", &deep, &[]) && kept("src/c.ts", &deep, &[]) && !kept("lib/c.ts", &deep, &[]));
+    }
+
+    #[test]
+    fn every_place_on_a_line_is_found_and_shown() {
+        let re = matcher(&ask("ab")).unwrap();
+        let s = spots_on("    xx ab yy AB\r", 7, &re);
+        assert_eq!(s.len(), 2);
+        assert_eq!((s[0].line, s[0].col, s[0].len), (7, 8, 2));
+        assert_eq!(s[0].text, "xx ab yy AB", "the indent and the line's end are not shown");
+        assert_eq!(&s[0].text[s[0].at as usize..s[0].at as usize + 2], "ab");
+        let long = format!("{}needle{}", "x".repeat(500), "y".repeat(500));
+        let s = spots_on(&long, 1, &matcher(&ask("needle")).unwrap());
+        let shown: Vec<char> = s[0].text.chars().collect();
+        assert!(shown.len() <= SHOWN + 2 && shown[0] == '\u{2026}');
+        assert_eq!(shown[s[0].at as usize..s[0].at as usize + 6].iter().collect::<String>(), "needle");
+        assert_eq!(s[0].col, 501);
+    }
+
+    #[test]
+    fn a_folder_is_searched_through_every_match_and_pattern() {
+        let dir = std::env::temp_dir().join(format!("sk-spots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("skip")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "one hit\nhit two hit\n").unwrap();
+        std::fs::write(dir.join("skip/b.rs"), "hit\n").unwrap();
+        std::fs::write(dir.join("c.bin"), b"hit\0\0").unwrap();
+        let found = search(&dir, &Ask { exclude: "skip".into(), ..ask("hit") }, &|| false).unwrap();
+        assert_eq!(found.files.len(), 1, "{found:?}");
+        assert_eq!(found.files[0].path, "src/a.rs");
+        assert_eq!(found.total, 3, "every match, not the first of each file");
+        assert!(!found.capped);
+        let stopped = search(&dir, &ask("hit"), &|| true).unwrap();
+        assert!(stopped.capped && stopped.total == 0, "a search no longer wanted stops");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_few_letters_find_the_file_meant() {
+        let paths: Vec<String> = ["src/runtime.rs", "src/routine.rs", "docs/readme.md", "crates/core/src/files.rs", "src/run_time_tests.rs"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(best_fits(&paths, "routine", 3)[0], "src/routine.rs");
+        assert_eq!(best_fits(&paths, "runtime", 3)[0], "src/runtime.rs", "whole in the name beats letters spread out");
+        assert_eq!(best_fits(&paths, "core files", 3), vec!["crates/core/src/files.rs".to_string()], "every word has to fit");
+        assert_eq!(best_fits(&paths, "rtt", 5)[0], "src/run_time_tests.rs", "letters at the starts of words");
+        assert!(best_fits(&paths, "zzz", 5).is_empty());
+    }
+
+    #[test]
+    fn what_another_machine_found_reads_as_places() {
+        let out = "./src/a.rs\x003:let hit = 1; // hit\nsrc/b.md\x0010:no match here for the words\nskip/c.rs\x001:hit\n";
+        let s = far::spots(out, &Ask { exclude: "skip".into(), ..ask("hit") }, 100).unwrap();
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files[0].path, "src/a.rs");
+        assert_eq!(s.total, 2);
+        assert_eq!((s.files[0].spots[0].line, s.files[0].spots[0].col), (3, 5));
+        let cut = far::spots(out, &ask("hit"), 1).unwrap();
+        assert!(cut.capped, "a list that went past the limit says so");
+        let cmd = far::spots_command("/w", &Ask { word: true, regex: true, case: true, ..ask("a b") }, 10);
+        assert!(cmd.contains(" -w") && cmd.contains(" -E") && !cmd.contains(" -i") && cmd.contains("head -n 11"), "{cmd}");
+    }
 
     /// A new name stays in the folder the file is in, and a name that would
     /// put it somewhere else is not a name

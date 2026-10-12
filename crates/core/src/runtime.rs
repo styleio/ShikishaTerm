@@ -10725,6 +10725,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
+            // Every place the words are, and a file by a few letters of its
+            // name: on a thread, on this machine as on another
+            if act == "spots" || act == "quick" {
+                files_look(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx);
+                continue;
+            }
             // An editor showing held text reads it from here
             let held = views.answer(&panel, &act, &args);
             if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
@@ -17950,6 +17956,118 @@ fn write_reply(panel: &str, path: &str, bytes: &[u8], args: &serde_json::Value, 
 /// How long a search on another machine may take. It is that machine walking
 /// its own folder, and a big one takes a while
 const FAR_SEARCH_WAIT_MS: u64 = 30_000;
+
+/// How many files a list for opening one by a few letters of its name shows
+const QUICK_SHOWN: usize = 60;
+
+/// The newest search of each panel, by number: a search that is no longer the
+/// newest stops, and its answer is not sent
+fn newest_search(panel: &str, seq: u64) -> impl Fn() -> bool + Sync + Send + 'static {
+    static NEWEST: std::sync::Mutex<Option<std::collections::HashMap<String, std::sync::Arc<std::sync::atomic::AtomicU64>>>> = std::sync::Mutex::new(None);
+    let mut all = NEWEST.lock().unwrap_or_else(|e| e.into_inner());
+    let cell = all.get_or_insert_with(Default::default).entry(panel.to_string()).or_default().clone();
+    cell.fetch_max(seq, std::sync::atomic::Ordering::Relaxed);
+    move || cell.load(std::sync::atomic::Ordering::Relaxed) > seq
+}
+
+/// Every place the words are in a panel's folder ("spots"), and the files a
+/// few letters of a name fit ("quick"): looked for on a thread, here or on the
+/// machine the folder is on, and answered through `far` like the work done
+/// over there. A search a newer one of the same panel has replaced stops,
+/// and says nothing
+fn files_look(
+    panel: &str,
+    act: &str,
+    args: &serde_json::Value,
+    surfaces: &[Surface],
+    tabs: &[Tab],
+    caps: &crate::caps::Capabilities,
+    far: &std::sync::mpsc::Sender<FarFiles>,
+) {
+    let seq = args.get("seq").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let tx = far.clone();
+    let (panel, act) = (panel.to_string(), act.to_string());
+    let send = move |js: serde_json::Value| {
+        let _ = tx.send(FarFiles { key: String::new(), path: String::new(), js: Some(js.to_string()), stamp: None, asked: Instant::now(), polled: false });
+    };
+    let fail = |e: String| serde_json::json!({"act": act, "panel": panel, "ok": false, "seq": seq, "error": e});
+    let place = match files_at(&panel, surfaces, tabs) {
+        Some(p) => p,
+        None => return send(fail(i18n::t("err.files.no_folder"))),
+    };
+    // Reading every file's name and contents on another machine is reading,
+    // asked of the same table a listing and a read are
+    if matches!(place, FilesAt::There { .. }) {
+        for name in ["sftp_ls", "sftp_read"] {
+            if !caps.allows(name, grants::Subject::Human) {
+                return send(fail(i18n::tp("err.hooks.not_permitted", &[("name", name), ("who", &i18n::t("grant.who.human"))])));
+            }
+        }
+    }
+    // Numbered per panel and per kind: a search inside the files and the list
+    // of files by name are asked side by side, each with numbers of its own
+    let gone = newest_search(&format!("{panel}\0{act}"), seq);
+    if act == "spots" {
+        let ask: crate::files::Ask = serde_json::from_value(args.clone()).unwrap_or_default();
+        if ask.q.trim().is_empty() {
+            return send(serde_json::json!({"act": act, "panel": panel, "ok": true, "seq": seq, "files": [], "total": 0, "capped": false}));
+        }
+        std::thread::spawn(move || {
+            let found = match &place {
+                FilesAt::Here(root) => crate::files::search(root, &ask, &gone),
+                FilesAt::There { at, root } => crate::files::matcher(&ask).and_then(|_| {
+                    let command = crate::files::far::spots_command(root, &ask, crate::files::SPOTS_CAP);
+                    match crate::elsewhere::exec(at, &command, FAR_SEARCH_WAIT_MS) {
+                        Ok(ran) if ran.ok() || ran.out.trim().is_empty() => crate::files::far::spots(&ran.out, &ask, crate::files::SPOTS_CAP),
+                        Ok(ran) => Err(ran.said()),
+                        Err(e) => Err(format!("{e:#}")),
+                    }
+                }),
+            };
+            if gone() {
+                return;
+            }
+            send(match found {
+                Ok(s) => serde_json::json!({"act": act, "panel": panel, "ok": true, "seq": seq, "files": s.files, "total": s.total, "capped": s.capped}),
+                Err(e) => serde_json::json!({"act": act, "panel": panel, "ok": false, "seq": seq, "error": e}),
+            });
+        });
+        return;
+    }
+    let q = args.get("q").and_then(serde_json::Value::as_str).unwrap_or_default().trim().to_string();
+    std::thread::spawn(move || {
+        let listed = match &place {
+            FilesAt::Here(root) => Ok(crate::files::quick_list(root)),
+            FilesAt::There { at, root } => {
+                let key = format!("{}\0{root}", at.address());
+                let command = crate::files::far::names_command(root);
+                // Read there once for the few seconds a name is typed in
+                let mut failed = None;
+                let l = crate::files::listing(&key, || match crate::elsewhere::exec(at, &command, FAR_SEARCH_WAIT_MS) {
+                    Ok(ran) => crate::files::far::listed(&ran.out, crate::files::QUICK_FILES_CAP),
+                    Err(e) => {
+                        failed = Some(format!("{e:#}"));
+                        (Vec::new(), false)
+                    }
+                });
+                match failed {
+                    Some(e) => Err(e),
+                    None => Ok(l),
+                }
+            }
+        };
+        if gone() {
+            return;
+        }
+        send(match listed {
+            Ok(l) => {
+                let paths = if q.is_empty() { Vec::new() } else { crate::files::best_fits(&l.0, &q, QUICK_SHOWN) };
+                serde_json::json!({"act": act, "panel": panel, "ok": true, "seq": seq, "q": q, "paths": paths, "capped": l.1, "count": l.0.len()})
+            }
+            Err(e) => serde_json::json!({"act": act, "panel": panel, "ok": false, "seq": seq, "error": e}),
+        });
+    });
+}
 
 /// What the column's file list and the editor asked of a folder on another
 /// machine.

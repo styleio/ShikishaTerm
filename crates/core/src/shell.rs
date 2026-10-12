@@ -221,6 +221,31 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* The line a search matched, under the file it is in */
   #filepanel .fhit { padding:0 10px 4px 32px; color:var(--faint); font-size:11px;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Searching inside: how the words are read, and which files are looked
+     in, under the box. The choices are the ones every editor has, drawn as
+     their usual marks */
+  #filepanel .fopts { flex:0 0 auto; display:flex; flex-wrap:wrap; align-items:center; gap:var(--s1);
+    padding:0 var(--s2) var(--s2); border-bottom:1px solid var(--line); }
+  #filepanel .fopts[hidden] { display:none; }
+  #filepanel .fopts button.opt { min-width:28px; height:24px; padding:0 6px; font-family:var(--mono); font-size:11.5px;
+    border-radius:var(--r-chip); border:1px solid var(--line); background:none; color:var(--muted); cursor:pointer; }
+  #filepanel .fopts button.opt.on { color:var(--text); border-color:var(--brand); background:color-mix(in srgb, var(--brand) 14%, transparent); }
+  #filepanel .fopts details { flex:1 1 100%; }
+  #filepanel .fopts summary { font-size:11.5px; color:var(--dim); cursor:pointer; padding:2px 0; }
+  #filepanel .fopts details > div { display:flex; flex-direction:column; gap:var(--s1); padding-top:var(--s1); }
+  #filepanel .fopts input { height:28px; padding:0 var(--s3); border:1px solid var(--edge); border-radius:var(--r-ctl);
+    background:var(--bg); color:var(--text); font-family:var(--mono); font-size:12px; min-width:0; }
+  #filepanel .fopts input:focus { outline:none; border-color:var(--brand); }
+  /* Every place in a file, under it: the line number, then the line with
+     the words lit */
+  #filepanel .frow .cnt { flex:0 0 auto; margin-left:auto; padding-left:var(--s2); color:var(--faint);
+    font-size:11px; font-variant-numeric:tabular-nums; }
+  #filepanel .fspot { display:flex; gap:var(--s2); padding:2px 10px 2px 30px; min-height:22px; align-items:center;
+    font-family:var(--mono); font-size:11.5px; color:var(--dim); cursor:pointer; white-space:nowrap; overflow:hidden; }
+  #filepanel .fspot:hover { background:var(--hover); }
+  #filepanel .fspot .ln { flex:0 0 auto; min-width:3ch; text-align:right; color:var(--faint); font-variant-numeric:tabular-nums; }
+  #filepanel .fspot .tx { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+  #filepanel .fspot mark { background:color-mix(in srgb, var(--brand) 30%, transparent); color:var(--text); border-radius:2px; }
   :is(#filepanel, #convopanel) .fsay { flex:0 0 auto; padding:var(--s2) 10px; color:var(--faint);
     font-size:11.5px; border-top:1px solid var(--line); }
   /* ── The console ───────────────────────────────
@@ -4165,6 +4190,8 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #palette .pgrp { flex:none; font-size:10px; color:var(--brand); text-transform:uppercase;
     width:64px; letter-spacing:.5px; }
   #palette .plabel { color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* Where a file is, after its name: the part that gives way */
+  #palette .psub { color:var(--faint); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   #convopanel .vrow:hover, #past .vrow:hover { background:var(--raise); border-color:var(--line); }
   #convopanel .vrow .vr1, #past .vrow .vr1 { display:flex; gap:var(--s2); align-items:baseline; }
   #convopanel .vrow .vprog, #past .vrow .vprog { color:var(--brand); font-size:11px; flex:none; }
@@ -13968,6 +13995,19 @@ document.addEventListener("keydown", e => {
   else send({kind:"seek", what: e.shiftKey ? "prev" : "next"});
 }, true);
 
+// Ctrl+P opens a file of the folder in front by a few letters of its name.
+// A terminal's programs use Ctrl+P themselves (the command before), so there
+// it is Ctrl+Shift+P -- the same trade Ctrl+F makes above
+document.addEventListener("keydown", e => {
+  if (e.isComposing || e.altKey) return;
+  const term = (activeTab() || {}).kind === "pty";
+  if (!(appKey(e) && e.shiftKey === term && e.code === "KeyP")) return;
+  if (covering() || directKeyOf(e) || !folderTab()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  window.__openPalette("files");
+}, true);
+
 // The bar that asks the person something about a page (shikisha.browser_ask).
 //
 // Drawn by the board under the page it is about, never inside the page: the
@@ -15439,10 +15479,21 @@ function editHeard(d) {
     drawEdit();
     ED.reading = false;
     if (edAce) {
+      // The same file read again -- written by somebody else, the AI next
+      // door most often -- keeps the place it was being read at. Putting the
+      // text in moves the cursor to its end
+      const again = ED.shown === ED.path && !ED.goto
+        ? {pos: edAce.getCursorPosition(), top: edAce.session.getScrollTop()} : null;
       // Setting the text is not the person typing, so it must not look like it
       edAce.session.doc.setValue(draft ? draft.text : ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
+      if (again) {
+        edAce.moveCursorToPosition(again.pos);
+        edAce.clearSelection();
+        edAce.session.setScrollTop(again.top);
+      }
+      ED.shown = ED.path;
       ED.dirty = draft ? draft.text !== ED.text : false;
       drawEdit();
       edGotoNow();
@@ -15763,6 +15814,9 @@ function drawEdit() {
       edAce.session.doc.setValue(ED.text);
       edAce.session.getUndoManager().reset();
       edAce.clearSelection();
+      // Which file's text the editor holds: a later reading of the same one
+      // keeps its place (see the reading above)
+      ED.shown = ED.path;
       // After the text, never before: putting text in moves the cursor
       edGotoNow();
     }
@@ -16820,6 +16874,11 @@ const FS = {
   q: "", mode: "name",
   hits: null,       // search results, or null while the tree is what is shown
   capped: false, said: "", bad: false,
+  // Searching inside: how the words are read and which files are looked in,
+  // what came back (every place, by file), the number of the newest search
+  // asked, and the files whose places are folded away
+  opt: {case: false, word: false, regex: false, include: "", exclude: ""},
+  spots: null, seq: 0, fold: {},
   // Bumped by everything that changes what the list would say. The page is
   // redrawn several times a second; a tree of a thousand rows rebuilt that
   // often costs the window its smoothness, and takes the row out from under
@@ -16840,6 +16899,18 @@ window.__files = function (d) {
   if (d.act === "read" || d.act === "write") { editHeard(d); return; }
   if (d.act === "image") { mdPictureHeard(d); return; }
   if (d.act === "templates" || d.act === "newmd") { filesNewMdHeard(d); return; }
+  // A file by a few letters of its name, for the list that opens one
+  if (d.act === "quick") { palQuickHeard(d); return; }
+  // Every place the words are: only the newest search's answer is drawn
+  if (d.act === "spots") {
+    if (d.seq !== FS.seq || (d.panel && FS.panel && d.panel !== FS.panel)) return;
+    FS.spots = d.ok ? d : null;
+    FS.said = d.ok ? "" : (d.error || "");
+    FS.bad = !d.ok;
+    FS.rev++;
+    drawFiles();
+    return;
+  }
   // A folder on another machine answers later than it was asked, and by then
   // the column may be showing another folder: an answer about the last one is
   // not put into this one
@@ -16879,7 +16950,7 @@ function filesChanged(d) {
   if (d.act === "mkdir" && at) FS.open[at] = true;
   delete FS.asked[at];
   filesLoad(at);
-  if (FS.q) filesAsk(FS.mode === "name" ? "find" : "grep", {q: FS.q});
+  if (FS.q) filesSearchNow();
   drawFiles();
 }
 // The name a copy beside `name` is given: "report - Copy.txt", then
@@ -17024,7 +17095,7 @@ function filesNewMdHeard(d) {
 // A file opened where there is room to read it
 function filesOpen(path) {
   const t = folderTab();
-  if (t) send({kind: "editopen", panel: t.id || t.name || "", path});
+  if (t) { send({kind: "editopen", panel: t.id || t.name || "", path}); quickRemember(t, path); }
   // On a phone the list is covering the very thing it just opened
   if (phoneWidth()) { sideStoodAside = true; drawSide(); }
 }
@@ -17046,10 +17117,16 @@ function filesLoad(at) {
 // keystroke is a walk of the folder
 function filesSearchSoon() {
   clearTimeout(fsTimer);
-  fsTimer = setTimeout(() => {
-    if (!FS.q) { FS.hits = null; FS.capped = false; drawFiles(); return; }
-    filesAsk(FS.mode === "name" ? "find" : "grep", {q: FS.q});
-  }, 250);
+  fsTimer = setTimeout(filesSearchNow, 250);
+}
+// The search the box and the choices say, asked now. Inside the files, each
+// is numbered: the newest is the only one drawn, and the app stops the rest
+function filesSearchNow() {
+  clearTimeout(fsTimer);
+  if (!FS.q) { FS.hits = null; FS.spots = null; FS.capped = false; FS.rev++; drawFiles(); return; }
+  if (FS.mode === "name") { filesAsk("find", {q: FS.q}); return; }
+  FS.seq++;
+  filesAsk("spots", Object.assign({q: FS.q, seq: FS.seq}, FS.opt));
 }
 function filesBuild(box) {
   box.textContent = "";
@@ -17064,13 +17141,36 @@ function filesBuild(box) {
                              ["text", T["files.find.text"] || "Inside"]]) {
     modes[id] = el("button", {onclick: () => {
       FS.mode = id;
+      FS.hits = null; FS.spots = null;
       FS.rev++;
       drawFiles();
-      if (FS.q) filesAsk(id === "name" ? "find" : "grep", {q: FS.q});
+      if (FS.q) filesSearchNow();
     }}, label);
     mode.append(modes[id]);
   }
   search.append(mode);
+  // How the words are read, and which files are looked in: for searching
+  // inside them. Each choice asks again at once
+  const opts = el("div", {class: "fopts"});
+  const optBtn = {};
+  for (const [id, mark] of [["case", "Aa"], ["word", "ab"], ["regex", ".*"]]) {
+    optBtn[id] = el("button", {class: "opt", type: "button", title: T["files.opt." + id] || "",
+      "aria-label": T["files.opt." + id] || "", onclick: () => {
+        FS.opt[id] = !FS.opt[id];
+        drawFiles();
+        if (FS.q) filesSearchNow();
+      }}, mark);
+    opts.append(optBtn[id]);
+  }
+  const globIn = (key, ph) => {
+    const i = el("input", {type: "text", autocomplete: "off", spellcheck: "false", placeholder: ph});
+    i.value = FS.opt[key];
+    i.oninput = () => { FS.opt[key] = i.value; if (FS.q) filesSearchSoon(); };
+    return i;
+  };
+  const which = el("details", {}, el("summary", {}, T["files.opt.files"] || ""),
+    el("div", {}, globIn("include", T["files.opt.include.ph"] || ""), globIn("exclude", T["files.opt.exclude.ph"] || "")));
+  opts.append(which);
   const list = el("div", {class: "flist"});
   // Below the rows, where no row is: what can be made in the working folder
   // itself, which has no row of its own to open a list on. A held press says
@@ -17086,8 +17186,50 @@ function filesBuild(box) {
   list.addEventListener("contextmenu", blank);
   holdOpens(list, blank);
   const say = el("div", {class: "fsay"});
-  box.append(search, list, say);
-  fsUi = {q, modes, list, say};
+  box.append(search, opts, list, say);
+  fsUi = {q, modes, list, say, opts, optBtn, which};
+}
+// Every place the words are, by file: the file (where it is, how many
+// places, folded away or not) and under it each line with the words lit.
+// Pressing a line opens the file at that place
+function filesSpots(into) {
+  const r = FS.spots;
+  if (!r) return;
+  for (const f of r.files) {
+    const cut = f.path.lastIndexOf("/");
+    const folded = !!FS.fold[f.path];
+    const head = el("div", {class: "frow file", title: f.path, onclick: () => {
+      FS.fold[f.path] = !folded;
+      FS.rev++;
+      drawFiles();
+    }}, el("span", {class: "car"}, folded ? "\u25b8" : "\u25be"));
+    if (cut >= 0) {
+      const folder = f.path.slice(0, cut + 1);
+      head.append(el("span", {class: "dir"}, folder.length > 30 ? "\u2026" + folder.slice(-29) : folder));
+    }
+    head.append(el("span", {class: "nm"}, f.path.slice(cut + 1)), el("span", {class: "cnt"}, String(f.spots.length)));
+    dragFile(head, f.path);
+    const menu = e => { e.preventDefault(); filesRowMenu(head, f.path.slice(cut + 1), f.path, false, e); };
+    head.addEventListener("contextmenu", menu);
+    holdOpens(head, menu);
+    into.append(head);
+    if (folded) continue;
+    for (const s of f.spots) {
+      const chars = Array.from(s.text);
+      const tx = el("span", {class: "tx"},
+        chars.slice(0, s.at).join(""),
+        el("mark", {}, chars.slice(s.at, s.at + s.len).join("")),
+        chars.slice(s.at + s.len).join(""));
+      into.append(el("div", {class: "fspot", title: s.text, onclick: () => filesOpenAt(f.path, s.line, s.col)},
+        el("span", {class: "ln"}, String(s.line)), tx));
+    }
+  }
+}
+// A file opened at a place in it: the line, and where on it
+function filesOpenAt(path, line, col) {
+  ED.goto = line ? {path, line, col: col || 1} : null;
+  filesOpen(path);
+  edGotoNow();
 }
 // One row of the tree. `depth` is how far in it sits; the step is the tab
 // bar's, so the two lists read as one idea
@@ -17140,10 +17282,16 @@ function drawFiles() {
   const u = fsUi;
   u.q.value === FS.q || (document.activeElement === u.q ? null : (u.q.value = FS.q));
   for (const id in u.modes) u.modes[id].className = FS.mode === id ? "on" : "";
+  u.opts.hidden = FS.mode !== "text";
+  for (const id in u.optBtn) u.optBtn[id].classList.toggle("on", !!FS.opt[id]);
+  // A filter in use keeps its box open, so it is not forgotten
+  if ((FS.opt.include || FS.opt.exclude) && !u.which.open) u.which.open = true;
   if (u.list.dataset.rev !== String(FS.rev)) {
     u.list.dataset.rev = String(FS.rev);
     u.list.textContent = "";
-    if (FS.hits) {
+    if (FS.mode === "text" && FS.q) {
+      filesSpots(u.list);
+    } else if (FS.hits) {
       for (const h of FS.hits) {
         const cut = h.path.lastIndexOf("/");
         u.list.append(filesRow(cut < 0 ? h.path : h.path.slice(cut + 1), h.path, false, 0, h));
@@ -17155,9 +17303,13 @@ function drawFiles() {
   }
   // What the list cannot say for itself: nothing matched, a search that
   // stopped early, or -- with nothing else to say -- what a press does
-  const empty = FS.hits ? !FS.hits.length : !((FS.rows[""] || []).length);
+  const inside = FS.mode === "text" && FS.q;
+  const empty = inside ? !!FS.spots && !FS.spots.total : FS.hits ? !FS.hits.length : !((FS.rows[""] || []).length);
   u.say.textContent = FS.said ? FS.said
-    : empty ? (FS.hits ? (T["files.none"] || "") : (T["files.empty"] || ""))
+    : inside && !FS.spots ? (T["files.spots.looking"] || "")
+    : empty ? (FS.hits || inside ? (T["files.none"] || "") : (T["files.empty"] || ""))
+    : inside ? (T[FS.spots.capped ? "files.spots.capped" : "files.spots.count"] || "")
+      .replaceAll("{n}", FS.spots.total.toLocaleString()).replaceAll("{files}", FS.spots.files.length.toLocaleString())
     : FS.capped ? (T["files.capped"] || "")
     : (T["files.hint"] || "");
   u.say.style.color = FS.bad ? "var(--stop)" : "";
@@ -21440,17 +21592,82 @@ function sameDir(a, b) {
 // things a person reaches for -- go somewhere, do something, run one of their
 // own actions -- filtered as they type, run on Enter or a click.
 let palItems = [], palSel = 0;
-window.__openPalette = function () {
+// "files": the same list, opening a file of the folder in front by a few
+// letters of its name (Ctrl+P). Anything else: the commands
+let palMode = "commands";
+window.__openPalette = function (mode) {
   const v = document.getElementById("palette");
   if (!v) return;
+  palMode = mode === "files" ? "files" : "commands";
   v.hidden = false;
-  v.querySelector(".vtitle").textContent = T["palette.title"] || "COMMANDS";
+  const files = palMode === "files";
+  v.querySelector(".vtitle").textContent = files ? (T["quick.files.title"] || "") : (T["palette.title"] || "COMMANDS");
   const q = document.getElementById("pq");
-  q.placeholder = T["palette.placeholder"] || "Type a command…";
+  q.placeholder = files ? (T["quick.files.placeholder"] || "") : (T["palette.placeholder"] || "Type a command…");
   q.value = "";
   buildPalette("");
   setTimeout(() => q.focus(), 30);
 };
+// Opening a file by a few letters of its name. The app holds the folder's
+// list and says which files fit best (`files::best_fits`); the files opened
+// here last are kept on this device, per folder, and come first
+const QUICK_KEPT = 30;
+const palQuick = {seq: 0, line: 0, col: 0};
+function quickFolderKey(t) {
+  const g = t ? ((S && S.groups) || [])[t.group] : null;
+  return g ? (g.key || g.folder || "") : "";
+}
+function quickRecent(t) {
+  try { return JSON.parse(localStorage.getItem("sk.quick." + quickFolderKey(t)) || "[]"); } catch { return []; }
+}
+function quickRemember(t, path) {
+  const key = quickFolderKey(t);
+  if (!key) return;
+  const list = [path].concat(quickRecent(t).filter(p => p !== path)).slice(0, QUICK_KEPT);
+  try { localStorage.setItem("sk.quick." + key, JSON.stringify(list)); } catch {}
+}
+function quickItem(path, recent) {
+  const cut = path.lastIndexOf("/");
+  return {grp: recent ? "recent" : "file", label: path.slice(cut + 1), sub: cut < 0 ? "" : path.slice(0, cut),
+    run: () => filesOpenAt(path, palQuick.line, palQuick.col)};
+}
+function quickAsk(query) {
+  const t = folderTab();
+  if (!t) {
+    palItems = [{grp: "", label: T["quick.files.no_folder"] || "", run: () => {}}];
+    palSel = 0;
+    renderPalette();
+    return;
+  }
+  // "name:12" or "name:12:5" opens at that line, and that place on it
+  const m = /^(.*?)(?::(\d+))?(?::(\d+))?$/.exec(query.trim()) || [];
+  const q = (m[1] || "").trim();
+  palQuick.line = +(m[2] || 0);
+  palQuick.col = +(m[3] || 0);
+  palQuick.seq++;
+  if (!q) {
+    palItems = quickRecent(t).map(p => quickItem(p, true));
+    palSel = 0;
+    renderPalette();
+    return;
+  }
+  send({kind: "files", panel: t.id || t.name || "", act: "quick", args: {q, seq: palQuick.seq}});
+}
+function palQuickHeard(d) {
+  if (palMode !== "files" || d.seq !== palQuick.seq) return;
+  if (!d.ok) {
+    palItems = [{grp: "", label: d.error || "", run: () => {}}];
+  } else {
+    // What was opened here lately first, in the order the fit put it
+    const recent = new Set(quickRecent(folderTab()));
+    const paths = d.paths || [];
+    palItems = paths.filter(p => recent.has(p)).map(p => quickItem(p, true))
+      .concat(paths.filter(p => !recent.has(p)).map(p => quickItem(p, false)));
+    if (!palItems.length) palItems = [{grp: "", label: T["quick.files.none"] || "", run: () => {}}];
+  }
+  palSel = 0;
+  renderPalette();
+}
 function closePalette() {
   const v = document.getElementById("palette");
   if (v) v.hidden = true;
@@ -21469,6 +21686,8 @@ function paletteAll() {
   const out = [];
   out.push({grp:"go", label:T["tui.menu.settings"] || "Settings", run:() => openSettings()});
   out.push({grp:"go", label:T["tui.menu.vault"] || "Find past work", run:() => window.__openVault()});
+  // A file of the folder in front, by a few letters of its name (Ctrl+P)
+  if (folderTab()) out.push({grp:"go", label:T["quick.files.title"] || "", run:() => setTimeout(() => window.__openPalette("files"), 0)});
   for (const t of (S && S.tabs || [])) {
     out.push({grp:"tab", label:(T["palette.gototab"] || "Go to") + " " + t.name,
       run:() => send({kind:"select", tab:t.index})});
@@ -21494,6 +21713,7 @@ function paletteAll() {
   return out;
 }
 function buildPalette(query) {
+  if (palMode === "files") { quickAsk(query || ""); return; }
   const q = (query || "").trim().toLowerCase();
   const all = paletteAll();
   // Plain contains-match, in the order the groups were built -- predictable is
@@ -21511,7 +21731,8 @@ function renderPalette() {
   palItems.forEach((it, i) => {
     const row = el("div", {class:"prow" + (i === palSel ? " sel" : ""),
       onclick:() => { closePalette(); it.run(); }});
-    row.append(el("span", {class:"pgrp"}, grpName(it.grp)), el("span", {class:"plabel"}, it.label));
+    row.append(el("span", {class:"pgrp"}, it.grp ? grpName(it.grp) : ""), el("span", {class:"plabel"}, it.label));
+    if (it.sub) row.append(el("span", {class:"psub"}, it.sub));
     list.append(row);
   });
   const sel = list.children[palSel];

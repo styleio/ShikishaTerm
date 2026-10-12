@@ -124,6 +124,20 @@ else by its file name. `{{title}}`, `{{file}}`, `{{date}}` and `{{time}}` in a t
 in for the new file; anything else in braces is left as written. What is deleted from a folder on this PC goes to the recycle bin, and can be
 restored from there. What is deleted from a folder on another machine cannot be restored, and a folder with files in it cannot be deleted there.
 
+The search box over the list looks through the whole working folder: by file name with **Name**,
+and through what the files say with **Inside**. Inside lists every place the words are, grouped
+by file; press a line to open the file at it. The buttons under the box choose matching case
+(Aa), whole words (ab) and a regular expression (.*). **Files to look in** narrows the files
+(`*.rs, src/**`) or leaves some out (`dist, *.min.js`). The files looked in are the ones git
+keeps, and new ones it does not ignore (everything but `.git` in a folder git does not keep).
+A search stops at 1,000 places, and says so.
+
+**Ctrl+P** (**Ctrl+Shift+P** in a terminal tab, whose programs use Ctrl+P themselves) opens a
+file of the folder in view by part of its name. The letters need not be side by side (`rntm`
+finds `runtime.rs`); `name:12` opens it at line 12. With nothing typed, the files opened in
+that folder lately are listed. On a phone it is "Open a file" in the command palette, from the
+menu. Both searches and Ctrl+P work in a folder on another machine too.
+
 **A Markdown file** opens in the editor three ways, chosen at the top: **Text** (the file as it
 is written), **Visual** (edited as it reads, with a bar for headings, lists and links, and `/`
 for tables, code, diagrams and formulas) and **Preview** (read as it is drawn: tables, task
