@@ -93,7 +93,7 @@ fn day_number((y, m, d, _, _): (u16, u16, u16, u16, u16)) -> i64 {
 
 /// The local date and time of a moment, as year, month, day, hour, minute
 #[cfg(windows)]
-fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
+pub(crate) fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
     use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
     use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
     // 100-nanosecond steps since 1601
@@ -112,7 +112,7 @@ fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
 }
 
 #[cfg(not(windows))]
-fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
+pub(crate) fn local_at(epoch: u64) -> (u16, u16, u16, u16, u16) {
     let at = epoch as i64;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: as in `local_now`
@@ -1772,6 +1772,18 @@ struct Script {
     /// This script's environment table (hook functions are looked up from here)
     env: Table,
     defined: HashSet<String>,
+}
+
+/// A hook named after a time, as the loop that keeps the clock sees it
+#[derive(Debug, Clone)]
+pub struct Timed {
+    /// The script it is in, by the path it was loaded from
+    pub script: String,
+    pub hook: String,
+    pub when: crate::schedule::When,
+    /// The tabs it runs for, by number; empty for a desk's or the
+    /// program's script, which runs it once for no tab
+    pub tabs: Vec<usize>,
 }
 
 /// Where a hook resolves to. The more specific one wins (tab > desk > base)
@@ -4611,6 +4623,26 @@ impl HookEngine {
             source.push_str(&format!("function {hook}(tab, screen)\n{body}\nend\n"));
             found = true;
         }
+        // Hooks named after a time (`crate::schedule`): any file whose name
+        // says one, in the order the folder lists them
+        let mut timed: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "lua"))
+            .filter_map(|p| {
+                let stem = p.file_stem()?.to_string_lossy().into_owned();
+                crate::schedule::parse(&stem).map(|_| (stem, p))
+            })
+            .collect();
+        timed.sort();
+        for (hook, f) in timed {
+            let body = std::fs::read_to_string(&f)
+                .with_context(|| crate::i18n::tp("err.hooks.cannot_read", &[("path", &f.display().to_string())]))?;
+            source.push_str(&format!("function {hook}(tab)\n{body}\nend\n"));
+            found = true;
+        }
         // Browser hooks receive a page, not a tab
         for hook in PAGE_HOOK_NAMES {
             let f = dir.join(format!("{hook}.lua"));
@@ -4656,6 +4688,12 @@ impl HookEngine {
         for name in HOOK_NAMES.iter().chain(PAGE_HOOK_NAMES.iter()).chain([&STEP_HOOK]) {
             if env.get::<mlua::Function>(*name).is_ok() {
                 defined.insert(name.to_string());
+            }
+        }
+        // ...and every function named after a time, whatever the time
+        for (name, value) in env.clone().pairs::<String, mlua::Value>().flatten() {
+            if matches!(value, mlua::Value::Function(_)) && crate::schedule::parse(&name).is_some() {
+                defined.insert(name);
             }
         }
         self.scripts.push(Script {
@@ -5290,6 +5328,53 @@ end
             None => "on_done",
         };
         self.fire(hook, ctx, None);
+    }
+
+    /// Every hook named after a time, with the script it is in and the tabs
+    /// it runs for: the tabs that script is attached to, or none for a
+    /// desk's or the program's script -- which runs it once, for no tab
+    pub fn timed(&self) -> Vec<Timed> {
+        let mut out = Vec::new();
+        for (id, script) in self.scripts.iter().enumerate() {
+            let shared = self.attach.desk == Some(id) || self.attach.base == Some(id);
+            let mut tabs: Vec<usize> = self.attach.tabs.iter().filter(|(_, s)| **s == id).map(|(t, _)| *t).collect();
+            tabs.sort_unstable();
+            if !shared && tabs.is_empty() {
+                continue;
+            }
+            for hook in &script.defined {
+                if let Some(when) = crate::schedule::parse(hook) {
+                    out.push(Timed { script: script.path.clone(), hook: hook.clone(), when, tabs: if shared { Vec::new() } else { tabs.clone() } });
+                }
+            }
+        }
+        out.sort_by(|a, b| (&a.script, &a.hook).cmp(&(&b.script, &b.hook)));
+        out
+    }
+
+    /// Run a hook named after a time, for a tab or (`None`) for no tab:
+    /// a desk's script, whose `tab` is then index 0 with nothing in it
+    pub fn fire_timed(&mut self, script: &str, hook: &str, ctx: Option<&TabCtx>) {
+        let Some(id) = self.scripts.iter().position(|s| s.path == script && s.defined.contains(hook)) else {
+            return;
+        };
+        let nobody = TabCtx {
+            index: 0, name: String::new(), id: None, state: "WAIT".into(), profile: String::new(),
+            output: String::new(), chain_depth: 0, locked: false, is_model: false, reply: None,
+        };
+        let ctx = ctx.unwrap_or(&nobody);
+        self.current_origin.set(ctx.index);
+        self.subject.set(crate::grants::Subject::Human);
+        let result = (|| -> mlua::Result<()> {
+            let func: mlua::Function = self.scripts[id].env.get(hook)?;
+            let thread = self.lua.create_thread(func)?;
+            let tbl = self.make_tab_table(ctx)?;
+            self.resume_thread(thread, hook, ctx.index, MultiValue::from_vec(vec![Value::Table(tbl)]));
+            Ok(())
+        })();
+        if let Err(e) = result {
+            self.push_log(crate::i18n::tp("err.hooks.lua_error", &[("hook", hook), ("e", &format!("{e}"))]));
+        }
     }
 
     /// Fire a hook. extra is e.g. the screen text for on_question
@@ -8044,6 +8129,37 @@ mod tests {
         assert!(matches!(&cmds[0], Command::Log(m) if m == "hi tab1"), "the shared function can be used");
         assert!(matches!(&cmds[1], Command::SendKeys { keys, .. } if keys == "1\r"));
         assert_eq!(cmds.len(), 2, "the delete confirmation goes to a person, so nothing is sent");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file named after a time is a hook like the others, found by its
+    /// name; a tab's script runs it for that tab, a desk's for no tab
+    #[test]
+    fn files_named_after_a_time_are_hooks_the_clock_runs() {
+        let dir = std::env::temp_dir().join(format!("shikisha-timed-{}", crate::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("at_weekdays_0900.lua"), "shikisha.log('morning for ' .. tab.index)").unwrap();
+        std::fs::write(dir.join("every_30m.lua"), "shikisha.log('half hour')").unwrap();
+        std::fs::write(dir.join("at_2500.lua"), "shikisha.log('never')").unwrap();
+
+        let mut e = HookEngine::new().unwrap();
+        let id = e.load_path(&dir).unwrap();
+        e.set_tab(3, id);
+        let desk = e.load_source("desk", "function every_2h(tab) shikisha.log('desk ' .. tab.index) end").unwrap();
+        e.set_desk(desk);
+
+        let timed = e.timed();
+        let names: Vec<(&str, Vec<usize>)> = timed.iter().map(|t| (t.hook.as_str(), t.tabs.clone())).collect();
+        assert!(names.contains(&("at_weekdays_0900", vec![3])), "{names:?}");
+        assert!(names.contains(&("every_30m", vec![3])), "{names:?}");
+        assert!(names.contains(&("every_2h", vec![])), "a desk's timed hook is for no tab: {names:?}");
+        assert!(!names.iter().any(|(n, _)| *n == "at_2500"), "a time that is not one was taken for one");
+
+        let morning = timed.iter().find(|t| t.hook == "at_weekdays_0900").unwrap();
+        e.fire_timed(&morning.script, "at_weekdays_0900", Some(&ctx(3, "")));
+        e.fire_timed("desk", "every_2h", None);
+        let said: Vec<String> = e.drain_commands().into_iter().filter_map(|c| match c { Command::Log(m) => Some(m), _ => None }).collect();
+        assert_eq!(said, ["morning for 3", "desk 0"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -131,6 +131,10 @@ pub struct TabState {
     /// about reads as a message that was lost
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sending: Option<SendingState>,
+    /// The next time one of its hooks named after a time runs
+    /// (`crate::schedule`), as the clock on the wall reads it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed: Option<String>,
     /// Where this tab is: the branch, its pull request, the ports it opened.
     ///
     /// A different kind of thing from `status`, which is why it gets its own
@@ -2716,6 +2720,7 @@ impl TabState {
             // Filled in by `view::ui_state_of`: what is being typed into a tab
             // is the runtime's business, not the tab's
             sending: None,
+            timed: None,
             place: (t.place != crate::repo::Place::default()).then(|| PlaceState {
                 branch: t.place.branch.clone(),
                 pr: t.place.pr.clone(),
@@ -2860,6 +2865,7 @@ impl TabState {
             progress: None,
             // Nothing is typed into a page by this road
             sending: None,
+            timed: None,
             // A browser is not in a folder and starts nothing, so it has
             // nowhere to be, and nothing of its own to cost
             place: None,
@@ -3403,6 +3409,7 @@ mod tests {
             status: None,
             progress: None,
             sending: None,
+            timed: None,
             place: None,
             cost: None,
             readable: false,

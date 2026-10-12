@@ -1406,6 +1406,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      name in full weight, and a small mark that goes once the tab is opened */
   .tab.unread .nm, .tab.unread .nm.agent .who { color:var(--text); font-weight:700; }
   .tab .unreadmark { flex:none; width:7px; height:7px; border-radius:50%; background:var(--brand); margin-left:var(--s1); }
+  .tab .timed { flex:none; margin-left:var(--s1); font-size:10px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap; }
   /* Choosing one. The swatches are the colours picked from when nobody has,
      and the last square opens whatever the system offers */
   .swatches { display:flex; flex-wrap:wrap; gap:var(--s2); padding:6px 8px 8px; max-width:200px; }
@@ -8574,6 +8575,8 @@ function tabRow(t, g, deep, head) {
     serverMark(t.mark),
     t.locked ? el("span", {class:"lock"}, "\u{1F512}") : null,
     t.unread ? el("span", {class:"unreadmark", title:T["tui.unread"] || ""}) : null,
+    // When its automation next runs by the clock (at_0900.lua, every_30m.lua)
+    t.timed ? el("span", {class:"timed", title:(T["tui.timed"] || "").replaceAll("{at}", t.timed)}, "⏰ " + t.timed) : null,
     t.ai && t.since ? agoMark(t.since) : spark(t.activity));
   // Its settings are its own page, opened from here: the settings list no
   // longer carries every tab of every folder

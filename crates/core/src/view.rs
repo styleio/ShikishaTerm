@@ -693,6 +693,14 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
                         .iter()
                         .find(|(n, _)| *n == i + 1)
                         .map(|(_, s)| s.clone());
+                    // The next time one of its hooks named after a time runs
+                    ts.timed = ui
+                        .timed
+                        .iter()
+                        .filter(|(n, _)| *n == i + 1)
+                        .map(|(_, at)| *at)
+                        .min()
+                        .map(crate::hooks::local_clock_at);
                     ts
                 }),
                 Surface::Browser { key, name, .. } => {
@@ -1788,6 +1796,9 @@ pub struct Ui {
     /// each has got and how long it is. A long one takes seconds to go in
     /// (`send.rs`), and the composer says so while it does
     pub sending: Vec<(usize, crate::uistate::SendingState)>,
+    /// When each tab's next hook named after a time runs, by screen number,
+    /// in seconds since 1970 (`crate::schedule`)
+    pub timed: Vec<(usize, u64)>,
     /// Which file each editor is showing, by the editor's own name. The page
     /// asks for the contents itself, so it has to be told this -- and it has to
     /// survive a reload, which is why it travels in the state rather than

@@ -2535,6 +2535,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // tab or switching desks moves the numbers out from under it
     let mut busy_again: std::collections::HashMap<u64, u64> =
         std::collections::HashMap::new();
+    // Hooks named after a time (`crate::schedule`): when each last ran, kept
+    // across runs of the app, and when the clock was last looked at
+    let mut schedule_kept = crate::schedule::Kept::load();
+    let mut schedule_looked = Instant::now();
+    // ...and when each tab's next one runs, for the board to say
+    let mut timed_next: Vec<(usize, u64)> = Vec::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
     let mut ball = ball::Ball::default();
@@ -4685,6 +4691,60 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
 
+                    // Hooks named after a time, looked at four times a minute
+                    // (`crate::schedule`): each one for every tab its script is
+                    // attached to, or once for a desk's or the program's script
+                    if schedule_looked.elapsed() >= Duration::from_secs(15) {
+                        schedule_looked = Instant::now();
+                        let now = crate::hooks::epoch_ms() / 1000;
+                        let local = |at: u64| crate::hooks::local_at(at);
+                        let mut changed = false;
+                        let mut upcoming = Vec::new();
+                        for timed in eng.timed() {
+                            let targets: Vec<Option<usize>> = match timed.tabs.is_empty() {
+                                true => vec![None],
+                                false => timed.tabs.iter().copied().map(Some).collect(),
+                            };
+                            for pane in targets {
+                                let tab = pane.and_then(|n| session_at(&surfaces, n).and_then(|i| tabs.get(i)).map(|t| (n, t)));
+                                // A tab that is not there any more has nothing to run for
+                                if pane.is_some() && tab.is_none() {
+                                    continue;
+                                }
+                                let key = crate::schedule::key(&timed.script, &timed.hook, tab.map(|(_, t)| t.uid()));
+                                let last = schedule_kept.last.get(&key).copied();
+                                let (due, keep) = crate::schedule::due(timed.when, last, now, &local);
+                                if last != Some(keep) {
+                                    schedule_kept.last.insert(key, keep);
+                                    changed = true;
+                                }
+                                let whom = tab.map(|(n, t)| format!("tab{n} \"{}\"", t.title)).unwrap_or_else(|| "no tab".into());
+                                match due {
+                                    crate::schedule::Due::Run(at) => {
+                                        append_hook_log(&format!(
+                                            "schedule: {} for {whom} ({}, due {})",
+                                            timed.hook, timed.script, crate::hooks::local_clock_at(at)
+                                        ));
+                                        let ctx = tab.map(|(n, t)| tab_ctx(t, n));
+                                        eng.fire_timed(&timed.script, &timed.hook, ctx.as_ref());
+                                    }
+                                    crate::schedule::Due::Missed(at) => append_hook_log(&format!(
+                                        "schedule: {} for {whom} missed -- it was due {} and the app could not run it within an hour",
+                                        timed.hook, crate::hooks::local_clock_at(at)
+                                    )),
+                                    crate::schedule::Due::Not => {}
+                                }
+                                if let Some((n, _)) = tab {
+                                    upcoming.push((n, crate::schedule::next(timed.when, Some(keep), now, &local)));
+                                }
+                            }
+                        }
+                        timed_next = upcoming;
+                        if changed {
+                            schedule_kept.save();
+                        }
+                    }
+
                     // Automation addresses things by screen number; the contents live in sessions
                     eng.tick_pending(&|pane| {
                         session_at(&surfaces, pane)
@@ -4697,6 +4757,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // file panel goes on with automation stopped, the way a single
                 // file always has
                 if !auto_enabled {
+                    // Nothing runs by the clock while automation is stopped,
+                    // so nothing says it will
+                    timed_next.clear();
                     eng.tick_panel_pending();
                 }
                 // A report aimed at a file panel goes to that panel. Taken out
@@ -6691,6 +6754,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // rather than emptying and leaving the person guessing. Taken from
             // the sends themselves, here, where they are: a second tally kept
             // alongside them would be a second thing to get wrong
+            timed: timed_next.clone(),
             sending: pending_send
                 .iter()
                 .map(|p| {

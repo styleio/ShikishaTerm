@@ -41,6 +41,37 @@ Write **only the body** of the work in the file. No `function ... end` wrapper.
 shikisha.send_to_tab(2, "Please review this code:\n" .. tab.output)
 ```
 
+### At a time, or every so often
+
+A file named after a time runs at that time, by this PC's clock — the same way, only
+the name says when instead of what happened.
+
+| File name | When it runs |
+|---|---|
+| `at_0900.lua` | Every day at 09:00 |
+| `at_weekdays_0900.lua` / `at_weekends_1000.lua` | Monday to Friday / Saturday and Sunday |
+| `at_mon_0900.lua` … `at_sun_0900.lua` | One day of the week (`mon` `tue` `wed` `thu` `fri` `sat` `sun`) |
+| `every_30m.lua` / `every_2h.lua` | Every so many minutes (`m`) or hours (`h`) from when it last ran; at least a minute |
+
+The app keeps the time itself; nothing is registered with Task Scheduler or cron. So:
+
+- **It runs only while the app is running and the PC is awake.** A time that went by while
+  it could not run is run once when it can, if that is within an hour of the time; later than
+  that it is written in `logs/hooks.log` as missed and not run. `every_` runs once on coming
+  back, not once for each time it missed.
+- A time is never run for the past: one seen for the first time counts from then. When each
+  last ran is kept in `data/schedule.json`, so a restart does not run one twice.
+- While automation is stopped (the **A** switch at the top), nothing runs.
+- In a tab's automation folder, `tab` is that tab. In the desk's or the program's folder it runs
+  once, for no tab: `tab.index` is 0, and the script names the tab it wants.
+
+```lua
+-- example of at_weekdays_0900.lua in the reviewer tab's folder
+if tab.state ~= "BUSY" then
+  shikisha.send_to_tab(tab.index, "Summarise what changed in this repository since yesterday.")
+end
+```
+
 ---
 
 ## 2. Variables you can use

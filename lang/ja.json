@@ -1045,6 +1045,7 @@
   "tui.help.url": "https://shikisha-term.com/ja/manual/",
   "tui.scrolled": "▲ {lines}行前を見ています — 押すと今へ",
   "tui.unread": "ほかのタブを見ているあいだに返事や質問がありました",
+  "tui.timed": "このタブの自動化が、次は {at} に時刻で動きます（at_0900.lua のような時刻の名前のファイル）。上の A のスイッチで止められます",
   "tui.qr.title": "スマホから接続",
   "tui.qr.hint": "カメラで読み取ってください（このアドレスに届くスマホからつながります。Tailscale か、同じネットワークにいるスマホです）",
   "tui.status.copy": "[コピー:{mode}] -{offset} | 選択で自動コピー 右クリック:ペースト | v y a / Esc: 最新へ{hist}",

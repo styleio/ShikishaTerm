@@ -1043,6 +1043,7 @@
   "tui.awake.mode.always": "Keep the PC awake while this program runs",
   "tui.scrolled": "▲ {lines} lines back — click to return",
   "tui.unread": "It said something while you were on another tab",
+  "tui.timed": "Its automation runs by the clock next at {at} (a file named after a time, such as at_0900.lua). The A switch at the top stops it",
   "tui.qr.title": "Connect from your phone",
   "tui.qr.hint": "Scan with your camera (works from a phone that can reach this address: on Tailscale, or on the same network)",
   "tui.status.copy": "[COPY:{mode}] -{offset} | select to copy, right click to paste | v y a / Esc: live{hist}",
