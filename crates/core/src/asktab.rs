@@ -1082,6 +1082,9 @@ impl Ask {
             // What it answered to those words, once their turn is over
             let (reply, read) = match &source {
                 Source::Here(path) => (latest_reply(path, Some(t.uid())), "record"),
+                // Off another machine's screen there is no telling the
+                // person's answer from an ask put in after it
+                _ if self.superseded => return Some(Step::Answer(stopped(self, same_folder))),
                 _ => (t.last_response.clone(), "screen"),
             };
             return match reply {

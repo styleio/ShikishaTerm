@@ -1399,7 +1399,11 @@ fn tend_asks(
                     // By who it is and by the name it was asked by: an ask that
                     // found the tab and one that went by its name are to one tab
                     sent_now.push((a.sent_to.clone().unwrap_or_default(), sent));
-                    sent_now.push((a.target.clone(), sent));
+                    // ...and by its name, only for one that went by it: names
+                    // repeat from desk to desk
+                    if target.is_none() {
+                        sent_now.push((a.target.clone(), sent));
+                    }
                     // Into the conference, with the asker's line. A command
                     // typed into a terminal is not said to anyone
                     if a.run.is_none() {
@@ -1527,7 +1531,7 @@ fn tend_asks(
     });
     for a in asks.iter_mut() {
         let Some(to) = a.sent_to.clone() else { continue };
-        if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| (*t == to || *t == a.target) && *at > mine)) {
+        if a.sent_at.is_some_and(|mine| sent_now.iter().any(|(t, at)| *t == to && *at > mine)) {
             a.superseded = true;
         }
     }
