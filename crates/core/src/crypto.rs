@@ -197,35 +197,145 @@ pub fn token_eq(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Write via a temp file then rename (avoids conflicts with Google Drive
-/// sync; see DESIGN section 11).
+/// Write a file so that it is either the old one or the new one, and stays
+/// the new one: written beside it, made to reach the disk, then put in its
+/// place (also keeps clear of Google Drive's sync; see DESIGN section 11).
+///
+/// A rename alone is atomic for a reader but not for a power cut: the name
+/// can reach the disk before the bytes, and the file comes back empty --
+/// the settings, the paired devices, the token, gone. So the new file is
+/// synced before the rename, and the folder after it where the system has
+/// a way to (not Windows, where the file's own sync is what carries it).
+///
+/// The file written beside it has a name of its own each time. A fixed one
+/// (`x.tmp`) was shared by every write of the same name -- two of them at
+/// once wrote into one temp file and one of them put the other's half in
+/// place -- and by two files of one stem (`a.json`, `a.md`).
+///
+/// On Windows the rename is tried again for a moment when the file is held:
+/// an antivirus or an indexer opening it just as it is replaced is a normal
+/// day there, and a setting not saved because of it is not
 pub fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
+    write_atomic_bytes(path, content.as_bytes())
+}
+
+/// [`write_atomic`] for bytes that are not text
+pub fn write_atomic_bytes(path: &std::path::Path, content: &[u8]) -> Result<()> {
+    use std::io::Write as _;
     // Create the destination folder (e.g. config/) if it doesn't exist.
     // Without this, writing the temp file fails and the save silently
     // drops out as an "empty response".
-    if let Some(dir) = path.parent()
-        && !dir.as_os_str().is_empty() {
-            std::fs::create_dir_all(dir).with_context(|| {
-                crate::i18n::tp(
-                    "err.crypto.mkdir_failed",
-                    &[("path", &dir.display().to_string())],
-                )
-            })?;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = dir {
+        std::fs::create_dir_all(dir).with_context(|| {
+            crate::i18n::tp("err.crypto.mkdir_failed", &[("path", &dir.display().to_string())])
+        })?;
+    }
+    let tmp = temp_beside(path);
+    let written = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(content)?;
+        // A file kept from the person's view stays kept: what replaces it is
+        // given what it had (a secrets file at 0600 does not come back 0644)
+        #[cfg(unix)]
+        if let Ok(was) = std::fs::metadata(path) {
+            f.set_permissions(was.permissions())?;
         }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, content).with_context(|| {
-        crate::i18n::tp(
-            "err.crypto.write_failed",
-            &[("path", &tmp.display().to_string())],
-        )
-    })?;
-    std::fs::rename(&tmp, path).with_context(|| {
-        crate::i18n::tp(
-            "err.crypto.rename_failed",
-            &[("path", &path.display().to_string())],
-        )
-    })?;
+        f.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e))
+            .with_context(|| crate::i18n::tp("err.crypto.write_failed", &[("path", &tmp.display().to_string())]));
+    }
+    if let Err(e) = rename_held_a_moment(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow::Error::new(e))
+            .with_context(|| crate::i18n::tp("err.crypto.rename_failed", &[("path", &path.display().to_string())]));
+    }
+    #[cfg(unix)]
+    if let Some(dir) = dir
+        && let Ok(d) = std::fs::File::open(dir)
+    {
+        let _ = d.sync_all();
+    }
+    sweep_left_behind(path);
     Ok(())
+}
+
+/// The name a write is made under before it is put in place: the file's own
+/// name, this process, and a number no other write in it has, so no two
+/// writes share one. Not a secret, so not drawn from the random source --
+/// a save must not fail for want of one
+fn temp_beside(path: &std::path::Path) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let mark = (nanos.wrapping_add(n << 32)) & 0xffff_ffff_ffff;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!("{name}.{}.{mark:012x}.tmp", std::process::id()))
+}
+
+/// Whether `file` is one of [`temp_beside`]'s for `name`
+fn is_temp_of(file: &str, name: &str) -> bool {
+    let Some(rest) = file.strip_prefix(name).and_then(|r| r.strip_prefix('.')).and_then(|r| r.strip_suffix(".tmp")) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some(pid), Some(drawn), None)
+            if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+            && drawn.len() == 12 && drawn.bytes().all(|b| b.is_ascii_hexdigit())
+    )
+}
+
+/// Temp files of this name left by a write that never finished -- the
+/// program stopped between writing and renaming. Old ones only: a young one
+/// may be another copy of the program in the middle of its own write
+fn sweep_left_behind(path: &std::path::Path) {
+    const OLD: std::time::Duration = std::time::Duration::from_secs(600);
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().map(|n| n.to_string_lossy().into_owned())) else {
+        return;
+    };
+    let dir = if dir.as_os_str().is_empty() { std::path::Path::new(".") } else { dir };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        if !is_temp_of(&e.file_name().to_string_lossy(), &name) {
+            continue;
+        }
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > OLD);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// Put `from` in place of `to`, trying again for a moment on Windows while
+/// something else holds `to` open (access denied, sharing or lock
+/// violation). Anything else, and anywhere else, is answered at once
+fn rename_held_a_moment(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    let mut tries = 0u64;
+    loop {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) if cfg!(windows) && tries < 5 && is_held(&e) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50 * tries));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Whether a failed file operation looks like another program holding the
+/// file for a moment: access denied (5), sharing violation (32), lock
+/// violation (33)
+fn is_held(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5 | 32 | 33))
 }
 
 #[cfg(test)]
@@ -280,5 +390,108 @@ mod tests {
         let file = std::env::var("SHIKISHA_SEAL_FILE").expect("SHIKISHA_SEAL_FILE");
         let pw = std::env::var("SHIKISHA_SEAL_PW").expect("SHIKISHA_SEAL_PW");
         encrypt_file(std::path::Path::new(&file), &pw).unwrap();
+    }
+
+    fn own_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("shikitest_atomic_{}", crate::random_hex(6)));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn names_in(dir: &std::path::Path) -> Vec<String> {
+        let mut n: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        n.sort();
+        n
+    }
+
+    /// The file is replaced whole, and nothing is left beside it
+    #[test]
+    fn a_write_replaces_the_file_and_leaves_nothing_beside_it() {
+        let dir = own_dir();
+        let f = dir.join("config.json");
+        write_atomic(&f, "first").unwrap();
+        write_atomic(&f, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "second");
+        assert_eq!(names_in(&dir), ["config.json"], "a temp file was left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes of one file at the same moment each put a whole file in place.
+    /// With one temp name for all of them, one wrote into the other's half
+    /// and a mix of the two -- or an error -- was what was left
+    #[test]
+    fn writes_at_once_never_mix() {
+        let dir = own_dir();
+        let f = dir.join("clients.json");
+        let bodies: Vec<String> = (0..8).map(|i| format!("{{\"writer\":{i},\"pad\":\"{}\"}}", "x".repeat(200_000))).collect();
+        std::thread::scope(|s| {
+            for b in &bodies {
+                let f = &f;
+                s.spawn(move || {
+                    for _ in 0..5 {
+                        write_atomic(f, b).expect("a write at the same moment failed");
+                    }
+                });
+            }
+        });
+        let left = std::fs::read_to_string(&f).unwrap();
+        assert!(bodies.contains(&left), "what is left is not any one writer's whole file ({} bytes)", left.len());
+        assert_eq!(names_in(&dir), ["clients.json"], "a temp file was left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two files of one stem do not write through one temp file
+    #[test]
+    fn two_files_of_one_stem_keep_apart() {
+        let dir = own_dir();
+        let (a, b) = (dir.join("notes.json"), dir.join("notes.md"));
+        assert_ne!(temp_beside(&a).file_name(), temp_beside(&b).file_name());
+        write_atomic(&a, "json").unwrap();
+        write_atomic(&b, "md").unwrap();
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "json");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "md");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A temp file left by a write that never finished goes once it is old;
+    /// a young one may be another copy's write in progress and stays, and
+    /// nothing that is not one of ours is touched
+    #[test]
+    fn what_an_unfinished_write_left_is_swept_once_old() {
+        let dir = own_dir();
+        let f = dir.join("push-subs.json");
+        let old = dir.join("push-subs.json.4242.0123456789ab.tmp");
+        let young = dir.join("push-subs.json.4242.0123456789ac.tmp");
+        let theirs = dir.join("push-subs.json.backup.tmp");
+        for p in [&old, &young, &theirs] {
+            std::fs::write(p, "half").unwrap();
+        }
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(hour_ago).unwrap();
+        std::fs::File::options().write(true).open(&theirs).unwrap().set_modified(hour_ago).unwrap();
+        write_atomic(&f, "[]").unwrap();
+        assert_eq!(
+            names_in(&dir),
+            ["push-subs.json", "push-subs.json.4242.0123456789ac.tmp", "push-subs.json.backup.tmp"],
+            "the old one stayed, or a young one or somebody else's went"
+        );
+        assert!(is_temp_of("a.json.12.0123456789ab.tmp", "a.json"));
+        assert!(!is_temp_of("a.json.12.0123456789ab.tmp", "a.js"));
+        assert!(!is_temp_of("a.json.tmp", "a.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file kept from other users stays kept when it is replaced
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_file_keeps_who_may_read_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = own_dir();
+        let f = dir.join("secrets.json");
+        std::fs::write(&f, "{}").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic(&f, "{\"a\":1}").unwrap();
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -148,7 +148,7 @@ pub fn mark_running() {
         started: now_secs(),
     };
     if let Ok(text) = serde_json::to_string(&mark) {
-        let _ = std::fs::write(mark_path(), text);
+        let _ = crate::crypto::write_atomic(&mark_path(), &text);
     }
 }
 

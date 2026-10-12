@@ -934,7 +934,7 @@ fn edit(t: &Target, want: bool, program: &Path) -> Result<()> {
     // to write here, so a way back that could not be kept stops the change
     if let Some(text) = existing.as_deref() {
         let bak = t.file.with_extension("bak");
-        std::fs::write(&bak, text).with_context(|| {
+        crate::crypto::write_atomic(&bak, text).with_context(|| {
             crate::i18n::tp("err.hookfile.no_backup", &[("path", &bak.display().to_string())])
         })?;
     }

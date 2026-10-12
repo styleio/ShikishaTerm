@@ -315,8 +315,9 @@ fn vapid() -> Result<(p256::SecretKey, String), String> {
         secret: b64(&key.to_bytes()),
         public: public.clone(),
     };
-    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default())
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    // Lost, every phone registered with it stops hearing anything
+    crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(&v).unwrap_or_default())
+        .map_err(|e| format!("{}: {e:#}", path.display()))?;
     crate::append_hook_log(&format!("push: wrote a new sender key to {}", path.display()));
     Ok((key, public))
 }
@@ -356,8 +357,8 @@ pub fn subs() -> Vec<Sub> {
 
 fn write_subs(list: &[Sub]) {
     let path = subs_path();
-    if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(list).unwrap_or_default()) {
-        crate::append_hook_log(&format!("push: could not write {}: {e}", path.display()));
+    if let Err(e) = crate::crypto::write_atomic(&path, &serde_json::to_string_pretty(list).unwrap_or_default()) {
+        crate::append_hook_log(&format!("push: could not write {}: {e:#}", path.display()));
     }
 }
 
