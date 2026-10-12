@@ -1237,6 +1237,8 @@
   "prompt.password.keys": "Enter: 確定 / Esc: キャンセル",
   "settings.title": "SHIKISHA-TERM 設定",
   "settings.global": "全体設定",
+  "settings.find.ph": "設定を検索",
+  "settings.find.none": "その言葉を含む設定はありません。",
   "settings.nav.desk": "デスク",
   "settings.nav.projects": "プロジェクト",
   "settings.nav.projects.none": "プロジェクトはまだありません。盤面の PROJECT 見出しのフォルダ＋から追加します。",

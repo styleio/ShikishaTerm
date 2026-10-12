@@ -1235,6 +1235,8 @@
   "prompt.password.keys": "Enter: confirm / Esc: cancel",
   "settings.title": "SHIKISHA-TERM Settings",
   "settings.global": "General",
+  "settings.find.ph": "Search the settings",
+  "settings.find.none": "No setting says that.",
   "settings.nav.desk": "Desk",
   "settings.nav.projects": "Projects",
   "settings.nav.projects.none": "No project yet. Add one from the folder-plus on the board's PROJECT heading.",

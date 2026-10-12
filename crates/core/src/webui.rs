@@ -3444,6 +3444,13 @@ fn handle(
                 }
             }
         }
+        // Every screen of the settings, each card and each thing set on it,
+        // in the language on screen: what the settings' own search looks
+        // through -- the same index the ? answers from, so the two agree
+        ("GET", "/api/settings/index") => {
+            let idx = crate::guide::index(&|k: &str| crate::i18n::t(k));
+            req.respond(json_resp(serde_json::to_value(&idx).unwrap_or_default()))?;
+        }
         // What a bug report carries, made now and handed to the person, never
         // sent anywhere (`crate::diagnose`). How many things were hidden in it
         // goes along, so the page can say to look before attaching it
@@ -5596,6 +5603,16 @@ const PAGE: &str = r##"<!doctype html>
  .crumbs .sep { color:var(--muted); }
  .crumbs .here { color:var(--text); font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:320px; }
  .navnone { margin:var(--s1) var(--s3); color:var(--muted); font-size:12px; line-height:1.5; }
+ /* The settings' own search, at the head of the column. While it holds
+    words, what it found stands in place of the column's entries */
+ .navfind { display:block; width:calc(100% - 2 * var(--s3)); margin:var(--s2) var(--s3); box-sizing:border-box;
+   font:inherit; font-size:13px; padding:6px var(--s2); color:var(--text); background:var(--bg);
+   border:1px solid var(--edge); border-radius:var(--r-ctl); outline:none; }
+ .navfind:focus { border-color:var(--brand); }
+ #nav.finding > :not(.navfind):not(.navresults) { display:none; }
+ /* The setting a search led to, lit for a moment where it stands */
+ .foundflash { outline:2px solid var(--brand); outline-offset:3px; border-radius:var(--r-ctl);
+   transition:outline-color .4s; }
  /* A project names the repository its folders are in: the one row in the tree
     that names a thing, so it carries the weight (styleguide §3) */
  .navproject { color:var(--text); font-size:12.5px; font-weight:600; }
@@ -7549,9 +7566,88 @@ function pickDesk(anchor) {
   })).concat([{cls: "add", go: () => addWs(), kids: T["settings.desk.add"]}]));
 }
 
+// The settings' own search: a box at the head of the column, and what it
+// finds in place of the column's entries while there are words in it. The
+// words are kept across the column being drawn again; the index is asked
+// for once, the first time it is wanted
+let navFindText = "";
+let settingsIndex = null;
+let settingsIndexAsked = null;
+function loadSettingsIndex() {
+  if (!settingsIndexAsked) {
+    settingsIndexAsked = settingsFetch("/api/settings/index", {})
+      .then(r => r.json()).then(j => { settingsIndex = j; drawNavFinds(); })
+      .catch(() => { settingsIndexAsked = null; });
+  }
+  return settingsIndexAsked;
+}
+function drawNavFinds() {
+  const nav = document.getElementById("nav");
+  const results = nav.querySelector(".navresults");
+  if (!results) return;
+  const q = navFindText.trim().toLowerCase();
+  nav.classList.toggle("finding", !!q);
+  results.textContent = "";
+  if (!q) return;
+  if (!settingsIndex) { results.append(el("div", {class:"navnone"}, "…")); loadSettingsIndex(); return; }
+  const hits = [];
+  for (const p of settingsIndex.pages || []) {
+    for (const c of p.cards || []) {
+      for (const it of c.items || []) {
+        const hay = [p.title, c.title || "", it.label, it.hint || ""].join("\n").toLowerCase();
+        if (hay.includes(q)) hits.push({p, c, it});
+      }
+    }
+  }
+  if (!hits.length) { results.append(el("div", {class:"navnone"}, T["settings.find.none"])); return; }
+  for (const {p, c, it} of hits.slice(0, 40)) {
+    results.append(el("button", {class:"navitem", onclick:() => goFound(p, it.label)},
+      el("div", {class:"body"}, el("span", {}, it.label),
+        el("span", {class:"sub"}, [p.title, c.title].filter(Boolean).join(" › ")))));
+  }
+}
+// Where a setting found is: its page on screen, and the setting itself
+// brought into view and lit for a moment
+function goFound(p, label) {
+  navFindText = "";
+  const id = p.id || "";
+  if (id.startsWith("desk:")) goDeskSection(id.slice(5));
+  else if (globalSections().some(s => s.id === id)) goSection(id);
+  else {
+    const desk = desks[sel.desk] || desks[0];
+    const {projects, loose} = desk ? deskProjects(desk) : {projects: [], loose: []};
+    const at = desk ? navProject(desk, projects, loose) : {};
+    if (at.p) goProjectSection(at.p.key, (projectSections(at.p)[0] || {}).id || "rules");
+  }
+  setTimeout(() => {
+    const d = document.getElementById("detail");
+    const hit = [...d.querySelectorAll("label, h3, h2, span, div, button")]
+      .find(n => n.textContent.trim() === label && ![...n.children].some(k => k.textContent.trim() === label));
+    if (!hit) return;
+    hit.scrollIntoView({block: "center"});
+    hit.classList.add("foundflash");
+    setTimeout(() => hit.classList.remove("foundflash"), 2400);
+  }, 60);
+}
+function navFindBox() {
+  const input = el("input", {type:"search", class:"navfind", placeholder:T["settings.find.ph"],
+    enterkeyhint:"search", autocomplete:"off", spellcheck:"false"});
+  input.value = navFindText;
+  input.addEventListener("focus", loadSettingsIndex);
+  input.addEventListener("input", () => { navFindText = input.value; drawNavFinds(); });
+  input.addEventListener("keydown", e => {
+    if (e.key === "Escape" && input.value) { e.stopPropagation(); input.value = ""; navFindText = ""; drawNavFinds(); }
+    if (e.key === "Enter") { const first = document.querySelector("#nav .navresults .navitem"); if (first) first.click(); }
+  });
+  return input;
+}
+
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.textContent = "";
+  nav.append(navFindBox(), el("div", {class:"navresults"}));
+  nav.classList.toggle("finding", !!navFindText.trim());
+  if (navFindText.trim()) setTimeout(drawNavFinds, 0);
   // One column, read top to bottom, the larger world first: the program's own
   // settings, then the desk in view, then its projects. Every entry opens one
   // page; nothing here is entered and left, and nothing here adds anything --
