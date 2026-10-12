@@ -962,6 +962,102 @@ fn find_exe_root(stage: &Path) -> Option<PathBuf> {
     rd.flatten().map(|e| e.path()).find(|p| p.is_dir() && holds_program(p))
 }
 
+// ── A new version that cannot start ────────────────────────────────
+
+/// A version put in place by an update, until it has shown it can run.
+///
+/// The way back is a button in the settings, and a version that stops
+/// while starting never shows the settings: the person is left with a
+/// program that opens and vanishes, and a previous version kept on disk
+/// that nothing will put back. So each start of the new version is counted
+/// before anything it might stop on, and the count is cleared once it has
+/// run a while or was closed properly. Two starts in a row that did neither
+/// put the previous version back, and the one that failed is not offered
+/// again
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+struct Trial {
+    version: String,
+    from: String,
+    /// Starts that have not yet run a while or been closed properly
+    starts: u32,
+}
+
+/// How many starts in a row may fail before the previous version is put back
+const FAILED_STARTS: u32 = 2;
+
+/// How long a start has to last to count as one that worked
+pub const TRIAL_LASTS: Duration = Duration::from_secs(120);
+
+fn trial_path() -> PathBuf {
+    update_dir().join("trial.json")
+}
+
+fn read_trial() -> Option<Trial> {
+    serde_json::from_str(&std::fs::read_to_string(trial_path()).ok()?).ok()
+}
+
+fn write_trial(t: &Trial) {
+    if let Ok(text) = serde_json::to_string(t) {
+        let _ = crate::crypto::write_atomic(&trial_path(), &text);
+    }
+}
+
+/// What to do about a trial at this start, given what it says and which
+/// version is running and which one is kept to go back to
+fn judge_trial(t: Option<Trial>, running: &str, kept: Option<&str>) -> (Option<Trial>, Option<(String, String)>) {
+    let Some(mut t) = t else { return (None, None) };
+    if t.version != running {
+        return (None, None);
+    }
+    if t.starts >= FAILED_STARTS && kept == Some(t.from.as_str()) {
+        return (None, Some((t.version, t.from)));
+    }
+    t.starts += 1;
+    (Some(t), None)
+}
+
+/// Count this start of a version on trial. Called before anything this
+/// version might stop on. Answers the version that failed and the one to go
+/// back to, when it is time to go back
+pub fn start_of_trial() -> Option<(String, String)> {
+    let found = read_trial();
+    let had = found.is_some();
+    let (keep, back) = judge_trial(found, current_version(), find_prev().as_deref());
+    match &keep {
+        Some(t) => write_trial(t),
+        None if had => {
+            let _ = std::fs::remove_file(trial_path());
+        }
+        None => {}
+    }
+    back
+}
+
+/// This start worked: it ran a while, or it was closed properly
+pub fn trial_passed() {
+    if read_trial().is_some_and(|t| t.version == current_version()) {
+        let _ = std::fs::remove_file(trial_path());
+        crate::append_hook_log(&format!("Update: {} has run properly; it is no longer on trial", current_version()));
+    }
+}
+
+/// The person chose to try the failed version again: it is on trial afresh,
+/// this start counted
+pub fn try_again(failed: &str, from: &str) {
+    write_trial(&Trial { version: failed.to_string(), from: from.to_string(), starts: 1 });
+}
+
+/// Put the previous version back after the new one failed to start, and
+/// start it. The failed version is remembered as passed over, the way
+/// "skip" remembers it, so the version gone back to does not offer it again
+/// -- a later one it will. The caller ends this copy once this returns Ok
+pub fn go_back_from_failed_starts(failed: &str, to: &str) -> Result<()> {
+    crate::append_hook_log(&format!("Update: {failed} stopped while starting {FAILED_STARTS} times in a row; going back to {to}"));
+    write_text("update-skipped", failed);
+    remove_version_dir(failed);
+    put_in_place(&Apply::Rollback { version: to.to_string() })
+}
+
 // ── Putting it in place ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -1385,6 +1481,8 @@ pub fn finish_last() {
         sweep_aside(&root);
         if !j.rollback {
             let _ = std::fs::remove_dir_all(version_dir(&j.version));
+            // On trial until it has run a while (see `Trial`)
+            write_trial(&Trial { version: j.version.clone(), from: j.from.clone(), starts: 0 });
         }
         crate::append_hook_log(&format!("Update: now running {} (was {})", j.version, j.from));
         return;
@@ -1540,6 +1638,31 @@ mod tests {
     }
 
     use super::*;
+
+    fn on_trial(starts: u32) -> Option<Trial> {
+        Some(Trial { version: "0.30.0".into(), from: "0.29.0".into(), starts })
+    }
+
+    /// Two starts of the new version that neither ran a while nor were
+    /// closed properly, and the third start goes back -- to the version kept,
+    /// and only when the one kept is the one it replaced
+    #[test]
+    fn a_version_that_stops_twice_while_starting_goes_back() {
+        let (kept, back) = judge_trial(on_trial(0), "0.30.0", Some("0.29.0"));
+        assert_eq!((kept.map(|t| t.starts), back), (Some(1), None), "the first start is only counted");
+        let (kept, back) = judge_trial(on_trial(1), "0.30.0", Some("0.29.0"));
+        assert_eq!((kept.map(|t| t.starts), back), (Some(2), None), "one failed start is not enough");
+        let (kept, back) = judge_trial(on_trial(2), "0.30.0", Some("0.29.0"));
+        assert_eq!(kept, None);
+        assert_eq!(back, Some(("0.30.0".to_string(), "0.29.0".to_string())), "two failed starts did not go back");
+
+        // Nothing kept to go back to, or something else kept: nothing to do but count
+        assert_eq!(judge_trial(on_trial(2), "0.30.0", None).1, None);
+        assert_eq!(judge_trial(on_trial(2), "0.30.0", Some("0.28.0")).1, None);
+        // A trial of another version than the one running is over
+        assert_eq!(judge_trial(on_trial(5), "0.31.0", Some("0.29.0")), (None, None));
+        assert_eq!(judge_trial(None, "0.30.0", Some("0.29.0")), (None, None));
+    }
 
     #[test]
     fn compares_versions_numerically() {

@@ -1006,6 +1006,7 @@
   "tui.update.body": "Install it from Settings › Update, when you like.",
   "tui.update.open": "Open Update",
   "tui.update.close": "Not now",
+  "tui.update.failed_starts": "SHIKISHA-TERM {failed} stopped twice in a row while starting.\n\nGo back to {to}, the version you used before?\n\nYes: {to} is put back and started. {failed} is not offered again; a later version is.\nNo: {failed} is started once more.",
   "tui.keep.settings": "Open settings",
   "tui.keep.ok": "Got it",
   "tui.keep.body": "The terminals on this PC and the AIs in them keep running after the app quits, and come back with their screens at the next start. To stop them, answer “No” when quitting asks. The switch is Settings › Basic › Terminals on this PC.",

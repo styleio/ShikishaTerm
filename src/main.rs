@@ -221,6 +221,29 @@ fn boot() -> Result<()> {
         // An update that was interrupted mid-swap is put back, and one that
         // finished is tidied, before any of the files it touched is read
         update::finish_last();
+        // A version an update put in place that stopped twice while starting
+        // is offered the way back here, before anything it might stop on --
+        // the settings, where the button for it is, are never reached
+        if let Some((failed, to)) = update::start_of_trial() {
+            // Before the settings are read for anything else: only the language
+            speak_the_persons_language();
+            let words = shikisha_core::i18n::tp("tui.update.failed_starts", &[("failed", &failed), ("to", &to)]);
+            #[cfg(windows)]
+            let back = shikisha_core::resident::ask_yes_no("SHIKISHA-TERM", &words);
+            #[cfg(not(windows))]
+            let back = {
+                shikisha_core::append_hook_log(&words);
+                true
+            };
+            if !back {
+                update::try_again(&failed, &to);
+            } else {
+                match update::go_back_from_failed_starts(&failed, &to) {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => shikisha_core::append_hook_log(&format!("Update: going back to {to} failed: {e:#}")),
+                }
+            }
+        }
         // A settings save this program did not live to finish is put back to
         // what was there before it, before anything reads the settings
         webui::finish_settings_save(&config::config_file_path())?;
@@ -242,20 +265,7 @@ fn boot() -> Result<()> {
     // here: WEBVIEW2_USER_DATA_FOLDER applies to every WebView at once, which quietly
     // undid the whole point of per-page profiles. Every tab shared one cookie jar, so
     // "separate profile" and "private" were settings that did nothing.
-    // Decide the display language (config, then OS; falls back to English if untranslated)
-    i18n::init(
-        config::load().and_then(|c| c.language).as_deref(),
-        // The exe's own folder first: the translations ship with the program and
-        // are only ever read, so they stay where it was installed. Installed from
-        // the Store, the config folder is somewhere else entirely -- looking only
-        // there would find no ja.json and quietly fall back to English, on a
-        // Japanese machine, with nothing to say it had happened.
-        &[
-            config::shipped_dir(),
-            config_file_dir(),
-            std::path::PathBuf::from("."),
-        ],
-    );
+    speak_the_persons_language();
     // A window that is somebody else's client: the board is served by a runtime
     // running somewhere else, and this window shows it and drives it.
     //
@@ -1294,14 +1304,40 @@ fn run_in_window() -> Result<()> {
             });
         }
         shikisha_core::lastexit::mark_running();
+        // A version on trial after an update passes once it has run a while
+        std::thread::spawn(|| {
+            std::thread::sleep(update::TRIAL_LASTS);
+            update::trial_passed();
+        });
         let out = run(&mut surface);
         // Only a run that got here finished. Anything else -- a crash, a power
         // cut, being killed -- leaves the mark for the next start. Being asked
         // to end (SIGTERM on a Mac) ends as Quit does, and gets here
         // (browser/frame.rs, end_when_told)
         shikisha_core::lastexit::mark_closed();
+        // ...and a version on trial that was closed properly worked
+        update::trial_passed();
         out
     })
+}
+
+/// Decide the display language (config, then OS; falls back to English if
+/// untranslated). Done again wherever something has to be said before the
+/// usual place for it: it only reads
+fn speak_the_persons_language() {
+    i18n::init(
+        config::load().and_then(|c| c.language).as_deref(),
+        // The exe's own folder first: the translations ship with the program and
+        // are only ever read, so they stay where it was installed. Installed from
+        // the Store, the config folder is somewhere else entirely -- looking only
+        // there would find no ja.json and quietly fall back to English, on a
+        // Japanese machine, with nothing to say it had happened.
+        &[
+            config::shipped_dir(),
+            config_file_dir(),
+            std::path::PathBuf::from("."),
+        ],
+    );
 }
 
 /// What a newly split pane should show.

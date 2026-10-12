@@ -1033,6 +1033,7 @@
   "tui.update.body": "設定の「更新」から、好きなときに入れられます。",
   "tui.update.open": "更新を開く",
   "tui.update.close": "今回はいい",
+  "tui.update.failed_starts": "SHIKISHA-TERM {failed} は、2回続けて起動の途中で止まりました。\n\n前に使っていた {to} に戻しますか？\n\nはい: {to} に戻して起動します。{failed} はもう勧めません。次の版が出たらお知らせします。\nいいえ: {failed} をもう一度起動します。",
   "tui.keep.settings": "設定を開く",
   "tui.keep.ok": "わかりました",
   "tui.keep.body": "このPCの端末と中の AI は、アプリを終了しても止まらず、次に起動すると同じ画面に戻ります。止めるには、終了の確認で［いいえ］を選びます。切り替えは 設定 › 基本 › このPCの端末 です。",
