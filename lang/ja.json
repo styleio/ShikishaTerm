@@ -2381,6 +2381,7 @@
   "routine.why.busy": "タブが作業中でした。",
   "routine.why.limit": "AI が利用上限に達しています。",
   "routine.why.turn_failed": "AI が答える前に、エラーで止まりました。",
+  "routine.why.not_sent": "指示文は、送る前に止められました。",
   "routine.why.tab_gone": "タブが開いていません。",
   "routine.why.tab_ended": "タブのプログラムが終了しました。",
   "routine.why.tab_closed": "AI が答える前に、タブが閉じられました。",

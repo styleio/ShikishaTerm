@@ -4715,6 +4715,13 @@ impl Tab {
         })
     }
 
+    /// When the last submit (Enter) went in, on the clock `Tab::tick` is given
+    /// (its launch `Instant`'s elapsed millis). `None` before any, and for the
+    /// moment between a submit and the next tick, which is what stamps it
+    pub fn submitted_at_ms(&self) -> Option<u64> {
+        Some(self.submit_tick_ms.load(Ordering::Relaxed)).filter(|&ms| ms != u64::MAX)
+    }
+
     /// Whether we're waiting for a response to a submitted input
     pub fn was_prompted(&self) -> bool {
         self.prompted.load(Ordering::Relaxed)

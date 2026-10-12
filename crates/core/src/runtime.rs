@@ -8335,8 +8335,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // in for it to have been -- a turn that failed at once can end
                 // between two looks, and a tab that reads as failed from
                 // before the prompt is not taken for this run's failure
-                if f.typed_ms.is_none() && !pending_send.iter().any(|p| p.serial == t.serial()) {
+                // In once its Enter has gone in after it was handed over; the
+                // way it is typed having gone without one (stopped by the
+                // person) means it was never sent
+                let typing = pending_send.iter().any(|p| p.serial == t.serial());
+                if f.typed_ms.is_none() && t.submitted_at_ms().is_some_and(|at| at >= f.sent_ms) {
                     f.typed_ms = Some(now_ms);
+                }
+                // (A model tab is handed its words without an Enter)
+                if f.typed_ms.is_none() && !typing && !t.is_model() && now_ms.saturating_sub(f.sent_ms) >= ROUTINE_FAILED_AFTER_MS {
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.not_sent", None);
+                    append_hook_log(&format!("scheduled prompt run {} of {} never went in to tab \"{}\"", f.n, f.id, t.title));
+                    continue;
                 }
                 let failed = record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some()
                     || (t.state == TabState::Failed

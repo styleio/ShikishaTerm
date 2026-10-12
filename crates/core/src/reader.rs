@@ -398,7 +398,10 @@ fn turn_end_by(
     resume: u64,
     read_at: &mut dyn FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
 ) -> (Option<TurnEnd>, u64) {
-    let resume = resume.max(from);
+    // A record now shorter than where the last look stopped was written
+    // again, and what was read of it before is not there any more: read
+    // from the turn's start again
+    let resume = if resume > len { from } else { resume.max(from) };
     let stop = len.min(from.saturating_add(TURN_READ_MAX));
     let mut carried: Vec<u8> = Vec::new();
     let mut carried_at = resume;
@@ -2593,6 +2596,10 @@ mod tests {
         let (end, _) = turn_end_by(ended.len() as u64, 0, to, &mut read(&ended));
         assert_eq!(end.map(|e| (e.mark, e.at)), Some((TurnMark::Failed, going.len() as u64)));
         assert_eq!(reads.get(), failed.len() + 1, "only what was written since is read");
+        // Written again shorter than where the last look stopped: read anew
+        let shorter = format!("{began}\n{failed}\n");
+        let (end, _) = turn_end_by(shorter.len() as u64, 0, to, &mut read(&shorter));
+        assert_eq!(end.map(|e| e.mark), Some(TurnMark::Failed), "the end before the old stopping place is found");
         // A Codex at its usage limit says so in the kind of its error
         let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
         assert!(turn_at_limit(limited) && !turn_at_limit(failed) && !turn_at_limit(answered));
