@@ -191,8 +191,14 @@ const agreeToHooks = async () => {
 // Each Codex up to its prompt; a question this does not know fails the run
 const bringUp = async (id) => {
   const end = Date.now() + 10 * 60000;
+  let restarts = 0;
   while (Date.now() < end) {
     const s = await screen(id);
+    // Codexes started together in a new home race to set up its database,
+    // and the ones that lose stop at this; started again, they find it set up
+    if (/local database appears to be damaged/i.test(s) && restarts++ < 3) {
+      await sleep(3000); await call('restart', id, 'fresh'); await sleep(3000); continue;
+    }
     if (/Setting up sandbox|Input disabled until setup/i.test(s)) { await sleep(3000); continue; }
     if (/Couldn't set up your sandbox/i.test(s) && /non-admin sandbox/i.test(s)) {
       await call('send', id, '2'); await sleep(300); await call('send', id, '\r'); await sleep(3000); continue;
@@ -255,7 +261,12 @@ try {
   check(true, 'the asking AI let go of the line (PENDING)');
   await until(() => fromLog(/ask_tab: codex-slow's answer \(FAILED\) is in codex-good's inbox/), 'the failure in the inbox', 4 * 60000);
   check(true, 'the failure that came after it went into the asker\'s inbox');
-  check((await state('codex-slow')) === 'FAILED', 'the tab asked reads as failed', await state('codex-slow'));
+  // The answer is read off the record; the tab's own dot follows once its
+  // screen stops saying it is at work, a few seconds later
+  const failedDot = await until(async () => (await state('codex-slow')) === 'FAILED', 'the tab asked to read as failed', 30000).catch(() => false);
+  check(failedDot, 'the tab asked reads as failed', await state('codex-slow'));
+  const toHook = await until(() => fromLog(/on_failed fired tab\d+ \[FAILED\]/), 'on_failed', 30000).catch(() => false);
+  check(toHook, 'the end of its turn is handed to on_failed, not on_done');
   // The asker is told, reads its inbox, and says what came back
   const told = await until(async () => /at capacity|ended in an error|NOT DONE/i.test(await screen('codex-good'))
     && ['DONE', 'WAIT', 'BACKGROUND'].includes(await state('codex-good')), 'the asker to say what came back', 5 * 60000).catch(() => false);

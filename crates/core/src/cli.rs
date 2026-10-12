@@ -267,7 +267,7 @@ pub(crate) fn said(r: &Value) -> String {
         ),
         "LIMIT" => format!("[shikisha] NOT DONE: <@{tab}> hit its usage limit{facts}"),
         "FAILED" => {
-            let error = match s("error").trim() {
+            let error = match s("error").trim().trim_end_matches('.') {
                 "" => String::new(),
                 e => format!(": {e}"),
             };
@@ -275,6 +275,9 @@ pub(crate) fn said(r: &Value) -> String {
                 "{reply}\n\n[shikisha] NOT DONE: the turn of <@{tab}> ended in an error{error}{facts}. Nothing came of it; asking again sends it again"
             )
         }
+        "NOREPLY" => format!(
+            "[shikisha] NOT DONE: no reply to this was found from <@{tab}>, and it has gone on to other work since; ask again if you still need it{facts}"
+        ),
         "EXIT" => format!("[shikisha] NOT DONE: the program in <@{tab}> has ended{facts}"),
         "GONE" => format!("[shikisha] NOT DONE: <@{tab}> was closed{facts}"),
         other => format!("{reply}\n\n[shikisha] {other}{facts}"),
@@ -370,7 +373,7 @@ mod tests {
             "error":"Selected model is at capacity.","round":1}));
         assert!(failed.starts_with("■ Selected model"), "{failed}");
         assert!(
-            failed.contains("NOT DONE: the turn of <@otter> ended in an error: Selected model is at capacity. (round 1)")
+            failed.contains("NOT DONE: the turn of <@otter> ended in an error: Selected model is at capacity (round 1). Nothing")
                 && failed.contains("asking again sends it again"),
             "{failed}"
         );

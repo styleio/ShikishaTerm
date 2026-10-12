@@ -315,30 +315,80 @@ pub fn turn_error(line: &str) -> Option<String> {
     (!said.is_empty()).then(|| said.to_string())
 }
 
+/// Whether a line that ends a turn in an error says the error was the usage
+/// limit: then the thing to wait for is the clock, and asking again will not
+/// help. Codex names the kind of every error it files (`codex_error_info`);
+/// a CLI that names none is left to its screen (`limit_patterns`)
+pub fn turn_at_limit(line: &str) -> bool {
+    turn_mark(line) == Some(TurnMark::Failed)
+        && serde_json::from_str::<Value>(line.trim()).ok().is_some_and(|v| {
+            v.pointer("/payload/error/codex_error_info").and_then(Value::as_str) == Some("usage_limit_exceeded")
+        })
+}
+
+/// How a turn ended, as its record says
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnEnd {
+    /// Where the line that ends it begins, in bytes from the start of the record
+    pub at: u64,
+    /// [`TurnMark::Over`] or [`TurnMark::Failed`]
+    pub mark: TurnMark,
+    /// What the CLI said went wrong, for a failure ([`turn_error`])
+    pub error: Option<String>,
+    /// The failure was the usage limit ([`turn_at_limit`])
+    pub at_limit: bool,
+}
+
+impl TurnEnd {
+    fn of(line: &str, at: u64) -> Option<Self> {
+        let mark = turn_mark(line).filter(|m| m.ended())?;
+        Some(TurnEnd { at, mark, error: turn_error(line), at_limit: turn_at_limit(line) })
+    }
+}
+
 /// How the turn that begins at byte `from` of the record ended: the first end
-/// the record wrote after it, [`TurnMark::Over`] or [`TurnMark::Failed`], and
-/// for a failure, what the CLI said went wrong. `None` while it has not ended.
-/// A turn begun after that one does not undo it -- the question asked at
-/// `from` was answered (or failed) either way.
+/// the record wrote after it. `None` while it has not ended. A turn begun
+/// after that one does not undo it -- the question asked at `from` was
+/// answered (or failed) either way.
 ///
-/// Read forwards from `from`, and no further than [`TURN_READ_MAX`] bytes: a
-/// turn is found near its start, and a record that has grown past that since
-/// is read as "not known", which leaves the screen to judge
-pub fn turn_end_after(path: &Path, from: u64) -> Option<(TurnMark, Option<String>)> {
+/// Read forwards from `from` a piece at a time, stopping at the end found, and
+/// no further than [`TURN_READ_MAX`] bytes: a turn is found near its start,
+/// and a record that has grown past that since is read as "not known", which
+/// leaves the screen to judge
+pub fn turn_end_after(path: &Path, from: u64) -> Option<TurnEnd> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
     if from >= len {
         return None;
     }
-    let n = (len - from).min(TURN_READ_MAX);
-    let mut buf = vec![0u8; n as usize];
+    let stop = len.min(from.saturating_add(TURN_READ_MAX));
     file.seek(SeekFrom::Start(from)).ok()?;
-    file.read_exact(&mut buf).ok()?;
-    first_end_in(&buf)
+    let mut carried: Vec<u8> = Vec::new();
+    let mut carried_at = from;
+    let mut at = from;
+    while at < stop {
+        let n = (stop - at).min(TURN_READ_PIECE) as usize;
+        let start = carried.len();
+        carried.resize(start + n, 0);
+        file.read_exact(&mut carried[start..]).ok()?;
+        at += n as u64;
+        // Whole lines only; what is left of the last is carried into the next piece
+        let Some(last) = carried.iter().rposition(|&b| b == b'\n') else { continue };
+        if let Some(end) = first_end_in(&carried[..=last], carried_at) {
+            return Some(end);
+        }
+        carried.drain(..=last);
+        carried_at += last as u64 + 1;
+    }
+    None
 }
 
 /// How much of a record [`turn_end_after`] reads past the turn's start
 pub const TURN_READ_MAX: u64 = 32 * 1024 * 1024;
+
+/// How much [`turn_end_after`] reads at a time: a turn's end is usually in the
+/// first piece, and a turn written whole is never read whole for it
+const TURN_READ_PIECE: u64 = 256 * 1024;
 
 /// The last mark the record at `path` makes, and when it was written
 /// (milliseconds since the epoch, where the line says).
@@ -368,6 +418,8 @@ pub struct Standing {
     /// What the CLI said went wrong, when the last mark is
     /// [`TurnMark::Failed`] and it said anything ([`turn_error`])
     pub error: Option<String>,
+    /// ...and that failure was the usage limit ([`turn_at_limit`])
+    pub at_limit: bool,
 }
 
 /// [`Standing`] of a record on this machine
@@ -389,6 +441,7 @@ fn standing_in(len: u64, tail: &[u8], cut: bool) -> Standing {
         len,
         mark: last.map(|(mark, when, _)| (mark, when)),
         error: last.and_then(|(_, _, line)| turn_error(line)),
+        at_limit: last.is_some_and(|(_, _, line)| turn_at_limit(line)),
     }
 }
 
@@ -406,6 +459,9 @@ impl Standing {
         if matches!(self.mark, Some((TurnMark::Failed, _))) {
             v["failed"] = Value::Bool(true);
             v["error"] = self.error.map_or(Value::Null, Value::from);
+            if self.at_limit {
+                v["limit"] = Value::Bool(true);
+            }
         }
         v
     }
@@ -421,7 +477,8 @@ impl Standing {
             _ => None,
         };
         let error = if failed { v.get("error").and_then(Value::as_str).map(str::to_string) } else { None };
-        Some(Standing { len, mark, error })
+        let at_limit = failed && v.get("limit").and_then(Value::as_bool) == Some(true);
+        Some(Standing { len, mark, error, at_limit })
     }
 }
 
@@ -451,20 +508,23 @@ fn last_mark_line(bytes: &[u8], cut: bool) -> Option<(TurnMark, Option<i64>, &st
 /// Whether a turn ended in bytes already read ([`first_end_in`])
 #[cfg(test)]
 fn turn_over_in(bytes: &[u8]) -> bool {
-    first_end_in(bytes).is_some()
+    first_end_in(bytes, 0).is_some()
 }
 
-/// The first end of a turn in bytes already read, as [`turn_end_after`] gives
-/// it. Only whole lines count: the last one may still be being written
-fn first_end_in(bytes: &[u8]) -> Option<(TurnMark, Option<String>)> {
+/// The first end of a turn in bytes already read, which begin at byte `base`
+/// of the record, as [`turn_end_after`] gives it. Only whole lines count: the
+/// last one may still be being written
+fn first_end_in(bytes: &[u8], base: u64) -> Option<TurnEnd> {
     let end = bytes.iter().rposition(|&b| b == b'\n')?;
-    bytes[..=end]
-        .split(|&b| b == b'\n')
-        .filter_map(|line| std::str::from_utf8(line).ok())
-        .find_map(|line| {
-            let mark = turn_mark(line).filter(|m| m.ended())?;
-            Some((mark, turn_error(line)))
-        })
+    let mut at = base;
+    for line in bytes[..end].split(|&b| b == b'\n') {
+        let here = at;
+        at += line.len() as u64 + 1;
+        if let Some(found) = std::str::from_utf8(line).ok().and_then(|l| TurnEnd::of(l, here)) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// The first `want` things said at or after byte `from`, read forwards: what
@@ -1195,6 +1255,16 @@ fn words_of(content: &Value) -> String {
     said.join("\n\n")
 }
 
+/// Whether words read as the person's were put there by a hook: Codex files
+/// what a stop hook says back as a message of the person's, wrapped whole in
+/// a tag of its own (Claude Code files it as a meta message, never read as
+/// anyone's). It is kept as a turn of its own -- what the AI said before it
+/// and after it are two things, an answer and a line -- but nobody said it
+pub fn from_a_hook(text: &str) -> bool {
+    let text = text.trim();
+    text.starts_with("<hook_prompt ") && text.ends_with("</hook_prompt>")
+}
+
 /// What a person actually typed, out of a user message.
 ///
 /// Both CLIs hand machine-written material over as though the person had typed
@@ -1208,16 +1278,6 @@ fn words_of(content: &Value) -> String {
 /// An envelope that is never closed is left alone. Cutting to the end of the
 /// message on the strength of one opening tag would swallow the very words
 /// this is trying to rescue.
-/// Whether words read as the person's were put there by a hook: Codex files
-/// what a stop hook says back as a message of the person's, wrapped whole in
-/// a tag of its own (Claude Code files it as a meta message, never read as
-/// anyone's). It is kept as a turn of its own -- what the AI said before it
-/// and after it are two things, an answer and a line -- but nobody said it
-pub fn from_a_hook(text: &str) -> bool {
-    let text = text.trim();
-    text.starts_with("<hook_prompt ") && text.ends_with("</hook_prompt>")
-}
-
 pub fn human_part(text: &str) -> String {
     // Codex puts project instructions in a user message with a Markdown
     // heading and an uppercase envelope. Match that complete wrapper, not
@@ -2419,13 +2479,23 @@ mod tests {
         let claude = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":[{"type":"text","text":"API Error: 529 overloaded"}]}}"#;
         assert_eq!(turn_error(claude).as_deref(), Some("API Error: 529 overloaded"));
 
-        // The first end after the turn began is how it ended, error and all
+        // The first end after the turn began is how it ended, error and all,
+        // and where it is
         let began = r#"{"type":"event_msg","payload":{"type":"task_started"}}"#;
         let bytes = format!("{began}\n{failed}\n{began}\n{answered}\n");
-        assert_eq!(
-            first_end_in(bytes.as_bytes()),
-            Some((TurnMark::Failed, turn_error(failed)))
-        );
+        let first = TurnEnd { at: began.len() as u64 + 1, mark: TurnMark::Failed, error: turn_error(failed), at_limit: false };
+        assert_eq!(first_end_in(bytes.as_bytes(), 0), Some(first.clone()));
+        // Read from a file a piece at a time, the same end is found
+        let f = std::env::temp_dir().join(format!("reader-end-{}.jsonl", std::process::id()));
+        let padding = format!("{}\n", r#"{"type":"response_item","payload":{"type":"reasoning"}}"#).repeat(8000);
+        std::fs::write(&f, format!("{began}\n{padding}{failed}\n{answered}\n")).unwrap();
+        let far_in = turn_end_after(&f, 0).expect("an end past the first piece");
+        assert_eq!((far_in.mark, far_in.at), (TurnMark::Failed, (began.len() + 1 + padding.len()) as u64));
+        assert_eq!(turn_end_after(&f, far_in.at + 1).map(|e| e.mark), Some(TurnMark::Over));
+        let _ = std::fs::remove_file(&f);
+        // A Codex at its usage limit says so in the kind of its error
+        let limited = r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"You've hit your usage limit.","codex_error_info":"usage_limit_exceeded"}}}"#;
+        assert!(turn_at_limit(limited) && !turn_at_limit(failed) && !turn_at_limit(answered));
         // And the end of the record is where the tab stands now
         let now = standing_in(bytes.len() as u64, format!("{began}\n{failed}\n").as_bytes(), false);
         assert_eq!(now.mark.map(|m| m.0), Some(TurnMark::Failed));
@@ -2438,12 +2508,14 @@ mod tests {
     /// failed: a PC that knows no failures still reads it as over
     #[test]
     fn a_failed_standing_travels_as_over_and_failed() {
-        let s = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: Some("at capacity".into()) };
+        let s = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: Some("at capacity".into()), at_limit: false };
         let v = s.clone().to_json();
         assert_eq!(v["mark"], "over");
         assert_eq!(v["failed"], true);
         assert_eq!(Standing::from_json(&v), Some(s));
-        let over = Standing { len: 9, mark: Some((TurnMark::Over, Some(5))), error: None };
+        let limited = Standing { len: 9, mark: Some((TurnMark::Failed, Some(5))), error: None, at_limit: true };
+        assert_eq!(Standing::from_json(&limited.clone().to_json()), Some(limited));
+        let over = Standing { len: 9, mark: Some((TurnMark::Over, Some(5))), error: None, at_limit: false };
         let v = over.clone().to_json();
         assert!(v.get("failed").is_none());
         assert_eq!(Standing::from_json(&v), Some(over));

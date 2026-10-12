@@ -5786,6 +5786,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             line_unheard: false,
                                             late_line: None,
                                             answered: false,
+                                            overtaken: false,
                                         });
                                     }
                                 }
@@ -8324,15 +8325,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if matches!(t.state, TabState::Busy | TabState::Question) {
                     f.busy_seen = true;
                 }
+                let record = t.record();
                 // Its turn ended in an error: no answer is coming, and the
-                // screen says what went wrong
-                if f.busy_seen && t.state == TabState::Failed {
+                // screen says what went wrong. Told by the tab, or by the
+                // record of a CLI whose record files its failures and whose
+                // tab is not told of them by a hook
+                let failed = f.busy_seen
+                    && (t.state == TabState::Failed
+                        || record.as_deref().and_then(|p| crate::asktab::failure_in(p, &f.text, f.from)).is_some());
+                if failed {
                     let screen = screen_tail(t, ROUTINE_SCREEN_LINES);
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.turn_failed", Some(&screen));
                     append_hook_log(&format!("scheduled prompt run {} of {} ended in an error in tab \"{}\"", f.n, f.id, t.title));
                     continue;
                 }
-                let record = t.record();
                 let said = record.as_deref().and_then(|p| crate::asktab::reply_when_over(p, &f.text, f.from));
                 let quiet = f.busy_seen && crate::asktab::turn_over(t.state) && t.ms_since_change(now_ms) >= ROUTINE_SETTLE_MS;
                 if said.is_none() && !quiet {

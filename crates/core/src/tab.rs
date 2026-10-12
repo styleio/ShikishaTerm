@@ -3405,6 +3405,8 @@ struct TurnLook {
     /// this tab's program was): what the CLI said went wrong, empty when it
     /// said nothing. A level like the busy reading, gone once a turn begins
     failed: Option<String>,
+    /// ...and the error was the usage limit
+    at_limit: bool,
 }
 
 /// How often a record is looked at for a turn going on. The record is the
@@ -3885,14 +3887,14 @@ impl Tab {
         // Whether a turn is going on, and whether the last one failed: both
         // only for a turn this tab's program began
         let reading = move |s: Option<crate::reader::Standing>| {
-            let Some(s) = s else { return (false, None) };
+            let Some(s) = s else { return (false, None, false) };
             match s.mark {
                 Some((mark, Some(when))) if when >= since => match mark {
-                    crate::reader::TurnMark::Working => (true, None),
-                    crate::reader::TurnMark::Failed => (false, Some(s.error.unwrap_or_default())),
-                    crate::reader::TurnMark::Over => (false, None),
+                    crate::reader::TurnMark::Working => (true, None, false),
+                    crate::reader::TurnMark::Failed => (false, Some(s.error.unwrap_or_default()), s.at_limit),
+                    crate::reader::TurnMark::Over => (false, None, false),
                 },
-                _ => (false, None),
+                _ => (false, None, false),
             }
         };
         let now = Instant::now();
@@ -3903,9 +3905,10 @@ impl Tab {
                 match rx.try_recv() {
                     Ok(standing) => {
                         self.turn_look.far = None;
-                        let (busy, failed) = reading(standing);
+                        let (busy, failed, at_limit) = reading(standing);
                         self.detector.record_says(busy);
                         self.turn_look.failed = failed;
+                        self.turn_look.at_limit = at_limit;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => self.turn_look.far = None,
                     Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -3945,9 +3948,10 @@ impl Tab {
             self.turn_look.found = id.zip(self.record());
         }
         let standing = self.turn_look.found.as_ref().and_then(|(_, path)| crate::reader::standing_of(path));
-        let (busy, failed) = reading(standing);
+        let (busy, failed, at_limit) = reading(standing);
         self.detector.record_says(busy);
         self.turn_look.failed = failed;
+        self.turn_look.at_limit = at_limit;
     }
 
     /// What the CLI's own record says went wrong in the last turn, when that
@@ -5528,7 +5532,9 @@ impl Tab {
             // Order is which one a person needs to hear. A turn that ended
             // against the limit produced no answer and no amount of waiting on
             // this tab will change that, so it outranks work still running
-            if self.limit_note.is_some() {
+            // The record names a usage limit where the screen has no line for
+            // it (Codex says it in the kind of the error it files)
+            if self.limit_note.is_some() || (self.turn_look.failed.is_some() && self.turn_look.at_limit) {
                 self.state = TabState::Limit;
             } else if self.turn_look.failed.is_some() {
                 // The turn ended in an error the CLI gave up on, and it says
