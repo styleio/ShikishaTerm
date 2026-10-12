@@ -136,10 +136,20 @@ fn typed_here(tab: &str, text: &str) -> bool {
     TYPED.lock().ok().is_some_and(|g| g.as_ref().is_some_and(|t| t.is_ours(tab, text)))
 }
 
+/// How much of two texts has to agree for one to be the other ([`Typed::is_ours`]),
+/// and how long both have to be for their openings alone to do
+const TYPED_HEAD: usize = 60;
+
 impl Typed {
     pub fn note(&mut self, tab: &str, text: &str) {
+        let f = flat(text);
+        // Nothing typed is nothing to tell apart, and the same words twice
+        // (noted where they were sent and where they were asked) are one
         let q = self.by_tab.entry(tab.to_string()).or_default();
-        q.push_back(flat(text));
+        if f.is_empty() || q.back() == Some(&f) {
+            return;
+        }
+        q.push_back(f);
         while q.len() > 32 {
             q.pop_front();
         }
@@ -150,10 +160,15 @@ impl Typed {
         if f.is_empty() {
             return false;
         }
-        let head: String = f.chars().take(60).collect();
-        self.by_tab
-            .get(tab)
-            .is_some_and(|q| q.iter().any(|t| t.starts_with(&head) || f.starts_with(t.as_str())))
+        // Long words match by their opening (a CLI may trim the end of a long
+        // paste, or join a line typed apart); short ones only exactly -- "yes"
+        // typed by a script is not every "yes, but ..." the person types, and
+        // the person's "continue" is not a prompt that opens with it
+        let head = |s: &str| s.chars().take(TYPED_HEAD).collect::<String>();
+        let long = |s: &str| s.chars().count() >= TYPED_HEAD;
+        self.by_tab.get(tab).is_some_and(|q| {
+            q.iter().any(|t| *t == f || (long(t) && long(&f) && head(t) == head(&f)))
+        })
     }
 }
 
@@ -399,5 +414,20 @@ mod tests {
         let brief = super::super::text::brief(5, 3, "Fix the parser.", false);
         t.note("w", &brief);
         assert!(t.is_ours("w", &brief.replace('\n', " ")));
+        // Short words only exactly: a script's "yes" is not the person's
+        // "yes, but ...", and the person's "continue" is not a prompt opening
+        // with it. Nothing typed is no text at all
+        t.note("s", "yes");
+        t.note("s", "continue the nightly review of the open pull requests and say what is left");
+        t.note("s", "");
+        assert!(t.is_ours("s", "yes"));
+        assert!(!t.is_ours("s", "yes, but skip the tests"), "a short text claimed the person's longer one");
+        assert!(!t.is_ours("s", "continue"), "the person's short word taken for a long prompt opening with it");
+        assert!(!t.is_ours("s", "anything the person says"), "an empty text claimed every turn");
+        // The same words noted twice in a row (where they were sent, and where
+        // they were asked) are kept once
+        t.note("s", "yes");
+        t.note("s", "yes");
+        assert_eq!(t.by_tab["s"].len(), 3);
     }
 }
