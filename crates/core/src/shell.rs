@@ -29420,7 +29420,9 @@ mod tests {
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, gkey(g))),"#), "a folder's menu cannot edit it");
         assert!(PAGE.contains(r#"item(T["tui.menu.edit"] || "", () => openSettings(null, false, null, t)),"#), "a tab's menu cannot edit it");
         assert!(PAGE.contains(r#"oncontextmenu:e => { e.preventDefault(); tabMenu(e.currentTarget, t, "strip", e); }},"#), "a tab over the pane has no menu");
-        assert!(PAGE.contains("const x = point ? point.clientX : r.left, y = point ? point.clientY + 2 : r.bottom + 4;"), "a right-click menu does not open at the pointer");
+        assert!(PAGE.contains("const x = point ? point.clientX : r.left;"), "a right-click menu does not open at the pointer");
+        assert!(PAGE.contains("const y = point ? point.clientY + 2 : (below + box.height > window.innerHeight - 8 && above >= 8 ? above : below);"),
+            "a right-click menu does not open at the pointer, or a list at the foot of the window is pushed over what opened it");
         assert!(PAGE.contains("tabname = at.name || null;"), "a tab's settings are looked for by position alone");
         assert!(PAGE.contains("input.onblur = () => finish(true);"), "leaving the field does not keep the name");
         assert!(PAGE.contains(r#"send({kind:"tabname", tab:t.index, name:v})"#), "a tab's new name is not sent");
