@@ -559,6 +559,8 @@ fn allowed_from_here(ev: &shikisha_shared::Ev) -> bool {
         // The window's own "disconnect remote access" pill. It cuts the phones;
         // this window's session is not one of them (`Gate::cut`)
         Ev::RemoteCut => true,
+        // A server version's board, opened in a window of its own on this PC
+        Ev::OpenBoard { .. } => true,
         // Everything else is what a phone may ask, or refused at this PC too
         // for the reason written beside it above
         _ => false,
@@ -4426,6 +4428,7 @@ mod tests {
             Ev::Setup { ai: None, yolo: false },
             Ev::SetupRefresh { step: 1 },
             Ev::RemoteCut,
+            Ev::OpenBoard { name: "vps1".into() },
         ];
         for ev in &pc_only {
             assert!(!super::allowed_from_afar(ev), "a phone may send {ev:?}");

@@ -6375,6 +6375,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::RemoteCut) => {
                         shell.mail().remote_cut = true;
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::OpenBoard { name }) => {
+                        shell.mail().open_boards.push(name);
+                    }
                     // A right-click on the terminal: this PC's clipboard, into
                     // the tab in view, the way the window pastes
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Paste) => {
