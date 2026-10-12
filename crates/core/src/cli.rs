@@ -256,6 +256,9 @@ pub(crate) fn said(r: &Value) -> String {
         "STUCK" => format!(
             "{reply}\n\n[shikisha] NOT DONE: <@{tab}> could not get it done (the reason is above){facts}"
         ),
+        "STOPPED" if r.get("by_person").and_then(Value::as_bool) == Some(true) => format!(
+            "[shikisha] NOT DONE: the person stopped the turn of <@{tab}> before it answered{facts}. Ask the person whether to ask again"
+        ),
         "STOPPED" => format!(
             "[shikisha] NOT DONE: the run on <@{tab}> was stopped before it finished{facts}"
         ),
@@ -385,6 +388,9 @@ mod tests {
             "error":"This content was flagged for possible cybersecurity risk.","refused":true}));
         assert!(refused.contains("refused again: put it another way, or tell the person"), "{refused}");
         assert!(!refused.contains("asking again sends it again"), "{refused}");
+        let stopped = said(&json!({"tab":"otter","state":"STOPPED","by_person":true}));
+        assert!(stopped.contains("the person stopped the turn of <@otter>") && stopped.contains("Ask the person"), "{stopped}");
+        assert!(said(&json!({"tab":"otter","state":"STOPPED"})).contains("the run on <@otter> was stopped"), "a page's run is said as before");
     }
 
     /// The words after the command are its arguments, as Lua would pass them

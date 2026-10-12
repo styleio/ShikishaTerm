@@ -5775,6 +5775,12 @@ impl Tab {
         self.detector.question_matched()
     }
 
+    /// When the program's hook said it is asking a person, while that
+    /// stands (see `Detector::hook_question_at`)
+    pub fn hook_question_at(&self) -> Option<u64> {
+        self.detector.hook_question_at()
+    }
+
     /// What the program last said about itself, while it still stands
     pub fn hook_word(&self) -> Option<TabState> {
         self.detector.hook_word()

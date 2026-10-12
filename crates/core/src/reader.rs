@@ -359,7 +359,11 @@ impl FailKind {
 pub fn turn_stopped(line: &str) -> bool {
     let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return false };
     match v.get("type").and_then(Value::as_str) {
-        Some("event_msg") => v.pointer("/payload/type").and_then(Value::as_str) == Some("turn_aborted"),
+        // A turn replaced by the next is that next turn going on, not one stopped
+        Some("event_msg") => {
+            v.pointer("/payload/type").and_then(Value::as_str) == Some("turn_aborted")
+                && v.pointer("/payload/reason").and_then(Value::as_str) != Some("replaced")
+        }
         Some("user") => v.get("interruptedMessageId").is_some_and(|i| !i.is_null()),
         _ => false,
     }
