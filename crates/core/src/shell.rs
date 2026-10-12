@@ -6614,6 +6614,17 @@ function drawHolding(t) {
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig;
   box.textContent = "";
+  // A tab waiting for its turn to start after a bad end (`tab::Held::Paced`,
+  // `AfterCrash`) has a folder and wants none: what it is offered is to
+  // start now, as its launch meant it to
+  if (h.kind === "wait") {
+    box.append(el("div", {class:"box"},
+      el("h3", {}, el("span", {class:"dot"}), h.head || ""),
+      el("div", {class:"why"}, h.say || ""),
+      el("div", {class:"acts"},
+        el("button", {class:"go", onclick:() => send({kind:"restart"})}, T["tui.hold.start"] || ""))));
+    return;
+  }
   const move = path => { if (path) send({kind:"tabfolder", tab:t.index, folder:path}); };
   const acts = el("div", {class:"acts"});
   if (places.length) {

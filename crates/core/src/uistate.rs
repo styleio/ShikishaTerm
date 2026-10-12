@@ -293,6 +293,9 @@ pub struct HoldState {
     pub say: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// `folder`, `nofolder` or `wait` (`tab::Held::kind`): what the panel
+    /// offers depends on it -- a folder to pick, or a start
+    pub kind: &'static str,
 }
 
 /// What a script is asking the person about a page, for the bar the board
@@ -2728,6 +2731,7 @@ impl TabState {
                 head: h.header(),
                 say: h.say(),
                 folder: h.folder().map(|f| f.display().to_string()),
+                kind: h.kind(),
             }),
             draft: None,
             // Filled in by `view::ui_state_of`, which knows the rows

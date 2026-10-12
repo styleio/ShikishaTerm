@@ -468,6 +468,21 @@ pub fn spawn_desk(
         let said = opts.clone();
         let carried = launch_plan(carry, desk, &argv, &ft.cfg, &said.place(), &title, far_opts(&said));
         opts.lost = carried.lost;
+        // After a run that did not close properly, the AI tabs of this
+        // machine come back one at a time, or wait for the person
+        // (`lastexit::Pace`). Each keeps what it was to start as for when its
+        // turn comes; a terminal of another machine and a model conversation
+        // cost this machine nothing and start at once
+        let waits = (opts.held.is_none()
+            && !far_opts(&said)
+            && opts.model.is_none()
+            && Tab::resolve_profile(&argv, &ft.cfg.profile).name != crate::profile::GENERIC)
+            .then(crate::lastexit::turn)
+            .flatten();
+        let waiting_plan = waits.is_some().then(|| carried.plan.clone());
+        if waits.is_some() {
+            opts.held = waits;
+        }
         match Tab::spawn_as(
             title.clone(),
             &argv,
@@ -479,6 +494,7 @@ pub fn spawn_desk(
         ) {
             Ok(mut tab) => {
                 forget_failure(&desk.uid, &title);
+                tab.waiting_plan = waiting_plan;
                 tab.locked = ft.cfg.locked;
                 tab.auto_restart = ft.cfg.auto_restart;
                 tab.depth = ft.depth;

@@ -181,6 +181,16 @@ pub enum Held {
     /// changes with how the app was started, is written down nowhere, and
     /// appears nowhere on screen. So the tab is held instead, and says so
     NoFolder,
+    /// The run before this one did not close properly, and the AI tabs are
+    /// coming back one at a time rather than all at once: this one starts
+    /// at `until`. Each of them is a program of a few hundred megabytes, and
+    /// a machine that just ran out of memory, given them all in the same
+    /// second, runs out again (see `crate::lastexit::Pace`)
+    Paced { until: std::time::Instant },
+    /// The runs before this one stopped soon after starting, more than once.
+    /// Starting every AI again by itself may be what stops it, so this one
+    /// waits until the person starts it
+    AfterCrash,
 }
 
 impl Held {
@@ -213,8 +223,26 @@ impl Held {
     pub fn header(&self) -> String {
         crate::i18n::t(match self {
             Held::NoFolder => "msg.folder.none_head",
+            Held::Paced { .. } => "msg.start.paced_head",
+            Held::AfterCrash => "msg.start.after_crash_head",
             _ => "msg.folder.held",
         })
+    }
+
+    /// Whether this tab waits for its turn rather than for a folder: it is
+    /// started by time or by the person, never by a folder turning up
+    pub fn waits_to_start(&self) -> bool {
+        matches!(self, Held::Paced { .. } | Held::AfterCrash)
+    }
+
+    /// What kind of holding it is, for the board: a folder that is not here,
+    /// no folder at all, or a start that waits
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Held::NoDrive { .. } | Held::Missing { .. } => "folder",
+            Held::NoFolder => "nofolder",
+            Held::Paced { .. } | Held::AfterCrash => "wait",
+        }
     }
 
     /// The reason a folder is not usable, as the tab's own screen says it.
@@ -229,6 +257,8 @@ impl Held {
                 &[("path", &cwd.display().to_string())],
             ),
             Held::NoFolder => crate::i18n::t("msg.folder.none"),
+            Held::Paced { .. } => crate::i18n::t("msg.start.paced"),
+            Held::AfterCrash => crate::i18n::t("msg.start.after_crash"),
         }
     }
 
@@ -237,7 +267,7 @@ impl Held {
     pub fn folder(&self) -> Option<&std::path::Path> {
         match self {
             Held::NoDrive { cwd, .. } | Held::Missing { cwd } => Some(cwd),
-            Held::NoFolder => None,
+            Held::NoFolder | Held::Paced { .. } | Held::AfterCrash => None,
         }
     }
 
@@ -247,6 +277,8 @@ impl Held {
             Held::NoDrive { drive, .. } => format!("nodrive:{drive}"),
             Held::Missing { .. } => "missing".into(),
             Held::NoFolder => "nofolder".into(),
+            Held::Paced { .. } => "paced".into(),
+            Held::AfterCrash => "aftercrash".into(),
         }
     }
 }
@@ -3368,6 +3400,12 @@ pub struct Tab {
     /// someone who quit to be rid of it — but offered to the key that already
     /// means "carry the conversation over"
     pub previous: Option<Session>,
+    /// What a tab waiting for its turn to start (`Held::waits_to_start`) is to
+    /// start as when its turn comes: the conversation its launch would have
+    /// carried, or a new one. Kept apart from `previous`, which is what the
+    /// restart key reaches for -- a tab whose desk does not carry
+    /// conversations must not come back on yesterday's because it waited
+    pub waiting_plan: Option<Resume>,
     /// Whether this tab came up on a conversation of nobody's although its
     /// folder has been worked in before.
     ///
@@ -3907,8 +3945,18 @@ impl Tab {
     /// no folder that is missing: they were released, restarted, held again,
     /// and went round for as long as the app was open
     pub fn reconsider(&mut self) {
-        if self.opts.held.is_some() && self.opts.hold().is_none() {
-            self.release();
+        match &self.opts.held {
+            // Its turn has come. Whatever its folder is doing now, the
+            // restart asks again (`restart_as`)
+            Some(Held::Paced { until }) => {
+                if std::time::Instant::now() >= *until {
+                    self.release();
+                }
+            }
+            // Only the person starts it
+            Some(Held::AfterCrash) => {}
+            Some(_) if self.opts.hold().is_none() => self.release(),
+            _ => {}
         }
     }
 
@@ -4462,6 +4510,7 @@ impl Tab {
             log_path,
             keyboard,
             previous: None,
+            waiting_plan: None,
             past_here,
             // Handed a conversation, and this folder's records say it was not
             // had here: whatever the app wrote down, what this tab was saying
@@ -4815,6 +4864,11 @@ impl Tab {
     /// Relaunch, carrying the conversation over. What that means for this CLI
     /// is decided by the caller — see `Resume`
     pub fn restart_as(&mut self, rows: u16, cols: u16, plan: Resume) -> Result<()> {
+        // A tab that was waiting for its turn has never started: whichever
+        // road starts it now -- its turn, or the person pressing -- it starts
+        // as its launch meant it to. Only such a tab has one: any start puts
+        // a fresh tab in this one's place, which has none
+        let plan = self.waiting_plan.take().unwrap_or(plan);
         self.kill();
         // Asked again, because a restart is exactly when it may have changed:
         // the folder has turned up since this tab was held, or has gone since
@@ -7210,6 +7264,39 @@ mod held_tests {
         assert_eq!(tab.held(), Some(&Held::NoFolder), "it was let go, and the launch will hold it again");
         assert!(!tab.needs_restart, "it is on its way round the loop again");
         tab.kill();
+    }
+
+    /// A tab waiting for its turn after a bad end starts when its turn comes
+    /// and not before; one waiting for the person is never started by time.
+    /// Whichever starts it, it starts as its launch meant it to -- the
+    /// conversation it was to carry -- and not as the restart key would
+    #[test]
+    fn a_tab_waiting_its_turn_starts_when_it_comes_as_it_was_meant_to() {
+        let dir = std::env::temp_dir();
+        let soon = std::time::Instant::now() + std::time::Duration::from_millis(300);
+        let opts = TabOptions { cwd: Some(dir.clone()), held: Some(Held::Paced { until: soon }), ..Default::default() };
+        let mut tab = Tab::spawn("t".into(), &[crate::test_shell()], None, 10, 60, opts).expect("held");
+        assert_eq!(tab.held().map(Held::kind), Some("wait"));
+        assert!(tab.held().is_some_and(|h| h.folder().is_none()), "a tab waiting its turn was offered a folder");
+        tab.reconsider();
+        assert!(tab.held().is_some() && !tab.needs_restart, "it started before its turn");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        tab.reconsider();
+        assert!(tab.held().is_none() && tab.needs_restart, "its turn came and it was not started");
+        tab.kill();
+
+        let opts = TabOptions { cwd: Some(dir.clone()), held: Some(Held::AfterCrash), ..Default::default() };
+        let mut asked = Tab::spawn("t".into(), &[crate::test_shell()], None, 10, 60, opts).expect("held");
+        asked.reconsider();
+        assert_eq!(asked.held(), Some(&Held::AfterCrash), "a tab waiting for the person was started without them");
+
+        // Started by the person: it runs, and what it was to start as is
+        // spent on this start, not kept for a later restart
+        asked.waiting_plan = Some(super::Resume::Fresh);
+        asked.restart_as(10, 60, super::Resume::Fresh).unwrap();
+        assert!(asked.held().is_none(), "started, it is still waiting");
+        assert!(asked.waiting_plan.is_none(), "what it was to start as outlived its start");
+        asked.kill();
     }
 
     /// Japanese spends two columns per character, and the card holds Japanese.

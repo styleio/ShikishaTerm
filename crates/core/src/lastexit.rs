@@ -28,6 +28,114 @@ pub struct Mark {
     /// When it started, as seconds since the epoch
     #[serde(default)]
     pub started: u64,
+    /// Whether it had been running a while ([`SETTLES_AFTER`]) by the time
+    /// it last said anything. A run that ends badly before that is one that
+    /// stopped soon after starting -- which, more than once in a row, is
+    /// something the start itself may be doing
+    #[serde(default)]
+    pub settled: bool,
+}
+
+/// How long a run has to last before an end to it is no longer "soon after
+/// starting"
+pub const SETTLES_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// How the AI tabs come back at this start.
+///
+/// Every AI CLI is a program of a few hundred megabytes, and a start brings
+/// back all of them in the same second. After a run that ended because the
+/// machine ran out of memory (`crate::pressure`), that is the surest way to
+/// run out again -- so after a run that did not close properly they come
+/// back one at a time, and after two runs in a row that stopped soon after
+/// starting, they wait for the person
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pace {
+    /// The run before closed properly: everything starts at once
+    All,
+    /// It did not: the AI tabs start one after another, [`PACE_GAP`] apart
+    OneByOne,
+    /// Two runs in a row stopped soon after starting: the AI tabs wait to be
+    /// started by the person
+    Asked,
+}
+
+/// The time between one AI tab starting and the next, after a bad end
+pub const PACE_GAP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long after the start a tab being launched is still one of the start's.
+/// A desk opened later is the person asking for it, and starts as asked
+const START_LASTS: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Runs in a row that stopped soon after starting, kept from one start to the next
+const SHORT_RUNS: &str = "short-runs";
+
+/// How to come back, given the mark the run before left (if it left one)
+/// and how many runs in a row before it stopped soon after starting. Answers
+/// that count as it stands after this start is counted
+pub fn pace_for(left: Option<&Mark>, short_before: u32) -> (Pace, u32) {
+    let Some(left) = left else { return (Pace::All, 0) };
+    let short = if left.settled { 0 } else { short_before + 1 };
+    (if short >= 2 { Pace::Asked } else { Pace::OneByOne }, short)
+}
+
+/// This start's pace, when it has been decided, and the tabs handed a turn
+struct Turns {
+    pace: Pace,
+    from: std::time::Instant,
+    handed: u32,
+}
+
+static TURNS: std::sync::Mutex<Option<Turns>> = std::sync::Mutex::new(None);
+
+/// Decide how this start's AI tabs come back. Called once, at the start,
+/// with what [`left_behind`] found, before any tab is launched
+pub fn decide_pace(left: Option<&Mark>) -> Pace {
+    let path = crate::config::state_path(SHORT_RUNS);
+    let before = std::fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    let (pace, short) = pace_for(left, before);
+    let _ = crate::crypto::write_atomic(&path, &short.to_string());
+    if pace != Pace::All {
+        crate::append_hook_log(&format!("start: the run before did not close properly ({short} short run(s) in a row); AI tabs come back {pace:?}"));
+    }
+    *TURNS.lock().unwrap_or_else(|e| e.into_inner()) = Some(Turns { pace, from: std::time::Instant::now(), handed: 0 });
+    pace
+}
+
+/// What holds back an AI tab being launched now, if anything: its turn, or
+/// the person. `None` starts it at once -- the first of a paced start, every
+/// tab of a start after a run that closed properly, and any tab launched
+/// once the start is over. Each one after the first of a paced start goes a
+/// [`PACE_GAP`] after the one before
+pub fn turn() -> Option<crate::tab::Held> {
+    let mut turns = TURNS.lock().unwrap_or_else(|e| e.into_inner());
+    let t = turns.as_mut()?;
+    if t.from.elapsed() > START_LASTS {
+        return None;
+    }
+    match t.pace {
+        Pace::All => None,
+        Pace::Asked => Some(crate::tab::Held::AfterCrash),
+        Pace::OneByOne => {
+            let k = t.handed;
+            t.handed += 1;
+            (k > 0).then(|| crate::tab::Held::Paced { until: t.from + PACE_GAP * k })
+        }
+    }
+}
+
+/// Say that this run has been going a while: an end to it from now on is
+/// not one soon after starting, and the runs before it are forgiven
+pub fn mark_settled() {
+    let Ok(text) = std::fs::read_to_string(mark_path()) else { return };
+    let Ok(mut mark) = serde_json::from_str::<Mark>(&text) else { return };
+    if mark.pid != std::process::id() {
+        return;
+    }
+    mark.settled = true;
+    if let Ok(text) = serde_json::to_string(&mark) {
+        let _ = crate::crypto::write_atomic(&mark_path(), &text);
+    }
+    let _ = crate::crypto::write_atomic(&crate::config::state_path(SHORT_RUNS), "0");
 }
 
 /// What happened to a run that did not finish
@@ -146,6 +254,7 @@ pub fn mark_running() {
         pid: std::process::id(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         started: now_secs(),
+        settled: false,
     };
     if let Ok(text) = serde_json::to_string(&mark) {
         let _ = crate::crypto::write_atomic(&mark_path(), &text);
@@ -157,6 +266,7 @@ pub fn mark_running() {
 /// start reports
 pub fn mark_closed() {
     let _ = std::fs::remove_file(mark_path());
+    let _ = crate::crypto::write_atomic(&crate::config::state_path(SHORT_RUNS), "0");
 }
 
 /// The mark the previous run left behind, if it left one.
@@ -498,6 +608,41 @@ fn written_by<'a>(log: &'a str, mark: &Mark) -> Vec<&'a str> {
 mod tests {
     use super::*;
 
+    fn ended(settled: bool) -> Mark {
+        Mark { pid: 7, version: String::new(), started: 0, settled }
+    }
+
+    /// After a run that closed properly everything starts at once; after one
+    /// that did not, the AI tabs come back one at a time; after two in a row
+    /// that stopped soon after starting, they wait for the person. A run that
+    /// had gone on a while before it ended forgives the ones before it
+    #[test]
+    fn how_the_ai_tabs_come_back_follows_how_the_runs_before_ended() {
+        assert_eq!(pace_for(None, 5), (Pace::All, 0), "a proper close was not a fresh start");
+        assert_eq!(pace_for(Some(&ended(false)), 0), (Pace::OneByOne, 1));
+        assert_eq!(pace_for(Some(&ended(false)), 1), (Pace::Asked, 2), "two short runs in a row did not wait for the person");
+        assert_eq!(pace_for(Some(&ended(false)), 4), (Pace::Asked, 5));
+        assert_eq!(pace_for(Some(&ended(true)), 4), (Pace::OneByOne, 0), "a run that had gone on a while was counted as short");
+    }
+
+    /// The first AI tab of a paced start goes at once and each after it one
+    /// gap later; a start waiting for the person holds every one
+    #[test]
+    fn a_paced_start_hands_out_turns_a_gap_apart() {
+        let from = std::time::Instant::now();
+        *TURNS.lock().unwrap() = Some(Turns { pace: Pace::OneByOne, from, handed: 0 });
+        assert_eq!(turn(), None, "the first did not start at once");
+        assert_eq!(turn(), Some(crate::tab::Held::Paced { until: from + PACE_GAP }));
+        assert_eq!(turn(), Some(crate::tab::Held::Paced { until: from + PACE_GAP * 2 }));
+        *TURNS.lock().unwrap() = Some(Turns { pace: Pace::Asked, from, handed: 0 });
+        assert_eq!(turn(), Some(crate::tab::Held::AfterCrash));
+        assert_eq!(turn(), Some(crate::tab::Held::AfterCrash));
+        // A desk opened once the start is over starts as asked
+        *TURNS.lock().unwrap() = Some(Turns { pace: Pace::Asked, from: from - START_LASTS * 2, handed: 0 });
+        assert_eq!(turn(), None);
+        *TURNS.lock().unwrap() = None;
+    }
+
     /// This very process runs; one that has ended does not
     #[test]
     fn a_process_is_running_while_it_is_there_and_not_after() {
@@ -526,7 +671,7 @@ mod tests {
     /// be real, the explanation would be about somebody else's crash
     #[test]
     fn the_record_is_matched_to_the_process_that_went() {
-        let mark = Mark { pid: 19504, version: "0.18.0".into(), started: 0 };
+        let mark = Mark { pid: 19504, version: "0.18.0".into(), started: 0, settled: false };
         // Written the way this machine really answered: the sentence in the
         // language the machine is set to, and the fields underneath in none
         let found = serde_json::json!({
@@ -563,7 +708,7 @@ mod tests {
     /// Nothing recorded is an answer too, and not the same answer as a crash
     #[test]
     fn a_run_with_no_record_says_so_rather_than_inventing_one() {
-        let mark = Mark { pid: 999, version: "0.18.0".into(), started: 0 };
+        let mark = Mark { pid: 999, version: "0.18.0".into(), started: 0, settled: false };
         let ended = pick(&mark, &serde_json::json!({ "crashes": [], "exhaustion": [] }));
         assert!(ended.code.is_empty());
         assert!(ended.when.is_empty());
@@ -587,7 +732,7 @@ mod tests {
             .ok()
             .and_then(|v| v.trim().parse().ok())
             .expect("SHIKISHA_PROBE_PID is the process this should find");
-        let mark = Mark { pid, version: env!("CARGO_PKG_VERSION").into(), started: 0 };
+        let mark = Mark { pid, version: env!("CARGO_PKG_VERSION").into(), started: 0, settled: false };
         let began = std::time::Instant::now();
         let ended = why(&mark);
         println!("asked the machine in {}ms", began.elapsed().as_millis());
@@ -601,7 +746,7 @@ mod tests {
     /// is put back the way a person would look it up
     #[test]
     fn the_code_is_spelled_the_way_it_is_looked_up() {
-        let mark = Mark { pid: 7, version: String::new(), started: 0 };
+        let mark = Mark { pid: 7, version: String::new(), started: 0, settled: false };
         let one = |code: &str| {
             pick(
                 &mark,
@@ -635,7 +780,7 @@ mod tests {
     /// before the crash, which the old same-second match threw away
     #[test]
     fn a_shortage_the_second_before_is_part_of_the_account() {
-        let mark = Mark { pid: 5560, version: "0.18.0".into(), started: 0 };
+        let mark = Mark { pid: 5560, version: "0.18.0".into(), started: 0, settled: false };
         let found = serde_json::json!({
             "crashes": [crashed("2026-09-23T15:13:34", 5560, "c0000409", "SHIKISHA-TERM.exe")],
             "exhaustion": [
@@ -655,7 +800,7 @@ mod tests {
         assert!(e.starts_with(&format!("[pid {} at ", std::process::id())), "{e}");
         assert!(!e.contains('\n'), "{e}");
         assert!(e.ends_with("panicked at src/x.rs:3:9: / cannot move state from Destroyed"), "{e}");
-        let mark = Mark { pid: std::process::id(), version: String::new(), started: 0 };
+        let mark = Mark { pid: std::process::id(), version: String::new(), started: 0, settled: false };
         assert_eq!(written_by(&e, &mark), vec![e.as_str()], "and is read back as this run's");
     }
 
@@ -673,15 +818,15 @@ C:\\tao\\runner.rs:371: panicked at runner.rs:371:25: / cannot move state from D
 [pid 5560 at 2001] ours: index out of bounds
 [pid 5560 at 2002] ours again
 ";
-        let mark = Mark { pid: 5560, version: String::new(), started: 2000 };
+        let mark = Mark { pid: 5560, version: String::new(), started: 2000, settled: false };
         assert_eq!(
             written_by(log, &mark),
             vec!["[pid 5560 at 2001] ours: index out of bounds", "[pid 5560 at 2002] ours again"]
         );
-        let silent = Mark { pid: 5560, version: String::new(), started: 3000 };
+        let silent = Mark { pid: 5560, version: String::new(), started: 3000, settled: false };
         assert!(written_by(log, &silent).is_empty(), "a run that wrote nothing has nothing to show");
         let many: String = (0..10).map(|i| format!("[pid 1 at {}] n{i}\n", 10 + i)).collect();
-        let last = written_by(&many, &Mark { pid: 1, version: String::new(), started: 0 });
+        let last = written_by(&many, &Mark { pid: 1, version: String::new(), started: 0, settled: false });
         assert_eq!(last.len(), 6);
         assert_eq!(last.last().copied(), Some("[pid 1 at 19] n9"));
     }

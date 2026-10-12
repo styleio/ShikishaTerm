@@ -1293,7 +1293,11 @@ fn run_in_window() -> Result<()> {
         // What the run before this one left behind, looked at before this one
         // claims the mark. Asking the machine *why* is slow, so it happens on a
         // thread of its own and the answer catches up with the window
-        if let Some(mark) = shikisha_core::lastexit::left_behind() {
+        let left = shikisha_core::lastexit::left_behind();
+        // ...and how the AI tabs come back because of it, decided before any
+        // of them is launched
+        shikisha_core::lastexit::decide_pace(left.as_ref());
+        if let Some(mark) = left {
             shikisha_core::append_hook_log(&format!(
                 "the run before this one (pid {}) did not close properly",
                 mark.pid
@@ -1308,6 +1312,10 @@ fn run_in_window() -> Result<()> {
         std::thread::spawn(|| {
             std::thread::sleep(update::TRIAL_LASTS);
             update::trial_passed();
+            // ...and a run that has gone on a while is not one that stopped
+            // soon after starting, however it ends
+            std::thread::sleep(shikisha_core::lastexit::SETTLES_AFTER.saturating_sub(update::TRIAL_LASTS));
+            shikisha_core::lastexit::mark_settled();
         });
         let out = run(&mut surface);
         // Only a run that got here finished. Anything else -- a crash, a power
