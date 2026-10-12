@@ -837,6 +837,19 @@ pub fn moved_on_in(path: &Path, sent: &str, from: u64) -> Option<bool> {
     Some(moved_on(&page, asked))
 }
 
+/// What the AI answered to the last thing the person said, once that turn is
+/// over in the record (`None` while it goes on, and for one that failed or
+/// was stopped too): the answer to words given after an ask was stopped
+pub fn latest_reply(path: &Path) -> Option<String> {
+    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+    let last = page.turns.iter().rposition(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text))?;
+    let end = crate::reader::turn_end_after(path, page.turns[last].at?)?;
+    if end.mark != crate::reader::TurnMark::Over || end.stopped {
+        return None;
+    }
+    reply_after(&page, last, Some(end.at))
+}
+
 fn moved_on(page: &crate::reader::Page, asked: usize) -> bool {
     page.turns[asked + 1..].iter().any(|t| t.who == Who::You && !crate::reader::from_a_hook(&t.text))
 }
@@ -969,9 +982,10 @@ impl Told {
     fn another(&self, now: &Told) -> bool {
         match (self.words, now.words) {
             (Some(was), Some(is)) => was != is,
-            (None, None) => matches!((self.hook, now.hook), (Some(was), Some(is)) if was != is),
-            // Its words drawn after its hook said so, or gone a moment: the same one
-            _ => false,
+            // Without words on one side or both, its hook says: another word
+            // from it is another question, the same word with its words drawn
+            // since -- or gone a moment -- the same one
+            _ => matches!((self.hook, now.hook), (Some(was), Some(is)) if was != is),
         }
     }
 
@@ -990,20 +1004,40 @@ impl Ask {
     /// Seen at work again, it is followed to that answer; left quiet for
     /// [`RECORD_GIVES_NONE`], the turn was stopped and nothing came of it
     fn on_stopped(&mut self, t: &Tab, same_folder: Option<bool>) -> Option<Step> {
-        let since = *self.stopped_since.get_or_insert_with(Instant::now);
-        if matches!(t.state, TabState::Busy | TabState::Background | TabState::Question) {
-            self.redirected = true;
-            return None;
+        let now = Instant::now();
+        // The wait runs from the last the tab was seen at work: words given
+        // after the stop are worked on, and that is not quiet
+        if self.stopped_since.is_none() || matches!(t.state, TabState::Busy | TabState::Background) {
+            self.stopped_since = Some(now);
         }
+        let since = self.stopped_since.unwrap_or(now);
+        // Other words given after it are read off the record -- the person
+        // saying something after the ask -- not off a screen that may only
+        // have passed through a state between two looks
+        let from = self.record_from.unwrap_or(0);
+        let source = self.source(t);
+        let moved = match &source {
+            Source::Here(path) => moved_on_in(path, &self.text, from),
+            Source::Far(_) => self.far.moved_on,
+            Source::Screen => None,
+        };
+        self.redirected |= moved == Some(true) || self.overtaken;
         if self.redirected {
-            if t.reply_settling() {
+            if !quiet(t.state) || t.reply_settling() {
                 return None;
             }
-            let reply = t.last_response.clone().unwrap_or_else(|| tail(&t.last_screen, 40));
-            return Some(Step::Answer(answer(self, "DONE", Some(&reply), "record", same_folder,
-                Some("the person stopped the turn asked in and gave the tab other words; this is what it answered to them"))));
+            // What it answered to those words, once their turn is over
+            let (reply, read) = match &source {
+                Source::Here(path) => (latest_reply(path), "record"),
+                _ => (t.last_response.clone(), "screen"),
+            };
+            return match reply {
+                Some(reply) => Some(Step::Answer(answer(self, "DONE", Some(&reply), read, same_folder,
+                    Some("the person stopped the turn asked in and gave the tab other words; this is what it answered to them")))),
+                None => (since.elapsed() >= RECORD_GIVES_NONE).then(|| Step::Answer(stopped(self, same_folder))),
+            };
         }
-        (since.elapsed() >= RECORD_GIVES_NONE).then(|| Step::Answer(stopped(self, same_folder)))
+        (quiet(t.state) && since.elapsed() >= RECORD_GIVES_NONE).then(|| Step::Answer(stopped(self, same_folder)))
     }
 }
 
@@ -2043,7 +2077,10 @@ mod tests {
         a.stopped_since = Some(Instant::now() - RECORD_GIVES_NONE);
         let Some(Step::Answer(v)) = a.on_stopped(&t, None) else { panic!("left quiet, it is never said") };
         assert_eq!((v["state"].as_str(), v["by_person"].as_bool()), (Some("STOPPED"), Some(true)));
+        // Seen to settle and take up work again (the record has nothing to
+        // say for a tab that keeps none): the other words are followed
         let mut b = sent_ask();
+        b.overtaken = true;
         t.state = TabState::Busy;
         assert!(b.on_stopped(&t, None).is_none());
         assert!(b.redirected, "the person's other words are not followed");
@@ -2052,6 +2089,34 @@ mod tests {
         let Some(Step::Answer(v)) = b.on_stopped(&t, None) else { panic!("the answer to the other words did not come") };
         assert_eq!(v["state"], "DONE");
         assert!(v["reply"].as_str().is_some_and(|r| r.contains("one finding")), "{v}");
+    }
+
+    /// The words the person gave after stopping an ask, and the answer to
+    /// them, read off the record: the person spoke after the ask, and the
+    /// answer is the one to their words once that turn is over
+    #[test]
+    fn the_answer_to_words_given_after_a_stop_is_read_off_the_record() {
+        let q = "Review the parser change and run the tests.";
+        let codex_said = |role: &str, kind: &str, text: &str| {
+            json!({"type": "response_item", "payload": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}})
+        };
+        let mut lines = vec![
+            codex_said("user", "input_text", q),
+            codex_said("assistant", "output_text", "I will run the test suite first."),
+            json!({"type": "event_msg", "payload": {"type": "turn_aborted", "reason": "interrupted"}}),
+        ];
+        let stopped = record(&lines);
+        assert_eq!(moved_on_in(stopped.path(), q, 0), Some(false));
+        assert_eq!(latest_reply(stopped.path()), None, "the stopped turn's words are no answer");
+        lines.push(codex_said("user", "input_text", "Skip the tests and just read the diff."));
+        let going = record(&lines);
+        assert_eq!(moved_on_in(going.path(), q, 0), Some(true), "the person's words after the stop are missed");
+        assert_eq!(latest_reply(going.path()), None, "answered before the turn ended");
+        lines.push(codex_said("assistant", "output_text", "One finding: the parser drops the tail."));
+        lines.push(json!({"type": "event_msg", "payload": {"type": "task_complete", "error": null}}));
+        let done = record(&lines);
+        assert_eq!(latest_reply(done.path()).as_deref(), Some("One finding: the parser drops the tail."));
+        assert_eq!(outcome_in(done.path(), q, 0), Some(Outcome::Stopped), "the asked turn itself is still the one stopped");
     }
 
     /// A failed tab is free to be typed into, and saying it again is the way
