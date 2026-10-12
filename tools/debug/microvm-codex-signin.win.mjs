@@ -186,19 +186,62 @@ try {
     'the code is shown beside a press that copies it');
   await board.shot('1-step');
 
-  console.log('3. signed in in the terminal instead');
+  console.log('3. signed in in the terminal instead, for a project just cloned');
+  // A project's own step has no row to come back from: "in the terminal" lets
+  // it go the way "later" does, and leaves the sign-in tab for the person
   const terminal = await board.run('(() => { const b = [...document.querySelectorAll("#login .sfoot button")].find(b => b.textContent === T["tui.login.terminal"]); if (b) b.click(); return !!b; })()');
   check(terminal, '"Sign in in the terminal" is offered');
   await until(() => board.run('document.getElementById("login").hidden && !S.login_step'), 'the step put away', 20000);
   check(await board.run('(() => { const t = (S.tabs || []).find(x => x.index === S.active); return !!t && t.name === "codex sign-in"; })()'), 'the terminal is left in front');
-  // Signed in from outside: a stand-in of what Codex writes
-  await on(home.sandbox, 'mkdir -p ~/.codex && echo \'{"OPENAI_API_KEY":"stand-in"}\' > ~/.codex/auth.json');
-  await until(() => !signinTab(), 'the sign-in tab to come off the desk', 60000)
-    .catch(() => {});
-  check(!signinTab(), 'once signed in, the step goes on by itself and the sign-in tab comes off the desk');
-  check(/its tab is started again to read it/.test(log()), 'Codex\'s own tab is started again to read the sign-in');
-  await on(home.sandbox, 'rm -f ~/.codex/auth.json');
+  await sleep(15000);
+  check(!!signinTab(), 'the sign-in tab stays for the person to sign in in');
   await board.shot('2-after');
+
+  console.log('4. a worktree that has to make its checkout again waits on the sign-in, with the way on on its row');
+  // The rules the project goes on to after its sign-in are not this check's
+  await board.run('(() => { if (S.settings_open) send({kind:"settings_close"}); return true; })()');
+  await sleep(1500);
+  // The checkout's machine gone from the service: the next worktree makes it
+  // again from the project's address, and the new machine is not signed in
+  await e2b('DELETE', '/sandboxes/' + home.sandbox);
+  await until(() => board.run(`!!(S.groups || []).find(g => g.folder === ${JSON.stringify(CHECKOUT)})`), 'the checkout on the board', 20000);
+  await board.run(`openBranch((S.groups || []).find(g => g.folder === ${JSON.stringify(CHECKOUT)})); true`);
+  await until(() => board.run('!document.getElementById("branch").hidden'), 'the worktree dialog', 20000);
+  await board.run('branchTab = "name"; drawBranchTabs(document.getElementById("branch")); true');
+  await board.run(`(() => { const q = document.getElementById("bq"); q.value = "check/again"; q.dispatchEvent(new Event("input")); return true; })()`);
+  await until(() => board.run('!!(S.branch && S.branch.asked === "check/again" && S.branch.folder)'), 'the app\'s answer', 60000);
+  await board.run('document.querySelector("#branch .bgo .go").click(); true');
+  const row = () => board.run('JSON.stringify((S.making || []).find(m => m.stage === "signing_in") || null)').then((t) => JSON.parse(t || 'null'));
+  await until(async () => !!(await row()), 'the worktree\'s row to wait on the sign-in', 600000)
+    .catch(async (e) => { console.log('    (the rows: ' + await board.run('JSON.stringify(S.making)') + ')'); throw e; });
+  check(true, 'the worktree waits on the new checkout\'s sign-in');
+  await until(async () => ((await step()) || {}).tab === 'codex sign-in', 'the sign-in step for the new checkout', 120000);
+  check(true, 'the sign-in step is shown for it, with its sign-in tab');
+  // Put away for the terminal, then back from the row
+  await board.run('(() => { const b = [...document.querySelectorAll("#login .sfoot button")].find(b => b.textContent === T["tui.login.terminal"]); b && b.click(); return true; })()');
+  await until(() => board.run('document.getElementById("login").hidden && !S.login_step'), 'the step put away', 20000);
+  const rowButtons = () => board.run('JSON.stringify([...document.querySelectorAll(".making")].filter(r => r.querySelector(".mbtns")).map(r => [...r.querySelectorAll(".mbtns button")].map(b => b.textContent)))');
+  const buttons = JSON.parse(await rowButtons());
+  const [showWord, doneWord] = [await board.run('T["tui.making.signin.show"]'), await board.run('T["tui.making.signin.done"]')];
+  check(buttons.some((b) => b.includes(showWord) && b.includes(doneWord)),
+    'the waiting row offers the sign-in step and "I have signed in": ' + JSON.stringify(buttons));
+  await board.shot('3-row');
+  await board.run('(() => { const b = [...document.querySelectorAll(".making .mbtns button")].find(b => b.textContent === T["tui.making.signin.show"]); b && b.click(); return true; })()');
+  await until(async () => ((await step()) || {}).tab === 'codex sign-in' && await board.run('!document.getElementById("login").hidden'), 'the step back from the row', 30000);
+  check(true, '"Open the sign-in step" brings the step back');
+  await board.run('(() => { const b = [...document.querySelectorAll("#login .sfoot button")].find(b => b.textContent === T["tui.login.terminal"]); b && b.click(); return true; })()');
+  await until(() => board.run('document.getElementById("login").hidden'), 'the step put away again', 20000);
+  // "I have signed in": the worktree goes on, though the machine never said so
+  await board.run('(() => { const b = [...document.querySelectorAll(".making .mbtns button")].find(b => b.textContent === T["tui.making.signin.done"]); b && b.click(); return true; })()');
+  await until(async () => !(await row()), 'the row to go on past the sign-in', 60000);
+  check(true, '"I have signed in" lets the worktree go on');
+  const newCheckout = () => (project()?.homes || [])[0] || {};
+  await until(() => !((folderAt(CHECKOUT)?.tabs || []).some((t) => t.name === 'codex sign-in')), 'the sign-in tab to come off the desk', 60000).catch(() => {});
+  check(!((folderAt(CHECKOUT)?.tabs || []).some((t) => t.name === 'codex sign-in')), 'the sign-in tab comes off the desk');
+  await until(() => (desk().folders || []).some((f) => f.cwd !== CHECKOUT && f.sandbox && f.sandbox !== newCheckout().sandbox), 'the worktree written down', 300000)
+    .catch(async (e) => { console.log('    (the rows: ' + await board.run('JSON.stringify(S.making)') + ')'); throw e; });
+  check(true, 'the worktree is made, a copy of the new checkout');
+  await board.shot('4-made');
 } catch (e) {
   check(false, e.message);
 } finally {

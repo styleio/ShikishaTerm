@@ -43,7 +43,9 @@ const PORT = 9481;
 const TOKEN = 'accounts-token-0123456789';
 const BASE = `http://127.0.0.1:${PORT}`;
 const USUAL = path.join(HOME, '.claude');
-const ACCOUNT = path.join(APP, 'data', 'ai-accounts', 'work', 'home');
+// This machine's own data folder, never the app's: the app's may be synced
+const ACCOUNTS = path.join(RUN, 'localappdata', 'ShikishaTerm', 'ai-accounts');
+const ACCOUNT = path.join(ACCOUNTS, 'work', 'home');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -76,10 +78,11 @@ fs.mkdirSync(bin, { recursive: true });
 fs.writeFileSync(path.join(bin, 'stand-in.mjs'), `
 const fs = require('node:fs'), path = require('node:path');
 const dir = process.env.CLAUDE_CONFIG_DIR || '';
-process.stdout.write('CFG=[' + dir + ']\\r\\n');
+const key = process.env.ANTHROPIC_API_KEY || '';
+process.stdout.write('CFG=[' + dir + '] KEY=[' + key + ']\\r\\n');
 // Said into a file named after the tab too, which is what the checks read
 fs.mkdirSync(${JSON.stringify(path.join(RUN, 'said'))}, { recursive: true });
-fs.writeFileSync(path.join(${JSON.stringify(path.join(RUN, 'said'))}, (process.env.SHIKISHA_TAB || 'unknown') + '.txt'), 'CFG=[' + dir + ']');
+fs.writeFileSync(path.join(${JSON.stringify(path.join(RUN, 'said'))}, (process.env.SHIKISHA_TAB || 'unknown') + '.txt'), 'CFG=[' + dir + '] KEY=[' + key + ']');
 if (dir) {
   const rec = path.join(dir, 'projects', 'C--work');
   fs.mkdirSync(rec, { recursive: true });
@@ -109,6 +112,8 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(C
 env.LOCALAPPDATA = path.join(RUN, 'localappdata');
 env.USERPROFILE = HOME;
 env.HOME = HOME;
+// A key in the app's environment, which would sign every account in as itself
+env.ANTHROPIC_API_KEY = 'leaked-key';
 env.PATH = bin + ';' + (env.PATH || env.Path || '');
 delete env.Path;
 const start = () => spawn(appExe, ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
@@ -148,6 +153,9 @@ try {
   const shown = (workerSays.match(/CFG=\[([^\]]*)\]/) || [])[1] || '';
   check(shown && path.resolve(shown).toLowerCase() === ACCOUNT.toLowerCase(), `the account's tab is pointed at the account's folder (${shown})`);
   check(/CFG=\[\]/.test(plainSays), `the other tab is pointed at no folder (${(plainSays.match(/CFG=\[[^\]]*\]/) || [''])[0]})`);
+  check(/KEY=\[\]/.test(workerSays), `the account's tab is not handed a key that would sign it in as somebody else (${(workerSays.match(/KEY=\[[^\]]*\]/) || [''])[0]})`);
+  check(/KEY=\[leaked-key\]/.test(plainSays), 'the other tab keeps the environment it always had');
+  check(!fs.existsSync(path.join(APP, 'data', 'ai-accounts')), 'nothing of the account is in the app\'s own folder, which may be synced');
 
   // Made up from the usual folder
   check(linked(path.join(ACCOUNT, 'projects')) && fs.existsSync(path.join(ACCOUNT, 'projects', 'C--old', 'old-conversation.jsonl')), 'the account sees the usual folder\'s conversations through a link');
@@ -156,7 +164,7 @@ try {
   check(!fs.existsSync(path.join(ACCOUNT, '.credentials.json')), 'the usual sign-in is not copied into the account');
   const state0 = fs.existsSync(path.join(ACCOUNT, '.claude.json')) ? JSON.parse(fs.readFileSync(path.join(ACCOUNT, '.claude.json'), 'utf8')) : {};
   check(state0.hasCompletedOnboarding === true && !state0.oauthAccount, 'the state file comes without the account it was read from');
-  check(fs.existsSync(path.join(APP, 'data', 'ai-accounts', 'work', 'account.json')), 'the folder carries the mark of an account\'s');
+  check(fs.existsSync(path.join(ACCOUNTS, 'work', 'account.json')) && fs.existsSync(path.join(ACCOUNTS, 'work', 'made')), 'the folder carries the mark of an account\'s, and says it was made whole');
   check(fs.existsSync(path.join(USUAL, 'projects', 'C--work', 'from-the-account.jsonl')), 'a conversation written through the account is in the usual folder');
 
   // The app's hooks are in the account's settings
@@ -181,7 +189,16 @@ try {
   const openedSays = opened ? await until(async () => { const s = await screenOf(opened.id || opened.name); return /CFG=\[/.test(s) && s; }, 'the sign-in tab to start', 30000).catch(() => '') : '';
   check(openedSays.toLowerCase().includes(ACCOUNT.toLowerCase()), 'the sign-in tab runs as the account');
   const written = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-  check(JSON.stringify(written.desks).includes('"ai_account": "work"') || JSON.stringify(written.desks).includes('"ai_account":"work"'), 'the sign-in tab is written as running as the account');
+  const signInLine = JSON.stringify(written.desks);
+  check(/"ai_account":\s*"work"/.test(signInLine) && /"command":\s*"claude auth login"/.test(signInLine) && /"profile":\s*"GENERIC"/.test(signInLine),
+    'the sign-in tab runs the CLI\'s own sign-in as the account, as a plain terminal');
+
+  // Another account chosen on a running tab: it starts again as that one
+  const switched = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  switched.desks[0].folders[0].tabs.find((t) => t.name === 'plain').ai_account = 'work';
+  fs.writeFileSync(configFile, JSON.stringify(switched, null, 2));
+  const plainAgain = await until(async () => { const s2 = await screenOf('plain'); return s2.toLowerCase().includes(ACCOUNT.toLowerCase()) && s2; }, 'the plain tab to start again as the account', 30000).catch(() => '');
+  check(!!plainAgain, 'a running tab given an account starts again as it');
 
   // The page draws the card
   chrome = await startChrome();
@@ -206,10 +223,22 @@ try {
   const held = await until(async () => (await tabs()).find((t) => t.name === 'worker' && t.hold), 'the worker to be held', 30000).catch(() => null);
   check(held && held.hold.kind === 'account', `a tab of an account no longer in the settings is held, and says why (${held && JSON.stringify(held.hold).slice(0, 160)})`);
 
-  // Deleting the folder leaves the usual folder's conversations
+  // Deleting it is refused while tabs run as it
   await send(`/cfg?t=${TOKEN}`);
-  const dropped = await until(async () => { const r = await send('/api/ai-accounts/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'work' }) }); return r.status === 200 && (await r.json()); }, 'the delete', 20000);
-  check(dropped.ok === true && !fs.existsSync(path.join(APP, 'data', 'ai-accounts', 'work')), `the account's folder is deleted (${JSON.stringify(dropped)})`);
+  const forget = async () => { const r = await send('/api/ai-accounts/forget', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: 'work' }) }); return r.status === 200 && (await r.json()); };
+  const refused = await until(forget, 'the delete', 20000);
+  check(!refused.ok && /worker/.test(refused.error || '') && fs.existsSync(ACCOUNT), `deleting an account tabs run as is refused, naming them (${JSON.stringify(refused)})`);
+  // Those tabs set back to the usual sign-in: now it goes, its history with it
+  const cleared = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  const walk = (v) => { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') { delete v.ai_account; Object.values(v).forEach(walk); } };
+  walk(cleared.desks);
+  fs.writeFileSync(configFile, JSON.stringify(cleared, null, 2));
+  fs.writeFileSync(path.join(ACCOUNT, 'history.jsonl'), '{"display":"asked as work"}\n');
+  await sleep(3000);
+  const dropped = await until(forget, 'the delete', 20000);
+  check(dropped.ok === true && !fs.existsSync(path.join(ACCOUNTS, 'work')), `the account's folder is deleted (${JSON.stringify(dropped)})`);
+  check(!(JSON.parse(fs.readFileSync(configFile, 'utf8')).ai_accounts || []).some((a) => a.id === 'work'), 'and the account is out of the settings on disk');
+  check(fs.existsSync(path.join(USUAL, 'history.jsonl')) && fs.readFileSync(path.join(USUAL, 'history.jsonl'), 'utf8').includes('asked as work'), 'what was typed as it is kept in the usual history');
   check(fs.existsSync(path.join(USUAL, 'projects', 'C--old', 'old-conversation.jsonl')) && fs.existsSync(path.join(USUAL, 'projects', 'C--work', 'from-the-account.jsonl')), 'the usual folder\'s conversations are all still there');
   check(fs.existsSync(path.join(USUAL, '.credentials.json')), 'the usual sign-in is still there');
 } catch (e) {

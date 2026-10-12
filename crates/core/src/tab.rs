@@ -3185,7 +3185,7 @@ fn already_resumes(spec: &crate::profile::ResumeSpec, argv: &[String]) -> bool {
 /// Fingerprint of the launch conditions. If this changes, a new session must be created to take effect
 pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         argv.join(" "),
         opts.encoding.map(|e| e.name()).unwrap_or("UTF-8"),
         opts.scrollback,
@@ -3197,7 +3197,10 @@ pub fn signature_of(argv: &[String], opts: &TabOptions) -> String {
         // the stick plugged in, the branch expanded — changes this, and the
         // ordinary "its launch conditions changed" path then restarts the tab
         // for real, without a single line of its own
-        opts.held.as_ref().map(Held::tag).unwrap_or_default()
+        opts.held.as_ref().map(Held::tag).unwrap_or_default(),
+        // Which account of its AI it runs as: another one chosen is the same
+        // command in another folder of the CLI's, started again to be it
+        opts.ai_account.as_deref().unwrap_or_default()
     )
 }
 
@@ -4251,10 +4254,18 @@ impl Tab {
         // ...and which account of its AI it runs as, for a tab that chose one
         // (`crate::accounts`): its folder made up, and the CLI pointed at it.
         // Only a program started on this PC -- an account is a folder of this
-        // PC's, and a CLI on a server is signed in as that server's
+        // PC's, and a CLI on a server is signed in as that server's. A
+        // variable that signs the CLI in by itself is taken out: left in, it
+        // would outrank the account's own sign-in without a word
         if runs_here && let Some(id) = opts.ai_account.as_deref() {
-            let (var, dir) = crate::accounts::prepare(id, &profile.name).map_err(anyhow::Error::msg)?;
-            cmd.env(var, dir);
+            let ready = crate::accounts::prepare(id, argv).map_err(anyhow::Error::msg)?;
+            for name in ready.strip {
+                if cmd.get_env(name).is_some() {
+                    crate::append_hook_log(&format!("tab \"{title}\" runs as account {id}: {name} is left out of its environment"));
+                }
+                cmd.env_remove(name);
+            }
+            cmd.env(ready.var, ready.dir);
         }
         // Where it runs. A folder that is not there is NOT quietly swapped for
         // another one: the folder is the job, and a command that lands

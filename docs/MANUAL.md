@@ -465,7 +465,9 @@ or the token. In an AI tab's settings, **Account** chooses which one the tab run
 Conversations, skills, commands and plugins are shared with your usual sign-in, so a
 conversation had as either account is found, resumed and searched as always. Each account's
 settings start as a copy of your usual ones. Deleting an account removes its folder and its
-sign-in; the conversations stay. Accounts are for tabs on this PC: a tab on a server or a
+sign-in; its conversations and what was typed as it stay, with your usual sign-in's. An account's
+folder is kept in this PC's own data folder, which nothing syncs, so each PC signs in by itself. Deleting is
+refused while a tab still runs as the account. Accounts are for tabs on this PC: a tab on a server or a
 MicroVM runs as that machine's CLI is signed in.
 
 ## 7. Automation
@@ -484,7 +486,9 @@ Fill in the prompt, where it goes, and when:
   tab is busy at that time, that run is skipped rather than typed into its work.
 
 **Run now** runs one at once. **History** shows each run: when, how it went, and what the AI
-answered. A run whose last run has not been answered yet is skipped, and says so.
+answered. A run whose last run has not been answered yet is skipped, and says so, and so is one for an
+open tab you are typing in. A prompt runs in its own desk whichever desk is on screen, once that desk has
+been opened since the app started; before that, its runs are skipped with the reason in the history.
 
 It runs by this app's clock. Nothing is registered with Task Scheduler or cron, and nothing
 runs while the app is closed or the PC sleeps. A time that went by is run once when the app

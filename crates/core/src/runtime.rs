@@ -491,6 +491,8 @@ struct LoginPending {
     /// title, for a CLI whose first run cannot sign it in on a machine with
     /// no browser (`MachineAi::login`). Taken off again when the step is done
     login_tab: Option<String>,
+    /// Whether that tab has been asked for: once, whether or not it could be
+    login_tried: bool,
     /// Where the step goes on to: a project just cloned goes through its
     /// rules; an AI given to a checkout already in use goes back to the
     /// worktree dialog the page was on its way to, or nowhere
@@ -609,17 +611,19 @@ pub fn web_address_in(text: &str) -> String {
 }
 
 /// A code a terminal printed for the person to enter on another device: a
-/// run of capitals and digits in groups joined by dashes (`ABCD-1234`), with a
-/// letter and a digit somewhere in it so a word in capitals or a date is not
-/// taken for one. The last such on the screen, which is the newest. Empty when
-/// there is none
+/// run of capitals and digits in groups joined by dashes (`ABCD-1234`). A
+/// word in capitals or a date is not taken for one: it has a letter and a
+/// digit -- or, all letters, no vowel, which is how codes meant to be read
+/// and typed are made (`WDJB-MJHT`, the device-sign-in standard's own
+/// example) and no word is. The last such on the screen, which is the newest.
+/// Empty when there is none
 pub fn device_code_in(text: &str) -> String {
     let is_code = |w: &str| {
         let groups: Vec<&str> = w.split('-').collect();
         groups.len() >= 2
             && groups.iter().all(|g| (4..=8).contains(&g.len()) && g.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
             && w.bytes().any(|b| b.is_ascii_uppercase())
-            && w.bytes().any(|b| b.is_ascii_digit())
+            && (w.bytes().any(|b| b.is_ascii_digit()) || !w.bytes().any(|b| b"AEIOUY".contains(&b)))
             && w.len() <= 20
     };
     text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ':' | '(' | ')' | '[' | ']'))
@@ -630,17 +634,33 @@ pub fn device_code_in(text: &str) -> String {
         .to_string()
 }
 
+/// The key a sign-in tab is written with in the settings, its step's number
+/// as the value: what takes it out again when the step is done, and every
+/// one of them at the next start -- a step lives only as long as the app
+pub const SIGN_IN_MARK: &str = "sign_in_for";
+
 /// Put a tab on the desk that runs the sign-in command of the step's AI, in
 /// the checkout's folder on its machine; its title back, or `None` when it
-/// could not be written. One already there under that title is used again
-fn put_login_tab(desks: &[config::Desk], tabs: &[Tab], p: &LoginPending, line: &str) -> Option<String> {
+/// could not be written. One already there under that title is used again.
+///
+/// The tab is written as a plain terminal (the generic profile), not an AI
+/// tab: taken for the AI by its command it would be handed that AI's flags in
+/// front of `login`, a conversation to resume, its hooks
+fn put_login_tab(desks: &[config::Desk], desk_index: usize, tabs: &[Tab], p: &LoginPending, line: &str) -> Option<String> {
     let title = format!("{} sign-in", p.ai);
     if tabs.iter().any(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == title) {
         return Some(title);
     }
     let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)));
-    let desk = desks.iter().find(|d| d.folder_at(&key).is_some())?;
-    let tab = serde_json::json!({"name": title, "command": line});
+    // The desk on screen when it has the folder -- or when no desk has it
+    // yet: the checkout was put on the desk on screen a moment ago, and the
+    // desks as read here are from before that
+    let shown = desks.get(desk_index);
+    let desk = match shown.filter(|d| d.folder_at(&key).is_some()) {
+        Some(d) => d,
+        None => desks.iter().find(|d| d.folder_at(&key).is_some()).or(shown)?,
+    };
+    let tab = serde_json::json!({"name": title, "command": line, "profile": crate::profile::GENERIC, SIGN_IN_MARK: p.seq.to_string()});
     match config::append_tab_on(&desk.uid, tab, Some(std::path::Path::new(&p.folder)), Some(&p.host.name)) {
         true => {
             append_hook_log(&format!("sign-in of {} on {}: `{line}` in a tab of its own", p.ai, p.host.name));
@@ -654,43 +674,44 @@ fn put_login_tab(desks: &[config::Desk], tabs: &[Tab], p: &LoginPending, line: &
 }
 
 /// A sign-in step done with. The tab put on the desk for its sign-in
-/// command comes off again; and once signed in, the AI's own tab, started
-/// before there was a sign-in to read, is started again so it reads it
-#[allow(clippy::too_many_arguments)]
-fn login_done(
-    p: &LoginPending,
-    signed_in: bool,
-    desks: &[config::Desk],
-    desk_index: usize,
-    tabs: &mut [Tab],
-    desk_tabs: &[Vec<Tab>],
-    close_requests: &mut Vec<CloseRequest>,
-    rows: u16,
-    cols: u16,
-) {
-    let Some(title) = p.login_tab.as_deref() else { return };
-    let here = |t: &Tab, name: &str| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == name;
-    let key = std::path::PathBuf::from(crate::uistate::place_key(Some(&p.host.name), std::path::Path::new(&p.folder)));
-    let owner = desks.iter().position(|d| d.folder_at(&key).is_some());
-    let list: &[Tab] = match owner {
-        Some(o) if o != desk_index => desk_tabs.get(o).map_or(&[][..], |l| l.as_slice()),
-        _ => tabs,
-    };
-    if let Some(at) = list.iter().position(|t| here(t, title)) {
-        close_requests.push(CloseRequest {
-            desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
-            at: 0,
-            key: crate::view::surface_key(&Surface::Session(at), list),
-            sure: true,
-            reply: None,
-        });
+/// command comes out of the settings, which takes it off the desk whether or
+/// not it had started yet; answered whether anything was written, for the
+/// settings to be read again. Once signed in, the AI's own tab -- started
+/// before there was a sign-in to read -- is started again so it reads it,
+/// but only one nobody has used yet: a tab somebody is working in is theirs
+fn login_done(p: &LoginPending, signed_in: bool, tabs: &mut [Tab], rows: u16, cols: u16) -> bool {
+    if p.login_tab.is_none() {
+        return false;
     }
-    if signed_in && owner.is_none_or(|o| o == desk_index) {
-        if let Some(t) = tabs.iter_mut().find(|t| here(t, &p.ai)) {
-            append_hook_log(&format!("sign-in of {} on {} done: its tab is started again to read it", p.ai, p.host.name));
-            restart_tab(t, false, false, rows, cols);
+    let dropped = match config::drop_marked_tabs_at(
+        &config::config_file_path(),
+        SIGN_IN_MARK,
+        Some(&p.seq.to_string()),
+        Some((p.folder.as_str(), p.host.name.as_str())),
+    ) {
+        Ok(n) => n > 0,
+        Err(e) => {
+            append_hook_log(&format!("could not take the sign-in tab of {} on {} out of the settings: {e:#}", p.ai, p.host.name));
+            false
+        }
+    };
+    if signed_in
+        && let Some(t) = tabs
+            .iter_mut()
+            .find(|t| t.host() == Some(p.host.name.as_str()) && t.remote_cwd() == Some(p.folder.as_str()) && t.title == p.ai)
+    {
+        match !t.spoke() && !matches!(t.state, TabState::Busy | TabState::Question) {
+            true => {
+                append_hook_log(&format!("sign-in of {} on {} done: its tab is started again to read it", p.ai, p.host.name));
+                restart_tab(t, false, true, rows, cols);
+            }
+            false => append_hook_log(&format!(
+                "sign-in of {} on {} done: its tab is in use and is left as it is; starting it again reads the sign-in",
+                p.ai, p.host.name
+            )),
         }
     }
+    dropped
 }
 
 /// Delete a machine a row made and is putting away unwritten, unless the
@@ -1744,7 +1765,10 @@ pub fn resume_plan(t: &Tab, alone: bool, keep: bool) -> (tab::Resume, Option<&'s
                 && spec
                     .verify
                     .as_ref()
-                    .is_some_and(|v| !sessionfind::exists(v, &s.id));
+                    // Where this tab's CLI will look: its account's folder,
+                    // or the usual one -- a record another account kept is
+                    // not one this tab can be handed
+                    .is_some_and(|v| !sessionfind::exists_in(&crate::accounts::patterns_for(v, t.ai_account()), &s.id));
             if gone {
                 append_hook_log(&format!("\"{}\" no longer has {}", t.title, s.short()));
                 return (tab::Resume::Fresh, Some("msg.resume.gone"));
@@ -2101,6 +2125,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
 
     // Tab layout precedence: CLI args (debug) > config.json > default (1 PowerShell tab)
     let cfg = if cmd_args.is_empty() {
+        // A sign-in tab belongs to a step, and no step outlives the app that
+        // showed it: any left in the settings goes before the desks are read
+        match config::drop_marked_tabs_at(&config::config_file_path(), SIGN_IN_MARK, None, None) {
+            Ok(0) => {}
+            Ok(n) => append_hook_log(&format!("{n} sign-in tab(s) left from before taken off the desk")),
+            Err(e) => append_hook_log(&format!("could not look for sign-in tabs left from before: {e:#}")),
+        }
         config::load()
     } else {
         None
@@ -2635,12 +2666,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // Scheduled prompts (`crate::routine`): what came of each run, the runs
     // waiting for their answer, when the clock and the answers were last
     // looked at, and which tab on screen each next comes to
-    let mut routine_book = crate::routine::Book::load();
-    routine_book.save();
+    let (mut routine_book, cut) = crate::routine::Book::load();
+    if cut {
+        routine_book.save();
+    }
     let mut routine_flights: Vec<RoutineFlight> = Vec::new();
     let mut routine_looked = Instant::now();
     let mut routine_watched = Instant::now();
     let mut routine_next: Vec<(usize, u64)> = Vec::new();
+    // Desks not on screen that a scheduled prompt put a tab on or took one
+    // off: brought in line with the settings at the next reading of them,
+    // which a desk not on screen otherwise is only when it is switched to
+    let mut routine_apply: Vec<String> = Vec::new();
     // The "invisible ball" of the automation chain. Used in the display to show
     // which tab currently holds the work.
     let mut ball = ball::Ball::default();
@@ -3770,6 +3807,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     desk_index = target;
+                    // The desks not on screen a scheduled prompt opened or
+                    // closed a tab on, while they are running
+                    for uid in std::mem::take(&mut routine_apply) {
+                        if let Some(o) = new_ws.iter().position(|d| d.uid == uid)
+                            && o != target
+                            && desk_tabs.get(o).is_some_and(|l| !l.is_empty())
+                        {
+                            let said = apply_ws_config(&mut desk_tabs[o], &new_ws[o], rows, cols, &mut startup_errors, &mut resume_for, Some(&last_session));
+                            append_hook_log(&format!("desk \"{}\" (not on screen) brought in line for a scheduled prompt: {said}", new_ws[o].name));
+                        }
+                    }
                     // Bring browsers in line with config too: open added ones, close
                     // removed ones, redraw the bar and band. If reopening were required
                     // to take effect, editing settings would be pointless
@@ -5835,7 +5883,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             close_requests.push(CloseRequest {
                                 desk: desks.get(owner).map(|d| d.uid.clone()).unwrap_or_default(),
                                 at, key: surface_key(&surfaces[at - 1], tabs), sure: false,
-                                reply: Some(call.reply),
+                                reply: Some(call.reply), quiet: false,
                             });
                         } else {
                             let _ = call.reply.send(Err(i18n::t("err.api.tab_closed")));
@@ -6813,7 +6861,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        for a in crate::accounts::known() {
+        // A meter for an account no longer in the settings is let go, its
+        // thread with it
+        let known_accounts = crate::accounts::known();
+        account_meters.retain(|(key, _, _)| known_accounts.iter().any(|a| *key == format!("{}@{}", a.cli, a.id)));
+        for a in known_accounts {
             let key = format!("{}@{}", a.cli, a.id);
             let source = crate::limits::Source::ALL.into_iter().find(|s| s.key() == a.cli);
             if let Some(source) = source
@@ -7715,10 +7767,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // against these
         let shown_desk = desks.get(desk_index).map(|d| d.uid.clone()).unwrap_or_default();
         close_requests.extend(shell.mail().take_close_tabs().into_iter().map(|(at, key, sure)|
-            CloseRequest { desk: shown_desk.clone(), at, key, sure, reply: None }));
+            CloseRequest { desk: shown_desk.clone(), at, key, sure, reply: None, quiet: false }));
         for (desk, work) in &mut background_work {
             close_requests.extend(std::mem::take(&mut work.asks.closes).into_iter().map(|(at, key)|
-                CloseRequest { desk: desk.clone(), at, key, sure: false, reply: None }));
+                CloseRequest { desk: desk.clone(), at, key, sure: false, reply: None, quiet: false }));
         }
         if !close_requests.is_empty() {
             for request in std::mem::take(&mut close_requests) {
@@ -7753,6 +7805,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     crate::closed::Closing::Nothing => {
                         request.failed(i18n::t("err.api.tab_closed"));
                     }
+                    crate::closed::Closing::Ask(ask) if request.quiet => {
+                        append_hook_log(&format!("tab \"{}\" left open: it is at work again", ask.name));
+                    }
                     crate::closed::Closing::Ask(ask) => {
                         if request.reply.is_none() && owner == desk_index {
                             close_ask = Some(ask);
@@ -7761,7 +7816,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                     }
                     crate::closed::Closing::Closed { note, settings, ends } => {
-                        if owner == desk_index && request.reply.is_none() { close_ask = None; }
+                        if owner == desk_index && request.reply.is_none() && !request.quiet { close_ask = None; }
                         match ends {
                             crate::closed::Ends::Tab(serial) => ending.push(serial),
                             crate::closed::Ends::Editor(key) => editors.retain(|e| e.key != key),
@@ -7770,12 +7825,23 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         if let Some(reply) = request.reply { close_replies.push(reply); }
                         if settings {
                             // The reload that takes the line out says this
-                            // instead of "settings reloaded"
-                            said_before_reload = Some((Instant::now(), note));
+                            // instead of "settings reloaded" -- unless nobody
+                            // asked for it, and then it says nothing
+                            if !request.quiet {
+                                said_before_reload = Some((Instant::now(), note));
+                            }
+                            // A desk not on screen takes the line out of its
+                            // running tabs at the reload too
+                            if owner != desk_index && let Some(d) = desks.get(owner) {
+                                routine_apply.push(d.uid.clone());
+                            }
                             watcher.poke();
-                        } else {
+                        } else if !request.quiet {
                             flash = Some(note);
                         }
+                    }
+                    crate::closed::Closing::Failed(why) if request.quiet => {
+                        append_hook_log(&format!("tab close: {why}"));
                     }
                     crate::closed::Closing::Failed(why) => {
                         if owner == desk_index && request.reply.is_none() { close_ask = None; }
@@ -8064,6 +8130,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         // the answer is looked for after that
                         let from = session_at(surf, s).and_then(|i| list.get(i)).and_then(crate::asktab::record_len).unwrap_or(0);
                         let landed = hand_over(list, surf, s, p.text, p.submit, now_ms, &mut pending_send, held);
+                        // A desk not on screen: no place on this one is its
+                        if owner.is_some_and(|o| o != desk_index) && landed && let Some(q) = pending_send.last_mut() {
+                            q.tab = 0;
+                        }
                         if landed && p.submit {
                             record_sent(list, surf, s, &said, p.from.clone());
                         }
@@ -8086,6 +8156,24 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             Some(i) => {
                                 let f = routine_flights.remove(i);
                                 routine_end(&mut routine_book, &f, now, crate::routine::How::Failed, "routine.why.never_ready", None);
+                                // Its tab never took the prompt -- stopped at
+                                // a first-run question, say -- and the next
+                                // run would open another beside it. Taken off,
+                                // unless somebody has typed into it
+                                if let Some(i) = at.and_then(|s| session_at(surf, s))
+                                    && let Some(t) = list.get(i)
+                                    && f.tidy
+                                    && t.last_manual_ms.is_none_or(|ms| ms <= f.sent_ms)
+                                {
+                                    close_requests.push(CloseRequest {
+                                        desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
+                                        at: 0,
+                                        key: crate::view::surface_key(&Surface::Session(i), list),
+                                        sure: true,
+                                        reply: None,
+                                        quiet: true,
+                                    });
+                                }
                             }
                             None => flash = Some(i18n::tp("msg.quick.never_ready", &[("label", &p.label)])),
                         }
@@ -8114,9 +8202,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 flash = Some(i18n::t("msg.account.no_folder"));
                 continue;
             };
-            let label = crate::accounts::kind(&account.cli).map(|k| k.profile).unwrap_or("AI");
-            let (title, tab_id) = quick_tab_names(&format!("{label} · {}", account.shown()), label, &tabs);
-            let line = serde_json::json!({"name": title, "id": tab_id, "command": account.cli, "ai_account": account.id});
+            let Some(k) = crate::accounts::kind(&account.cli) else { continue };
+            let (title, tab_id) = quick_tab_names(&format!("{} · {}", k.profile, account.shown()), k.profile, &tabs);
+            // The CLI's own sign-in command, which signs in and ends -- not
+            // the AI itself, whose first screen need not ask (the settings it
+            // starts from say its first run is over) and which would be taken
+            // for an AI tab and handed a conversation. Written as a plain
+            // terminal (the generic profile), running as the account all the same
+            let line = serde_json::json!({"name": title, "id": tab_id, "command": k.login, "profile": crate::profile::GENERIC, "ai_account": account.id});
             let (_, cwd) = crate::uistate::place_of(&at);
             match config::add_tab_with_uid_at(&config_file, &desk.uid, line, Some(&cwd), None, config::NewFolder::Allowed) {
                 Ok((tab_id, _)) => {
@@ -8182,13 +8275,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if kept_changed {
                     schedule_kept.save();
                 }
-                // The history of a prompt taken out of the settings goes with it
-                if cfg.is_some() && routine_book.keep_only(&routines.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()) {
+                // The history of a prompt taken out of the settings goes with
+                // it -- out of the file, not merely left unread for a mistake
+                if let Some(ids) = crate::routine::ids_in_settings()
+                    && routine_book.keep_only(&ids.iter().map(String::as_str).collect::<Vec<_>>())
+                {
                     routine_book.save();
                 }
             }
+            // "Run now" for a prompt saved a moment ago, before the board read
+            // the settings again: read from disk rather than said to be gone
+            let fresh: Vec<crate::routine::Routine> = match wanted.iter().any(|(id, _)| !routines.iter().any(|r| &r.id == id)) {
+                true => config::load().map(|c| c.routines).unwrap_or_default(),
+                false => Vec::new(),
+            };
             for (id, due) in wanted {
-                let Some(r) = routines.iter().find(|r| r.id == id) else {
+                let Some(r) = routines.iter().chain(&fresh).find(|r| r.id == id) else {
                     append_hook_log(&format!("scheduled prompt {id} asked to run, but the settings hold no such prompt"));
                     continue;
                 };
@@ -8224,7 +8326,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     (list, &away_surfaces[..], &mut away_ball)
                                 }
                             };
-                            routine_hand(r, list, surf, held, now_ms, &mut pending_send, from)
+                            let sent = routine_hand(r, list, surf, held, now_ms, &mut pending_send, from);
+                            // Not on screen: no place on this desk is its
+                            // (`PendingSend::tab`), found by serial instead
+                            if o != desk_index && sent.is_ok() && let Some(p) = pending_send.last_mut() {
+                                p.tab = 0;
+                            }
+                            sent
                         }
                     },
                 };
@@ -8247,6 +8355,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             if let Some(p) = pending_quicks.last_mut() {
                                 p.routine = Some((r.id.clone(), n));
                             }
+                            if desks.get(desk_index).is_none_or(|d| d.uid != r.desk) {
+                                routine_apply.push(r.desk.clone());
+                            }
                             watcher.poke();
                         }
                         routine_flights.push(RoutineFlight {
@@ -8263,7 +8374,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     Err(why) => {
                         let how = match why {
-                            "routine.why.busy" | "routine.why.limit" => crate::routine::How::Skipped,
+                            "routine.why.busy" | "routine.why.limit" | "routine.why.in_use" | "routine.why.desk_not_open" => crate::routine::How::Skipped,
                             _ => crate::routine::How::Failed,
                         };
                         append_hook_log(&format!("scheduled prompt \"{name}\" not run: {why}"));
@@ -8277,13 +8388,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // The runs waiting for their answer, looked at once a second. The
         // record of the conversation says when a turn is over, where the CLI
         // keeps one; the screen going quiet after it was busy says so where
-        // it does not. A tab opened for the run is closed once it is over, if
-        // nobody has touched it and it is not the one in front
+        // it does not. However a run ends, a tab opened for it is closed when
+        // it is quiet, nobody has touched it and nobody is looking at it
+        // (`routine_tidy`). A run never answered within the longest a run is
+        // waited for is over all the same, its tab left for the person
         if !routine_flights.is_empty() && routine_watched.elapsed() >= Duration::from_secs(1) {
             routine_watched = Instant::now();
             let now_ms = start.elapsed().as_millis() as u64;
             let now = crate::hooks::epoch_ms() / 1000;
-            let shown = session_at(&surfaces, active).and_then(|i| tabs.get(i)).map(|t| t.uid().to_string());
+            // Every pane on screen, not only the one in front
+            let seen: Vec<String> = std::iter::once(active)
+                .chain(pane_layout.leaves().into_iter().map(|(_, s)| s))
+                .filter_map(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
+                .map(|t| t.uid().to_string())
+                .collect();
             let mut still = Vec::new();
             for mut f in std::mem::take(&mut routine_flights) {
                 if !f.handed {
@@ -8295,18 +8413,31 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     Some(o) if o != desk_index => &desk_tabs[o],
                     _ => &tabs,
                 };
+                let desk_uid = owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default();
                 let Some((index, t)) = list.iter().enumerate().find(|(_, t)| t.uid() == f.uid) else {
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.tab_closed", None);
                     continue;
                 };
+                let tidy = |f: &RoutineFlight, close_requests: &mut Vec<CloseRequest>| {
+                    if let Some(c) = routine_tidy(f, t, index, list, &desk_uid, &seen) {
+                        close_requests.push(c);
+                    }
+                };
                 if t.exited() {
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.tab_ended", None);
+                    tidy(&f, &mut close_requests);
                     continue;
                 }
                 // At its usage limit, the AI answers nothing until the limit
                 // lifts; the run is over, and the next one is not held up
                 if t.state == TabState::Limit {
                     routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.limit", None);
+                    tidy(&f, &mut close_requests);
+                    continue;
+                }
+                if now_ms.saturating_sub(f.sent_ms) > ROUTINE_LONGEST_MS {
+                    append_hook_log(&format!("scheduled prompt run {} of {}: no answer in {} h, left as it is", f.n, f.id, ROUTINE_LONGEST_MS / 3_600_000));
+                    routine_end(&mut routine_book, &f, now, crate::routine::How::Cut, "routine.why.too_long", None);
                     continue;
                 }
                 if matches!(t.state, TabState::Busy | TabState::Question) {
@@ -8324,19 +8455,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .unwrap_or_else(|| screen_tail(t, ROUTINE_SCREEN_LINES));
                 routine_end(&mut routine_book, &f, now, crate::routine::How::Answered, "", Some(&reply));
                 append_hook_log(&format!("scheduled prompt run {} of {} answered in tab \"{}\"", f.n, f.id, t.title));
-                let touched = t.last_manual_ms.is_some_and(|ms| ms > f.sent_ms);
-                if f.tidy && !touched && shown.as_deref() != Some(f.uid.as_str()) && !t.locked {
-                    close_requests.push(CloseRequest {
-                        desk: owner.and_then(|o| desks.get(o)).map(|d| d.uid.clone()).unwrap_or_default(),
-                        // Found by its key where it is, when the request is
-                        // carried out: a desk not on screen has no screen
-                        // numbers to name it by here
-                        at: 0,
-                        key: crate::view::surface_key(&Surface::Session(index), list),
-                        sure: false,
-                        reply: None,
-                    });
-                }
+                tidy(&f, &mut close_requests);
             }
             routine_flights = still;
         }
@@ -11995,7 +12114,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     match found {
                         Some(l) => {
-                            login_done(&l, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            if login_done(&l, true, &mut tabs, rows, cols) {
+                watcher.poke();
+            }
                             l.go_on();
                         }
                         None => gate.store(true, std::sync::atomic::Ordering::Relaxed),
@@ -12089,6 +12210,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 name: known.name,
                                 shown: false,
                                 login_tab: None,
+                                login_tried: false,
                                 after: LoginAfter::Copying(p.making.sign_in_gate()),
                             });
                         }
@@ -12802,6 +12924,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                                 name: known.name,
                                                 shown: false,
                                                 login_tab: None,
+                                                login_tried: false,
                                                 after: LoginAfter::Rules,
                                             });
                                         }
@@ -12853,6 +12976,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                             name: known.name,
                                             shown: false,
                                             login_tab: None,
+                                            login_tried: false,
                                             // A project already in use: back
                                             // where the page was going, never
                                             // through the rules a new one has
@@ -13823,12 +13947,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // shows instead. Whatever the command prints is on the
                     // screen as it is -- the address and the code are only
                     // picked out of it to be handed over with a press
-                    if !p.shown
-                        && state == "no"
-                        && p.login_tab.is_none()
+                    // Put there the first time the machine says it is not
+                    // signed in -- which need not be the first answer, a
+                    // first look can still be on its way -- and tried once
+                    if state == "no" && !p.login_tried {
+                        append_hook_log(&format!(
+                            "sign-in of {} on {}: not signed in; its sign-in command is {:?}",
+                            p.ai, p.host.name, crate::profile::machine_ai(&p.ai).and_then(|m| m.login)
+                        ));
+                    }
+                    if state == "no"
+                        && !p.login_tried
                         && let Some(line) = crate::profile::machine_ai(&p.ai).and_then(|m| m.login)
                     {
-                        p.login_tab = put_login_tab(&desks, &tabs, p, &line);
+                        p.login_tried = true;
+                        p.login_tab = put_login_tab(&desks, desk_index, &tabs, p, &line);
                         if p.login_tab.is_some() {
                             watcher.poke();
                         }
@@ -13850,7 +13983,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             let rows: Vec<(String, bool)> =
                                 s.rows(0, cols).enumerate().map(|(i, r)| (r, s.row_wrapped(i as u16))).collect();
                             let text = join_rows(&rows, cols);
-                            (crate::shell::screen_html(s), web_address_in(&text), device_code_in(&text))
+                            // A code only from a sign-in command, and only
+                            // while it runs: a code left on the screen of one
+                            // that ended has run out, and an AI's own screen
+                            // is full of things shaped like one
+                            let code = match p.login_tab.is_some() && !t.exited() {
+                                true => device_code_in(&text),
+                                false => String::new(),
+                            };
+                            (crate::shell::screen_html(s), web_address_in(&text), code)
                         })
                         .unwrap_or_default();
                     let v = crate::uistate::LoginStepState {
@@ -13875,7 +14016,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             if go_on {
-                login_done(p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                if login_done(p, true, &mut tabs, rows, cols) {
+                watcher.poke();
+            }
                 p.go_on();
                 login_pending = None;
                 login_view = None;
@@ -13885,17 +14028,33 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // person signs in there, the machine is asked as before, and the
         // step goes on by itself once it says so. The row of the worktree
         // waiting on it brings the step back, or says it is done
+        // Only a worktree's step is put away, so each has a making to belong
+        // to: one whose making was stopped or is gone goes with it, its
+        // sign-in tab taken off. And only the machine saying "yes" is a yes
+        // here -- no answer at all is not a sign-in
         let mut parked = std::mem::take(&mut login_parked);
+        let mut reread = false;
         parked.retain(|p| {
+            let LoginAfter::Copying(gate) = &p.after else { return false };
+            let alive = makings.iter().any(|m| {
+                std::sync::Arc::ptr_eq(&m.making.sign_in_gate(), gate) && m.error.is_none() && !m.gone && !m.making.stopped()
+            });
+            if !alive {
+                reread |= login_done(p, false, &mut tabs, rows, cols);
+                return false;
+            }
             let note = crate::microvm::ai_sign_in_note(&p.host, Some(&p.home), Some(&p.ai), LOGIN_FRESH);
-            let yes = note.as_ref().is_none_or(|n| n.state == "yes");
+            let yes = note.as_ref().is_some_and(|n| n.state == "yes");
             if yes {
-                login_done(p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                reread |= login_done(p, true, &mut tabs, rows, cols);
                 p.go_on();
             }
             !yes
         });
         login_parked = parked;
+        if reread {
+            watcher.poke();
+        }
         // The sign-in step for a server's git. Drawn once the server has been
         // looked at: the commands drafted for it, its terminal, and whether
         // the server's git can read the repository yet
@@ -14185,16 +14344,25 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(p) = login_pending.take() {
                     match act.as_str() {
                         "next" => {
-                            login_done(&p, true, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            if login_done(&p, true, &mut tabs, rows, cols) {
+                watcher.poke();
+            }
                             p.go_on();
                         }
                         // Signed in in the terminal instead: the step is put
                         // away, and goes on by itself once the machine says
                         // the AI is signed in. The terminal it was showing
                         // stays, in front (the page selects it)
-                        "terminal" => login_parked.push(p),
+                        // A worktree's step is put away until the machine
+                        // says so or its row is pressed. Any other step has
+                        // no row to come back from: it is let go as "later"
+                        // is, and its sign-in tab stays for the person
+                        "terminal" if matches!(p.after, LoginAfter::Copying(_)) => login_parked.push(p),
+                        "terminal" => p.leave(),
                         _ => {
-                            login_done(&p, false, &desks, desk_index, &mut tabs, &desk_tabs, &mut close_requests, rows, cols);
+                            if login_done(&p, false, &mut tabs, rows, cols) {
+                watcher.poke();
+            }
                             p.leave();
                         }
                     }
@@ -15335,6 +15503,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             }
                             waiting.clear();
                             pending_quicks.clear();
+                            // A scheduled prompt's run that was waiting for
+                            // its answer is over with the stop: left waiting,
+                            // it would hold the prompt's next run off for good
+                            let stopped_at = crate::hooks::epoch_ms() / 1000;
+                            for f in std::mem::take(&mut routine_flights) {
+                                routine_end(&mut routine_book, &f, stopped_at, crate::routine::How::Cut, "routine.why.stopped", None);
+                            }
                             for work in background_work.values_mut() {
                                 work.waiting.clear();
                             }
@@ -19728,6 +19903,32 @@ pub struct RoutineFlight {
     pub tidy: bool,
 }
 
+/// The longest a run of a scheduled prompt is waited for. An AI at work for
+/// hours is not unheard of, so this is long; it is there so a run whose
+/// answer can never come (a question nobody answers, a keystroke lost) does
+/// not hold every later run of its prompt off for good
+const ROUTINE_LONGEST_MS: u64 = 6 * 60 * 60 * 1000;
+
+/// The close of a tab opened for a run, once the run is over, if it is to be
+/// closed now: the prompt says to tidy, the tab is quiet (its turn over, or
+/// its program ended), nobody has typed into it since the prompt went in, and
+/// it is in no pane on screen. Asked quietly: a tab at work again by the time
+/// it is carried out is left as it is, with nobody asked
+fn routine_tidy(f: &RoutineFlight, t: &Tab, index: usize, list: &[Tab], desk: &str, seen: &[String]) -> Option<CloseRequest> {
+    let touched = t.last_manual_ms.is_some_and(|ms| ms > f.sent_ms);
+    let quiet = t.exited() || (crate::asktab::turn_over(t.state) && t.state != TabState::Question);
+    (f.tidy && !touched && quiet && !t.locked && !seen.iter().any(|u| u == t.uid())).then(|| CloseRequest {
+        desk: desk.to_string(),
+        // Found by its key where it is, when the request is carried out: a
+        // desk not on screen has no screen numbers to name it by here
+        at: 0,
+        key: crate::view::surface_key(&Surface::Session(index), list),
+        sure: false,
+        reply: None,
+        quiet: true,
+    })
+}
+
 /// How long the screen of a tab whose CLI keeps no record must hold still
 /// after its work, before the turn is taken to be over
 const ROUTINE_SETTLE_MS: u64 = 3000;
@@ -19763,6 +19964,12 @@ fn routine_open(
     let at = std::path::PathBuf::from(&r.folder);
     if desk.folder_at(&at).is_none() {
         return Err("routine.why.folder_gone");
+    }
+    // A desk not opened since the app started has nothing running, and is
+    // started whole when it is first opened. Started here for one prompt, it
+    // would set every AI of it going behind the person's back
+    if owner != desk_index && desk_tabs.get(owner).is_none_or(|l| l.is_empty()) {
+        return Err("routine.why.desk_not_open");
     }
     // The AI its machine was given, on a MicroVM or a server; this PC's
     // otherwise, as a quick command chooses
@@ -19808,6 +20015,14 @@ fn routine_hand(
         return Err("routine.why.limit");
     }
     if t.locked || !t.far_open() || !crate::asktab::turn_over(t.state) {
+        return Err("routine.why.busy");
+    }
+    // Somebody typing in it this moment, or words still going in: the
+    // prompt would land on what they are writing, and be sent with it
+    if touched_recently(t, now_ms) {
+        return Err("routine.why.in_use");
+    }
+    if pending_send.iter().any(|p| p.serial == t.serial()) {
         return Err("routine.why.busy");
     }
     let (uid, title, before) = (t.uid().to_string(), t.title.clone(), crate::asktab::record_len(t).unwrap_or(0));
@@ -20257,6 +20472,10 @@ struct CloseRequest {
     key: String,
     sure: bool,
     reply: Option<CloseReply>,
+    /// Asked for by the app itself (a scheduled prompt's tab, tidied): a tab
+    /// that turns out to be at work is left as it is, without a question to
+    /// anybody, and nothing the person has open is touched or said over
+    quiet: bool,
 }
 
 impl CloseRequest {
@@ -21767,6 +21986,7 @@ mod tests {
             name: "Claude Code".into(),
             shown: true,
             login_tab: None,
+            login_tried: false,
             after: LoginAfter::Copying(gate.clone()),
         };
         let next = std::sync::Arc::new(AtomicBool::new(false));
@@ -21897,6 +22117,7 @@ mod tests {
         let screen = "Welcome to Codex v0.47.0\n\n1. Open this link in your browser\n   https://auth.example.test/codex/device\n\n2. Enter this one-time code (expires in 15 minutes)\n   7KQX-M3PD\n\nDevice codes are a common phishing target. Never share this code.\n";
         assert_eq!(super::device_code_in(screen), "7KQX-M3PD");
         assert_eq!(super::device_code_in("code: ABCD-12EF."), "ABCD-12EF");
+        assert_eq!(super::device_code_in("enter WDJB-MJHT on the page"), "WDJB-MJHT", "a code of consonants only");
         for not in [
             "2026-10-12 and 14:30",
             "READ-ONLY mode",
@@ -21904,6 +22125,8 @@ mod tests {
             "run 0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d",
             "UTF-8",
             "ISO-8601",
+            "READ-ONLY WORK-TREE",
+            "HTTP-POST",
         ] {
             assert_eq!(super::device_code_in(not), "", "{not} was taken for a code");
         }

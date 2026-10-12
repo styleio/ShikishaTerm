@@ -309,7 +309,7 @@ try {
   ].join(' '));
   await signInFromOutside();
   await until(async () => ((await step()) || {}).state === 'yes', 'the sign-in to be seen while the step is open', 40000);
-  check(await board.run('document.querySelector("#login .lstate").textContent.includes("ログインを確認しました")'), 'the step says the sign-in was seen');
+  check(await board.run('document.querySelector("#login .lstate").textContent === T["tui.login.yes"]'), 'the step says the sign-in was seen');
   await on(home.sandbox, 'rm -f ~/.claude/.credentials.json');
   await board.run('document.getElementById("loginnext").click(); true');
   await until(() => board.run('document.getElementById("login").hidden'), 'the step put away', 30000);
@@ -359,7 +359,8 @@ try {
   // sign-in is there, seen without closing the dialog
   const aiNote = () => board.run('JSON.stringify((S.branch && S.branch.ai_sign_in) || null)').then((t) => JSON.parse(t || 'null'));
   await until(async () => ((await aiNote()) || {}).state === 'no', 'the dialog to say Claude is not signed in on the checkout', 90000);
-  check((await aiNote()).name === 'Claude Code' && (await aiNote()).checkout === CHECKOUT, 'not signed in yet, said for the checkout: ' + JSON.stringify(await aiNote()));
+  // The checkout by its place key: the machine's name and the path there
+  check((await aiNote()).name === 'Claude Code' && (await aiNote()).checkout === '\u0001' + vm.name + '\u0001' + CHECKOUT, 'not signed in yet, said for the checkout: ' + JSON.stringify(await aiNote()));
   check(await board.run('!!document.querySelector("#branch .baisignin button")'), 'the checkout\'s tab is one press away');
   await board.shot('3-branch');
   await signInFromOutside();

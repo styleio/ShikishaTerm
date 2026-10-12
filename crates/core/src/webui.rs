@@ -123,6 +123,42 @@ const NATIVE_DIALOG_PATHS: [&str; 3] = [
     "/api/desk/import",
 ];
 
+/// The names of the tabs the settings say run as account `id`, wherever they
+/// were written: a desk's folders, and the tabs inside tabs
+fn tabs_running_as(doc: &serde_json::Value, id: &str) -> Vec<String> {
+    fn walk(v: &serde_json::Value, id: &str, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.get("ai_account").and_then(|a| a.as_str()) == Some(id) {
+                    out.push(map.get("name").and_then(|n| n.as_str()).unwrap_or("?").to_string());
+                }
+                map.values().for_each(|c| walk(c, id, out));
+            }
+            serde_json::Value::Array(list) => list.iter().for_each(|c| walk(c, id, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(desks) = doc.get("desks") {
+        walk(desks, id, &mut out);
+    }
+    out
+}
+
+/// Account `id` taken out of the app's list in the settings file
+fn forget_account_in_settings(path: &std::path::Path, id: &str) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)?;
+    let mut doc: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))?;
+    if let Some(list) = doc.get_mut("ai_accounts").and_then(|l| l.as_array_mut()) {
+        let before = list.len();
+        list.retain(|a| a.get("id").and_then(|i| i.as_str()) != Some(id));
+        if list.len() != before {
+            crate::crypto::write_atomic(path, &serde_json::to_string_pretty(&doc)?)?;
+        }
+    }
+    Ok(())
+}
+
 fn header_value(req: &tiny_http::Request, name: &'static str) -> String {
     req.headers()
         .iter()
@@ -3156,8 +3192,11 @@ fn handle(
             };
             req.respond(json_resp(body))?;
         }
-        // An account's folder taken away, sign-in and all. The page takes the
-        // account out of its list after, for the person to save
+        // An account taken away, sign-in and all: refused while a tab in the
+        // settings runs as it (its folder would be in use, and the tab would
+        // come up as nobody); otherwise its folder goes, and the account goes
+        // out of the settings on disk at the same time, so the two cannot
+        // disagree when the page is not saved
         ("POST", "/api/ai-accounts/forget") => {
             let mut req = req;
             let Some(body) = read_body(&mut req, MAX_BODY)? else {
@@ -3167,9 +3206,19 @@ fn handle(
                 .ok()
                 .and_then(|v| v.get("id").and_then(|s| s.as_str()).map(str::to_string))
                 .unwrap_or_default();
-            let body = match crate::accounts::forget(&id) {
-                Ok(()) => serde_json::json!({"ok": true}),
-                Err(e) => serde_json::json!({"error": format!("{e:#}")}),
+            let path = crate::config::config_file_path();
+            let doc: serde_json::Value = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+                .unwrap_or_default();
+            let users = tabs_running_as(&doc, &id);
+            let body = if !users.is_empty() {
+                serde_json::json!({"error": crate::i18n::tp("msg.account.in_use", &[("tabs", &users.join(", "))])})
+            } else {
+                match crate::accounts::forget(&id).and_then(|()| forget_account_in_settings(&path, &id)) {
+                    Ok(()) => serde_json::json!({"ok": true}),
+                    Err(e) => serde_json::json!({"error": format!("{e:#}")}),
+                }
             };
             req.respond(json_resp(body))?;
         }
@@ -3181,8 +3230,23 @@ fn handle(
             let routines = crate::config::load().map(|c| c.routines).unwrap_or_default();
             let now = crate::hooks::epoch_ms() / 1000;
             let next = crate::routine::next_times(&routines, &crate::schedule::Kept::load(), now);
-            let book = crate::routine::Book::read();
+            // The start of each answer: the whole is read by itself, when
+            // a run is opened (a page polls this, a phone among them)
+            let mut book = crate::routine::Book::read();
+            for run in book.runs.values_mut().flatten() {
+                if let Some(reply) = run.reply.as_mut() {
+                    *reply = crate::routine::excerpt(reply);
+                }
+            }
             req.respond(json_resp(serde_json::json!({"next": next, "runs": book.runs, "now": now})))?;
+        }
+        // One run's whole answer
+        ("GET", "/api/routines/reply") => {
+            let q = |k: &str| query_param(req.url(), k).unwrap_or_default();
+            let n: u64 = q("n").parse().unwrap_or(0);
+            let mut book = crate::routine::Book::read();
+            let reply = book.run_mut(&q("id"), n).and_then(|r| r.reply.clone()).unwrap_or_default();
+            req.respond(json_resp(serde_json::json!({"reply": reply})))?;
         }
         // "Run now", for a prompt as it was saved. One the board has not read
         // yet, or that cannot run, is said rather than queued for nothing
@@ -4773,11 +4837,17 @@ fn handle(
                     if !crate::config::save_agent_hook(&t.name, on) {
                         crate::append_hook_log(&format!("hooks: the answer about {} could not be written to the settings", t.name));
                     }
-                    let done = if on {
-                        crate::agenthook::keep_right(&t).map(|_| ())
-                    } else {
-                        crate::agenthook::uninstall(&t)
-                    };
+                    // In the CLI's own folder and in every account's folder
+                    // of it (`crate::accounts`): one answer for the CLI, so
+                    // "off" leaves nothing of this app's running anywhere
+                    let all: Vec<_> = crate::agenthook::targets()
+                        .into_iter()
+                        .filter(|x| x.name == t.name && (x.account.is_none() || crate::agenthook::in_use(x)))
+                        .collect();
+                    let done = all.iter().try_for_each(|x| match on {
+                        true => crate::agenthook::keep_right(x).map(|_| ()),
+                        false => crate::agenthook::uninstall(x),
+                    });
                     match done {
                         Ok(()) => serde_json::json!({
                             "ok": true,
@@ -9373,6 +9443,9 @@ function routineRow(r, draw) {
   on.checked = r.on !== false;
   on.addEventListener("change", () => { r.on = on.checked; refreshSave(); draw(); });
   const runNow = el("button", {onclick: async () => {
+    // What runs is the prompt as it was saved: with changes not saved yet,
+    // pressing would run something other than what the page shows
+    if (snapshot() !== savedSnapshot) { result(T["settings.routine.run.unsaved"], true); return; }
     runNow.disabled = true;
     const j = await settingsApi("/api/routines/run", {id: r.id}).catch(e => ({error: e.message}));
     runNow.disabled = false;
@@ -9590,8 +9663,15 @@ function routineHistory(r, runs) {
     }
     const item = el("div", {class:"rtrun"}, head);
     if (run.reply) {
+      // The list carries the start of an answer; the whole is read when it
+      // is opened
       const reply = el("pre", {class:"rtreply short"}, run.reply);
-      const more = el("button", {class:"quiet", onclick:() => {
+      let whole = false;
+      const more = el("button", {class:"quiet", onclick: async () => {
+        if (!whole) {
+          const j = await settingsApi("/api/routines/reply?id=" + encodeURIComponent(r.id) + "&n=" + run.n).catch(() => null);
+          if (j && j.reply) { reply.textContent = j.reply; whole = true; }
+        }
         const short = reply.classList.toggle("short");
         more.textContent = T[short ? "settings.routine.history.more" : "settings.routine.history.less"];
       }}, T["settings.routine.history.more"]);
