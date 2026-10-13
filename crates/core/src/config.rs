@@ -5337,12 +5337,22 @@ pub fn default_shell_start(which: Option<&str>) -> Start {
     }
     match which.map(str::trim).unwrap_or_default() {
         "cmd" => Start::One { name: crate::i18n::t("shell.cmd"), command: "cmd.exe".into() },
-        "gitbash" => match git_bash() {
-            Some(bash) => Start::One { name: "Git Bash".into(), command: format!("\"{}\" --login -i", bash.display()) },
+        "gitbash" => match git_bash_command() {
+            Some(command) => Start::One { name: "Git Bash".into(), command },
             None => powershell(),
         },
         _ => powershell(),
     }
+}
+
+/// The line a tab runs to open Git Bash, the way its own shortcut opens it:
+/// a login shell, so the profile Git for Windows sets up is read. None where
+/// there is no Git Bash (and on any system but Windows)
+pub fn git_bash_command() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    git_bash().map(|bash| format!("\"{}\" --login -i", bash.display()))
 }
 
 /// Git for Windows' bash: beside the git on PATH (\<Git>\cmd\git.exe has

@@ -8,6 +8,11 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **Git Bash is one of the shells a tab can be.** On a PC with Git for
+  Windows, the Command kind offers Git Bash beside PowerShell and the command
+  prompt, the same three Basic > Default command offers.
+
 ### Changed
 - **The ports panel says what each server is, and opens it where it said.**
   Each line now says the folder the server runs in and what it runs
@@ -20,6 +25,13 @@ once it reaches its first tagged release.
   Auto on, the AI that writes automatic names also names each server ("Admin
   console"), once per server; what it is sent is listed under Automatic names
   in the desk's settings.
+
+### Fixed
+- **A tab whose program is under a path with spaces survives the settings
+  screen.** A project added with Git Bash as its default command runs
+  `C:\Program Files\Git\bin\bash.exe`; saving the settings wrote that back
+  cut at its space, and the tab no longer started. The command field shows
+  such a program in quotes, and keeps it whole when it is typed that way.
 
 ## [0.27.0] - 2026-10-09
 

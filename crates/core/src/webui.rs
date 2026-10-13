@@ -1571,17 +1571,18 @@ fn pet_adjectives_json() -> String {
     serde_json::to_string(&crate::config::pet_adjectives()).unwrap_or_else(|_| "[]".into())
 }
 
+/// This machine's own shell for the settings page, as {name, cmd}
+/// (`config::machine_shell`), and the line that opens Git Bash where this PC
+/// has it (`git_bash`, null where it has not)
+fn machine_shell_json() -> String {
+    let (name, cmd) = crate::config::machine_shell();
+    serde_json::json!({ "name": name, "cmd": cmd, "git_bash": crate::config::git_bash_command() }).to_string()
+}
+
 /// What the quick-command editor has to know that `quick.rs` decides: the
 /// grid's bounds, how long a name and a body may be, where the icons are,
 /// and what a secret named in a body looks like. Handed over rather than
 /// written again in the page, so the two cannot hold different limits
-/// This machine's own shell for the settings page, as {name, cmd}
-/// (`config::machine_shell`)
-fn machine_shell_json() -> String {
-    let (name, cmd) = crate::config::machine_shell();
-    serde_json::json!({ "name": name, "cmd": cmd }).to_string()
-}
-
 fn quick_json() -> String {
     use crate::quick as q;
     serde_json::json!({
@@ -3502,7 +3503,13 @@ fn handle(
                     .map(str::to_string)
                     .filter(|s| !s.trim().is_empty())
             };
-            let argv = crate::config::CommandSpec::Line(str_of("command").unwrap_or_default()).argv();
+            // A line, or the words apart when the program's path has spaces --
+            // the two ways a tab writes its command
+            let argv = v
+                .get("command")
+                .and_then(|c| serde_json::from_value::<crate::config::CommandSpec>(c.clone()).ok())
+                .unwrap_or_default()
+                .argv();
             // A tab in a folder on another machine starts nothing here: the
             // shell that opens there is typed the folder and then the command
             // -- with the conversation's arguments, as the launch writes them
@@ -7157,8 +7164,8 @@ function choose(obj, key, opts, onChange) {
 // the field's own "input" event, so a write that skipped the event would
 // leave one of the three showing a command that is no longer there.
 function setCommand(t, input, value) {
-  t.command = value;
-  input.value = value;
+  t.command = textToCmd(cmdToText(value));
+  input.value = cmdToText(value);
   input.dispatchEvent(new Event("input", {bubbles: true}));
 }
 
@@ -7216,9 +7223,13 @@ function launchLine(t) {
     if (!r || !r.argv || !r.argv.length) { box.hidden = !(r && r.missing); tell(undefined); return; }
     box.hidden = false;
     tell(r.carry || null);
+    // A word with a space in it is one word, quoted, as it is typed; else
+    // C:\Program Files\... reads as if it were cut there. A far tab's line
+    // is what is typed into its shell, already as it is typed
+    const one = !farPlaceOf(t);
     r.argv.forEach((a, i) => {
       if (i) line.append(document.createTextNode(" "));
-      line.append(el("span", {class: (i >= 1 && i <= r.added) ? "added" : ""}, a));
+      line.append(el("span", {class: (i >= 1 && i <= r.added) ? "added" : ""}, one && /\s/.test(a) ? `"${a}"` : a));
     });
     // The same arguments mean two different things depending on the tab's own
     // answer to "come back to this conversation", and the line cannot show
@@ -7292,7 +7303,7 @@ function inferredTabId(t) {
   // The program, not the whole command line: two browser tabs become "browser"
   // and "browser-2" rather than two mouthfuls of URL. config.rs reads argv()[0]
   // here, which is the same token for every command written as one line
-  const prog = cmdToText(t.command).trim().split(/\s+/)[0] || "";
+  const prog = programOf(t.command);
   return slugId(t.name) || slugId(prog) || "tab";
 }
 // Fills in an id for every tab that has none, a safety net at save time: a tab
@@ -7561,20 +7572,39 @@ const AI_CLIS = [
   {label:"Gemini CLI",  cmd:"gemini", check:"gemini"},
   {label:"Aider",       cmd:"aider",  check:null},
 ];
-// Plain shells (the "Command" category): Windows' two, or this machine's own
+// Plain shells (the "Command" category): Windows' two, and Git Bash on a PC
+// that has it -- the same choices as Basic > Default command -- or this
+// machine's own
 const SHELL_CMDS = SYSTEM === "windows" ? [
   {label:"PowerShell",  cmd:"powershell.exe", check:null},
   {label:T["settings.tab.kind.cmdprompt"], cmd:"cmd.exe", check:null},
+  ...(MACHINE_SHELL.git_bash ? [{label:"Git Bash", cmd:MACHINE_SHELL.git_bash, check:null}] : []),
 ] : [{label:MACHINE_SHELL.name, cmd:MACHINE_SHELL.cmd, check:null}];
 // All launchers, for the command field's datalist.
 const COMMON_COMMANDS = AI_CLIS.concat(SHELL_CMDS);
 // A "cmd" tab whose head is one of these is an AI CLI, so it groups under the
 // AI category rather than the plain-shell one.
 const AI_CLI_HEADS = ["claude", "codex", "gemini", "aider", "kimi", "grok", "opencode", "cursor-agent"];
-const headOf = c => (cmdToText(c).trim().split(/\s+/)[0] || "").toLowerCase().replace(/\.exe$/, "");
+const headOf = c => programOf(c).toLowerCase().replace(/\.exe$/, "");
 const isAiCli = c => AI_CLI_HEADS.includes(headOf(c));
 
-const cmdToText = c => Array.isArray(c) ? c.join(" ") : (c || "");
+// A tab's command is written one of two ways (config::command_value): a line,
+// split at every space when it is read, or -- when its program's path has a
+// space in it -- the program and its arguments apart. On this page it is a
+// line either way, with such a program in quotes, the way it is typed
+const cmdToText = c => Array.isArray(c)
+  ? c.map((w, i) => i === 0 && /\s/.test(w) ? `"${w}"` : w).join(" ") : (c || "");
+// ...and back: a line whose program is quoted is written apart, every other
+// line as it is
+function textToCmd(text) {
+  const m = /^\s*"([^"]+)"(.*)$/.exec(text || "");
+  return m ? [m[1], ...m[2].split(/\s+/).filter(Boolean)] : (text || "");
+}
+// The program a command runs: the first word, or the quoted path
+function programOf(c) {
+  const v = textToCmd(cmdToText(c));
+  return Array.isArray(v) ? v[0] : (v.trim().split(/\s+/)[0] || "");
+}
 // The machine a tab's folder is on, when it is not this PC, and the folder as
 // that machine spells it. Null for a folder here. A tab there is a terminal on
 // that machine: what it runs is typed into the shell that opens there, so this
@@ -7679,7 +7709,7 @@ const CAT_START = {ai:defaultAiCommand, cmd:"", remote:"ssh://user@example.com:2
 const catStart = v => { const s = CAT_START[v]; return (typeof s === "function" ? s() : s) || ""; };
 const CAT_LIST = [
   ["ai",      T["settings.tab.cat.ai"]],
-  ["cmd",     T["settings.tab.cat.cmd"]],
+  ["cmd",     T[MACHINE_SHELL.git_bash ? "settings.tab.cat.cmd.gitbash" : "settings.tab.cat.cmd"]],
   ["remote",  T["settings.tab.cat.remote"]],
   ["ssh",     SYSTEM === "windows" ? "SSH (ssh.exe)" : "SSH"],
   ["docker",  "Docker"],
@@ -7715,6 +7745,7 @@ function kindName(command) {
     if (!h) return T["settings.tab.name.cmd"];
     if (h === "powershell" || h === "pwsh") return "PowerShell";
     if (h === "cmd") return T["settings.tab.kind.cmdprompt"];
+    if (MACHINE_SHELL.git_bash && h === headOf(MACHINE_SHELL.git_bash)) return "Git Bash";
     return h;
   }
   return ({remote:"SSH", ssh:"SSH", docker:"Docker", wsl:"WSL", sftp:"SFTP", git:"git",
@@ -16894,13 +16925,19 @@ function launchCard(t, renamed) {
   const cmdRow = el("div", {class:"row"});
   const real = launchLine(t);
   let before = cmdToText(t.command);
-  const cmdInput = field(t, "command", (T[farPlaceOf(t) ? "settings.tab.command.ph.far" : "settings.tab.command.ph"] || "").replaceAll("{shell}", MACHINE_SHELL.cmd),
-    {mono:true, onInput:() => {
-      followKind(t, before);
-      before = cmdToText(t.command);
-      if (renamed) renamed();
-      renderNav(); real.schedule();
-    }});
+  // Shown as a line and written the way the app reads it (textToCmd): a
+  // program under a path with spaces is kept whole. A command nobody types
+  // in stays exactly as it was written
+  const cmdInput = el("input", {type:"text", class:"mono grow",
+    placeholder: (T[farPlaceOf(t) ? "settings.tab.command.ph.far" : "settings.tab.command.ph"] || "").replaceAll("{shell}", MACHINE_SHELL.cmd)});
+  cmdInput.value = cmdToText(t.command);
+  cmdInput.addEventListener("input", () => {
+    t.command = textToCmd(cmdInput.value);
+    followKind(t, before);
+    before = cmdToText(t.command);
+    if (renamed) renamed();
+    renderNav(); real.schedule();
+  });
   const far = farPlaceOf(t);
   cmdInput.setAttribute("list", far ? "cmdlistfar" : "cmdlist");
   const detailBox = el("div");
@@ -17246,9 +17283,9 @@ function aiPanel(t, cmdInput, rebuild, real) {
       const flag = cliFlagOf(head);
       if (!flag) return;
       const cb = el("input", {type:"checkbox"});
-      cb.checked = (t.command || "").split(/\s+/).includes(flag);
+      cb.checked = cmdToText(t.command).split(/\s+/).includes(flag);
       cb.addEventListener("change", () => {
-        let c = (t.command || "").trim();
+        let c = cmdToText(t.command).trim();
         const parts = c.split(/\s+/).filter(Boolean);
         if (cb.checked) { if (!parts.includes(flag)) parts.push(flag); }
         else { for (let i = parts.length - 1; i >= 0; i--) if (parts[i] === flag) parts.splice(i, 1); }
@@ -18359,7 +18396,9 @@ const TAB_KEYS_SHOWN = new Set(["name", "id", "uid", "command", "profile", "auto
 
 function flatten(tabs, depth, group, out) {
   for (const t of tabs || []) {
-    out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: cmdToText(t.command),
+    // The command as written, a line or the words apart: made a line here, a
+    // program under C:\Program Files was saved split at its space
+    out.push({ name: t.name || "", id: t.id || "", uid: t.uid || "", command: t.command || "",
                profile: t.profile || "", automation: t.automation || t.lua || "",
                git_account: t.git_account || "",
                ai_account: t.ai_account || "",
@@ -19351,7 +19390,7 @@ load().then(() => {
       };
       tabs.forEach((t, i) => { if ((t.group || 0) === gi && terminal(t)) here.push(i); });
       const titleOf = t => ((t.name || "").trim()
-        || (cmdToText(t.command).trim().split(/\s+/)[0] || "").split(/[\/]/).pop().replace(/\.[^.]*$/, "")).toLowerCase();
+        || programOf(t.command).split(/[\/]/).pop().replace(/\.[^.]*$/, "")).toLowerCase();
       const named = tabName ? here.filter(i => titleOf(tabs[i]) === tabName) : [];
       const ti = named.length === 1 ? named[0] : here[tabPos];
       if (ti != null) {

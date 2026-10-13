@@ -2682,6 +2682,7 @@
   "settings.tab.kind": "Kind",
   "settings.tab.cat.ai": "AI",
   "settings.tab.cat.cmd": "Command (PowerShell / cmd)",
+  "settings.tab.cat.cmd.gitbash": "Command (PowerShell / cmd / Git Bash)",
   "settings.tab.cat.cmd@mac": "Command (zsh / bash)",
   "settings.tab.cat.cmd.far": "Command (that machine's shell)",
   "settings.tab.ai.pick": "AI to use",
