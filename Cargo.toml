@@ -38,7 +38,7 @@ tokio = { version = "1.53.1", default-features = false }
 
 [package]
 name = "shikisha-term"
-version = "0.28.0"
+version = "0.28.1"
 edition = "2024"
 description = "Run Claude Code, Codex and Gemini side by side and let them hand work to each other. A terminal for orchestrating AI CLIs on Windows and macOS."
 authors = ["styleio"]
@@ -57,7 +57,14 @@ path = "src/main.rs"
 
 [profile.release]
 strip = true
-lto = true
+# Thin, not whole-program ("fat") LTO. Fat LTO optimises the program as one
+# module on one thread, and `runtime::run` -- one function of some fourteen
+# thousand lines, with everything it calls inlined into it -- made that grow
+# far faster than the code did: the Windows release build went from about an
+# hour (0.19.0) to past GitHub's six-hour limit (0.28.0, cancelled). Thin LTO
+# did the same build in 23 minutes on a PC that fat LTO had not finished in
+# 75, for an executable about an eighth larger
+lto = "thin"
 
 # The picture a phone watches is undone from JPEG once per frame (`vframe`).
 # Unoptimised, the decoder alone held the relay to 3-4 pictures a second at over

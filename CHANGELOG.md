@@ -8,6 +8,11 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-10-14
+
+0.28.0 came out for Linux only. On Windows, this is the first version with
+everything listed under 0.28.0.
+
 ### Fixed
 - **A terminal kept on a Linux machine ends when it is stopped, even just
   after it opened.** Stopping one sends its program the hangup, and bash
@@ -5321,7 +5326,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...v0.26.0
