@@ -282,14 +282,62 @@ struct Term {
 impl Term {
     /// Closing a kept terminal ends its whole job immediately. Its screen and
     /// exit can stay around for the owner without keeping its children alive.
-    fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
+    fn stop(self: &Arc<Self>) {
+        let first = !self.stopped.swap(true, Ordering::SeqCst);
         #[cfg(windows)]
         if let Some(job) = &self._job {
             job.terminate();
         }
         if let Ok(mut killer) = self.killer.lock() {
             let _ = killer.kill();
+        }
+        // The hangup can be lost: bash takes it in a handler and acts on it
+        // at its next safe point, and an `exec` before that point leaves the
+        // program it became running with the hangup forgotten. Whatever of
+        // its session is still there after a moment is killed outright
+        #[cfg(unix)]
+        if first && let Some(session) = self.session {
+            let term = Arc::clone(self);
+            std::thread::spawn(move || {
+                let until = Instant::now() + KILL_AFTER;
+                while Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if term.ended.lock().is_ok_and(|e| e.is_some()) {
+                        return;
+                    }
+                }
+                crate::fardaemon::log(&format!("session {session}: still there after the hangup; killing it"));
+                kill_session(session);
+            });
+        }
+        #[cfg(not(unix))]
+        let _ = first;
+    }
+}
+
+/// How long a stopped terminal's program is given to go on its hangup
+/// before what is left of its session is killed
+#[cfg(unix)]
+const KILL_AFTER: Duration = Duration::from_secs(2);
+
+/// Kill every process of a session: its shell leads it, and its process
+/// group is the shell's own, with any job the shell put in a group of its own
+#[cfg(unix)]
+fn kill_session(session: u32) {
+    let table = crate::repo::process_table(None, sysinfo::ProcessRefreshKind::nothing());
+    let pids: Vec<i32> = table
+        .processes()
+        .iter()
+        .filter(|(_, p)| p.session_id().is_some_and(|s| s.as_u32() == session))
+        .map(|(pid, _)| pid.as_u32() as i32)
+        .collect();
+    // SAFETY: signals only; the group is the session leader's own, and the
+    // leader has not been waited for yet (the terminal has not ended), so its
+    // id is not anybody else's
+    unsafe {
+        libc::killpg(session as i32, libc::SIGKILL);
+        for pid in pids {
+            libc::kill(pid, libc::SIGKILL);
         }
     }
 }

@@ -1794,6 +1794,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A program the hangup does not end -- one that ignores it, as one
+    /// does that bash `exec`ed into just after taking the hangup -- still
+    /// ends when its terminal is stopped
+    #[test]
+    fn a_stopped_terminal_ends_even_when_its_program_ignores_the_hangup() {
+        // SAFETY: tests that read SHELL do not run beside this one
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let home = std::env::temp_dir().join(format!("sk-farterms-hup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let run = home.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let h = home.clone();
+        let resident = std::thread::spawn(move || daemon(h));
+        while probe(&run.join(KEEP_SOCK)).is_none() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut pc = App::open(&run);
+        term(&mut pc, json!({ "do": "open", "ref": 1, "tab": "t1", "rows": 24, "cols": 80, "then": "trap '' HUP; echo trap-set; exec cat" }));
+        let opened = term_said(&mut pc, |m| m["did"] == "opened").expect("not opened");
+        let id = opened["term"].as_u64().unwrap();
+        let at = term_said(&mut pc, |m| m["did"] == "attached").expect("not attached");
+        let owner = at["owner"].as_u64().unwrap();
+        // Once in the command as it was typed, once as what it printed: the
+        // hangup is ignored from here on, by cat as well
+        let mut outs = Vec::new();
+        while screen_of(&at, &outs).matches("trap-set").count() < 2 {
+            outs.push(term_said(&mut pc, |m| m["did"] == "out" && m["term"] == id).expect("the trap was not set"));
+        }
+        term(&mut pc, json!({ "do": "stop", "term": id, "owner": owner }));
+        assert!(term_said(&mut pc, |m| m["did"] == "ended").is_some(), "a program that ignores the hangup was left running");
+        drop(pc);
+        let _ = resident.join();
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     /// The terminals job (far-keep plan §4.4): a terminal opened by one app,
     /// taken by another with its state, the first told and refused, asked
     /// about by the wrong tab or generation answered "unknown", stopped with

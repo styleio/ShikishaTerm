@@ -8,6 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **A terminal kept on a Linux machine ends when it is stopped, even just
+  after it opened.** Stopping one sends its program the hangup, and bash
+  takes that hangup in a handler it acts on a moment later. A program bash
+  had just become (`exec`) in that moment never heard of it, and went on
+  running with its terminal reported as ending. What is still there two
+  seconds after the hangup is now killed outright, with every process of its
+  session.
+
 ## [0.28.0] - 2026-10-14
 
 ### Added
