@@ -4730,21 +4730,21 @@ checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "shikisha-bridge"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "shikisha-core",
 ]
 
 [[package]]
 name = "shikisha-chromium-helper"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "cef",
 ]
 
 [[package]]
 name = "shikisha-core"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "anyhow",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-server"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "shikisha-core",
@@ -4809,7 +4809,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-shared"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -4818,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "shikisha-term"
-version = "0.27.0"
+version = "0.28.0"
 dependencies = [
  "aes-gcm 0.11.0",
  "anyhow",

@@ -8,7 +8,213 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-14
+
 ### Added
+- **An AI tab can run as another Claude Code or Codex account.** Under
+  "Settings → AI accounts", "Add account" makes an account, and "Sign in"
+  opens a tab as that account, where the CLI asks for the sign-in in its own
+  screen; this app never sees a password or a token. In an AI tab's settings,
+  "Account" chooses which one the tab runs as, and a tab given another
+  account starts again as it. The CLI is installed once: each account is a
+  settings folder of its own, and conversations, skills, commands and plugins
+  are shared with your usual sign-in, so a conversation had as either account
+  is found, resumed and searched as always. Settings start as a copy of your
+  usual ones. Each tab's usage line reads the allowance of the account it
+  runs as. An account's folder is kept in this PC's own data folder, which
+  nothing syncs, so each PC signs in by itself. "Delete" is refused while a
+  tab runs as the account (or a desk kept in a file of its own names it);
+  otherwise it removes the account's folder and sign-in, and moves its
+  conversations and what was typed as it to your usual sign-in's. A tab
+  whose account is gone from the settings waits, saying why, rather than
+  running as somebody else. Accounts are for tabs on this PC; a tab on a
+  server or a MicroVM runs as that machine's CLI is signed in. A
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` you set yourself is now where hooks,
+  skills, records and the allowance are read from.
+- **A conversation carries on with another AI, or another account, in a new
+  tab.** "Continue with another AI…" in an AI tab's right-click menu (a long
+  press on a phone), on its usage-limit notice, and beside "Resume" on a past
+  conversation opened from "Every conversation", opens a dialog listing what
+  the folder can start: this PC's AIs and the accounts added for them, a
+  server's own, a MicroVM's. The chosen one opens in a new tab in the same
+  folder, told where the old conversation's record is and asked to check
+  where it stopped before going on. "How much it reads first" chooses
+  between "From the end (recommended)" and "All of it, first". For a CLI
+  whose record cannot be found, the last part of the old tab's screen is
+  passed on instead. The old tab is left as it is.
+  The new tab opens on the desk the dialog was opened from; if the desk in
+  view, the tab, its folder or the chosen AI changed while it was being
+  prepared, nothing opens and the dialog asks to be opened again. A folder of
+  the same path on another machine is not used in place of one on this PC.
+  If you type into the new tab before it is ready, your words are kept and
+  the request to carry on is not sent. Opening the dialog no longer wakes a
+  paused MicroVM: its record is looked for only once you press "Start in a
+  new tab".
+- **A prompt is handed to an AI at set times, from a form.** "Settings →
+  Scheduled prompts" → "+ New scheduled prompt" takes a prompt, where it
+  goes and when, with no script. "A new tab each time" opens a tab with the
+  chosen AI in a folder and starts a fresh conversation; with "Close the tab
+  when the AI has answered" ticked, the tab is closed afterwards, unless
+  somebody typed into it or it is on screen. "A tab that is open" sends the
+  prompt to an AI tab and carries on its conversation. It runs on days and a
+  time, every hour at a minute, or at an interval, by this app's clock;
+  nothing is registered with Task Scheduler or cron, and nothing runs while
+  the app is closed or the PC sleeps. A time that went by is run once if no
+  later than "Run late by up to". A run is skipped, with the reason, when the
+  last one has not been answered, when the tab is busy or somebody is typing
+  in it, or when the prompt's desk has not been opened since the app
+  started; a prompt runs in its own desk whichever desk is on screen. A run
+  waits 6 hours at most, and the emergency stop ends runs still waiting.
+  "History" lists each run with how it went ("Answered", "Skipped", "Missed",
+  "Not run", "Cut short") and the AI's answer, read from the conversation's
+  record. "Run now" runs the prompt as saved. A tab a prompt goes to shows
+  its next run as "⏰ 09:00". All of it works from a phone too.
+- **Automation scripts run by the clock.** A hook can be named after a time
+  the way the others are named after an event: `at_0900`, `at_weekdays_0900`,
+  `at_weekends_1000`, `at_mon_0900` … `at_sun_0900`, `every_30m`,
+  `every_2h`, as a file in an automation folder or a function in a script. In
+  a tab's script it runs for that tab; in a desk's or the program's, once for
+  no tab. The app keeps the time itself, so nothing is left on the machine.
+  A time missed while the app was closed or the PC slept is run once if
+  within an hour, otherwise written to `logs/hooks.log` as missed; an
+  `every_` hook runs once on coming back, not once per missed time. A restart
+  does not run one twice, and nothing runs while automation is stopped. A
+  tab whose automation runs by the clock shows when it next runs, as
+  "⏰ 09:00".
+- **Codex signs in on a MicroVM from another device.** Codex's own first run
+  waits for a browser on the machine itself, which a MicroVM does not have.
+  The sign-in step on a MicroVM checkout now runs `codex login --device-auth`
+  in a tab of its own and shows it, with "Copy the code" beside the one-time
+  code and the address to open on this PC. A profile names its command for
+  this as `login_on_linux`. "Sign in in the terminal" puts the step away with
+  the terminal in front, and the step goes on by itself once the machine says
+  the AI is signed in. A worktree waiting for the sign-in has "Open the
+  sign-in step" and "I have signed in" on its row. Once signed in, the
+  sign-in tab is taken off the desk, and the AI's own tab, if nobody has used
+  it yet, starts again with its conversation.
+- **See the tokens Claude Code and Codex used on this PC, and what they
+  would cost by the token.** "Settings > Tokens and cost" reads the CLIs' own
+  conversation records, the accounts added under "AI accounts" included, and
+  shows for a period ("Last 7 days", "Last 30 days", "Last 90 days", "Last
+  year") and an AI the totals (input, input read from and written to the
+  cache, output, calls to a model), a bar for each day, and lists "By model",
+  "By folder" and "Latest conversations". Archived Codex conversations are
+  counted too. The cost is "Cost at API prices": what the same tokens would
+  cost bought through each maker's API at its published prices, each Codex
+  variant at its own price, with a long prompt's higher rate, Claude's fast
+  mode and US-only processing priced per call. A subscription does not bill
+  this way. Calls to a model with no known price are counted, left out of the
+  cost, and the card says how many. The first look reads every record and
+  takes a while; after that only what was added is read, and "Read again"
+  reads once more. Records that could not be read are said and tried again.
+  The counts are kept for a little over a year, even after a CLI deletes its
+  own records. Servers and MicroVMs are not counted.
+- **An AI that asked another tab is told when you stopped that tab's turn,
+  or gets the answer to what you said instead.** When you refuse the asked
+  tab's request at its dialog ("No, and tell Codex what to do differently")
+  or press Esc, `ask_tab` no longer hands back what the tab had said on the
+  way as its answer. If you then give the tab other words, the asking AI gets
+  what the tab answers to them. If you leave it, the asking AI hears the new
+  `STOPPED` state, is told that the person stopped the turn, and is told to
+  ask you whether to ask again. Only words you typed yourself are followed:
+  another ask, a script, a scheduled prompt or an orchestration's brief put
+  into the same tab ends the stopped ask instead, so their answer is never
+  passed off as the answer to it.
+- **The settings can be searched.** The column of settings screens has a
+  "Search the settings" box at its head. While it holds words, the column
+  lists every setting on every screen that matches by its name, its line of
+  explanation, its card or its screen. Pressing one opens its screen with the
+  setting brought into view and lit for a moment. Enter goes to the first,
+  Esc clears the words, and "No setting says that." is shown when nothing
+  matches.
+- **A tab's menu copies its reference.** The menu of an AI, terminal or page
+  tab -- in the list and in the strip, held on a phone -- has "Copy this tab's
+  reference", which copies its `<@id>` for pasting where the @ list in the
+  input is not: another tab's prompt file, a chat, an issue. Before, the @
+  list was the only way to get it.
+- **A tab that answered while you were elsewhere is marked unread.** A tab
+  that finishes, asks something or hits a limit while another tab is in
+  front (or while it is in no pane of a divided screen) shows its name in
+  bold with a small mark beside it, in the list and in the strip a phone
+  sees. The mark goes when the tab is brought to the front. Before, the blue
+  dot kept saying a tab had answered after the answer was read, so with many
+  tabs nobody could tell which answers were new.
+- **Phones can be told only while you are away from the PC.** A phone among
+  a desk's notification destinations has "Only while I am away from this PC".
+  Away is when the PC's screen is locked, or nothing has been typed or moved
+  on it for 3 minutes; sitting at it, you have the PC's banner already. Where
+  the system cannot say, the phone is told as before. A phone set up before
+  this is told always, as it was, and Test still sends at once.
+- **An AI answers a pull request's review.** "Have the AI answer the review"
+  in the git panel's ▾ reads the review threads nobody has marked resolved --
+  each with its file, its lines, whether the code under it has changed since,
+  and who said what in order -- and opens an "Answer review" AI tab in the
+  branch's folder with them, the same way a failed CI is handed over. The AI
+  fixes what the reviewer is right about and commits without pushing, and
+  asks you about questions and anything it disagrees with; replying and
+  resolving on GitHub stay with you. The prompt is the project's own,
+  editable under "Answering a review" in the settings beside the CI one. A
+  branch with no open pull request, or one with no open thread, says so.
+- **Notes on the lines of a change go to an AI together.** A line of a change
+  opened from the git panel has a menu (right-click, held on a phone) to
+  write a note for the AI on it, as a document's paragraph has. The line
+  numbers are the file's as it is now, so the AI reads the line the note
+  means; select several lines first to note all of them. The notes are drawn
+  under their lines and handed to an AI tab by the same bar as a document's.
+  Before, a change could hand only one `path:line` at a time to the input.
+- **A terminal's history can be searched from the board, on a phone too.**
+  Ctrl+Shift+F in a terminal tab, or "Search this terminal" in the tab's
+  menu, opens the board's search bar over the terminal (not Ctrl+F alone,
+  which programs in a terminal use themselves). It looks through everything
+  that has gone by, brings the newest line holding the words to the middle
+  of the view and marks it. Enter goes to the newer match, Shift+Enter to the
+  older one, and Esc closes the bar and puts the view back at the newest
+  output. Before, a terminal could be searched only in copy mode from the
+  PC's keyboard, and not at all from a phone.
+- **"Save diagnostics" for a bug report.** Settings has "Save diagnostics"
+  beside "Report a bug". It saves the app's log, the crash log, how the last
+  run ended and what an update was doing as one zip, where you save things,
+  and sends nothing anywhere. In the zip, keys, addresses, links to anywhere
+  but this machine, mail addresses, the home folder and your user name are
+  hidden, and the words of the AIs' conversations are left out. The message
+  after saving counts what was hidden and says that folder and branch names
+  are still in it, to look inside before attaching it. It works from a phone
+  too.
+- **A whole folder can be searched for every place the words are, and a file
+  opened by a few letters with Ctrl+P.** "Inside" in the file list's search
+  now lists every place the words are, grouped by file with the words lit;
+  pressing a line opens the file at it. Buttons under the box choose "Match
+  case", "Whole word" and "Regular expression", and "Files to look in" names
+  the files to look in (`*.rs, src/**`) or leave out (`dist, *.min.js`). The
+  files looked in are those git keeps and new ones it does not ignore. A
+  search stops at 1,000 places and says so, and files over 4 MB are counted
+  as not looked in. Ctrl+P (Ctrl+Shift+P in a terminal tab, whose programs
+  use Ctrl+P) opens a file of the folder in view by part of its name: the
+  letters need not be side by side (`rntm` finds `runtime.rs`), and
+  `name:12` opens it at line 12. With nothing typed, the files opened there
+  lately are listed. On a phone it is "Open a file" in the command palette.
+  Both work in a folder on another machine, which says when the folder is
+  not there. A file read again because somebody else wrote it keeps the
+  place it was being read at.
+- **A web page's notifications come as SHIKISHA-TERM's own, asked about once
+  per site.** The first time a page in a browser tab asks to show
+  notifications, the board asks "Allow notifications from this site?" with
+  "Allow" and "Block" (a phone watching the board is asked too). The answer
+  is kept per site. On Windows, an allowed site's notification shows as a
+  SHIKISHA-TERM banner, headed with the site's name in front of the page's
+  own title ("example.com: New message"), and pressing it brings that tab
+  forward. A page decides the words, never whose they look like: the title
+  and text are cut short, and the site's name is always put in by the app.
+  The new "Site notifications" page in Settings lists the sites that asked
+  and your answer, and "Remove" lets a site ask again. A notification a site
+  sends only from its service worker is not shown.
+- **The board says when a page's sound is not reaching the phone.** When the
+  sound of a page watched from a phone cannot be taken, a notice "The page's
+  sound isn't reaching the phone" stands at the top of the pane on the PC,
+  with the reason and "Close", and the same words appear under the speaker
+  on the phone, whose speaker goes back to off. It says to press the speaker
+  again to try once more. Before, the speaker said it was on and nothing
+  played, with no word of why.
 - **Git Bash is one of the shells a tab can be.** On a PC with Git for
   Windows, the Command kind offers Git Bash beside PowerShell and the command
   prompt, the same three Basic > Default command offers.
@@ -25,8 +231,152 @@ once it reaches its first tagged release.
   Auto on, the AI that writes automatic names also names each server ("Admin
   console"), once per server; what it is sent is listed under Automatic names
   in the desk's settings.
+- **After a run that did not close properly, AI tabs come back one at a
+  time.** The first AI tab starts at once and each of the others waits five
+  seconds after the one before, saying "Starting in turn". After two runs in
+  a row that stopped within ten minutes of starting, every AI tab waits for
+  you ("Waiting for you to start it") with a "Start now" button on its card.
+  A waiting tab still starts as the conversation it was to carry, or a new
+  one, as its launch meant. Terminals on other machines and model
+  conversations start at once. Before, every AI CLI came back in the same
+  second, a few hundred megabytes each -- after a run that ran out of memory,
+  the surest way to run out again.
+- **An AI is told when the app renames the branch under it.** When the app
+  gives a worktree's drawn branch name (`mighty-gannet`) the name of the
+  work, each Claude or Codex tab in that folder is told once, as it starts
+  its next turn, that only the name changed and nobody switched branches.
+  Before, the AI found the new name, took the branch to have been switched
+  by somebody else, and could go off to work in a folder of its own. The
+  hooks the app writes into each CLI's settings say this in their
+  explanation, and a new version asks before writing them again.
+- **A phone reaches the right panel from the top bar.** A ◨ handle in the
+  top bar's right corner opens and closes the right panel, the way ☰ opens
+  the left one, kept clear of STOP. The list of closed tabs stands beside +.
+  Before, the panel came back by an edge strip down the right side, which
+  lay over the end of the row of tabs and took presses meant for the closed
+  tabs.
+- **The 🖥️ for server versions appears once one is paired, and opens it.**
+  The button beside the folder list used to stand on every PC and open the
+  settings. It now shows only when a server version is paired, and a press
+  opens that server's board in its own window ("Open the server version
+  <name>"). With several, it opens a list of them, ending in "Manage server
+  versions…", which leads to the settings page where they are paired and
+  removed; right-clicking the button opens the same list. A long list
+  scrolls, and a name is shown exactly as it is written. A list opened from
+  a button at the foot of the window now opens above the button rather than
+  over it.
+- **The ports panel also lists a server whose starting shell has ended.** An
+  AI that starts a dev server in the background runs it from a shell of its
+  own, and that shell ends while the server goes on. Such a server is now
+  listed under the tab whose folder it runs in, and in place of a tab's name
+  its row says "Tab unknown (the shell that started it has ended)". Before,
+  it was missing from the panel.
+- **Clearer words when there is nowhere to send notifications.** The test
+  notification with no destination set now says "There is nowhere to send
+  notifications yet. Add one in Settings > <desk> > Notifications." in place
+  of a pointer to config.json. The test notification itself reads "Test
+  notification" with a line saying that, if you can read it, notifications
+  reach you there.
+- **A download's folder is written the way every other path is.** The
+  downloads list shows a path in your home folder as `~/Downloads`. Before, a
+  long path cut at the front could show its leading slash at the end
+  (`Users/me/Downloads/`).
+- **On Linux, a tab's Command kind offers this machine's own shell.** The
+  Command choices and the command field's example ("e.g. /bin/bash") now
+  name the shell in `$SHELL` (or `/bin/sh`). Before, they offered PowerShell
+  there too.
+- **The window goes as soon as you choose to quit.** Stopping the tabs and
+  writing the record takes a few seconds, and the window stayed on the
+  screen, gone black, while it did. It is now put away the moment Quit is
+  decided.
 
 ### Fixed
+- **An AI that asked another tab hears when that tab's turn failed.** A Codex
+  turn the model would not take ended without an answer and read like any
+  other end, so an AI that had asked with `ask_tab` waited for good. The tab
+  now shows as failed, and `ask_tab` answers `FAILED` with the error -- also
+  later, typed into the asking tab, when it had stopped waiting -- and the
+  lead of a job hears of it at once. `refused: true` marks a request the AI's
+  provider would not answer, which asking again with the same words will not
+  fix. A tab at its usage limit answers `LIMIT`, and one whose reply cannot
+  be found after it moved on answers `NOREPLY`. This works for tabs on a
+  server or a MicroVM as well, and a reply ends where the person spoke
+  again. A scheduled prompt whose AI failed this way ends its run with "The
+  AI stopped with an error before it answered."
+- **A MicroVM checkout made again after its machine was gone clones and
+  installs.** Before, it still named the gone machine and had nothing to
+  check out.
+- **An AI that asked another tab hears its answer after you approve a
+  request there.** When the asked tab stops at a question for you, the
+  asking AI is told once, with the tab's screen, to tell you and end its
+  turn. Once you have answered and the tab finishes, its reply is typed into
+  the asking tab and left in its inbox like any other. Before, the ask ended
+  at "waiting for approval", and what the tab went on to write reached
+  nobody. A second question in the same turn is told again; the same question
+  redrawn, with the cursor on another choice or wrapped at a phone's width,
+  is not. When the tab's record says the turn ended while its screen still
+  looks like a question, the reply is passed on.
+- **A Codex tab reads as "Waiting for you" only at Codex's own approval
+  dialog.** Codex is now taken to be asking only when its dialog ("Would you
+  like to run the following command?", "...make the following edits?",
+  "...grant these permissions?") stands on screen with its numbered choices
+  under it. Before, a word such as "approve", "(y/n)" or "[y/N]" anywhere on
+  the screen counted, so a review whose text said "approve or object" was
+  answered "waiting for approval" within seconds, and quoting the dialog's
+  own words did the same.
+- **A scheduled prompt whose turn you stopped is booked as "Cut short".**
+  Its run says "The AI's turn was stopped before it answered." Before, a turn
+  stopped with Esc or a refused request was booked as "Answered".
+- **A version an update put in place that stops twice while starting offers
+  the way back.** After two starts in a row that neither ran two minutes nor
+  closed properly, a message box asks, in your language, whether to go back
+  to the version you used before. Yes puts it back and starts it, and the
+  failed version is not offered again (a later one is); No tries it once
+  more. Before, the way back was a button in the settings, which a version
+  that vanishes as it opens never shows.
+- **A removed device is shut out for good.** Taking a device's key away now
+  changes the board's link, so the link it came in by (in its tab, its
+  history, a bookmark) stops working, and it can come back only by scanning
+  the new code on the PC. The other devices keep working. Its phone
+  notifications stop too. With a fixed token written in the settings, the
+  confirmation says the device can come back by that link and to change
+  "Fixed token" to keep it out. Before, opening the old link again added it
+  back as a new device without asking, and its notifications kept arriving
+  with what the AI said.
+- **Saved files survive a power cut, two writes at once and an antivirus
+  holding them.** A power cut could leave the settings, the paired devices
+  or the token empty. Each file is now written fully to disk before it
+  replaces the old one, keeps that file's permissions, and is tried again
+  for a moment while something on Windows holds it. The phone notifications'
+  keys and registrations, the mark of a run in progress and the backup of an
+  AI CLI's hook file are saved the same way.
+- **The question dialog has a box to type in again.** Questions that asked
+  for something new -- a new folder's name over SFTP, a picture's address or
+  a note in the visual Markdown editor -- hid their box because the starting
+  text was empty, leaving nowhere to type.
+- **A browser's bar no longer covers INDEX or the settings form.** The
+  browser's bar stayed drawn over the top of the board (and under the notice
+  about a run that ended badly), hiding its first lines. It now goes away
+  with the panes and comes back with them.
+- **Dragging the window by its bar keeps the spot you grabbed under the
+  pointer.** On Windows, the window started to move only after the pointer
+  had travelled a few pixels, and from then on trailed the pointer by that
+  much. A maximised window dragged off its bar is still restored by Windows
+  under the pointer, at the same place along its width. The bar also stays
+  above a dialog's veil, so a window with a dialog open can still be moved,
+  maximised and minimised.
+- **A question that comes up during the first-start setup waits until setup
+  is done.** The question about the AI hooks could arrive at the same moment
+  as the first-start setup and show half under its box, and Enter meant for
+  "Done" could answer it unseen. It now stays hidden and cannot be pressed
+  or take the keys until setup is finished.
+- **Notices at the top of a pane no longer cover what is under them.** "It
+  stopped with an error last time" and the notice about the page's sound
+  were laid over the top of the pane, hiding a browser tab's address bar,
+  its search row, the first lines of a terminal, the board and every panel
+  (git, editor, files, issues). Everything now starts below the notices and
+  moves when they come, go or grow taller. The bubble for the first steps
+  keeps out from under them too.
 - **A tab whose program is under a path with spaces survives the settings
   screen.** A project added with Git Bash as its default command runs
   `C:\Program Files\Git\bin\bash.exe`; saving the settings wrote that back
@@ -4962,7 +5312,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/styleio/ShikishaTerm/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/styleio/ShikishaTerm/compare/v0.24.1...v0.25.0
