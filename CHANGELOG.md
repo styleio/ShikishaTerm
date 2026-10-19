@@ -19,6 +19,12 @@ once it reaches its first tagged release.
   conversations too, the way the conversation panel does, and a tab whose
   conversation has not been identified yet no longer says it cannot be read.
   A shell has no 📖 on a phone any more.
+- **A list is copied as it is laid out.** Text selected over a list, in the
+  reader or anywhere else on the board, keeps its numbers and bullets when it
+  is copied, and an item inside another is set in by half-width spaces as far
+  as the words of the item it is in. An AI's answer nests its lists the way it
+  writes them, and a numbered list that carries on after a blank line keeps
+  its numbers.
 
 ## [0.28.1] - 2026-10-14
 

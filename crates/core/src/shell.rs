@@ -19763,14 +19763,14 @@ function rdMarkup(text, gh) {
   const lines = source.split(/\r?\n/);
   const row = l => /^\s*\|.*\|\s*$/.test(l);
   const cells = l => l.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
-  let i = 0, para = [], list = null;
-  // Text from GitHub nests its lists: an item written further in belongs to the
+  let i = 0, para = [];
+  // Lists nest the way they are written: an item further in belongs to the
   // item above it, and the list it was in carries on after it -- "3." stays 3.
-  // Each open list, outermost first, with how far in its items are written
+  // An AI's answer nests them as GitHub's text does. Each open list, outermost
+  // first, with how far in its items are written
   let open = [];
   const endPara = () => { if (para.length) { out.append(rdInline(el("p", {}), para.join("\n"), gh)); para = []; } };
   const endList = () => {
-    if (list) { out.append(list); list = null; }
     if (open.length) { out.append(open[0].el); open = []; }
   };
   const intoList = (tag, body, indent, start) => {
@@ -19780,12 +19780,6 @@ function rdMarkup(text, gh) {
     const task = gh && /^\[([ xX])\]\s+(.*)$/.exec(body);
     if (task) { li.classList.add("task"); li.append(el("span", {class:"box"}, task[1] === " " ? "\u2610" : "\u2611")); body = task[2]; }
     rdInline(li, body, gh);
-    if (!gh) {
-      if (list && list.tagName.toLowerCase() !== tag) endList();
-      if (!list) list = el(tag, {});
-      list.append(li);
-      return;
-    }
     while (open.length && indent < open[open.length - 1].indent) open.pop();
     let top = open[open.length - 1];
     if (top && indent === top.indent && top.el.tagName.toLowerCase() !== tag) {
@@ -20153,6 +20147,124 @@ document.addEventListener("keydown", e => {
 });
 
 
+// A selection that takes in a list, as text laid out the way it is on the
+// screen. The browser's own reading leaves the numbers and the bullets out --
+// they are drawn beside the words, not written in them -- and with them the
+// steps a list is set in by, so "1." "2." "3." came out as three lines with
+// nothing to say what they were. Here each item that starts inside the
+// selection keeps the mark it is drawn with, and an item inside another is set
+// in by half-width spaces as far as the words of the item it is in. Anything
+// else is left to the browser: null when the selection has no list in it
+const LAID_BULLET = {disc: "\u2022 ", circle: "\u25e6 ", square: "\u25aa "};
+const LAID_GAP = /^(P|H[1-6]|PRE|TABLE|BLOCKQUOTE|HR)$/;
+function laidOutText(sel) {
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  let top = range.commonAncestorContainer;
+  if (top.nodeType !== 1) top = top.parentElement;
+  if (!top || top.closest("input, textarea, [contenteditable]")) return null;
+  if (!top.closest("li") && ![...top.querySelectorAll("li")].some(li => range.intersectsNode(li))) return null;
+  const style = new Map();
+  const css = n => { let c = style.get(n); if (!c) style.set(n, c = getComputedStyle(n)); return c; };
+  // The mark an item is drawn with, as text
+  const mark = li => {
+    const type = css(li).listStyleType;
+    if (type === "none") return "";
+    if (LAID_BULLET[type]) return LAID_BULLET[type];
+    const list = li.parentElement;
+    let n = list && list.tagName === "OL" ? list.start : 1;
+    for (const c of list ? list.children : []) {
+      if (c.tagName !== "LI") continue;
+      if (c.hasAttribute("value")) n = c.value;
+      if (c === li) break;
+      n++;
+    }
+    return n + ". ";
+  };
+  // How far in the words inside a node start: as far as the words of the item
+  // it is in, which is that item's own mark further in than its list
+  const cols = new Map();
+  const col = n => {
+    const li = n && n.closest && n.closest("li");
+    if (!li) return 0;
+    if (!cols.has(li)) cols.set(li, col(li.parentElement) + mark(li).length);
+    return cols.get(li);
+  };
+  // Whether the selection takes in an item from its first word, so its mark
+  // with it: a selection begun part-way into one does not
+  const fromHead = li => {
+    if (!li.contains(range.startContainer)) return true;
+    const before = document.createRange();
+    before.setStart(li, 0);
+    before.setEnd(range.startContainer, range.startOffset);
+    return !before.toString().trim();
+  };
+  const lines = [];
+  let line = null, need = 0;
+  const put = (text, at, kept) => {
+    if (!text) return;
+    if (need && (lines.length || line !== null)) {
+      lines.push(line || "");
+      for (let k = 1; k < need; k++) lines.push("");
+      line = null;
+    }
+    need = 0;
+    if (line === null) {
+      if (!kept) text = text.replace(/^ +/, "");
+      if (!text) return;
+      // The first line is where the selection began, not where a line starts
+      line = lines.length || kept === "mark" ? " ".repeat(at) : "";
+    }
+    line += text;
+  };
+  const hard = () => {
+    if (need && (lines.length || line !== null)) { lines.push(line || ""); line = null; need = 0; }
+    lines.push(line || "");
+    line = null;
+  };
+  const walk = node => {
+    if (!range.intersectsNode(node)) return;
+    if (node.nodeType === 3) {
+      const host = node.parentElement;
+      let text = node.data.slice(node === range.startContainer ? range.startOffset : 0,
+        node === range.endContainer ? range.endOffset : node.data.length);
+      const ws = css(host).whiteSpace;
+      const kept = /^pre|break-spaces/.test(ws);
+      if (!kept) text = text.replace(/[\t\n\r ]+/g, " ");
+      else if (ws === "pre-line") text = text.replace(/[\t ]+/g, " ");
+      text.split("\n").forEach((part, k) => { if (k) hard(); put(part, col(host), kept); });
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const c = css(node);
+    if (c.display === "none" || node.tagName === "BUTTON" || (c.userSelect || c.webkitUserSelect) === "none") return;
+    if (node.tagName === "BR") { hard(); return; }
+    const cell = c.display === "table-cell";
+    const block = !cell && !/^inline|^contents$/.test(c.display);
+    const gap = !block ? 0
+      : LAID_GAP.test(node.tagName) || (/^(UL|OL)$/.test(node.tagName) && !node.parentElement.closest("li")) ? 2 : 1;
+    need = Math.max(need, gap);
+    if (node.tagName === "LI" && fromHead(node)) put(mark(node), col(node.parentElement), "mark");
+    for (const child of node.childNodes) walk(child);
+    if (cell && node.nextElementSibling) put("\t", 0, true);
+    need = Math.max(need, gap);
+  };
+  walk(top);
+  if (line !== null) lines.push(line);
+  const out = lines.map(l => l.replace(/[ \t]+$/, ""));
+  while (out.length && !out[0]) out.shift();
+  while (out.length && !out[out.length - 1]) out.pop();
+  return out.join("\n");
+}
+// What the browser itself copies -- a key, the menu, or the command a phone
+// copies with -- laid out the same way
+document.addEventListener("copy", e => {
+  const text = laidOutText(window.getSelection());
+  if (text == null || !e.clipboardData) return;
+  e.clipboardData.setData("text/plain", text);
+  e.preventDefault();
+});
+
 // The top bar's input needs to behave like an ordinary text field. If
 // merely selecting text copied it, or right-click pasted into the
 // terminal, editing the URL would be impossible
@@ -20169,7 +20281,7 @@ document.addEventListener("mouseup", e => {
   const reading = !!(e.target && e.target.closest && e.target.closest("#reader"));
   if (inBar(e) && !reading) return;
   const s = window.getSelection();
-  const t = s ? s.toString() : "";
+  const t = s ? laidOutText(s) ?? s.toString() : "";
   if (t) {
     // Whoever is looking gets it in their own clipboard. At the window that is
     // this machine, and the runtime does it (the same manners as PuTTY: select
@@ -31272,6 +31384,18 @@ mod tests {
         assert!(PAGE.contains("if (rdTake(d)) return;"), "the reader's answers never reach it");
         assert!(PAGE.contains("const showRead = term && !!(seen && seen.kind === \"pty\" && seen.ai && seen.readable);"),
             "📖 is not decided the same way wherever the board is looked at");
+    }
+
+    /// A list is copied as it is laid out, numbers, bullets and steps in
+    /// included, by every way there is of copying. Played out in
+    /// tools/debug/scenes/reader.mjs and tools/debug/reader.win.mjs.
+    #[test]
+    fn a_list_is_copied_as_it_is_laid_out() {
+        assert!(PAGE.contains("const t = s ? laidOutText(s) ?? s.toString() : \"\";"), "a press copies the browser's reading of a list");
+        assert!(PAGE.contains("document.addEventListener(\"copy\", e => {")
+            && PAGE.contains("  const text = laidOutText(window.getSelection());"),
+            "a key or the menu copies the browser's reading of a list");
+        assert!(!PAGE.contains("if (!gh) {"), "an AI's answer does not nest its lists the way it writes them");
     }
 
     /// The ball is a moving element, not a character.

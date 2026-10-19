@@ -48,8 +48,12 @@ const answer = [
   '',
   '## What changed',
   '',
-  '- The tax bands are read once and kept for five minutes',
-  '- A discounted line is now tested',
+  '1. The tax bands are read once and kept for five minutes',
+  '   - read at the first request',
+  '   - kept for each shop',
+  '2. A discounted line is now tested',
+  '',
+  '- Nothing else was touched',
   '',
   '```rust',
   'let bands = cache.bands_or(|| db.tax_bands())?;',
@@ -154,6 +158,39 @@ export default {
         return new Promise(ok => setTimeout(ok, 150));
       }).then(() => {
         ${must('document.querySelector("#rbody .ragain")', 'a failed reading offers no way to read again')}
+        return "ok"; })`,
+    },
+    // A selection is copied as it is laid out: the numbers and the bullets
+    // with it, an item inside another set in by spaces as far as its words,
+    // and a selection with no list in it left to the browser
+    'copy-window': {
+      served: 'window', sizes: [['wide', 1280, 860]],
+      run: `${opened('window')}.then(() => {
+        const ai = document.querySelector("#rbody .rturn.ai");
+        const sel = getSelection();
+        const r = document.createRange();
+        r.selectNodeContents(ai);
+        sel.removeAllRanges(); sel.addRange(r);
+        const all = laidOutText(sel);
+        const want = ["1. The tax bands are read once and kept for five minutes",
+          "   ◦ read at the first request", "   ◦ kept for each shop",
+          "2. A discounted line is now tested", "", "• Nothing else was touched"].join("\\n");
+        ${must('all.includes(want)', 'the list was not copied as it is laid out')}
+        ${must('all.includes("let bands = cache.bands_or(|| db.tax_bands())?;\\nassert_eq!")', 'the code lost its lines')}
+        ${must('/Checkout\\t640 ms\\t90 ms/.test(all)', 'the table lost its cells')}
+        const data = new DataTransfer();
+        document.dispatchEvent(new ClipboardEvent("copy", {clipboardData: data, bubbles: true, cancelable: true}));
+        ${must('data.getData("text/plain") === all', 'a key or the menu copies something else')}
+        // Begun part-way into the first item: no mark for it, the ones after kept
+        const first = ai.querySelector("ol > li").firstChild;
+        r.setStart(first, 4);
+        r.setEnd(ai.querySelector("ol > li:nth-child(2)").firstChild, 3);
+        sel.removeAllRanges(); sel.addRange(r);
+        ${must('laidOutText(sel) === "tax bands are read once and kept for five minutes\\n   \\u25e6 read at the first request\\n   \\u25e6 kept for each shop\\n2. A d"', 'a selection begun inside an item was laid out wrongly')}
+        r.selectNodeContents(ai.querySelector("p"));
+        sel.removeAllRanges(); sel.addRange(r);
+        ${must('laidOutText(sel) === null', 'a selection with no list in it was not left to the browser')}
+        sel.removeAllRanges();
         return "ok"; })`,
     },
     // Esc puts it away, and the buttons come back

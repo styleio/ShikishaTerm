@@ -89,9 +89,13 @@ fs.writeFileSync(config, JSON.stringify({
   ]}]}],
 }));
 
-// The clipboard as it was, to be put back
-const clipBefore = ps('Get-Clipboard -Raw');
-const clipboard = () => ps('Get-Clipboard -Raw').replace(/\r?\n$/, '');
+// The clipboard as it was, to be put back. Carried as base64 both ways: the
+// console's own code page turns anything past ASCII into "?", and what was
+// put back would no longer be what was there
+const clipRead = () => Buffer.from(
+  ps('[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$(Get-Clipboard -Raw)"))').trim(), 'base64').toString('utf8');
+const clipBefore = clipRead();
+const clipboard = () => clipRead().replace(/\r?\n$/, '');
 
 let local, phone;
 try {
@@ -145,6 +149,13 @@ try {
     range.selectNodeContents(p); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     p.dispatchEvent(new MouseEvent("mouseup", {bubbles: true})); return true; })()`);
   check(await until(() => clipboard() === ANSWER_HEAD, 'the clipboard', 8000).catch(() => false), 'the selection is on the clipboard');
+  // A list is copied as it is laid out: the bullets the screen draws with it
+  await run(`(() => { const items = document.querySelectorAll("#rbody .rturn.ai li"); const range = document.createRange();
+    range.setStartBefore(items[0]); range.setEndAfter(items[1]); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    items[1].dispatchEvent(new MouseEvent("mouseup", {bubbles: true})); return true; })()`);
+  const bullets = [1, 2].map(i => `• Step ${i}: a line of the explanation that a terminal would scroll away.`).join('\n');
+  check(await until(() => clipboard().replace(/\r\n/g, '\n') === bullets, 'the clipboard', 8000).catch(() => false),
+    'a list is on the clipboard with its bullets');
 
   console.log('3b. while it is up, the keys stay its own');
   await run('window.dispatchEvent(new Event("focus")); true');
@@ -200,7 +211,10 @@ try {
   try { phone?.stop(); } catch {}
   try { local?.ws?.close(); } catch {}
   try { ps(`& ${quote(launch)} -At ${quote(instance)} -Stop`); } catch (e) { console.error(e.message); }
-  try { spawnSync('powershell.exe', ['-NoProfile', '-Command', '$input | Set-Clipboard'], {input: clipBefore.replace(/\r?\n$/, '')}); } catch {}
+  try {
+    ps('Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:CLIP_BACK)))',
+      {...process.env, CLIP_BACK: Buffer.from(clipBefore.replace(/\r?\n$/, ''), 'utf8').toString('base64')});
+  } catch {}
 }
 console.log(failures ? `${failures} failed` : 'all passed');
 process.exit(failures ? 1 : 0);
