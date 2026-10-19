@@ -1226,6 +1226,14 @@ pub struct Config {
     /// screen's buttons, which are one setting
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub agent_hooks: std::collections::BTreeMap<String, String>,
+    /// Whether a new worktree of a project an AI CLI trusts is written into
+    /// that CLI's own file as trusted too, so it does not ask again
+    /// (`aitrust`), by the CLI's name: [`crate::aitrust::ON`] or
+    /// [`crate::aitrust::OFF`]. A CLI not named here has not been asked, and
+    /// is asked on the board the first time it would matter. Written by that
+    /// question and by the settings screen's buttons, which are one setting
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub worktree_trust: std::collections::BTreeMap<String, String>,
     /// What a folder runs when nothing else is said: `powershell` (also what
     /// absent means), `cmd` or `gitbash`
     #[serde(default)]
@@ -7734,6 +7742,36 @@ fn save_agent_hook_at(path: &Path, cli: &str, on: bool) -> bool {
         doc["agent_hooks"] = serde_json::json!({});
     }
     doc["agent_hooks"][cli] = serde_json::json!(if on { HOOK_ON } else { HOOK_OFF });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Write the person's answer about writing one CLI's yes for new worktrees
+/// into the settings file ([`Config::worktree_trust`]), leaving the rest of
+/// it as they wrote it. Returns whether it was written
+pub fn save_worktree_trust(cli: &str, on: bool) -> bool {
+    save_worktree_trust_at(&config_file_path(), cli, on)
+}
+
+fn save_worktree_trust_at(path: &Path, cli: &str, on: bool) -> bool {
+    let cli = cli.trim();
+    if cli.is_empty() {
+        return false;
+    }
+    let text = std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into());
+    let Ok(mut doc) = serde_json::from_str::<serde_json::Value>(without_bom(&text)) else {
+        crate::append_hook_log("could not record the answer about worktree trust: settings are not readable");
+        return false;
+    };
+    if !doc.is_object() {
+        doc = serde_json::json!({});
+    }
+    if !doc["worktree_trust"].is_object() {
+        doc["worktree_trust"] = serde_json::json!({});
+    }
+    doc["worktree_trust"][cli] = serde_json::json!(if on { crate::aitrust::ON } else { crate::aitrust::OFF });
     match serde_json::to_string_pretty(&doc) {
         Ok(out) => crate::crypto::write_atomic(path, &out).is_ok(),
         Err(_) => false,

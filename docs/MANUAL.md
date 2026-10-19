@@ -394,6 +394,16 @@ Which AI writes them is chosen under Settings > AI agents > Automatic names, and
 desk can choose another under Desk > Automatic names: the assistant AI, asked the
 lightest way it can be, or one of the AI providers.
 
+**An AI that asks whether to trust each new worktree.** Gemini CLI asks, the first time it
+starts in a folder, whether to trust it, and asks again in every new worktree of a project
+you already trust. When a worktree is made in a project Gemini CLI trusts, the program
+asks once whether it may write the same yes into Gemini CLI's list of trusted folders
+(`~/.gemini/trustedFolders.json`) for each new worktree from then on. With yes, it is written
+before the worktree's tabs start, the way Gemini CLI writes it when you say yes on its
+screen. A project Gemini CLI does not trust is never written. The answer is kept under
+Settings > AI agents > Trusting new worktrees, where it can be changed. Claude Code and Codex
+CLI already trust a worktree of a project they trust, so nothing is written for them.
+
 Worktrees made from a terminal or another tool show up under the heading as "Hiding N
 found worktrees". Open it and **Show in the worktree list**, or press ✕ to keep them hidden.
 

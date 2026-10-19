@@ -10,6 +10,7 @@ pub mod ace;
 pub mod addproject;
 pub mod accounts;
 pub mod agenthook;
+pub mod aitrust;
 pub mod api;
 pub mod asking;
 pub mod askpass;

@@ -12935,6 +12935,34 @@ function drawNoticeAsks() {
   });
 }
 
+// An AI CLI that trusts a project but asks again in every new worktree of it:
+// may the same yes be written into the CLI's own list for each new worktree?
+// Asked once for each CLI, the first time it would matter, and kept (Settings
+// > AI agents changes it). Put away without an answer it is asked again with
+// the next worktree. The same question on the window and on a phone; answered
+// on either, it goes from both. Another question up first is left alone and
+// this one waits for it
+let cliTrustAsking = "";
+function drawTrustAsks() {
+  const waiting = (S && S.trust_asks) || [];
+  if (cliTrustAsking && !waiting.some(a => a.ai === cliTrustAsking)) { cliTrustAsking = ""; closeAsk(true); }
+  if (cliTrustAsking) return;
+  const a = waiting[0];
+  if (!a || !document.getElementById("sask").hidden) return;
+  cliTrustAsking = a.ai;
+  const answer = yes => { cliTrustAsking = ""; send({kind:"trust-answer", ai:a.ai, yes}); };
+  const fill = s => (s || "").replaceAll("{ai}", a.ai).replaceAll("{checkout}", a.checkout).replaceAll("{n}", String(a.more || 0));
+  askQuestion({
+    title: fill(T["tui.trust.title"]),
+    say: fill(T["tui.trust.say"]) + (a.more ? " " + fill(T["tui.trust.more"]) : ""),
+    what: a.machine ? a.machine + ": " + a.folder : a.folder,
+    label: T["tui.trust.yes"] || "",
+    no: {label: T["tui.trust.no"] || "", act: () => answer(false)},
+    go: () => answer(true),
+    back: () => answer(null),
+  });
+}
+
 // The question asked as the program starts, about letting the AI CLIs used on
 // this PC report what they are doing. Each CLI with the file its hook goes
 // into and, a press away, exactly what goes into it -- agreed to having been
@@ -14164,6 +14192,7 @@ window.__state = function (json) {
   drawCloseAsk();
   drawKeyChanges();
   drawNoticeAsks();
+  drawTrustAsks();
   drawHookAsk();
   drawStatus();
   drawNav();

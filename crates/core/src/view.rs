@@ -644,6 +644,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         folder_manage: ui.folder_manage.clone(),
         key_changes: ui.key_changes.clone(),
         notice_asks: ui.notice_asks.clone(),
+        trust_asks: ui.trust_asks.clone(),
         board_finds: ui.board_finds,
         sound_trouble: ui.sound_trouble.clone(),
         bridge_offer: ui.bridge_offer.clone(),
@@ -1926,6 +1927,8 @@ pub struct Ui {
     pub key_changes: Vec<crate::ssh::KeyChange>,
     /// Sites asking whether they may show notifications, waiting to be answered
     pub notice_asks: Vec<crate::pagenotice::Asking>,
+    /// AI CLIs waiting on the person about worktrees they would ask about
+    pub trust_asks: Vec<crate::aitrust::Asking>,
     /// The browser drawing the pages has no search box of its own: every
     /// browser tab is searched with the board's row
     pub board_finds: bool,

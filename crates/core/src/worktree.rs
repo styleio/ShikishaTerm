@@ -678,6 +678,13 @@ fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, m
             ],
         );
     }
+    // The AIs that trust the checkout and would ask again here are told the
+    // same yes, if the person agreed to that -- before any tab starts in it
+    let at = match &plan.host {
+        None => crate::aitrust::At::Here,
+        Some(h) => crate::aitrust::At::Far(h.clone()),
+    };
+    crate::aitrust::worktree_made(at, &plan.main, &plan.folder);
     Ok(())
 }
 

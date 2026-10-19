@@ -398,6 +398,9 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the site the question named); a yes to a site nobody asked about
         // is kept, as in Settings, and shows nothing until a page of it asks
         Ev::NoticeAnswer { .. } => true,
+        // The answer about writing an AI CLI's yes for new worktrees: the
+        // same question on a phone as on the window
+        Ev::TrustAnswer { .. } => true,
         // Opening one of them in a browser tab here: a tab like any other the
         // phone adds, on an address this app worked out itself
         Ev::FarPage { .. } => true,

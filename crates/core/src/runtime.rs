@@ -6677,6 +6677,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::NoticeAnswer { site, allow }) => {
                         shell.mail().notice_answers.push((site, allow));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TrustAnswer { ai, yes }) => {
+                        shell.mail().trust_answers.push((ai, yes));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
                         shell.mail().far_pages.push((folder, port));
                     }
@@ -7130,6 +7133,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             far_ports: far_ports_view.clone(),
             key_changes: crate::ssh::key_changes(),
             notice_asks: crate::pagenotice::asking(),
+            trust_asks: crate::aitrust::asking(),
             board_finds: !shell.pages_find_themselves(),
             sound_trouble: crate::vaudio::trouble(),
             bridge_offer: cfg.as_ref().and_then(|c| bridge_offer(c, tabs.iter().filter_map(|t| t.host()))),
@@ -8918,6 +8922,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 None if ask => crate::pagenotice::ask(&site, &child),
                 None => {}
             }
+        }
+        // The person's answer about an AI CLI's yes for new worktrees, from
+        // the window or a phone: kept, and written for the worktrees that
+        // waited on it -- on a thread, since a worktree may be on a server.
+        // What could not be done is said when it is known
+        for (ai, yes) in shell.mail().take_trust_answers() {
+            std::thread::spawn(move || crate::aitrust::answered(&ai, yes));
+        }
+        if let Some(said) = crate::aitrust::take_said() {
+            flash = Some(said);
         }
         // The person's answer, from the window or a phone: kept, and told to
         // every page of the site that was waiting for it

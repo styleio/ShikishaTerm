@@ -731,6 +731,10 @@ pub enum Ev {
     /// The person's answer about a site's notifications, from the board or a
     /// phone: yes, no, or (`None`) the question put away without one
     NoticeAnswer { site: String, allow: Option<bool> },
+    /// The person's answer about writing an AI CLI's yes for new worktrees
+    /// into that CLI's own file, from the board or a phone: yes, no, or
+    /// (`None`) the question put away without one
+    TrustAnswer { ai: String, yes: Option<bool> },
     /// The 🎯 panel asking for something done to what was picked: a note on
     /// one, one taken out, all cleared, or all handed to an AI tab as a
     /// draft. `page` is the browser tab's key; `act` is one of a short list
@@ -1727,6 +1731,10 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("notice-answer") => Ev::NoticeAnswer {
             site: v.get("site").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             allow: v.get("allow").and_then(|x| x.as_bool()),
+        },
+        Some("trust-answer") => Ev::TrustAnswer {
+            ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            yes: v.get("yes").and_then(|x| x.as_bool()),
         },
         Some("devtools") => Ev::DevTools {
             page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

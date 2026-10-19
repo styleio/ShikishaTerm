@@ -4645,6 +4645,34 @@ fn handle(
                 .collect();
             req.respond(json_resp(serde_json::json!(rows)))?;
         }
+        // Whether a new worktree is written into an AI CLI's own list of
+        // trusted folders, for each CLI that keeps one: the answer kept, shown
+        // as the value it is (written, not written, or not answered yet), and
+        // the file the yes goes in
+        ("GET", "/api/worktree-trust") => {
+            let rows: Vec<serde_json::Value> = crate::aitrust::rows()
+                .into_iter()
+                .map(|(k, answer, file)| serde_json::json!({ "ai": k.name, "answer": answer, "file": file }))
+                .collect();
+            req.respond(json_resp(serde_json::json!(rows)))?;
+        }
+        ("POST", "/api/worktree-trust") => {
+            let mut req = req;
+            let Some(body) = read_body(&mut req, MAX_BODY)? else {
+                req.respond(Response::from_string("payload too large").with_status_code(413))?;
+                return Ok(());
+            };
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let ai = v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+            let resp = match v.get("on").and_then(|x| x.as_bool()) {
+                None => serde_json::json!({ "ok": false, "error": "say on or off" }),
+                Some(on) => match crate::aitrust::set(&ai, on) {
+                    Ok(()) => serde_json::json!({ "ok": true }),
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                },
+            };
+            req.respond(json_resp(resp))?;
+        }
         // The skill that teaches an AI to ask another tab, for each CLI that has
         // somewhere to keep one: how it stands, where it goes, and its words
         ("GET", "/api/skill") => {
@@ -10905,7 +10933,57 @@ function aiAgentsCard() {
   names.id = "ai-names";
   const skill = skillCard();
   skill.id = "ai-skill";
-  box.append(ais, names, skill, providersCard());
+  const trust = trustCard();
+  trust.id = "ai-trust";
+  box.append(ais, names, skill, trust, providersCard());
+  return box;
+}
+// Whether a new worktree of a project an AI CLI trusts is written into that
+// CLI's own list of trusted folders, per CLI that keeps one: the answer as the
+// value it is -- written, not written, or not answered yet -- and the two
+// answers to choose between. The board asks the first time it matters; this
+// is where it is changed
+function trustCard() {
+  const STATE = {
+    on: T["settings.trust.state.on"], off: T["settings.trust.state.off"],
+    "": T["settings.trust.state.unasked"],
+  };
+  const list = el("div", {}, el("div", {class:"hint"}, "…"));
+  const box = card(T["settings.trust.title"],
+    el("div", {class:"hint", style:"margin-bottom:var(--s3)"}, T["settings.trust.intro"]),
+    list);
+  load();
+  async function load() {
+    let rows = [];
+    try { rows = await (await settingsFetch("/api/worktree-trust", {})).json(); }
+    catch (e) { return; }
+    list.textContent = "";
+    for (const r of rows) list.append(rowFor(r));
+  }
+  function rowFor(r) {
+    const choose = (on, label) => {
+      const b = el("button", {class:"btn"}, label);
+      // The answer it is now is not offered again
+      b.disabled = r.answer === (on ? "on" : "off");
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          const j = await (await settingsFetch("/api/worktree-trust", {method:"POST", json:{ai: r.ai, on}})).json();
+          if (!j.ok) result(j.error || "", true);
+        } catch (e) {}
+        load();
+      });
+      return b;
+    };
+    // One row a CLI, under the setting's own name; the CLI it is about is
+    // said first, then the answer as it stands and the file it goes in
+    const right = el("div", {style:"display:flex;flex-direction:column;gap:var(--s2);min-width:0;flex:1"},
+      el("span", {}, el("b", {}, r.ai), " — " + (STATE[r.answer] || r.answer)),
+      el("span", {class:"hint mono"}, r.file),
+      el("div", {style:"display:flex;gap:var(--s2);align-items:center"},
+        choose(true, T["settings.trust.on"]), choose(false, T["settings.trust.off"])));
+    return row(T["settings.trust.answer"], right, el("span", {class:"hint"}, T["settings.trust.answer.hint"]));
+  }
   return box;
 }
 // The skill that teaches an AI what `<@ID>` means in the input bar, per CLI:

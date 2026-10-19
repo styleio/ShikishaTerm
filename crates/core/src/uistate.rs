@@ -2560,6 +2560,12 @@ pub struct UiState {
     /// for the person: the same question on the window and on a phone
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notice_asks: Vec<crate::pagenotice::Asking>,
+    /// AI CLIs that would ask again in a new worktree of a project they
+    /// trust, waiting for the person to say whether the same yes may be
+    /// written into the CLI's own file: the same question on the window and
+    /// on a phone
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trust_asks: Vec<crate::aitrust::Asking>,
     /// The browser drawing the pages has no search box of its own (Chromium
     /// inside a Mac's window): every browser tab is searched with the board's
     /// row, not only one whose controls offer it
