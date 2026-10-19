@@ -223,8 +223,8 @@ pub struct Mailbox {
     /// put away)
     pub notice_answers: Vec<(String, Option<bool>)>,
     /// The person's answers about writing an AI CLI's yes for new worktrees:
-    /// (the CLI, yes / no / put away)
-    pub trust_answers: Vec<(String, Option<bool>)>,
+    /// (the CLI, the question's id, yes / no / put away)
+    pub trust_answers: Vec<(String, u64, Option<bool>)>,
     /// What the 🎯 panel asked for: (page key, act, args)
     pub designs: Vec<(String, String, serde_json::Value)>,
     /// Lines pages said on their consoles: (the page's in-window name, the line)
@@ -644,7 +644,7 @@ impl Mailbox {
     pub fn take_notice_answers(&mut self) -> Vec<(String, Option<bool>)> {
         std::mem::take(&mut self.notice_answers)
     }
-    pub fn take_trust_answers(&mut self) -> Vec<(String, Option<bool>)> {
+    pub fn take_trust_answers(&mut self) -> Vec<(String, u64, Option<bool>)> {
         std::mem::take(&mut self.trust_answers)
     }
     pub fn take_designs(&mut self) -> Vec<(String, String, serde_json::Value)> {

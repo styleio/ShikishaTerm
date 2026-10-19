@@ -12945,12 +12945,12 @@ function drawNoticeAsks() {
 let cliTrustAsking = "";
 function drawTrustAsks() {
   const waiting = (S && S.trust_asks) || [];
-  if (cliTrustAsking && !waiting.some(a => a.ai === cliTrustAsking)) { cliTrustAsking = ""; closeAsk(true); }
+  if (cliTrustAsking && !waiting.some(a => a.ai + "\u0001" + a.id === cliTrustAsking)) { cliTrustAsking = ""; closeAsk(true); }
   if (cliTrustAsking) return;
   const a = waiting[0];
   if (!a || !document.getElementById("sask").hidden) return;
-  cliTrustAsking = a.ai;
-  const answer = yes => { cliTrustAsking = ""; send({kind:"trust-answer", ai:a.ai, yes}); };
+  cliTrustAsking = a.ai + "\u0001" + a.id;
+  const answer = yes => { cliTrustAsking = ""; send({kind:"trust-answer", ai:a.ai, id:a.id, yes}); };
   const fill = s => (s || "").replaceAll("{ai}", a.ai).replaceAll("{checkout}", a.checkout).replaceAll("{n}", String(a.more || 0));
   askQuestion({
     title: fill(T["tui.trust.title"]),

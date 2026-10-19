@@ -274,11 +274,20 @@ done"#;
 
 /// Where Gemini CLI keeps its files on the server, in the environment a
 /// command there runs in: the file of trusted folders (a link followed),
-/// whether it is there, and the settings
+/// whether it is there, the settings, and what system the server is
 const FAR_PLACE: &str = r#"home="${GEMINI_CLI_HOME:-$HOME}"
 f="${GEMINI_CLI_TRUSTED_FOLDERS_PATH:-$home/.gemini/trustedFolders.json}"
 if [ -e "$f" ]; then f=$(readlink -f -- "$f" 2>/dev/null || printf '%s' "$f"); e=1; else e=0; fi
-printf '%s\n%s\n%s\n' "$f" "$e" "$home/.gemini/settings.json""#;
+printf '%s\n%s\n%s\n%s\n' "$f" "$e" "$home/.gemini/settings.json" "$(uname -s 2>/dev/null)""#;
+
+/// A server whose paths are Windows' -- a shell of Unix's on Windows names
+/// its folders one way, its file commands another, and Gemini CLI there a
+/// third. Nothing is written there rather than a guess at which is meant
+fn windows_like(system: &str, paths: &[&str]) -> bool {
+    let s = system.to_ascii_uppercase();
+    ["MINGW", "MSYS", "CYGWIN", "WINDOWS"].iter().any(|w| s.starts_with(w))
+        || paths.iter().any(|p| p.contains('\\') || p.as_bytes().get(1) == Some(&b':'))
+}
 
 /// Where the CLI's files are, on the machine the worktree is on
 fn place(at: &At) -> Result<Place, String> {
@@ -299,21 +308,27 @@ fn place(at: &At) -> Result<Place, String> {
         At::Far(host) => {
             let out = far_run(host, FAR_PLACE, &[])?;
             let mut lines = out.lines();
-            let (Some(file), Some(e), Some(settings)) = (lines.next(), lines.next(), lines.next()) else {
+            let (Some(file), Some(e), Some(settings), system) = (lines.next(), lines.next(), lines.next(), lines.next().unwrap_or(""))
+            else {
                 return Err(format!("the server said {out:?} about where Gemini CLI's files are"));
             };
-            Ok(Place { at: at.clone(), file: file.into(), exists: e == "1", settings: settings.into(), fold: false })
+            if windows_like(system, &[file]) {
+                return Err(format!("{} is a Windows server, where nothing is written", host.name));
+            }
+            // A Mac tells letters' case apart no more than Windows does
+            Ok(Place { at: at.clone(), file: file.into(), exists: e == "1", settings: settings.into(), fold: system == "Darwin" })
         }
     }
 }
 
 impl Place {
-    /// Read a file of the CLI's. `None` when it is not there; an error when
-    /// it is there and could not be read, which is never taken for empty
-    fn read(&self, path: &str, exists: bool) -> Result<Option<String>, String> {
+    /// Read a file of the CLI's, as it is. `None` when it is not there; an
+    /// error when it is there and could not be read, which is never taken
+    /// for empty
+    fn read(&self, path: &str, exists: bool) -> Result<Option<Vec<u8>>, String> {
         match &self.at {
             At::Here => match std::fs::read(path) {
-                Ok(b) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+                Ok(b) => Ok(Some(b)),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(e) => Err(format!("{path}: {e}")),
             },
@@ -322,7 +337,7 @@ impl Place {
                     return Ok(None);
                 }
                 match crate::elsewhere::files(&there(host)?, crate::ssh::FileJob::Read { path: path.into() }, FAR_WAIT_MS) {
-                    Ok(crate::ssh::FileAnswer::Bytes(b)) => Ok(Some(String::from_utf8_lossy(&b).into_owned())),
+                    Ok(crate::ssh::FileAnswer::Bytes(b)) => Ok(Some(b)),
                     Ok(_) => Err(format!("{path}: not a file")),
                     Err(e) => Err(format!("{path}: {e:#}")),
                 }
@@ -333,7 +348,7 @@ impl Place {
     fn settings_text(&self) -> Option<String> {
         match &self.at {
             At::Here => std::fs::read_to_string(&self.settings).ok(),
-            At::Far(_) => self.read(&self.settings, true).ok().flatten(),
+            At::Far(_) => self.read(&self.settings, true).ok().flatten().map(|b| String::from_utf8_lossy(&b).into_owned()),
         }
     }
 
@@ -377,114 +392,182 @@ impl Place {
     }
 }
 
-// ── Gemini CLI's lock, here and on a server ─────────────────────────────────
-
-/// The CLI's own lock on its file, taken the way it takes it (a folder named
-/// for the file as it really is, made only if it is not there), so a yes the
-/// CLI is writing at that moment is not written over. Waited for a second;
-/// one older than the CLI's own limit for a lock was left by a CLI that
-/// stopped
-enum Locked {
-    Here(PathBuf),
-    Far(crate::config::HostSpec, String),
+/// The repository a folder belongs to, as git says: its shared git folder,
+/// as it really is. `None` when the folder is not there or is no repository
+fn common_dir(at: &At, folder: &str) -> Option<String> {
+    match at {
+        At::Here => {
+            let out = std::process::Command::new("git").args(["-C", folder, "rev-parse", "--git-common-dir"]).output().ok()?;
+            let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (out.status.success() && !said.is_empty())
+                .then(|| real_here(&Path::new(folder).join(said).display().to_string()))
+        }
+        At::Far(host) => far_run(
+            host,
+            r#"case "$1" in "~") p="$HOME";; "~/"*) p="$HOME/${1#\~/}";; *) p="$1";; esac
+cd "$p" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P"#,
+            &[folder],
+        )
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty()),
+    }
 }
 
-/// Take the lock on a server: made there if it is not, or stale and taken
+/// Whether `worktree` is still there and still a worktree of `checkout`: a
+/// yes given late is never written for a folder taken away since, or for
+/// another repository put in its place
+fn still_its_worktree(at: &At, checkout: &str, worktree: &str) -> bool {
+    match (common_dir(at, checkout), common_dir(at, worktree)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+// ── Gemini CLI's lock ────────────────────────────────────────────────────────
+
+/// The CLI's own lock on its file on this PC, taken the way it takes it (a
+/// folder named for the file as it really is, made only if it is not there),
+/// so a yes the CLI is writing at that moment is not written over. Waited for
+/// a second; one older than the CLI's own limit for a lock was left by a CLI
+/// that stopped. Held only while the file is read, looked at and written --
+/// nothing slow happens under it
+struct Locked(PathBuf);
+
+impl Locked {
+    fn take(file: &str) -> Result<Locked, String> {
+        let lock = PathBuf::from(format!("{file}.lock"));
+        if let Some(dir) = lock.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        for _ in 0..20 {
+            match std::fs::create_dir(&lock) {
+                Ok(()) => return Ok(Locked(lock)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&lock)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > Duration::from_secs(10));
+                    if stale {
+                        let _ = std::fs::remove_dir(&lock);
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(format!("{}: {e}", lock.display())),
+            }
+        }
+        Err("Gemini CLI is writing its file".into())
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+/// The same lock on a server, as the start of the one command that holds it
 const FAR_LOCK: &str = r#"l="$1.lock"; i=0
 while ! mkdir "$l" 2>/dev/null; do
   if [ -n "$(find "$l" -maxdepth 0 -mmin +0.17 2>/dev/null)" ]; then rmdir "$l" 2>/dev/null; continue; fi
   i=$((i+1)); [ "$i" -gt 20 ] && exit 9; sleep 0.05 2>/dev/null || sleep 1
 done"#;
 
-impl Locked {
-    fn take(place: &Place) -> Result<Locked, String> {
-        match &place.at {
-            At::Here => {
-                let lock = PathBuf::from(format!("{}.lock", place.file));
-                if let Some(dir) = lock.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                for _ in 0..20 {
-                    match std::fs::create_dir(&lock) {
-                        Ok(()) => return Ok(Locked::Here(lock)),
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                            let stale = std::fs::metadata(&lock)
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .and_then(|t| t.elapsed().ok())
-                                .is_some_and(|age| age > Duration::from_secs(10));
-                            if stale {
-                                let _ = std::fs::remove_dir(&lock);
-                                continue;
-                            }
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(e) => return Err(format!("{}: {e}", lock.display())),
-                    }
-                }
-                Err("Gemini CLI is writing its file".into())
-            }
-            At::Far(host) => {
-                far_run(host, &format!("mkdir -p \"$(dirname \"$1\")\" && {{ {FAR_LOCK}\n}}"), &[&place.file])
-                    .map_err(|e| format!("Gemini CLI's file is being written, or the lock could not be taken: {e}"))?;
-                Ok(Locked::Far(host.clone(), place.file.clone()))
-            }
-        }
+/// The rest of that command, with the lock held for no longer than it runs:
+/// the file must still be what was read (`$2`, in base64), else nothing is
+/// written (8) and it is read again; the new one (`$3`) is written beside it
+/// and moved over it in one step, so the CLI never reads half of one; and the
+/// lock is given back however it ends
+const FAR_SWAP: &str = r#"trap 'rmdir "$l" 2>/dev/null' EXIT INT TERM
+was=$(mktemp "${TMPDIR:-/tmp}/sk-was.XXXXXX") || exit 7
+printf '%s' "$2" | base64 -d > "$was" 2>/dev/null || { rm -f "$was"; exit 7; }
+if [ -e "$1" ]; then cmp -s "$was" "$1" || { rm -f "$was"; exit 8; }
+elif [ -s "$was" ]; then rm -f "$was"; exit 8; fi
+rm -f "$was"
+t="$1.tmp.$$"
+printf '%s' "$3" | base64 -d > "$t" && chmod 600 "$t" && mv -f "$t" "$1" || { rm -f "$t"; exit 7; }"#;
+
+/// What became of a swap on a server
+#[derive(Debug, PartialEq, Eq)]
+enum Swap {
+    Done,
+    /// The file changed after it was read
+    Changed,
+}
+
+fn far_swap(host: &crate::config::HostSpec, file: &str, was: &[u8], now: &str) -> Result<Swap, String> {
+    use base64::Engine as _;
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let script = format!("mkdir -p \"$(dirname \"$1\")\" || exit 7\n{FAR_LOCK}\n{FAR_SWAP}");
+    let quoted: Vec<String> = [file.to_string(), b64(was), b64(now.as_bytes())].iter().map(|a| crate::ssh::sh_quote(a)).collect();
+    let command = format!("sh -c {} sh {}", crate::ssh::sh_quote(&script), quoted.join(" "));
+    let ran = crate::elsewhere::exec(&there(host)?, &command, FAR_WAIT_MS).map_err(|e| format!("{e:#}"))?;
+    match ran.code {
+        0 => Ok(Swap::Done),
+        8 => Ok(Swap::Changed),
+        9 => Err("Gemini CLI is writing its file".into()),
+        _ => Err(ran.said()),
     }
 }
 
-impl Drop for Locked {
-    fn drop(&mut self) {
-        match self {
-            Locked::Here(lock) => {
-                let _ = std::fs::remove_dir(&*lock);
-            }
-            Locked::Far(host, file) => {
-                let _ = far_run(host, r#"rmdir "$1.lock" 2>/dev/null; true"#, &[file]);
-            }
-        }
-    }
-}
-
-/// Put a whole file in place on a server: written beside it, then moved over
-/// it in one step, so the CLI never reads half of one
-fn far_put(host: &crate::config::HostSpec, file: &str, text: &str) -> Result<(), String> {
-    let tmp = format!("{file}.tmp.{}", std::process::id());
-    crate::elsewhere::files(&there(host)?, crate::ssh::FileJob::Write { to: tmp.clone(), bytes: text.as_bytes().to_vec() }, FAR_WAIT_MS)
-        .map_err(|e| format!("{e:#}"))?;
-    far_run(host, r#"chmod 600 "$1" 2>/dev/null; mv -f "$1" "$2""#, &[&tmp, file]).map(|_| ())
-}
-
-/// Write the yes for `worktree` into the CLI's file -- if, read again under
-/// its lock, the CLI still trusts the checkout and says nothing yet about the
-/// worktree. Answers whether it was written
+/// Write the yes for `worktree` into the CLI's file -- if the worktree is
+/// still the checkout's, and, read again at the moment of writing (under the
+/// CLI's lock here; checked unchanged under it on a server), the CLI still
+/// trusts the checkout and says nothing yet about the worktree. Answers
+/// whether it was written
 fn write(keeper: Keeper, at: &At, checkout: &str, worktree: &str) -> Result<bool, String> {
     debug_assert_eq!(keeper, GEMINI);
-    let place = place(at)?;
-    let _lock = Locked::take(&place)?;
-    let text = place.read(&place.file, place.exists)?.unwrap_or_default();
-    if !place.would_ask(&text, checkout, worktree)? {
+    if !still_its_worktree(at, checkout, worktree) {
         return Ok(false);
     }
-    let real = place.reals(&[worktree.to_string()])?.remove(worktree).unwrap_or_else(|| worktree.to_string());
-    let out = gemini_with(&text, &real, place.fold).ok_or("Gemini CLI's file is not one it could read")?;
     match at {
-        At::Here => crate::crypto::write_atomic(Path::new(&place.file), &out).map_err(|e| e.to_string())?,
-        At::Far(host) => far_put(host, &place.file, &out)?,
+        At::Here => {
+            let place = place(at)?;
+            let _lock = Locked::take(&place.file)?;
+            let bytes = place.read(&place.file, place.exists)?.unwrap_or_default();
+            let text = String::from_utf8_lossy(&bytes);
+            if !place.would_ask(&text, checkout, worktree)? {
+                return Ok(false);
+            }
+            let out = gemini_with(&text, &real_here(worktree), place.fold).ok_or("Gemini CLI's file is not one it could read")?;
+            crate::crypto::write_atomic(Path::new(&place.file), &out).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        At::Far(host) => {
+            for _ in 0..3 {
+                let place = place(at)?;
+                let bytes = place.read(&place.file, place.exists)?.unwrap_or_default();
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                if !place.would_ask(&text, checkout, worktree)? {
+                    return Ok(false);
+                }
+                let real = place.reals(&[worktree.to_string()])?.remove(worktree).unwrap_or_else(|| worktree.to_string());
+                let out = gemini_with(&text, &real, place.fold).ok_or("Gemini CLI's file is not one it could read")?;
+                match far_swap(host, &place.file, &bytes, &out)? {
+                    Swap::Done => return Ok(true),
+                    Swap::Changed => continue,
+                }
+            }
+            Err("Gemini CLI's file kept changing while it was being written".into())
+        }
     }
-    Ok(true)
 }
 
 /// Whether the CLI, on that machine, asks about folders at all, trusts the
 /// checkout and would ask about the worktree
 fn would_ask(keeper: Keeper, at: &At, checkout: &str, worktree: &str) -> Result<bool, String> {
     debug_assert_eq!(keeper, GEMINI);
+    if matches!(at, At::Far(_)) && windows_like("", &[checkout, worktree]) {
+        return Err("a folder named the way Windows names them, on a server: nothing is written there".into());
+    }
     let place = place(at)?;
-    let Some(text) = place.read(&place.file, place.exists)? else { return Ok(false) };
+    let Some(bytes) = place.read(&place.file, place.exists)? else { return Ok(false) };
     if !place.settings_text().as_deref().is_none_or(gemini_asks) {
         return Ok(false);
     }
-    place.would_ask(&text, checkout, worktree)
+    place.would_ask(&String::from_utf8_lossy(&bytes), checkout, worktree)
 }
 
 // ── The question ────────────────────────────────────────────────────────────
@@ -502,6 +585,10 @@ struct Waiting {
 /// The question about one CLI, as the board shows it
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Asking {
+    /// Which question this is: an answer names it, so an answer to one
+    /// already taken down -- given on another screen at the same time, or
+    /// late -- changes nothing
+    pub id: u64,
     /// The CLI's name
     pub ai: String,
     /// The worktree's folder, as the person reads it
@@ -521,6 +608,7 @@ fn is_zero(n: &usize) -> bool {
 }
 
 struct Question {
+    id: u64,
     ai: &'static str,
     waiting: Vec<Waiting>,
 }
@@ -528,6 +616,7 @@ struct Question {
 static ASKING: Mutex<Vec<Question>> = Mutex::new(Vec::new());
 /// Told when a question is answered or put away
 static ANSWERED: Condvar = Condvar::new();
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The questions up, one for each CLI
 pub fn asking() -> Vec<Asking> {
@@ -538,6 +627,7 @@ pub fn asking() -> Vec<Asking> {
         .filter_map(|q| {
             let first = q.waiting.first()?;
             Some(Asking {
+                id: q.id,
                 ai: q.ai.into(),
                 folder: first.worktree.clone(),
                 checkout: first.checkout.clone(),
@@ -548,15 +638,18 @@ pub fn asking() -> Vec<Asking> {
         .collect()
 }
 
-fn ask(keeper: Keeper, w: Waiting) {
-    let mut all = ASKING.lock().unwrap_or_else(|e| e.into_inner());
+fn ask_in(all: &mut Vec<Question>, keeper: Keeper, w: Waiting) {
     match all.iter_mut().find(|q| q.ai == keeper.name) {
         Some(q) => {
             if !q.waiting.iter().any(|x| x.at == w.at && x.worktree == w.worktree) {
                 q.waiting.push(w);
             }
         }
-        None => all.push(Question { ai: keeper.name, waiting: vec![w] }),
+        None => all.push(Question {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            ai: keeper.name,
+            waiting: vec![w],
+        }),
     }
 }
 
@@ -572,28 +665,36 @@ fn say(what: String) {
     *SAID.lock().unwrap_or_else(|e| e.into_inner()) = Some(what);
 }
 
-/// The person's answer about `ai`, from the board: yes or no, kept, and done
-/// for every worktree that waited on it; or put away (`None`), and asked
-/// again with the next worktree. What could not be done is said on the board
-pub fn answered(ai: &str, yes: Option<bool>) {
-    if let Err(e) = answer(ai, yes) {
+/// The person's answer to question `id` about `ai`, from the board: yes or
+/// no, kept, and done for every worktree that waited on it; or put away
+/// (`None`), and asked again with the next worktree. An answer to a question
+/// no longer up changes nothing. What could not be done is said on the board
+pub fn answered(ai: &str, id: u64, yes: Option<bool>) {
+    if let Err(e) = answer(ai, Some(id), yes) {
         say(e);
     }
 }
 
-/// The answer kept, and the question taken down. The worktrees whose making
-/// still waits write their own yes; the others are written on a thread of
-/// their own, so whoever answered is not kept waiting on a server
-fn answer(ai: &str, yes: Option<bool>) -> Result<(), String> {
+/// The answer kept and the question taken down, both while no worktree can
+/// put up another -- so one being made sees either no answer and the question
+/// up, or the answer. A board answer names its question (`id`); the settings
+/// name none, and are kept whatever is up. The worktrees whose making still
+/// waits write their own yes; the others are written on a thread of their
+/// own, so whoever answered is not kept waiting on a server
+fn answer(ai: &str, id: Option<u64>, yes: Option<bool>) -> Result<(), String> {
     let Some(keeper) = KEEPERS.into_iter().find(|k| k.name == ai) else { return Ok(()) };
-    if let Some(yes) = yes
-        && !crate::config::save_worktree_trust(ai, yes)
-    {
-        return Err(crate::i18n::t("msg.trust.not_saved"));
-    }
     let taken: Vec<Waiting> = {
         let mut all = ASKING.lock().unwrap_or_else(|e| e.into_inner());
-        let i = all.iter().position(|q| q.ai == ai);
+        let i = all.iter().position(|q| q.ai == ai && id.is_none_or(|id| q.id == id));
+        if id.is_some() && i.is_none() {
+            crate::append_hook_log(&format!("worktree trust: an answer about {ai} came for a question no longer up"));
+            return Ok(());
+        }
+        if let Some(yes) = yes
+            && !crate::config::save_worktree_trust(ai, yes)
+        {
+            return Err(crate::i18n::t("msg.trust.not_saved"));
+        }
         let q = i.map(|i| all.remove(i));
         ANSWERED.notify_all();
         q.map(|q| q.waiting).unwrap_or_default()
@@ -621,7 +722,7 @@ fn carry(keeper: Keeper, at: &At, checkout: &str, worktree: &str) {
     match write(keeper, at, checkout, worktree) {
         Ok(true) => crate::append_hook_log(&format!("worktree trust: {worktree} is trusted by {} as {checkout} is", keeper.name)),
         Ok(false) => crate::append_hook_log(&format!(
-            "worktree trust: {worktree} was not written for {}: it no longer trusts {checkout}, or was told about the worktree",
+            "worktree trust: {worktree} was not written for {}: it is gone, no longer {checkout}'s, or the CLI no longer trusts {checkout} or was told about the worktree",
             keeper.name
         )),
         Err(e) => {
@@ -631,24 +732,28 @@ fn carry(keeper: Keeper, at: &At, checkout: &str, worktree: &str) {
     }
 }
 
+/// The answer kept for a CLI, as the settings file has it now
+fn kept(keeper: Keeper) -> Option<String> {
+    crate::config::load().and_then(|c| c.worktree_trust.get(keeper.name).cloned())
+}
+
 /// A worktree was just made from `checkout`: each CLI that trusts the
 /// checkout and would ask about the worktree is told the same yes, if the
 /// person agreed to that; asked whether to, if they have not been -- and the
 /// making waits a while for the answer, so the worktree's tabs start with it
 /// written; and left to ask on its own screen if they said no. Called on the
 /// thread making the worktree, before its tabs are started. `stop` is the
-/// making being stopped, which stops the waiting too
+/// making being stopped: the worktree is taken back then, so it is taken off
+/// the question too
 pub fn worktree_made(at: At, checkout: &Path, worktree: &Path, stop: &dyn Fn() -> bool) {
     let path = |p: &Path| match at {
         At::Here => real_here(&p.display().to_string()),
-        At::Far(_) => p.display().to_string().replace('\\', "/"),
+        At::Far(_) => p.display().to_string(),
     };
     let (checkout, worktree) = (path(checkout), path(worktree));
-    let answers = crate::config::load().map(|c| c.worktree_trust).unwrap_or_default();
     for keeper in KEEPERS {
-        let answer = answers.get(keeper.name).map(String::as_str);
         // Said no: nothing of the CLI's is even read
-        if answer == Some(OFF) {
+        if kept(keeper).as_deref() == Some(OFF) {
             continue;
         }
         match would_ask(keeper, &at, &checkout, &worktree) {
@@ -659,26 +764,40 @@ pub fn worktree_made(at: At, checkout: &Path, worktree: &Path, stop: &dyn Fn() -
                 continue;
             }
         }
-        if answer == Some(ON) {
-            carry(keeper, &at, &checkout, &worktree);
-            continue;
-        }
         let held = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        ask(keeper, Waiting { at: at.clone(), checkout: checkout.clone(), worktree: worktree.clone(), held: held.clone() });
+        let mut all = ASKING.lock().unwrap_or_else(|e| e.into_inner());
+        // Looked at again where an answer cannot slip in between: looking at
+        // the file may have taken a while, and been answered meanwhile
+        match kept(keeper).as_deref() {
+            Some(OFF) => continue,
+            Some(ON) => {
+                drop(all);
+                carry(keeper, &at, &checkout, &worktree);
+                continue;
+            }
+            _ => ask_in(&mut all, keeper, Waiting { at: at.clone(), checkout: checkout.clone(), worktree: worktree.clone(), held: held.clone() }),
+        }
         // Waited for, the first time: the person is looking at the question
         let until = Instant::now() + WAIT_FOR_ANSWER;
-        let mut all = ASKING.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             let up = all.iter().any(|q| q.ai == keeper.name && q.waiting.iter().any(|w| Arc::ptr_eq(&w.held, &held)));
             if !up {
                 drop(all);
-                let now = crate::config::load().and_then(|c| c.worktree_trust.get(keeper.name).cloned());
-                if now.as_deref() == Some(ON) {
+                if kept(keeper).as_deref() == Some(ON) {
                     carry(keeper, &at, &checkout, &worktree);
                 }
                 break;
             }
-            if Instant::now() >= until || stop() {
+            if stop() {
+                // Taken back: off the question, and the question down when
+                // it was the only worktree on it
+                for q in all.iter_mut() {
+                    q.waiting.retain(|w| !Arc::ptr_eq(&w.held, &held));
+                }
+                all.retain(|q| !q.waiting.is_empty());
+                break;
+            }
+            if Instant::now() >= until {
                 // Left on the question: written when it is answered
                 held.store(false, std::sync::atomic::Ordering::SeqCst);
                 break;
@@ -695,7 +814,7 @@ pub fn set(ai: &str, on: bool) -> Result<(), String> {
     if !KEEPERS.iter().any(|k| k.name == ai) {
         return Err(format!("{ai} keeps no list of trusted folders this app writes"));
     }
-    answer(ai, Some(on))
+    answer(ai, None, Some(on))
 }
 
 /// How each CLI stands, for the settings: its name, the answer kept
@@ -849,13 +968,16 @@ mod tests {
     fn a_question_waits_once_for_each_cli_and_counts_the_worktrees() {
         ASKING.lock().unwrap().clear();
         let w = |f: &str| Waiting { at: At::Here, checkout: "c:/p".into(), worktree: f.into(), held: Default::default() };
-        ask(GEMINI, w("c:/p-a"));
-        ask(GEMINI, w("c:/p-b"));
-        ask(GEMINI, w("c:/p-a"));
+        for f in ["c:/p-a", "c:/p-b", "c:/p-a"] {
+            ask_in(&mut ASKING.lock().unwrap(), GEMINI, w(f));
+        }
         let up = asking();
         assert_eq!(up.len(), 1);
         assert_eq!((up[0].folder.as_str(), up[0].more), ("c:/p-a", 1));
-        assert!(answer(GEMINI.name, None).is_ok());
+        // An answer to a question already taken down changes nothing
+        assert!(answer(GEMINI.name, Some(up[0].id + 1000), Some(true)).is_ok());
+        assert_eq!(asking().len(), 1, "still up");
+        assert!(answer(GEMINI.name, Some(up[0].id), None).is_ok());
         assert!(asking().is_empty(), "put away");
     }
 
@@ -899,7 +1021,8 @@ mod tests {
         let home = std::fs::canonicalize(scratch("far-place")).unwrap();
         let h = home.display().to_string();
         let (_, out) = sh(FAR_PLACE, &[], &home, &[]);
-        assert_eq!(out, format!("{h}/.gemini/trustedFolders.json\n0\n{h}/.gemini/settings.json\n"), "none yet");
+        assert!(out.starts_with(&format!("{h}/.gemini/trustedFolders.json\n0\n{h}/.gemini/settings.json\n")), "none yet: {out}");
+        assert!(out.ends_with("Linux\n"), "and what system it is: {out}");
         std::fs::create_dir_all(home.join("real")).unwrap();
         std::fs::write(home.join("real/trusted.json"), "{}").unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
@@ -907,8 +1030,39 @@ mod tests {
         let (_, out) = sh(FAR_PLACE, &[], &home, &[]);
         assert!(out.starts_with(&format!("{h}/real/trusted.json\n1\n")), "the link followed: {out}");
         let (_, out) = sh(FAR_PLACE, &[], &home, &[("GEMINI_CLI_HOME", "/elsewhere")]);
-        assert_eq!(out, "/elsewhere/.gemini/trustedFolders.json\n0\n/elsewhere/.gemini/settings.json\n", "its home as it is told");
+        assert!(out.starts_with("/elsewhere/.gemini/trustedFolders.json\n0\n/elsewhere/.gemini/settings.json\n"), "its home as it is told");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The whole write on a server, as one command: written when the file is
+    /// what was read, refused when it changed, the lock given back each time
+    #[cfg(unix)]
+    #[test]
+    fn a_server_swaps_the_file_only_if_it_is_as_read() {
+        use base64::Engine as _;
+        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+        let home = std::fs::canonicalize(scratch("far-swap")).unwrap();
+        let file = home.join(".gemini/trustedFolders.json").display().to_string();
+        let script = format!("mkdir -p \"$(dirname \"$1\")\" || exit 7\n{FAR_LOCK}\n{FAR_SWAP}");
+        let lock = home.join(".gemini/trustedFolders.json.lock");
+        assert_eq!(sh(&script, &[&file, &b64(""), &b64("{\"a\":1}")], &home, &[]).0, 0, "no file yet, read as none");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
+        assert!(!lock.exists(), "the lock given back");
+        assert_eq!(sh(&script, &[&file, &b64("{}"), &b64("{\"b\":2}")], &home, &[]).0, 8, "changed since it was read");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}", "left as it was");
+        assert!(!lock.exists(), "the lock given back after a refusal too");
+        assert_eq!(sh(&script, &[&file, &b64("{\"a\":1}"), &b64("{\"c\":3}")], &home, &[]).0, 0);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"c\":3}");
+        assert!(!std::fs::read_dir(home.join(".gemini")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".tmp.")), "nothing left beside it");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_windows_server_is_left_alone() {
+        assert!(windows_like("MINGW64_NT-10.0", &[]));
+        assert!(windows_like("Linux", &["C:/work/p"]));
+        assert!(windows_like("", &[r"D:\work"]));
+        assert!(!windows_like("Linux", &["/home/me/p", "~/p"]));
     }
 
     #[cfg(unix)]
@@ -929,9 +1083,9 @@ mod tests {
         let dir = scratch("lock");
         let p = here(&dir);
         {
-            let held = Locked::take(&p).expect("taken");
+            let held = Locked::take(&p.file).expect("taken");
             assert!(dir.join("trustedFolders.json.lock").is_dir());
-            assert!(Locked::take(&p).is_err(), "not twice");
+            assert!(Locked::take(&p.file).is_err(), "not twice");
             drop(held);
         }
         assert!(!dir.join("trustedFolders.json.lock").exists(), "given back");

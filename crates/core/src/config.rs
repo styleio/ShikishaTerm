@@ -7722,6 +7722,7 @@ pub const HOOK_OFF: &str = "off";
 /// Write the person's answer about one CLI's hook into the settings file,
 /// leaving the rest of it as they wrote it. Returns whether it was written
 pub fn save_agent_hook(cli: &str, on: bool) -> bool {
+    let _one_at_a_time = writing_answers();
     save_agent_hook_at(&config_file_path(), cli, on)
 }
 
@@ -7752,7 +7753,17 @@ fn save_agent_hook_at(path: &Path, cli: &str, on: bool) -> bool {
 /// into the settings file ([`Config::worktree_trust`]), leaving the rest of
 /// it as they wrote it. Returns whether it was written
 pub fn save_worktree_trust(cli: &str, on: bool) -> bool {
+    let _one_at_a_time = writing_answers();
     save_worktree_trust_at(&config_file_path(), cli, on)
+}
+
+/// Held while the settings file is read, changed and written by anything
+/// that writes the answers given on the board or by a card's own button --
+/// and by the settings page's save, which keeps those answers as the file
+/// has them -- so neither writes over the other's
+pub fn writing_answers() -> std::sync::MutexGuard<'static, ()> {
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    WRITING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn save_worktree_trust_at(path: &Path, cli: &str, on: bool) -> bool {

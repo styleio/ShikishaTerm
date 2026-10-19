@@ -6677,8 +6677,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::NoticeAnswer { site, allow }) => {
                         shell.mail().notice_answers.push((site, allow));
                     }
-                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TrustAnswer { ai, yes }) => {
-                        shell.mail().trust_answers.push((ai, yes));
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::TrustAnswer { ai, id, yes }) => {
+                        shell.mail().trust_answers.push((ai, id, yes));
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::FarPage { folder, port }) => {
                         shell.mail().far_pages.push((folder, port));
@@ -8927,8 +8927,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // the window or a phone: kept, and written for the worktrees that
         // waited on it -- on a thread, since a worktree may be on a server.
         // What could not be done is said when it is known
-        for (ai, yes) in shell.mail().take_trust_answers() {
-            std::thread::spawn(move || crate::aitrust::answered(&ai, yes));
+        for (ai, id, yes) in shell.mail().take_trust_answers() {
+            std::thread::spawn(move || crate::aitrust::answered(&ai, id, yes));
         }
         if let Some(said) = crate::aitrust::take_said() {
             flash = Some(said);

@@ -734,7 +734,7 @@ pub enum Ev {
     /// The person's answer about writing an AI CLI's yes for new worktrees
     /// into that CLI's own file, from the board or a phone: yes, no, or
     /// (`None`) the question put away without one
-    TrustAnswer { ai: String, yes: Option<bool> },
+    TrustAnswer { ai: String, id: u64, yes: Option<bool> },
     /// The 🎯 panel asking for something done to what was picked: a note on
     /// one, one taken out, all cleared, or all handed to an AI tab as a
     /// draft. `page` is the browser tab's key; `act` is one of a short list
@@ -1734,6 +1734,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         },
         Some("trust-answer") => Ev::TrustAnswer {
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
             yes: v.get("yes").and_then(|x| x.as_bool()),
         },
         Some("devtools") => Ev::DevTools {

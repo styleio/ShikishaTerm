@@ -5356,6 +5356,9 @@ fn save_settings(
     p: &serde_json::Value,
 ) -> anyhow::Result<std::collections::HashMap<String, String>> {
     use anyhow::Context as _;
+    // From reading the answers kept to the last file written: an answer
+    // given on the board meanwhile is written after this save, not under it
+    let _one_at_a_time = crate::config::writing_answers();
     // Recover before planning secret moves or taking another set of copies.
     // An unfinished rollback must never become the next save's baseline.
     finish_settings_save(config_path)?;
