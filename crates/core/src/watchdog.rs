@@ -107,13 +107,13 @@ fn awake_ms() -> u64 {
 /// A part says it is alive, from its own thread
 pub fn beat(part: Part) {
     MINE.with(|m| m.set(Some(part)));
-    LAST[part.index()].store(awake_ms(), Ordering::Relaxed);
+    LAST[part.index()].store(awake_ms(), Ordering::SeqCst);
 }
 
 /// Start watching a part from now on, from any thread: one that does not
 /// answer from here on has stopped, even if it never answered at all
 fn arm(part: Part) {
-    LAST[part.index()].store(awake_ms(), Ordering::Relaxed);
+    LAST[part.index()].store(awake_ms(), Ordering::SeqCst);
 }
 
 /// Wait for a person to answer a dialog of the system's own: the part on
@@ -170,10 +170,23 @@ pub struct Hang {
 
 /// The last time each part stopped, as the hang file says
 pub fn last_hangs() -> Vec<Hang> {
-    std::fs::read_to_string(hang_file())
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    std::fs::read_to_string(hang_file()).map(|text| read_hangs(&text)).unwrap_or_default()
+}
+
+/// The hang file's accounts: a list, one for each part; or, as the first
+/// version wrote it, one account alone
+fn read_hangs(text: &str) -> Vec<Hang> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Written {
+        Each(Vec<Hang>),
+        One(Hang),
+    }
+    match serde_json::from_str(text) {
+        Ok(Written::Each(all)) => all,
+        Ok(Written::One(h)) => vec![h],
+        Err(_) => Vec::new(),
+    }
 }
 
 /// The part of a run that was still stopped when it was last looked at --
@@ -256,6 +269,7 @@ fn watch() {
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<DumpAsk>();
     let (got_tx, got_rx) = std::sync::mpsc::channel::<(DumpAsk, Option<PathBuf>)>();
     let _ = std::thread::Builder::new().name("shikisha-dumps".into()).spawn(move || {
+        move_out(&crate::config::logs_dir().join("dumps"), &dumps_dir());
         tidy_dumps(&dumps_dir());
         for ask in ask_rx {
             #[cfg(windows)]
@@ -289,13 +303,24 @@ fn watch() {
         let now = awake_ms();
         for part in PARTS {
             let i = part.index();
-            let last = LAST[i].load(Ordering::Relaxed);
-            if last == 0 || HELD[i].load(Ordering::SeqCst) > 0 {
+            // Whether a person is being waited for is read before when it
+            // last beat: a dialog that closes in between beats before it lets
+            // go (`person_answers`), so the beat read after is the new one
+            if HELD[i].load(Ordering::SeqCst) > 0 {
+                continue;
+            }
+            let last = LAST[i].load(Ordering::SeqCst);
+            if last == 0 {
                 continue;
             }
             let quiet = Duration::from_millis(now.saturating_sub(last));
             match (&stopped[i], quiet >= HUNG_AFTER) {
                 (None, true) => {
+                    // And looked at once more: a dialog opened, or a beat
+                    // given, since the two were read is not a part stopped
+                    if HELD[i].load(Ordering::SeqCst) > 0 || LAST[i].load(Ordering::SeqCst) != last {
+                        continue;
+                    }
                     times += 1;
                     // Written down before any dump is tried: a run ended
                     // while the dump is being written still says it stopped
@@ -376,6 +401,23 @@ pub fn debug_stall() {
     }
 }
 
+/// Dumps the first version kept beside the program, moved to where dumps are
+/// kept now: that folder may be one a cloud drive copies
+fn move_out(old: &Path, new: &Path) {
+    let Ok(found) = std::fs::read_dir(old) else { return };
+    let _ = std::fs::create_dir_all(new);
+    for e in found.flatten() {
+        let p = e.path();
+        if let Some(name) = p.file_name()
+            && (p.extension().is_some_and(|x| x == "dmp") || unfinished(&p))
+            && std::fs::rename(&p, new.join(name)).is_err()
+        {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+    let _ = std::fs::remove_dir(old);
+}
+
 fn unfinished(p: &Path) -> bool {
     p.extension().is_some_and(|x| x == UNFINISHED)
 }
@@ -447,7 +489,7 @@ mod native {
     use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL};
     use windows_sys::Win32::System::Diagnostics::Debug::{
-        EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER, MINIDUMP_EXCEPTION_INFORMATION, MiniDumpNormal, MiniDumpWithThreadInfo,
+        CONTEXT, EXCEPTION_POINTERS, EXCEPTION_RECORD, LPTOP_LEVEL_EXCEPTION_FILTER, MINIDUMP_EXCEPTION_INFORMATION, MiniDumpNormal, MiniDumpWithThreadInfo,
         MiniDumpWithUnloadedModules, MiniDumpWriteDump, SetUnhandledExceptionFilter,
     };
     use windows_sys::Win32::System::Threading::{
@@ -483,7 +525,7 @@ mod native {
             ClientPointers: 0,
         });
         // SAFETY: this process, a file open for writing, and exception
-        // pointers that stay valid while the crashed thread waits for this
+        // pointers to a copy of the crash that stays for good
         let ok = unsafe {
             MiniDumpWriteDump(
                 GetCurrentProcess(),
@@ -500,6 +542,9 @@ mod native {
             let _ = std::fs::remove_file(&writing);
             return None;
         }
+        // Again with the new one counted, so the dumps kept are within the
+        // limits once it is there too
+        super::tidy_dumps(&dir);
         Some(path)
     }
 
@@ -519,6 +564,45 @@ mod native {
     // thread it names are always the same crash's
     static CLAIMED: AtomicBool = AtomicBool::new(false);
     static CRASH_POINTERS: AtomicPtr<EXCEPTION_POINTERS> = AtomicPtr::new(std::ptr::null_mut());
+
+    /// The crash as copied from the thread that crashed. The thread's own
+    /// record and registers live on its stack, and stop being there once a
+    /// filter lets it go on -- which may happen before a writer held up
+    /// behind a hang's dump gets to them -- so the writer reads this copy
+    #[repr(C, align(16))]
+    struct Copied {
+        context: CONTEXT,
+        record: EXCEPTION_RECORD,
+        pointers: EXCEPTION_POINTERS,
+    }
+    struct Kept(std::cell::UnsafeCell<std::mem::MaybeUninit<Copied>>);
+    // SAFETY: written once, by the one thread that claimed it, before the
+    // writer is told to read it
+    unsafe impl Sync for Kept {}
+    static COPIED: Kept = Kept(std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit()));
+
+    /// Copy the crash, and the pointers to the copy
+    ///
+    /// SAFETY: `from` is what Windows handed the filter, and only the thread
+    /// that claimed the crash calls this, once
+    unsafe fn copy_crash(from: *const EXCEPTION_POINTERS) -> *mut EXCEPTION_POINTERS {
+        unsafe {
+            let to = (*COPIED.0.get()).as_mut_ptr();
+            if from.is_null() || (*from).ExceptionRecord.is_null() || (*from).ContextRecord.is_null() {
+                return std::ptr::null_mut();
+            }
+            std::ptr::addr_of_mut!((*to).context).write(*(*from).ContextRecord);
+            let mut record = *(*from).ExceptionRecord;
+            // The record of an exception this one came from is not copied
+            record.ExceptionRecord = std::ptr::null_mut();
+            std::ptr::addr_of_mut!((*to).record).write(record);
+            std::ptr::addr_of_mut!((*to).pointers).write(EXCEPTION_POINTERS {
+                ExceptionRecord: std::ptr::addr_of_mut!((*to).record),
+                ContextRecord: std::ptr::addr_of_mut!((*to).context),
+            });
+            std::ptr::addr_of_mut!((*to).pointers)
+        }
+    }
     static CRASH_THREAD: AtomicU32 = AtomicU32::new(0);
     static GO: AtomicIsize = AtomicIsize::new(0);
     static DONE: AtomicIsize = AtomicIsize::new(0);
@@ -563,7 +647,7 @@ mod native {
         // SAFETY: plain calls on this thread and on the events made at start
         unsafe {
             if !CLAIMED.swap(true, Ordering::SeqCst) {
-                CRASH_POINTERS.store(pointers as *mut _, Ordering::SeqCst);
+                CRASH_POINTERS.store(copy_crash(pointers), Ordering::SeqCst);
                 CRASH_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
                 SetEvent(GO.load(Ordering::SeqCst) as HANDLE);
             }
@@ -654,8 +738,25 @@ mod tests {
     fn hangs_read_back_as_written() {
         let h = Hang { pid: 7, part: "work".into(), since: 100, secs: 25, back: false, dump: String::new() };
         let text = serde_json::to_string(&[&h]).unwrap();
-        assert_eq!(serde_json::from_str::<Vec<Hang>>(&text).unwrap(), vec![h]);
+        assert_eq!(read_hangs(&text), vec![h.clone()]);
         assert!(!text.contains("dump"), "no dump, nothing said of one");
+        // As the first version wrote it: one account alone, its dump kept
+        let one = Hang { dump: "C:\\x\\hang-work-7-1.dmp".into(), ..h };
+        assert_eq!(read_hangs(&serde_json::to_string(&one).unwrap()), vec![one]);
+        assert!(read_hangs("not json").is_empty());
+    }
+
+    #[test]
+    fn dumps_beside_the_program_are_moved_out() {
+        let dir = scratch("out");
+        let (old, new) = (dir.join("old"), dir.join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("crash-7-1.dmp"), b"x").unwrap();
+        move_out(&old, &new);
+        assert!(new.join("crash-7-1.dmp").exists());
+        assert!(!old.exists(), "the old folder goes once empty");
+        move_out(&old, &new);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
