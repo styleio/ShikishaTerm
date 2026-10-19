@@ -143,6 +143,8 @@ try {
   const asked = await until(() => chrome.run(`(() => { const b = document.getElementById("sask"); return b && !b.hidden && (S.trust_asks || []).length ? b.querySelector(".vtitle").textContent + " | " + b.querySelector(".vsay").textContent + " | " + b.querySelector(".bwhere").textContent : ""; })()`), 'the question', 30000).catch(() => '');
   check(/Gemini CLI/.test(asked) && asked.toLowerCase().includes(path.basename(PROJ)) && /feat-a/.test(asked), `the question names Gemini CLI, the project and the worktree (${asked.slice(0, 160)})`);
   check(!(key(a) in listed()), 'nothing is written before the answer');
+  // The worktree waits for the answer, so its tabs start with the yes written
+  check(await chrome.run(`(S.making || []).some(m => m.name === "feat-a" && !m.error)`), 'the first worktree waits for the answer before it is done');
   if (process.env.SHOT) fs.writeFileSync(path.join(process.env.SHOT, 'worktree-trust-ask.png'), Buffer.from((await chrome.send('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
   await chrome.run(`document.querySelector("#sask .go").click()`);
   await until(() => listed()[key(a)] === 'TRUST_FOLDER', 'the yes to be written', 20000).catch(() => {});

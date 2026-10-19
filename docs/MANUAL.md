@@ -400,7 +400,8 @@ you already trust. When a worktree is made in a project Gemini CLI trusts, the p
 asks once whether it may write the same yes into Gemini CLI's list of trusted folders
 (`~/.gemini/trustedFolders.json`) for each new worktree from then on. With yes, it is written
 before the worktree's tabs start, the way Gemini CLI writes it when you say yes on its
-screen. A project Gemini CLI does not trust is never written. The answer is kept under
+screen. That first worktree waits for your answer (up to 90 seconds), so its tabs start
+with the answer already written. A project Gemini CLI does not trust is never written. The answer is kept under
 Settings > AI agents > Trusting new worktrees, where it can be changed. Claude Code and Codex
 CLI already trust a worktree of a project they trust, so nothing is written for them.
 

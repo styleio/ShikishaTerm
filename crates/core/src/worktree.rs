@@ -684,7 +684,7 @@ fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, m
         None => crate::aitrust::At::Here,
         Some(h) => crate::aitrust::At::Far(h.clone()),
     };
-    crate::aitrust::worktree_made(at, &plan.main, &plan.folder);
+    crate::aitrust::worktree_made(at, &plan.main, &plan.folder, stop);
     Ok(())
 }
 

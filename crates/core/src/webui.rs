@@ -164,6 +164,28 @@ fn marks_in(doc: &serde_json::Value, mark: &str) -> Vec<String> {
     out
 }
 
+/// Settings answered somewhere that writes them at once -- the board's
+/// questions, a card's own buttons -- while a settings page may be open
+/// holding the value from before. A save that did not change one (the page
+/// says which, `keep`) leaves the file's value as it is
+const ANSWERED_ELSEWHERE: [&str; 2] = ["agent_hooks", "worktree_trust"];
+
+/// `config` with each setting in `keep` that is answered elsewhere put back
+/// to what the file holds now
+fn keep_answers(config: &mut serde_json::Value, on_disk: &serde_json::Value, keep: &[String]) {
+    let Some(doc) = config.as_object_mut() else { return };
+    for key in ANSWERED_ELSEWHERE.iter().filter(|k| keep.iter().any(|x| x == *k)) {
+        match on_disk.get(*key) {
+            Some(v) => {
+                doc.insert(key.to_string(), v.clone());
+            }
+            None => {
+                doc.remove(*key);
+            }
+        }
+    }
+}
+
 /// Every tab in `doc` carrying key `mark` with a value not in `keep` taken out
 fn drop_marks_not_in(doc: &mut serde_json::Value, mark: &str, keep: &[String]) {
     match doc {
@@ -5343,7 +5365,19 @@ fn save_settings(
         let path = safe_desk_file(rel, config_path).ok_or_else(|| anyhow::anyhow!("not a desk file: {rel}"))?;
         docs.push((path, f.get("body").cloned().unwrap_or_else(|| serde_json::json!({}))));
     }
-    let config = p.get("config").filter(|c| c.is_object()).cloned().context("no settings to save")?;
+    let mut config = p.get("config").filter(|c| c.is_object()).cloned().context("no settings to save")?;
+    let keep: Vec<String> = p
+        .get("keep")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|k| k.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    if !keep.is_empty() {
+        let on_disk: serde_json::Value = std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
+            .unwrap_or_default();
+        keep_answers(&mut config, &on_disk, &keep);
+    }
     docs.push((config_path.to_path_buf(), config));
     let before = docs.iter().map(|(path, _)| {
         let value = match std::fs::read_to_string(path) {
@@ -18975,10 +19009,17 @@ async function doSave() {
   const { out, files } = payload();
   const saved = JSON.parse(JSON.stringify({out, files}));
   const savedIds = idsNow();
+  // Answers given on the board or by a card's own button while this page was
+  // open are already in the file: one this page did not change is left as
+  // the file has it, not put back to what the page loaded
+  const before = (() => { try { return JSON.parse(savedSnapshot).out || {}; } catch (e) { return null; } })();
+  const keep = before ? ["agent_hooks", "worktree_trust"]
+    .filter(k => JSON.stringify(out[k]) === JSON.stringify(before[k])) : [];
   const j = await settingsApi("/api/settings/save", {
     config: out,
     files: files.map(f => ({file: f.file, body: f.body})),
     moves: secretMovesOfNewIds(),
+    keep,
   }).catch(e => ({ok:false, error:String(e && e.message || e)}));
   if (!j || !j.ok) { result(fill(T["settings.save_failed"], {error: (j && j.error) || ""}), true); return false; }
   refileSecretNames([current, desks, saved], j.renamed || {});
@@ -20166,6 +20207,26 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(&config).unwrap(), was);
             }
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// An answer given on the board while the settings were open is not put
+    /// back by a save that did not touch it; one the page changed is the page's
+    #[test]
+    fn a_save_keeps_answers_given_elsewhere_while_it_was_open() {
+        let (dir, config, secrets) = save_place("save-keeps-answers");
+        std::fs::write(&config, r#"{"language":"en","worktree_trust":{"Gemini CLI":"off"},"agent_hooks":{"Codex CLI":"on"}}"#).unwrap();
+        // The page loaded before the answers changed to these
+        let page = serde_json::json!({"language":"ja","worktree_trust":{"Gemini CLI":"on"}});
+        super::save_settings(&config, &secrets, None, &serde_json::json!({"config":page,"keep":["worktree_trust","agent_hooks","language"]})).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(saved["language"], "ja", "only answers given elsewhere are kept from the file");
+        assert_eq!(saved["worktree_trust"]["Gemini CLI"], "off");
+        assert_eq!(saved["agent_hooks"]["Codex CLI"], "on", "kept though the page had none");
+        // Changed on the page (its text editor): the page's
+        super::save_settings(&config, &secrets, None, &serde_json::json!({"config":page})).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(saved["worktree_trust"]["Gemini CLI"], "on");
         let _ = std::fs::remove_dir_all(dir);
     }
 
