@@ -164,6 +164,9 @@ block2 = "0.6.2"
 # which is the whole point of the runtime being its own crate.
 [target.'cfg(windows)'.dependencies]
 junction = "2.1.0"
+# Hands out the memory the reserve keeps (`reserve.rs`) once the system refuses.
+# Its own lock is left out: the reserve holds it under the standard one
+linked_list_allocator = { version = "0.10.6", default-features = false }
 # Read the PATH a new terminal is started with -- the one in the registry, which
 # the terminal library uses -- so "is this program installed" is asked of the
 # same list the launch will search. Already in the tree through portable-pty

@@ -529,6 +529,18 @@ fn ask_the_system(_mark: &Mark) -> Option<String> {
 /// Facts only in the second half, and named as facts: what the machine
 /// recorded, what was running, and nothing this side has decided
 pub fn question(ended: &Ended, mark: &Mark, language: &str) -> (String, String) {
+    put_question(ended, mark, language, crash_log_tail(mark), memory_notes(mark))
+}
+
+/// [`question`], with what the run wrote as it fell over and what it noted
+/// about the machine's memory already read
+fn put_question(
+    ended: &Ended,
+    mark: &Mark,
+    language: &str,
+    fell: Option<String>,
+    memory: Option<String>,
+) -> (String, String) {
     let job = format!("{ASKING}\n\nAnswer in {language}.");
     let mut out = vec![
         format!("- version: {}", mark.version),
@@ -553,11 +565,23 @@ pub fn question(ended: &Ended, mark: &Mark, language: &str) -> (String, String) 
     // reader to notice a section missing
     out.push(String::new());
     out.push("What the application itself wrote as it fell over:".into());
-    out.push(crash_log_tail(mark).unwrap_or_else(|| {
+    out.push(fell.unwrap_or_else(|| {
         "(nothing: this run wrote no panic message. A failed memory allocation ends a run \
          without one, and so does being stopped from outside)"
             .into()
     }));
+    // What the run saw of the machine's memory, when it saw anything. Windows
+    // does not always write its own diagnosis of a shortage: on 2026-10-19 it
+    // wrote none, and the explanation said no record showed any program
+    // holding the memory -- while this run had noted, a second before it
+    // went, a link holding 1.9 GB and the machine down to 123 MB. Left out
+    // when there is nothing, rather than said to be nothing: a machine where
+    // memory is not watched has nothing to say either way
+    if let Some(memory) = memory {
+        out.push(String::new());
+        out.push("What the application noted about the machine's memory during that run:".into());
+        out.push(memory);
+    }
     (job, out.join("\n"))
 }
 
@@ -600,6 +624,31 @@ pub fn crash_entry(what: &str) -> String {
         now_secs(),
         what.lines().map(str::trim_end).collect::<Vec<_>>().join(" / ")
     )
+}
+
+/// Where a run notes what it sees of the machine's memory (`crate::pressure`)
+const MEMORY_NOTES: &str = "memory.log";
+
+/// Note something about the machine's memory where the next start will find
+/// it, should this run not live to say it. One line, saying whose it is and
+/// when -- the time as the machine's own records write it, so the two can be
+/// laid side by side
+pub fn note_memory(what: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crate::config::logs_dir().join(MEMORY_NOTES))
+    {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{}", crash_entry(&format!("{} {what}", crate::hooks::local_stamp("%Y-%m-%dT%H:%M:%S"))));
+    }
+}
+
+/// The last few things the run that ended noted about the machine's memory
+fn memory_notes(mark: &Mark) -> Option<String> {
+    let text = std::fs::read_to_string(crate::config::logs_dir().join(MEMORY_NOTES)).ok()?;
+    let tail = written_by(&text, mark);
+    (!tail.is_empty()).then(|| tail.join("\n"))
 }
 
 /// The last few panics the run that ended wrote as it fell over.
@@ -856,5 +905,20 @@ C:\\tao\\runner.rs:371: panicked at runner.rs:371:25: / cannot move state from D
         let last = written_by(&many, &Mark { pid: 1, version: String::new(), started: 0, settled: false });
         assert_eq!(last.len(), 6);
         assert_eq!(last.last().copied(), Some("[pid 1 at 19] n9"));
+    }
+
+    /// What the run noted about the machine's memory goes to whoever explains
+    /// the ending, under its own heading. The ending of 2026-10-19 was put
+    /// without it, and the program the run had named was not named back
+    #[test]
+    fn the_runs_own_memory_notes_are_handed_over() {
+        let mark = Mark { pid: 20800, version: "0.28.1".into(), started: 0, settled: true };
+        let ended = Ended { pid: 20800, when: "2026-10-19T20:37:53".into(), code: "0xc0000409".into(), ..Default::default() };
+        let notes = "[pid 20800 at 1792413472] 2026-10-19T20:37:52 memory: the most is held by link.exe (1.9 GB)";
+        let (_, records) = put_question(&ended, &mark, "English", None, Some(notes.into()));
+        let heading = records.find("noted about the machine's memory").expect("no heading for the notes");
+        assert!(records[heading..].contains("link.exe (1.9 GB)"), "{records}");
+        let (_, records) = put_question(&ended, &mark, "English", None, None);
+        assert!(!records.contains("machine's memory"), "nothing noted was said to be something: {records}");
     }
 }

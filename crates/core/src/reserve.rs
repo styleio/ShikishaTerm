@@ -7,68 +7,137 @@
 //! the time, a few bytes at once. It went three times in two days that way,
 //! each time over an allocation smaller than a page.
 //!
-//! So some memory is committed at the start and never touched, and the
-//! allocator this program uses ([`Reserve`]) gives it back to Windows the
-//! instant an allocation is refused, then asks again. A shortage that lasts
-//! the seconds a build takes to link is ridden out. Committed and untouched,
-//! it takes none of the machine's RAM, only a place in its commit.
+//! So some memory is committed at the start and kept: when the system refuses
+//! an allocation, the allocator this program uses ([`Reserve`]) hands it out
+//! of the reserve instead, and takes it back there when it is freed. A
+//! shortage that lasts the seconds a build takes to link is ridden out.
+//! Committed and untouched until then, it takes none of the machine's RAM,
+//! only a place in its commit.
+//!
+//! The reserve is never given back to Windows. It once was, on the refusal,
+//! so the allocation could be asked for again -- but memory given back is the
+//! machine's, not this program's, and on a machine being run dry the program
+//! running it dry takes it first. On 2026-10-19 the reserve went back at a
+//! refusal while a link was growing by the gigabyte, and the run ended a
+//! second later. A probe that limits only itself (`bin/reserve_probe.rs`)
+//! cannot show that: nothing else there is asking.
 //!
 //! Nothing here allocates or logs: this runs *inside* a refused allocation.
-//! What happened is picked up afterwards by `crate::pressure`, which says so
-//! and puts the reserve back once there is room.
+//! What happened is picked up afterwards by `crate::pressure`, which says so.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// How much is set aside. Many times what this program allocates in a
-/// second, and small enough for the smallest machine it runs on not to
-/// notice the commit it takes
+/// How much is set aside. Many times what this program holds onto through
+/// a shortage of a few seconds, and small enough for the smallest machine it
+/// runs on not to notice the commit it takes
 pub const SIZE: usize = 64 * 1024 * 1024;
 
-/// The reserve's address, or 0 while there is none
+/// The reserve's address, or 0 while there is none. Set once and kept
 static HELD: AtomicUsize = AtomicUsize::new(0);
 
-/// Set when the reserve was given back to keep this program running, and
-/// cleared by whoever reports it
+/// What hands out the reserve. Behind the standard lock, which neither
+/// allocates nor gives way to another allocation while it is held
+#[cfg(windows)]
+static HEAP: std::sync::Mutex<linked_list_allocator::Heap> =
+    std::sync::Mutex::new(linked_list_allocator::Heap::empty());
+
+/// How much of the reserve is handed out right now, in bytes
+static IN_USE: AtomicUsize = AtomicUsize::new(0);
+
+/// Set when the reserve began to be drawn on, and cleared by whoever reports
+/// it. Set once per draw rather than once per allocation: a shortage draws
+/// on it thousands of times, and is one thing to say
 static SPENT: AtomicBool = AtomicBool::new(false);
 
 /// Set the reserve aside. True if it is now held (whether by this call or
 /// an earlier one)
+#[cfg(windows)]
 pub fn arm() -> bool {
     if armed() {
         return true;
     }
-    let Some(at) = commit(SIZE) else { return false };
-    if HELD.compare_exchange(0, at, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        // Another thread set one aside first; one is enough
-        unsafe { release(at) };
+    let mut heap = HEAP.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread set one aside while this one waited; one is enough
+    if armed() {
+        return true;
     }
+    let Some(at) = commit(SIZE) else { return false };
+    // SAFETY: the range was just committed for this alone, is never given
+    // back, and nothing else is told of it
+    unsafe { heap.init(at as *mut u8, SIZE) };
+    HELD.store(at, Ordering::SeqCst);
     true
 }
 
-/// Whether the reserve is held right now
+// Elsewhere the kernel overcommits: an allocation is not refused but a
+// program is ended later, of the kernel's choosing, so there is nothing to
+// set aside against
+#[cfg(not(windows))]
+pub fn arm() -> bool {
+    false
+}
+
+/// Whether the reserve is held
 pub fn armed() -> bool {
     HELD.load(Ordering::SeqCst) != 0
 }
 
-/// Whether the reserve has been spent since this was last asked. Asking
+/// How much of the reserve is handed out right now, in bytes
+pub fn in_use() -> usize {
+    IN_USE.load(Ordering::SeqCst)
+}
+
+/// Whether the reserve has been drawn on since this was last asked. Asking
 /// clears it, so each rescue is reported once
 pub fn take_spent() -> bool {
     SPENT.swap(false, Ordering::SeqCst)
 }
 
-/// Give the reserve back to Windows, if it is held. True if it was: there is
-/// now that much more room, and an allocation that was refused is worth
-/// asking for again
-fn spend() -> bool {
-    let at = HELD.swap(0, Ordering::SeqCst);
-    if at == 0 {
-        return false;
-    }
-    unsafe { release(at) };
-    SPENT.store(true, Ordering::SeqCst);
-    true
+/// Whether `p` was handed out of the reserve
+fn ours(p: *mut u8) -> bool {
+    let at = HELD.load(Ordering::SeqCst);
+    at != 0 && (at..at + SIZE).contains(&(p as usize))
 }
+
+/// Hand out `layout` from the reserve, or null when it is not held or has no
+/// room for it
+#[cfg(windows)]
+fn from_reserve(layout: Layout) -> *mut u8 {
+    if !armed() {
+        return std::ptr::null_mut();
+    }
+    let got = HEAP.lock().unwrap_or_else(|e| e.into_inner()).allocate_first_fit(layout);
+    match got {
+        Ok(p) => {
+            if IN_USE.fetch_add(layout.size(), Ordering::SeqCst) == 0 {
+                SPENT.store(true, Ordering::SeqCst);
+            }
+            p.as_ptr()
+        }
+        Err(()) => std::ptr::null_mut(),
+    }
+}
+
+#[cfg(not(windows))]
+fn from_reserve(_layout: Layout) -> *mut u8 {
+    std::ptr::null_mut()
+}
+
+/// Take back what [`from_reserve`] handed out
+#[cfg(windows)]
+unsafe fn to_reserve(p: *mut u8, layout: Layout) {
+    // SAFETY: `p` came from the reserve with this layout, the caller says
+    unsafe {
+        HEAP.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .deallocate(std::ptr::NonNull::new_unchecked(p), layout)
+    };
+    IN_USE.fetch_sub(layout.size(), Ordering::SeqCst);
+}
+
+#[cfg(not(windows))]
+unsafe fn to_reserve(_p: *mut u8, _layout: Layout) {}
 
 #[cfg(windows)]
 fn commit(size: usize) -> Option<usize> {
@@ -77,24 +146,22 @@ fn commit(size: usize) -> Option<usize> {
     (!at.is_null()).then_some(at as usize)
 }
 
-#[cfg(windows)]
-unsafe fn release(at: usize) {
-    use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
-    unsafe { VirtualFree(at as *mut _, 0, MEM_RELEASE) };
+/// What the system is asked first. A test stands in a system that refuses,
+/// which a test cannot otherwise arrange without running the machine dry
+#[cfg(not(test))]
+fn refusing() -> bool {
+    false
 }
 
-// Elsewhere the kernel overcommits: an allocation is not refused but a
-// program is ended later, of the kernel's choosing, so there is nothing to
-// set aside against
-#[cfg(not(windows))]
-fn commit(_size: usize) -> Option<usize> {
-    None
+#[cfg(test)]
+static REFUSING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn refusing() -> bool {
+    REFUSING.load(Ordering::SeqCst)
 }
 
-#[cfg(not(windows))]
-unsafe fn release(_at: usize) {}
-
-/// The allocator: the system's own, with one more try when it says no.
+/// The allocator: the system's own, with the reserve behind it when it says no.
 ///
 /// Put in place by the program, not by this library:
 ///
@@ -106,31 +173,64 @@ pub struct Reserve;
 
 unsafe impl GlobalAlloc for Reserve {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(layout) };
-        if p.is_null() && spend() {
-            return unsafe { System.alloc(layout) };
+        let p = if refusing() { std::ptr::null_mut() } else { unsafe { System.alloc(layout) } };
+        if p.is_null() {
+            return from_reserve(layout);
         }
         p
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc_zeroed(layout) };
-        if p.is_null() && spend() {
-            return unsafe { System.alloc_zeroed(layout) };
+        let p = if refusing() { std::ptr::null_mut() } else { unsafe { System.alloc_zeroed(layout) } };
+        if p.is_null() {
+            // The reserve's memory is handed out again after it is freed, so
+            // it is cleared here rather than trusted to be
+            let q = from_reserve(layout);
+            if !q.is_null() {
+                unsafe { std::ptr::write_bytes(q, 0, layout.size()) };
+            }
+            return q;
         }
         p
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let p = unsafe { System.realloc(ptr, layout, new_size) };
-        if p.is_null() && spend() {
-            return unsafe { System.realloc(ptr, layout, new_size) };
+        // SAFETY: the caller promises `new_size` rounded up to the alignment
+        // does not overflow, which is what this layout needs
+        let grown = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        if !ours(ptr) {
+            let p = if refusing() { std::ptr::null_mut() } else { unsafe { System.realloc(ptr, layout, new_size) } };
+            if !p.is_null() {
+                return p;
+            }
+            // Refused, the system leaves the old block where it was
+            let q = from_reserve(grown);
+            if !q.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr, q, layout.size().min(new_size));
+                    System.dealloc(ptr, layout);
+                }
+            }
+            return q;
         }
-        p
+        // A block of the reserve's moves out of it as soon as the system will
+        // have it again, so the reserve is there for the next shortage
+        let q = unsafe { self.alloc(grown) };
+        if !q.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr, q, layout.size().min(new_size));
+                to_reserve(ptr, layout);
+            }
+        }
+        q
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) }
+        if ours(ptr) {
+            unsafe { to_reserve(ptr, layout) }
+        } else {
+            unsafe { System.dealloc(ptr, layout) }
+        }
     }
 }
 
@@ -138,29 +238,70 @@ unsafe impl GlobalAlloc for Reserve {
 mod tests {
     use super::*;
 
-    /// A refused allocation spends the reserve, is asked for again, and the
-    /// rescue is reported once. The refusal is made real by asking for more
-    /// than any machine has, so the second ask is refused too -- which is also
-    /// the case to get right: nothing spent twice, nothing invented
+    /// The tests share the one reserve and the one stand-in refusal, so
+    /// they take turns
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// With the system refusing, allocations come out of the reserve, are
+    /// taken back into it when freed, and the rescue is reported once however
+    /// many there were. Asked for more than the reserve has, the answer is
+    /// still no: nothing is invented
     #[test]
-    fn a_refusal_spends_the_reserve_once_and_says_so() {
+    fn a_refusal_is_answered_from_the_reserve_and_it_is_said_once() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         assert!(arm(), "no reserve could be set aside");
         assert!(armed());
-        let impossible = Layout::from_size_align(1 << 46, 16).unwrap();
-        let p = unsafe { Reserve.alloc(impossible) };
-        assert!(p.is_null(), "64 TB was granted");
-        assert!(!armed(), "the reserve was given back");
-        assert!(take_spent(), "and that was recorded");
-        assert!(!take_spent(), "once");
-        let p = unsafe { Reserve.alloc(impossible) };
-        assert!(p.is_null());
-        assert!(!take_spent(), "with nothing held, nothing is spent");
-        assert!(arm(), "and it can be set aside again");
-        // An ordinary allocation goes straight through
+        let _ = take_spent();
         let small = Layout::from_size_align(64, 8).unwrap();
+        // An ordinary allocation goes straight through
         let p = unsafe { Reserve.alloc(small) };
-        assert!(!p.is_null());
+        assert!(!p.is_null() && !ours(p), "the system's own allocation came from the reserve");
         unsafe { Reserve.dealloc(p, small) };
-        assert!(armed(), "an allocation that succeeds leaves the reserve alone");
+        assert!(!take_spent(), "an allocation that succeeds leaves the reserve alone");
+
+        REFUSING.store(true, Ordering::SeqCst);
+        let held: Vec<*mut u8> = (0..1000).map(|_| unsafe { Reserve.alloc(small) }).collect();
+        let zeroed = unsafe { Reserve.alloc_zeroed(Layout::from_size_align(4096, 64).unwrap()) };
+        let impossible = unsafe { Reserve.alloc(Layout::from_size_align(SIZE * 2, 16).unwrap()) };
+        REFUSING.store(false, Ordering::SeqCst);
+
+        assert!(held.iter().all(|p| !p.is_null() && ours(*p)), "a refusal was not answered from the reserve");
+        assert!(!zeroed.is_null() && ours(zeroed) && zeroed as usize % 64 == 0, "the alignment asked for was not kept");
+        assert!(unsafe { std::slice::from_raw_parts(zeroed, 4096) }.iter().all(|b| *b == 0));
+        assert!(impossible.is_null(), "more than the reserve holds was handed out");
+        assert!(in_use() >= 1000 * 64 + 4096);
+        assert!(take_spent(), "the rescue was not recorded");
+        assert!(!take_spent(), "a rescue was said twice");
+
+        // Freed, it goes back to the reserve and nowhere else
+        for p in held {
+            unsafe { Reserve.dealloc(p, small) };
+        }
+        unsafe { Reserve.dealloc(zeroed, Layout::from_size_align(4096, 64).unwrap()) };
+        assert_eq!(in_use(), 0, "the reserve did not get everything back");
+        assert!(armed(), "the reserve was let go of");
+    }
+
+    /// A block grown while the system refuses moves into the reserve with its
+    /// contents, and moves back out with them once the system answers again
+    #[test]
+    fn a_block_grown_through_a_shortage_keeps_what_it_holds() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(arm());
+        let small = Layout::from_size_align(16, 8).unwrap();
+        let p = unsafe { Reserve.alloc(small) };
+        unsafe { std::ptr::copy_nonoverlapping(b"held through it.".as_ptr(), p, 16) };
+
+        REFUSING.store(true, Ordering::SeqCst);
+        let q = unsafe { Reserve.realloc(p, small, 4096) };
+        REFUSING.store(false, Ordering::SeqCst);
+        assert!(ours(q), "the grown block did not come from the reserve");
+        assert_eq!(unsafe { std::slice::from_raw_parts(q, 16) }, b"held through it.");
+
+        let grown = Layout::from_size_align(4096, 8).unwrap();
+        let r = unsafe { Reserve.realloc(q, grown, 8192) };
+        assert!(!ours(r), "the block stayed in the reserve after the shortage");
+        assert_eq!(unsafe { std::slice::from_raw_parts(r, 16) }, b"held through it.");
+        unsafe { Reserve.dealloc(r, Layout::from_size_align(8192, 8).unwrap()) };
     }
 }

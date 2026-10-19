@@ -348,7 +348,7 @@ fn boot() -> Result<()> {
     // that may be short of it
     #[cfg(windows)]
     if !shikisha_core::reserve::arm() {
-        shikisha_core::append_hook_log("memory: no reserve could be set aside");
+        shikisha_core::pressure::note("memory: no reserve could be set aside");
     }
     if split {
         return run_split();

@@ -14,13 +14,15 @@
 //! crossed while somebody is using it (`.private/doc/crash-resilience-trials.ja.md`).
 //!
 //! * **The reserve** (`crate::reserve`): memory set aside at the start and
-//!   given back the instant an allocation is refused, so the refusal a build
+//!   drawn on the instant an allocation is refused, so the refusal a build
 //!   causes for a second is ridden out instead of ending the program. This
-//!   module puts it back once there is room again.
+//!   module sets it aside later when there was no room for it at the start.
 //! * **Saying so**: when the room is getting small, or the reserve has just
-//!   been spent, the notification-area icon says what is going on and names
+//!   been drawn on, the notification-area icon says what is going on and names
 //!   the program holding the most. The person can do something about a python
-//!   holding 17 GB; they can do nothing about a terminal that vanished.
+//!   holding 17 GB; they can do nothing about a terminal that vanished. What
+//!   is said is also noted for the next start (`crate::lastexit`), in case
+//!   this run does not outlive it.
 
 /// Below this much room the machine is short, on a machine with a commit
 /// limit of 20 GB or more. Smaller machines scale it down to a tenth of
@@ -203,6 +205,13 @@ pub fn notice(rescued: bool, heaviest: Option<(String, u64)>) -> (String, String
     (title, format!("{} {}", crate::i18n::t("tray.memory.still_working"), who))
 }
 
+/// Write down something about the machine's memory: in the log, and where the
+/// next start looks should this run end before it can say anything more
+pub fn note(line: &str) {
+    crate::append_hook_log(line);
+    crate::lastexit::note_memory(line);
+}
+
 /// Follow the room for as long as `say` wants to hear, on a thread of its
 /// own: put the reserve back once there is room for it, and hand `say` a
 /// notice when the room gets small or the reserve is spent. `say` answers
@@ -212,37 +221,47 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
     let _ = std::thread::Builder::new().name("shikisha-pressure".into()).spawn(move || {
         let mut gauge = Gauge::new(limit);
         let mut last_said: Option<std::time::Instant> = None;
+        // Whether the reserve has been drawn on during this shortage. One
+        // shortage draws on it again and again as what it lent is given back
+        // and asked for anew; that is one rescue to tell the person of, not
+        // one every half second
+        let mut drawn = false;
         loop {
             std::thread::sleep(EVERY);
             let Some((left, _)) = room() else { continue };
             // Read first, before anything here allocates: the log line
             // below is the first thing that would be refused
-            #[cfg(windows)]
-            let rescued = crate::reserve::take_spent();
-            // No reserve is kept where allocations are not refused
-            #[cfg(not(windows))]
-            let rescued = false;
+            let drew = crate::reserve::take_spent();
             let turn = gauge.read(left);
+            let rescued = drew && !drawn;
+            drawn |= drew;
             if rescued {
-                crate::append_hook_log(&format!(
-                    "memory: an allocation was refused and the reserve was spent to keep going ({} left)",
+                note(&format!(
+                    "memory: an allocation was refused and answered from the reserve ({} of it in use, {} left)",
+                    size(crate::reserve::in_use() as u64),
                     size(left)
                 ));
             }
             if let Some(turn) = turn {
-                crate::append_hook_log(&format!("memory: {turn:?} with {} of commit left", size(left)));
+                note(&format!("memory: {turn:?} with {} of commit left", size(left)));
             }
-            // Put back once the machine could lose it and still have room
+            // Over once the room is back and all it lent has come home
+            if drawn && !gauge.low && crate::reserve::in_use() == 0 {
+                drawn = false;
+                note("memory: all that was drawn from the reserve is back in it");
+            }
+            // Set aside when there was no room for it at the start, once the
+            // machine could lose it and still have room
             #[cfg(windows)]
             if !crate::reserve::armed() && left > crate::reserve::SIZE as u64 * 8 && crate::reserve::arm() {
-                crate::append_hook_log("memory: the reserve is set aside again");
+                note("memory: the reserve is set aside");
             }
             let worth_saying = rescued || turn == Some(Turn::Low);
             let quiet = last_said.is_some_and(|t| t.elapsed() < QUIET_FOR);
             if worth_saying && (!quiet || rescued) {
                 let who = heaviest();
                 if let Some((name, held)) = &who {
-                    crate::append_hook_log(&format!("memory: the most is held by {name} ({})", size(*held)));
+                    note(&format!("memory: the most is held by {name} ({})", size(*held)));
                 }
                 let (title, text) = notice(rescued, who);
                 last_said = Some(std::time::Instant::now());
