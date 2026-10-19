@@ -281,6 +281,18 @@ impl Aside {
         }
         !self.helpers.is_empty() || self.other.is_some()
     }
+
+    /// [`Aside::running`] without letting go of anything: for those who only
+    /// look
+    pub fn any(&self, now: std::time::Instant) -> bool {
+        self.helping(now) || self.other.is_some_and(|at| now.saturating_duration_since(at) < ASIDE_TRUST)
+    }
+
+    /// Whether any of its helpers is out, as of `now`, without letting go of
+    /// anything
+    pub fn helping(&self, now: std::time::Instant) -> bool {
+        self.helpers.values().any(|at| now.saturating_duration_since(*at) < ASIDE_TRUST)
+    }
 }
 
 /// The end of a turn can go missing: pressing Ctrl+C or Esc is something a

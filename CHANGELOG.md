@@ -26,6 +26,15 @@ once it reaches its first tagged release.
   writes them, and a numbered list that carries on after a blank line keeps
   its numbers.
 
+### Fixed
+- **An AI asked for work it finishes later is heard to the end.** An AI that
+  ends its turn while helpers or commands it started are still running ("waiting
+  for the review; I will go on when it ends") no longer has those words passed
+  on as its answer. The tab that asked is told them as what it has said so far,
+  marked as still working, and what the AI says once that work is over reaches
+  the asking tab's inbox as its answer. Before, the ask ended at the first words
+  and the report that came later went to nobody.
+
 ## [0.28.1] - 2026-10-14
 
 0.28.0 came out for Linux only. On Windows, this is the first version with

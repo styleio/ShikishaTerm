@@ -1266,10 +1266,7 @@ fn look_at(line: &[u8]) -> Seen {
     let Ok(record) = serde_json::from_str::<Value>(text) else {
         return Seen::Nothing;
     };
-    // A side conversation — a sub-agent's own turns, written into the same
-    // file. It is a different conversation that happens to share a log, and
-    // splicing it in would read as the AI interrupting itself
-    if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+    if beside_the_conversation(&record) {
         return Seen::Nothing;
     }
     if reaching_for_a_tool(&record) {
@@ -1304,6 +1301,23 @@ fn turn_of(record: &Value) -> Option<Turn> {
         Who::Ai => said.trim().to_string(),
     };
     (!said.is_empty()).then_some(Turn { who, text: said, at: None, when: when_of(record), peer: None })
+}
+
+/// Whether a record is kept beside the conversation rather than being part of
+/// it, though it holds messages:
+///
+/// - a side conversation -- a sub-agent's own turns, written into the same
+///   file. It is a different conversation that happens to share a log, and
+///   splicing it in would read as the AI interrupting itself
+/// - a copy of what was sent to the model (Claude Code's `api-request-blob`,
+///   seen from 2.1.303). Each holds a message that is said once already, or
+///   never said by anyone: the person's words again, the reason a stop hook
+///   gave, the CLI's own notes. Read as said, the person's words came twice
+///   and a hook's reason read as the person speaking, which ended an AI's
+///   answer there (measured 2026-10-19)
+fn beside_the_conversation(record: &Value) -> bool {
+    record.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || record.get("type").and_then(Value::as_str).is_some_and(|t| t.starts_with("api-request"))
 }
 
 /// Whether a record says the CLI put it in the person's place itself rather
@@ -1576,7 +1590,7 @@ fn read_line(line: &[u8]) -> Line {
     let Ok(record) = serde_json::from_str::<Value>(text) else {
         return Line::Nothing;
     };
-    if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+    if beside_the_conversation(&record) {
         return Line::Nothing;
     }
     if reaching_for_a_tool(&record) {
@@ -2000,6 +2014,11 @@ mod tests {
         assert!(said(result).is_none(), "a tool result is not a turn");
         // A sub-agent's transcript shares the file
         let side = r#"{"isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"別の会話"}]}}"#;
+        // What Claude Code sent to the model, kept beside the conversation
+        let sent = r#"{"type":"api-request-blob","sessionId":"s","hash":"h","message":{"role":"user","content":"Stop hook feedback: Reply with one line."}}"#;
+        assert!(said(&sent.replace("api-request-blob", "user")).is_some(), "the same message, said");
+        assert!(said(sent).is_none(), "what was sent to the model is not said again");
+        assert!(matches!(read_line(sent.as_bytes()), Line::Nothing));
         assert!(said(side).is_none(), "a subagent's record is a different conversation");
         // Neither is anything without a role
         let meta = r#"{"type":"summary","text":"…"}"#;

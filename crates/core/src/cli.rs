@@ -253,6 +253,9 @@ pub(crate) fn said(r: &Value) -> String {
         "PENDING" => format!(
             "[shikisha] STILL WORKING: <@{tab}> has not finished. End your turn now; when it is done you will be told here, and shikisha inbox gives you its reply{facts}"
         ),
+        "WORKING" => format!(
+            "{reply}\n\n[shikisha] STILL WORKING: <@{tab}> has said the above so far, and work it started still runs behind its prompt. It has not finished. End your turn now; when it is done you will be told here, and shikisha inbox gives you its reply{facts}"
+        ),
         "STUCK" => format!(
             "{reply}\n\n[shikisha] NOT DONE: <@{tab}> could not get it done (the reason is above){facts}"
         ),
@@ -372,6 +375,10 @@ mod tests {
             pending.contains("STILL WORKING") && pending.contains("End your turn"),
             "{pending}"
         );
+        // Said so far, with its work going on: what it said, and that it is not over
+        let on = said(&json!({"tab":"otter","state":"WORKING","reply":"Waiting for the review.","round":1}));
+        assert!(on.starts_with("Waiting for the review."), "{on}");
+        assert!(on.contains("[shikisha] STILL WORKING: <@otter> has said the above so far") && on.contains("End your turn"), "{on}");
         let q = said(&json!({"tab":"otter","state":"QUESTION","reply":"Allow? (y/n)"}));
         assert!(q.contains("WAITING") && q.starts_with("Allow?"), "{q}");
         // A turn that failed says what went wrong and that the way on is to ask again

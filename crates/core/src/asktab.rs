@@ -76,6 +76,19 @@ const SCREEN_SETTLE: Duration = Duration::from_secs(3);
 /// on a reply that is already written
 const BACKGROUND_GRACE: Duration = Duration::from_secs(180);
 
+/// How long a tab that has said something so far ([`Ask::so_far`]) must stay
+/// finished before what it said last is its answer. A helper coming back
+/// wakes its AI a moment after the helper ends, and the tab reads as finished
+/// in between (measured 2026-10-19: 0.4 s)
+const SO_FAR_SETTLE: Duration = Duration::from_secs(10);
+
+/// How long a tab that has said something so far may sit at rest with work
+/// other than helpers still running behind its prompt, saying nothing more,
+/// before what it said last is taken as its answer. A helper says when it is
+/// back, and is waited for; a command left running may be a server that
+/// never ends
+const LEFT_RUNNING: Duration = Duration::from_secs(30 * 60);
+
 /// How long a tab that keeps a record may sit finished without the record
 /// giving its turn an answer, before its screen is taken instead. The record
 /// catches up within seconds of a turn's end; one that has not in two minutes
@@ -236,6 +249,14 @@ pub struct Ask {
     /// The caller has the answer kept in [`Self::held`]; the ask stays only
     /// for the answer's line (see [`Step::Lined`])
     pub answered: bool,
+    /// What the tab said while work it started went on behind its prompt
+    /// (`Tab::works_on`), passed on to the caller as said so far: the ask
+    /// goes on for what it says once that work is over. Measured 2026-10-19:
+    /// an AI asked for a long piece of work said "waiting for verify and the
+    /// review; I'll go on when they end" with two helpers out, that went to
+    /// the caller as the answer, and the report it gave 40 minutes later, once
+    /// they were back, went to nobody
+    pub so_far: Option<String>,
     /// The tab went quiet after the words were sent and then took up work
     /// again: what it shows now may be somebody else's turn, and is not
     /// taken for this ask's answer (see [`RECORD_GIVES_NONE`])
@@ -340,7 +361,7 @@ pub struct FarRead {
     /// A look out on its thread, and whether it asked for the turn to be over
     /// too (see [`FarRead::reply`]). An answer to the other kind of look is
     /// not this one's
-    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<After>, Option<(u64, u64)>)>, bool)>,
+    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<After>, Option<(u64, u64)>)>, Look)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
@@ -373,10 +394,9 @@ impl FarRead {
     /// `None` while one is out or the record has not caught up.
     ///
     /// `from` is how long the record was when `sent` was sent, as for
-    /// [`reply_in`]. `over` is the record-says-so road taken while the screen
-    /// still reads as busy (see [`reply_when_over`]): the answer only counts
-    /// once the record's last mark ends a turn, written after the question
-    fn reply(&mut self, record: &crate::reader::Record, sent: &str, from: u64, over: bool) -> Option<Outcome> {
+    /// [`reply_in`]. `look` is how much of the record the answer is read
+    /// from (see [`Look`])
+    fn reply(&mut self, record: &crate::reader::Record, sent: &str, from: u64, look: Look) -> Option<Outcome> {
         if let Some((rx, kind)) = &self.pending {
             let kind = *kind;
             let got = rx.try_recv();
@@ -395,7 +415,7 @@ impl FarRead {
                 Ok(Found::Is(outcome)) => {
                     self.pending = None;
                     // A failure is one whichever kind of look found it
-                    return (kind == over || matches!(outcome, Outcome::Failed { .. })).then_some(outcome);
+                    return (kind == look || matches!(outcome, Outcome::Failed { .. })).then_some(outcome);
                 }
                 Ok(Found::Missing) => {
                     self.pending = None;
@@ -413,7 +433,7 @@ impl FarRead {
         let (record, sent, scanned, tab) = (record.clone(), sent.to_string(), self.scanned, self.tab.clone());
         std::thread::spawn(move || {
             let (mut moved, mut read_to) = (None, None);
-            let found = match record.page(u64::MAX, REPLY_TURNS) {
+            let found = match record.page(u64::MAX, look.turns()) {
                 None => Found::Missing,
                 Some(Ok(page)) => match asked_in(&page, &sent, from) {
                     None => Found::NotYet,
@@ -431,14 +451,14 @@ impl FarRead {
                         let last_over = || {
                             record.standing().and_then(|s| s.mark).map(|(m, _)| m) == Some(crate::reader::TurnMark::Over)
                         };
-                        decide(&page, asked, end, over, last_over).map_or(Found::NotYet, Found::Is)
+                        decide(&page, asked, end, look, last_over).map_or(Found::NotYet, Found::Is)
                     }
                 },
                 Some(Err(_)) => Found::NotYet,
             };
             let _ = tx.send((found, moved, read_to));
         });
-        self.pending = Some((rx, over));
+        self.pending = Some((rx, look));
         self.last = Some(Instant::now());
         None
     }
@@ -488,16 +508,22 @@ impl Ask {
 
     /// What came of the ask, from the record wherever it is kept (see
     /// [`outcome_in`]; with `over`, [`outcome_when_over`]). `None` while it
-    /// has not been found (yet)
+    /// has not been found (yet). Once the tab has said something so far
+    /// ([`Ask::so_far`]), its answer is all it said since the ask, read
+    /// whatever `over` says ([`Look::On`])
     fn outcome(&mut self, t: &Tab, over: bool) -> Option<Outcome> {
         let from = self.record_from.unwrap_or(0);
         self.far.tab = Some(t.uid().to_string());
+        let look = match (self.so_far.is_some(), over) {
+            (true, _) => Look::On,
+            (false, true) => Look::Over,
+            (false, false) => Look::Turn,
+        };
         match self.source(t) {
-            Source::Here(path) if over => outcome_when_over(&path, &self.text, from),
-            Source::Here(path) => outcome_in(&path, &self.text, from),
+            Source::Here(path) => outcome(&path, &self.text, from, look),
             Source::Far(record) => {
                 let text = self.text.clone();
-                self.far.reply(&record, &text, from, over)
+                self.far.reply(&record, &text, from, look)
             }
             Source::Screen => None,
         }
@@ -545,6 +571,7 @@ pub fn handing(caller: String, caller_uid: Option<String>, target: String, text:
         line_unheard: false,
         late_line: None,
         answered: false,
+        so_far: None,
         overtaken: false,
         question_told: None,
         stopped_since: None,
@@ -757,7 +784,7 @@ pub enum Outcome {
 /// record for both. `None` while the turn has not been written, or has said
 /// nothing yet and not ended
 pub fn outcome_in(path: &Path, sent: &str, from: u64) -> Option<Outcome> {
-    outcome(path, sent, from, false)
+    outcome(path, sent, from, Look::Turn)
 }
 
 /// What went wrong, when the turn `sent` was given in ended in an error
@@ -773,6 +800,35 @@ pub fn failure_in(path: &Path, sent: &str, from: u64) -> Option<String> {
 
 /// How many things said are read back to find the turn a reply belongs to
 const REPLY_TURNS: usize = 16;
+
+/// ...and to find it behind the turns the tab's own work woke it for since
+/// ([`Look::On`]): one for every helper back and every word it had on the
+/// way, over a piece of work that can run for an hour
+const ON_TURNS: usize = REPLY_TURNS * 4;
+
+/// How much of a record an ask's answer is read from
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Look {
+    /// The turn asked in, as far as it is written
+    Turn,
+    /// The turn asked in, once the record has ended it and begun no other
+    /// since ([`reply_when_over`])
+    Over,
+    /// The turn asked in and those its own work woke the tab for after it,
+    /// up to the next words given it, once the last of them has ended: the
+    /// answer of a tab that has said something so far ([`Ask::so_far`])
+    On,
+}
+
+impl Look {
+    /// How many things said are read back for it
+    fn turns(self) -> usize {
+        match self {
+            Look::On => ON_TURNS,
+            Look::Turn | Look::Over => REPLY_TURNS,
+        }
+    }
+}
 
 /// The reply to `sent` in the record at `path`, but only once the record says
 /// the turn it was given in has ended in an answer ([`crate::reader::turn_end_after`]).
@@ -790,17 +846,16 @@ pub fn reply_when_over(path: &Path, sent: &str, from: u64) -> Option<String> {
 
 /// [`reply_when_over`], with a turn that failed told as such
 pub fn outcome_when_over(path: &Path, sent: &str, from: u64) -> Option<Outcome> {
-    outcome(path, sent, from, true)
+    outcome(path, sent, from, Look::Over)
 }
 
-/// What came of the turn `sent` was given in. With `over`, a reply counts only
-/// once the record has ended that turn and begun no other since (see
-/// [`reply_when_over`]); a failure counts as soon as it is written, either way
-fn outcome(path: &Path, sent: &str, from: u64, over: bool) -> Option<Outcome> {
-    let page = crate::reader::read_back(path, u64::MAX, REPLY_TURNS).ok()?;
+/// What came of the turn `sent` was given in, read as `look` says; a failure
+/// counts as soon as it is written, whichever
+fn outcome(path: &Path, sent: &str, from: u64, look: Look) -> Option<Outcome> {
+    let page = crate::reader::read_back(path, u64::MAX, look.turns()).ok()?;
     let asked = asked_in(&page, sent, from)?;
     let end = page.turns[asked].at.and_then(|begun| crate::reader::turn_end_after(path, begun));
-    decide(&page, asked, end, over, || {
+    decide(&page, asked, end, look, || {
         crate::reader::last_turn_mark(path).map(|(mark, _)| mark) == Some(crate::reader::TurnMark::Over)
     })
 }
@@ -808,12 +863,12 @@ fn outcome(path: &Path, sent: &str, from: u64, over: bool) -> Option<Outcome> {
 /// What came of the turn at `asked` in `page`, given how the record says it
 /// ended (`end`): the one reading for a record here and one on another
 /// machine. `last_over` says whether the record's last mark ends a turn,
-/// asked only on the `over` road
+/// asked only when `look` waits for that
 fn decide(
     page: &crate::reader::Page,
     asked: usize,
     end: Option<crate::reader::TurnEnd>,
-    over: bool,
+    look: Look,
     last_over: impl FnOnce() -> bool,
 ) -> Option<Outcome> {
     if let Some(end) = &end
@@ -824,7 +879,7 @@ fn decide(
     if end.as_ref().is_some_and(|e| e.stopped) {
         return Some(Outcome::Stopped);
     }
-    if over {
+    if look != Look::Turn {
         end.as_ref()?;
         // And no turn has begun since. An AI that answered, left work running
         // in the background and was woken by it is still on the job: what it
@@ -834,7 +889,10 @@ fn decide(
             return None;
         }
     }
-    reply_after(page, asked, end.map(|e| e.at)).map(Outcome::Reply)
+    // Past the turn's own end, through the turns its work woke it for: what
+    // it said last before anyone gave it words again
+    let end = if look == Look::On { None } else { end.map(|e| e.at) };
+    reply_after(page, asked, end).map(Outcome::Reply)
 }
 
 /// Whether the record shows anything said in the person's place after the
@@ -980,6 +1038,41 @@ fn answer(
         v["note"] = json!(n);
     }
     v
+}
+
+/// What the caller is told of a tab that said something while work it started
+/// goes on behind its prompt
+const WORKS_ON: &str = "the tab still has work it started running behind its prompt; this is what it has said so far, and what it says once that work is over will be passed on too";
+
+impl Ask {
+    /// The tab said `reply` as its turn ended. While work it started goes on
+    /// behind its prompt (`Tab::works_on`) that is what it has said so far:
+    /// passed on once, and the ask goes on for what it says when that work is
+    /// over -- it is told nothing more till then, so a tab woken a dozen
+    /// times by its helpers does not wake the caller a dozen times. Otherwise
+    /// it is the answer
+    fn replied(&mut self, t: Option<&Tab>, reply: &str, source: &str, same_folder: Option<bool>, note: Option<&str>) -> Step {
+        if t.is_some_and(Tab::works_on) {
+            if self.so_far.is_some() {
+                return Step::Nothing;
+            }
+            self.so_far = Some(reply.to_string());
+            return Step::Answer(answer(self, "WORKING", Some(reply), source, same_folder, Some(WORKS_ON)));
+        }
+        Step::Answer(answer(self, "DONE", Some(reply), source, same_folder, note))
+    }
+
+    /// The answer's line is settled. A tab that has said something so far
+    /// ([`Ask::so_far`]) is followed on for the rest, and the line it said
+    /// was that of what it said so far: the ask is kept, and true
+    pub fn carry_on(&mut self) -> bool {
+        if self.so_far.is_none() {
+            return false;
+        }
+        self.answered = false;
+        self.held = None;
+        true
+    }
 }
 
 /// The answer for a turn that ended in an error: the bottom of the tab's
@@ -1153,9 +1246,9 @@ pub fn step(
     // already, or the tab closed since -- and it goes to the caller at once:
     // the line is for the chat, and nobody waits on it. The ask stays for the
     // line (`line_step`)
-    if a.held.is_some() && !a.answered {
+    if let Some(held) = a.held.clone().filter(|_| !a.answered) {
         a.answered = true;
-        return Step::Answer(answer(a, "DONE", a.held.as_deref(), "record", same_folder, None));
+        return a.replied(target, &held, "record", same_folder, None);
     }
     let Some(t) = target else {
         return Step::Answer(answer(
@@ -1237,14 +1330,13 @@ pub fn step(
                 }
                 match a.outcome(t, true) {
                     Some(Outcome::Reply(reply)) => {
-                        return Step::Answer(answer(
-                            a,
-                            "DONE",
-                            Some(&reply),
+                        return a.replied(
+                            Some(t),
+                            &reply,
                             "record",
                             same_folder,
                             Some("the tab's own record says the turn ended, though its screen still looked busy"),
-                        ));
+                        );
                     }
                     Some(Outcome::Failed { error, kind }) => {
                         return Step::Answer(ended_badly(a, t, error, kind, same_folder));
@@ -1262,19 +1354,17 @@ pub fn step(
             a.seen_busy = true;
             a.quiet_since = None;
             let since = *a.background_since.get_or_insert(now);
-            if since.elapsed() >= BACKGROUND_GRACE {
-                if let Some(reply) = a.recorded(t) {
-                    return Step::Answer(answer(
-                        a,
-                        "DONE",
-                        Some(&reply),
-                        "record",
-                        same_folder,
-                        Some(
-                            "the tab still has work running in the background; this is what it has said so far",
-                        ),
-                    ));
+            if a.so_far.is_some() {
+                if !t.helpers_out() && since.elapsed() >= LEFT_RUNNING {
+                    let reply = a.recorded(t).or_else(|| a.so_far.clone());
+                    return Step::Answer(answer(a, "DONE", reply.as_deref(), "record", same_folder, Some(
+                        "work it started still runs behind its prompt, and it has said nothing more for 30 minutes; this is the last it said",
+                    )));
                 }
+            } else if since.elapsed() >= BACKGROUND_GRACE
+                && let Some(reply) = a.recorded(t)
+            {
+                return a.replied(Some(t), &reply, "record", same_folder, None);
             }
         }
         TabState::Question => {
@@ -1404,7 +1494,8 @@ pub fn step(
                     Source::Here(_) => a.record_look.is_none_or(|at| at.elapsed() >= RECORD_SETTLED_AGAIN),
                     _ => true,
                 };
-                if since.elapsed() >= SETTLE && due {
+                let settle = if a.so_far.is_some() { SO_FAR_SETTLE } else { SETTLE };
+                if since.elapsed() >= settle && due {
                     if matches!(source, Source::Here(_)) {
                         a.record_look = Some(now);
                     }
@@ -1413,7 +1504,7 @@ pub fn step(
                     // which may not be there
                     match a.outcome(t, false) {
                         Some(Outcome::Reply(reply)) => {
-                            return Step::Answer(answer(a, "DONE", Some(&reply), "record", same_folder, None));
+                            return a.replied(Some(t), &reply, "record", same_folder, None);
                         }
                         Some(Outcome::Failed { error, kind }) => {
                             return Step::Answer(ended_badly(a, t, error, kind, same_folder));
@@ -1436,6 +1527,19 @@ pub fn step(
                 // where the ask cannot be found at all says nothing for the
                 // screen, and the screen is not taken then either
                 if since.elapsed() >= RECORD_GIVES_NONE {
+                    // Said something so far, and its work is over: what it
+                    // said after cannot be read, and the caller is told so
+                    // rather than kept waiting for it
+                    if let Some(so_far) = a.so_far.clone() {
+                        return Step::Answer(answer(
+                            a,
+                            "DONE",
+                            Some(&so_far),
+                            "record",
+                            same_folder,
+                            Some("the work behind the tab's prompt is over, and nothing it said after this could be read from its record; ask it if you need more"),
+                        ));
+                    }
                     let record_says = match &source {
                         Source::Here(path) => moved_on_in(path, &a.text, a.record_from.unwrap_or(0)),
                         _ => a.far.moved_on.map(|m| m.person || m.app),
@@ -1462,7 +1566,8 @@ pub fn step(
                 }
             }
             Source::Screen => {
-                if since.elapsed() >= SCREEN_SETTLE {
+                let settle = if a.so_far.is_some() { SO_FAR_SETTLE } else { SCREEN_SETTLE };
+                if since.elapsed() >= settle {
                     let reply = t
                         .last_response
                         .clone()
@@ -1951,6 +2056,146 @@ mod tests {
         lines.push(turn_end);
         let done = record(&lines);
         assert!(reply_when_over(done.path(), q, 0).is_some_and(|r| r.ends_with("memo-3 says ZETA-9")));
+    }
+
+    /// Measured 2026-10-19: asked for a long piece of work, an AI ended its
+    /// turn with two helpers out ("waiting for verify and the review"), was
+    /// woken as each came back, and gave its report 40 minutes on. The
+    /// report is in the turns its helpers woke it for, and is read once the
+    /// last of them has ended
+    #[test]
+    fn the_answer_of_a_tab_that_worked_on_is_what_it_said_last() {
+        let q = "Make the console run on the staging stack, then open a PR.";
+        let turn_end = json!({"type": "system", "subtype": "turn_duration", "durationMs": 15000});
+        let ended = |text: &str| json!({"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}});
+        let woken = json!({"type": "user", "message": {"role": "user", "content": "<task-notification>\n<task-id>a1</task-id>\n</task-notification>"}});
+        let mut lines = vec![
+            said("user", q),
+            ended("Waiting for verify and the review; I will go on when they end."),
+            turn_end.clone(),
+            woken.clone(),
+            ended("Verify passed; the review is still going."),
+            turn_end.clone(),
+            woken,
+        ];
+        let going = record(&lines);
+        assert!(matches!(outcome(going.path(), q, 0, Look::Turn), Some(Outcome::Reply(_))), "the turn asked in has ended");
+        assert_eq!(outcome(going.path(), q, 0, Look::On), None, "a turn it was woken for is going on");
+        lines.push(ended("Done: the console runs on staging, and PR #12 is open."));
+        lines.push(turn_end);
+        let done = record(&lines);
+        let reply = |path: &Path| match outcome(path, q, 0, Look::On) {
+            Some(Outcome::Reply(r)) => r,
+            other => panic!("{other:?}"),
+        };
+        assert!(reply(done.path()).ends_with("Done: the console runs on staging, and PR #12 is open."), "{}", reply(done.path()));
+        // Words given it after are somebody else's turn, and their answer
+        // is not this one's
+        lines.push(said("user", "Thanks. Now tidy the README."));
+        lines.push(ended("The README is tidied."));
+        lines.push(json!({"type": "system", "subtype": "turn_duration", "durationMs": 900}));
+        let later = record(&lines);
+        let said = reply(later.path());
+        assert!(said.ends_with("PR #12 is open.") && !said.contains("README"), "{said}");
+    }
+
+    /// The same in a record as Claude Code 2.1.303 writes it (measured
+    /// 2026-10-19): beside each message it keeps a copy of what it sent the
+    /// model, the person's words and the stop hook's reason among them. Read
+    /// as said, the hook's reason was the person speaking, and the answer
+    /// ended at the words said so far
+    #[test]
+    fn what_was_sent_to_the_model_does_not_cut_the_answer_short() {
+        let q = "Start one helper in the background, then report what it found.";
+        let ended = |text: &str| json!({"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}});
+        let sent = |content: Value| json!({"type": "api-request-blob", "sessionId": "s", "hash": "h", "message": {"role": "user", "content": content}});
+        let reason = "Stop hook feedback:
+Your full answer is kept separately. Reply with only one short line.";
+        let rec = record(&[
+            said("user", q),
+            sent(json!([{"type": "text", "text": q}])),
+            ended("WAITING FOR THE HELPER"),
+            sent(json!(reason)),
+            json!({"type": "user", "isMeta": true, "message": {"role": "user", "content": reason}}),
+            ended("Waiting on one helper."),
+            json!({"type": "system", "subtype": "turn_duration", "durationMs": 4000}),
+            json!({"type": "user", "message": {"role": "user", "content": "<task-notification>
+<task-id>a1</task-id>
+<result>K7</result>
+</task-notification>"}}),
+            ended("FINAL: K7"),
+            json!({"type": "system", "subtype": "turn_duration", "durationMs": 3000}),
+        ]);
+        let Some(Outcome::Reply(reply)) = outcome(rec.path(), q, 0, Look::On) else { panic!("no answer") };
+        assert!(reply.ends_with("FINAL: K7"), "{reply}");
+    }
+
+    /// The same, as the caller hears it: what was said while the helpers
+    /// were out is passed on once as said so far, nothing more while they
+    /// are, and the ask goes on past its line for the answer at the end
+    #[test]
+    fn a_tab_with_work_going_on_is_followed_to_its_end() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Busy;
+        t.helper_says("a1", true);
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("Waiting for verify and the review.", 80), Hear::Hold(_)));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("what it said so far was kept back") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("WORKING"), Some("Waiting for verify and the review.")));
+        assert_eq!(a.so_far.as_deref(), Some("Waiting for verify and the review."));
+        // Its line said, and settled: the ask is kept, for what comes after
+        assert_eq!(a.hear_stop("Two checks still out.", 80), Hear::Line("Two checks still out.".into()));
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
+        assert!(a.carry_on(), "the ask was let go of at its line");
+        a.phase = Phase::Deliver;
+        // Woken by its helpers and back at rest with one still out: the caller
+        // is not told again
+        for state in [TabState::Busy, TabState::Background] {
+            t.state = state;
+            assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "{state:?}");
+        }
+        // All of it back, and the tab at rest: that is the answer
+        t.helper_says("a1", false);
+        t.state = TabState::Done;
+        t.last_response = Some("Done: PR #12 is open.".into());
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "not settled yet");
+        a.quiet_since = Some(Instant::now() - SCREEN_SETTLE);
+        assert!(
+            matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing),
+            "a helper back wakes its AI a moment after, and the tab reads as finished in between"
+        );
+        a.quiet_since = Some(Instant::now() - SO_FAR_SETTLE);
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the end was not passed on") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("Done: PR #12 is open.")));
+        // A tab with nothing going on behind its prompt answers as before
+        let mut t = Tab::spawn("finch".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Busy;
+        let mut a = sent_ask();
+        assert!(matches!(a.hear_stop("The memo says ABC.", 80), Hear::Hold(_)));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!() };
+        assert_eq!(v["state"].as_str(), Some("DONE"));
+        assert!(!a.carry_on(), "an answer that is the answer lets the ask go at its line");
+    }
+
+    /// A helper says when it is back and is waited for however long; a
+    /// command left running may be a server that never ends, and the caller
+    /// is not kept waiting on it for good
+    #[test]
+    fn work_left_running_is_not_waited_on_for_good() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Background;
+        let mut a = sent_ask();
+        a.phase = Phase::Deliver;
+        a.so_far = Some("The dev server is up; checking the pages.".into());
+        a.background_since = Some(Instant::now() - LEFT_RUNNING);
+        t.helper_says("a1", true);
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "a helper out is waited for");
+        t.helper_says("a1", false);
+        a.background_since = Some(Instant::now() - LEFT_RUNNING / 2);
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing), "not yet");
+        a.background_since = Some(Instant::now() - LEFT_RUNNING);
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("waited on for good") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The dev server is up; checking the pages.")));
     }
 
     /// A record with no marks (Gemini) is never answered from here: the

@@ -58,9 +58,9 @@ them, with their kind):
 Each waits for the tab to finish and prints the result. Read the last line:
 
 - `[shikisha] DONE` -- the result is above it. Act on it.
-- `[shikisha] STILL WORKING` -- it has not finished. End your turn now; when it
-  is done you are told so in this tab, `shikisha inbox` gives you the result,
-  and you carry on then.
+- `[shikisha] STILL WORKING` -- it has not finished; what it has said so far
+  may be above. End your turn now; when it is done you are told so in this
+  tab, `shikisha inbox` gives you the result, and you carry on then.
 - `[shikisha] WAITING` -- that tab is waiting for a person to approve or
   choose something. Tell the person.
 - `[shikisha] NOT DONE` -- the reason is above it.

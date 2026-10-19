@@ -5751,6 +5751,20 @@ impl Tab {
         self.aside.replace(running, Instant::now());
     }
 
+    /// Whether work the AI started goes on behind its prompt, by its own
+    /// word (a helper, a command it left running) or by its tab's processes
+    /// once its turn is over. What it says while that runs is not all it
+    /// will say
+    pub fn works_on(&self) -> bool {
+        self.state == TabState::Background || self.aside.any(Instant::now())
+    }
+
+    /// Whether helpers of the AI's are out, by its own word: work that says
+    /// when it is back, unlike a command left running
+    pub fn helpers_out(&self) -> bool {
+        self.aside.helping(Instant::now())
+    }
+
     /// What this tab has to take from one report of its CLI's hook, beyond the
     /// conversation's id and its prompt: its state, and what runs beside it.
     /// The one place both roads a report comes by -- the pipe from a program
