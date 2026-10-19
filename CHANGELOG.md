@@ -8,6 +8,18 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Changed
+- **The reader (📖) is on the window too, not only on a phone.** A full-screen
+  AI CLI keeps no scrollback, so a long answer cannot be selected past the
+  rows on the screen. 📖 stands over the right edge of every AI tab whose CLI
+  keeps a record of the conversation, in the same place on the window and on
+  a phone, and shows the conversation as text that can be scrolled, selected
+  and copied (selecting copies it, as on the terminal). On the window it
+  covers only the pane it reads, and Esc closes it. It reads the tab's earlier
+  conversations too, the way the conversation panel does, and a tab whose
+  conversation has not been identified yet no longer says it cannot be read.
+  A shell has no 📖 on a phone any more.
+
 ## [0.28.1] - 2026-10-14
 
 0.28.0 came out for Linux only. On Windows, this is the first version with

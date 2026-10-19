@@ -5125,19 +5125,6 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             cwd: tab_cwd_abs(t),
                             machine: t.machine(),
                             remote_cwd: t.remote_cwd().unwrap_or_default().to_string(),
-                            // Two strings, no filesystem: this runs every tick,
-                            // and finding the record means walking a folder.
-                            // The reader resolves the path when it is asked
-                            record_id: t
-                                .session
-                                .as_ref()
-                                .map(|s| s.id.clone())
-                                .unwrap_or_default(),
-                            record_glob: t
-                                .resume
-                                .as_ref()
-                                .and_then(|r| r.verify.clone())
-                                .unwrap_or_default(),
                         })
                         .collect(),
                 };
@@ -5729,7 +5716,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let _ = call.reply.send(Ok(serde_json::json!(list)));
                         continue;
                     }
-                    // Another tab's conversation, as the phone's reader reads it:
+                    // Another tab's conversation, as the reader (📖) reads it:
                     // from its CLI's own record, here or on the machine the tab
                     // runs on -- and so answered from a thread, since a record over
                     // there is a round trip or several away

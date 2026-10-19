@@ -3921,7 +3921,7 @@ impl Tab {
     }
 
     /// Where this tab's CLI keeps its record of the conversation, on this PC
-    /// or on the machine the tab runs on -- the record the phone's reader reads
+    /// or on the machine the tab runs on -- the record the reader (📖) reads
     pub fn record_at(&self) -> Option<crate::reader::Record> {
         let id = &self.session.as_ref()?.id;
         let glob = self.resume.as_ref()?.verify.as_deref()?;

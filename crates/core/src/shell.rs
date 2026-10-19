@@ -4313,15 +4313,20 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
       calc(100% - var(--toast-max) / 2 - 12px)); }
 {{TOAST_CSS}}
 
-  /* ── Remote history paging (phone only) ──────────────────────────────
-     A phone can't scroll a full-screen TUI smoothly over the network, so
-     instead of continuous swipe it pages one screenful at a time with two
-     buttons — the frame just updates in place (no slide). Hidden by default;
-     shown only on a terminal tab, remote. */
+  /* ── The buttons over the right edge of a terminal ─────────────────────
+     📖 opens the reader, on an AI's tab, wherever the board is looked at --
+     one way in, in one place, on the window and on the phone alike.
+     Under it, on a phone only, the history pager: a phone can't scroll a
+     full-screen TUI smoothly over the network, so instead of continuous
+     swipe it pages one screenful at a time with two buttons — the frame just
+     updates in place (no slide). A window has its wheel for that. */
   #pageui { position:absolute; right:calc(var(--fr) + 12px);
     top:calc(var(--fy) + (100% - var(--fy) - var(--fb)) / 2); transform:translateY(-50%);
     display:none; flex-direction:column; align-items:center; gap:var(--s3); z-index:8; }
   #pageui.on { display:flex; }
+  #pageui:not(.paging) :is(#pageUp, #pageCount, #pageDown), #readOpen[hidden] { display:none; }
+  /* Reading, the reader stands where they were */
+  body.reading #pageui { display:none; }
   /* Put away after a few seconds untouched, so the column they sit on can be
      read; any touch on the screen brings them back. In one step, not a fade:
      nothing in the window moves smoothly (STYLEGUIDE §6) */
@@ -4340,21 +4345,28 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-top-color:var(--brand); border-radius:50%; animation:pgspin .7s linear infinite; }
   @keyframes pgspin { to { transform:rotate(360deg); } }
 
-  /* ── Reader (phone only) ───────────────────────────────────────────────
+  /* ── Reader ────────────────────────────────────────────────────────────
      The answer as words, not as a grid of cells.
 
-     Paging the relay cannot be made smooth, and not because the link is slow:
-     a full-screen TUI keeps no scrollback, so every page turn asks the CLI to
-     scroll ITSELF and waits for a fresh screen — a round trip per third of a
-     screen, on text already broken to the terminal's width and impossible to
-     select. Here the phone holds the words instead. Scrolling is then the
-     browser's own (a flick travels), lines re-wrap to the width, and anything
-     on the page can be selected and copied.
+     A full-screen TUI keeps no scrollback. What has scrolled out of its
+     screen is gone from ours, so a selection on the terminal cannot reach
+     past the rows in view -- at the window as much as on a phone, where
+     every page turn also asks the CLI to scroll ITSELF and waits for a fresh
+     screen, on text already broken to the terminal's width. Here the board
+     holds the words instead. Scrolling is then the browser's own (a flick
+     travels), lines re-wrap to the width, and anything on the page can be
+     selected and copied.
 
      Which is why this is a plain document and not a second terminal: the one
-     thing it must never become is another grid. */
-  #reader { position:fixed; inset:0; z-index:30; display:none; flex-direction:column;
+     thing it must never become is another grid.
+
+     It stands where the terminal it reads stands, over that pane alone: the
+     panes beside it go on showing what they show. On a phone the pane is the
+     screen, so there it takes the whole of it (.full), the bars included. */
+  #reader { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
+    bottom:calc(var(--fb) + var(--dock, 0px)); z-index:30; display:none; flex-direction:column;
     background:var(--bg); color:var(--text); }
+  #reader.full { position:fixed; inset:0; }
   #reader.on { display:flex; }
   #rhead { flex:0 0 auto; display:flex; align-items:center; gap:var(--s3); padding:10px 12px;
     padding-top:calc(10px + env(safe-area-inset-top)); background:var(--panel);
@@ -4369,6 +4381,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     padding:16px 16px calc(32px + env(safe-area-inset-bottom));
     font-size:16px; line-height:1.75;
     user-select:text; -webkit-user-select:text; }
+  /* Given the keys when it opens, so the arrows and Page Up/Down scroll it.
+     The whole document is what has them; a ring around all of it says nothing */
+  #rbody:focus { outline:none; }
   /* The one place in this app where text is NOT monospace: this is prose to be
      read, and a proportional face fits more of it on a phone's width */
   #rbody, #rhead, #convopanel .clist { font-family:system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif; }
@@ -4399,15 +4414,18 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .rturn th { background:var(--panel); font-weight:700; white-space:nowrap; }
   /* The drawer handle is fixed to the top-left corner and would sit on top of
      the reader's own heading. While reading there is no board to reach for */
-  body.reading #hamburger, body.reading #sidebtn { display:none; }
+  body.reading:has(#reader.full) :is(#hamburger, #sidebtn) { display:none; }
   /* The way back into the past, at the head of the document — which is where
      the conversation carries on upward. Full width so a thumb cannot miss it,
      and quiet, because it is not the thing you came here to read */
-  #rearlier { display:none; width:100%; margin:0 0 var(--s5); padding:11px 12px;
+  #rearlier, .ragain { display:none; width:100%; margin:0 0 var(--s5); padding:11px 12px;
     border:1px dashed var(--line); border-radius:var(--r-ctl); background:transparent;
     color:var(--dim); font:inherit; font-size:13px; cursor:pointer;
     touch-action:manipulation; }
   #rearlier:disabled { opacity:.6; }
+  /* Reading again after a reading that failed: the same quiet way as reading
+     further back, under the line that says what went wrong */
+  .ragain { display:block; margin:var(--s3) 0 0; }
   #rfoot { flex:0 0 auto; padding:8px 12px calc(8px + env(safe-area-inset-bottom));
     border-top:1px solid var(--line); color:var(--dim); font-size:12px; display:none; }
   #rfoot.on { display:block; }
@@ -4590,6 +4608,19 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     <div id="failpanel" hidden></div>
     <!-- A tab with nowhere to work stands here too, with the folder to give it -->
     <div id="holdpanel" hidden></div>
+    <!-- The reader: what was said on this tab, as text you can scroll and copy.
+         Its own layer rather than a pane, because it covers the terminal and
+         gives it straight back — nothing about the session changes while it is up.
+         In here with the panels so it stands over the pane in front -->
+    <div id="reader">
+      <div id="rhead">
+        <div id="rname"></div>
+        <button id="rclose" aria-label="close">✕</button>
+      </div>
+      <div id="rbody" tabindex="-1"></div>
+      <div id="rfoot"></div>
+      <button id="rmore"></button>
+    </div>
     <div id="issuespanel" hidden></div>
     <!-- The working folder is not on this machine, so nothing was started and
          this stands where the terminal would. It says the one thing that
@@ -4841,18 +4872,6 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   <div id="cfgwrap" hidden></div>
   <div id="guidewrap" hidden></div>
   <!-- Somewhere else to work. The same list on the window and on a phone -->
-  <!-- The reader: what was said on this tab, as text you can scroll and copy.
-       Its own layer rather than a pane, because it covers the terminal and
-       gives it straight back — nothing about the session changes while it is up -->
-  <div id="reader">
-    <div id="rhead">
-      <div id="rname"></div>
-      <button id="rclose" aria-label="close">✕</button>
-    </div>
-    <div id="rbody"></div>
-    <div id="rfoot"></div>
-    <button id="rmore"></button>
-  </div>
   <div id="status"></div>
 </div>
 <script>
@@ -14396,27 +14415,28 @@ window.__state = function (json) {
   // Window only: over a browser tab, reuse the sub-input bar (composer) — actions
   // only, no target — and reserve room so the native browser doesn't hide it.
   syncBrowserDock();
-  // Page buttons: only on a phone, only over a screen a person reads page by
-  // page. A model pane's conversation arrives whole, so it has no pages.
+  // The buttons over a terminal's right edge. A model pane's conversation
+  // arrives whole, so it has neither pages nor a record to read back.
   const pager = document.getElementById("pageui");
   if (pager) {
-    // A phone's, not a laptop's: a browser with a mouse wheel scrolls like the
-    // window does, and two round buttons in the middle of a pane covered the
-    // terminal they were meant to page
-    const showPager = !OURS && phoneWidth() && !screen.hidden && !web && !onModelTab();
+    const term = !screen.hidden && !web && !onModelTab();
+    // 📖 on every AI tab whose CLI keeps a record of what was said, wherever
+    // the board is looked at: one way in, the same on the window and the
+    // phone. Asked of the CLI rather than of this conversation, so the button
+    // does not come and go while the conversation is being looked up
+    const showRead = term && !!(seen && seen.kind === "pty" && seen.ai && seen.readable);
+    // ▲▼ are a phone's, not a laptop's: a browser with a mouse wheel scrolls
+    // like the window does, and two round buttons in the middle of a pane
+    // covered the terminal they were meant to page
+    const showPager = !OURS && phoneWidth() && term;
     const wasShown = pager.classList.contains("on");
-    pager.classList.toggle("on", showPager);
+    pager.classList.toggle("on", showRead || showPager);
+    pager.classList.toggle("paging", showPager);
+    document.getElementById("readOpen").hidden = !showRead;
     if (!showPager) pgReset();
+    if (!showRead && !showPager) pgIdleReset();
     // Arriving on a terminal tab shows them, and the idle count starts there
     else if (!wasShown) pgWake();
-    // Keep 📖 in the same place on every terminal tab. Whether the app has
-    // identified this conversation can change after the tab appears; hiding
-    // the button makes that delay (or a failed lookup) look like lost UI.
-    const openRead = document.getElementById("readOpen");
-    if (openRead) {
-      openRead.style.display = showPager ? "flex" : "none";
-      openRead.title = T["tui.read.open"] || "";
-    }
   }
   rdOnState();
   // ...and it goes away when there is not. INDEX and the settings form cover
@@ -17502,6 +17522,8 @@ function convoMerge(fresh, older) {
 }
 window.__convo = function (d) {
   if (!d || !d.act) return;
+  // The reader asks down this line too (rdAsk), about the same tab
+  if (rdTake(d)) return;
   if (d.panel === "confer") { cfGot(d); return; }
   if (d.panel === "vault") { allGot(d); return; }
   if (d.panel !== CV.panel) return;
@@ -17674,7 +17696,7 @@ function convoEventText(r) {
 // -- the rows -----------------------------------------------------------------
 
 // One thing said. Drawn with the reader's own parts, so a thing said looks the
-// same here, in the phone's reader and in a conversation found by the search
+// same here, in the reader (📖) and in a conversation found by the search
 function convoSay(r) {
   const box = el("div", {class: "rturn " + (r.who === "ai" ? "ai" : "you") + (convoKind(r) === "aiin" ? " aiin" : ""),
     "data-key": convoKey(r)});
@@ -19392,7 +19414,9 @@ let pgPending = 0, pgTimer = 0, pgWaiting = false, pgWaitTimer = 0;
 function pgReset() {
   pgPending = 0; pgWaiting = false; clearTimeout(pgTimer); clearTimeout(pgWaitTimer);
   const c = document.getElementById("pageCount"); if (c) c.textContent = "";
-  // Gone with the pager, so it comes back awake rather than already put away
+}
+// Gone with the buttons, so they come back awake rather than already put away
+function pgIdleReset() {
   clearTimeout(pgIdleTimer);
   const p = document.getElementById("pageui"); if (p) p.classList.remove("idle");
 }
@@ -19425,6 +19449,16 @@ function pgSleep() {
 }
 // Capture, so a handler below that stops the touch cannot keep it from here
 document.addEventListener("pointerdown", pgWake, { capture: true, passive: true });
+// With a mouse, moving it is that touch: the hand comes back to the pane before
+// anything is pressed. Taken a few times a second rather than on every pixel
+// it crosses -- well inside the time the buttons stay up, so none is missed
+const PAGER_MOVE_MS = 250;
+let pgMovedAt = -Infinity;
+document.addEventListener("pointermove", e => {
+  if (e.pointerType !== "mouse" || e.timeStamp - pgMovedAt < PAGER_MOVE_MS) return;
+  pgMovedAt = e.timeStamp;
+  pgWake();
+}, { capture: true, passive: true });
 // The little indicator between the buttons: the pending count while you tap,
 // then a spinner from the moment a move fires until the new screen lands. On a
 // good link the spinner flashes for a fraction of a second; on a slow one it
@@ -19446,7 +19480,7 @@ function pgArrived() {
 // flurry of taps becomes one move of N pages instead of a stutter of round
 // trips. dir +1 = older (into the past), -1 = newer (toward the present).
 function pageBy(dir) {
-  if (!document.getElementById("pageui").classList.contains("on")) return;
+  if (!document.getElementById("pageui").classList.contains("paging")) return;
   // Reviewing history needs the whole screen — put the soft keyboard away
   // (the tap-to-focus handlers already skip the buttons, so it stays away).
   if (REMOTE && kbd) kbd.blur();
@@ -19619,18 +19653,26 @@ function dgEnd() {
   dgCoast = requestAnimationFrame(step);
 }
 
-// ── Reader (phone only) ──────────────────────────────────────────────
+// ── Reader ───────────────────────────────────────────────────────────
 // The words of this tab's conversation, as a document. Where they come from
 // and why they cannot come from the screen is written at the top of reader.rs;
-// the short of it is that a full-screen TUI keeps no scrollback, so the pager
-// above does not scroll our copy of anything — it asks the CLI to scroll
-// itself, one round trip at a time, over text already broken to the terminal's
-// width. Here the phone holds the text, so scrolling is the browser's own.
+// the short of it is that a full-screen TUI keeps no scrollback, so what has
+// scrolled out of its screen cannot be selected on the terminal at all, and
+// the pager above does not scroll our copy of anything — it asks the CLI to
+// scroll itself, one round trip at a time, over text already broken to the
+// terminal's width. Here the board holds the text, so scrolling and selecting
+// are the browser's own.
 //
 // Nothing in here talks to the PC while you read. That is the whole point: a
 // flick has to travel, and a flick that must ask a PC across the house how far
 // it went never will.
-let rdTab = 0, rdFrom = 0, rdMore = false, rdLoading = false, rdWasBusy = false;
+//
+// What is read comes down the same line as the column's conversation panel
+// (kind "convo", act "page"): the window and the phone read a conversation
+// one way, with the earlier conversations of the tab behind the current one.
+// The reader keeps only what was said; the work in between and the events
+// are the panel's to show.
+let rdTab = 0, rdKey = "", rdFrom = null, rdMore = false, rdLoading = false, rdWasBusy = false;
 // The newest page exactly as it was last put on screen, and whether a look for
 // something newer is already out. What "a reply arrived" is held against: the
 // record is the only thing that knows whether anything was actually said
@@ -19830,22 +19872,61 @@ function rdRelabel() {
   }
 }
 
-function rdNote(text) {
+// A line in place of the document. With `again`, the reading failed and can
+// simply be asked for once more: the way to that is put under the words
+function rdNote(text, again) {
   const body = rdBodyEl();
   body.textContent = "";
   body.append(el("div", {class:"rwho"}, text));
+  if (again) body.append(el("button", {class:"ragain", onclick: () => rdShow()}, T["tui.read.again"] || ""));
 }
 
 // The opening page is deliberately small: the last exchange, and nothing else.
 // Walking back is a tap, and each tap brings a handful
 const RD_FIRST = 2, RD_MORE = 6;
 
-async function rdAsk(before, want) {
-  const q = "api/read?t=" + encodeURIComponent(TOKEN) + "&tab=" + rdTab + "&want=" + want
-    + (before != null ? "&before=" + before : "");
-  const r = await fetch(q, {cache:"no-store"});
-  if (!r.ok) throw new Error("status " + r.status);
-  return await r.json();
+// The questions out, by their request, each with what to do with its answer.
+// An answer is broadcast to the window and every viewer; only the asker's own
+// request is found here
+const rdAsked = new Map();
+// Named the way the panel names its requests (convoRequest), which keeps the
+// newest of each kind here; the reader tells its answers apart by rdAsked
+const rdSlots = {};
+// How long an answer is waited for before the reader says it did not come.
+// The app always answers -- with the words, or with why not -- so this is for
+// an answer lost on the way (a phone's line dropped and came back). Longer
+// than reading a long record on another machine over a slow link takes
+const RD_PATIENCE_MS = 60000;
+
+// One page of the conversation: the newest, or the one before `older` (the
+// place the page before this one reached back to). What was said, oldest
+// first, and the place to read on back from when there is more
+function rdAsk(older, want) {
+  return new Promise((done, fail) => {
+    const req = convoRequest(rdSlots, older ? "older" : "newest");
+    const timer = setTimeout(() => {
+      if (rdAsked.delete(req)) fail(new Error(T["tui.read.lost"] || ""));
+    }, RD_PATIENCE_MS);
+    rdAsked.set(req, d => {
+      clearTimeout(timer);
+      if (!d.ok) { fail(new Error(d.error || "")); return; }
+      const turns = (d.rows || []).filter(r => r.k === "say")
+        .map(r => ({who: r.who, text: r.text})).reverse();
+      done({turns, from: d.older || null, more: !!d.older});
+    });
+    const args = {want, req, viewer: convoViewer};
+    if (older) args.older = older;
+    send({kind: "convo", panel: rdKey, act: "page", args});
+  });
+}
+// An answer down the conversation line that is one of the reader's: handed to
+// whoever asked, and nothing else is done with it
+function rdTake(d) {
+  const got = d && rdAsked.get(d.req);
+  if (!got) return false;
+  rdAsked.delete(d.req);
+  got(d);
+  return true;
 }
 
 // One page, written down as one string, so two of them can be compared. What
@@ -19885,9 +19966,11 @@ async function rdOlder() {
   rdLoading = true;
   rdEarlierState();
   const body = rdBodyEl();
+  const gen = rdGen;
   try {
     const j = await rdAsk(rdFrom, RD_MORE);
-    if (!j.ok) { rdMore = false; return false; }
+    // Closed, or opened again on another tab, while this was on its way
+    if (gen !== rdGen) return false;
     rdFrom = j.from; rdMore = !!j.more;
     if (!j.turns || !j.turns.length) return rdMore;
     const frag = document.createDocumentFragment();
@@ -19908,23 +19991,36 @@ async function rdOlder() {
   } catch (e) {
     return false;
   } finally {
-    rdLoading = false;
-    rdEarlierState();
+    if (gen === rdGen) {
+      rdLoading = false;
+      rdEarlierState();
+    }
   }
 }
 
+// Each opening and closing of the reader. An answer asked for under an
+// earlier one is about a page no longer on screen, and is let fall
+let rdGen = 0;
+
 async function rdShow() {
   const tab = activeTab();
-  if (!REMOTE || !tab) return;
+  if (!tab) return;
+  const gen = ++rdGen;
   rdTab = tab.index;
-  rdFrom = 0; rdMore = false; rdWasBusy = false; rdSeen = "";
+  rdKey = convoTabKey(tab);
+  rdFrom = null; rdMore = false; rdLoading = false; rdWasBusy = false; rdSeen = "";
   document.getElementById("rname").textContent = tab.name || "";
   document.getElementById("rmore").classList.remove("on");
+  // On a phone the pane is the whole screen, and the reader takes all of it
+  rdPanel().classList.toggle("full", REMOTE && phoneWidth());
   rdPanel().classList.add("on");
   document.body.classList.add("reading");
   // Reading is reading: put the keyboard away and stop the screen relay's
-  // gestures from being aimed at a tab nobody is looking at
+  // gestures from being aimed at a tab nobody is looking at. Where there are
+  // keys, they go to the document: the arrows and Page Up/Down scroll it, and
+  // nothing typed reaches the terminal hidden under it
   if (kbd) kbd.blur();
+  if (!REMOTE || typingDirect()) rdBodyEl().focus({preventScroll: true});
   if (!tab.readable) {
     rdNote(T["tui.read.unavailable"] || "");
     return;
@@ -19932,7 +20028,8 @@ async function rdShow() {
   rdNote(T["tui.read.loading"] || "…");
   try {
     const j = await rdAsk(null, RD_FIRST);
-    if (!j.ok || !j.turns || !j.turns.length) {
+    if (gen !== rdGen) return;
+    if (!j.turns.length) {
       rdNote(T["tui.read.empty"] || "");
       return;
     }
@@ -19946,16 +20043,20 @@ async function rdShow() {
     rdRelabel();
     rdToLatest();
   } catch (e) {
-    rdNote(String((e && e.message) || e));
+    if (gen === rdGen) rdNote(String((e && e.message) || e), true);
   }
 }
 
 function rdHide() {
+  if (!rdIsOpen()) return;
+  rdGen++;
   rdPanel().classList.remove("on");
   document.body.classList.remove("reading");
   rdBodyEl().textContent = "";
   document.getElementById("rfoot").classList.remove("on");
   document.getElementById("rmore").classList.remove("on");
+  // The caret goes back where it was before the reader took the keys
+  focus();
 }
 
 // Whether anything has been said since the page on screen was read, and the
@@ -19970,12 +20071,13 @@ function rdHide() {
 async function rdLookForAnswer(tries) {
   if (rdLooking) return;
   rdLooking = true;
+  const gen = rdGen;
   try {
     for (let i = 0; i < tries; i++) {
-      if (!rdIsOpen()) return;
+      if (gen !== rdGen) return;
       const j = await rdAsk(null, RD_FIRST);
-      if (!rdIsOpen()) return;
-      if (j && j.ok && j.turns && j.turns.length && rdSig(j.turns) !== rdSeen) {
+      if (gen !== rdGen) return;
+      if (j.turns.length && rdSig(j.turns) !== rdSeen) {
         const more = document.getElementById("rmore");
         more.textContent = T["tui.read.arrived"] || "";
         more.classList.add("on");
@@ -19999,6 +20101,9 @@ function rdOnState() {
   // The reader belongs to the tab it was opened from. Follow a tab switch and
   // it would quietly show somebody else's conversation under the same heading
   if (S && S.active !== rdTab) { rdHide(); return; }
+  // ...and to the pane it was opened over. INDEX and the settings form are not
+  // panes, and the reader is not to be left standing on top of them
+  if (covering()) { rdHide(); return; }
   const tab = (S && S.tabs) ? S.tabs.find(t => t.index === rdTab) : null;
   if (!tab || !tab.readable) return;
   const busy = !!(tab && (tab.state === "BUSY" || tab.busy));
@@ -20009,9 +20114,25 @@ function rdOnState() {
   rdWasBusy = busy;
 }
 
-document.getElementById("readOpen").addEventListener("click", () => rdShow());
-document.getElementById("rclose").addEventListener("click", () => rdHide());
+{
+  const open = document.getElementById("readOpen");
+  open.title = T["tui.read.open"] || "";
+  open.setAttribute("aria-label", T["tui.read.open"] || "");
+  open.addEventListener("click", () => rdShow());
+  const shut = document.getElementById("rclose");
+  shut.title = T["tui.read.close"] || "";
+  shut.setAttribute("aria-label", T["tui.read.close"] || "");
+  shut.addEventListener("click", () => rdHide());
+}
 document.getElementById("rmore").addEventListener("click", () => rdShow());
+// Esc puts the reader away where there are keys to press it with, as it puts
+// away the other things laid over a pane
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || typingIME(e) || !rdIsOpen()) return;
+  e.preventDefault();
+  e.stopPropagation();
+  rdHide();
+}, true);
 
 
 // The top bar's input needs to behave like an ordinary text field. If
@@ -20025,7 +20146,10 @@ document.getElementById("rmore").addEventListener("click", () => rdShow());
 // a list that has just dropped open closed again the moment the button came up
 const inBar = e => e.target && e.target.closest && e.target.closest("#nav, #ask, .pask, #pageui, #castdock, #composerfab, #reader, #issuespanel, #ideas");
 document.addEventListener("mouseup", e => {
-  if (inBar(e)) return;
+  // The reader is words to be taken away: what is selected in it is copied
+  // the way the terminal's is, and a press there is no press on the terminal
+  const reading = !!(e.target && e.target.closest && e.target.closest("#reader"));
+  if (inBar(e) && !reading) return;
   const s = window.getSelection();
   const t = s ? s.toString() : "";
   if (t) {
@@ -20039,6 +20163,7 @@ document.addEventListener("mouseup", e => {
     else send({kind:"copy", text:t});
     return;
   }
+  if (reading) return;
   // A press on an address or a path is the place's, and the click that
   // follows handles it -- the input bar opening under it would put the
   // keyboard over the list it brings up
@@ -31108,7 +31233,23 @@ mod tests {
             PAGE.contains("if (a && a.closest && a.closest(\"#nav\")) return;"),
             "it steals focus while typing"
         );
-        assert!(PAGE.contains("if (inBar(e)) return;"), "the terminal's key handling works inside the bar");
+        // The reader is the one thing past the bars that a release is read in:
+        // a selection there is copied, and nothing else follows
+        assert!(PAGE.contains("if (inBar(e) && !reading) return;"), "the terminal's key handling works inside the bar");
+        assert!(PAGE.contains("  if (reading) return;\n"), "a press in the reader reaches the terminal");
+    }
+
+    /// The reader (📖) is one thing on the window and on a phone: the same
+    /// button, and what it reads asked down the conversation line the column's
+    /// panel uses. A phone-only door of its own (`/api/read`) is how the window
+    /// came to have no reader at all.
+    #[test]
+    fn the_reader_is_one_way_in_on_both() {
+        assert!(!PAGE.contains("api/read"), "the reader still has a door of the phone's own");
+        assert!(PAGE.contains(r#"send({kind: "convo", panel: rdKey, act: "page", args});"#), "the reader does not ask down the conversation line");
+        assert!(PAGE.contains("if (rdTake(d)) return;"), "the reader's answers never reach it");
+        assert!(PAGE.contains("const showRead = term && !!(seen && seen.kind === \"pty\" && seen.ai && seen.readable);"),
+            "📖 is not decided the same way wherever the board is looked at");
     }
 
     /// The ball is a moving element, not a character.

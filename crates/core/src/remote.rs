@@ -46,14 +46,6 @@ pub struct RemoteTab {
     pub machine: Option<crate::elsewhere::Elsewhere>,
     #[serde(skip)]
     pub remote_cwd: String,
-    /// Which conversation, and the pattern that finds its record. Never sent:
-    /// an id names a conversation, and the phone has no use for one — it asks
-    /// by tab number and the path is resolved on this side. Kept here because
-    /// this snapshot is the only thing the request thread can see
-    #[serde(skip)]
-    pub record_id: String,
-    #[serde(skip)]
-    pub record_glob: String,
 }
 
 #[derive(Clone, Serialize, Default)]
@@ -1368,26 +1360,6 @@ fn device_name(agent: &str) -> String {
         (s, "") => s.to_string(),
         ("", b) => b.to_string(),
         (s, b) => format!("{s} · {b}"),
-    }
-}
-
-/// What the reader is told about one page of a record: the page, or that
-/// there is none yet, or why it could not be read
-fn read_answer(page: Option<std::io::Result<crate::reader::Page>>) -> serde_json::Value {
-    match page {
-        // No record yet is the ordinary state of a tab nobody has
-        // spoken to. Said plainly, so the reader can show a line
-        // instead of an error
-        None => serde_json::json!({"ok": false, "empty": true}),
-        Some(page) => match page {
-            Ok(page) => serde_json::json!({
-                "ok": true,
-                "turns": page.turns,
-                "from": page.from,
-                "more": page.more,
-            }),
-            Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
-        },
     }
 }
 
@@ -3262,46 +3234,6 @@ fn handle(
             let snap = snapshot.lock().unwrap().clone();
             req.respond(json_response(serde_json::to_value(snap)?))?;
         }
-        // The tab's conversation, as text, newest turns last. What the phone's
-        // reader shows instead of the terminal grid: a full-screen TUI keeps no
-        // scrollback, so the screen relay simply has no older text to give, and
-        // the CLI's own record is the only complete copy (reader.rs).
-        //
-        // The phone names a tab and a byte offset to read back from — never a
-        // path. Which file that is stays on this side, resolved from the id the
-        // app itself handed the CLI at launch
-        ("GET", "/api/read") => {
-            let tab: usize = query_value(req.url(), "tab").parse().unwrap_or(0);
-            let before: u64 = query_value(req.url(), "before").parse().unwrap_or(u64::MAX);
-            let want: usize = query_value(req.url(), "want")
-                .parse()
-                .unwrap_or(6)
-                .clamp(1, 40);
-            let record = snapshot
-                .lock()
-                .unwrap()
-                .tabs
-                .iter()
-                .find(|t| t.index == tab)
-                .and_then(|t| crate::reader::Record::named(&t.record_glob, &t.record_id, t.machine.clone()));
-            // A tab on another machine keeps its record there: found and read
-            // there, a piece at a time, the same walk as a record here -- and
-            // answered from a thread of its own: this one serves every request
-            // from the phone, keys included, and a record fetched over the
-            // network would hold them all until it came
-            match record {
-                Some(record) if record.is_far() => {
-                    std::thread::spawn(move || {
-                        let _ = req.respond(json_response(read_answer(record.page(before, want))));
-                    });
-                }
-                record => {
-                    let page = record.and_then(|r| r.page(before, want));
-                    req.respond(json_response(read_answer(page)))?;
-                }
-            }
-        }
-
         // A file a page saved, to the device asking for it: the download
         // list's "save to this device". Named by its line in the list, never by
         // a path, and only a line that has finished on this machine -- so what
@@ -3919,8 +3851,8 @@ fn cookie_value(req: &tiny_http::Request, name: &str) -> String {
 /// once, and the cost was silent: a route added below and not here sent the
 /// phone to the settings proxy for it, and the code that actually served it --
 /// a dozen lines away -- was never once reached.
-const OWN_VERBS: [&str; 12] = [
-    "state", "send", "auto", "intent", "attach", "read", "snip", "video", "actions", "download", "locked", "unlock",
+const OWN_VERBS: [&str; 11] = [
+    "state", "send", "auto", "intent", "attach", "snip", "video", "actions", "download", "locked", "unlock",
 ];
 
 /// Answer a viewer asking to watch as video, and remember it.
@@ -6040,7 +5972,7 @@ mod tests {
             assert!(is_settings_path(p), "{p} should proxy to settings");
         }
         for p in [
-            "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach", "/api/read",
+            "/api/state", "/api/send", "/api/auto", "/api/intent", "/api/attach",
             "/api/snip", "/api/actions", "/api/download", "/", "/shell", "/ws-state",
         ] {
             assert!(!is_settings_path(p), "{p} is the remote's own route");

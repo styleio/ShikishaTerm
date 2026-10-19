@@ -15,7 +15,7 @@
 //! there is something to say.
 //!
 //! **Where the reply comes from.** The CLI's own record of the conversation,
-//! read the way the phone's reader reads it -- not the screen, which is a
+//! read the way the reader (📖) reads it -- not the screen, which is a
 //! picture of the reply cut to the window's width and wrapped in the tool's
 //! own frame. A tab on another machine is read from the record kept there,
 //! a look at a time on a thread of its own ([`FarRead`]). A tab whose profile
@@ -333,7 +333,7 @@ fn run_output(t: &Tab, from: &RunFrom) -> (String, &'static str) {
 ///
 /// Reading it there is a round trip or several, and this is asked on the main
 /// loop, a tick at a time: so a look is sent off on a thread of its own and
-/// its answer picked up on a later tick, the way the phone's reader answers
+/// its answer picked up on a later tick, the way the reader (📖) answers
 /// from a thread of its own.
 #[derive(Default)]
 pub struct FarRead {

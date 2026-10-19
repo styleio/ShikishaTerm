@@ -2717,12 +2717,15 @@ pub struct UiState {
 
 /// Whether this tab's conversation can be read back as flowing text.
 ///
-/// True when the CLI keeps a record we know how to find and we know which
-/// conversation is this tab's — claude and codex today. It rides in the tab
-/// state rather than in the phone's own snapshot because the reader is a
-/// property of the tab, and both surfaces ask the same question of it
+/// True when the CLI keeps a record we know how to find -- claude, codex and
+/// gemini today. Not whether this tab's conversation has been identified yet:
+/// what is read is the tab's conversations as the record of conversations
+/// knows them (`convo::read`), which holds the earlier ones before the
+/// current one is found, and a tab nothing was said in reads as empty rather
+/// than as one that can never be read. A fact about the CLI, so the reader's
+/// button does not come and go while a conversation is being looked up
 fn readable(t: &crate::tab::Tab) -> bool {
-    t.session.is_some() && t.resume.as_ref().is_some_and(|r| r.verify.is_some())
+    t.resume.as_ref().is_some_and(|r| r.verify.is_some())
 }
 
 impl TabState {
