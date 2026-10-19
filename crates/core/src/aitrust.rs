@@ -475,19 +475,27 @@ while ! mkdir "$l" 2>/dev/null; do
   i=$((i+1)); [ "$i" -gt 20 ] && exit 9; sleep 0.05 2>/dev/null || sleep 1
 done"#;
 
-/// The rest of that command, with the lock held for no longer than it runs:
-/// the file must still be what was read (`$2`, in base64), else nothing is
-/// written (8) and it is read again; the new one (`$3`) is written beside it
-/// and moved over it in one step, so the CLI never reads half of one; and the
-/// lock is given back however it ends
-const FAR_SWAP: &str = r#"trap 'rmdir "$l" 2>/dev/null' EXIT INT TERM
-was=$(mktemp "${TMPDIR:-/tmp}/sk-was.XXXXXX") || exit 7
-printf '%s' "$2" | base64 -d > "$was" 2>/dev/null || { rm -f "$was"; exit 7; }
-if [ -e "$1" ]; then cmp -s "$was" "$1" || { rm -f "$was"; exit 8; }
-elif [ -s "$was" ]; then rm -f "$was"; exit 8; fi
-rm -f "$was"
-t="$1.tmp.$$"
-printf '%s' "$3" | base64 -d > "$t" && chmod 600 "$t" && mv -f "$t" "$1" || { rm -f "$t"; exit 7; }"#;
+/// How the one command that holds the lock on a server starts: what it
+/// leaves behind is cleared once, as it exits, and the lock given back only
+/// if it was taken; a signal ends it there and then, so nothing is written
+/// after the lock is gone
+const FAR_SWAP_START: &str = r#"got=
+trap 'rm -f "$2" "$3"; [ -n "$got" ] && rmdir "$l" 2>/dev/null' EXIT
+trap 'exit 130' INT TERM HUP"#;
+
+/// The rest of that command, once the lock is held: the file must still be
+/// what was read (`$2`, sent beside it before), else nothing is written (8)
+/// and it is read again; the new one (`$3`, sent beside it too) is moved over
+/// it in one step, so the CLI never reads half of one
+const FAR_SWAP: &str = r#"got=1
+if [ -e "$1" ]; then cmp -s "$2" "$1" || exit 8
+elif [ -s "$2" ]; then exit 8; fi
+chmod 600 "$3" && mv -f "$3" "$1" || exit 7"#;
+
+/// The whole command
+fn far_swap_script() -> String {
+    format!("{FAR_SWAP_START}\n{FAR_LOCK}\n{FAR_SWAP}")
+}
 
 /// What became of a swap on a server
 #[derive(Debug, PartialEq, Eq)]
@@ -497,13 +505,28 @@ enum Swap {
     Changed,
 }
 
+/// The file on a server made `now`, if it is still `was`. Both are sent as
+/// files beside it first -- a command line holds only so much -- and the
+/// command that holds the lock is a short one
 fn far_swap(host: &crate::config::HostSpec, file: &str, was: &[u8], now: &str) -> Result<Swap, String> {
-    use base64::Engine as _;
-    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
-    let script = format!("mkdir -p \"$(dirname \"$1\")\" || exit 7\n{FAR_LOCK}\n{FAR_SWAP}");
-    let quoted: Vec<String> = [file.to_string(), b64(was), b64(now.as_bytes())].iter().map(|a| crate::ssh::sh_quote(a)).collect();
-    let command = format!("sh -c {} sh {}", crate::ssh::sh_quote(&script), quoted.join(" "));
-    let ran = crate::elsewhere::exec(&there(host)?, &command, FAR_WAIT_MS).map_err(|e| format!("{e:#}"))?;
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let (was_at, now_at) = (format!("{file}.was.{}.{n}", std::process::id()), format!("{file}.new.{}.{n}", std::process::id()));
+    far_run(host, r#"mkdir -p "$(dirname "$1")""#, &[file])?;
+    let at = there(host)?;
+    let send = |to: &str, bytes: &[u8]| {
+        crate::elsewhere::files(&at, crate::ssh::FileJob::Write { to: to.into(), bytes: bytes.to_vec() }, FAR_WAIT_MS)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+    };
+    let sent = send(&was_at, was).and_then(|()| send(&now_at, now.as_bytes()));
+    if let Err(e) = sent {
+        let _ = far_run(host, r#"rm -f "$1" "$2""#, &[&was_at, &now_at]);
+        return Err(e);
+    }
+    let quoted: Vec<String> = [file, &was_at, &now_at].iter().map(|a| crate::ssh::sh_quote(a)).collect();
+    let command = format!("sh -c {} sh {}", crate::ssh::sh_quote(&far_swap_script()), quoted.join(" "));
+    let ran = crate::elsewhere::exec(&at, &command, FAR_WAIT_MS).map_err(|e| format!("{e:#}"))?;
     match ran.code {
         0 => Ok(Swap::Done),
         8 => Ok(Swap::Changed),
@@ -1039,21 +1062,33 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_server_swaps_the_file_only_if_it_is_as_read() {
-        use base64::Engine as _;
-        let b64 = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
         let home = std::fs::canonicalize(scratch("far-swap")).unwrap();
-        let file = home.join(".gemini/trustedFolders.json").display().to_string();
-        let script = format!("mkdir -p \"$(dirname \"$1\")\" || exit 7\n{FAR_LOCK}\n{FAR_SWAP}");
-        let lock = home.join(".gemini/trustedFolders.json.lock");
-        assert_eq!(sh(&script, &[&file, &b64(""), &b64("{\"a\":1}")], &home, &[]).0, 0, "no file yet, read as none");
+        let dir = home.join(".gemini");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("trustedFolders.json").display().to_string();
+        let lock = dir.join("trustedFolders.json.lock");
+        // The two versions sent beside the file first, as far_swap sends them
+        let run = |was: &str, now: &str| {
+            let (w, n) = (dir.join("t.was"), dir.join("t.new"));
+            std::fs::write(&w, was).unwrap();
+            std::fs::write(&n, now).unwrap();
+            sh(&far_swap_script(), &[&file, &w.display().to_string(), &n.display().to_string()], &home, &[]).0
+        };
+        assert_eq!(run("", "{\"a\":1}"), 0, "no file yet, read as none");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
         assert!(!lock.exists(), "the lock given back");
-        assert_eq!(sh(&script, &[&file, &b64("{}"), &b64("{\"b\":2}")], &home, &[]).0, 8, "changed since it was read");
+        assert_eq!(run("{}", "{\"b\":2}"), 8, "changed since it was read");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}", "left as it was");
         assert!(!lock.exists(), "the lock given back after a refusal too");
-        assert_eq!(sh(&script, &[&file, &b64("{\"a\":1}"), &b64("{\"c\":3}")], &home, &[]).0, 0);
+        assert_eq!(run("{\"a\":1}", "{\"c\":3}"), 0);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"c\":3}");
-        assert!(!std::fs::read_dir(home.join(".gemini")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains(".tmp.")), "nothing left beside it");
+        let left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, vec!["trustedFolders.json".to_string()], "nothing left beside it");
+        // Someone else's lock is never taken down by a run that did not get it
+        std::fs::create_dir(&lock).unwrap();
+        assert_eq!(run("{\"c\":3}", "{\"d\":4}"), 9, "not taken while another holds it");
+        assert!(lock.is_dir(), "the other's lock is left");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"c\":3}");
         let _ = std::fs::remove_dir_all(&home);
     }
 
