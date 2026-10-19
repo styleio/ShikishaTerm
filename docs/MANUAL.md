@@ -617,6 +617,13 @@ settings screen, so it cannot fall behind.
 - **What happened** — `logs/hooks.log` beside the program records every state
   change and every automation run, stamped with the seconds since the program
   started.
+- **The window froze** — when the program's work or its window does not respond
+  for 20 seconds, the program writes that down, and says for how long once it
+  responds again. On Windows it also records where it had stopped, in
+  `logs/dumps` (a dump; the newest 8 are kept). A run that ended while it was
+  frozen, or that crashed, is told at the next start in the bar at the top, with
+  where the record is. Nothing is sent from this PC; attach a record to a bug
+  report if it is asked for.
 - **The zip shows a Windows warning on first start** — the zip is not code-signed;
   the Store copy is. [Why, and how to check the download](https://github.com/styleio/ShikishaTerm/blob/main/SIGNING.md).
 

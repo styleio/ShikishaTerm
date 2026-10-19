@@ -220,6 +220,9 @@ pub enum Cmd {
     /// result view are served by a second local server whose port is only
     /// known once it starts, so it is told here rather than at the window's birth
     Trust { origin: String },
+    /// Asked by the watchdog: the window's thread says it is alive by taking
+    /// this (`shikisha_core::watchdog`)
+    Alive,
     /// Evaluate JS and return the result (matched up by `id`).
     /// `to` is the destination page name. `None` means the main view
     Eval {
@@ -706,6 +709,14 @@ impl Browser {
         let beside = std::thread::Builder::new().name("shikisha-work".into()).spawn(move || -> Result<R> {
             let me = Self::once_open(proxy_rx, ev_rx, sound_pid)?;
             let closer = me.proxy.clone();
+            // The window's thread is watched as the work loop is: asked to
+            // answer every few seconds, through its own queue of messages
+            let pinger = std::sync::Mutex::new(me.proxy.clone());
+            shikisha_core::watchdog::watch_window(move || {
+                if let Ok(p) = pinger.lock() {
+                    let _ = p.send_event(Cmd::Alive);
+                }
+            });
             let out = work(me);
             // Whatever `work` still holds of the window, the window is done
             let _ = closer.send_event(Cmd::Close);

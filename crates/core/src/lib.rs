@@ -180,6 +180,7 @@ pub mod vaudio;
 /// The Rust view of libvpx. Only where there is one to link against.
 #[cfg(all(not(windows), feature = "vp8"))]
 pub mod vpx;
+pub mod watchdog;
 pub mod vcast;
 pub mod vencode;
 pub mod vframe;

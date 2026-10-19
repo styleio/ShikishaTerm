@@ -2250,6 +2250,13 @@ pub struct LastExit {
     /// The explanation, once somebody has been asked for one
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// How long it had not been answering when it ended, in seconds. Zero
+    /// when it had not stopped
+    #[serde(default)]
+    pub hung: u64,
+    /// The dump it wrote of itself, when it wrote one
+    #[serde(default)]
+    pub dump: String,
     /// Whether the asking is under way, so the button can say so instead of
     /// looking like it did nothing
     #[serde(default)]

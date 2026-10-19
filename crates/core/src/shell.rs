@@ -5114,22 +5114,29 @@ function drawCrashBar() {
   const x = S.last_exit;
   const was = bar.hidden;
   if (!x) { bar.hidden = true; crashSig = null; if (!was) layout(); return; }
-  const sig = [x.code, x.when, x.asking, x.carried, x.lost, x.why || ""].join("|");
+  const sig = [x.code, x.when, x.asking, x.carried, x.lost, x.why || "", x.hung || 0, x.dump || ""].join("|");
   if (crashSig === sig) { bar.hidden = false; if (was) layout(); return; }
   crashSig = sig;
   bar.textContent = "";
   const by = x.by || "";
   const said = el("div", {class:"cb-text"},
-    el("div", {class:"cb-title"}, T["tui.crash.title"] || "It stopped with an error last time"),
+    // A run that had stopped answering, with no error of its own on record,
+    // was most likely ended by a person: said as what it was
+    el("div", {class:"cb-title"}, (x.hung && !x.code ? T["tui.crash.title_hung"] : T["tui.crash.title"]) || "It stopped with an error last time"),
     // What they actually want to know first: whether their work came back.
     // The code is for whoever ends up reporting it, and comes second
     (x.carried || x.lost) ? el("div", {class:"cb-kept"}, x.lost
       ? (T["tui.crash.some_lost"] || "").split("{kept}").join(x.carried).split("{lost}").join(x.lost)
       : (T["tui.crash.all_kept"] || "").split("{kept}").join(x.carried)) : null,
+    // It had stopped answering before it ended: most often what ended it was
+    // a person closing a window that no longer moved
+    x.hung ? el("div", {class:"cb-kept"}, (T["tui.crash.hung"] || "").split("{secs}").join(x.hung)) : null,
     el("div", {class:"cb-code"}, x.code
       ? ((T["tui.crash.code"] || "Code {code}").split("{code}").join(x.code)
          + (x.when ? "  ·  " + x.when.replace("T", " ") : ""))
-      : (T["tui.crash.unknown"] || "")));
+      : x.hung ? "" : (T["tui.crash.unknown"] || "")),
+    // Where the dump of it is, for whoever is asked to look into it
+    x.dump ? el("div", {class:"cb-code", title: x.dump}, (T["tui.crash.dump"] || "").split("{path}").join(x.dump)) : null);
   const ask = el("button", {class:"cb-ask", onclick: () => {
     send({kind:"whystopped", ask:true});
     // Say so at once: the asking happens elsewhere and the answer takes

@@ -620,6 +620,8 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         last_exit: crate::lastexit::told().map(|t| crate::uistate::LastExit {
             code: t.ended.code,
             when: t.ended.when,
+            hung: t.ended.hung,
+            dump: t.ended.dump,
             why: t.why,
             asking: ui.asking_why,
             by: ui.ask_why_by.clone(),

@@ -155,6 +155,14 @@ pub struct Ended {
     /// read it. Never shown raw on screen
     #[serde(default)]
     pub evidence: String,
+    /// How long the run had not been answering when it ended, in seconds,
+    /// when it had stopped (`crate::watchdog`). Zero when it had not
+    #[serde(default)]
+    pub hung: u64,
+    /// The dump the run wrote of itself as it stopped or crashed, when it
+    /// wrote one
+    #[serde(default)]
+    pub dump: String,
 }
 
 impl Ended {
@@ -322,12 +330,21 @@ fn still_running(pid: u32) -> bool {
 /// reads a system log), which is why it is a function of its own rather than
 /// part of the start
 pub fn why(mark: &Mark) -> Ended {
-    match ask_the_system(mark) {
+    let mut ended = match ask_the_system(mark) {
         Some(raw) => pick(mark, &serde_json::from_str(&raw).unwrap_or_default()),
         // Nothing to read, which is still an answer: the run ended without
         // finishing and the machine kept no account of it
         None => Ended { pid: mark.pid, ..Default::default() },
+    };
+    // What the run said of itself: that it had stopped answering, and the
+    // dump it wrote then, or of a crash
+    if let Some(h) = crate::watchdog::last_hang().filter(|h| h.pid == mark.pid && !h.back && h.since + 1 >= mark.started) {
+        ended.hung = h.secs;
     }
+    if let Some(d) = crate::watchdog::dump_of(mark.pid, mark.started) {
+        ended.dump = d.display().to_string();
+    }
+    ended
 }
 
 /// Which record is about this run, and what else the machine said at that

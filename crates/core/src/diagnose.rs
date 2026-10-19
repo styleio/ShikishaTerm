@@ -275,9 +275,11 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
     let mut files: Vec<(&str, String)> = vec![("about.txt", about())];
     let logs = crate::config::logs_dir();
     let state = |name: &str| crate::config::state_path(name);
-    let sources: [(&str, std::path::PathBuf, usize); 6] = [
+    let sources: [(&str, std::path::PathBuf, usize); 7] = [
         ("hooks.log", logs.join("hooks.log"), LOG_LINES),
         ("crash.log", logs.join("crash.log"), CRASH_LINES),
+        // The last time a part of the app stopped answering
+        ("hang.json", logs.join("hang.json"), 50),
         ("running.json", state("running.json"), 50),
         ("short-runs.txt", state("short-runs"), 5),
         ("update-trial.json", state("update").join("trial.json"), 50),
@@ -292,6 +294,16 @@ pub fn bundle() -> Result<(String, Vec<u8>, usize)> {
         && !told.ended.evidence.is_empty()
     {
         files.push(("last-run-ended.txt", told.ended.evidence.clone()));
+    }
+    // The dumps are named, not put in: they hold the memory of the
+    // program's threads, which nothing here can look through for secrets.
+    // The person hands one over by itself if asked for it
+    let dumps: Vec<String> = crate::watchdog::tidy_dumps(&crate::watchdog::dumps_dir())
+        .into_iter()
+        .map(|(p, size)| format!("{} ({} KB)", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), size / 1024))
+        .collect();
+    if !dumps.is_empty() {
+        files.push(("dumps.txt", dumps.join("\n")));
     }
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);

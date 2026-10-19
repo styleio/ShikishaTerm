@@ -3285,7 +3285,22 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }};
     }
 
+    // Something watches that this loop keeps going (`crate::watchdog`)
+    crate::watchdog::start();
     loop {
+        crate::watchdog::beat(crate::watchdog::Part::Work);
+        #[cfg(debug_assertions)]
+        crate::watchdog::debug_stall();
+        // A part of the app that stopped and came back: said once, with how
+        // long it was gone, since the person was looking at a window that
+        // did not answer and was not told why
+        if let Some((part, secs)) = crate::watchdog::take_came_back() {
+            let which = i18n::t(match part {
+                crate::watchdog::Part::Work => "msg.watchdog.work",
+                crate::watchdog::Part::Window => "msg.watchdog.window",
+            });
+            flash = Some(i18n::tp("msg.watchdog.back", &[("part", &which), ("secs", &secs.to_string())]));
+        }
         // Install the remote server the moment its background bind lands.
         // Errors and notes surface exactly as the old synchronous path did.
         if let Some(rx) = &remote_rx

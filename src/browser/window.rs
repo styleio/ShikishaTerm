@@ -472,6 +472,7 @@ pub(super) fn run_window(
                     #[cfg(target_os = "macos")]
                     crate::hotkeys::register_here();
                 }
+                Cmd::Alive => shikisha_core::watchdog::beat(shikisha_core::watchdog::Part::Window),
                 Cmd::Trust { origin } => {
                     let mut list = own.borrow_mut();
                     if !list.iter().any(|o| same_origin(o, &origin)) {
