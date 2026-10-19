@@ -440,11 +440,13 @@ fn move_out(old: &Path, new: &Path) {
     let _ = std::fs::remove_dir(old);
 }
 
-/// The first version's dumps, out of the program's folder. Done before the
-/// last run is accounted for (`lastexit::why`), so what that names is where
-/// the dump stays; and again as watching starts. Doing it twice is harmless
+/// The first version's dumps, out of the program's folder: once in a run,
+/// by whichever asks first -- the account of the last run (`lastexit::why`)
+/// or the watching -- while the other waits for it to end. So what the
+/// account names stays where it is named, whether it was moved or left
 pub fn take_old_dumps() {
-    move_out(&crate::config::logs_dir().join("dumps"), &dumps_dir());
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| move_out(&crate::config::logs_dir().join("dumps"), &dumps_dir()));
 }
 
 fn unfinished(p: &Path) -> bool {
