@@ -262,6 +262,28 @@ fn far_run(host: &crate::config::HostSpec, script: &str, args: &[&str]) -> Resul
     }
 }
 
+/// How long the words given one command on a server may be, together: well
+/// under the smallest limit Linux puts on a single argument (128 KiB), which
+/// the whole command line is when the server's shell is handed it
+const FAR_ARGS_MOST: usize = 32 * 1024;
+
+/// The paths in runs whose words, quoted, stay under `most` together; a path
+/// longer than that on its own is a run of its own
+fn batches(paths: &[String], most: usize) -> Vec<Vec<&str>> {
+    let mut out: Vec<Vec<&str>> = Vec::new();
+    let mut size = 0;
+    for p in paths {
+        let n = crate::ssh::sh_quote(p).len() + 1;
+        if out.is_empty() || size + n > most {
+            out.push(Vec::new());
+            size = 0;
+        }
+        out.last_mut().expect("one is there").push(p);
+        size += n;
+    }
+    out
+}
+
 /// Each path the way the server has it: `~` as the home, made whole, and
 /// links followed where the path is there (as the CLI follows them); one
 /// line each, in order
@@ -363,14 +385,16 @@ impl Place {
                 }
             }
             At::Far(host) => {
-                let args: Vec<&str> = paths.iter().map(String::as_str).collect();
-                let said = far_run(host, FAR_REAL, &args)?;
-                let lines: Vec<&str> = said.lines().collect();
-                if lines.len() != paths.len() {
-                    return Err(format!("the server gave {} folders for {}", lines.len(), paths.len()));
-                }
-                for (p, r) in paths.iter().zip(lines) {
-                    out.insert(p.clone(), r.to_string());
+                // In batches: one command line holds only so much
+                for batch in batches(paths, FAR_ARGS_MOST) {
+                    let said = far_run(host, FAR_REAL, &batch)?;
+                    let lines: Vec<&str> = said.lines().collect();
+                    if lines.len() != batch.len() {
+                        return Err(format!("the server gave {} folders for {}", lines.len(), batch.len()));
+                    }
+                    for (p, r) in batch.iter().zip(lines) {
+                        out.insert(p.to_string(), r.to_string());
+                    }
                 }
             }
         }
@@ -480,7 +504,7 @@ done"#;
 /// if it was taken; a signal ends it there and then, so nothing is written
 /// after the lock is gone
 const FAR_SWAP_START: &str = r#"got=
-trap 'rm -f "$2" "$3"; [ -n "$got" ] && rmdir "$l" 2>/dev/null' EXIT
+trap 'rm -f "$2" "$3"; rmdir "$(dirname "$2")" 2>/dev/null; [ -n "$got" ] && rmdir "$l" 2>/dev/null' EXIT
 trap 'exit 130' INT TERM HUP"#;
 
 /// The rest of that command, once the lock is held: the file must still be
@@ -509,10 +533,14 @@ enum Swap {
 /// files beside it first -- a command line holds only so much -- and the
 /// command that holds the lock is a short one
 fn far_swap(host: &crate::config::HostSpec, file: &str, was: &[u8], now: &str) -> Result<Swap, String> {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let (was_at, now_at) = (format!("{file}.was.{}.{n}", std::process::id()), format!("{file}.new.{}.{n}", std::process::id()));
-    far_run(host, r#"mkdir -p "$(dirname "$1")""#, &[file])?;
+    // A folder of this write's own, made by the server beside the file, so
+    // no other write -- from this PC or another -- can share it
+    let staged = far_run(host, r#"d=$(dirname "$1") && mkdir -p "$d" && mktemp -d "$d/.sk-trust.XXXXXX""#, &[file])?;
+    let staged = staged.trim();
+    if staged.is_empty() {
+        return Err("the server made no folder to send the file to".into());
+    }
+    let (was_at, now_at) = (format!("{staged}/was"), format!("{staged}/new"));
     let at = there(host)?;
     let send = |to: &str, bytes: &[u8]| {
         crate::elsewhere::files(&at, crate::ssh::FileJob::Write { to: to.into(), bytes: bytes.to_vec() }, FAR_WAIT_MS)
@@ -521,7 +549,7 @@ fn far_swap(host: &crate::config::HostSpec, file: &str, was: &[u8], now: &str) -
     };
     let sent = send(&was_at, was).and_then(|()| send(&now_at, now.as_bytes()));
     if let Err(e) = sent {
-        let _ = far_run(host, r#"rm -f "$1" "$2""#, &[&was_at, &now_at]);
+        let _ = far_run(host, r#"rm -f "$1" "$2"; rmdir "$(dirname "$1")""#, &[&was_at, &now_at]);
         return Err(e);
     }
     let quoted: Vec<String> = [file, &was_at, &now_at].iter().map(|a| crate::ssh::sh_quote(a)).collect();
@@ -1069,7 +1097,9 @@ mod tests {
         let lock = dir.join("trustedFolders.json.lock");
         // The two versions sent beside the file first, as far_swap sends them
         let run = |was: &str, now: &str| {
-            let (w, n) = (dir.join("t.was"), dir.join("t.new"));
+            let staged = dir.join(".sk-trust.test");
+            std::fs::create_dir_all(&staged).unwrap();
+            let (w, n) = (staged.join("was"), staged.join("new"));
             std::fs::write(&w, was).unwrap();
             std::fs::write(&n, now).unwrap();
             sh(&far_swap_script(), &[&file, &w.display().to_string(), &n.display().to_string()], &home, &[]).0
@@ -1090,6 +1120,18 @@ mod tests {
         assert!(lock.is_dir(), "the other's lock is left");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"c\":3}");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn many_folders_are_asked_about_in_runs_a_command_line_holds() {
+        let paths: Vec<String> = (0..1800).map(|i| format!("/home/me/SHIKISHA-TERM/branches/project/branch-{i:04}")).collect();
+        let runs = batches(&paths, FAR_ARGS_MOST);
+        assert!(runs.len() > 1);
+        assert!(runs.iter().all(|r| r.iter().map(|p| crate::ssh::sh_quote(p).len() + 1).sum::<usize>() <= FAR_ARGS_MOST));
+        assert_eq!(runs.concat(), paths.iter().map(String::as_str).collect::<Vec<_>>(), "every one, in order");
+        let long = "x".repeat(FAR_ARGS_MOST + 10);
+        assert_eq!(batches(&[long.clone(), "/a".into()], FAR_ARGS_MOST).len(), 2, "a long one alone");
+        assert!(batches(&[], FAR_ARGS_MOST).is_empty());
     }
 
     #[test]
