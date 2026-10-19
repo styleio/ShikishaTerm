@@ -205,6 +205,29 @@ pub fn notice(rescued: bool, heaviest: Option<(String, u64)>) -> (String, String
     (title, format!("{} {}", crate::i18n::t("tray.memory.still_working"), who))
 }
 
+/// The reserve's rescues, one to a shortage.
+///
+/// One shortage draws on the reserve again and again; that is one rescue to
+/// tell the person of, not one every half second. The shortage is over at
+/// the first look that finds the room back and the reserve not drawn on --
+/// whatever it lent may well still be out, held by something that lives for
+/// hours, and that is no reason to say nothing of the next shortage
+#[derive(Debug, Default)]
+struct Draws {
+    drawn: bool,
+}
+
+impl Draws {
+    /// `drew` is whether the reserve was drawn on since the last look, `low`
+    /// whether the room is short. Answers (a rescue to say, a shortage over)
+    fn read(&mut self, drew: bool, low: bool) -> (bool, bool) {
+        let rescued = drew && !self.drawn;
+        let over = self.drawn && !drew && !low;
+        self.drawn = (self.drawn || drew) && !over;
+        (rescued, over)
+    }
+}
+
 /// Write down something about the machine's memory: in the log, and where the
 /// next start looks should this run end before it can say anything more
 pub fn note(line: &str) {
@@ -221,11 +244,7 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
     let _ = std::thread::Builder::new().name("shikisha-pressure".into()).spawn(move || {
         let mut gauge = Gauge::new(limit);
         let mut last_said: Option<std::time::Instant> = None;
-        // Whether the reserve has been drawn on during this shortage. One
-        // shortage draws on it again and again as what it lent is given back
-        // and asked for anew; that is one rescue to tell the person of, not
-        // one every half second
-        let mut drawn = false;
+        let mut draws = Draws::default();
         loop {
             std::thread::sleep(EVERY);
             let Some((left, _)) = room() else { continue };
@@ -233,8 +252,7 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
             // below is the first thing that would be refused
             let drew = crate::reserve::take_spent();
             let turn = gauge.read(left);
-            let rescued = drew && !drawn;
-            drawn |= drew;
+            let (rescued, over) = draws.read(drew, gauge.low);
             if rescued {
                 note(&format!(
                     "memory: an allocation was refused and answered from the reserve ({} of it in use, {} left)",
@@ -245,10 +263,11 @@ pub fn watch(say: impl Fn(String, String) -> bool + Send + 'static) {
             if let Some(turn) = turn {
                 note(&format!("memory: {turn:?} with {} of commit left", size(left)));
             }
-            // Over once the room is back and all it lent has come home
-            if drawn && !gauge.low && crate::reserve::in_use() == 0 {
-                drawn = false;
-                note("memory: all that was drawn from the reserve is back in it");
+            if over {
+                note(&format!(
+                    "memory: the shortage is over ({} of the reserve still lent out)",
+                    size(crate::reserve::in_use() as u64)
+                ));
             }
             // Set aside when there was no room for it at the start, once the
             // machine could lose it and still have room
@@ -317,6 +336,21 @@ mod tests {
         assert!(text.contains("python.exe") && text.contains("16.3 GB"), "{text}");
         let (_, text) = notice(true, None);
         assert!(!text.is_empty());
+    }
+
+    /// A shortage's rescue is said once however often it draws, and the next
+    /// shortage's is said too -- even while a block lent in the first is
+    /// still out, which once kept the second from being said at all
+    #[test]
+    fn each_shortage_is_said_once_and_the_next_one_too() {
+        let mut d = Draws::default();
+        assert_eq!(d.read(true, true), (true, false), "the first draw is said");
+        assert_eq!(d.read(true, true), (false, false), "drawing again is the same shortage");
+        assert_eq!(d.read(false, true), (false, false), "still short is not over");
+        assert_eq!(d.read(true, false), (false, false), "drawn on with room back is not over either");
+        assert_eq!(d.read(false, false), (false, true), "room back and nothing drawn: over");
+        assert_eq!(d.read(false, false), (false, false), "and said to be over once");
+        assert_eq!(d.read(true, true), (true, false), "the next shortage is said");
     }
 
     #[test]

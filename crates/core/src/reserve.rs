@@ -45,9 +45,11 @@ static HEAP: std::sync::Mutex<linked_list_allocator::Heap> =
 /// How much of the reserve is handed out right now, in bytes
 static IN_USE: AtomicUsize = AtomicUsize::new(0);
 
-/// Set when the reserve began to be drawn on, and cleared by whoever reports
-/// it. Set once per draw rather than once per allocation: a shortage draws
-/// on it thousands of times, and is one thing to say
+/// Set whenever the reserve answers an allocation, and cleared by whoever
+/// reports it. Set by each one, not only by the first after the reserve was
+/// empty: a block lent in one shortage can outlive it, and the next shortage
+/// would then never be said. Telling one shortage from the next is the
+/// reporter's to do (`crate::pressure`)
 static SPENT: AtomicBool = AtomicBool::new(false);
 
 /// Set the reserve aside. True if it is now held (whether by this call or
@@ -110,9 +112,8 @@ fn from_reserve(layout: Layout) -> *mut u8 {
     let got = HEAP.lock().unwrap_or_else(|e| e.into_inner()).allocate_first_fit(layout);
     match got {
         Ok(p) => {
-            if IN_USE.fetch_add(layout.size(), Ordering::SeqCst) == 0 {
-                SPENT.store(true, Ordering::SeqCst);
-            }
+            IN_USE.fetch_add(layout.size(), Ordering::SeqCst);
+            SPENT.store(true, Ordering::SeqCst);
             p.as_ptr()
         }
         Err(()) => std::ptr::null_mut(),
