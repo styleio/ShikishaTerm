@@ -1248,9 +1248,12 @@ fn tend_asks(
     };
     // The tabs still saying the line for an answer they gave: nothing more is
     // sent them until it is said or given up on. Their line may yet be read
-    // from their record, and a second question's answer would be read as it
+    // from their record, and a second question's answer would be read as it.
+    // So are the tabs followed past what they said so far, till their work
+    // is over: what they say then is read from their record as that ask's
+    // answer, up to the next words given them
     let owing: std::collections::HashSet<String> =
-        asks.iter().filter(|a| a.owes_line()).map(ask_key).collect();
+        asks.iter().filter(|a| a.owes_line() || a.follows_on()).map(ask_key).collect();
     // The desk an ask is kept on, by id, and the tab it went to as the
     // conference names it
     let ask_desk = |a: &crate::asktab::Ask| a.desk.clone().or_else(|| here.map(str::to_string)).unwrap_or_default();
@@ -1466,6 +1469,13 @@ fn tend_asks(
                 // How an answer that is not a reply reads in the inbox, should
                 // nobody hold the line for it any more
                 let told = crate::cli::said(&v);
+                // Said so far, to a caller with no tab its answer can go to
+                // later (a client of the pipe): the line is its one way to
+                // hear, and it is kept for the answer, or for these words if
+                // the wait runs out first (`asktab::step`)
+                if state == "WORKING" && a.caller.is_none() && a.reply.is_some() && a.phase == Phase::Waiting && std::time::Instant::now() < a.deadline {
+                    return true;
+                }
                 // Still holding the line: answer on it
                 if let Some(line) = a.reply.take() {
                     if line.send(Ok(v)).is_ok() {

@@ -433,6 +433,10 @@ impl FarRead {
         let (record, sent, scanned, tab) = (record.clone(), sent.to_string(), self.scanned, self.tab.clone());
         std::thread::spawn(move || {
             let (mut moved, mut read_to) = (None, None);
+            // Where the record stood as its page was read, for a look that
+            // waits for its last mark: a mark read after an answer written
+            // since is not the page's (see [`decide`])
+            let read_at = (look != Look::Turn).then(|| record.standing().map(|s| s.len)).flatten();
             let found = match record.page(u64::MAX, look.turns()) {
                 None => Found::Missing,
                 Some(Ok(page)) => match asked_in(&page, &sent, from) {
@@ -449,7 +453,9 @@ impl FarRead {
                             end
                         });
                         let last_over = || {
-                            record.standing().and_then(|s| s.mark).map(|(m, _)| m) == Some(crate::reader::TurnMark::Over)
+                            record.standing().is_some_and(|s| {
+                                s.mark.map(|(m, _)| m) == Some(crate::reader::TurnMark::Over) && Some(s.len) == read_at
+                            })
                         };
                         decide(&page, asked, end, look, last_over).map_or(Found::NotYet, Found::Is)
                     }
@@ -852,18 +858,25 @@ pub fn outcome_when_over(path: &Path, sent: &str, from: u64) -> Option<Outcome> 
 /// What came of the turn `sent` was given in, read as `look` says; a failure
 /// counts as soon as it is written, whichever
 fn outcome(path: &Path, sent: &str, from: u64, look: Look) -> Option<Outcome> {
+    let len = || std::fs::metadata(path).map(|m| m.len()).ok();
+    let read_at = len();
     let page = crate::reader::read_back(path, u64::MAX, look.turns()).ok()?;
     let asked = asked_in(&page, sent, from)?;
     let end = page.turns[asked].at.and_then(|begun| crate::reader::turn_end_after(path, begun));
+    // The last mark is the page's own only while nothing has been written
+    // since the page was read (see [`decide`])
     decide(&page, asked, end, look, || {
-        crate::reader::last_turn_mark(path).map(|(mark, _)| mark) == Some(crate::reader::TurnMark::Over)
+        crate::reader::last_turn_mark(path).map(|(mark, _)| mark) == Some(crate::reader::TurnMark::Over) && len() == read_at
     })
 }
 
 /// What came of the turn at `asked` in `page`, given how the record says it
 /// ended (`end`): the one reading for a record here and one on another
 /// machine. `last_over` says whether the record's last mark ends a turn,
-/// asked only when `look` waits for that
+/// asked only when `look` waits for that -- and only of the record as `page`
+/// was read: an answer written between the page and the mark would end the
+/// turn on the mark and be missing from the page, and the words before it
+/// taken for the answer (a review, 2026-10-20)
 fn decide(
     page: &crate::reader::Page,
     asked: usize,
@@ -1059,7 +1072,17 @@ impl Ask {
             self.so_far = Some(reply.to_string());
             return Step::Answer(answer(self, "WORKING", Some(reply), source, same_folder, Some(WORKS_ON)));
         }
+        // The answer: nothing is followed on for any more, and the line it
+        // may yet say is this answer's (`carry_on`)
+        self.so_far = None;
         Step::Answer(answer(self, "DONE", Some(reply), source, same_folder, note))
+    }
+
+    /// The tab has said something so far and is followed for the rest:
+    /// nothing more is sent it till then, or what it says next would be
+    /// read for two asks at once
+    pub fn follows_on(&self) -> bool {
+        self.so_far.is_some()
     }
 
     /// The answer's line is settled. A tab that has said something so far
@@ -1356,7 +1379,8 @@ pub fn step(
             let since = *a.background_since.get_or_insert(now);
             if a.so_far.is_some() {
                 if !t.helpers_out() && since.elapsed() >= LEFT_RUNNING {
-                    let reply = a.recorded(t).or_else(|| a.so_far.clone());
+                    let reply = a.recorded(t).or_else(|| a.so_far.take());
+                    a.so_far = None;
                     return Step::Answer(answer(a, "DONE", reply.as_deref(), "record", same_folder, Some(
                         "work it started still runs behind its prompt, and it has said nothing more for 30 minutes; this is the last it said",
                     )));
@@ -1530,7 +1554,7 @@ pub fn step(
                     // Said something so far, and its work is over: what it
                     // said after cannot be read, and the caller is told so
                     // rather than kept waiting for it
-                    if let Some(so_far) = a.so_far.clone() {
+                    if let Some(so_far) = a.so_far.take() {
                         return Step::Answer(answer(
                             a,
                             "DONE",
@@ -1572,17 +1596,18 @@ pub fn step(
                         .last_response
                         .clone()
                         .unwrap_or_else(|| tail(&t.last_screen, 40));
-                    return Step::Answer(answer(
-                        a,
-                        "DONE",
-                        Some(&reply),
-                        "screen",
-                        same_folder,
-                        None,
-                    ));
+                    return a.replied(Some(t), &reply, "screen", same_folder, None);
                 }
             }
         }
+    }
+    // The caller held the line past what the tab has said so far (a caller
+    // with no tab to be told in, see `runtime::tend_asks`): those words, then
+    if a.phase == Phase::Waiting
+        && now >= a.deadline
+        && let Some(so_far) = a.so_far.clone()
+    {
+        return Step::Answer(answer(a, "WORKING", Some(&so_far), "record", same_folder, Some(WORKS_ON)));
     }
     if a.phase == Phase::Waiting && now >= a.deadline {
         return Step::Answer(answer(
@@ -2147,6 +2172,7 @@ Your full answer is kept separately. Reply with only one short line.";
         assert_eq!(a.hear_stop("Two checks still out.", 80), Hear::Line("Two checks still out.".into()));
         assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
         assert!(a.carry_on(), "the ask was let go of at its line");
+        assert!(a.follows_on(), "nothing more is sent it till its work is over");
         a.phase = Phase::Deliver;
         // Woken by its helpers and back at rest with one still out: the caller
         // is not told again
@@ -2167,6 +2193,7 @@ Your full answer is kept separately. Reply with only one short line.";
         a.quiet_since = Some(Instant::now() - SO_FAR_SETTLE);
         let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the end was not passed on") };
         assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("Done: PR #12 is open.")));
+        assert!(!a.follows_on(), "answered: free to be asked again");
         // A tab with nothing going on behind its prompt answers as before
         let mut t = Tab::spawn("finch".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
         t.state = TabState::Busy;
@@ -2175,6 +2202,40 @@ Your full answer is kept separately. Reply with only one short line.";
         let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!() };
         assert_eq!(v["state"].as_str(), Some("DONE"));
         assert!(!a.carry_on(), "an answer that is the answer lets the ask go at its line");
+    }
+
+    /// A review, 2026-10-20: what it said so far was read from its record
+    /// (its stop hook heard nothing), and its answer came through the hook
+    /// with a line. Once that line is said the ask is over: it is not taken
+    /// up again for having said something so far once
+    #[test]
+    fn an_answer_given_is_not_followed_on_again() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Busy;
+        let mut a = sent_ask();
+        a.phase = Phase::Deliver;
+        a.so_far = Some("Waiting for the review.".into());
+        assert!(matches!(a.hear_stop("The review found one bug.", 80), Hear::Hold(_)));
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the answer was not passed on") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The review found one bug.")));
+        assert_eq!(a.hear_stop("One bug found.", 80), Hear::Line("One bug found.".into()));
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Lined));
+        assert!(!a.carry_on() && !a.follows_on(), "taken up again after its answer");
+    }
+
+    /// A caller with no tab to be told in later holds the line for the
+    /// answer; if its wait runs out first, it hears what was said so far
+    #[test]
+    fn a_wait_that_runs_out_hears_what_was_said_so_far() {
+        let mut t = Tab::spawn("otter".into(), &[crate::test_shell()], None, 10, 40, Default::default()).unwrap();
+        t.state = TabState::Background;
+        let mut a = sent_ask();
+        a.caller = None;
+        a.so_far = Some("Waiting for the review.".into());
+        assert!(matches!(step(&mut a, Some(&t), false, None, true), Step::Nothing));
+        a.deadline = Instant::now() - Duration::from_secs(1);
+        let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("the wait ran out unheard") };
+        assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("WORKING"), Some("Waiting for the review.")));
     }
 
     /// A helper says when it is back and is waited for however long; a
