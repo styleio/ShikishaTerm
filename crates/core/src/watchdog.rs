@@ -269,7 +269,7 @@ fn watch() {
     let (ask_tx, ask_rx) = std::sync::mpsc::channel::<DumpAsk>();
     let (got_tx, got_rx) = std::sync::mpsc::channel::<(DumpAsk, Option<PathBuf>)>();
     let _ = std::thread::Builder::new().name("shikisha-dumps".into()).spawn(move || {
-        move_out(&crate::config::logs_dir().join("dumps"), &dumps_dir());
+        take_old_dumps();
         tidy_dumps(&dumps_dir());
         for ask in ask_rx {
             #[cfg(windows)]
@@ -408,14 +408,43 @@ fn move_out(old: &Path, new: &Path) {
     let _ = std::fs::create_dir_all(new);
     for e in found.flatten() {
         let p = e.path();
-        if let Some(name) = p.file_name()
-            && (p.extension().is_some_and(|x| x == "dmp") || unfinished(&p))
-            && std::fs::rename(&p, new.join(name)).is_err()
-        {
+        let Some(name) = p.file_name() else { continue };
+        // One left half written is not a dump
+        if unfinished(&p) {
             let _ = std::fs::remove_file(&p);
+            continue;
+        }
+        if p.extension().is_none_or(|x| x != "dmp") {
+            continue;
+        }
+        let to = new.join(name);
+        if std::fs::rename(&p, &to).is_ok() {
+            continue;
+        }
+        // Another drive: copied under an unfinished name, given its own once
+        // whole, with the time it was written kept, and only then taken from
+        // where it was. One that cannot be copied stays where it is
+        let writing = to.with_extension(format!("dmp.{UNFINISHED}"));
+        let copied = std::fs::copy(&p, &writing).is_ok()
+            && std::fs::metadata(&p).and_then(|m| m.modified()).is_ok_and(|when| {
+                std::fs::File::options().write(true).open(&writing).and_then(|f| f.set_modified(when)).is_ok()
+            })
+            && std::fs::rename(&writing, &to).is_ok();
+        if copied {
+            let _ = std::fs::remove_file(&p);
+        } else {
+            let _ = std::fs::remove_file(&writing);
+            crate::append_hook_log(&format!("watchdog: {} could not be moved to {}; it stays where it is", p.display(), new.display()));
         }
     }
     let _ = std::fs::remove_dir(old);
+}
+
+/// The first version's dumps, out of the program's folder. Done before the
+/// last run is accounted for (`lastexit::why`), so what that names is where
+/// the dump stays; and again as watching starts. Doing it twice is harmless
+pub fn take_old_dumps() {
+    move_out(&crate::config::logs_dir().join("dumps"), &dumps_dir());
 }
 
 fn unfinished(p: &Path) -> bool {
@@ -752,10 +781,29 @@ mod tests {
         let (old, new) = (dir.join("old"), dir.join("new"));
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("crash-7-1.dmp"), b"x").unwrap();
+        std::fs::write(old.join("note.txt"), b"x").unwrap();
         move_out(&old, &new);
         assert!(new.join("crash-7-1.dmp").exists());
+        assert!(!old.join("crash-7-1.dmp").exists());
+        assert!(old.join("note.txt").exists(), "only dumps are moved");
+        std::fs::remove_file(old.join("note.txt")).unwrap();
+        move_out(&old, &new);
         assert!(!old.exists(), "the old folder goes once empty");
         move_out(&old, &new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_dump_that_cannot_be_moved_stays() {
+        let dir = scratch("stays");
+        let old = dir.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("crash-7-1.dmp"), b"x").unwrap();
+        // Where it would go is a file, so no folder can be made there
+        let new = dir.join("blocked");
+        std::fs::write(&new, b"x").unwrap();
+        move_out(&old, &new);
+        assert!(old.join("crash-7-1.dmp").exists(), "not lost");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

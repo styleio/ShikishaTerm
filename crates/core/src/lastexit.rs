@@ -338,6 +338,9 @@ pub fn why(mark: &Mark) -> Ended {
     };
     // What the run said of itself: that it had stopped answering, and the
     // dump it wrote then, or of a crash
+    // Dumps of the first version moved first, so the one named here stays
+    // where it is named
+    crate::watchdog::take_old_dumps();
     let hangs = crate::watchdog::last_hangs();
     let hung = crate::watchdog::still_stopped(&hangs, mark.pid, mark.started);
     if let Some(h) = hung {
