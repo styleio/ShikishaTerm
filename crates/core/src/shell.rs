@@ -4363,10 +4363,14 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
      It stands where the terminal it reads stands, over that pane alone: the
      panes beside it go on showing what they show. On a phone the pane is the
      screen, so there it takes the whole of it (.full), the bars included. */
+  /* Over a pane it is in the panes' own band (§4 of the style guide), like
+     the editor: the drawer and the right-hand column a narrow window opens
+     over the panes open over it too. Over the whole of a phone's screen it is
+     the reader's own layer */
   #reader { position:absolute; left:var(--fx); top:calc(var(--fy) + var(--crashh, 0px)); right:var(--fr);
-    bottom:calc(var(--fb) + var(--dock, 0px)); z-index:30; display:none; flex-direction:column;
+    bottom:calc(var(--fb) + var(--dock, 0px)); z-index:6; display:none; flex-direction:column;
     background:var(--bg); color:var(--text); }
-  #reader.full { position:fixed; inset:0; }
+  #reader.full { position:fixed; inset:0; z-index:30; }
   #reader.on { display:flex; }
   #rhead { flex:0 0 auto; display:flex; align-items:center; gap:var(--s3); padding:10px 12px;
     padding-top:calc(10px + env(safe-area-inset-top)); background:var(--panel);
@@ -14042,7 +14046,7 @@ document.addEventListener("keydown", e => {
     && !(term && !(S && S.seek));
   if (!find && !again) return;
   if (e.target && e.target.closest && e.target.closest("#seek")) return;
-  if (!seekable(activeTab()) || covering() || directKeyOf(e)) return;
+  if (!seekable(activeTab()) || covering() || rdIsOpen() || directKeyOf(e)) return;
   e.preventDefault();
   e.stopPropagation();
   if (find) seekOpen();
@@ -19295,6 +19299,13 @@ function typingDirect() { return hardKeys || typeDirectChosen(); }
 const focus = () => {
   const a = document.activeElement;
   if (a && a.closest && a.closest("#nav")) return;
+  // While the reader is up the keys are its own: the window coming back to
+  // the front, or a press beside it, must not hand them to the terminal
+  // hidden under it, where they would be typed at the AI unseen
+  if (rdIsOpen()) {
+    if (!REMOTE || typingDirect()) rdBodyEl().focus({preventScroll: true});
+    return;
+  }
   // The quick commands hold the keyboard while they are up: arrows walk the
   // buttons, Enter presses one, Esc puts them away
   if (quickOpen) return;
@@ -19676,7 +19687,7 @@ let rdTab = 0, rdKey = "", rdFrom = null, rdMore = false, rdLoading = false, rdW
 // The newest page exactly as it was last put on screen, and whether a look for
 // something newer is already out. What "a reply arrived" is held against: the
 // record is the only thing that knows whether anything was actually said
-let rdSeen = "", rdLooking = false;
+let rdSeen = "", rdLooking = -1;
 const rdPanel = () => document.getElementById("reader");
 const rdBodyEl = () => document.getElementById("rbody");
 const rdIsOpen = () => rdPanel().classList.contains("on");
@@ -19903,6 +19914,7 @@ const RD_PATIENCE_MS = 60000;
 // first, and the place to read on back from when there is more
 function rdAsk(older, want) {
   return new Promise((done, fail) => {
+    if (REMOTE && window.__feedUp && !window.__feedUp()) { fail(new Error(T["tui.read.offline"] || "")); return; }
     const req = convoRequest(rdSlots, older ? "older" : "newest");
     const timer = setTimeout(() => {
       if (rdAsked.delete(req)) fail(new Error(T["tui.read.lost"] || ""));
@@ -20069,9 +20081,10 @@ function rdHide() {
 // read, which is a button that does nothing. A few tries, a breath apart,
 // because the last words of a turn are written as the screen settles
 async function rdLookForAnswer(tries) {
-  if (rdLooking) return;
-  rdLooking = true;
-  const gen = rdGen;
+  // One look at a time for this opening. A look left over from an earlier
+  // one, still waiting on its answer, is no reason not to look now
+  if (rdLooking === rdGen) return;
+  const gen = rdLooking = rdGen;
   try {
     for (let i = 0; i < tries; i++) {
       if (gen !== rdGen) return;
@@ -20087,7 +20100,7 @@ async function rdLookForAnswer(tries) {
     }
   } catch (e) {
   } finally {
-    rdLooking = false;
+    if (rdLooking === gen) rdLooking = -1;
   }
 }
 
@@ -20126,13 +20139,18 @@ function rdOnState() {
 }
 document.getElementById("rmore").addEventListener("click", () => rdShow());
 // Esc puts the reader away where there are keys to press it with, as it puts
-// away the other things laid over a pane
+// away the other things laid over a pane. Heard last, and only when it was
+// pressed at the reader itself: an Esc meant for a list, a box or the palette
+// opened over it is theirs, and closes them, not the reader under them
 document.addEventListener("keydown", e => {
-  if (e.key !== "Escape" || typingIME(e) || !rdIsOpen()) return;
+  if (e.key !== "Escape" || e.defaultPrevented || typingIME(e) || !rdIsOpen()) return;
+  const at = e.target;
+  const here = at === document.body || at === document.documentElement
+    || !!(at && at.closest && at.closest("#reader"));
+  if (!here) return;
   e.preventDefault();
-  e.stopPropagation();
   rdHide();
-}, true);
+});
 
 
 // The top bar's input needs to behave like an ordinary text field. If
@@ -20345,6 +20363,10 @@ report();
 // slow poll takes over until it reconnects.
 if (REMOTE) {
   let wsUp = false, sws = null, downSince = 0;
+  // Whether the line answers come down is up. What a panel asks is answered
+  // on it alone; the slow poll that stands in while it is down carries the
+  // screen, not answers (the reader asks before it waits on one)
+  window.__feedUp = () => wsUp;
   // Say what happened when the feed stops. The PC can end this session
   // deliberately (its "disconnect": every request then answers 403 and this
   // page is done until someone opens the link again), or the link can simply

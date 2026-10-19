@@ -3025,6 +3025,7 @@
   "tui.read.close": "Close and go back to the terminal",
   "tui.read.again": "Read again",
   "tui.read.lost": "The conversation did not arrive. Select Read again.",
+  "tui.read.offline": "Waiting for the connection to the PC to come back. Select Read again once it is back.",
   "settings.phone.checking": "Checking…",
   "settings.phone.listening": "Listening",
   "settings.phone.stopped": "Stopped",

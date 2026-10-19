@@ -75,7 +75,10 @@ const box = (id) => `document.getElementById(${JSON.stringify(id)}).getBoundingC
 const shown = (id) => `(getComputedStyle(document.getElementById(${JSON.stringify(id)})).display !== "none" && ${box(id)}.width > 0)`;
 const must = (cond, why) => `if (!(${cond})) throw new Error(${JSON.stringify(why)});`;
 
-const onTab = (active) => `window.__state(${stateOn(active)});
+// A phone's page here has no socket to the app: it is said to be up, so the
+// reader asks, and the answer is handed in below. 'offline-phone' says it is down
+const onTab = (active, feed = true) => `window.__state(${stateOn(active)});
+  if (window.__feedUp) window.__feedUp = () => ${feed};
   window.__screen('<div class="r">\\u276f the checkout page is slow</div><div class="r">  \\u23bf  Read 3 files</div>');
   new Promise(ok => setTimeout(ok, 200))`;
 
@@ -130,6 +133,18 @@ export default {
     },
     'open-window': { served: 'window', sizes: [['wide', 1280, 860]], run: opened('window') },
     'open-phone': { served: 'remote', sizes: [['phone', 390, 820]], run: opened('remote') },
+    // The phone's line to the app is down: said at once, with the way to read
+    // again, rather than a minute of "reading"
+    'offline-phone': {
+      served: 'remote', sizes: [['phone', 390, 820]],
+      run: `${onTab(1, false)}.then(() => {
+        document.getElementById("readOpen").click();
+        return new Promise(ok => setTimeout(ok, 150));
+      }).then(() => {
+        ${must('rdAsked.size === 0', 'the reader asked down a line that is down')}
+        ${must('document.querySelector("#rbody .ragain")', 'the reader does not offer to read again')}
+        return "ok"; })`,
+    },
     // Reading failed: the reason, and the way to read again
     'failed-window': {
       served: 'window', sizes: [['wide', 1280, 860]],
@@ -145,7 +160,7 @@ export default {
     'closed-window': {
       served: 'window', sizes: [['wide', 1280, 860]],
       run: `${opened('window')}.then(() => {
-        document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+        rdBodyEl().dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
         ${must('!rdIsOpen()', 'Esc did not put the reader away')}
         window.__state(${stateOn(1)});
         ${must(shown('readOpen'), 'the buttons did not come back')}

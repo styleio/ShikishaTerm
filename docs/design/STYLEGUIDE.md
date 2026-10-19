@@ -204,7 +204,7 @@ its border is the shape of an admin panel from fifteen years ago.
 - Elevation: one shadow, `0 8px 24px #0007`, and only on a layer that floats
   over the page (menus, bubbles, dialogs). Nothing set into the page has a shadow.
 - Layers, from the bottom: panes (3-6) · composer (18-19) · bars over a pane
-  (22-26) · reader (30) · the phone's drawer (30) · splash (40) · veil (50) ·
+  (22-26) · reader (30 over a phone's whole screen; over a pane on the window it is in the panes' band) · the phone's drawer (30) · splash (40) · veil (50) ·
   the first-run bubble (55) · menus and the net veil (60). Take a slot that exists;
   do not add a number.
 

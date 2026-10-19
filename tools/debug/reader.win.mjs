@@ -146,8 +146,24 @@ try {
     p.dispatchEvent(new MouseEvent("mouseup", {bubbles: true})); return true; })()`);
   check(await until(() => clipboard() === ANSWER_HEAD, 'the clipboard', 8000).catch(() => false), 'the selection is on the clipboard');
 
+  console.log('3b. while it is up, the keys stay its own');
+  await run('window.dispatchEvent(new Event("focus")); true');
+  check(await run('document.activeElement && document.activeElement.id === "rbody"'),
+    'the window coming back to the front does not hand the keys to the terminal');
+  await run('window.__openPalette("files"); true');
+  const palette = await until(() => run(`(() => { const a = document.activeElement;
+    return a && a.tagName === "INPUT" && a.closest("#reader") === null ? a.id || a.className || "input" : ""; })()`), 'the palette');
+  await run(`document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true})); true`);
+  await sleep(200);
+  check(await run('rdIsOpen()'), 'Esc in the palette (' + palette + ') leaves the reader open');
+  await run('if (typeof closePalette === "function") closePalette(); true');
+  await run('rdBodyEl().focus(); true');
+  check(!(await run(`(() => { const e = document.getElementById("side"); return !!e && getComputedStyle(e).zIndex !== "auto"
+    && Number(getComputedStyle(e).zIndex) <= Number(getComputedStyle(document.getElementById("reader")).zIndex); })()`)),
+    'the right-hand column stands over the reader, not under it');
+
   console.log('4. Esc puts it away and gives the terminal its keys back');
-  await run('document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true})); true');
+  await run('rdBodyEl().dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true})); true');
   check(!(await run('rdIsOpen()')), 'the reader is put away');
   check(await run('document.activeElement === kbd'), 'the caret is back in the terminal');
 

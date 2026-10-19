@@ -3025,6 +3025,7 @@
   "tui.read.close": "閉じて端末の画面に戻る",
   "tui.read.again": "もう一度読む",
   "tui.read.lost": "会話を読み込めませんでした。「もう一度読む」を押してください。",
+  "tui.read.offline": "PC とのつながりが戻るのを待っています。戻ったら「もう一度読む」を押してください。",
   "settings.phone.checking": "確認中…",
   "settings.phone.listening": "待ち受け中",
   "settings.phone.stopped": "停止中",
