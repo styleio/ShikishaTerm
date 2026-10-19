@@ -1073,7 +1073,8 @@ mod tests {
         let h = home.display().to_string();
         let (_, out) = sh(FAR_PLACE, &[], &home, &[]);
         assert!(out.starts_with(&format!("{h}/.gemini/trustedFolders.json\n0\n{h}/.gemini/settings.json\n")), "none yet: {out}");
-        assert!(out.ends_with("Linux\n"), "and what system it is: {out}");
+        let system = std::process::Command::new("uname").arg("-s").output().unwrap();
+        assert!(out.ends_with(&String::from_utf8_lossy(&system.stdout).to_string()), "and what system it is: {out}");
         std::fs::create_dir_all(home.join("real")).unwrap();
         std::fs::write(home.join("real/trusted.json"), "{}").unwrap();
         std::fs::create_dir_all(home.join(".gemini")).unwrap();
