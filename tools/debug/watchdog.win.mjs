@@ -104,10 +104,12 @@ try {
   // A toast is up for a few seconds: what it said is kept as it comes
   await chrome.run(`(() => { window.__toasts = []; const m = document.getElementById("toastmsg");
     new MutationObserver(() => window.__toasts.push(m.textContent)).observe(m, {childList: true, characterData: true, subtree: true}); })()`);
-  const hang = await until(() => { const f = find('hang.json'); return f && JSON.parse(fs.readFileSync(f, 'utf8')); }, 'the hang to be written down', 40000).catch(() => null);
+  // The work part's account in the hang file, which holds one for each part
+const work = () => { const f = find('hang.json'); return f ? JSON.parse(fs.readFileSync(f, 'utf8')).find((h) => h.part === 'work') : null; };
+  const hang = await until(() => { const h = work(); return h && h.dump && h; }, 'the hang to be written down with its dump', 40000).catch(() => work());
   check(hang && hang.part === 'work' && !hang.back && hang.secs >= 20, `a work loop held still is written down (${JSON.stringify(hang)})`);
-  check(hang && hang.dump && fs.existsSync(hang.dump) && fs.statSync(hang.dump).size > 10000 && fs.readFileSync(hang.dump).subarray(0, 4).toString() === "MDMP", `with a dump of the threads (${hang && hang.dump})`);
-  const back = await until(() => { const h = JSON.parse(fs.readFileSync(find('hang.json'), 'utf8')); return h.back && h; }, 'it to come back', 40000).catch(() => null);
+  check(hang && hang.dump && !hang.dump.startsWith(APP) && fs.existsSync(hang.dump) && fs.statSync(hang.dump).size > 10000 && fs.readFileSync(hang.dump).subarray(0, 4).toString() === "MDMP", `with a dump of the threads, kept outside the program's folder (${hang && hang.dump})`);
+  const back = await until(() => { const h = work(); return h && h.back && h; }, 'it to come back', 40000).catch(() => null);
   check(back && back.secs >= 20 && back.secs <= 40, `its coming back is written down, with how long (${back && back.secs} s)`);
   const toasts = await until(() => chrome.run(`window.__toasts.find(t => /did not respond for/.test(t)) || ""`), 'the board to say so', 20000).catch(() => '');
   check(/app did not respond for \d+ seconds/.test(toasts), `the board says it once (${toasts})`);
@@ -122,8 +124,9 @@ try {
   await sleep(1500);
   const before = dumps().length;
   start('6:120');
-  await until(() => { const f = find('hang.json'); const h = f && JSON.parse(fs.readFileSync(f, 'utf8')); return h && !h.back && h.secs >= 20 && h; }, 'the second hang', 60000);
+  await until(() => { const h = work(); return h && !h.back && h.secs >= 20 && h.dump && h; }, 'the second hang', 60000);
   check(dumps().length === before + 1, 'the second hang has its own dump');
+  check(!fs.readdirSync(path.dirname(dumps()[0])).some((n) => n.endsWith('.part')), 'nothing is left half written');
   await sleep(4000);
   stopApp();
   await sleep(1500);

@@ -1791,6 +1791,13 @@ fn local_appdata() -> std::path::PathBuf {
         .unwrap_or_else(|| root_dir().join("data"))
 }
 
+/// This machine's own folder for the app, never copied anywhere: what must
+/// not travel with the program's folder -- which a cloud drive may be
+/// copying to other machines -- goes here
+pub fn machine_dir() -> std::path::PathBuf {
+    local_appdata().join("ShikishaTerm")
+}
+
 /// Remote UI settings. Off by default since this lets AI be operated from afar
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteSpec {

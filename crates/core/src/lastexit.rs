@@ -338,12 +338,19 @@ pub fn why(mark: &Mark) -> Ended {
     };
     // What the run said of itself: that it had stopped answering, and the
     // dump it wrote then, or of a crash
-    if let Some(h) = crate::watchdog::last_hang().filter(|h| h.pid == mark.pid && !h.back && h.since + 1 >= mark.started) {
+    let hangs = crate::watchdog::last_hangs();
+    let hung = crate::watchdog::still_stopped(&hangs, mark.pid, mark.started);
+    if let Some(h) = hung {
         ended.hung = h.secs;
     }
-    if let Some(d) = crate::watchdog::dump_of(mark.pid, mark.started) {
-        ended.dump = d.display().to_string();
-    }
+    // The stopped part's own dump when it was written; else the newest of
+    // the kind that fits how it ended
+    ended.dump = match hung.map(|h| h.dump.clone()).filter(|d| !d.is_empty() && std::path::Path::new(d).exists()) {
+        Some(d) => d,
+        None => crate::watchdog::dump_of(&crate::watchdog::dumps_dir(), mark.pid, mark.started, if hung.is_some() { "hang" } else { "crash" })
+            .map(|d| d.display().to_string())
+            .unwrap_or_default(),
+    };
     ended
 }
 

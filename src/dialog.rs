@@ -22,8 +22,14 @@ pub fn warn(title: &str, body: &str) {
     ask(title, body, MessageLevel::Error, MessageButtons::Ok);
 }
 
-/// Ask, and wait for the answer
+/// Ask, and wait for the answer: the part of the app on this thread, if it
+/// is one that is watched, is not taken to have stopped while the person
+/// thinks (`shikisha_core::watchdog`)
 pub fn ask(title: &str, body: &str, level: MessageLevel, buttons: MessageButtons) -> MessageDialogResult {
+    shikisha_core::watchdog::person_answers(|| ask_now(title, body, level, buttons))
+}
+
+fn ask_now(title: &str, body: &str, level: MessageLevel, buttons: MessageButtons) -> MessageDialogResult {
     let here = FIRST.get().is_none_or(|first| *first == std::thread::current().id());
     if cfg!(target_os = "macos") && !here {
         let asked = rfd::AsyncMessageDialog::new()

@@ -194,14 +194,14 @@ pub fn ask_quit(ask: &crate::host::QuitAsk) -> crate::host::Quit {
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let (body, title) = (wide(&ask.words()), wide("SHIKISHA-TERM"));
     let three = ask.goes_on();
-    let answered = unsafe {
+    let answered = crate::watchdog::person_answers(|| unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
             body.as_ptr(),
             title.as_ptr(),
             if three { MB_YESNOCANCEL } else { MB_YESNO } | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
         )
-    };
+    });
     use crate::host::Pressed;
     ask.answered(match answered {
         IDYES => Pressed::Yes,
@@ -216,14 +216,14 @@ pub fn ask_yes_no(title: &str, body: &str) -> bool {
     };
     let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
     let (body, title) = (wide(body), wide(title));
-    let answered = unsafe {
+    let answered = crate::watchdog::person_answers(|| unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
             body.as_ptr(),
             title.as_ptr(),
             MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST,
         )
-    };
+    });
     answered == IDYES
 }
 

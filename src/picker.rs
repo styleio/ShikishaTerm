@@ -94,7 +94,7 @@ impl shikisha_shared::FilePicker for DesktopPicker {
         if let Some(s) = start {
             d = d.set_directory(s);
         }
-        d.pick_folder()
+        shikisha_core::watchdog::person_answers(|| d.pick_folder())
     }
 
     fn open(&self, title: &str, start: Option<&Path>, ext: (&str, &str)) -> Option<PathBuf> {
@@ -106,7 +106,7 @@ impl shikisha_shared::FilePicker for DesktopPicker {
         if !ext.1.is_empty() {
             d = d.add_filter(ext.0, &[ext.1]);
         }
-        d.pick_file()
+        shikisha_core::watchdog::person_answers(|| d.pick_file())
     }
 
     fn save(&self, title: &str, start: Option<&Path>, name: &str, ext: (&str, &str)) -> Option<PathBuf> {
@@ -118,6 +118,6 @@ impl shikisha_shared::FilePicker for DesktopPicker {
         if !ext.1.is_empty() {
             d = d.add_filter(ext.0, &[ext.1]);
         }
-        d.save_file()
+        shikisha_core::watchdog::person_answers(|| d.save_file())
     }
 }

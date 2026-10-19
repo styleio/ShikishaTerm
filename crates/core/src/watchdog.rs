@@ -11,17 +11,23 @@
 //! stopped. Nothing is stopped or killed: a part that is only slow comes back,
 //! and is written down as having come back, with how long it was gone.
 //!
+//! Time is counted only while the machine is awake, so a lid closed over a
+//! running app is not a hang; and a part waiting on purpose for a person to
+//! answer a dialog of the system's own ([`person_answers`]) is not one either.
+//!
 //! A native crash on Windows (one Rust's own panic does not catch: an access
 //! violation in a library the window uses) is written as a dump too, before
 //! Windows' own error reporting takes it.
 //!
-//! The dumps stay on this PC, in the logs folder, a bounded number of them.
-//! They hold the memory of the program's threads, so nothing sends them
-//! anywhere; the person can hand one over if they choose to.
+//! The dumps hold the memory of the program's threads. They stay on this PC
+//! -- in its own local application data, never beside the program, which may
+//! be in a folder a cloud drive copies elsewhere -- a bounded number of them,
+//! and nothing sends them anywhere; the person can hand one over if they
+//! choose to.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::time::Duration;
 
 /// How long a part may go without saying it is alive before it is taken to
 /// have stopped. Longer than anything the loop does on purpose -- its slowest
@@ -37,6 +43,11 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 const DUMPS_KEPT: usize = 8;
 const DUMPS_ROOM: u64 = 200 * 1024 * 1024;
 
+/// A dump still being written is named so; one left so by a run that ended
+/// halfway through it is given up once it is this old
+const UNFINISHED: &str = "part";
+const UNFINISHED_GIVEN_UP: Duration = Duration::from_secs(10 * 60);
+
 /// The parts that have to keep moving
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
@@ -46,6 +57,8 @@ pub enum Part {
     Window,
 }
 
+const PARTS: [Part; 2] = [Part::Work, Part::Window];
+
 impl Part {
     fn name(self) -> &'static str {
         match self {
@@ -53,43 +66,90 @@ impl Part {
             Part::Window => "window",
         }
     }
-}
 
-/// When each part last said it is alive, in milliseconds since this module
-/// started counting. Zero: it has not said so yet, and is not watched
-static WORK: AtomicU64 = AtomicU64::new(0);
-static WINDOW: AtomicU64 = AtomicU64::new(0);
-
-fn clock() -> &'static Instant {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now)
-}
-
-fn now_ms() -> u64 {
-    // From 1, so that zero keeps meaning "not yet"
-    clock().elapsed().as_millis() as u64 + 1
-}
-
-fn cell(part: Part) -> &'static AtomicU64 {
-    match part {
-        Part::Work => &WORK,
-        Part::Window => &WINDOW,
+    fn index(self) -> usize {
+        match self {
+            Part::Work => 0,
+            Part::Window => 1,
+        }
     }
 }
 
-/// A part says it is alive
-pub fn beat(part: Part) {
-    cell(part).store(now_ms(), Ordering::Relaxed);
+/// When each part last said it is alive, in milliseconds of the machine
+/// being awake. Zero: it has not been watched yet
+static LAST: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
+/// How many dialogs each part is waiting on a person to answer
+static HELD: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+
+std::thread_local! {
+    /// Which part runs on this thread, once it has said so
+    static MINE: std::cell::Cell<Option<Part>> = const { std::cell::Cell::new(None) };
 }
 
-/// Where the account of a part that stopped is kept: the last one, as JSON
+/// Milliseconds the machine has been awake, from 1 so that zero keeps
+/// meaning "not yet". Windows' interrupt time without the time asleep; the
+/// monotonic clocks elsewhere already leave sleep out
+fn awake_ms() -> u64 {
+    #[cfg(windows)]
+    {
+        let mut t = 0u64;
+        // SAFETY: writes one number
+        unsafe { windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime(&mut t) };
+        t / 10_000 + 1
+    }
+    #[cfg(not(windows))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+    }
+}
+
+/// A part says it is alive, from its own thread
+pub fn beat(part: Part) {
+    MINE.with(|m| m.set(Some(part)));
+    LAST[part.index()].store(awake_ms(), Ordering::Relaxed);
+}
+
+/// Start watching a part from now on, from any thread: one that does not
+/// answer from here on has stopped, even if it never answered at all
+fn arm(part: Part) {
+    LAST[part.index()].store(awake_ms(), Ordering::Relaxed);
+}
+
+/// Wait for a person to answer a dialog of the system's own: the part on
+/// this thread, if it is one that is watched, is not taken to have stopped
+/// while they think
+pub fn person_answers<R>(ask: impl FnOnce() -> R) -> R {
+    struct Held(Part);
+    impl Drop for Held {
+        fn drop(&mut self) {
+            beat(self.0);
+            HELD[self.0.index()].fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+    let _held = MINE.with(|m| m.get()).map(|part| {
+        HELD[part.index()].fetch_add(1, Ordering::SeqCst);
+        Held(part)
+    });
+    ask()
+}
+
+/// Where the account of the parts that stopped is kept, as JSON
 fn hang_file() -> PathBuf {
     crate::config::logs_dir().join("hang.json")
 }
 
-/// Where dumps are written
+/// Where dumps are written: this machine's own application data, apart for
+/// each copy of the program, so that tidying one copy's never takes
+/// another's
 pub fn dumps_dir() -> PathBuf {
-    crate::config::logs_dir().join("dumps")
+    let root = crate::config::root_dir().display().to_string().to_lowercase();
+    // FNV-1a: a short name that stays the same for the same folder
+    let mut h: u32 = 0x811c_9dc5;
+    for b in root.bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    crate::config::machine_dir().join("dumps").join(format!("{h:08x}"))
 }
 
 /// A part that stopped, as written down
@@ -103,19 +163,30 @@ pub struct Hang {
     pub secs: u64,
     /// Whether it came back
     pub back: bool,
-    /// The dump written when it was found, when there is one
+    /// The dump written when it was found, once it is written
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dump: String,
 }
 
-/// The last part that stopped, as the hang file says
-pub fn last_hang() -> Option<Hang> {
-    let text = std::fs::read_to_string(hang_file()).ok()?;
-    serde_json::from_str(&text).ok()
+/// The last time each part stopped, as the hang file says
+pub fn last_hangs() -> Vec<Hang> {
+    std::fs::read_to_string(hang_file())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
-fn write_hang(h: &Hang) {
-    if let Ok(text) = serde_json::to_string_pretty(h) {
+/// The part of a run that was still stopped when it was last looked at --
+/// the longest stopped, if both were
+pub fn still_stopped(hangs: &[Hang], pid: u32, started: u64) -> Option<&Hang> {
+    hangs.iter().filter(|h| h.pid == pid && !h.back && h.since + 1 >= started).max_by_key(|h| h.secs)
+}
+
+/// Both parts' accounts, written together: one part coming back never
+/// writes over the other still being stopped
+fn write_hangs(open: &[Option<Hang>; 2]) {
+    let all: Vec<&Hang> = open.iter().flatten().collect();
+    if let Ok(text) = serde_json::to_string_pretty(&all) {
         let _ = crate::crypto::write_atomic(&hang_file(), &text);
     }
 }
@@ -145,9 +216,11 @@ type Ping = Box<dyn Fn() + Send + Sync>;
 static PING: std::sync::Mutex<Option<Ping>> = std::sync::Mutex::new(None);
 
 /// How the window is asked to say it is alive: a message to its own thread,
-/// which says so when it takes it
+/// which says so when it takes it. Watched from now on, so a window that
+/// never takes the first one has stopped too
 pub fn watch_window(ping: impl Fn() + Send + Sync + 'static) {
     *PING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(ping));
+    arm(Part::Window);
 }
 
 /// Start watching, once
@@ -156,73 +229,118 @@ pub fn start() {
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = clock();
+    let _ = awake_ms();
     #[cfg(windows)]
     native::catch_crashes();
     let _ = std::thread::Builder::new().name("shikisha-watchdog".into()).spawn(watch);
 }
 
+/// A dump asked for: of which part, for which time it stopped (the times
+/// any part stopped are counted, so a dump that comes back late is put with
+/// the time it was taken for)
+struct DumpAsk {
+    part: Part,
+    time: u64,
+}
+
+/// A part that is stopped, as the watching thread holds it
+struct Stopped {
+    /// The awake time of the last beat before it stopped
+    from: u64,
+}
+
 fn watch() {
-    let mut stopped: [Option<Hang>; 2] = [None, None];
-    let mut last_look = Instant::now();
+    // Dumps are written by a thread of their own: one that is slow or never
+    // ends cannot hold up writing down that the part stopped, nor the
+    // watching of the other part
+    let (ask_tx, ask_rx) = std::sync::mpsc::channel::<DumpAsk>();
+    let (got_tx, got_rx) = std::sync::mpsc::channel::<(DumpAsk, Option<PathBuf>)>();
+    let _ = std::thread::Builder::new().name("shikisha-dumps".into()).spawn(move || {
+        tidy_dumps(&dumps_dir());
+        for ask in ask_rx {
+            #[cfg(windows)]
+            let got = native::dump_now(&format!("hang-{}", ask.part.name()), None);
+            #[cfg(not(windows))]
+            let got = None;
+            if got_tx.send((ask, got)).is_err() {
+                return;
+            }
+        }
+    });
+    let mut open: [Option<Hang>; 2] = [None, None];
+    // Which time each part's account in `open` is of
+    let mut open_time = [0u64; 2];
+    let mut stopped: [Option<Stopped>; 2] = [None, None];
+    let mut times = 0u64;
     loop {
         std::thread::sleep(LOOK_EVERY);
         if let Some(ping) = PING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             ping();
         }
-        // A machine that slept: nothing was alive, and nothing stopped
-        let gap = last_look.elapsed();
-        last_look = Instant::now();
-        if gap > LOOK_EVERY * 3 {
-            for part in [Part::Work, Part::Window] {
-                let c = cell(part);
-                if c.load(Ordering::Relaxed) != 0 {
-                    c.store(now_ms(), Ordering::Relaxed);
-                }
+        let mut changed = false;
+        for (ask, got) in got_rx.try_iter() {
+            let i = ask.part.index();
+            let Some(path) = got else { continue };
+            if let (Some(h), true) = (&mut open[i], open_time[i] == ask.time) {
+                h.dump = path.display().to_string();
+                changed = true;
             }
-            continue;
         }
-        for (i, part) in [Part::Work, Part::Window].into_iter().enumerate() {
-            let last = cell(part).load(Ordering::Relaxed);
-            if last == 0 {
+        let now = awake_ms();
+        for part in PARTS {
+            let i = part.index();
+            let last = LAST[i].load(Ordering::Relaxed);
+            if last == 0 || HELD[i].load(Ordering::SeqCst) > 0 {
                 continue;
             }
-            let quiet = Duration::from_millis(now_ms().saturating_sub(last));
-            match (&mut stopped[i], quiet >= HUNG_AFTER) {
+            let quiet = Duration::from_millis(now.saturating_sub(last));
+            match (&stopped[i], quiet >= HUNG_AFTER) {
                 (None, true) => {
-                    let mut h = Hang {
+                    times += 1;
+                    // Written down before any dump is tried: a run ended
+                    // while the dump is being written still says it stopped
+                    open[i] = Some(Hang {
                         pid: std::process::id(),
                         part: part.name().into(),
                         since: now_secs().saturating_sub(quiet.as_secs()),
                         secs: quiet.as_secs(),
                         back: false,
                         dump: String::new(),
-                    };
+                    });
+                    open_time[i] = times;
+                    stopped[i] = Some(Stopped { from: last });
+                    write_hangs(&open);
+                    changed = false;
                     note(&format!("the {} part has not answered for {} s", part.name(), quiet.as_secs()));
-                    #[cfg(windows)]
-                    if let Some(p) = native::dump_now(&format!("hang-{}", part.name()), None) {
-                        h.dump = p.display().to_string();
-                    }
-                    write_hang(&h);
-                    stopped[i] = Some(h);
+                    let _ = ask_tx.send(DumpAsk { part, time: times });
                 }
-                (Some(h), true) => {
+                (Some(_), true) => {
                     // Still gone: how long is kept up to date, so a run ended
                     // while it was says for how long
-                    h.secs = quiet.as_secs();
-                    write_hang(h);
+                    if let Some(h) = &mut open[i] {
+                        h.secs = quiet.as_secs();
+                        changed = true;
+                    }
                 }
-                (Some(h), false) => {
-                    let lasted = now_secs().saturating_sub(h.since);
-                    h.back = true;
-                    h.secs = lasted;
-                    write_hang(h);
+                (Some(s), false) => {
+                    // Back only on a beat it gave since: awake time from its
+                    // last beat before to its first after
+                    let lasted = last.saturating_sub(s.from) / 1000;
+                    if let Some(h) = &mut open[i] {
+                        h.back = true;
+                        h.secs = lasted;
+                    }
+                    stopped[i] = None;
+                    write_hangs(&open);
+                    changed = false;
                     note(&format!("the {} part answers again after {lasted} s", part.name()));
                     *CAME_BACK.lock().unwrap_or_else(|e| e.into_inner()) = Some((part, lasted));
-                    stopped[i] = None;
                 }
                 (None, false) => {}
             }
+        }
+        if changed {
+            write_hangs(&open);
         }
     }
 }
@@ -234,9 +352,11 @@ fn watch() {
 #[cfg(debug_assertions)]
 pub fn debug_stall() {
     static DONE: AtomicBool = AtomicBool::new(false);
+    static FROM: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     if DONE.load(Ordering::Relaxed) {
         return;
     }
+    let from = FROM.get_or_init(std::time::Instant::now);
     let Some((after, hold)) = std::env::var("SHIKISHA_DEBUG_STALL").ok().and_then(|v| {
         let (a, b) = v.split_once(':')?;
         Some((a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?))
@@ -244,7 +364,7 @@ pub fn debug_stall() {
         DONE.store(true, Ordering::Relaxed);
         return;
     };
-    if clock().elapsed() >= Duration::from_secs(after) {
+    if from.elapsed() >= Duration::from_secs(after) {
         DONE.store(true, Ordering::Relaxed);
         // `<for>` of 0: not held still but made to crash, as a library
         // reading memory it does not have would
@@ -256,24 +376,33 @@ pub fn debug_stall() {
     }
 }
 
+fn unfinished(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x == UNFINISHED)
+}
+
 /// The dumps newest first, and the oldest given up past [`DUMPS_KEPT`] or
-/// [`DUMPS_ROOM`]
+/// [`DUMPS_ROOM`]; and any a run left half written, once it is plainly not
+/// being written any more
 pub fn tidy_dumps(dir: &Path) -> Vec<(PathBuf, u64)> {
-    let mut all: Vec<(PathBuf, u64, std::time::SystemTime)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "dmp"))
-        .filter_map(|e| {
-            let m = e.metadata().ok()?;
-            Some((e.path(), m.len(), m.modified().ok()?))
-        })
-        .collect();
+    let now = std::time::SystemTime::now();
+    let mut all: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        let Some((size, when)) = e.metadata().ok().and_then(|m| Some((m.len(), m.modified().ok()?))) else { continue };
+        if unfinished(&path) {
+            if now.duration_since(when).is_ok_and(|age| age >= UNFINISHED_GIVEN_UP) {
+                let _ = std::fs::remove_file(&path);
+            }
+        } else if path.extension().is_some_and(|x| x == "dmp") {
+            all.push((path, size, when));
+        }
+    }
     all.sort_by(|a, b| b.2.cmp(&a.2));
     let mut kept = Vec::new();
     let mut room = 0u64;
     for (i, (path, size, _)) in all.into_iter().enumerate() {
-        // The newest is always kept, however big
+        // The newest is always kept, however big: it is the one that says
+        // what just happened, and it alone is still one file
         if i > 0 && (i >= DUMPS_KEPT || room + size > DUMPS_ROOM) {
             let _ = std::fs::remove_file(&path);
             continue;
@@ -285,23 +414,27 @@ pub fn tidy_dumps(dir: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 /// The dump a run wrote, when it wrote one: by its process id, written after
-/// it started
-pub fn dump_of(pid: u32, started: u64) -> Option<PathBuf> {
+/// it started -- the newest of the kind asked for (`crash` or `hang`), or
+/// else the newest of any
+pub fn dump_of(dir: &Path, pid: u32, started: u64, kind: &str) -> Option<PathBuf> {
     let tag = format!("-{pid}-");
-    std::fs::read_dir(dumps_dir())
+    let mut found: Vec<(PathBuf, u64)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().contains(&tag))
-        .filter(|e| {
-            e.metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .is_some_and(|t| t.as_secs() + 1 >= started)
-        })
         .map(|e| e.path())
-        .max()
+        .filter(|p| p.extension().is_some_and(|x| x == "dmp"))
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(&tag)))
+        .filter_map(|p| {
+            let when = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+            (when.as_secs() + 1 >= started).then_some((p, when.as_secs()))
+        })
+        .collect();
+    found.sort_by_key(|(_, when)| std::cmp::Reverse(*when));
+    let of_kind = found
+        .iter()
+        .position(|(p, _)| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{kind}-"))));
+    of_kind.or((!found.is_empty()).then_some(0)).map(|i| found.swap_remove(i).0)
 }
 
 #[cfg(windows)]
@@ -310,25 +443,33 @@ mod native {
     //! thread's stack and the list of loaded modules, which is enough to say
     //! where each thread was; not the whole of the program's memory
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicIsize, AtomicPtr, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicUsize, Ordering};
     use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Storage::FileSystem::{CREATE_ALWAYS, CreateFileW, FILE_ATTRIBUTE_NORMAL};
     use windows_sys::Win32::System::Diagnostics::Debug::{
-        EXCEPTION_POINTERS, MINIDUMP_EXCEPTION_INFORMATION, MiniDumpNormal, MiniDumpWithThreadInfo, MiniDumpWithUnloadedModules,
-        MiniDumpWriteDump, SetUnhandledExceptionFilter,
+        EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER, MINIDUMP_EXCEPTION_INFORMATION, MiniDumpNormal, MiniDumpWithThreadInfo,
+        MiniDumpWithUnloadedModules, MiniDumpWriteDump, SetUnhandledExceptionFilter,
     };
     use windows_sys::Win32::System::Threading::{
         CreateEventW, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, INFINITE, SetEvent, WaitForSingleObject,
     };
 
+    /// Windows' writer may not be called by two threads at once: a hang's
+    /// dump and a crash's take turns
+    static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A dump of this program, now, named for what it is of. With the
     /// exception that caused it, when there is one: the thread it happened
-    /// on and where
+    /// on and where. Written under a name that says it is unfinished, and
+    /// given its own name only once whole
     pub fn dump_now(what: &str, crash: Option<(u32, *mut EXCEPTION_POINTERS)>) -> Option<PathBuf> {
         let dir = super::dumps_dir();
         std::fs::create_dir_all(&dir).ok()?;
+        super::tidy_dumps(&dir);
         let path = dir.join(format!("{what}-{}-{}.dmp", std::process::id(), super::now_secs()));
-        let wide: Vec<u16> = path.as_os_str().encode_wide_z();
+        let writing = path.with_extension(format!("dmp.{}", super::UNFINISHED));
+        let wide: Vec<u16> = writing.as_os_str().encode_wide_z();
+        let _turn = WRITING.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: a path ended by a zero, and handles closed below
         let file = unsafe {
             CreateFileW(wide.as_ptr(), GENERIC_WRITE, 0, std::ptr::null(), CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, std::ptr::null_mut())
@@ -355,11 +496,10 @@ mod native {
             )
         };
         unsafe { CloseHandle(file) };
-        if ok == 0 {
-            let _ = std::fs::remove_file(&path);
+        if ok == 0 || std::fs::rename(&writing, &path).is_err() {
+            let _ = std::fs::remove_file(&writing);
             return None;
         }
-        super::tidy_dumps(&dir);
         Some(path)
     }
 
@@ -374,16 +514,22 @@ mod native {
     }
 
     // The crash to write down, handed from the thread that crashed to one
-    // that can still write: a thread whose stack has run out cannot
+    // that can still write: a thread whose stack has run out cannot. Only
+    // the first thread to crash fills these in, so the exception and the
+    // thread it names are always the same crash's
+    static CLAIMED: AtomicBool = AtomicBool::new(false);
     static CRASH_POINTERS: AtomicPtr<EXCEPTION_POINTERS> = AtomicPtr::new(std::ptr::null_mut());
     static CRASH_THREAD: AtomicU32 = AtomicU32::new(0);
     static GO: AtomicIsize = AtomicIsize::new(0);
     static DONE: AtomicIsize = AtomicIsize::new(0);
+    /// The filter that was there before this one, called after it
+    static BEFORE: AtomicUsize = AtomicUsize::new(0);
 
     /// Have a native crash written down before Windows' own reporting runs
     pub fn catch_crashes() {
-        // SAFETY: plain events, kept for the life of the process
-        let (go, done) = unsafe { (CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()), CreateEventW(std::ptr::null(), 0, 0, std::ptr::null())) };
+        // SAFETY: plain events, kept for the life of the process. Done is
+        // left set once set, so every thread that crashed is let go
+        let (go, done) = unsafe { (CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()), CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())) };
         if go.is_null() || done.is_null() {
             return;
         }
@@ -406,18 +552,30 @@ mod native {
             return;
         }
         // SAFETY: a function of the shape Windows calls
-        unsafe { SetUnhandledExceptionFilter(Some(on_crash)) };
+        let before = unsafe { SetUnhandledExceptionFilter(Some(on_crash)) };
+        BEFORE.store(before.map_or(0, |f| f as usize), Ordering::SeqCst);
     }
 
     /// Called by Windows on the thread that crashed: hands the crash to the
-    /// writer, waits a while for it, and lets Windows go on as it would have
+    /// writer, waits a while for it, then does what the filter before this
+    /// one would have done, or lets Windows go on as it would have
     unsafe extern "system" fn on_crash(pointers: *const EXCEPTION_POINTERS) -> i32 {
-        CRASH_POINTERS.store(pointers as *mut _, Ordering::SeqCst);
         // SAFETY: plain calls on this thread and on the events made at start
         unsafe {
-            CRASH_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
-            SetEvent(GO.load(Ordering::SeqCst) as HANDLE);
+            if !CLAIMED.swap(true, Ordering::SeqCst) {
+                CRASH_POINTERS.store(pointers as *mut _, Ordering::SeqCst);
+                CRASH_THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
+                SetEvent(GO.load(Ordering::SeqCst) as HANDLE);
+            }
             WaitForSingleObject(DONE.load(Ordering::SeqCst) as HANDLE, 15_000);
+        }
+        let before = BEFORE.load(Ordering::SeqCst);
+        if before != 0 && before != on_crash as *const () as usize {
+            // SAFETY: what SetUnhandledExceptionFilter gave back, a filter
+            let f: LPTOP_LEVEL_EXCEPTION_FILTER = unsafe { std::mem::transmute::<usize, LPTOP_LEVEL_EXCEPTION_FILTER>(before) };
+            if let Some(f) = f {
+                return unsafe { f(pointers) };
+            }
         }
         // EXCEPTION_CONTINUE_SEARCH: Windows' own reporting still runs
         0
@@ -428,17 +586,25 @@ mod native {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_newest_dumps_are_kept() {
-        let dir = std::env::temp_dir().join(format!("sk-dumps-{}", std::process::id()));
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("sk-dumps-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn aged(p: &Path, secs_ago: u64) {
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - Duration::from_secs(secs_ago)).unwrap();
+    }
+
+    #[test]
+    fn only_the_newest_dumps_are_kept() {
+        let dir = scratch("kept");
         for i in 0..(DUMPS_KEPT + 3) {
             let p = dir.join(format!("crash-1-{i}.dmp"));
             std::fs::write(&p, b"x").unwrap();
-            let when = std::time::SystemTime::now() - Duration::from_secs((100 - i) as u64);
-            let f = std::fs::File::options().write(true).open(&p).unwrap();
-            f.set_modified(when).unwrap();
+            aged(&p, (100 - i) as u64);
         }
         std::fs::write(dir.join("notes.txt"), b"not a dump").unwrap();
         let kept = tidy_dumps(&dir);
@@ -450,11 +616,77 @@ mod tests {
     }
 
     #[test]
-    fn a_hang_reads_back_as_written() {
+    fn a_dump_left_half_written_goes_once_it_is_old() {
+        let dir = scratch("half");
+        let old = dir.join("hang-work-1-5.dmp.part");
+        let fresh = dir.join("hang-work-2-6.dmp.part");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        aged(&old, UNFINISHED_GIVEN_UP.as_secs() + 60);
+        let kept = tidy_dumps(&dir);
+        assert!(kept.is_empty(), "a half-written dump is not one: {kept:?}");
+        assert!(!old.exists(), "one left long ago went");
+        assert!(fresh.exists(), "one perhaps still being written stays");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_dump_of_a_run_is_the_newest_of_its_kind() {
+        let dir = scratch("of");
+        let started = now_secs() - 50;
+        let hang = dir.join(format!("hang-work-7-{}.dmp", started + 10));
+        let crash = dir.join(format!("crash-7-{}.dmp", started + 30));
+        let other = dir.join(format!("crash-8-{}.dmp", started + 40));
+        let earlier = dir.join("crash-7-1.dmp");
+        for (p, ago) in [(&hang, 40), (&crash, 20), (&other, 10), (&earlier, 5000)] {
+            std::fs::write(p, b"x").unwrap();
+            aged(p, ago);
+        }
+        assert_eq!(dump_of(&dir, 7, started, "crash"), Some(crash.clone()), "a crash after a hang it came back from");
+        assert_eq!(dump_of(&dir, 7, started, "hang"), Some(hang.clone()));
+        std::fs::remove_file(&hang).unwrap();
+        assert_eq!(dump_of(&dir, 7, started, "hang"), Some(crash), "else the newest of the run");
+        assert_eq!(dump_of(&dir, 9, started, "crash"), None, "another run's are not this one's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hangs_read_back_as_written() {
         let h = Hang { pid: 7, part: "work".into(), since: 100, secs: 25, back: false, dump: String::new() };
-        let text = serde_json::to_string(&h).unwrap();
-        assert_eq!(serde_json::from_str::<Hang>(&text).unwrap(), h);
+        let text = serde_json::to_string(&[&h]).unwrap();
+        assert_eq!(serde_json::from_str::<Vec<Hang>>(&text).unwrap(), vec![h]);
         assert!(!text.contains("dump"), "no dump, nothing said of one");
+    }
+
+    #[test]
+    fn a_part_back_does_not_hide_one_still_stopped() {
+        let work = Hang { pid: 7, part: "work".into(), since: 100, secs: 40, back: false, dump: String::new() };
+        let window = Hang { pid: 7, part: "window".into(), since: 100, secs: 22, back: true, dump: String::new() };
+        let both = [window.clone(), work.clone()];
+        assert_eq!(still_stopped(&both, 7, 90), Some(&work));
+        assert_eq!(still_stopped(&[window], 7, 90), None, "back is not stopped");
+        assert_eq!(still_stopped(&both, 8, 90), None, "another run's");
+        assert_eq!(still_stopped(&both, 7, 200), None, "from before this run started");
+    }
+
+    #[test]
+    fn a_person_answering_is_not_a_hang() {
+        // On a thread of its own: the part is this thread's
+        std::thread::spawn(|| {
+            beat(Part::Window);
+            let held = person_answers(|| HELD[Part::Window.index()].load(Ordering::SeqCst));
+            assert_eq!(held, 1, "held while the person thinks");
+            assert_eq!(HELD[Part::Window.index()].load(Ordering::SeqCst), 0, "and let go after");
+        })
+        .join()
+        .unwrap();
+        // A thread that is no part is not held
+        std::thread::spawn(|| {
+            let before = HELD.iter().map(|h| h.load(Ordering::SeqCst)).sum::<u32>();
+            person_answers(|| assert_eq!(HELD.iter().map(|h| h.load(Ordering::SeqCst)).sum::<u32>(), before));
+        })
+        .join()
+        .unwrap();
     }
 
     #[cfg(windows)]
@@ -462,6 +694,7 @@ mod tests {
     fn a_dump_of_this_program_can_be_written() {
         let p = native::dump_now("test", None).expect("a dump");
         assert!(std::fs::metadata(&p).unwrap().len() > 1000);
+        assert!(!p.with_extension("dmp.part").exists(), "nothing half written left");
         let _ = std::fs::remove_file(p);
     }
 }
