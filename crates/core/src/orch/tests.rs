@@ -354,6 +354,13 @@ fn a_line_about_mail_that_did_not_go_in_is_said_again() {
     assert_eq!(w.o.tick(&w.scene), told, "said again");
     w.o.typed(&uid("codex"), true);
     assert!(w.o.tick(&w.scene).is_empty(), "went in: said once");
+    // On its way when the app closed: nothing is written down as told, and
+    // the app that comes up next says it
+    w.o.mail_tab(&uid("codex"), "claude", "Another", "More.");
+    assert_eq!(w.o.tick(&w.scene).len(), 1);
+    assert!(w.o.tick(&w.scene).is_empty(), "not twice while on its way");
+    w.o.telling.clear();
+    assert_eq!(w.o.tick(&w.scene).len(), 1, "said by the next app");
 }
 
 /// Mail handed over to a wait whose caller had gone is in nobody's hands:

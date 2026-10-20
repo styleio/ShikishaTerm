@@ -984,14 +984,6 @@ impl Store {
         Ok(())
     }
 
-    /// The box's tab was not told after all: everything unread in it is
-    /// pointed at again
-    pub fn tell_again(&mut self, box_: &str) -> Result<()> {
-        self.conn
-            .execute("UPDATE mail SET is_told = 0 WHERE box = ?1 AND is_read = 0", params![box_])?;
-        Ok(())
-    }
-
     /// Every handover given as if `by_ms` earlier, for a test of how long one
     /// is trusted to be in its reader's hands
     #[cfg(test)]

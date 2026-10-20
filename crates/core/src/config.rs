@@ -2067,6 +2067,10 @@ pub fn confer_merges(cfg: &Config) -> bool {
 
 /// A count as written, held to what a `u32` holds: a negative one is 0, a
 /// larger one is the largest, and one that is not a number is refused
+fn blank_is_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.filter(|s| !s.trim().is_empty()))
+}
+
 fn saturating_u32<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
     let v = serde_json::Value::deserialize(d)?;
     match v.as_f64() {
@@ -3243,7 +3247,12 @@ pub struct BrowserConfig {
 
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct TabConfig {
-    /// Tab name (generated from the command name if omitted)
+    /// Tab name (generated from the command name if omitted). A name of
+    /// nothing but spaces is no name: written so by an ask that named none,
+    /// it gave the tab a different title on launch than the one it was
+    /// matched by when the settings were read again, and every save of the
+    /// settings started that tab anew (2026-10-20)
+    #[serde(default, deserialize_with = "blank_is_none")]
     pub name: Option<String>,
     /// Name referred to from automation (optional). Setting this means renaming the
     /// tab won't break scripts. If omitted, the tab can be referred to by its name
@@ -5386,6 +5395,16 @@ pub fn git_bash() -> Option<std::path::PathBuf> {
 /// A command as it is written into a tab: one line, or -- when its program is
 /// quoted because its path has spaces in it -- the program and its arguments
 /// apart, since a line is split at every space when it is read back
+/// The line of the one tab an ask named: its name only when it has one, so
+/// the tab is called what its command makes it otherwise (`TabConfig::name`)
+fn one_tab(name: &str, command: &str) -> serde_json::Value {
+    let mut tab = serde_json::json!({ "command": command_value(command) });
+    if !name.trim().is_empty() {
+        tab["name"] = serde_json::json!(name.trim());
+    }
+    tab
+}
+
 pub fn command_value(command: &str) -> serde_json::Value {
     let c = command.trim();
     match c.strip_prefix('"').and_then(|rest| rest.split_once('"')) {
@@ -5442,9 +5461,7 @@ pub fn append_folder_at(
             // a plain shell, so it gets one tab: the one the ask named, which
             // is the AI the project's machines are given (typed into the
             // terminal there once it is open, see `TabOptions::remote_run`)
-            (Some(_), Start::One { name, command }) => {
-                serde_json::json!([{ "name": name, "command": command_value(command) }])
-            }
+            (Some(_), Start::One { name, command }) => serde_json::json!([one_tab(name, command)]),
             // The tabs of the checkout on that machine it was cut from, the way
             // a worktree here takes its checkout's -- they are already that
             // machine's terminals
@@ -5475,7 +5492,7 @@ pub fn append_folder_at(
                 })
                 .and_then(|g| g.get("tabs").cloned())
                 .unwrap_or_else(|| serde_json::json!([])),
-            (None, Start::One { name, command }) => serde_json::json!([{ "name": name, "command": command_value(command) }]),
+            (None, Start::One { name, command }) => serde_json::json!([one_tab(name, command)]),
         };
         // What marks the copies apart. The branch when there is one, since two
         // branches can end in the same word (`feature/login`, `fix/login`) and
@@ -6001,7 +6018,8 @@ impl TabMark {
         match written {
             Some(id) => self.id.as_deref() == Some(id),
             None => {
-                let name = line.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                // A blank name is no name, as it is read (`TabConfig::name`)
+                let name = line.get("name").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()).map(str::to_string);
                 let argv = line
                     .get("command")
                     .and_then(|c| serde_json::from_value::<CommandSpec>(c.clone()).ok())
@@ -8599,6 +8617,25 @@ mod tests {
         ] {
             assert_eq!(slug_id(name), want, "the automation name for {name}");
         }
+    }
+
+    /// A tab named nothing is called what its command makes it, however the
+    /// nothing was written: a blank name read as a name gave the tab one
+    /// title on launch and another when the settings were read again, and
+    /// every save started it anew (2026-10-20)
+    #[test]
+    fn a_blank_tab_name_is_no_name() {
+        let cfg: super::Config = serde_json::from_str(
+            r#"{"desks":[{"name":"d","folders":[{"tabs":[{"name":"","command":"claude"},{"name":"  ","command":"codex"},{"command":"bash"}]}]}]}"#,
+        )
+        .unwrap();
+        let (desk, _) = cfg.resolve_desks();
+        assert!(desk[0].tabs.iter().all(|t| t.cfg.name.is_none()));
+        assert_eq!(super::one_tab("", "claude").get("name"), None);
+        // ...and a line written with a blank name is still found as that tab
+        let mark = super::TabMark { id: None, uid: None, name: None, argv: vec!["claude".into()], folder: None };
+        assert!(mark.fits(&serde_json::json!({"name": " ", "command": "claude"})));
+        assert_eq!(super::one_tab(" Git Bash ", "bash")["name"], "Git Bash");
     }
 
     /// Automation reaches a tab by its id and by nothing else, so every tab

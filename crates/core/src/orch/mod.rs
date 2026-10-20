@@ -1963,6 +1963,10 @@ impl Orchestra {
             {
                 continue;
             }
+            // A line about it on its way: told once that has gone in
+            if self.telling.values().any(|boxes| boxes.contains(&inbox)) {
+                continue;
+            }
             // Handed over and in its reader's hands, for a while
             if store
                 .given_at(&inbox)
@@ -2000,26 +2004,28 @@ impl Orchestra {
                 lead: None,
                 text: line,
             });
-            let _ = store.told(&inbox);
+            // Written down as told once the line has gone in (`Self::typed`):
+            // a line lost on the way -- the app closing, an emergency stop,
+            // a terminal that could not be written to -- leaves it untold,
+            // and it is pointed out again, after a restart too
             self.telling.entry(reader).or_default().push_back(inbox);
         }
     }
 
-    /// The line telling a tab (by uid) of its mail went in, or did not: one
-    /// that did not -- its terminal on a machine whose line went, say -- has
-    /// its mail pointed out again, once the tab can be told
+    /// The line telling a tab (by uid) of its mail went in, or did not: its
+    /// box is told, or left to be pointed out again once the tab can be told
     pub fn typed(&mut self, tab: &str, went_in: bool) {
         let Some(waiting) = self.telling.get_mut(tab) else { return };
         let Some(inbox) = waiting.pop_front() else { return };
         if waiting.is_empty() {
             self.telling.remove(tab);
         }
-        if went_in {
+        if !went_in {
+            crate::append_hook_log(&format!("orchestration: the line about {inbox}'s mail did not go in; it is said again"));
             return;
         }
-        crate::append_hook_log(&format!("orchestration: the line about {inbox}'s mail did not go in; it is said again"));
         if let Ok(s) = self.store() {
-            let _ = s.tell_again(&inbox);
+            let _ = s.told(&inbox);
         }
     }
 

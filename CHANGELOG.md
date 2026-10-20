@@ -53,6 +53,11 @@ once it reaches its first tagged release.
   gone, and not dealt with for two minutes, is pointed out too: before, it
   and everything after it in that inbox went untold until the tab read its
   inbox by itself.
+- **A tab whose name is left blank is no longer started anew by every save of
+  the settings.** A tab an AI added without naming it was written with an
+  empty name, and was taken for a different tab than the one running each
+  time the settings were saved. A blank name is now no name: the tab is
+  called after its command, and is left running as it is.
 
 ## [0.28.1] - 2026-10-14
 
