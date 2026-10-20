@@ -1319,6 +1319,10 @@ impl portable_pty::ChildKiller for SshKiller {
     }
 }
 
+/// A terminal on another machine: its end of the line, the way to end it,
+/// and whether it has ended
+pub type Shell = (Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<AtomicBool>);
+
 /// Open a terminal on another machine.
 ///
 /// Returns the pair a tab needs and nothing else, so that the tab's own code
@@ -1329,7 +1333,7 @@ pub fn shell(
     cols: u16,
     cwd: Option<&str>,
     then: Option<&str>,
-) -> Result<(Box<dyn portable_pty::MasterPty + Send>, Box<dyn portable_pty::ChildKiller + Send + Sync>, Arc<AtomicBool>)>
+) -> Result<Shell>
 {
     let (out_tx, out_rx) = channel::<Vec<u8>>();
     let (reply_tx, reply_rx) = channel::<Result<ShellTx>>();
@@ -1910,7 +1914,7 @@ mod tests {
 
         assert!(answer_key_change(&spec.machine(), "SHA256:another", true).is_err(), "a key nobody was shown was trusted");
         assert_eq!(remembered(&spec).as_deref(), Some("SHA256:the-old-one"));
-        assert_eq!(answer_key_change(&spec.machine(), &change.now, true).expect("trusted"), true);
+        assert!(answer_key_change(&spec.machine(), &change.now, true).expect("trusted"));
         assert!(key_changes().iter().all(|c| c.machine != spec.machine()), "the question stayed up");
         assert!(exec(&spec, "true", 15_000).expect("it did not connect with the trusted key").ok());
     }
@@ -1983,7 +1987,7 @@ mod tests {
         remember_host(&spec.machine(), "SHA256:kept").expect("written");
         assert!(exec(&spec, "true", 15_000).is_err());
         let change = key_changes().into_iter().find(|c| c.machine == spec.machine()).expect("nobody was asked");
-        assert_eq!(answer_key_change(&spec.machine(), &change.now, false).expect("answered"), false);
+        assert!(!answer_key_change(&spec.machine(), &change.now, false).expect("answered"));
         assert!(key_changes().iter().all(|c| c.machine != spec.machine()));
         assert_eq!(remembered(&spec).as_deref(), Some("SHA256:kept"));
     }

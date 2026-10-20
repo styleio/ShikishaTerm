@@ -5386,7 +5386,7 @@ pub fn git_bash() -> Option<std::path::PathBuf> {
         .filter(|d| d.join("git.exe").is_file())
         .filter_map(|d| d.parent().map(|g| g.join("bin").join("bash.exe")));
     let installed = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"].iter()
-        .filter_map(|k| std::env::var_os(k))
+        .filter_map(std::env::var_os)
         .map(|p| std::path::PathBuf::from(p).join("Git").join("bin").join("bash.exe"))
         .chain(std::env::var_os("LOCALAPPDATA").map(|p| std::path::PathBuf::from(p).join("Programs").join("Git").join("bin").join("bash.exe")));
     beside_git.chain(installed).find(|b| b.is_file())
@@ -9980,8 +9980,8 @@ mod tests {
         let (_dir, file) = tabs_file("arrange", &body);
         let before = read_desk(&file);
         let identities = |d: &Desk| d.tabs.iter().map(|t| (t.cfg.id.clone(), t.cfg.uid.clone())).collect::<Vec<_>>();
-        arrange_folders_at(&file, &before.uid, &[a.clone()], "pin").unwrap();
-        arrange_folders_at(&file, &before.uid, &[a.clone()], "archive").unwrap();
+        arrange_folders_at(&file, &before.uid, std::slice::from_ref(&a), "pin").unwrap();
+        arrange_folders_at(&file, &before.uid, std::slice::from_ref(&a), "archive").unwrap();
         let parked = read_desk(&file);
         assert!(parked.folders[0].keep_first && parked.folders[0].parked);
         assert_eq!(parked.tabs.len(), 1);
@@ -9989,7 +9989,7 @@ mod tests {
         let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(doc["desks"][0]["folders"][0]["custom"]["keep"], "me");
         assert_eq!(doc["desks"][0]["folders"][0]["tabs"][0]["children"].as_array().unwrap().len(), 1);
-        arrange_folders_at(&file, &before.uid, &[b.clone()], "archive").unwrap();
+        arrange_folders_at(&file, &before.uid, std::slice::from_ref(&b), "archive").unwrap();
         assert!(read_desk(&file).tabs.is_empty(), "archiving the last active folder launched a fallback tab");
         arrange_folders_at(&file, &before.uid, &[a.clone(), b], "restore").unwrap();
         assert_eq!(identities(&read_desk(&file)), identities(&before));

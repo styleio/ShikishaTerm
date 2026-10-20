@@ -125,7 +125,7 @@ fn step(at: At, b: u8) -> At {
             _ => At::Ground,
         },
         At::EscIntermediate => match b {
-            0x20..=0x2f | 0x00..=0x1f => At::EscIntermediate,
+            0x00..=0x2f => At::EscIntermediate,
             _ => At::Ground,
         },
         At::Csi => match b {
@@ -164,9 +164,7 @@ mod tests {
             b"9",
             b"next\r\n",
         ];
-        for _ in 0..40 {
-            s.push(b"scrolling line\r\n");
-        }
+        s.extend([b"scrolling line\r\n".as_slice(); 40]);
         s.push(b"\x1b[?2004l\x1b[?1l\x1b>\x1b[?1002l\x1b[?1006l end");
         s
     }

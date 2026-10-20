@@ -237,7 +237,7 @@ impl Board {
         // and a hook can report it -- and one asked for twice is not two
         // things the folder is for
         let cut = trim_ask(text);
-        if h.asks.iter().any(|a| *a == cut) {
+        if h.asks.contains(&cut) {
             return false;
         }
         h.asks.push(cut);

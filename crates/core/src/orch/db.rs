@@ -1054,7 +1054,7 @@ impl Store {
         drop(st);
         let woken = match wake {
             None => !unread.is_empty(),
-            Some(kinds) => unread.iter().any(|m| kinds.iter().any(|k| *k == m.kind)),
+            Some(kinds) => unread.iter().any(|m| kinds.contains(&m.kind)),
         };
         if !woken {
             tx.commit()?;

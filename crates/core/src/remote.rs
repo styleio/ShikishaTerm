@@ -69,6 +69,9 @@ pub struct Snapshot {
 }
 
 /// Operations arriving from remote. Executed on the main loop
+// Held for the moment it takes the main loop to read it, never in numbers:
+// boxing its largest kind would cost every one of the places that make it
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum RemoteCmd {
     /// A remote viewer opened the board. Its screen takes over from keys
@@ -470,7 +473,7 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // are also listed in `the_phone_is_refused_only_what_is_written_down`
 
         // Paste stays local — one long-press would flow straight into the AI's input box
-        Ev::Paste { .. } => false,
+        Ev::Paste => false,
         // The master password. Answered in the window, where the prompt holds
         // the whole app until the person at it replies -- and a password that
         // never travels is one no network can carry off
@@ -2561,6 +2564,7 @@ fn pair_route(mut req: tiny_http::Request, method: &str, path: &str, snapshot: &
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     req: tiny_http::Request,
     token: &Arc<Mutex<String>>,
@@ -4261,7 +4265,7 @@ mod tests {
         // the match still parses, still fills the list, and stops meaning
         // anything at all
         assert!(
-            gate.len() < gate_src.len() / 4 && gate.contains("Ev::Paste { .. } => false,"),
+            gate.len() < gate_src.len() / 4 && gate.contains("Ev::Paste => false,"),
             "the gate's range was not read ({} characters)",
             gate.len()
         );
@@ -4509,7 +4513,7 @@ mod tests {
         assert!(key.len() >= 32, "the window's key is guessable: {key}");
 
         // A wrong key is only the link: the page for a phone, and no window
-        let mut stranger = Phone::new(&base);
+        let stranger = Phone::new(&base);
         let page = stranger.text("/?t=tok123456789012&here=nottheone");
         assert!(page.contains("const AT_PC = false;"), "a wrong key was taken for this PC's window");
 
@@ -4603,8 +4607,7 @@ mod tests {
                 let above = names
                     .lines()
                     .map(str::trim)
-                    .filter(|l| !l.is_empty() && !l.starts_with("Ev::") && !l.starts_with('|'))
-                    .last()
+                    .rfind(|l| !l.is_empty() && !l.starts_with("Ev::") && !l.starts_with('|'))
                     .unwrap_or_default();
                 assert!(above.starts_with("//"), "{} is refused with no reason beside it", names.trim());
                 refused.extend(names.match_indices("Ev::").map(|(i, _)| {

@@ -21397,6 +21397,7 @@ mod tests {
     #[test]
     fn every_code_entry_in_the_style_guide_exists() {
         let board = crate::shell::page();
+        let named = regex::Regex::new(r"`([A-Za-z_][A-Za-z0-9_]*)\(").unwrap();
         for (lang, guide) in [
             ("ja", include_str!("../../../docs/design/STYLEGUIDE.ja.md")),
             ("en", include_str!("../../../docs/design/STYLEGUIDE.md")),
@@ -21406,7 +21407,6 @@ mod tests {
             let to = guide.find("<!-- /code-entries -->").unwrap_or_else(|| panic!("{lang}: the list does not end"));
             let rows: Vec<&str> = guide[from..to].lines().filter(|l| l.starts_with("| ") && !l.starts_with("|---")).skip(1).collect();
             assert!(rows.len() >= 10, "{lang}: only {} rows were read", rows.len());
-            let named = regex::Regex::new(r"`([A-Za-z_][A-Za-z0-9_]*)\(").unwrap();
             for row in rows {
                 let cells: Vec<&str> = row.split(" | ").collect();
                 let page = cells.last().copied().unwrap_or_default();

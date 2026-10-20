@@ -61,7 +61,7 @@ pub enum Said {
     /// An answer to what was asked, by the number it was asked under
     Answer { id: u64, ok: bool, value: serde_json::Value },
     /// Something a page over there reported, on its own
-    Report { ev: Ev },
+    Report { ev: Box<Ev> },
 }
 
 /// Reports a page is allowed to send back up this line.
@@ -194,11 +194,11 @@ impl Line {
             Said::Report { mut ev } => {
                 // A file saved over there is on that device, wherever the
                 // report says it is
-                if let Ev::Download { item, .. } = &mut ev {
+                if let Ev::Download { item, .. } = &mut *ev {
                     item.far = true;
                 }
                 if worth_hearing(&ev) {
-                    self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()).push(ev);
+                    self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()).push(*ev);
                 }
             }
         }
@@ -604,7 +604,7 @@ pub fn draw_for<B: BrowserHost + Speaks>(
             move || {
                 while !stop.load(Ordering::Relaxed) {
                     for ev in reports() {
-                        let said = Said::Report { ev };
+                        let said = Said::Report { ev: Box::new(ev) };
                         if let Ok(text) = serde_json::to_string(&said)
                             && telling.send(text).is_err() {
                                 return;
@@ -830,7 +830,7 @@ mod tests {
         let far = Far::new();
         let line = far.line();
         let say = |ev: &Ev| {
-            line.heard(&serde_json::to_string(&Said::Report { ev: ev.clone() }).unwrap());
+            line.heard(&serde_json::to_string(&Said::Report { ev: Box::new(ev.clone()) }).unwrap());
         };
         say(&Ev::Ready {
             from: Some("ws/page".into()),

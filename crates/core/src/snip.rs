@@ -1337,7 +1337,7 @@ mod tests {
     /// into another language's word for the same name
     #[test]
     fn nouns_are_asked_for_in_the_language_on_screen() {
-        let dir = crate::repo_root().join("lang");
+        let _dir = crate::repo_root().join("lang");
         // Only the naming tool writes words of its own: the reading tool
         // writes out what is in the picture, in whatever language that is
         assert!(

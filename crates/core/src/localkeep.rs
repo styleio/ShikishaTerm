@@ -465,9 +465,8 @@ mod tests {
         // Back on a new line: attached again, the screen in the state
         let (conn, mut reader) = line(2);
         say(&conn, json!({ "do": "attach", "ref": 11, "term": term, "gen": generation, "tab": "t", "rows": 24, "cols": 80, "away": "always" }));
-        let mut back = String::new();
         let until = Instant::now() + Duration::from_secs(20);
-        loop {
+        let back = loop {
             assert!(Instant::now() < until, "attached again");
             let mut l = String::new();
             reader.read_line(&mut l).unwrap();
@@ -476,12 +475,11 @@ mod tests {
                     assert_eq!(m["gen"], generation);
                     assert_eq!(m["ref"], 11, "attach acknowledgement is addressed to its request");
                     let state = b64(&m["state"]);
-                    back = vt100::Screen::from_snapshot(&state).map(|s| s.contents()).expect("a state it can read");
-                    break;
+                    break vt100::Screen::from_snapshot(&state).map(|s| s.contents()).expect("a state it can read");
                 }
                 assert_ne!(m["did"], "unknown", "the terminal was known: {m}");
             }
-        }
+        };
         assert!(back.contains("held-on-this-pc"), "the screen came back: {back:?}");
 
         // And its end is told, with the code

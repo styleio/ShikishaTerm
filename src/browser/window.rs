@@ -24,11 +24,17 @@ pub(super) enum Place {
     At(std::rc::Rc<std::cell::Cell<Rect4>>),
 }
 
+/// What is done with a message a page posts, given the message and the
+/// address it was posted from
+pub(super) type Ipc = std::rc::Rc<dyn Fn(&str, &str)>;
+/// Whether an address is one of the app's own
+pub(super) type IsOurs = std::rc::Rc<dyn Fn(&str) -> bool>;
+
 /// What a page tells the window, each handed to the engine to wire up
 pub(super) struct Wiring {
     /// A message the page posted (`window.ipc.postMessage`), with the address
     /// it was posted from -- the engine's word, never the page's
-    pub ipc: std::rc::Rc<dyn Fn(&str, &str)>,
+    pub ipc: Ipc,
     /// The page started (true) or finished (false) loading
     pub loading: Option<std::rc::Rc<dyn Fn(bool)>>,
     /// The page's own processes died; `true` when it was for want of memory
@@ -41,7 +47,7 @@ pub(super) struct Wiring {
     pub downloads: Option<(Option<String>, Sender<Ev>)>,
     /// Ctrl+F and F3 open the board's search for this page, unless the page
     /// is at one of the app's own addresses then
-    pub find_keys: Option<(String, Sender<Ev>, std::rc::Rc<dyn Fn(&str) -> bool>)>,
+    pub find_keys: Option<(String, Sender<Ev>, IsOurs)>,
 }
 
 /// One page to make

@@ -547,7 +547,7 @@ mod tests {
         let record = |folder: &str, id: &str| folder == b && id == "working-conversation";
         assert!(crossed_hook(&idle, &[idle.clone(), working.clone()], record));
         assert!(!crossed_hook(&working, &[idle.clone(), working.clone()], record), "the independently found owner keeps it");
-        assert!(!crossed_hook(&idle, &[working.clone()], |_, _| false), "an unreadable record proves nothing");
+        assert!(!crossed_hook(&idle, std::slice::from_ref(&working), |_, _| false), "an unreadable record proves nothing");
         assert!(!crossed_hook(&idle, &[row(&b, "Hook")], record), "two explicit resumes are not this defect");
         assert!(!crossed_hook(&idle, &[row(&a, "Store")], |_, _| true), "two tabs in one folder are not contradictory");
         let mut remote = working;

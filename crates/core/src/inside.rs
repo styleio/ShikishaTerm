@@ -101,7 +101,7 @@ pub fn effective(bring: &[crate::config::BringRule]) -> Vec<crate::config::Bring
 /// [`effective`] against a given list of the app's rules: what a version
 /// with that list makes of the same settings
 fn merged(list: &[Shipped], bring: &[crate::config::BringRule]) -> Vec<crate::config::BringRule> {
-    let change_of = |id: &str| bring.iter().filter(|r| r.shipped.as_deref() == Some(id)).last();
+    let change_of = |id: &str| bring.iter().rfind(|r| r.shipped.as_deref() == Some(id));
     let mut out: Vec<crate::config::BringRule> = list
         .iter()
         .filter_map(|s| match change_of(s.id) {

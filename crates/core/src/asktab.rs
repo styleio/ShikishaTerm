@@ -352,6 +352,10 @@ fn run_output(t: &Tab, from: &RunFrom) -> (String, &'static str) {
     (tail(&t.last_screen, 60), "screen")
 }
 
+/// Where a look out on its thread answers: what it found, what came after
+/// the question, and the record's length before and after
+type LookAnswer = std::sync::mpsc::Receiver<(Found, Option<After>, Option<(u64, u64)>)>;
+
 /// The reply looked for in a record on the machine the tab runs on.
 ///
 /// Reading it there is a round trip or several, and this is asked on the main
@@ -363,7 +367,7 @@ pub struct FarRead {
     /// A look out on its thread, and whether it asked for the turn to be over
     /// too (see [`FarRead::reply`]). An answer to the other kind of look is
     /// not this one's
-    pending: Option<(std::sync::mpsc::Receiver<(Found, Option<After>, Option<(u64, u64)>)>, Look)>,
+    pending: Option<(LookAnswer, Look)>,
     /// When the last look went out, so a record that has not caught up yet is
     /// looked at again every few seconds rather than every tick
     last: Option<Instant>,
@@ -491,7 +495,7 @@ pub const FAR_LEN_WAIT: Duration = Duration::from_secs(10);
 /// machine the tab runs on, or -- with neither -- the screen
 enum Source {
     Here(std::path::PathBuf),
-    Far(crate::reader::Record),
+    Far(Box<crate::reader::Record>),
     Screen,
 }
 
@@ -499,7 +503,7 @@ impl Ask {
     fn source(&self, t: &Tab) -> Source {
         match t.record_at() {
             Some(record) if record.is_far() => {
-                if self.far.missing || self.record_unsure { Source::Screen } else { Source::Far(record) }
+                if self.far.missing || self.record_unsure { Source::Screen } else { Source::Far(Box::new(record)) }
             }
             _ => t.record().map_or(Source::Screen, Source::Here),
         }
@@ -1005,9 +1009,7 @@ fn reply_after(page: &crate::reader::Page, asked: usize, end: Option<u64>) -> Op
         Some(end) => later.take_while(|t| t.at.is_none_or(|at| at <= end)).collect(),
         None => later.take_while(|t| t.who != Who::You || crate::reader::from_a_hook(&t.text)).collect(),
     };
-    said.into_iter()
-        .filter(|t| t.who == Who::Ai && !t.text.trim().is_empty())
-        .last()
+    said.into_iter().rfind(|t| t.who == Who::Ai && !t.text.trim().is_empty())
         .map(|t| t.text.trim().to_string())
 }
 

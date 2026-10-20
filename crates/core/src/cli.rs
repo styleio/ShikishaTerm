@@ -78,11 +78,11 @@ fn skill(topic: Option<&str>, out: &mut impl std::io::Write, err: &mut impl std:
             let _ = write!(out, "{}", crate::skill::text());
             0
         }
-        Some(t) if t == "orchestration" => {
+        Some("orchestration") => {
             let _ = write!(out, "{}", crate::orch::text::guide());
             0
         }
-        Some(t) if t == "worktree" => {
+        Some("worktree") => {
             let _ = write!(out, "{}", crate::skill::worktree_guide());
             0
         }
@@ -118,10 +118,10 @@ fn usage() -> &'static str {
 /// a number is still a request
 fn argument(arg: &str) -> Value {
     let t = arg.trim_start();
-    if t.starts_with('{') || t.starts_with('[') {
-        if let Ok(v) = serde_json::from_str(arg) {
-            return v;
-        }
+    if (t.starts_with('{') || t.starts_with('['))
+        && let Ok(v) = serde_json::from_str(arg)
+    {
+        return v;
     }
     json!(arg)
 }
@@ -445,7 +445,10 @@ mod tests {
     /// each with its own behaviour to keep in step
     #[test]
     fn this_door_has_no_commands_of_its_own() {
-        let src = include_str!("cli.rs");
+        // One newline convention, whatever this machine checked the source
+        // out with: on CRLF the end of run() written as "\n}\n" matches
+        // nothing, and the words of every function below it were read as its
+        let src = include_str!("cli.rs").replace("\r\n", "\n");
         let body = src
             .split("pub fn run(args: &[String]) -> i32 {")
             .nth(1)
@@ -481,10 +484,10 @@ mod tests {
         for dir in ["crates/core/src", "crates/shared/src", "docs", "lang"] {
             for entry in std::fs::read_dir(root.join(dir)).expect(dir).flatten() {
                 let p = entry.path();
-                if matches!(p.extension().and_then(|e| e.to_str()), Some("rs" | "md" | "json")) {
-                    if let Ok(t) = std::fs::read_to_string(&p) {
-                        texts.push((p.display().to_string(), t));
-                    }
+                if matches!(p.extension().and_then(|e| e.to_str()), Some("rs" | "md" | "json"))
+                    && let Ok(t) = std::fs::read_to_string(&p)
+                {
+                    texts.push((p.display().to_string(), t));
                 }
             }
         }

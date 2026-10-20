@@ -119,20 +119,6 @@ pub fn ready() -> Result<Checkout> {
     Ok(Checkout { folder: dir, commit, read })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The page is told which code an answer was read in, by name
-    #[test]
-    fn which_code_was_read_is_said_by_name() {
-        assert_eq!(serde_json::to_value(Read::Build).unwrap(), serde_json::json!({"which": "build"}));
-        assert_eq!(serde_json::to_value(Read::Tag(release_tag())).unwrap(), serde_json::json!({"which": "tag", "name": release_tag()}));
-        assert_eq!(serde_json::to_value(Read::Main).unwrap(), serde_json::json!({"which": "main"}));
-        assert!(release_tag().starts_with('v') && release_tag().contains('.'));
-    }
-}
-
 /// The commit a folder has checked out
 fn head(git: &Path, dir: &Path) -> Option<String> {
     run(git, dir, &["rev-parse", "HEAD"], FETCH_TIMEOUT).ok().map(|s| s.trim().to_string())
@@ -177,5 +163,19 @@ fn run(git: &Path, dir: &Path, args: &[&str], timeout: std::time::Duration) -> R
             bail!("git {}: {}", args.join(" "), crate::i18n::t("guide.source.too_slow"));
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The page is told which code an answer was read in, by name
+    #[test]
+    fn which_code_was_read_is_said_by_name() {
+        assert_eq!(serde_json::to_value(Read::Build).unwrap(), serde_json::json!({"which": "build"}));
+        assert_eq!(serde_json::to_value(Read::Tag(release_tag())).unwrap(), serde_json::json!({"which": "tag", "name": release_tag()}));
+        assert_eq!(serde_json::to_value(Read::Main).unwrap(), serde_json::json!({"which": "main"}));
+        assert!(release_tag().starts_with('v') && release_tag().contains('.'));
     }
 }

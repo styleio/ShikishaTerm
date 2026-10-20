@@ -267,7 +267,7 @@ mod tests {
         REFUSING.store(false, Ordering::SeqCst);
 
         assert!(held.iter().all(|p| !p.is_null() && ours(*p)), "a refusal was not answered from the reserve");
-        assert!(!zeroed.is_null() && ours(zeroed) && zeroed as usize % 64 == 0, "the alignment asked for was not kept");
+        assert!(!zeroed.is_null() && ours(zeroed) && (zeroed as usize).is_multiple_of(64), "the alignment asked for was not kept");
         assert!(unsafe { std::slice::from_raw_parts(zeroed, 4096) }.iter().all(|b| *b == 0));
         assert!(impossible.is_null(), "more than the reserve holds was handed out");
         assert!(in_use() >= 1000 * 64 + 4096);

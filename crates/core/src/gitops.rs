@@ -54,7 +54,7 @@ pub fn root(dir: &Path, at: Option<&crate::elsewhere::Elsewhere>) -> Result<Path
     crate::git::root(dir).map_err(|e| e.to_string())
 }
 
-fn opt<'a>(args: &'a [Value], i: usize) -> Option<&'a serde_json::Map<String, Value>> {
+fn opt(args: &[Value], i: usize) -> Option<&serde_json::Map<String, Value>> {
     args.get(i).and_then(|v| v.as_object())
 }
 

@@ -177,6 +177,10 @@ pub fn secret(key: &str) -> Option<String> {
     store().lock().ok()?.get(key).cloned()
 }
 
+/// The settings git is run with: what is passed as `-c`, and what is put in
+/// its environment
+type Settings = (Vec<(String, String)>, Vec<(&'static str, String)>);
+
 /// Whose git these settings are being put on.
 ///
 /// The same account, told to two very different gits. One is a command this
@@ -206,7 +210,7 @@ impl As {
     /// credential is two chances to be signed in as somebody else. What
     /// differs is written out here, in the one place, rather than in two
     /// lists that have to be kept alike
-    fn settings(&self, whose: Whose) -> (Vec<(String, String)>, Vec<(&'static str, String)>) {
+    fn settings(&self, whose: Whose) -> Settings {
         let mut cfg: Vec<(String, String)> = Vec::new();
         let mut env: Vec<(&'static str, String)> = Vec::new();
         if let Some(n) = &self.name {
@@ -2445,7 +2449,7 @@ mod tests {
         assert!(discard_steps(&dir, &["kept.txt".into()], false).is_empty(), "a conflict would be run over");
         let err = discard(&dir, &["kept.txt".into()], false).unwrap_err();
         assert!(!err.to_string().is_empty());
-        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap().contains("<<<<<<<"), true);
+        assert!(std::fs::read_to_string(dir.join("kept.txt")).unwrap().contains("<<<<<<<"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

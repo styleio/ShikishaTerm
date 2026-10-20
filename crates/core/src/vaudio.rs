@@ -148,13 +148,13 @@ pub(crate) struct Fit {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 impl Fit {
-    pub(crate) fn to_rate(&mut self, input: &[f32], rate: f64) -> Samples {
+    pub(crate) fn resample(&mut self, input: &[f32], rate: f64) -> Samples {
         if (rate - RATE as f64).abs() < 0.5 || rate <= 0.0 {
             return input.to_vec();
         }
         let step = rate / RATE as f64;
         let mut frames: Vec<(f32, f32)> = self.last.into_iter().collect();
-        frames.extend(input.chunks_exact(2).map(|f| (f[0], f[1])));
+        frames.extend(input.as_chunks::<2>().0.iter().map(|&[l, r]| (l, r)));
         let mut out = Vec::new();
         while self.at + 1.0 < frames.len() as f64 {
             let i = self.at as usize;
@@ -668,7 +668,7 @@ mod mac_tap {
                 RATE as f64
             };
             let _ = NOT_INTERLEAVED;
-            Ok(self.fit.to_rate(&got, rate))
+            Ok(self.fit.resample(&got, rate))
         }
     }
 }
@@ -1107,7 +1107,7 @@ mod tests {
     fn sound_at_another_rate_is_made_to_fit() {
         let mut same = Fit::default();
         let tone: Samples = (0..960).flat_map(|i| [i as f32, -(i as f32)]).collect();
-        assert_eq!(same.to_rate(&tone, RATE as f64), tone, "48kHz was changed");
+        assert_eq!(same.resample(&tone, RATE as f64), tone, "48kHz was changed");
 
         // A second of 44.1kHz, in ten pieces, comes to a second of 48kHz
         let mut fit = Fit::default();
@@ -1117,7 +1117,7 @@ mod tests {
                 let v = (piece * 4410 + i) as f32;
                 [v, v]
             }).collect();
-            out.extend(fit.to_rate(&chunk, 44_100.0));
+            out.extend(fit.resample(&chunk, 44_100.0));
         }
         let frames = out.len() / CHANNELS;
         assert!((47_990..=48_000).contains(&frames), "a second came out as {frames} frames");

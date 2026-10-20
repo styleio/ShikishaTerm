@@ -37,6 +37,10 @@ pub struct SettingsWanted {
     pub sheet: bool,
 }
 
+/// Folders managed on a desk: (desk, what is done, the folders, the reviews
+/// to keep with them)
+pub type FolderManage = (String, String, Vec<String>, std::collections::BTreeMap<String, String>);
+
 /// Reports from a shell, sorted and waiting.
 #[derive(Default)]
 pub struct Mailbox {
@@ -350,7 +354,7 @@ pub struct Mailbox {
     /// Folders put out of sight until the next launch: (folder, hide). An
     /// empty folder with `false` brings back every one of them
     pub folder_hides: Vec<(String, bool)>,
-    pub folder_manage: Vec<(String, String, Vec<String>, std::collections::BTreeMap<String, String>)>,
+    pub folder_manage: Vec<FolderManage>,
     /// Folders told to work somewhere else: (folder, where)
     pub folder_moves: Vec<(String, String)>,
 }
@@ -818,7 +822,7 @@ impl Mailbox {
     pub fn take_folder_hides(&mut self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.folder_hides)
     }
-    pub fn take_folder_manage(&mut self) -> Vec<(String, String, Vec<String>, std::collections::BTreeMap<String, String>)> {
+    pub fn take_folder_manage(&mut self) -> Vec<FolderManage> {
         std::mem::take(&mut self.folder_manage)
     }
     pub fn take_folder_moves(&mut self) -> Vec<(String, String)> {

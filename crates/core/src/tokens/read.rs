@@ -166,11 +166,10 @@ pub fn codex_line(line: &[u8], carry: &mut CodexCarry) -> Option<Call> {
     // The same total counted again is not another call. Codex says it again
     // when only what is left of the plan changed -- with the last call's
     // numbers beside it, under a new time
-    if let Some((t, w)) = total {
-        if t == carry.total && w == carry.written {
+    if let Some((t, w)) = total
+        && t == carry.total && w == carry.written {
             return None;
         }
-    }
     let (last, written) = match info.get("last_token_usage").filter(|u| !u.is_null()) {
         Some(u) => (read(u), n(u, "/cache_write_input_tokens")),
         // Only the total: the call is what it grew by. A total that went

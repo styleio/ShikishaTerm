@@ -470,7 +470,7 @@ pub fn tidy_dumps(dir: &Path) -> Vec<(PathBuf, u64)> {
             all.push((path, size, when));
         }
     }
-    all.sort_by(|a, b| b.2.cmp(&a.2));
+    all.sort_by_key(|a| std::cmp::Reverse(a.2));
     let mut kept = Vec::new();
     let mut room = 0u64;
     for (i, (path, size, _)) in all.into_iter().enumerate() {

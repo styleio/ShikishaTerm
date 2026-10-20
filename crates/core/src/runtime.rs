@@ -557,6 +557,13 @@ fn bridge_offer<'a>(cfg: &config::Config, mut open_on: impl Iterator<Item = &'a 
     })
 }
 
+/// Whether a server's git can read a repository: when it was last asked,
+/// what it said, and whether an asking is on its way
+type Access = (Option<Instant>, Option<bool>, bool);
+
+/// The accounts a server was asked for, or why it could not say
+type Accounts = Result<Vec<String>, String>;
+
 /// The sign-in step for a server's git: a clone onto the server could not
 /// read the repository, and the server's git is to be given a sign-in to
 /// GitHub by the person, in a terminal on the server, with the commands the
@@ -578,7 +585,7 @@ struct GitSignIn {
     added: bool,
     /// Whether the server's git can read the repository now: when it was
     /// last asked, what it said, and whether an asking is on its way
-    access: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<bool>, bool)>>,
+    access: std::sync::Arc<std::sync::Mutex<Access>>,
 }
 
 /// A terminal's rows as one text, each row with whether the terminal itself
@@ -628,8 +635,7 @@ pub fn device_code_in(text: &str) -> String {
     };
     text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | ':' | '(' | ')' | '[' | ']'))
         .map(|w| w.trim_end_matches(['.', ',']))
-        .filter(|w| is_code(w))
-        .last()
+        .rfind(|w| is_code(w))
         .unwrap_or_default()
         .to_string()
 }
@@ -1067,6 +1073,7 @@ impl FarProject {
 /// what its checkout here is called, the way the settings would name it.
 /// `machine_ai` is the AI the dialog chose for a checkout made on a MicroVM
 /// (empty: what the project says)
+#[allow(clippy::too_many_arguments)]
 fn far_of(
     desk: Option<&config::Desk>,
     project: Option<&config::ProjectSpec>,
@@ -1368,7 +1375,7 @@ fn tend_asks(
             }
             // Sent to later, once the tab has its line
             Step::Send if owing.contains(&ask_key(a)) => true,
-            Step::Send => match {
+            Step::Send => {
                 // Where the terminal's output starts is taken as the command goes in
                 if a.run.is_some()
                     && let Some(t) = target
@@ -1384,60 +1391,61 @@ fn tend_asks(
                 // To the tab found, by what it is named now; the caller by
                 // the name its key was minted under
                 let from = caller.map(Tab::called).or(a.caller.as_deref());
-                match (target, &a.target_uid) {
+                let delivered = match (target, &a.target_uid) {
                     (Some(t), _) => send(from, &crate::orch::glue::tab_id(t), &a.text),
                     (None, None) => send(from, &a.target, &a.text),
                     (None, Some(_)) => Err(format!("<@{}> was closed before it was asked", a.target)),
-                }
-            } {
-                Ok(_) => {
-                    append_hook_log(&format!("ask_tab: sent to {}", a.target));
-                    a.phase = Phase::Waiting;
-                    // One moment, kept for both: an ask is never after itself
-                    let sent = std::time::Instant::now();
-                    a.sent_at = Some(sent);
-                    // The tab it went to, by who it is however it was named,
-                    // and the last the person had typed into it then
-                    a.sent_to = Some(target.map(|t| t.uid().to_string()).unwrap_or_else(|| a.target.clone()));
-                    if let Some(t) = target {
-                        crate::orch::glue::note_from_app(t.uid(), &a.text);
-                    }
-                    // By who it is and by the name it was asked by: an ask that
-                    // found the tab and one that went by its name are to one tab
-                    sent_now.push((a.sent_to.clone().unwrap_or_default(), sent));
-                    // ...and by its desk and name: an ask that went by name
-                    // and one that found the tab are to the same tab, and a
-                    // name on another desk is another tab
-                    sent_now.push((format!("{}/{}", ask_desk(a), a.target), sent));
-                    // Into the conference, with the asker's line. A command
-                    // typed into a terminal is not said to anyone
-                    if a.run.is_none() {
-                        let desk = ask_desk(a);
-                        let caller_name = a.caller.is_some().then(|| caller_id.clone());
-                        let target_id = ask_target(a, target);
-                        // The asker's conversation; one asked from outside every
-                        // tab grows from the tab it asked
-                        let thread = match caller {
-                            Some(c) => thread_of_tab(log, &answering, &desk, c),
-                            None => log.thread_for(&desk, &format!("outside/{target_id}")),
-                        };
-                        if let Some((thread, new)) = thread {
-                            a.ask_id = log.ask_opened(&desk, thread, caller_name.as_deref(), &target_id, &a.line, &a.text, a.round);
-                            if new {
-                                begun.push(Begun { desk: desk.clone(), thread, line: a.line.clone(), text: a.text.clone() });
-                            }
-                            opened.push((desk, thread));
+                };
+                match delivered {
+                    Ok(_) => {
+                        append_hook_log(&format!("ask_tab: sent to {}", a.target));
+                        a.phase = Phase::Waiting;
+                        // One moment, kept for both: an ask is never after itself
+                        let sent = std::time::Instant::now();
+                        a.sent_at = Some(sent);
+                        // The tab it went to, by who it is however it was named,
+                        // and the last the person had typed into it then
+                        a.sent_to = Some(target.map(|t| t.uid().to_string()).unwrap_or_else(|| a.target.clone()));
+                        if let Some(t) = target {
+                            crate::orch::glue::note_from_app(t.uid(), &a.text);
                         }
+                        // By who it is and by the name it was asked by: an ask that
+                        // found the tab and one that went by its name are to one tab
+                        sent_now.push((a.sent_to.clone().unwrap_or_default(), sent));
+                        // ...and by its desk and name: an ask that went by name
+                        // and one that found the tab are to the same tab, and a
+                        // name on another desk is another tab
+                        sent_now.push((format!("{}/{}", ask_desk(a), a.target), sent));
+                        // Into the conference, with the asker's line. A command
+                        // typed into a terminal is not said to anyone
+                        if a.run.is_none() {
+                            let desk = ask_desk(a);
+                            let caller_name = a.caller.is_some().then(|| caller_id.clone());
+                            let target_id = ask_target(a, target);
+                            // The asker's conversation; one asked from outside every
+                            // tab grows from the tab it asked
+                            let thread = match caller {
+                                Some(c) => thread_of_tab(log, &answering, &desk, c),
+                                None => log.thread_for(&desk, &format!("outside/{target_id}")),
+                            };
+                            if let Some((thread, new)) = thread {
+                                a.ask_id = log.ask_opened(&desk, thread, caller_name.as_deref(), &target_id, &a.line, &a.text, a.round);
+                                if new {
+                                    begun.push(Begun { desk: desk.clone(), thread, line: a.line.clone(), text: a.text.clone() });
+                                }
+                                opened.push((desk, thread));
+                            }
+                        }
+                        true
                     }
-                    true
-                }
-                Err(e) => {
-                    if let Some(line) = a.reply.take() {
-                        let _ = line.send(Err(e));
+                    Err(e) => {
+                        if let Some(line) = a.reply.take() {
+                            let _ = line.send(Err(e));
+                        }
+                        false
                     }
-                    false
                 }
-            },
+            }
             Step::Answer(v) => {
                 let state = v["state"].as_str().unwrap_or_default().to_string();
                 // A tab still saying its line has passed its answer on: the
@@ -1992,7 +2000,7 @@ fn reload_said_only_that(note: &str) -> bool {
 /// one in front
 fn probe_sessions(tabs: &mut [Tab], where_: &str) {
     for i in 0..tabs.len() {
-        let alone = only_one_here(&tabs, i);
+        let alone = only_one_here(tabs, i);
         let Some(t) = tabs.get_mut(i) else { continue };
         let Some((at, left)) = t.session_probe else { continue };
         if std::time::Instant::now() < at {
@@ -3088,7 +3096,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The SSH clone page's question, which GitHub accounts GitHub CLI on the
     // chosen server holds: (the page's number, the answer), filled in by a
     // thread since asking a server takes a moment
-    let ssh_accounts_answer: std::sync::Arc<std::sync::Mutex<Option<(u64, Result<Vec<String>, String>)>>> = Default::default();
+    let ssh_accounts_answer: std::sync::Arc<std::sync::Mutex<Option<(u64, Accounts)>>> = Default::default();
     let mut login_view: Option<crate::uistate::LoginStepState> = None;
     let mut login_seq: u64 = 0;
     // What it would take to have a missing working folder here. Answered when
@@ -5330,17 +5338,17 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // record -- now, or once the tabs have done what it waits on
                     if crate::orch::Orchestra::handles(&call.method) {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
                             let _ = call.reply.send(Err(e));
                             continue;
                         }
-                        let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+                        let scene = crate::orch::glue::scene(tabs, surfaces, &mut orch_profiles);
                         let named = call
                             .caller
                             .as_deref()
-                            .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                            .map(|c| crate::orch::glue::named_for(c, tabs, &mention_grants))
                             .unwrap_or_default();
                         let op = config::operate();
                         let limits = crate::orch::Limits { max_assignments: op.max_rounds, max_depth: op.depth() };
@@ -5358,7 +5366,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         );
                         let now_ms = start.elapsed().as_millis() as u64;
                         // A call is the caller's desk's: what it does is to the tabs there
-                        crate::orch::glue::apply(fx, &tabs, &surfaces, &[], &mut pending_send, engine.as_ref(), now_ms);
+                        crate::orch::glue::apply(fx, tabs, surfaces, &[], &mut pending_send, engine.as_ref(), now_ms);
                         continue;
                     }
                     // This desk's worktrees on this machine and on others: where,
@@ -5367,8 +5375,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // it clears away what AIs made
                     if call.method == "worktree_list" {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
                             let _ = call.reply.send(Err(e));
                             continue;
@@ -5413,8 +5421,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // and its commits stay
                     if call.method == "worktree_remove" {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
                             let _ = call.reply.send(Err(e));
                             continue;
@@ -5451,8 +5459,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // and answered once the folder is on the desk
                     if call.method == "worktree_add" {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &call.params) {
                             let _ = call.reply.send(Err(e));
                             continue;
@@ -5579,8 +5587,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // a card: a tab's own words, so a tab has to be calling
                     if matches!(call.method.as_str(), "say" | "react" | "share") {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         let words: Vec<serde_json::Value> = call.params.iter().take(3).cloned().collect();
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, &call.method, &words) {
                             let _ = call.reply.send(Err(e));
@@ -5665,8 +5673,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // on a thread, here or on the machine the folder is on
                     if call.method == "adr_list" {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "adr_list", &[]) {
                             let _ = call.reply.send(Err(e));
                             continue;
@@ -5685,7 +5693,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             continue;
                         };
                         let panel = me.id.clone().unwrap_or_else(|| me.called().to_string());
-                        let disk = match folder_disk(&panel, &surfaces, &tabs, &caps, false) {
+                        let disk = match folder_disk(&panel, surfaces, tabs, &caps, false) {
                             Ok(d) => d,
                             Err(e) => {
                                 let _ = call.reply.send(Err(e));
@@ -5711,7 +5719,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let granted = call
                             .caller
                             .as_deref()
-                            .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                            .map(|c| crate::orch::glue::named_for(c, tabs, &mention_grants))
                             .unwrap_or_default();
                         let mut list = Vec::new();
                         for s in surfaces.iter() {
@@ -5743,8 +5751,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     // there is a round trip or several away
                     if call.method == "tab_conversation" {
                         let Some(eng) = engine.as_ref() else { continue };
-                        brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                        let who = subject_of(call.caller.as_deref(), &tabs);
+                        brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                        let who = subject_of(call.caller.as_deref(), tabs);
                         let target = call
                             .params
                             .first()
@@ -5809,15 +5817,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let granted = call
                             .caller
                             .as_deref()
-                            .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                            .map(|c| crate::orch::glue::named_for(c, tabs, &mention_grants))
                             .unwrap_or_default();
                         let refused = match (engine.as_ref(), crate::asktab::parse(&call.params)) {
                             (_, Err(e)) => Some(e),
                             (None, _) => Some("no engine".to_string()),
                             (Some(eng), Ok((target, goal, wait))) => {
-                                brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                                let who = subject_of(call.caller.as_deref(), &tabs);
-                                let kind = crate::asktab::kind_of(&target, &surfaces, &tabs);
+                                brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                                let who = subject_of(call.caller.as_deref(), tabs);
+                                let kind = crate::asktab::kind_of(&target, surfaces, tabs);
                                 if let Err(e) = eng.call_primitive_as(call.caller.as_deref(), who, "browser_do",
                                     &[serde_json::json!(target), serde_json::json!(goal)]) {
                                     Some(e)
@@ -5825,7 +5833,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     Some(why)
                                 } else if kind == crate::asktab::Kind::Missing {
                                     Some(format!("There is no tab <@{target}> on this desk"))
-                                } else if call.caller.is_some() && !crate::orch::glue::named_key(&target, &tabs, &page_targets(desks.get(desk_index), desk_index, &caps)).is_some_and(|uid| granted.contains(&uid)) {
+                                } else if call.caller.is_some() && !crate::orch::glue::named_key(&target, tabs, &page_targets(desks.get(desk_index), desk_index, &caps)).is_some_and(|uid| granted.contains(&uid)) {
                                     Some(format!("Not done: the person has not named <@{target}> in what they asked you. \
                                         A page is only driven when the person names it with @; ask them to."))
                                 } else if driving.is_some() || words_waiter.is_some() || !words_calls.is_empty() {
@@ -5868,11 +5876,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         let granted = call
                             .caller
                             .as_deref()
-                            .map(|c| crate::orch::glue::named_for(c, &tabs, &mention_grants))
+                            .map(|c| crate::orch::glue::named_for(c, tabs, &mention_grants))
                             .unwrap_or_default();
                         if let Some(eng) = engine.as_ref() {
-                            brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                            let who = subject_of(call.caller.as_deref(), &tabs);
+                            brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                            let who = subject_of(call.caller.as_deref(), tabs);
                             // An ask carries a line for the chat, second; a command does not
                             let parsed = if run {
                                 crate::asktab::parse(&call.params).map(|(target, text, wait)| (target, String::new(), text, wait))
@@ -5888,14 +5896,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 )?;
                                 // The command for this kind of tab, or the one that is
                                 // -- said, not merely refused
-                                if let Some(why) = crate::asktab::wrong_command(&call.method, &target, crate::asktab::kind_of(&target, &surfaces, &tabs)) {
+                                if let Some(why) = crate::asktab::wrong_command(&call.method, &target, crate::asktab::kind_of(&target, surfaces, tabs)) {
                                     return Err(why);
                                 }
                                 // A terminal can be a server somewhere: only one the
                                 // person named is typed into
                                 // By who it is: a terminal opened under the id of
                                 // one the person named is not the one named
-                                if run && call.caller.is_some() && !crate::orch::glue::named_key(&target, &tabs, &page_targets(desks.get(desk_index), desk_index, &caps)).is_some_and(|uid| granted.contains(&uid)) {
+                                if run && call.caller.is_some() && !crate::orch::glue::named_key(&target, tabs, &page_targets(desks.get(desk_index), desk_index, &caps)).is_some_and(|uid| granted.contains(&uid)) {
                                     return Err(format!("Not run: the person has not named <@{target}> in what they asked you. \
                                         A terminal is only typed into when the person names it with @; ask them to."));
                                 }
@@ -5992,8 +6000,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // The screens, not the tabs: a caller is credited the
                             // number its report is then carried out under, and the
                             // two lists are not the same one (`places_by_surface`)
-                            brief_engine(eng, desks.get(desk_index), &surfaces, &tabs);
-                            let who = subject_of(call.caller.as_deref(), &tabs);
+                            brief_engine(eng, desks.get(desk_index), surfaces, tabs);
+                            let who = subject_of(call.caller.as_deref(), tabs);
                             eng.call_primitive_as(
                                 call.caller.as_deref(),
                                 who,
@@ -6011,7 +6019,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // what an AI calls a tab is its id
                             let uid = v.as_object_mut().and_then(|o| o.remove("uid")).and_then(|u| u.as_str().map(str::to_string));
                             if let (Some(id), Some(uid)) = (v.get("id").and_then(serde_json::Value::as_str).map(str::to_string), uid) {
-                                let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+                                let scene = crate::orch::glue::scene(tabs, surfaces, &mut orch_profiles);
                                 // A job's lead assigns it a task; anyone else
                                 // hands it the work in words
                                 match orchestra.opened(call.caller.as_deref(), &scene, &id, &uid) {
@@ -6053,45 +6061,45 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
 
         // Asks waiting on another tab: a look at each, every turn of the loop
-        if !tab_asks.is_empty() {
-            if let Some(eng) = engine.as_ref() {
-                let mut opened: Vec<(String, i64)> = Vec::new();
-                let mut begun: Vec<Begun> = Vec::new();
-                tend_asks(
-                    &mut tab_asks,
-                    eng,
-                    &desks,
-                    desk_index,
-                    &surfaces,
-                    &tabs,
-                    &desk_tabs,
-                    &mut orchestra,
-                    start,
-                    &mut convo_log,
-                    &mut opened,
-                    &mut begun,
-                );
-                if let Some((desk, thread)) = opened.pop() {
-                    confer_open = (confer_open.0 + 1, desk, thread);
-                }
-                // A conversation begun by an AI asking on its own may be one
-                // the desk already has: the deciding AI is asked, when the
-                // settings say so, while the conversation shows as begun
-                if !begun.is_empty() && cfg.as_ref().is_some_and(config::confer_merges)
-                    && let Ok(who) = caps.answerer_to_choose(None)
-                {
-                    for b in begun {
-                        let (tx, who) = (merge_tx.clone(), who.clone());
-                        std::thread::spawn(move || {
-                            match crate::convo::confer::belongs_to(&who, &crate::convo::path(), &b.desk, b.thread, &b.line, &b.text) {
-                                Ok(Some(into)) => {
-                                    let _ = tx.send((b.thread, into));
-                                }
-                                Ok(None) => {}
-                                Err(e) => append_hook_log(&format!("confer: the deciding AI could not place a conversation ({e:#})")),
+        if !tab_asks.is_empty()
+            && let Some(eng) = engine.as_ref()
+        {
+            let mut opened: Vec<(String, i64)> = Vec::new();
+            let mut begun: Vec<Begun> = Vec::new();
+            tend_asks(
+                &mut tab_asks,
+                eng,
+                &desks,
+                desk_index,
+                &surfaces,
+                &tabs,
+                &desk_tabs,
+                &mut orchestra,
+                start,
+                &mut convo_log,
+                &mut opened,
+                &mut begun,
+            );
+            if let Some((desk, thread)) = opened.pop() {
+                confer_open = (confer_open.0 + 1, desk, thread);
+            }
+            // A conversation begun by an AI asking on its own may be one
+            // the desk already has: the deciding AI is asked, when the
+            // settings say so, while the conversation shows as begun
+            if !begun.is_empty() && cfg.as_ref().is_some_and(config::confer_merges)
+                && let Ok(who) = caps.answerer_to_choose(None)
+            {
+                for b in begun {
+                    let (tx, who) = (merge_tx.clone(), who.clone());
+                    std::thread::spawn(move || {
+                        match crate::convo::confer::belongs_to(&who, &crate::convo::path(), &b.desk, b.thread, &b.line, &b.text) {
+                            Ok(Some(into)) => {
+                                let _ = tx.send((b.thread, into));
                             }
-                        });
-                    }
+                            Ok(None) => {}
+                            Err(e) => append_hook_log(&format!("confer: the deciding AI could not place a conversation ({e:#})")),
+                        }
+                    });
                 }
             }
         }
@@ -6111,11 +6119,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for t in tabs.iter() {
                 if let Some(ms) = t.last_manual_ms {
                     let uid = t.uid().to_string();
-                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms) {
-                        if orch_manual.insert(uid.clone(), ms).is_some() {
+                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms)
+                        && orch_manual.insert(uid.clone(), ms).is_some() {
                             orchestra.person_typed(&uid);
                         }
-                    }
                 }
             }
             // Working folders a command asked to remove: answered once the
@@ -7527,7 +7534,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         // that page. A page placed in the focused pane is a window of its own,
         // and anything of ours stands behind it (or, in a split, is cut off at
         // the pane's edge)
-        for (text, warn) in shell.mail().page_toasts.drain(..).collect::<Vec<_>>() {
+        for (text, warn) in std::mem::take(&mut shell.mail().page_toasts) {
             if let Some(key) = focused_page(&pane_layout, &ui.surfaces) {
                 let _ = caps.browser_toast(&key, &text, warn);
             }
@@ -8187,12 +8194,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             if let Some(Surface::Session(i)) = surfaces.get(to.wrapping_sub(1))
                 && let Some(t) = tabs.get(*i)
             {
-                mention_grants.insert(t.uid().to_string(), crate::orch::glue::named_now(&line, &tabs, &page_targets(desks.get(owner), owner, &caps)));
+                mention_grants.insert(t.uid().to_string(), crate::orch::glue::named_now(&line, tabs, &page_targets(desks.get(owner), owner, &caps)));
                 crate::orch::glue::save_named(&mention_grants);
             }
             let said = line.clone();
             if hand_line(tabs, surfaces, to, line, now_ms, &mut pending_send, ball) {
-                record_sent(&tabs, &surfaces, to, &said, crate::convo::Origin::person(device, "composer"));
+                record_sent(tabs, surfaces, to, &said, crate::convo::Origin::person(device, "composer"));
                 // A person naming a tab is where a conference begins: what
                 // they said is its first line
                 if !crate::asktab::named_in(&said).is_empty()
@@ -11722,13 +11729,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             };
             let Some(ft) = desk.tabs.get(*written) else { continue };
-            if let Surface::Session(i) = surface {
-                if !wanted.is_empty() && tabs.get(*i).is_some_and(|t| t.title != wanted)
+            if let Surface::Session(i) = surface
+                && !wanted.is_empty() && tabs.get(*i).is_some_and(|t| t.title != wanted)
                     && tabs.iter().enumerate().any(|(at, t)| at != *i && t.title == wanted) {
                     flash = Some(i18n::tp("err.tab.name_taken", &[("name", wanted)]));
                     continue;
                 }
-            }
             let mark = config::TabMark::of(desk, ft);
             match config::rename_tab_written(&desk.uid, *written, &mark, wanted) {
                 Ok(()) => {
@@ -12629,10 +12635,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     };
                     match found {
                         Some(l) => {
-                            if (login_done(&l, true, &mut tabs, rows, cols) && {
+                            if login_done(&l, true, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, &l));
                     true
-                }) {
+                } {
                 watcher.poke();
             }
                             l.go_on();
@@ -14537,10 +14543,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
             };
             if go_on {
-                if (login_done(p, true, &mut tabs, rows, cols) && {
+                if login_done(p, true, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, p));
                     true
-                }) {
+                } {
                 watcher.poke();
             }
                 p.go_on();
@@ -14564,19 +14570,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 std::sync::Arc::ptr_eq(&m.making.sign_in_gate(), gate) && m.error.is_none() && !m.gone && !m.making.stopped()
             });
             if !alive {
-                reread |= (login_done(p, false, &mut tabs, rows, cols) && {
+                reread |= login_done(p, false, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, p));
                     true
-                });
+                };
                 return false;
             }
             let note = crate::microvm::ai_sign_in_note(&p.host, Some(&p.home), Some(&p.ai), LOGIN_FRESH);
             let yes = note.as_ref().is_some_and(|n| n.state == "yes");
             if yes {
-                reread |= (login_done(p, true, &mut tabs, rows, cols) && {
+                reread |= login_done(p, true, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, p));
                     true
-                });
+                };
                 p.go_on();
             }
             !yes
@@ -14874,10 +14880,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 if let Some(p) = login_pending.take() {
                     match act.as_str() {
                         "next" => {
-                            if (login_done(&p, true, &mut tabs, rows, cols) && {
+                            if login_done(&p, true, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, &p));
                     true
-                }) {
+                } {
                 watcher.poke();
             }
                             p.go_on();
@@ -14893,10 +14899,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         "terminal" if matches!(p.after, LoginAfter::Copying(_)) => login_parked.push(p),
                         "terminal" => p.leave(),
                         _ => {
-                            if (login_done(&p, false, &mut tabs, rows, cols) && {
+                            if login_done(&p, false, &mut tabs, rows, cols) && {
                     routine_apply.extend(login_desks_away(&desks, desk_index, &p));
                     true
-                }) {
+                } {
                 watcher.poke();
             }
                             p.leave();
@@ -20431,7 +20437,9 @@ fn resolve_in_tab_knowing(
 }
 
 /// A hand-over (`crate::handover`) back from the thread that looked for the
-/// conversation's record: an answer for the dialog, or the tab to open
+/// conversation's record: an answer for the dialog, or the tab to open.
+/// One at a time, for the moment it takes to be read: its size costs nothing
+#[allow(clippy::large_enum_variant)]
 enum HandDone {
     Answer(String),
     Open {

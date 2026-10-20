@@ -1466,7 +1466,7 @@ pub fn far_answers_now(answers: &std::collections::BTreeMap<String, std::collect
     *now = answers.clone();
     drop(now);
     if let Ok(mut looked) = FAR_LOOKED.lock() {
-        looked.retain(|k, _| !changed.iter().any(|h| k.0 == *h));
+        looked.retain(|k, _| !changed.contains(&k.0));
     }
 }
 

@@ -33,10 +33,14 @@ pub struct View {
     pub results: BTreeMap<String, Notice>,
 }
 
+/// A folder being measured: which, where its sizes come back, and the flag
+/// that stops the measuring
+type Measuring = (String, mpsc::Receiver<(String, Usage)>, Arc<AtomicBool>);
+
 #[derive(Default)]
 pub struct Manager {
     views: BTreeMap<String, View>,
-    measuring: Option<(String, mpsc::Receiver<(String, Usage)>, Arc<AtomicBool>)>,
+    measuring: Option<Measuring>,
     /// A delayed remote preflight must never act on the next desk.
     pub pending: BTreeMap<String, String>,
     pub reviews: BTreeMap<String, String>,

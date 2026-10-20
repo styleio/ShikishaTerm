@@ -425,7 +425,8 @@ pub fn start(auto: bool) {
                         let _ = std::panic::catch_unwind(download);
                     }
                     Some(Want::Apply(what)) => {
-                        if std::panic::catch_unwind(|| apply(&what)).is_err() {
+                        let failed = std::panic::catch_unwind(|| apply(&what)).is_err();
+                        if failed {
                             // Put back only a swap that had not started the new copy
                             if read_journal().is_some_and(|j| j.step == "swap") {
                                 restore_aside(&crate::config::root_dir());

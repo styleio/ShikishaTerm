@@ -245,7 +245,7 @@ pub fn remote_quote(path: &str) -> String {
     match path.trim() {
         "" | "~" => "~".into(),
         p => match p.strip_prefix("~/") {
-            Some(rest) if rest.is_empty() => "~".into(),
+            Some("") => "~".into(),
             Some(rest) => format!("~/{}", q(rest)),
             None => q(p),
         },

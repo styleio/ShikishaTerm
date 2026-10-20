@@ -655,6 +655,9 @@ pub fn source_files() -> Vec<std::path::PathBuf> {
     out
 }
 
+#[cfg(all(test, unix))]
+pub(crate) use farterms::b64 as farterms_b64;
+
 #[cfg(test)]
 mod tests {
     /// The home folder and the folder for a program's own things, as each
@@ -665,8 +668,8 @@ mod tests {
             move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| std::ffi::OsString::from(*v))
         };
         let both = env(&[("USERPROFILE", "/u/win"), ("HOME", "/u/unix"), ("LOCALAPPDATA", "/u/win/local"), ("XDG_DATA_HOME", "/u/xdg")]);
-        let home = super::home_in(&both).unwrap();
-        let data = super::data_home(&both).unwrap();
+        let home = super::home_in(both).unwrap();
+        let data = super::data_home(both).unwrap();
         if cfg!(windows) {
             assert_eq!(home, std::path::PathBuf::from("/u/win"));
             assert_eq!(data, std::path::PathBuf::from("/u/win/local"));
@@ -783,6 +786,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&at);
     }
 }
-
-#[cfg(all(test, unix))]
-pub(crate) use farterms::b64 as farterms_b64;

@@ -626,16 +626,16 @@ fn here_in(src: &Source, cwd: &Path, most: usize) -> Vec<Hit> {
         // reading half a megabyte per file to learn one path is a scan nobody
         // would wait for
         let Some(head) = read_some(&path, FOLDER_CAP) else { continue };
-        let Some(at) = cwd_of(&head, &src) else { continue };
+        let Some(at) = cwd_of(&head, src) else { continue };
         if !crate::uistate::same_folder(Path::new(&at), cwd) {
             continue;
         }
-        let Some(id) = id_of(&path, &head, &src) else { continue };
+        let Some(id) = id_of(&path, &head, src) else { continue };
         out.push(Hit {
             program: src.program.clone(),
             id,
             title: title_of(Some(&at), &src.program),
-            snippet: first_ask(&path, &src).unwrap_or_default(),
+            snippet: first_ask(&path, src).unwrap_or_default(),
             cwd: Some(at),
             when: when.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
             tab: None,

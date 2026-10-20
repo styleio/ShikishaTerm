@@ -1527,9 +1527,9 @@ pub fn ask(question: &str, so_far: &[Said], picked: Option<&Picked>) -> anyhow::
 /// answers one of them belongs in the index, where it can be read.
 fn system_for(idx: &Index, picking: bool) -> String {
     let mut out = String::new();
-    out.push_str(&crate::asking::HELP_WHO);
+    out.push_str(crate::asking::HELP_WHO);
     out.push('\n');
-    out.push_str(&crate::asking::HELP_HOW);
+    out.push_str(crate::asking::HELP_HOW);
     out.push('\n');
     out.push_str(&crate::i18n::fill(
         crate::asking::HELP_OPEN,
@@ -1537,7 +1537,7 @@ fn system_for(idx: &Index, picking: bool) -> String {
     ));
     if picking {
         out.push('\n');
-        out.push_str(&crate::asking::HELP_FILL);
+        out.push_str(crate::asking::HELP_FILL);
     }
     // The answer is read by whoever asked, so which language to write it
     // in is said rather than guessed at from the question. Last, where an

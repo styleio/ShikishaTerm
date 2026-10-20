@@ -1390,7 +1390,7 @@ mod drawn_away_tests {
         );
         // Leave it out -- draw the list from what is on screen alone -- and
         // the project offers the folder straight back. That was the bug
-        let found = super::discovered_of(&cuts, &[main.clone()], &kept, &[]);
+        let found = super::discovered_of(&cuts, std::slice::from_ref(&main), &kept, &[]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].found[0].folder, away.display().to_string());
     }
@@ -1990,6 +1990,9 @@ pub const RESULT_TAB: &str = "result";
 ///
 /// Keeping sessions and browsers as separate variants is purely an internal
 /// concern; it has nothing to do with whoever wrote the config.
+// One for each pane, and a pane is not made in a loop: what its largest
+// kind weighs is not worth a box every match on it would reach through
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
     /// Which index into `tabs` (0-based)

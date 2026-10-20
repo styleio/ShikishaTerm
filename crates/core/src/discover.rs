@@ -376,8 +376,10 @@ fn decode_utf16_or_utf8(raw: &[u8]) -> String {
         return String::from_utf8_lossy(raw).into_owned();
     }
     let mut units: Vec<u16> = raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     if units.first() == Some(&0xFEFF) {
         units.remove(0);

@@ -591,9 +591,7 @@ mod live {
     /// there is no `node` to run it -- a machine without one has nothing to
     /// say about this and must not fail for it
     fn a_package_that_waits(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-        if which_node().is_none() {
-            return None;
-        }
+        which_node()?;
         let bin = dir.join("node_modules/@openai/codex/bin");
         std::fs::create_dir_all(&bin).ok()?;
         let file = bin.join("codex.js");

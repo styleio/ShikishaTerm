@@ -7247,7 +7247,7 @@ mod tests {
     /// the tab opened in the caller's folder instead of the one it was given
     #[test]
     fn open_ai_tab_refuses_options_that_are_not_a_table() {
-        let mut e = HookEngine::new().unwrap();
+        let e = HookEngine::new().unwrap();
         let broken = r#"{"folder":"C:\Users\me\work"}"#;
         let err = e.call_primitive("open_ai_tab", &[serde_json::json!("claude"), serde_json::json!(broken)]).unwrap_err();
         assert!(err.contains(broken) && err.contains("C:/work/x"), "{err}");

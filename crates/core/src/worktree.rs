@@ -1894,11 +1894,10 @@ fn discard_step(folder: &Path, released: &mut bool, approved: Option<&str>) -> R
         // Git deletes `.git` before anything else in the folder. If it is still
         // there, git refused before it touched anything, and git's reason is the
         // answer. If it is gone, git got part of the way, and the rest is ours
-        if let Err(e) = removed {
-            if folder.join(".git").exists() {
+        if let Err(e) = removed
+            && folder.join(".git").exists() {
                 return Err(e);
             }
-        }
         *released = true;
         let _ = run(&[
             "git".into(),

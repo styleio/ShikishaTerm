@@ -1588,7 +1588,7 @@ pub fn recent_text<CB: vt100::Callbacks>(p: &mut vt100::Parser<CB>, most: usize,
         next = at + rows;
     }
     p.screen_mut().set_scrollback(saved);
-    lines.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    lines.sort_unstable_by_key(|l| std::cmp::Reverse(l.0));
     let mut out = String::new();
     let mut blank = false;
     for (_, text) in lines {
@@ -4477,12 +4477,13 @@ impl Tab {
             let left = crate::farterm::left_running(&at, opts.remote_cwd.as_deref().unwrap_or_default(), &uid, opts.called(&title));
             (at, left, away)
         });
-        let (master, killer, pid, child): (
+        type Started = (
             Box<dyn MasterPty + Send>,
             Box<dyn ChildKiller + Send + Sync>,
             Option<u32>,
             Option<Box<dyn portable_pty::Child + Send + Sync>>,
-        ) = match (pair, opts.remote.as_ref(), opts.cloud.as_ref(), held_there) {
+        );
+        let (master, killer, pid, child): Started = match (pair, opts.remote.as_ref(), opts.cloud.as_ref(), held_there) {
             (Some(pair), _, _, _) => {
                 let child = pair.slave.spawn_command(cmd)?;
                 drop(pair.slave);

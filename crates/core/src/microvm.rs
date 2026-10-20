@@ -223,7 +223,8 @@ fn sign_in_print(s: Option<&crate::e2b::SignIn>) -> String {
 pub fn trust_as_checkout(at: &crate::elsewhere::Elsewhere, checkout: &str, worktree: &str) {
     // Each AI's file, and how it is read and written. Claude Code keeps a
     // JSON of projects; Codex CLI a TOML table per folder (seen on 0.157)
-    let ais: [(&str, &str, fn(&str, &str, &str) -> Option<String>); 2] = [
+    type Trusts = fn(&str, &str, &str) -> Option<String>;
+    let ais: [(&str, &str, Trusts); 2] = [
         ("Claude Code", "/home/user/.claude.json", trusted_as),
         ("Codex CLI", "/home/user/.codex/config.toml", codex_trusted_as),
     ];
