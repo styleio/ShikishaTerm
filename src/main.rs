@@ -350,6 +350,10 @@ fn boot() -> Result<()> {
     if !shikisha_core::reserve::arm() {
         shikisha_core::pressure::note("memory: no reserve could be set aside");
     }
+    // A refusal too large for the reserve still ends the run; it is written
+    // down as it happens, for the next start to say
+    #[cfg(windows)]
+    shikisha_core::reserve::write_refusals_to(&shikisha_core::lastexit::memory_notes_file());
     if split {
         return run_split();
     }

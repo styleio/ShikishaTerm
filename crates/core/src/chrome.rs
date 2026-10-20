@@ -1108,6 +1108,10 @@ impl Pages {
                         .unwrap_or_default()
                         .to_string();
                     book.cast.insert(page.clone(), (w, h));
+                    // Each frame is the whole picture: one not handed on yet
+                    // is only out of date, and a loop that is held up must
+                    // not come back to a pile of them
+                    book.mail.retain(|e| !matches!(e, shikisha_shared::Ev::Frame { from: Some(f), .. } if *f == page));
                     book.mail.push(shikisha_shared::Ev::Frame {
                         from: Some(page),
                         data,

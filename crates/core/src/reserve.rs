@@ -22,8 +22,16 @@
 //! second later. A probe that limits only itself (`bin/reserve_probe.rs`)
 //! cannot show that: nothing else there is asking.
 //!
-//! Nothing here allocates or logs: this runs *inside* a refused allocation.
-//! What happened is picked up afterwards by `crate::pressure`, which says so.
+//! A refusal the reserve cannot answer either -- one allocation larger than
+//! all of it -- still ends the program, and the standard library says why
+//! only on a console this program does not have. So that one is written down
+//! as it happens, in the file the next start reads ([`write_refusals_to`]):
+//! on 2026-10-20 a run ended on a list of 260 thousand events doubling to
+//! 163 MB, and nothing anywhere said so but a crash dump.
+//!
+//! Nothing here allocates: this runs *inside* a refused allocation. A rescue
+//! is picked up afterwards by `crate::pressure`, which says so; a refusal is
+//! written with the program's own few bytes and one call to Windows.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -51,6 +59,98 @@ static IN_USE: AtomicUsize = AtomicUsize::new(0);
 /// would then never be said. Telling one shortage from the next is the
 /// reporter's to do (`crate::pressure`)
 static SPENT: AtomicBool = AtomicBool::new(false);
+
+/// Where a refusal the reserve cannot answer is written down: an open
+/// file's handle, or 0. Opened beforehand, because a refusal is no time to
+/// open a file
+static NOTES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many refusals have been written down. The first few say what
+/// happened; a run refused over and over would only fill the disk
+static NOTED: AtomicUsize = AtomicUsize::new(0);
+const MOST_NOTED: usize = 20;
+
+/// Write each refusal the reserve cannot answer at the end of `file`, as
+/// one line in the form the next start reads (`crate::lastexit`). True if
+/// the file could be opened
+#[cfg(windows)]
+pub fn write_refusals_to(file: &std::path::Path) -> bool {
+    use std::os::windows::io::IntoRawHandle as _;
+    let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(file) else { return false };
+    let old = NOTES.swap(f.into_raw_handle() as usize, Ordering::SeqCst);
+    if old != 0 {
+        // SAFETY: the handle was opened here and nothing else holds it
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(old as _) };
+    }
+    true
+}
+
+/// A line put together without allocating
+struct Line {
+    bytes: [u8; 256],
+    len: usize,
+}
+
+impl Line {
+    fn put(&mut self, s: &[u8]) {
+        let n = s.len().min(self.bytes.len() - self.len);
+        self.bytes[self.len..self.len + n].copy_from_slice(&s[..n]);
+        self.len += n;
+    }
+
+    fn number(&mut self, mut n: u64) {
+        let mut digits = [0u8; 20];
+        let mut at = digits.len();
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (n % 10) as u8;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        self.put(&digits[at..]);
+    }
+}
+
+/// Write down that `size` bytes were refused and the reserve could not
+/// answer either
+#[cfg(windows)]
+fn refused(size: usize) {
+    let file = NOTES.load(Ordering::SeqCst);
+    if file == 0 || NOTED.fetch_add(1, Ordering::SeqCst) >= MOST_NOTED {
+        return;
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut line = Line { bytes: [0; 256], len: 0 };
+    line.put(b"[pid ");
+    line.number(u64::from(std::process::id()));
+    line.put(b" at ");
+    line.number(now);
+    line.put(b"] memory: Windows refused ");
+    line.number(size as u64 >> 20);
+    line.put(b" MB (");
+    line.number(size as u64);
+    line.put(b" bytes) asked for at once, more than the reserve could hand out (");
+    line.number(in_use() as u64 >> 20);
+    line.put(b" of its ");
+    line.number(SIZE as u64 >> 20);
+    line.put(b" MB lent out)\n");
+    let mut written = 0u32;
+    // SAFETY: the handle is an open file's, and the bytes are on this stack
+    unsafe {
+        windows_sys::Win32::Storage::FileSystem::WriteFile(
+            file as _,
+            line.bytes.as_ptr(),
+            line.len as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        )
+    };
+}
+
+#[cfg(not(windows))]
+fn refused(_size: usize) {}
 
 /// Set the reserve aside. True if it is now held (whether by this call or
 /// an earlier one)
@@ -162,6 +262,15 @@ fn refusing() -> bool {
     REFUSING.load(Ordering::SeqCst)
 }
 
+/// What the reserve answered a refusal of `size` bytes with, written down
+/// when it was no
+fn answered(p: *mut u8, size: usize) -> *mut u8 {
+    if p.is_null() {
+        refused(size);
+    }
+    p
+}
+
 /// The allocator: the system's own, with the reserve behind it when it says no.
 ///
 /// Put in place by the program, not by this library:
@@ -176,7 +285,7 @@ unsafe impl GlobalAlloc for Reserve {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = if refusing() { std::ptr::null_mut() } else { unsafe { System.alloc(layout) } };
         if p.is_null() {
-            return from_reserve(layout);
+            return answered(from_reserve(layout), layout.size());
         }
         p
     }
@@ -186,7 +295,7 @@ unsafe impl GlobalAlloc for Reserve {
         if p.is_null() {
             // The reserve's memory is handed out again after it is freed, so
             // it is cleared here rather than trusted to be
-            let q = from_reserve(layout);
+            let q = answered(from_reserve(layout), layout.size());
             if !q.is_null() {
                 unsafe { std::ptr::write_bytes(q, 0, layout.size()) };
             }
@@ -205,7 +314,7 @@ unsafe impl GlobalAlloc for Reserve {
                 return p;
             }
             // Refused, the system leaves the old block where it was
-            let q = from_reserve(grown);
+            let q = answered(from_reserve(grown), new_size);
             if !q.is_null() {
                 unsafe {
                     std::ptr::copy_nonoverlapping(ptr, q, layout.size().min(new_size));
@@ -281,6 +390,28 @@ mod tests {
         unsafe { Reserve.dealloc(zeroed, Layout::from_size_align(4096, 64).unwrap()) };
         assert_eq!(in_use(), 0, "the reserve did not get everything back");
         assert!(armed(), "the reserve was let go of");
+    }
+
+    /// A refusal larger than the whole reserve is written down as it happens,
+    /// whose it was and how large, in the form the next start reads
+    #[test]
+    fn a_refusal_the_reserve_cannot_answer_is_written_down() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(arm());
+        let file = std::env::temp_dir().join(format!("reserve-refusals-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        assert!(write_refusals_to(&file));
+        let huge = Layout::from_size_align(SIZE * 2 + 5, 16).unwrap();
+        REFUSING.store(true, Ordering::SeqCst);
+        let p = unsafe { Reserve.alloc(huge) };
+        REFUSING.store(false, Ordering::SeqCst);
+        assert!(p.is_null());
+        let said = std::fs::read_to_string(&file).unwrap();
+        let line = said.lines().last().expect("the refusal was not written down");
+        assert!(line.starts_with(&format!("[pid {} at ", std::process::id())), "{line}");
+        assert!(line.contains(&format!("Windows refused 128 MB ({} bytes)", SIZE * 2 + 5)), "{line}");
+        assert!(line.contains("of its 64 MB lent out"), "{line}");
+        let _ = std::fs::remove_file(&file);
     }
 
     /// A block grown while the system refuses moves into the reserve with its

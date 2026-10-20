@@ -86,6 +86,9 @@ fn main() {
     };
 
     assert!(reserve::arm(), "no reserve could be set aside");
+    // Where the refusal the reserve cannot answer is written down
+    let notes = std::env::temp_dir().join(format!("reserve-probe-{}.log", std::process::id()));
+    assert!(reserve::write_refusals_to(&notes), "the notes could not be opened");
     // The rival goes with the probe however the probe ends: closing the job
     // ends everything in it
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
@@ -142,6 +145,14 @@ fn main() {
         }
     }
     let _ = rival.kill();
+    let written = std::fs::read_to_string(&notes).unwrap_or_default();
+    match written.lines().last() {
+        Some(line) => println!("written down as it happened: {line}"),
+        None => {
+            println!("NOT WRITTEN DOWN: the last refusal left no line in {}", notes.display());
+            std::process::exit(1);
+        }
+    }
     // Half the reserve's worth is the line: a block of the probe's own going
     // on to its next block, or a reserve given away, gets a megabyte or two
     // before the next refusal, and a reserve kept gets nearly all of it

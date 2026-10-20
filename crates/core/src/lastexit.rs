@@ -629,6 +629,11 @@ pub fn crash_entry(what: &str) -> String {
 /// Where a run notes what it sees of the machine's memory (`crate::pressure`)
 const MEMORY_NOTES: &str = "memory.log";
 
+/// The file a run notes the machine's memory in, and the next start reads
+pub fn memory_notes_file() -> std::path::PathBuf {
+    crate::config::logs_dir().join(MEMORY_NOTES)
+}
+
 /// Note something about the machine's memory where the next start will find
 /// it, should this run not live to say it. One line, saying whose it is and
 /// when -- the time as the machine's own records write it, so the two can be
@@ -637,7 +642,7 @@ pub fn note_memory(what: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(crate::config::logs_dir().join(MEMORY_NOTES))
+        .open(memory_notes_file())
     {
         use std::io::Write as _;
         let _ = writeln!(f, "{}", crash_entry(&format!("{} {what}", crate::hooks::local_stamp("%Y-%m-%dT%H:%M:%S"))));
@@ -646,7 +651,7 @@ pub fn note_memory(what: &str) {
 
 /// The last few things the run that ended noted about the machine's memory
 fn memory_notes(mark: &Mark) -> Option<String> {
-    let text = std::fs::read_to_string(crate::config::logs_dir().join(MEMORY_NOTES)).ok()?;
+    let text = std::fs::read_to_string(memory_notes_file()).ok()?;
     let tail = written_by(&text, mark);
     (!tail.is_empty()).then(|| tail.join("\n"))
 }

@@ -526,6 +526,62 @@ pub enum Typed {
     Nothing,
 }
 
+/// How long an answer nobody is waiting for is kept. Long enough for a
+/// script's answer that comes back before its asker has begun to wait, which
+/// is a matter of microseconds; an asker that has given up is not coming back
+const UNASKED_KEPT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a wait for an answer listens before it looks again at the
+/// answers set aside
+const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The answers to scripts and DevTools calls that came in while something
+/// else was being waited for, kept for whoever asked.
+///
+/// Only for as long as somebody is asking. Every script run in a page is
+/// answered, also the many that nobody waits on (the bar shown again, the
+/// recorder armed again) and the ones whose asker gave up. All of them were
+/// once kept for good: on 2026-10-20 a day's 260 thousand of them were copied
+/// through every look at the window's events, until one more copy -- 163 MB
+/// at once, on a machine a build had run out of memory -- ended the program
+#[derive(Default)]
+struct Answers {
+    kept: Vec<(u64, bool, String, std::time::Instant)>,
+    /// The ids somebody is waiting for now
+    awaited: std::collections::HashSet<u64>,
+}
+
+impl Answers {
+    /// Keep an answer that came in while nobody was there to take it, and
+    /// let go of the ones nobody will take
+    fn keep(&mut self, id: u64, ok: bool, value: String, now: std::time::Instant) {
+        self.kept.push((id, ok, value, now));
+        self.let_go(now);
+    }
+
+    /// Let go of the answers nobody has asked for in the time they are kept.
+    /// Also when no new one comes in: the last one may be a whole page
+    fn let_go(&mut self, now: std::time::Instant) {
+        let awaited = &self.awaited;
+        self.kept
+            .retain(|(id, _, _, at)| awaited.contains(id) || now.saturating_duration_since(*at) < UNASKED_KEPT);
+    }
+
+    /// Somebody begins waiting for `id`: what came in for it already, if
+    /// anything has
+    fn ask(&mut self, id: u64) -> Option<(bool, String)> {
+        self.awaited.insert(id);
+        let at = self.kept.iter().position(|(got, ..)| *got == id)?;
+        let (_, ok, value, _) = self.kept.remove(at);
+        Some((ok, value))
+    }
+
+    /// The wait for `id` is over, answered or not
+    fn done(&mut self, id: u64) {
+        self.awaited.remove(&id);
+    }
+}
+
 /// A handle to one running browser
 pub struct Browser {
     proxy: tao::event_loop::EventLoopProxy<Cmd>,
@@ -547,6 +603,8 @@ pub struct Browser {
     /// began vanishes forever. That's exactly how the window's column
     /// count once never arrived
     spare: std::sync::Mutex<Vec<Ev>>,
+    /// The answers among them (see [`Answers`])
+    answers: std::sync::Mutex<Answers>,
     /// Where a placed page's traffic goes, when this window is drawing the
     /// pages of a server somewhere else. Everything the page fetches then
     /// leaves from *that* machine -- which is the only reason drawing it here
@@ -785,6 +843,7 @@ impl Browser {
             pending_rec: std::sync::Mutex::new(std::collections::HashSet::new()),
             devtools: std::sync::Mutex::new(None),
             spare: std::sync::Mutex::new(Vec::new()),
+            answers: std::sync::Mutex::new(Answers::default()),
             through: std::sync::Mutex::new(None),
             digests: std::sync::Mutex::new(std::collections::HashMap::new()),
             sound_pid,
@@ -812,7 +871,7 @@ impl Browser {
                 }
                 Ok(Ev::Closed) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.closed"))),
                 Ok(other) => {
-                    self.spare.lock().unwrap().push(other);
+                    self.set_aside(other);
                     continue;
                 }
                 Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.page_not_ready"))),
@@ -1067,17 +1126,18 @@ impl Browser {
     pub fn drain(&self) -> Vec<Ev> {
         // Return anything that arrived while we were waiting first (preserves arrival order)
         let mut evs: Vec<Ev> = std::mem::take(&mut *self.spare.lock().unwrap());
-        evs.extend(self.events.lock().unwrap_or_else(|e| e.into_inner()).try_iter());
         // An answer belongs to whoever asked for it, not to whoever reads the
-        // queue first. Put those back rather than hand them out: the asker is
+        // queue first. Set those aside rather than hand them out: the asker is
         // blocked waiting, and a stolen answer is an operation that times out
         // for no reason anybody can see
-        let (answers, rest): (Vec<Ev>, Vec<Ev>) =
-            evs.into_iter().partition(|e| matches!(e, Ev::Result { .. }));
-        if !answers.is_empty() {
-            self.spare.lock().unwrap().extend(answers);
+        let arrived: Vec<Ev> = self.events.lock().unwrap_or_else(|e| e.into_inner()).try_iter().collect();
+        for e in arrived {
+            match e {
+                Ev::Result { .. } => self.set_aside(e),
+                e => evs.push(e),
+            }
         }
-        let evs = rest;
+        self.answers.lock().unwrap_or_else(|e| e.into_inner()).let_go(std::time::Instant::now());
         for e in &evs {
             if let Ev::Ready { from, .. } = e {
                 self.reask(from.as_deref());
@@ -1153,7 +1213,7 @@ impl Browser {
                 Ok(Ev::Password { text }) => return Ok(Typed::Answer(text)),
                 Ok(Ev::Closed | Ev::CloseRequested | Ev::TrayQuit) => return Ok(Typed::Quit),
                 Ok(other) => {
-                    self.spare.lock().unwrap().push(other);
+                    self.set_aside(other);
                     continue;
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(Typed::Nothing),
@@ -1181,30 +1241,54 @@ impl Browser {
         let until = std::time::Instant::now() + timeout;
         // It may already have arrived and been set aside -- by another wait, or
         // by a drain that knew it was not its to take
-        {
-            let mut spare = self.spare.lock().unwrap();
-            if let Some(at) = spare
-                .iter()
-                .position(|e| matches!(e, Ev::Result { id: got, .. } if *got == id))
-                && let Ev::Result { ok, value, .. } = spare.remove(at) {
-                    return Ok((ok, value));
-                }
+        let already = self.answers.lock().unwrap_or_else(|e| e.into_inner()).ask(id);
+        let got = match already {
+            Some(got) => Ok(got),
+            None => self.wait_for_answer(id, until),
+        };
+        self.answers.lock().unwrap_or_else(|e| e.into_inner()).done(id);
+        got
+    }
+
+    /// Something that came in while waiting for something else, kept for
+    /// whoever it is for
+    fn set_aside(&self, e: Ev) {
+        match e {
+            Ev::Result { id, ok, value } => {
+                self.answers.lock().unwrap_or_else(|e| e.into_inner()).keep(id, ok, value, std::time::Instant::now())
+            }
+            e => self.spare.lock().unwrap().push(e),
         }
+    }
+
+    /// Wait for the answer to `id` itself, until `until`
+    fn wait_for_answer(&self, id: u64, until: std::time::Instant) -> Result<(bool, String)> {
         loop {
+            // Taken off the queue and set aside by whoever held it while this
+            // waited for its turn at it
+            if let Some(got) = self.answers.lock().unwrap_or_else(|e| e.into_inner()).ask(id) {
+                return Ok(got);
+            }
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_result")))?;
-            match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left) {
+            // A short look at a time: the answer can be set aside by another
+            // thread between the look above and this one, and nothing would
+            // then wake a wait as long as all the time that is left
+            match self.events.lock().unwrap_or_else(|e| e.into_inner()).recv_timeout(left.min(LOOK_AGAIN)) {
                 Ok(Ev::Result { id: got, ok, value }) if got == id => return Ok((ok, value)),
                 Ok(Ev::Ready { from, .. }) => {
                     self.reask(from.as_deref());
                     continue;
                 }
                 Ok(other) => {
-                    self.spare.lock().unwrap().push(other);
+                    self.set_aside(other);
                     continue;
                 }
-                Err(_) => return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_result"))),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_result")));
+                }
             }
         }
     }
@@ -1654,6 +1738,38 @@ mod nav_tests {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    /// An answer is kept for whoever waits for it, however long that takes,
+    /// and found by a wait that begins after it came in. One nobody waits
+    /// for, or whose asker gave up, is let go of once a minute has passed:
+    /// a day of them once filled the memory
+    #[test]
+    fn answers_are_kept_for_whoever_waits_and_let_go_of_otherwise() {
+        let start = std::time::Instant::now();
+        let mut a = Answers::default();
+        // Came back before its asker began to wait
+        a.keep(1, true, "early".into(), start);
+        assert_eq!(a.ask(1), Some((true, "early".into())));
+        a.done(1);
+        // Somebody is waiting: kept past the minute
+        assert_eq!(a.ask(2), None);
+        a.keep(2, true, "late".into(), start);
+        a.keep(3, true, "nobody's".into(), start);
+        let later = start + UNASKED_KEPT + Duration::from_secs(1);
+        a.keep(4, false, "fresh".into(), later);
+        assert_eq!(a.kept.iter().map(|k| k.0).collect::<Vec<_>>(), [2, 4], "nobody's answer was kept past the minute");
+        assert_eq!(a.ask(2), Some((true, "late".into())));
+        a.done(2);
+        // A day of answers nobody asks for stays a minute's worth
+        for i in 0..10_000u64 {
+            a.keep(10 + i, true, String::new(), later + Duration::from_millis(i * 100));
+        }
+        assert!(a.kept.len() <= 601, "{} answers were kept", a.kept.len());
+        assert!(a.awaited.is_empty());
+        // The last of them goes too, with nothing coming in after it
+        a.let_go(later + Duration::from_secs(1_000 + 61));
+        assert!(a.kept.is_empty(), "{} answers outlived their minute", a.kept.len());
+    }
 
     /// An answer read off the DevTools protocol has the shape a page's own
     /// answer has, so whoever asked cannot tell which road it came by.

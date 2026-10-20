@@ -58,6 +58,17 @@ once it reaches its first tagged release.
   empty name, and was taken for a different tab than the one running each
   time the settings were saved. A blank name is now no name: the tab is
   called after its command, and is left running as it is.
+- **The app no longer grows by every script a page answers.** Each script
+  the app runs in a page is answered, and an answer that came in while
+  something else was being waited for was kept for good -- also the many
+  nobody waits on. A day of them, a quarter of a million, was copied through
+  every look at the window's events, until one copy of 163 MB, on a machine a
+  build had run out of memory, ended the app. An answer nobody is waiting
+  for is now let go of after a minute.
+- **An allocation too large for the reserve is written down as it happens.**
+  When Windows refuses the app more memory than the memory it keeps aside for
+  a shortage, the app still ends, but how much was asked for is written to
+  `memory.log` first, and the next start's account of why it ended says so.
 - **What a person said to Claude Code is shown once.** Newer versions of
   Claude Code also write down each message as it went to the model. Read as
   part of the conversation, every line a person typed showed twice in the
