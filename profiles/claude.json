@@ -72,7 +72,10 @@
       "role_at": "/message/role",
       "role": "user",
       "text_at": "/message/content",
-      "skip_when": ["/isMeta", "/isCompactSummary"]
+      "parts": ["text"],
+      "skip_when": ["/isMeta", "/isCompactSummary", "/interruptedMessageId"],
+      "kind_at": "/type",
+      "kind": "user"
     }
   }
 }

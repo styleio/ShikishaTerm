@@ -344,14 +344,25 @@ pub struct AskSpec {
     pub role: String,
     /// Where the words themselves are (a JSON pointer)
     pub text_at: String,
-    /// The kinds of content block that hold a person's words. Empty means
-    /// the words stand there as a string, with no blocks around them
+    /// The kinds of content block that hold a person's words, where they come
+    /// in blocks rather than as one string -- beside a picture, say. Empty
+    /// means they only ever come as a string
     #[serde(default)]
     pub parts: Vec<String>,
     /// Pointers that, where they hold anything true, mean the line is not a
     /// person speaking however it is labelled
     #[serde(default)]
     pub skip_when: Vec<String>,
+    /// Where the line says what kind of line it is (a JSON pointer), for a
+    /// CLI that keeps more than the conversation in its record under the same
+    /// role. Claude Code also writes down each message as it went to the model
+    /// (`api-request-blob`): the person's words a second time, and words of
+    /// the CLI's own -- a stop hook's reason, a tool's note -- that nobody typed
+    #[serde(default)]
+    pub kind_at: Option<String>,
+    /// The kind of line a person's words are in, where `kind_at` is given
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// A CLI's own record of its conversations, as far as we need to read it:

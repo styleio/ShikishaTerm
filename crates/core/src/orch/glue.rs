@@ -454,8 +454,10 @@ mod tests {
             role_at: "/message/role".into(),
             role: "user".into(),
             text_at: "/message/content".into(),
-            parts: Vec::new(),
-            skip_when: vec!["/isMeta".into()],
+            parts: vec!["text".into()],
+            skip_when: vec!["/isMeta".into(), "/interruptedMessageId".into()],
+            kind_at: Some("/type".into()),
+            kind: Some("user".into()),
         };
         let file = std::env::temp_dir().join(format!("glue-asked-{}.jsonl", std::process::id()));
         let mut body = String::new();
@@ -468,6 +470,9 @@ mod tests {
             body.push('\n');
         }
         body.push_str(r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"skill text naming <@otter>"}}"#);
+        body.push('\n');
+        // A stop hook's reason, as the CLI sent it to the model
+        body.push_str(r#"{"type":"api-request-blob","message":{"role":"user","content":"Stop hook feedback: ask <@otter>"}}"#);
         body.push('\n');
         std::fs::write(&file, body).unwrap();
         let got = last_asked(&file, &spec, |_| true).unwrap();

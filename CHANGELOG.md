@@ -58,6 +58,16 @@ once it reaches its first tagged release.
   empty name, and was taken for a different tab than the one running each
   time the settings were saved. A blank name is now no name: the tab is
   called after its command, and is left running as it is.
+- **What a person said to Claude Code is shown once.** Newer versions of
+  Claude Code also write down each message as it went to the model. Read as
+  part of the conversation, every line a person typed showed twice in the
+  conversation panel, and lines nobody typed ("Tool loaded.", a stop hook's
+  reason) showed as the person's. These copies are now left out there, in
+  naming folders after their requests, in the first request that titles a
+  conversation in the search of all conversations, and in the request whose
+  `<@name>`s say which tabs a lead may ask. A request sent with a picture
+  pasted beside it is read there too, where before it was passed over, and
+  the CLI's note that a request was interrupted is not taken for one.
 
 ## [0.28.1] - 2026-10-14
 

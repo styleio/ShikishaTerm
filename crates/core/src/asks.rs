@@ -113,17 +113,23 @@ fn ask_of(line: &[u8], spec: &AskSpec) -> Option<String> {
     if v.pointer(&spec.role_at)?.as_str()? != spec.role {
         return None;
     }
+    // A line kept beside the conversation, not part of it
+    if let (Some(at), Some(kind)) = (&spec.kind_at, &spec.kind)
+        && v.pointer(at).and_then(|k| k.as_str()) != Some(kind.as_str())
+    {
+        return None;
+    }
     // Lines the CLI itself marks as not being somebody speaking
     if spec.skip_when.iter().any(|at| truthy(v.pointer(at))) {
         return None;
     }
     let held = v.pointer(&spec.text_at)?;
-    let text = match spec.parts.is_empty() {
+    let text = match held.as_str() {
         // The words stand there as they were typed
-        true => held.as_str()?.to_string(),
+        Some(typed) => typed.to_string(),
         // The words are in blocks, beside blocks that are not words at all --
         // what a tool returned, a picture, a file that came along
-        false => held
+        None => held
             .as_array()?
             .iter()
             .filter(|b| b.get("type").and_then(|t| t.as_str()).is_some_and(|t| spec.parts.iter().any(|p| p == t)))
@@ -160,8 +166,10 @@ mod tests {
             role_at: "/message/role".into(),
             role: "user".into(),
             text_at: "/message/content".into(),
-            parts: Vec::new(),
-            skip_when: vec!["/isMeta".into()],
+            parts: vec!["text".into()],
+            skip_when: vec!["/isMeta".into(), "/interruptedMessageId".into()],
+            kind_at: Some("/type".into()),
+            kind: Some("user".into()),
         }
     }
 
@@ -172,6 +180,8 @@ mod tests {
             text_at: "/payload/content".into(),
             parts: vec!["input_text".into()],
             skip_when: Vec::new(),
+            kind_at: None,
+            kind: None,
         }
     }
 
@@ -210,6 +220,26 @@ mod tests {
             None
         );
         assert_eq!(one("not json at all", &spec), None);
+        // A request with a picture pasted beside it comes in blocks
+        assert_eq!(
+            one(r#"{"type":"user","imagePasteIds":[1],"message":{"role":"user","content":[{"type":"text","text":"[Image #1] have <@reviewer> look at this"},{"type":"image","source":{}}]}}"#, &spec).as_deref(),
+            Some("[Image #1] have <@reviewer> look at this")
+        );
+        // The CLI noting that the person stopped it
+        assert_eq!(
+            one(r#"{"type":"user","interruptedMessageId":"m1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#, &spec),
+            None
+        );
+        // What the CLI sent the model, kept beside the conversation: the
+        // person's words once more, and words nobody typed
+        assert_eq!(
+            one(r#"{"type":"api-request-blob","sessionId":"s","hash":"h","message":{"role":"user","content":"fix the login page"}}"#, &spec),
+            None
+        );
+        assert_eq!(
+            one(r#"{"type":"api-request-blob","sessionId":"s","hash":"h","message":{"role":"user","content":"Stop hook feedback: Reply with one line."}}"#, &spec),
+            None
+        );
 
         let spec = codex();
         assert_eq!(
