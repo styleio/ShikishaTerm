@@ -34,6 +34,18 @@ once it reaches its first tagged release.
   marked as still working, and what the AI says once that work is over reaches
   the asking tab's inbox as its answer. Before, the ask ended at the first words
   and the report that came later went to nobody.
+- **A tab on a desk that is not in front is told of its mail.** When another
+  tab's answer, or a command's output, reaches the inbox of a tab on a desk
+  the person has switched away from, that tab is told at once, as a tab in
+  front is. A job whose tabs are on such a desk goes on being tended: its
+  workers are no longer taken for closed, and stopping the job stops them.
+  An answer that is held up by work behind a tab's prompt has the reason
+  written to the log every ten minutes, with the processes that hold it.
+- **A job's lead or worker finds the reply to its own ask in its inbox.** A
+  reply that came after the call it was asked on goes to the asking tab's
+  own inbox. A tab leading a job, or working on one, read only the job's mail
+  with `shikisha inbox`, and was told of mail it could not find. It now reads
+  its own first, then the job's.
 
 ## [0.28.1] - 2026-10-14
 

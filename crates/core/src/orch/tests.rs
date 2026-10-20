@@ -26,6 +26,7 @@ fn tab(id: &str, state: TabState) -> TabFact {
         typed_request: id.starts_with("claude"),
         failure: None,
         refused: false,
+        here: true,
     }
 }
 
@@ -341,6 +342,58 @@ fn a_tab_with_mail_and_nothing_to_do_is_told_once() {
     assert!(w.o.tick(&w.scene).is_empty(), "told once");
 }
 
+/// A job's lead asked another tab outside the job, and the reply came after
+/// the call: it reads that reply with the inbox it is told to read, then its
+/// job's mail (a review, 2026-10-20: the reply was in the tab's own box,
+/// and `inbox` read only the job's)
+#[test]
+fn a_lead_reads_a_reply_to_its_own_ask_in_its_inbox() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("a")]);
+    w.assign("t1", "claude");
+    w.ok("claude", "report", vec![json!("done"), json!("Built it."), json!("Nothing odd."), json!("nothing")]);
+    w.o.mail_tab(&uid("lead"), "codex", "The reply of <@codex>", "The branch is clean.");
+    let first = w.ok("lead", "inbox", vec![]);
+    assert_eq!(first["mail"][0]["text"], "The branch is clean.", "{first}");
+    let h = first["handover"].as_i64().unwrap();
+    let then = w.ok("lead", "inbox", vec![json!({"dealt": h})]);
+    assert_eq!(then["mail"][0]["kind"], "report", "{then}");
+}
+
+/// The person went to another desk: the job's tabs go on running there, and
+/// the clock's work is done for them as for tabs in front (2026-10-20: a
+/// reply came into the inbox of a tab on a desk not in front, and nothing
+/// told it)
+#[test]
+fn a_tab_on_a_desk_not_in_front_is_told_of_its_mail_and_its_work_goes_on() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("a")]);
+    w.ok("lead", "task_add", vec![json!("b")]);
+    w.assign("t1", "claude");
+    w.assign("t2", "codex");
+    w.ok("claude", "report", vec![json!("done"), json!("Built it."), json!("Nothing odd."), json!("nothing")]);
+    for t in &mut w.scene.tabs {
+        t.here = false;
+    }
+    w.set("lead", TabState::Done);
+    // The look for what is left undone is due too
+    w.o.last_watch = None;
+    let fx = w.o.tick(&w.scene);
+    assert_eq!(fx, vec![Effect::Type { tab: uid("lead"), lead: None, text: text::mail_line(1) }]);
+    // A name is read on the desk in front only
+    assert!(w.scene.by_id("codex").is_none());
+    assert!(w.scene.by_uid(&uid("codex")).is_some());
+    // Its worker still at work there was not taken for closed
+    for t in &mut w.scene.tabs {
+        t.here = true;
+    }
+    let inbox = w.ok("lead", "inbox", vec![]);
+    assert_eq!(inbox["mail"].as_array().map(Vec::len), Some(1), "{inbox}");
+    assert!(!inbox.to_string().contains("was closed"), "{inbox}");
+}
+
 #[test]
 fn a_lead_waiting_on_its_inbox_is_not_told_through_the_screen() {
     let mut w = World::new();
@@ -455,8 +508,14 @@ fn stopping_a_worker_it_opened_closes_the_tab_if_it_will_not_stop() {
     rx.try_recv().unwrap().unwrap();
     assert_eq!(fx, vec![Effect::Esc { tab: uid("claude") }]);
     assert_eq!(w.o.store().unwrap().task(1).unwrap().unwrap().state, "held");
-    // Still busy after the grace: closed
     w.o.stopping[0].since -= STOP_GRACE;
+    // On a desk not in front: its name means nothing there, so it waits
+    w.scene.tabs.iter_mut().find(|t| t.id == "claude").unwrap().here = false;
+    w.o.last_watch = None;
+    let fx = w.o.tick(&w.scene);
+    assert!(!fx.contains(&Effect::Close { tab: uid("claude") }), "{fx:?}");
+    // Its desk shown, still busy after the grace: closed
+    w.scene.tabs.iter_mut().find(|t| t.id == "claude").unwrap().here = true;
     w.o.last_watch = None;
     let fx = w.o.tick(&w.scene);
     assert!(fx.contains(&Effect::Close { tab: uid("claude") }), "{fx:?}");

@@ -146,6 +146,9 @@ pub struct TabFact {
     pub failure: Option<String>,
     /// ...and that error was its AI's provider refusing what was asked
     pub refused: bool,
+    /// On the desk in front. A name means a tab there; a tab on a desk not
+    /// in front is found only by who it is (`glue::scene_everywhere`)
+    pub here: bool,
 }
 
 impl TabFact {
@@ -163,14 +166,14 @@ impl Scene {
     /// The tab a name says (`<@ID>`, `assign t3 <tab>`): what an AI or a
     /// person calls it now
     fn by_id(&self, id: &str) -> Option<&TabFact> {
-        self.tabs.iter().find(|t| t.id == id)
+        self.tabs.iter().find(|t| t.here && t.id == id)
     }
-    /// The tab a record means
+    /// The tab a record means, on whichever desk it is
     fn by_uid(&self, uid: &str) -> Option<&TabFact> {
         self.tabs.iter().find(|t| t.uid == uid)
     }
     fn by_called(&self, called: &str) -> Option<&TabFact> {
-        self.tabs.iter().find(|t| t.called == called)
+        self.tabs.iter().find(|t| t.here && t.called == called)
     }
 }
 
@@ -1306,12 +1309,24 @@ impl Orchestra {
             || w.iter().any(|v| v.as_str() == Some("wait"));
         let peek = o.get("peek").and_then(Value::as_bool).unwrap_or(false) || w.iter().any(|v| v.as_str() == Some("peek"));
         let wake: Option<Vec<String>> = option(&o, &["kinds", "types"]).map(|t| strings(Some(t)));
-        let inbox = self.inbox_of(&me, c.incarnation, &o)?;
+        let role = self.inbox_of(&me, c.incarnation, &o)?;
+        let own = db::tab_box(&me.uid);
         let dealt = option(&o, &["dealt", "ack"]).and_then(|v| number(v, 'h'));
         let store = self.store()?;
         if let Some(h) = dealt {
-            store.dealt(&inbox, h).map_err(|e| e.to_string())?;
+            // The handover is the tab's own box's or its role's, whichever gave it
+            let of = if store.given(&own).map_err(|e| e.to_string())? == Some(h) { &own } else { &role };
+            store.dealt(of, h).map_err(|e| e.to_string())?;
         }
+        // A lead or a worker reads its job's or its assignment's box, and the
+        // tab's own box gets what came to the tab itself: an ask_tab reply
+        // that outlived its call. It was told there was mail and found none
+        // (2026-10-20, a review); what is in its own box is read first
+        let mine = role != own
+            && !o.contains_key("job")
+            && (store.given(&own).map_err(|e| e.to_string())?.is_some()
+                || !store.unread(&own).map_err(|e| e.to_string())?.is_empty());
+        let inbox = if mine { own } else { role };
         if peek {
             let unread = store.unread(&inbox).map_err(|e| e.to_string())?;
             // A look, not a read: taking them is `inbox`, which hands them over
@@ -1976,6 +1991,13 @@ impl Orchestra {
         let stopping = std::mem::take(&mut self.stopping);
         for s in stopping {
             if now.duration_since(s.since) < STOP_GRACE {
+                self.stopping.push(s);
+                continue;
+            }
+            // A tab is closed by its name, and a name means a tab on the desk
+            // in front: one on another desk is looked at again, all of this
+            // asked anew, once its desk is shown
+            if scene.by_uid(&s.tab).is_some_and(|t| !t.here) {
                 self.stopping.push(s);
                 continue;
             }

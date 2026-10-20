@@ -5839,6 +5839,41 @@ impl Tab {
         why.join("; ")
     }
 
+    /// Why this tab reads as at work behind its prompt, in words for the log:
+    /// the processes of its job counted as work, by name, against how many
+    /// it holds at rest, and what its program says runs beside it. A command
+    /// asked of a terminal was answered only ten minutes after it ended, and
+    /// nothing said what had held it (2026-10-20)
+    pub fn why_behind(&self, now_ms: u64) -> String {
+        let mut why = Vec::new();
+        let (all, pids) = self.job_pids();
+        // Counted as work: what is not this app or a console host, as last
+        // looked at (`job_population`)
+        let work: Vec<String> = pids
+            .iter()
+            .filter(|pid| self.job_ours.get(pid) == Some(&false))
+            .map(|&pid| match crate::guest::image_of(pid) {
+                Some(image) => format!("{} ({pid})", image.rsplit(['\\', '/']).next().unwrap_or(&image)),
+                None => format!("{pid}, gone"),
+            })
+            .collect();
+        why.push(format!(
+            "{} processes in its job, {} counted as work, {} at rest: {}",
+            all.map_or("unknown".to_string(), |n| n.to_string()),
+            work.len(),
+            self.job_rest.map_or("not learned".to_string(), |n| n.to_string()),
+            if work.is_empty() { "none".to_string() } else { work.join(", ") }
+        ));
+        if self.far_term.as_ref().is_some_and(|t| t.here()) {
+            why.push("its processes as this PC's resident process last said them".to_string());
+        }
+        if self.aside.any(Instant::now()) {
+            why.push("its program says something it started runs beside it".to_string());
+        }
+        why.push(format!("screen last changed {}s ago", self.ms_since_change(now_ms) / 1000));
+        why.join("; ")
+    }
+
     /// Whether the child process has output anything (a proxy for whether it started up and is moving)
     pub fn had_output(&self) -> bool {
         self.output_count() > 0

@@ -1309,11 +1309,14 @@ fn tend_asks(
         {
             let waited = a.sent_at.unwrap_or(a.asked_at).elapsed().as_secs() / 60;
             let now_ms = start.elapsed().as_millis() as u64;
-            append_hook_log(&format!(
-                "ask_tab: {} still reads as busy {waited} min after it was asked: {}",
-                a.target,
-                t.why_busy(now_ms)
-            ));
+            append_hook_log(&match t.state {
+                TabState::Background => format!(
+                    "ask_tab: {} still reads as at work behind its prompt {waited} min after it was asked: {}",
+                    a.target,
+                    t.why_behind(now_ms)
+                ),
+                _ => format!("ask_tab: {} still reads as busy {waited} min after it was asked: {}", a.target, t.why_busy(now_ms)),
+            });
         }
         let caller_free = caller.is_some_and(|t| crate::asktab::turn_over(t.state));
         let same_folder = match (caller.and_then(|t| t.cwd()), target.and_then(|t| t.cwd())) {
@@ -5282,7 +5285,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     continue;
                 }
                 let _scope = desks.get(owner).map(|desk| caps.on_desk(owner, desk));
-                let (mut tabs, engine) = if away {
+                let (tabs, engine) = if away {
                     (&mut desk_tabs[owner], &mut engines[owner])
                 } else {
                     (&mut tabs, &mut engine)
@@ -5354,7 +5357,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             limits,
                         );
                         let now_ms = start.elapsed().as_millis() as u64;
-                        crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                        // A call is the caller's desk's: what it does is to the tabs there
+                        crate::orch::glue::apply(fx, &tabs, &surfaces, &[], &mut pending_send, engine.as_ref(), now_ms);
                         continue;
                     }
                     // This desk's worktrees on this machine and on others: where,
@@ -6256,12 +6260,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     flash = Some(said);
                 }
             }
-            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+            // Every desk's tabs: a desk not in front goes on running, and its
+            // tabs' mail and work are tended as those in front are
+            let scene = crate::orch::glue::scene_everywhere(&tabs, &surfaces, &desk_tabs, &mut orch_profiles);
             let fx = if auto_enabled { orchestra.tick(&scene) } else { Vec::new() };
             orch_board = orchestra.board(&scene);
             if !fx.is_empty() {
                 let now_ms = start.elapsed().as_millis() as u64;
-                crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                crate::orch::glue::apply(fx, &tabs, &surfaces, &desk_tabs, &mut pending_send, engine.as_ref(), now_ms);
             }
         }
         if !ask_rounds.is_empty() {
@@ -14656,12 +14662,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         }
         // A job's card, pressed: here or on a phone
         for (act, job, decision, choice) in shell.mail().take_orch() {
-            let scene = crate::orch::glue::scene(&tabs, &surfaces, &mut orch_profiles);
+            let scene = crate::orch::glue::scene_everywhere(&tabs, &surfaces, &desk_tabs, &mut orch_profiles);
             match act.as_str() {
                 "stop" => {
                     let fx = orchestra.stop_job(job, &scene);
                     let now_ms = start.elapsed().as_millis() as u64;
-                    crate::orch::glue::apply(fx, &mut tabs, &surfaces, &mut pending_send, engine.as_ref(), now_ms);
+                    crate::orch::glue::apply(fx, &tabs, &surfaces, &desk_tabs, &mut pending_send, engine.as_ref(), now_ms);
                     append_hook_log(&format!("orchestration: the person stopped j{job}"));
                 }
                 "decide" => match orchestra.make_decision(decision, &choice, "person") {

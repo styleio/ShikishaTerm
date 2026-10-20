@@ -58,27 +58,50 @@ pub fn scene(tabs: &[Tab], surfaces: &[Surface], profiles: &mut Profiles) -> Sce
     for s in surfaces {
         let Surface::Session(i) = s else { continue };
         let Some(t) = tabs.get(*i) else { continue };
-        let (cli, typed_request) = profiles.of(t.profile_name());
-        let far = t.machine().is_some();
-        out.push(TabFact {
-            id: tab_id(t),
-            uid: t.uid().to_string(),
-            called: t.called().to_string(),
-            title: t.title.clone(),
-            ai: t.is_ai() && !t.is_model(),
-            cli,
-            state: t.state,
-            folder: t.cwd().map(|p| p.display().to_string()),
-            far,
-            reachable: !far || reachable(t),
-            bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
-            incarnation: crate::api::incarnation_of(t.uid()),
-            typed_request,
-            failure: t.record_failure().map(str::to_string),
-            refused: t.record_failure().is_some() && t.record_fail_kind() == crate::reader::FailKind::Refused,
-        });
+        out.push(fact(t, profiles, true));
     }
     Scene { tabs: out }
+}
+
+/// The tabs of every desk: the one in front, as [`scene`] has them, and the
+/// tabs of the desks not in front, which go on running there with their
+/// state kept true (`Tab::tick_away`). For what orchestration does by the
+/// clock -- telling a tab it has mail, seeing a worker through, stopping a
+/// job -- which is about each tab wherever it is: a desk put away was taken
+/// for its tabs closed, and a tab on it was never told of its mail
+/// (2026-10-20). Names are still read on the desk in front only
+/// (`Scene::by_id`)
+pub fn scene_everywhere(tabs: &[Tab], surfaces: &[Surface], away: &[Vec<Tab>], profiles: &mut Profiles) -> Scene {
+    let mut s = scene(tabs, surfaces, profiles);
+    for t in away.iter().flatten() {
+        if !s.tabs.iter().any(|f| f.uid == t.uid()) {
+            s.tabs.push(fact(t, profiles, false));
+        }
+    }
+    s
+}
+
+fn fact(t: &Tab, profiles: &mut Profiles, here: bool) -> TabFact {
+    let (cli, typed_request) = profiles.of(t.profile_name());
+    let far = t.machine().is_some();
+    TabFact {
+        id: tab_id(t),
+        uid: t.uid().to_string(),
+        called: t.called().to_string(),
+        title: t.title.clone(),
+        ai: t.is_ai() && !t.is_model(),
+        cli,
+        state: t.state,
+        folder: t.cwd().map(|p| p.display().to_string()),
+        far,
+        reachable: !far || reachable(t),
+        bridge: far && t.host_name().is_some_and(crate::farlink::agreed),
+        incarnation: crate::api::incarnation_of(t.uid()),
+        typed_request,
+        failure: t.record_failure().map(str::to_string),
+        refused: t.record_failure().is_some() && t.record_fail_kind() == crate::reader::FailKind::Refused,
+        here,
+    }
 }
 
 /// What this app typed into each tab itself, recently: a brief, a line saying
@@ -284,15 +307,42 @@ fn position(tabs: &[Tab], surfaces: &[Surface], uid: &str) -> Option<(usize, usi
     })
 }
 
+/// Where a tab (by uid) is: shown on the desk in front, at its surface
+/// position, or on a desk not in front
+enum Found<'a> {
+    Here(usize, &'a Tab),
+    Away(&'a Tab),
+}
+
+fn find<'a>(tabs: &'a [Tab], surfaces: &[Surface], away: &'a [Vec<Tab>], uid: &str) -> Option<Found<'a>> {
+    position(tabs, surfaces, uid)
+        .map(|(pos, i)| Found::Here(pos, &tabs[i]))
+        .or_else(|| away.iter().flatten().find(|t| t.uid() == uid).map(Found::Away))
+}
+
+impl<'a> Found<'a> {
+    fn tab(&self) -> &'a Tab {
+        match self {
+            Found::Here(_, t) | Found::Away(t) => t,
+        }
+    }
+}
+
 /// Carry out what orchestration decided, with the machinery every other
 /// hand-off uses: the send queue for words, the tab's own keys for Esc, and
 /// the same commands a person's automation would call to close a tab or tell
 /// somebody. Every effect names its tab by uid: a tab closed since, and
-/// another given its name, is not the one it meant
+/// another given its name, is not the one it meant.
+///
+/// `away` holds the tabs of the desks not in front: words and keys go to a
+/// tab there as to one in front (the send queue finds a tab by who it is,
+/// wherever it is). A close is by name, and a name means a tab of the desk in
+/// front: orchestration closes only those (`Orchestra::watch`)
 pub fn apply(
     effects: Vec<Effect>,
-    tabs: &mut [Tab],
+    tabs: &[Tab],
     surfaces: &[Surface],
+    away: &[Vec<Tab>],
     pending: &mut Vec<PendingSend>,
     eng: Option<&HookEngine>,
     now_ms: u64,
@@ -300,11 +350,17 @@ pub fn apply(
     for e in effects {
         match e {
             Effect::Type { tab, lead, text } => {
-                let Some((pos, i)) = position(tabs, surfaces, &tab) else {
-                    crate::append_hook_log(&format!("orchestration: nothing typed; tab {tab} is not on screen"));
+                let Some(found) = find(tabs, surfaces, away, &tab) else {
+                    crate::append_hook_log(&format!("orchestration: nothing typed; tab {tab} is on no desk"));
                     continue;
                 };
-                let t = &tabs[i];
+                // The send queue addresses a tab by who it is; its position
+                // is only what the log says it as (0: on a desk not in front)
+                let pos = match found {
+                    Found::Here(pos, _) => pos,
+                    Found::Away(_) => 0,
+                };
+                let t = found.tab();
                 let mut chunks = Vec::new();
                 let mut said = String::new();
                 if let Some(l) = &lead {
@@ -321,17 +377,29 @@ pub fn apply(
                     note_typed(&tab, &text);
                 }
                 pending.push(PendingSend::new(pos, t.serial(), chunks, true, t.output_count(), now_ms, said.chars().count()));
-                crate::append_hook_log(&format!("orchestration: typed into {} ({} chars)", tab_id(t), said.chars().count()));
+                crate::append_hook_log(&format!(
+                    "orchestration: typed into {}{} ({} chars)",
+                    tab_id(t),
+                    if pos == 0 { " on a desk not in front" } else { "" },
+                    said.chars().count()
+                ));
             }
             Effect::Esc { tab } => {
-                if let Some((_, i)) = position(tabs, surfaces, &tab) {
-                    let _ = tabs[i].write_bytes(b"\x1b");
+                if let Some(found) = find(tabs, surfaces, away, &tab) {
+                    let _ = found.tab().write_bytes(b"\x1b");
                 }
             }
             Effect::Close { tab } => {
                 // Closed by the name it goes by now, which is what the command
                 // takes -- found from who it is, so it is that tab or none
-                let Some(name) = position(tabs, surfaces, &tab).map(|(_, i)| tab_id(&tabs[i])) else { continue };
+                let name = match find(tabs, surfaces, away, &tab) {
+                    Some(Found::Here(_, t)) => tab_id(t),
+                    Some(Found::Away(t)) => {
+                        crate::append_hook_log(&format!("orchestration: {} not closed; it is on a desk not in front", tab_id(t)));
+                        continue;
+                    }
+                    None => continue,
+                };
                 if let Some(eng) = eng
                     && let Err(e) = eng.call_primitive_as(None, crate::grants::Subject::Human, "close_tab", &[serde_json::json!(name)])
                 {
@@ -339,11 +407,11 @@ pub fn apply(
                 }
             }
             Effect::Wake { tab } => {
-                if let Some((_, i)) = position(tabs, surfaces, &tab)
-                    && let Some(id) = tabs[i].cloud().and_then(|h| h.instance.as_deref())
+                if let Some(t) = find(tabs, surfaces, away, &tab).map(|f| f.tab())
+                    && let Some(id) = t.cloud().and_then(|h| h.instance.as_deref())
                 {
                     crate::e2b::shown(id);
-                    crate::append_hook_log(&format!("orchestration: opened {}'s machine for its task", tab_id(&tabs[i])));
+                    crate::append_hook_log(&format!("orchestration: opened {}'s machine for its task", tab_id(t)));
                 }
             }
             Effect::Person { text } => {

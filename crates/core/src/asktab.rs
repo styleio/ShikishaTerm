@@ -288,16 +288,18 @@ pub fn record_len(t: &Tab) -> Option<u64> {
 }
 
 /// How often a tab that has held an answer back for a long time has the
-/// reason it reads as busy written to the log. Not sooner than an ask's
-/// ordinary wait: a turn of a few minutes is not a mystery
+/// reason it reads as busy, or as at work behind its prompt, written to the
+/// log. Not sooner than an ask's ordinary wait: a turn of a few minutes is
+/// not a mystery
 pub const WHY_AGAIN: Duration = Duration::from_secs(10 * 60);
 
 impl Ask {
     /// Whether it is time to write down why the tab it waits on still reads
-    /// as busy, and if so, notes that it was written
+    /// as busy or as at work behind its prompt, and if so, notes that it was
+    /// written
     pub fn time_to_say_why(&mut self, state: TabState) -> bool {
         let waited = self.sent_at.unwrap_or(self.asked_at).elapsed();
-        if state != TabState::Busy || waited < WHY_AGAIN || self.why_said.is_some_and(|at| at.elapsed() < WHY_AGAIN) {
+        if !matches!(state, TabState::Busy | TabState::Background) || waited < WHY_AGAIN || self.why_said.is_some_and(|at| at.elapsed() < WHY_AGAIN) {
             return false;
         }
         self.why_said = Some(Instant::now());
@@ -2257,6 +2259,21 @@ Your full answer is kept separately. Reply with only one short line.";
         a.background_since = Some(Instant::now() - LEFT_RUNNING);
         let Step::Answer(v) = step(&mut a, Some(&t), false, None, true) else { panic!("waited on for good") };
         assert_eq!((v["state"].as_str(), v["reply"].as_str()), (Some("DONE"), Some("The dev server is up; checking the pages.")));
+    }
+
+    /// A tab that reads as at work behind its prompt for long has the reason
+    /// written down, as a busy one has: a command answered ten minutes after
+    /// it ended left nothing to say what had held it (2026-10-20)
+    #[test]
+    fn a_long_wait_on_work_behind_the_prompt_says_why() {
+        let mut a = sent_ask();
+        a.sent_at = Some(Instant::now() - WHY_AGAIN);
+        assert!(a.time_to_say_why(TabState::Background));
+        assert!(!a.time_to_say_why(TabState::Background), "not again so soon");
+        a.why_said = None;
+        assert!(a.time_to_say_why(TabState::Busy));
+        a.why_said = None;
+        assert!(!a.time_to_say_why(TabState::Done), "nothing held up");
     }
 
     /// A record with no marks (Gemini) is never answered from here: the
