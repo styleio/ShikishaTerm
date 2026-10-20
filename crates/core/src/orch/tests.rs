@@ -342,6 +342,62 @@ fn a_tab_with_mail_and_nothing_to_do_is_told_once() {
     assert!(w.o.tick(&w.scene).is_empty(), "told once");
 }
 
+/// The line saying there is mail did not go in (its terminal's line had
+/// gone, say): the mail is pointed out again, once (a review, 2026-10-20)
+#[test]
+fn a_line_about_mail_that_did_not_go_in_is_said_again() {
+    let mut w = World::new();
+    w.o.mail_tab(&uid("codex"), "claude", "The reply of <@claude>", "Done.");
+    let told = vec![Effect::Type { tab: uid("codex"), lead: None, text: text::mail_line(1) }];
+    assert_eq!(w.o.tick(&w.scene), told);
+    w.o.typed(&uid("codex"), false);
+    assert_eq!(w.o.tick(&w.scene), told, "said again");
+    w.o.typed(&uid("codex"), true);
+    assert!(w.o.tick(&w.scene).is_empty(), "went in: said once");
+}
+
+/// Mail handed over to a wait whose caller had gone is in nobody's hands:
+/// once it has been out for a while with nothing dealt with, its tab is told
+/// all the same (a review, 2026-10-20)
+#[test]
+fn mail_handed_to_nobody_is_pointed_out_after_a_while() {
+    let mut w = World::new();
+    w.o.mail_tab(&uid("codex"), "claude", "The reply of <@claude>", "Done.");
+    let inbox = db::tab_box(&uid("codex"));
+    assert!(w.o.store().unwrap().hand_over(&inbox, None).unwrap().is_some());
+    assert!(w.o.tick(&w.scene).is_empty(), "in its reader's hands for now");
+    w.o.store().unwrap().age_handovers(GIVEN_TRUSTED.as_millis() as i64 + 1000);
+    assert_eq!(w.o.tick(&w.scene), vec![Effect::Type { tab: uid("codex"), lead: None, text: text::mail_line(1) }]);
+    w.o.typed(&uid("codex"), true);
+    assert!(w.o.tick(&w.scene).is_empty(), "once");
+    // Taken again, as an AI does: in its hands from then, not pointed out
+    w.o.store().unwrap().age_handovers(GIVEN_TRUSTED.as_millis() as i64 + 1000);
+    w.o.mail_tab(&uid("codex"), "lead", "Another", "More.");
+    assert!(w.o.store().unwrap().hand_over(&inbox, None).unwrap().is_some_and(|h| h.again));
+    assert!(w.o.tick(&w.scene).is_empty(), "handed over again just now");
+}
+
+/// A lead told of its job's mail and of a reply of its own at once: the line
+/// that did not go in is the one whose box is pointed out again (a review,
+/// 2026-10-20)
+#[test]
+fn each_line_about_mail_is_answered_for_its_own_box() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("a")]);
+    w.assign("t1", "claude");
+    w.ok("claude", "report", vec![json!("done"), json!("Built it."), json!("Nothing odd."), json!("nothing")]);
+    w.o.mail_tab(&uid("lead"), "codex", "The reply of <@codex>", "Clean.");
+    w.set("lead", TabState::Done);
+    assert_eq!(w.o.tick(&w.scene).len(), 2, "both boxes told");
+    // The first line did not go in, the second did
+    w.o.typed(&uid("lead"), false);
+    w.o.typed(&uid("lead"), true);
+    assert_eq!(w.o.tick(&w.scene).len(), 1, "one box told again");
+    w.o.typed(&uid("lead"), true);
+    assert!(w.o.tick(&w.scene).is_empty());
+}
+
 /// A job's lead asked another tab outside the job, and the reply came after
 /// the call: it reads that reply with the inbox it is told to read, then its
 /// job's mail (a review, 2026-10-20: the reply was in the tab's own box,
@@ -359,6 +415,8 @@ fn a_lead_reads_a_reply_to_its_own_ask_in_its_inbox() {
     let h = first["handover"].as_i64().unwrap();
     let then = w.ok("lead", "inbox", vec![json!({"dealt": h})]);
     assert_eq!(then["mail"][0]["kind"], "report", "{then}");
+    // Said twice, its answer lost on the way: still fine
+    w.ok("lead", "inbox", vec![json!({"dealt": h})]);
 }
 
 /// The person went to another desk: the job's tabs go on running there, and

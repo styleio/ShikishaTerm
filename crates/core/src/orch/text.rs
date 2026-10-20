@@ -53,7 +53,14 @@ If the person tells you something directly, that comes first.{nested}
 
 /// Typed into a tab that has mail and is not already waiting for it
 pub fn mail_line(count: usize) -> String {
-    format!("[shikisha] New mail for this tab ({count}). Read it with: shikisha inbox")
+    format!("{MAIL_LINE_OPENS} ({count}). Read it with: shikisha inbox")
+}
+
+const MAIL_LINE_OPENS: &str = "[shikisha] New mail for this tab";
+
+/// Whether `text` is the line saying a tab has mail
+pub fn is_mail_line(text: &str) -> bool {
+    text.starts_with(MAIL_LINE_OPENS)
 }
 
 /// The whole guide for a lead, printed by `shikisha skill orchestration`.

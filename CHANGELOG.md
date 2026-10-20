@@ -46,6 +46,13 @@ once it reaches its first tagged release.
   own inbox. A tab leading a job, or working on one, read only the job's mail
   with `shikisha inbox`, and was told of mail it could not find. It now reads
   its own first, then the job's.
+- **Mail is pointed out again when the line about it did not get through.**
+  When the line telling a tab it has mail cannot be typed into it (its
+  terminal on another machine whose connection dropped), the tab is told
+  again once it can be. Mail handed over to a wait whose caller had already
+  gone, and not dealt with for two minutes, is pointed out too: before, it
+  and everything after it in that inbox went untold until the tab read its
+  inbox by itself.
 
 ## [0.28.1] - 2026-10-14
 

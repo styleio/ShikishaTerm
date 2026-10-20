@@ -984,6 +984,44 @@ impl Store {
         Ok(())
     }
 
+    /// The box's tab was not told after all: everything unread in it is
+    /// pointed at again
+    pub fn tell_again(&mut self, box_: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE mail SET is_told = 0 WHERE box = ?1 AND is_read = 0", params![box_])?;
+        Ok(())
+    }
+
+    /// Every handover given as if `by_ms` earlier, for a test of how long one
+    /// is trusted to be in its reader's hands
+    #[cfg(test)]
+    pub fn age_handovers(&mut self, by_ms: i64) {
+        self.conn
+            .execute("UPDATE handovers SET given_at = given_at - ?1", params![by_ms])
+            .unwrap();
+    }
+
+    /// Which box a handover was given from
+    pub fn handover_box(&self, handover: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT box FROM handovers WHERE id = ?1", params![handover], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// When the handover given and not yet dealt with was last handed over,
+    /// if there is one
+    pub fn given_at(&self, box_: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT given_at FROM handovers WHERE box = ?1 AND state = 'given'",
+                params![box_],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// The handover given and not yet dealt with, if there is one
     pub fn given(&self, box_: &str) -> Result<Option<i64>> {
         Ok(self
@@ -1011,6 +1049,8 @@ impl Store {
             .optional()?;
         if let Some((id, seqs)) = given {
             let mail = Self::mail_of(&tx, &ids(&seqs))?;
+            // In its reader's hands again from now (`given_at`)
+            tx.execute("UPDATE handovers SET given_at = ?1 WHERE id = ?2", params![now_ms(), id])?;
             tx.commit()?;
             return Ok(Some(Handover { id, box_: box_.to_string(), mail, again: true }));
         }

@@ -96,6 +96,11 @@ pub struct PendingSend {
     not_before: u64,
     /// The time to give up and send anyway, if things never settle
     give_up: u64,
+    /// The tab (by uid) this tells of its mail, for orchestration to hear
+    /// whether it went in (`Orchestra::typed`)
+    pub tells: Option<String>,
+    /// A piece of it, or its Enter, could not be written
+    pub went_wrong: bool,
 }
 
 /// The paste to hand a tab, cut into chunks small enough for it to swallow one
@@ -142,6 +147,8 @@ impl PendingSend {
             quiet_since: None,
             not_before: now_ms + SUBMIT_FLOOR_MS,
             give_up: now_ms + SUBMIT_GIVE_UP_MS,
+            tells: None,
+            went_wrong: false,
         }
     }
 

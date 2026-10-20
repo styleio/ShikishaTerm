@@ -97,6 +97,12 @@ const WATCH_EVERY: Duration = Duration::from_secs(5);
 /// How long a stopped tab has to stop before one this job opened is closed
 const STOP_GRACE: Duration = Duration::from_secs(15);
 
+/// How long mail handed over and not yet dealt with is taken to be in its
+/// reader's hands. Past that, mail of that box nobody was told of is pointed
+/// out once all the same: a handover can be given to a wait whose caller had
+/// already gone, and its reader then never heard of it (a review, 2026-10-20)
+const GIVEN_TRUSTED: Duration = Duration::from_secs(120);
+
 /// How much of a task `task_list` shows when asked for the short form
 const SHORT: usize = 120;
 
@@ -253,6 +259,11 @@ pub struct Orchestra {
     last_watch: Option<Instant>,
     /// What each tab was last written down as being called, by uid
     names: HashMap<String, String>,
+    /// The boxes each tab (by uid) is being told of, in the order the lines
+    /// saying so went to it, while they are still going in: pointed out
+    /// again if they do not (`Self::typed`). A tab's lines go in one after
+    /// another, so the first to finish is the first told
+    telling: HashMap<String, std::collections::VecDeque<String>>,
     /// Bumped whenever something a person would see changes
     pub revision: u64,
 }
@@ -422,6 +433,7 @@ impl Orchestra {
             quiet_since: HashMap::new(),
             last_watch: None,
             names: HashMap::new(),
+            telling: HashMap::new(),
             revision: 0,
         }
     }
@@ -1314,8 +1326,10 @@ impl Orchestra {
         let dealt = option(&o, &["dealt", "ack"]).and_then(|v| number(v, 'h'));
         let store = self.store()?;
         if let Some(h) = dealt {
-            // The handover is the tab's own box's or its role's, whichever gave it
-            let of = if store.given(&own).map_err(|e| e.to_string())? == Some(h) { &own } else { &role };
+            // The handover is the tab's own box's or its role's, whichever
+            // gave it -- by the box it was given from, so saying it twice
+            // finds it again after it was dealt with
+            let of = if store.handover_box(h).map_err(|e| e.to_string())?.as_deref() == Some(own.as_str()) { &own } else { &role };
             store.dealt(of, h).map_err(|e| e.to_string())?;
         }
         // A lead or a worker reads its job's or its assignment's box, and the
@@ -1949,7 +1963,13 @@ impl Orchestra {
             {
                 continue;
             }
-            if store.given(&inbox).ok().flatten().is_some() {
+            // Handed over and in its reader's hands, for a while
+            if store
+                .given_at(&inbox)
+                .ok()
+                .flatten()
+                .is_some_and(|at| db::now_ms().saturating_sub(at) < GIVEN_TRUSTED.as_millis() as i64)
+            {
                 continue;
             }
             let reader = if let Some(j) = inbox.strip_prefix("job:").and_then(|n| n.parse::<i64>().ok()) {
@@ -1981,6 +2001,25 @@ impl Orchestra {
                 text: line,
             });
             let _ = store.told(&inbox);
+            self.telling.entry(reader).or_default().push_back(inbox);
+        }
+    }
+
+    /// The line telling a tab (by uid) of its mail went in, or did not: one
+    /// that did not -- its terminal on a machine whose line went, say -- has
+    /// its mail pointed out again, once the tab can be told
+    pub fn typed(&mut self, tab: &str, went_in: bool) {
+        let Some(waiting) = self.telling.get_mut(tab) else { return };
+        let Some(inbox) = waiting.pop_front() else { return };
+        if waiting.is_empty() {
+            self.telling.remove(tab);
+        }
+        if went_in {
+            return;
+        }
+        crate::append_hook_log(&format!("orchestration: the line about {inbox}'s mail did not go in; it is said again"));
+        if let Ok(s) = self.store() {
+            let _ = s.tell_again(&inbox);
         }
     }
 

@@ -6906,6 +6906,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             // second Enter went out onto an empty line. Sending in turn is what
             // makes two messages two messages.
             let mut holding: Vec<u64> = Vec::new();
+            // Lines about mail that went in, or did not, for orchestration
+            let mut typed: Vec<(String, bool)> = Vec::new();
             pending_send.retain_mut(|p| {
                 if holding.contains(&p.serial) {
                     return true;
@@ -6918,17 +6920,20 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     .find(|&n| session_at(&surfaces, n).and_then(|i| tabs.get(i)).is_some_and(|t| t.serial() == p.serial))
                     .unwrap_or(0);
                 let Some(t) = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.serial() == p.serial) else {
+                    if let Some(tab) = p.tells.take() {
+                        typed.push((tab, false));
+                    }
                     return false;
                 };
                 match p.step(t.output_count(), now_ms) {
                     Step::Wait => true,
                     Step::Hand(chunk) => {
-                        let _ = t.write_passthrough(&chunk);
+                        p.went_wrong |= t.write_passthrough(&chunk).is_err();
                         true
                     }
                     Step::Submit { settled } => {
                         if p.submit {
-                            let _ = t.write_bytes(b"\r");
+                            p.went_wrong |= t.write_bytes(b"\r").is_err();
                             append_hook_log(&format!(
                                 "submit tab{} \"{}\"{} ({})",
                                 p.tab,
@@ -6937,10 +6942,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 if settled { "after intake finished" } else { "sent while still unsettled" }
                             ));
                         }
+                        if let Some(tab) = p.tells.take() {
+                            typed.push((tab, !p.went_wrong));
+                        }
                         false
                     }
                 }
             });
+            for (tab, went_in) in typed {
+                orchestra.typed(&tab, went_in);
+            }
         }
 
         // chain_depth resets to 0 when a human types. Make the ball follow that too
@@ -16020,7 +16031,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // trickling in, and its Enter land, after the stop.
                             // Whatever has already gone over stays in the input
                             // box, unsent — which is what stopping means here.
-                            pending_send.clear();
+                            // A line about mail stopped on its way is said again
+                            for p in pending_send.drain(..) {
+                                if let Some(tab) = p.tells {
+                                    orchestra.typed(&tab, false);
+                                }
+                            }
                             // Discard every waiting loop too (don't let them revive on resume)
                             for eng in engine.iter_mut().chain(engines.iter_mut().flatten()) {
                                 eng.cancel_all();
