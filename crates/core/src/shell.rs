@@ -12831,6 +12831,7 @@ function closedMenu(e, here) {
 //
 // Levels with one entry are skipped. On a desk with one project, being asked
 // to choose the project is being asked to confirm that there is only one.
+// It opens at the bottom, not the top: see the end of the function.
 function pickIntoPane(anchor, pane) {
   const rows = (S && S.tabs) || [];
   const groups = (S && S.groups) || [];
@@ -12849,37 +12850,43 @@ function pickIntoPane(anchor, pane) {
       items.length ? items : [el("div", {class:"note"}, T["tui.pane.take.none"] || "")]), items.length > 8);
   };
 
-  const chooseFolder = (folders, back) => {
-    if (folders.length === 1) return chooseTab(inFolder(folders[0]), back);
-    openList(anchor, (back ? [back] : []).concat(folders.map(g =>
-      el("div", {class:"closed", title:g.folder || "",
-          onclick:() => { closeFolderMenu(); chooseFolder([g], backRow(() => start())); }},
-        el("span", {class:"cn"}, g.name || ""),
-        el("span", {class:"cw"}, String(inFolder(g).length))))), folders.length > 8);
-  };
-
   const inFolder = g => takeable.filter(t => groups[t.group] === g);
   const backRow = go => el("div", {class:"note back", onclick:() => { closeFolderMenu(); go(); }},
     "‹ " + (T["tui.pane.take.back"] || "Back"));
 
+  // Rows in no folder at all -- the Issue tab, a page opened by automation
+  const loose = takeable.filter(t => t.group == null || !groups[t.group]);
+  const projects = [];
+  for (const g of groups.filter(g => inFolder(g).length)) {
+    const key = nameOfProject(g);
+    const at = projects.find(p2 => p2.key === key);
+    if (at) at.folders.push(g); else projects.push({ key, folders: [g] });
+  }
+  // The top level is skipped when it would hold one project and nothing else,
+  // so the way back from the level under it leads nowhere
+  const topSkipped = projects.length === 1 && !loose.length;
+  const backToTop = () => topSkipped ? null : backRow(start);
+
+  // A folder's tabs come back to the list of that project's folders, not to
+  // the top: the folder beside the one just looked at is the likelier one
+  const chooseFolder = (pr, back) => {
+    if (pr.folders.length === 1) return chooseTab(inFolder(pr.folders[0]), back);
+    openList(anchor, (back ? [back] : []).concat(pr.folders.map(g =>
+      el("div", {class:"closed", title:g.folder || "",
+          onclick:() => { closeFolderMenu(); chooseTab(inFolder(g), backRow(() => chooseFolder(pr, back))); }},
+        el("span", {class:"cn"}, g.name || ""),
+        el("span", {class:"cw"}, String(inFolder(g).length))))), pr.folders.length > 8);
+  };
+
   const start = () => {
-    // Rows in no folder at all -- the Issue tab, a page opened by automation
-    const loose = takeable.filter(t => t.group == null || !groups[t.group]);
-    const used = groups.filter(g => inFolder(g).length);
-    const projects = [];
-    for (const g of used) {
-      const key = nameOfProject(g);
-      const at = projects.find(p2 => p2.key === key);
-      if (at) at.folders.push(g); else projects.push({ key, folders: [g] });
-    }
     if (!projects.length && !loose.length) {
       openList(anchor, [el("div", {class:"note"}, T["tui.pane.take.none"] || "")]);
       return;
     }
-    if (projects.length === 1 && !loose.length) return chooseFolder(projects[0].folders, null);
+    if (topSkipped) return chooseFolder(projects[0], null);
     const items = projects.map(pr =>
       el("div", {class:"closed",
-          onclick:() => { closeFolderMenu(); chooseFolder(pr.folders, backRow(start)); }},
+          onclick:() => { closeFolderMenu(); chooseFolder(pr, backRow(start)); }},
         el("span", {class:"cn"}, pr.key),
         el("span", {class:"cw"}, String(pr.folders.reduce((n, g) => n + inFolder(g).length, 0)))));
     if (loose.length) {
@@ -12891,11 +12898,37 @@ function pickIntoPane(anchor, pane) {
     openList(anchor, items, items.length > 8);
   };
 
+  // The list opens where the person already is: among the tabs of the folder
+  // of the tab they were looking at -- the one beside this empty pane -- with
+  // the way back leading up to its project and then the top. Asked before the
+  // focus moves into the empty pane, which has no tab and so no folder. The
+  // same answer "+ Add a tab" gives the same pane (activeFolder). With the
+  // keyboard already in the empty pane there is no tab in focus, and the
+  // folder is the one of the nearest pane that shows a tab
+  const beside = () => {
+    const ps = (PANES && PANES.panes) || [];
+    const i = ps.findIndex(q => q.id === pane);
+    const near = ps.filter(q => q.id !== pane)
+      .sort((a, b) => Math.abs(ps.indexOf(a) - i) - Math.abs(ps.indexOf(b) - i));
+    for (const q of near) {
+      const t = paneTab(q);
+      if (t && t.group != null && groups[t.group]) return groups[t.group];
+    }
+    return null;
+  };
+  const here = activeFolder() || beside();
+  const mine = here && projects.find(pr => pr.folders.includes(here));
+  if (mine) {
+    chooseTab(inFolder(here), mine.folders.length > 1 ? backRow(() => chooseFolder(mine, backToTop())) : backToTop());
+  } else if (loose.some(t => t.index === S.active)) {
+    chooseTab(loose, backToTop());
+  } else {
+    start();
+  }
   // The pane it is going into is the one that was pressed, and the press the
   // list answers with is the ordinary "show me this row" -- which, with the
   // keyboard standing in an empty pane, fills that pane (see take_selects)
   send({kind:"focuspane", id:pane});
-  start();
 }
 
 // The question the app asks before closing a tab whose work would be cut off.
