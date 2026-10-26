@@ -322,6 +322,13 @@ fn local_banners() -> Option<&'static dyn shikisha_shared::Toasts> {
     LOCAL_BANNERS.get().map(|b| b.as_ref())
 }
 
+/// Why banners on this desktop would not be drawn, when they would not --
+/// the desktop's own notification switches -- in the person's words. `None`
+/// when they would, or when there is no desktop here to ask
+pub fn banners_turned_off() -> Option<String> {
+    local_banners().and_then(|t| t.turned_off())
+}
+
 /// A banner here, about tab `tab` (its screen number): what a page in that
 /// tab said (`pagenotice`). Nothing is sent anywhere else
 pub fn banner_here(title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {

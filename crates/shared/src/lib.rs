@@ -2234,6 +2234,13 @@ pub trait Toasts: Send + Sync {
     fn clicked_tab(&self) -> Option<usize>;
     /// Bring whatever is showing this to the front, because they asked for it
     fn raise(&self);
+    /// Why the desktop will not draw a banner from this program, when it
+    /// will not -- turned off for every program, or for this one -- written
+    /// for the person to read and act on. `None` when it will draw them, and
+    /// where the desktop cannot be asked
+    fn turned_off(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Asking the person at the desktop to point at a file or a folder.

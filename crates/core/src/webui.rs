@@ -2247,6 +2247,9 @@ fn handle(
                 Some("install") => query_param(req.url(), "prog")
                     .map(|p| percent_decode(&p))
                     .and_then(|p| install_page(&p)),
+                // Windows' own page of notification switches, for a PC whose
+                // notifications are turned off there (see /api/notify/pc)
+                Some("pc-notifications") if cfg!(windows) => Some("ms-settings:notifications".to_string()),
                 _ => None,
             };
             match url {
@@ -3397,6 +3400,13 @@ fn handle(
                 Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
             };
             req.respond(json_resp(resp))?;
+        }
+        // Whether this PC's own notifications would be drawn at all. The
+        // switches are Windows' and not ours, and with them off a banner is
+        // taken without a word and never shown -- so the tick for this PC
+        // says so beside itself, with the way to the switch
+        ("GET", "/api/notify/pc") => {
+            req.respond(json_resp(serde_json::json!({ "off": crate::notify::banners_turned_off() })))?;
         }
         // Standalone settings have no board to ask about a server's key.
         // Use the same pending questions and exact-fingerprint answer as it.
@@ -5807,6 +5817,13 @@ const PAGE: &str = r##"<!doctype html>
  /* A setting that could not be used. Said in the place it was set, not in a
     log nobody opens */
  .warn { color:var(--danger); font-size:13px; margin:0 0 var(--s2); }
+ /* 5.1's warn box: what is wrong and the button that fixes it, under the
+    control it is about. The same box as the board's (warnBox) */
+ .bwarn { display:flex; flex-direction:column; gap:var(--s2); padding:var(--s2) var(--s3);
+   margin-top:var(--s2); border-radius:var(--r-ctl); font-size:11.5px; line-height:1.5; color:var(--text);
+   background:color-mix(in srgb, var(--warn) 9%, transparent);
+   border:1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+ .bwarn .row { display:flex; flex-wrap:wrap; gap:var(--s2); }
  /* Replay the animation every time, so a click still registers even if the message text repeats */
  #msg.flash { animation:msgflash 1.1s ease-out; }
  @keyframes msgflash {
@@ -7029,6 +7046,14 @@ function sfield(label, control, hint) {
   return el("div", {class:"field"}, caption,
     el("div", {class:"fieldctl"}, control),
     !hint ? null : hint instanceof Node ? hint : el("div", {class:"hint"}, hint));
+}
+
+// Something a person has to do or know about the control above, and what does
+// it: one box, so the problem and its fix read as one thing (style guide 5.1's
+// warn box). The board draws the same box with a function of the same name
+function warnBox(text, ...acts) {
+  const fixes = acts.filter(Boolean);
+  return el("div", {class:"bwarn"}, el("div", {}, text), fixes.length ? el("div", {class:"row"}, ...fixes) : null);
 }
 
 // Every settings form answers a held save the same way. Keep each field's
@@ -13429,12 +13454,27 @@ function tickDestination(desk, type, called, label, hint, redraw) {
   box.checked = !!nameOf();
   const tick = el("label", {class:"check"});
   tick.append(box, document.createTextNode(label));
+  // This PC's banners can be turned off in Windows, where nothing of ours
+  // shows it: said under the tick while it is ticked, with the way to the
+  // switch when the person is at this PC to press it
+  const off = el("div", {});
+  const checkOff = async () => {
+    if (type !== "windows" || !box.checked) { off.textContent = ""; return; }
+    let r = null;
+    try { r = await (await settingsFetch("/api/notify/pc", {})).json(); } catch (e) {}
+    off.textContent = "";
+    if (!(r && r.off) || !box.checked) return;
+    off.append(warnBox(r.off, REMOTE ? null :
+      el("button", {type:"button", onclick:() => openExt("pc-notifications")}, T["settings.notify.pc.open_windows"])));
+  };
   const test = el("button", {class:"quiet", onclick: async () => {
     const r = await settingsApi("/api/notify/test", {type}).catch(() => null);
     toast((r && r.ok) ? T["settings.notify.test_ok"]
                       : ((r && r.error) || T["settings.notify.test_failed"]), !(r && r.ok));
+    checkOff();
   }}, T["settings.notify.test"]);
   test.hidden = !box.checked;
+  checkOff();
   // The phones may be told only while the person is away from this PC:
   // sitting at it, they have the banner already
   const away = el("input", {type:"checkbox"});
@@ -13459,12 +13499,14 @@ function tickDestination(desk, type, called, label, hint, redraw) {
     if (!box.checked && had) delete desk.notify[had];
     test.hidden = !box.checked;
     syncAway();
+    checkOff();
     refreshSave();
     redraw();
   });
   return el("div", {},
     el("div", {class:"row"}, tick, test),
     el("div", {class:"hint"}, hint),
+    off,
     awayRow);
 }
 

@@ -75,6 +75,12 @@ pub fn raise() {
 pub fn show(title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
     #[cfg(windows)]
     {
+        // Windows takes a notification it will never draw without a word:
+        // with notifications turned off, Show answers success and nothing
+        // appears. Asked first, so the person is told why and what to change
+        if let Some(why) = win::turned_off() {
+            return Err(why);
+        }
         win::show(title, body, tab)
     }
     #[cfg(not(windows))]
@@ -155,6 +161,27 @@ mod win {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
             .replace('"', "&quot;")
+    }
+
+    /// Why Windows will not draw a banner from this program, if it will not.
+    ///
+    /// The switches are the person's, in Windows' own settings: notifications
+    /// for every program, notifications for this one, and the administrator's
+    /// policy above both. Measured on this machine: with the first switch off,
+    /// the notifier reads `DisabledForUser` and Show still answers success.
+    /// A notifier that cannot be made says nothing here -- `show` reports that
+    /// failure itself, with its own error
+    pub fn turned_off() -> Option<String> {
+        use windows::UI::Notifications::NotificationSetting;
+        let key = match notifier().ok()?.Setting().ok()? {
+            NotificationSetting::DisabledForUser => "err.notify.pc_off",
+            NotificationSetting::DisabledForApplication | NotificationSetting::DisabledByManifest => {
+                "err.notify.pc_off_app"
+            }
+            NotificationSetting::DisabledByGroupPolicy => "err.notify.pc_off_policy",
+            _ => return None,
+        };
+        Some(shikisha_core::i18n::t(key))
     }
 
     pub fn show(title: &str, body: &str, tab: Option<usize>) -> Result<(), String> {
@@ -383,6 +410,15 @@ impl shikisha_shared::Toasts for WindowsBanners {
     fn raise(&self) {
         raise()
     }
+
+    fn turned_off(&self) -> Option<String> {
+        #[cfg(windows)]
+        {
+            win::turned_off()
+        }
+        #[cfg(not(windows))]
+        None
+    }
 }
 
 #[cfg(test)]
@@ -414,6 +450,22 @@ mod tests {
         // Long enough to see it, and to click it.
         std::thread::sleep(std::time::Duration::from_secs(12));
         println!("clicked tab: {:?}", super::clicked_tab());
+    }
+
+    /// What Windows' notification switches say on this machine, and the line
+    /// a person is shown for it. Run by hand, like the one above and for the
+    /// same reason (`cargo test -- --ignored windows_says_whether_it_will_draw_them
+    /// --nocapture`); turning the switch in Settings > System > Notifications
+    /// between runs is the check
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn windows_says_whether_it_will_draw_them() {
+        println!("turned off: {:?}", super::win::turned_off());
+        match super::show("SHIKISHA-TERM", "This is a test notification", None) {
+            Ok(()) => println!("shown"),
+            Err(e) => println!("not shown: {e}"),
+        }
     }
 }
 
