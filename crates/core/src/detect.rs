@@ -419,6 +419,12 @@ impl Detector {
     }
 
     /// Whether the "working" indicator was showing at the last tick
+    /// Whether the screen shows a paste folded up in the input box
+    /// (`ProfileFile::pasted_patterns`)
+    pub fn shows_pasted(&self, screen: &str) -> bool {
+        self.profile.pasted.iter().any(|r| r.is_match(screen))
+    }
+
     pub fn working_shown(&self) -> bool {
         self.working_shown
     }
@@ -689,6 +695,7 @@ mod tests {
             done_confirm_ms: None,
             title_busy: vec![],
             limit_patterns: vec!["hit your limit".into(), "Usage limit (reached|approaching)".into()],
+            pasted_patterns: vec![],
         })
         .unwrap()
     }

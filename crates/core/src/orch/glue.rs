@@ -376,7 +376,7 @@ pub fn apply(
                     // record; either may be what it shows as the request
                     note_typed(&tab, &text);
                 }
-                let mut send = PendingSend::new(pos, t.serial(), chunks, true, t.output_count(), now_ms, said.chars().count());
+                let mut send = PendingSend::new(pos, t.serial(), chunks, true, t.output_count(), now_ms, &said);
                 // Whether the line about mail went in is told back
                 if super::text::is_mail_line(&text) {
                     send.tells = Some(tab.clone());

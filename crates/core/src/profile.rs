@@ -57,6 +57,13 @@ pub struct ProfileFile {
     /// act on
     #[serde(default)]
     pub limit_patterns: Vec<String>,
+    /// Regex: how this CLI shows a long paste it has folded up in its input
+    /// box ("[Pasted Content 6115 chars]"). A long message is not on screen
+    /// in its own words then, and this is what says it is still in the box
+    /// after an Enter that started nothing (`send::Landing`). Written from
+    /// what the CLI actually draws
+    #[serde(default)]
+    pub pasted_patterns: Vec<String>,
     /// If the screen doesn't change for this long (ms), treat as done/idle
     #[serde(default = "default_silence_ms")]
     pub silence_ms: u64,
@@ -532,6 +539,8 @@ pub struct Profile {
     pub question: Vec<regex::Regex>,
     /// Lines about the CLI's usage limit (see `ProfileFile::limit_patterns`)
     pub limit: Vec<regex::Regex>,
+    /// A paste folded up in the input box (see `ProfileFile::pasted_patterns`)
+    pub pasted: Vec<regex::Regex>,
     /// Title marks. Plain text on purpose (see `ProfileFile::title_busy`)
     pub title_busy: Vec<String>,
     pub silence_ms: u64,
@@ -560,6 +569,7 @@ impl Profile {
             busy: Vec::new(),
             question: Vec::new(),
             limit: Vec::new(),
+            pasted: Vec::new(),
             title_busy: Vec::new(),
             silence_ms: default_silence_ms(),
             ignore_bottom_rows: default_ignore_bottom_rows(),
@@ -588,6 +598,7 @@ impl Profile {
             busy: compile_all(&f.busy_patterns)?,
             question: compile_all(&f.question_patterns)?,
             limit: compile_all(&f.limit_patterns)?,
+            pasted: compile_all(&f.pasted_patterns)?,
             title_busy: f.title_busy,
             silence_ms: f.silence_ms,
             done_confirm_ms: f.done_confirm_ms,

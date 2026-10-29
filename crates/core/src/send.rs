@@ -37,6 +37,24 @@ pub const PASTE_CHUNK: usize = 1024;
 /// the timeout is for a recipient that draws nothing at all.
 pub const PASTE_ACK_MS: u64 = 600;
 
+/// How long after its Enter an AI tab gets to show it has started before
+/// the Enter is looked at again. A real turn shows "working" within about a
+/// second (Codex CLI, measured: 0.85s).
+pub const LANDING_LOOK_MS: u64 = 2_500;
+
+/// How still the screen has to be before a second Enter goes in. A tab that
+/// is still drawing is still doing something with what it was given.
+pub const LANDING_QUIET_MS: u64 = 1_000;
+
+/// How many more times Enter is pressed for one message
+pub const LANDING_TRIES: u8 = 2;
+
+/// After this long, stop watching whether the Enter landed
+pub const LANDING_GIVE_UP_MS: u64 = 20_000;
+
+/// How much of the end of a message is looked for on screen
+const TAIL_CHARS: usize = 24;
+
 /// What to do with a send on this pass.
 pub enum Step {
     /// Nothing yet: the recipient hasn't caught up, or hasn't settled
@@ -45,6 +63,124 @@ pub enum Step {
     Hand(Vec<u8>),
     /// The body is all in. Press Enter (or, for a draft, stop here)
     Submit { settled: bool },
+}
+
+/// What to do about an Enter that may not have landed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Check {
+    /// Nothing yet: too early to tell
+    Wait,
+    /// Stop watching: it started, someone else typed, or it cannot be told
+    Done,
+    /// The message is still in the input box and nothing started: press Enter
+    Again,
+    /// Still in the input box after every try. Stop pressing and say so
+    Stuck,
+}
+
+/// What a tab looks like on this pass, for `Landing::check`
+pub struct Look<'a> {
+    /// The tab shows it started on what it was given (`Tab::answered_since_submit`)
+    pub started: bool,
+    /// `Tab::typed_in` now
+    pub typed_in: u64,
+    /// Another paste to this tab is on its way
+    pub sending: bool,
+    /// How long the screen has not changed (`Tab::ms_since_change`)
+    pub still_ms: u64,
+    /// The screen as it stands (`Tab::last_screen`)
+    pub screen: &'a str,
+    /// The screen shows a paste folded up in the input box, where a long
+    /// message is not in its own words (`Tab::shows_pasted`)
+    pub pasted: bool,
+}
+
+/// An Enter that has gone into an AI tab, watched until the turn it asked for
+/// shows.
+///
+/// The Enter can be taken *inside* the paste, as a newline, and leave the
+/// whole message in the input box: `PendingSend` reads "the recipient has
+/// caught up" off its drawing, and a recipient that is slow to take a paste
+/// in (a Codex CLI with a long conversation behind it) can stop drawing
+/// before it has read all of it. On 2026-10-30 two requests to a reviewing
+/// Codex sat that way for seven hours, the second one joining the first in
+/// the same box, until a person pressed Enter.
+///
+/// No wait before the Enter can be long enough, because how far behind the
+/// recipient is cannot be seen from here. What can be seen is the result:
+/// a tab that shows nothing started, with the end of the message still on
+/// its screen (or the paste folded up in its input box), did not take the
+/// Enter. One more Enter then sends what is in
+/// the box. An Enter on an empty input box does nothing in an AI CLI, so a
+/// wrong guess costs nothing.
+pub struct Landing {
+    /// Which tab (`Tab::serial`)
+    pub serial: u64,
+    /// The end of the message, without white space, as the screen would show it
+    tail: String,
+    /// When Enter last went in
+    pressed_ms: u64,
+    /// `Tab::typed_in` right after that Enter. Anything typed since, by a
+    /// person or another message, means the box is no longer ours to send
+    typed: u64,
+    /// How many more times Enter has been pressed
+    pub again: u8,
+}
+
+/// The last few characters of what was said, white space taken out: the
+/// part of a message that is still on screen when it sits in an input box,
+/// whichever way the box wrapped it. None when there is nothing to look for
+pub fn landing_tail(text: &str) -> Option<String> {
+    let flat: Vec<char> = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if flat.is_empty() {
+        return None;
+    }
+    Some(flat[flat.len().saturating_sub(TAIL_CHARS)..].iter().collect())
+}
+
+/// Whether the screen shows that tail, across any line breaks the box made
+pub fn screen_holds(screen: &str, tail: &str) -> bool {
+    let flat: String = screen.chars().filter(|c| !c.is_whitespace()).collect();
+    flat.contains(tail)
+}
+
+impl Landing {
+    pub fn new(serial: u64, tail: String, typed: u64, now_ms: u64) -> Self {
+        Self { serial, tail, pressed_ms: now_ms, typed, again: 0 }
+    }
+
+    /// The next thing to do about this Enter
+    pub fn check(&mut self, look: &Look, now_ms: u64) -> Check {
+        if look.started || look.sending || look.typed_in != self.typed {
+            return Check::Done;
+        }
+        let since = now_ms.saturating_sub(self.pressed_ms);
+        if since < LANDING_LOOK_MS {
+            return Check::Wait;
+        }
+        if look.still_ms < LANDING_QUIET_MS {
+            return if since >= LANDING_GIVE_UP_MS { Check::Done } else { Check::Wait };
+        }
+        if !look.pasted && !screen_holds(look.screen, &self.tail) {
+            return Check::Done;
+        }
+        if self.again >= LANDING_TRIES {
+            return Check::Stuck;
+        }
+        Check::Again
+    }
+
+    /// Enter has gone in again; `typed` is `Tab::typed_in` right after it
+    pub fn pressed(&mut self, typed: u64, now_ms: u64) {
+        self.again += 1;
+        self.typed = typed;
+        self.pressed_ms = now_ms;
+    }
+
+    /// How long it has been since the last Enter
+    pub fn since_ms(&self, now_ms: u64) -> u64 {
+        now_ms.saturating_sub(self.pressed_ms)
+    }
 }
 
 /// A paste on its way to a tab, and the Enter that finishes it.
@@ -88,6 +224,8 @@ pub struct PendingSend {
     /// takes seconds, and a composer that empties with nothing else happening
     /// reads as a message that was lost.
     chars: usize,
+    /// The end of the message, for seeing whether its Enter landed (`Landing`)
+    pub tail: Option<String>,
     /// When the last chunk was handed over
     handed_ms: u64,
     /// The point output stopped (None = hasn't stopped yet)
@@ -132,9 +270,10 @@ pub fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
 }
 
 impl PendingSend {
-    /// `chars` is the length of the text a person wrote, in characters -- the
-    /// number they would recognise, not the bytes it became on the way out.
-    pub fn new(tab: usize, serial: u64, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64, chars: usize) -> Self {
+    /// `text` is what the chunks were cut from: its length in characters is
+    /// the number a person would recognise, not the bytes it became on the
+    /// way out, and its end is what shows whether the Enter landed.
+    pub fn new(tab: usize, serial: u64, chunks: Vec<Vec<u8>>, submit: bool, seen: u64, now_ms: u64, text: &str) -> Self {
         Self {
             tab,
             serial,
@@ -142,7 +281,8 @@ impl PendingSend {
             handed: 0,
             submit,
             seen,
-            chars,
+            chars: text.chars().count(),
+            tail: if submit { landing_tail(text) } else { None },
             handed_ms: now_ms,
             quiet_since: None,
             not_before: now_ms + SUBMIT_FLOOR_MS,

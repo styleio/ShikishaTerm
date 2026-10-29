@@ -3742,6 +3742,10 @@ pub struct Tab {
     /// How many submits (Enter) have gone in, ever: counted as each goes, so
     /// "has one gone in since" is never a moment late (see `Tab::submits`)
     submits: AtomicU64,
+    /// How many bytes have been written into the program, by anyone: a
+    /// person typing, a paste, an Enter. Compared with the count at some
+    /// moment, whether anything has been typed in since
+    typed_in: AtomicU64,
     /// Hash of the screen content at the moment of execution.
     ///
     /// Using output byte count instead would count cursor blinking or frame
@@ -4792,6 +4796,7 @@ impl Tab {
             saw_working: AtomicBool::new(false),
             submit_tick_ms: AtomicU64::new(u64::MAX),
             submits: AtomicU64::new(0),
+            typed_in: AtomicU64::new(0),
             last_resize_ms: AtomicU64::new(NEVER_RESIZED),
             activity: [0; ACTIVITY_LEN],
             activity_mark: 0,
@@ -4818,6 +4823,26 @@ impl Tab {
     /// compared with the count at some moment, whether one has gone in since
     pub fn submits(&self) -> u64 {
         self.submits.load(Ordering::Relaxed)
+    }
+
+    /// How many bytes have been typed into this tab since it started:
+    /// compared with the count at some moment, whether anything has been
+    /// typed in since
+    pub fn typed_in(&self) -> u64 {
+        self.typed_in.load(Ordering::Relaxed)
+    }
+
+    /// Whether this tab says on screen when it is working (an AI CLI with a
+    /// profile). Without that, nothing can tell a turn that started from one
+    /// that did not
+    pub fn shows_working(&self) -> bool {
+        self.detector.shows_working()
+    }
+
+    /// Whether the screen at the last tick shows a paste folded up in the
+    /// input box, the way this tab's CLI draws one
+    pub fn shows_pasted(&self) -> bool {
+        self.detector.shows_pasted(&self.last_screen)
     }
 
     /// Whether we're waiting for a response to a submitted input
@@ -4893,6 +4918,7 @@ impl Tab {
     /// what a piece of a paste is. Already-encoded bytes (see `encode_out`), so
     /// a piece can be handed over without the conversion seeing half a character.
     pub fn write_passthrough(&self, bytes: &[u8]) -> Result<()> {
+        self.typed_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         pty_write(&self.writer, bytes)
     }
 
@@ -4909,6 +4935,7 @@ impl Tab {
     }
 
     pub fn write_bytes(&self, bytes: &[u8]) -> Result<()> {
+        self.typed_in.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         if contains_submit(bytes) {
             self.prompted.store(true, Ordering::Relaxed);
             self.submits.fetch_add(1, Ordering::Relaxed);
@@ -7111,16 +7138,7 @@ mod long_paste_probe {
     ///
     /// Costs one cheap turn of the real CLI (it is asked to reply "MANGO").
     fn run(label: &str, body: &str) {
-        let cli = std::env::var("SHIKISHA_PROBE_CMD").unwrap_or_else(|_| "codex".into());
-        let mut tab = Tab::spawn(
-            cli.clone(),
-            &[cli],
-            None,
-            30,
-            120,
-            TabOptions { cwd: Some(std::path::PathBuf::from(r"D:\ShikishaTerm")), ..Default::default() },
-        )
-        .expect("started");
+        let mut tab = spawn_cli();
         let settle = |ms: u64, cap: u64| {
             let start = Instant::now();
             let (mut last, mut quiet) = (0u64, Instant::now());
@@ -7131,18 +7149,12 @@ mod long_paste_probe {
                 else if last > 0 && quiet.elapsed() > Duration::from_millis(ms) { return; }
             }
         };
-        // Wait for the TUI proper (codex may update itself first). Bracketed
-        // paste turning on is the CLI saying "my input box is up".
-        let boot = Instant::now();
-        while boot.elapsed() < Duration::from_secs(240) && !tab.accepts_bracketed_paste() {
-            std::thread::sleep(Duration::from_millis(200));
-        }
         settle(2000, 120);
         println!("\n===== {label} ({} chars) =====", body.chars().count());
 
         // Exactly what the app does: chunks out, Enter last
         let chunks = paste_chunks(&tab, body);
-        let mut p = PendingSend::new(1, tab.serial(), chunks, true, tab.output_count(), 0, body.chars().count());
+        let mut p = PendingSend::new(1, tab.serial(), chunks, true, tab.output_count(), 0, body);
         let t0 = Instant::now();
         let mut handed = 0;
         loop {
@@ -7220,6 +7232,103 @@ mod long_paste_probe {
         let body = std::fs::read_to_string(&path).expect("read body");
         run("file", &body);
     }
+
+    /// An Enter the CLI took inside the paste is pressed again, and the
+    /// message goes.
+    ///
+    ///   cargo test enter_eaten -- --ignored --nocapture
+    ///
+    /// The whole paste and its Enter go in one write, the way that is known
+    /// to leave the message in the box: the Enter lands while the CLI is still
+    /// reading the paste and becomes a newline. Then `Landing` watches the tab
+    /// as the main loop does. Costs one cheap turn of the real CLI.
+    #[test]
+    #[ignore]
+    fn an_enter_eaten_by_the_paste_is_pressed_again() {
+        use crate::send::{Check, Landing, Look, landing_tail};
+        // Long enough to be folded up in the box; a file's words to see one
+        // that is not (on 2026-10-30, 1,298 characters in Codex)
+        let body = match std::env::var("SHIKISHA_PROBE_BODY") {
+            Ok(path) => std::fs::read_to_string(&path).expect("read body"),
+            Err(_) => ask(6_000),
+        };
+        let mut tab = spawn_cli();
+        assert!(tab.shows_working(), "the CLI has a profile that says when it works");
+        let start = Instant::now();
+        let tick = |tab: &mut Tab, ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            while Instant::now() < until {
+                tab.tick(start);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        tick(&mut tab, 3_000);
+
+        let all: Vec<u8> = paste_chunks(&tab, &body).concat();
+        tab.write_passthrough(&all).unwrap();
+        tab.write_bytes(b"\r").unwrap();
+        let mut l = Landing::new(tab.serial(), landing_tail(&body).unwrap(), tab.typed_in(), 0);
+        let t0 = Instant::now();
+        let mut pressed = 0;
+        let mut screen = String::new();
+        while t0.elapsed() < Duration::from_secs(90) {
+            tick(&mut tab, 100);
+            let now = t0.elapsed().as_millis() as u64;
+            screen = tab.last_screen.clone();
+            if screen.contains("MANGO") && !screen.contains("Pasted Content") && tab.answered_since_submit() {
+                break;
+            }
+            let look = Look {
+                started: tab.answered_since_submit(),
+                typed_in: tab.typed_in(),
+                sending: false,
+                still_ms: tab.ms_since_change(start.elapsed().as_millis() as u64),
+                screen: &tab.last_screen,
+                pasted: tab.shows_pasted(),
+            };
+            match l.check(&look, now) {
+                Check::Again => {
+                    tab.write_bytes(b"\r").unwrap();
+                    l.pressed(tab.typed_in(), now);
+                    pressed += 1;
+                    println!("Enter again at {now}ms");
+                }
+                Check::Wait => {}
+                other => println!("{other:?} at {now}ms"),
+            }
+        }
+        println!("--- screen ---\n{}\n--- end ---", screen.trim_end());
+        tab.kill();
+        println!("pressed again {pressed} time(s)");
+        assert!(screen.contains("MANGO"), "the message was sent");
+    }
+
+    fn spawn_cli() -> Tab {
+        let cli = std::env::var("SHIKISHA_PROBE_CMD").unwrap_or_else(|_| "codex".into());
+        // Codex asks whether to update itself before its input box comes up,
+        // and a paste answers that question: the probe started an npm install
+        // of a new Codex instead of sending anything (2026-10-30)
+        let mut argv = vec![cli.clone()];
+        if cli == "codex" {
+            argv.extend(["-c".to_string(), "check_for_update_on_startup=false".to_string()]);
+        }
+        let tab = Tab::spawn(
+            cli.clone(),
+            &argv,
+            None,
+            30,
+            120,
+            TabOptions { cwd: Some(std::path::PathBuf::from(r"D:\ShikishaTerm")), ..Default::default() },
+        )
+        .expect("started");
+        // Wait for the TUI proper. Bracketed paste turning on is the CLI
+        // saying "my input box is up".
+        let boot = Instant::now();
+        while boot.elapsed() < Duration::from_secs(240) && !tab.accepts_bracketed_paste() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        tab
+    }
 }
 
 #[cfg(test)]
@@ -7266,7 +7375,7 @@ mod codex_session_probe {
         // Say something, the way the app says it
         let said = "MANGO とだけ答えてください。ツールは使わないでください。";
         let chunks = paste_chunks(&tab, said);
-        let mut p = PendingSend::new(1, tab.serial(), chunks, true, tab.output_count(), 0, said.chars().count());
+        let mut p = PendingSend::new(1, tab.serial(), chunks, true, tab.output_count(), 0, said);
         let t0 = Instant::now();
         loop {
             let now = t0.elapsed().as_millis() as u64;

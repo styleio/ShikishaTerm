@@ -13,6 +13,7 @@
     "esc to interrupt",
     "ctrl\\+c to stop"
   ],
+  "pasted_patterns": ["\\[Pasted text #\\d+"],
   "question_patterns": [
     "Do you want to",
     "❯\\s*\\d\\.",

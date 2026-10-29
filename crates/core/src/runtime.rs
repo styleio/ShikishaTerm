@@ -10,7 +10,7 @@
 use crate::hooks::{Command, HookEngine, TabCtx};
 use crate::host::Shell;
 use crate::keymap::{key_to_bytes_with, named_key};
-use crate::send::{PendingSend, Step, paste_chunks};
+use crate::send::{Check, Landing, Look, PendingSend, Step, paste_chunks};
 use crate::tab::{CopyState, RecordedStep, Tab, extract_text};
 use crate::view::{
     RESULT_TAB, ScreenPush, Size, Surface, Ui, pty_dims, remote_floor, screen_push, surface_key,
@@ -2781,6 +2781,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut background_work: std::collections::HashMap<String, BackgroundWork> = Default::default();
     // A reservation to send submit (Enter) later, for text that's already been sent
     let mut pending_send: Vec<PendingSend> = Vec::new();
+    // Enters that went into an AI tab, watched until its turn shows (`Landing`)
+    let mut landing: Vec<Landing> = Vec::new();
     // Tabs that look like they've finished responding, and the time that gets confirmed.
     // We hold off firing until we've verified it stayed quiet, so we don't fire on a
     // mid-response pause for breath. Kept by tab serial, like `busy_again`: a
@@ -6948,6 +6950,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                 if p.tab == 0 { " on a desk not in front" } else { "" },
                                 if settled { "after intake finished" } else { "sent while still unsettled" }
                             ));
+                            // Only a tab that says when it is working can be
+                            // told to have not started
+                            if let Some(tail) = p.tail.take().filter(|_| t.shows_working() && !p.went_wrong) {
+                                landing.retain(|l| l.serial != p.serial);
+                                landing.push(Landing::new(p.serial, tail, t.typed_in(), now_ms));
+                            }
                         }
                         if let Some(tab) = p.tells.take() {
                             typed.push((tab, !p.went_wrong));
@@ -6959,6 +6967,50 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for (tab, went_in) in typed {
                 orchestra.typed(&tab, went_in);
             }
+        }
+
+        // An Enter that did not land: the message still in the input box and
+        // nothing started on it. Pressed again (`Landing`)
+        if !landing.is_empty() {
+            let now_ms = start.elapsed().as_millis() as u64;
+            landing.retain_mut(|l| {
+                let Some(t) = tabs.iter().chain(desk_tabs.iter().flatten()).find(|t| t.serial() == l.serial) else {
+                    return false;
+                };
+                let look = Look {
+                    started: t.answered_since_submit(),
+                    typed_in: t.typed_in(),
+                    sending: pending_send.iter().any(|p| p.serial == l.serial),
+                    still_ms: t.ms_since_change(now_ms),
+                    screen: &t.last_screen,
+                    pasted: t.shows_pasted(),
+                };
+                match l.check(&look, now_ms) {
+                    Check::Wait => true,
+                    Check::Done => false,
+                    Check::Again => {
+                        let waited = l.since_ms(now_ms);
+                        if t.write_bytes(b"\r").is_err() {
+                            return false;
+                        }
+                        l.pressed(t.typed_in(), now_ms);
+                        append_hook_log(&format!(
+                            "submit \"{}\" again ({} of {}): the end of its message is still on screen and nothing started {waited}ms after the Enter",
+                            t.title,
+                            l.again,
+                            crate::send::LANDING_TRIES
+                        ));
+                        true
+                    }
+                    Check::Stuck => {
+                        append_hook_log(&format!(
+                            "submit \"{}\": the end of its message is still on screen and nothing started after {} more Enters; left as it is",
+                            t.title, l.again
+                        ));
+                        false
+                    }
+                }
+            });
         }
 
         // chain_depth resets to 0 when a human types. Make the ball follow that too
@@ -16043,6 +16095,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                                     orchestra.typed(&tab, false);
                                 }
                             }
+                            // ...and no Enter goes in again after it either
+                            landing.clear();
                             // Discard every waiting loop too (don't let them revive on resume)
                             for eng in engine.iter_mut().chain(engines.iter_mut().flatten()) {
                                 eng.cancel_all();
@@ -19425,7 +19479,7 @@ fn draft_into(
     };
     let seen = t.output_count();
     let chunks = paste_chunks(t, &text);
-    pending_send.push(PendingSend::new(n, t.serial(), chunks, false, seen, now_ms, text.chars().count()));
+    pending_send.push(PendingSend::new(n, t.serial(), chunks, false, seen, now_ms, &text));
     append_hook_log(&format!("{stem}: drafted into {} ({} characters)", t.title, text.chars().count()));
     Ok(t.title.clone())
 }
@@ -19782,7 +19836,7 @@ pub fn hand_over(
         to_live(t);
         let seen = t.output_count();
         let chunks = paste_chunks(t, &text);
-        pending_send.push(PendingSend::new(target, t.serial(), chunks, submit, seen, now_ms, text.chars().count()));
+        pending_send.push(PendingSend::new(target, t.serial(), chunks, submit, seen, now_ms, &text));
     }
     true
 }
@@ -21855,7 +21909,7 @@ pub fn exec_commands(
                     // Don't send submit (Enter). A human adds to it and sends it themselves.
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(idx, t.serial(), chunks, false, seen, now_ms, text.chars().count()));
+                    pending_send.push(PendingSend::new(idx, t.serial(), chunks, false, seen, now_ms, &text));
                     // A human is part of the loop too. If they add to it and
                     // send it, the chain continues, so count the depth the same
                     // way as an auto-send.
@@ -21936,7 +21990,7 @@ pub fn exec_commands(
                 } else {
                     let seen = t.output_count();
                     let chunks = paste_chunks(t, &text);
-                    pending_send.push(PendingSend::new(target, t.serial(), chunks, true, seen, now_ms, text.chars().count()));
+                    pending_send.push(PendingSend::new(target, t.serial(), chunks, true, seen, now_ms, &text));
                     // Another tab's words, or the person's automation: whose
                     // they were, for the record of conversations
                     let sender = match (&from, origin) {
@@ -24990,7 +25044,7 @@ mod tests {
         let one = |n: usize| vec![vec![b'x'; 8]; n];
 
         // A one-chunk paste: out at once, then the settling rule as before
-        let mut p = PendingSend::new(1, 0, one(1), true, 100, 1_000, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 100, 1_000, "xxxxxxxx");
         assert!(handed(&p.step(100, 1_000)), "the first chunk is handed over at once");
         assert!(waited(&p.step(200, 1_100)), "a reaction starting is not enough to send");
         assert!(waited(&p.step(300, 2_000)), "still growing");
@@ -25000,7 +25054,7 @@ mod tests {
         assert!(submitted(&p.step(400, 3_100 + SUBMIT_QUIET_MS)), "it sends once it settles");
 
         // Restart the measurement if activity resumes partway through
-        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, "xxxxxxxx");
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert!(waited(&p.step(0, 100)), "quiet, but not long enough");
         assert!(waited(&p.step(50, 200)), "it started again, so it measures again");
@@ -25009,7 +25063,7 @@ mod tests {
         assert!(submitted(&p.step(50, 300 + SUBMIT_QUIET_MS)), "settled again");
 
         // Send anyway once the cap is hit, even if it never settles
-        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, 8);
+        let mut p = PendingSend::new(1, 0, one(1), true, 0, 0, "xxxxxxxx");
         assert!(handed(&p.step(0, 0)), "the first chunk");
         let mut out = 0;
         for t in (100..SUBMIT_GIVE_UP_MS).step_by(100) {
@@ -25029,7 +25083,7 @@ mod tests {
     /// of the paste, and 20,000 characters sat unsent in the input box.
     #[test]
     fn the_body_goes_over_a_piece_at_a_time_and_the_enter_comes_last() {
-        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, "abc");
         assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         // Silent recipient: not a word drawn. It must not be given the rest at
         // once, and above all must not be sent Enter.
@@ -25046,7 +25100,7 @@ mod tests {
         assert!(submitted(&p.step(9, last + 10 + SUBMIT_QUIET_MS)), "it sends after handing over everything");
 
         // A draft is placed and left alone: the body goes over, the Enter never does
-        let mut p = PendingSend::new(1, 0, vec![vec![b'a']], false, 0, 0, 1);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a']], false, 0, 0, "a");
         assert!(handed(&p.step(0, 0)), "the text is handed over");
         assert!(waited(&p.step(0, 10)), "it starts watching for it to stop");
         assert!(submitted(&p.step(0, 10 + SUBMIT_QUIET_MS)), "the text is all handed over");
@@ -25062,9 +25116,9 @@ mod tests {
     /// text I meant to send never went".
     #[test]
     fn a_second_message_waits_for_the_first_ones_enter() {
-        let mut queue = [PendingSend::new(1, 7, vec![vec![b'A']], true, 0, 0, 1),
-            PendingSend::new(1, 7, vec![vec![b'B']], true, 0, 0, 1),
-            PendingSend::new(2, 8, vec![vec![b'C']], true, 0, 0, 1)];
+        let mut queue = [PendingSend::new(1, 7, vec![vec![b'A']], true, 0, 0, "A"),
+            PendingSend::new(1, 7, vec![vec![b'B']], true, 0, 0, "B"),
+            PendingSend::new(2, 8, vec![vec![b'C']], true, 0, 0, "C")];
         // One pass: the front one for tab1 acts, the one behind it waits, and
         // another tab is nobody's business
         let mut holding: Vec<u64> = Vec::new();
@@ -25089,7 +25143,7 @@ mod tests {
     /// of the paste. The rest of it goes over first, in one piece.
     #[test]
     fn typing_pushes_the_rest_of_the_paste_out_first() {
-        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, 3);
+        let mut p = PendingSend::new(1, 0, vec![vec![b'a'], vec![b'b'], vec![b'c']], true, 0, 0, "abc");
         assert!(handed(&p.step(0, 0)), "the first chunk");
         assert_eq!(p.rest(500), b"bc".to_vec(), "the rest goes out in one go");
         assert_eq!(p.rest(500), Vec::<u8>::new(), "it is not sent twice");
@@ -25107,7 +25161,7 @@ mod tests {
     #[test]
     fn a_send_says_how_far_it_has_got() {
         let chunks = vec![vec![b'a'], vec![b'b'], vec![b'c'], vec![b'd']];
-        let mut p = PendingSend::new(1, 0, chunks, true, 0, 0, 3_400);
+        let mut p = PendingSend::new(1, 0, chunks, true, 0, 0, &"x".repeat(3_400));
         assert_eq!(p.sending(), (0.0, 3_400), "nothing has gone over, and it is 3,400 characters long");
         assert!(handed(&p.step(0, 0)), "the first chunk goes at once");
         assert_eq!(p.sending().0, 0.25, "one of the four is in");
@@ -25117,6 +25171,79 @@ mod tests {
         // say so rather than sitting at half
         assert_eq!(p.rest(PASTE_ACK_MS), b"cd".to_vec(), "the rest goes out in one go");
         assert_eq!(p.sending(), (1.0, 3_400), "all of it is in, and it is still the same message");
+    }
+
+    /// An Enter taken inside the paste leaves the message in the input box.
+    /// Seen from here, that is a tab where nothing started and the end of the
+    /// message is still on screen -- and one more Enter sends it.
+    ///
+    /// 2026-10-30: two review requests to a Codex tab sat in its box for seven
+    /// hours, the second joined onto the first, until a person pressed Enter.
+    #[test]
+    fn an_enter_that_did_not_land_is_pressed_again() {
+        use crate::send::{LANDING_LOOK_MS, LANDING_QUIET_MS, LANDING_TRIES, landing_tail};
+        let said = "Report concrete defects with file:line.\nDon't report style. Don't edit files.";
+        let p = PendingSend::new(1, 7, vec![b"x".to_vec()], true, 0, 0, said);
+        let tail = p.tail.clone().expect("a message that is sent is watched");
+        assert_eq!(Some(tail.clone()), landing_tail(said));
+        // The box wraps the message wherever its width falls
+        let boxed = "› Report concrete defects with file:line. Don't report style. Don't\n  edit files.\n\n  gpt · D:\\work";
+        let look = |started: bool, typed_in: u64, still_ms: u64, screen: &'static str| Look {
+            started,
+            typed_in,
+            sending: false,
+            still_ms,
+            screen,
+            pasted: false,
+        };
+
+        let mut l = Landing::new(7, tail.clone(), 100, 1_000);
+        assert_eq!(l.check(&look(false, 100, 5_000, boxed), 1_000 + LANDING_LOOK_MS - 1), Check::Wait, "too early to tell");
+        assert_eq!(
+            l.check(&look(false, 100, LANDING_QUIET_MS - 1, boxed), 1_000 + LANDING_LOOK_MS),
+            Check::Wait,
+            "the screen is still moving"
+        );
+        assert_eq!(l.check(&look(false, 100, LANDING_QUIET_MS, boxed), 1_000 + LANDING_LOOK_MS), Check::Again, "still in the box");
+        // Its own Enter is typing too: counted from after it
+        let mut typed = 101;
+        l.pressed(typed, 4_000);
+        assert_eq!(l.check(&look(false, typed, 5_000, boxed), 4_000 + LANDING_LOOK_MS - 1), Check::Wait, "each Enter gets its own look");
+        for _ in 1..LANDING_TRIES {
+            assert_eq!(l.check(&look(false, typed, 5_000, boxed), 99_000), Check::Again);
+            typed += 1;
+            l.pressed(typed, 99_000);
+        }
+        assert_eq!(
+            l.check(&look(false, typed, 5_000, boxed), 99_000 + LANDING_LOOK_MS),
+            Check::Stuck,
+            "it stops after its tries, and says so"
+        );
+
+        // It started: nothing more to do
+        let mut l = Landing::new(7, tail.clone(), 100, 0);
+        assert_eq!(l.check(&look(true, 100, 5_000, boxed), LANDING_LOOK_MS), Check::Done);
+        // Somebody typed into the box since: it is theirs now
+        let mut l = Landing::new(7, tail.clone(), 100, 0);
+        assert_eq!(l.check(&look(false, 105, 5_000, boxed), LANDING_LOOK_MS), Check::Done);
+        // The box is empty and nothing shows the message: there is nothing to send
+        let mut l = Landing::new(7, tail.clone(), 100, 0);
+        assert_eq!(l.check(&look(false, 100, 5_000, "› Ask anything"), LANDING_LOOK_MS), Check::Done);
+        // A long message folded up in the box is still there, in other words
+        let mut l = Landing::new(7, tail.clone(), 100, 0);
+        let mut folded = look(false, 100, 5_000, "› [Pasted Content 6115 chars]");
+        folded.pasted = true;
+        assert_eq!(l.check(&folded, LANDING_LOOK_MS), Check::Again);
+        // Another message is going in: its own Enter carries this one
+        let mut l = Landing::new(7, tail, 100, 0);
+        let mut busy = look(false, 100, 5_000, boxed);
+        busy.sending = true;
+        assert_eq!(l.check(&busy, LANDING_LOOK_MS), Check::Done);
+
+        // A draft is left for a person and never watched
+        let draft = PendingSend::new(1, 7, vec![b"x".to_vec()], false, 0, 0, said);
+        assert!(draft.tail.is_none());
+        assert!(landing_tail(" \n ").is_none(), "nothing to look for in an empty message");
     }
 
     /// A provider edited while its tab is open reaches that tab.
