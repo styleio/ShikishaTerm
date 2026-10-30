@@ -421,7 +421,9 @@ impl Place {
 fn common_dir(at: &At, folder: &str) -> Option<String> {
     match at {
         At::Here => {
-            let out = std::process::Command::new("git").args(["-C", folder, "rev-parse", "--git-common-dir"]).output().ok()?;
+            let mut git = std::process::Command::new("git");
+            git.args(["-C", folder, "rev-parse", "--git-common-dir"]);
+            let out = crate::detach_console(&mut git).output().ok()?;
             let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
             (out.status.success() && !said.is_empty())
                 .then(|| real_here(&Path::new(folder).join(said).display().to_string()))

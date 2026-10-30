@@ -325,8 +325,9 @@ pub fn opened_external(url: &str) -> bool {
 /// Best-effort version of the system for a bug report (the field is optional).
 #[cfg(windows)]
 pub(crate) fn os_version() -> String {
-    std::process::Command::new("cmd")
-        .args(["/C", "ver"])
+    let mut ver = std::process::Command::new("cmd");
+    ver.args(["/C", "ver"]);
+    crate::detach_console(&mut ver)
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -379,6 +380,7 @@ fn cli_help(prog: &str) -> Result<String, String> {
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::detach_console(&mut cmd);
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(cmd.output());
