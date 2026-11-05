@@ -398,9 +398,10 @@ impl ApiServer {
                     }
                     let Ok(conn) = conn else { continue };
                     let Ok(out) = conn.try_clone() else { continue };
+                    let Ok(look) = conn.try_clone() else { continue };
                     let (tokens, tx, announced) =
                         (Arc::clone(&tokens), tx.clone(), Arc::clone(&announced));
-                    std::thread::spawn(move || serve(conn, out, tokens, tx, announced));
+                    std::thread::spawn(move || serve(conn, out, move || socket_gone(&look), tokens, tx, announced));
                 }
             })
         };
@@ -473,8 +474,9 @@ fn accept_loop(
             continue;
         }
         let Some(out) = pipe.try_clone() else { continue };
+        let Some(look) = pipe.try_clone() else { continue };
         let (tokens, tx, announced) = (Arc::clone(&tokens), tx.clone(), Arc::clone(&announced));
-        std::thread::spawn(move || serve(pipe, out, tokens, tx, announced));
+        std::thread::spawn(move || serve(pipe, out, move || look.gone(), tokens, tx, announced));
     }
 }
 
@@ -491,7 +493,8 @@ pub fn serve_elsewhere<R: Read + Send + 'static, W: Write>(conn: R, out: W) -> b
     let Some(tx) = FAR_DOOR.lock().ok().and_then(|d| d.clone()) else {
         return false;
     };
-    serve(conn, out, Arc::clone(tokens()), tx, Arc::new(AtomicBool::new(true)));
+    // The bridge carries no word of the far end hanging up while a call waits
+    serve(conn, out, || false, Arc::clone(tokens()), tx, Arc::new(AtomicBool::new(true)));
     true
 }
 
@@ -508,9 +511,13 @@ pub fn mint_far(tab: &str) -> Option<String> {
 ///
 /// Written once for both doors. What arrives is a reader and a writer; whether
 /// they are two ends of a pipe or of a socket is not this function's business.
+///
+/// `gone` says whether the caller has hung up, for a call that waits on
+/// another tab: nothing is read from the connection during one.
 fn serve<R: Read + Send + 'static, W: Write>(
     conn: R,
     mut out: W,
+    gone: impl Fn() -> bool,
     tokens: Tokens,
     tx: Sender<ApiCall>,
     announced: Arc<AtomicBool>,
@@ -549,7 +556,7 @@ fn serve<R: Read + Send + 'static, W: Write>(
         if line.trim().is_empty() {
             continue;
         }
-        let answer = handle_line(&line, caller.as_deref(), incarnation, &tx);
+        let answer = handle_line(&line, caller.as_deref(), incarnation, &tx, &gone);
         if writeln!(out, "{answer}").is_err() {
             break;
         }
@@ -637,8 +644,53 @@ fn handed_now(id: &str) {
     });
 }
 
+/// How often a call waiting on another tab looks whether its caller is still there
+const LOOK_FOR_CALLER: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Hold a call that waits on another tab until its answer, or until the caller
+/// hangs up. Not a moment after that: the answer is sent to whoever holds
+/// `wait`, and only a line nobody holds sends it to the caller's inbox instead.
+/// A caller cut off early (`timeout 40 shikisha ask_tab ...`, or an AI's shell
+/// giving up on the command) left this holding the line for hours, and the
+/// answer went down it and was gone
+fn hold_the_line(
+    wait: Receiver<Result<serde_json::Value, String>>,
+    hold: std::time::Duration,
+    gone: &dyn Fn() -> bool,
+) -> Result<Result<serde_json::Value, String>, &'static str> {
+    use std::sync::mpsc::RecvTimeoutError;
+    let until = std::time::Instant::now() + hold;
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        match wait.recv_timeout(left.min(LOOK_FOR_CALLER)) {
+            Ok(answer) => return Ok(answer),
+            Err(RecvTimeoutError::Disconnected) => return Err("the app did not answer"),
+            Err(RecvTimeoutError::Timeout) if left.is_zero() => return Err("the app did not answer"),
+            Err(RecvTimeoutError::Timeout) if gone() => return Err("the caller hung up"),
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+/// Whether the other end of a socket has closed, without taking anything from it
+#[cfg(unix)]
+fn socket_gone(s: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd as _;
+    let mut byte = 0u8;
+    let got = unsafe {
+        libc::recv(s.as_raw_fd(), (&raw mut byte).cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT)
+    };
+    got == 0
+}
+
 /// Turn one request line into one answer line
-fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &Sender<ApiCall>) -> String {
+fn handle_line(
+    line: &str,
+    caller: Option<&str>,
+    incarnation: Option<u64>,
+    tx: &Sender<ApiCall>,
+    gone: &dyn Fn() -> bool,
+) -> String {
     let req: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => return error_line(&serde_json::Value::Null, &format!("bad JSON: {e}")),
@@ -681,11 +733,8 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     };
     // ask_tab is answered when another tab has finished, which can be an hour
     // of work; the loop decides when to answer it, not this line
-    let hold = if crate::asktab::HELD.contains(&method) || crate::orch::HELD.contains(&method) {
-        crate::asktab::LINE_HOLD
-    } else {
-        std::time::Duration::from_secs(300)
-    };
+    let long = crate::asktab::HELD.contains(&method) || crate::orch::HELD.contains(&method);
+    let hold = if long { crate::asktab::LINE_HOLD } else { std::time::Duration::from_secs(300) };
     let (reply, wait) = channel();
     let call = ApiCall {
         caller: caller.map(str::to_string),
@@ -699,7 +748,12 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
     }
     // Generous: a primitive may be waiting on a page, and a caller that asked
     // for that is not helped by being told "timeout" while it is still working
-    match wait.recv_timeout(hold) {
+    let answer = if long {
+        hold_the_line(wait, hold, gone)
+    } else {
+        wait.recv_timeout(hold).map_err(|_| "the app did not answer")
+    };
+    match answer {
         Ok(Ok(result)) => {
             if let Some(kept) = kept {
                 handed_now(kept);
@@ -707,7 +761,7 @@ fn handle_line(line: &str, caller: Option<&str>, incarnation: Option<u64>, tx: &
             serde_json::json!({"id": id, "ok": true, "result": result}).to_string()
         }
         Ok(Err(e)) => error_line(&id, &e),
-        Err(_) => error_line(&id, "the app did not answer"),
+        Err(why) => error_line(&id, why),
     }
 }
 
@@ -914,6 +968,20 @@ struct PipeWriter(HANDLE);
 unsafe impl Send for PipeWriter {}
 
 #[cfg(windows)]
+impl PipeWriter {
+    /// Whether the client has closed its end. Nothing is reading the pipe while
+    /// a call is held, so this does not wait on anything
+    fn gone(&self) -> bool {
+        use windows_sys::Win32::Foundation::{ERROR_BROKEN_PIPE, ERROR_PIPE_NOT_CONNECTED, GetLastError};
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        let ok = unsafe {
+            PeekNamedPipe(self.0, std::ptr::null_mut(), 0, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        ok == 0 && matches!(unsafe { GetLastError() }, ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+    }
+}
+
+#[cfg(windows)]
 impl Write for PipeWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         use windows_sys::Win32::Foundation::GetLastError;
@@ -1024,6 +1092,44 @@ mod tests {
             }
         });
         server
+    }
+
+    /// A caller cut off while an ask waits lets go of the line, so the answer
+    /// goes to its inbox (`runtime::tend_asks`) and not down a line nobody reads.
+    /// One still connected is answered on the line, however long that takes.
+    ///
+    /// 2026-11-05: `timeout 40 shikisha ask_tab ...`, and a finished review
+    /// never reached the AI that asked for it
+    #[test]
+    fn the_line_of_a_caller_that_hung_up_is_let_go() {
+        let (keep, kept) = channel();
+        let keep = Mutex::new(keep);
+        let mut server = served(move |call| {
+            let _ = keep.lock().unwrap().send(call.reply);
+        });
+        let token = server.mint("asker");
+        let ask = r#"{"id":"1","method":"ask_tab","params":["otter","a line","the question"]}"#;
+        let wait = std::time::Duration::from_secs(5);
+
+        let mut stays = ApiClient::connect(&server.path, &token).unwrap();
+        writeln!(stays.file, "{ask}").unwrap();
+        let line = kept.recv_timeout(wait).unwrap();
+        std::thread::sleep(LOOK_FOR_CALLER * 3);
+        assert!(line.send(Ok(serde_json::json!("the answer"))).is_ok(), "a caller still there lost its line");
+        let mut got = String::new();
+        stays.reader.read_line(&mut got).unwrap();
+        assert!(got.contains("the answer"), "{got}");
+
+        let mut leaves = ApiClient::connect(&server.path, &token).unwrap();
+        writeln!(leaves.file, "{ask}").unwrap();
+        let line = kept.recv_timeout(wait).unwrap();
+        drop(leaves);
+        let until = std::time::Instant::now() + wait;
+        while line.send(Ok(serde_json::Value::Null)).is_ok() {
+            assert!(std::time::Instant::now() < until, "the line is still held for a caller that has gone");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        server.shutdown();
     }
 
     #[test]

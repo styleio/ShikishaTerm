@@ -4150,6 +4150,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             flash = crate::caps::take_refusal();
         }
 
+        // What follows hangs off an engine: the record of each tab's state, a
+        // turn's end, and every ask another tab is waiting on. A desk with no
+        // Lua of its own builds none, and each save of the settings builds
+        // again, so all of that stopped at a save until some tab next called
+        // the app: on 2026-11-05 a review's answer waited 330 s on it, past
+        // the point its asker had let go of the line, and was never heard
+        if engine.is_none() {
+            engine = crate::hooks::HookEngine::with_caps(crate::hooks::Caps::clone(&caps)).ok();
+        }
+
         // Check every tab's state every 200ms (completion of inactive tabs is
         // reflected on INDEX too)
         if last_detect.elapsed() >= Duration::from_millis(200) {
