@@ -489,12 +489,14 @@ static FAR_DOOR: Mutex<Option<Sender<ApiCall>>> = Mutex::new(None);
 /// (`farlink`). The same handshake, the same keys and the same queue as the
 /// pipe, so a call from there is exactly a call from here. Refused while the
 /// API is off
-pub fn serve_elsewhere<R: Read + Send + 'static, W: Write>(conn: R, out: W) -> bool {
+///
+/// `gone` is the carrier's word that the command at the far end has hung up,
+/// as the pipe's is for a command on this machine
+pub fn serve_elsewhere<R: Read + Send + 'static, W: Write>(conn: R, out: W, gone: impl Fn() -> bool) -> bool {
     let Some(tx) = FAR_DOOR.lock().ok().and_then(|d| d.clone()) else {
         return false;
     };
-    // The bridge carries no word of the far end hanging up while a call waits
-    serve(conn, out, || false, Arc::clone(tokens()), tx, Arc::new(AtomicBool::new(true)));
+    serve(conn, out, gone, Arc::clone(tokens()), tx, Arc::new(AtomicBool::new(true)));
     true
 }
 

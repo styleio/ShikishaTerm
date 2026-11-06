@@ -235,7 +235,9 @@ pub struct Link {
     /// resident process): what shuts it
     closer: Option<Box<dyn Fn() + Send + Sync>>,
     waiting: Mutex<HashMap<u64, Sender<Result<Value, String>>>>,
-    conns: Mutex<HashMap<u64, Sender<Vec<u8>>>>,
+    /// The connections carried now. Shared so that a call waiting on one can
+    /// see it is no longer here (see [`Link::carry`])
+    conns: Mutex<HashMap<u64, Arc<Sender<Vec<u8>>>>>,
     next: AtomicU64,
     up: AtomicBool,
     /// The bridge's own version, once it has said hello
@@ -365,13 +367,11 @@ impl Link {
 
     /// A `shikisha` command over there connected: served here like the pipe
     fn open(self: &Arc<Self>, c: u64) {
-        let (tx, rx) = channel::<Vec<u8>>();
-        self.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(c, tx);
+        let (reader, gone) = self.carry(c);
         let link = Arc::clone(self);
         std::thread::spawn(move || {
-            let reader = Incoming { rx, held: Vec::new(), at: 0 };
             let writer = Outgoing { link: Arc::clone(&link), c, held: Vec::new() };
-            if !crate::api::serve_elsewhere(reader, writer) {
+            if !crate::api::serve_elsewhere(reader, writer, gone) {
                 let _ = link.say(&Frame::Line {
                     c,
                     l: r#"{"ok":false,"error":"the app's external API is off"}"#.into(),
@@ -379,6 +379,22 @@ impl Link {
             }
             let _ = link.say(&Frame::Close { c });
         });
+    }
+
+    /// Take on a connection: what it sends, and whether it has hung up. It is
+    /// gone once it is no longer in `conns`, which is the word of the far end
+    /// closing it and of the whole line ending alike.
+    ///
+    /// Every tab's `shikisha` comes this way, on this PC too (through the
+    /// resident process that holds its terminal). On 2026-11-06 a call cut off
+    /// by `timeout 40` went on being held here, so a review's answer went down
+    /// a line nobody read and never reached the inbox
+    fn carry(&self, c: u64) -> (Incoming, impl Fn() -> bool + use<>) {
+        let (tx, rx) = channel::<Vec<u8>>();
+        let tx = Arc::new(tx);
+        let here = Arc::downgrade(&tx);
+        self.conns.lock().unwrap_or_else(|e| e.into_inner()).insert(c, tx);
+        (Incoming { rx, held: Vec::new(), at: 0 }, move || here.strong_count() == 0)
     }
 }
 
@@ -1415,6 +1431,57 @@ mod tests {
             assert!(crate::farops::key_file(dir, &k).is_some(), "{name} -> {k}");
         }
         assert_ne!(key_name("a b"), key_name("a_b"), "two names, two files");
+    }
+
+    /// A call waits on a connection without reading from it, so the far end
+    /// closing it, or the whole line ending, is what it has to be told by
+    #[test]
+    fn a_connection_is_gone_when_its_far_end_closes_it_or_the_line_ends() {
+        let (here, there) = crate::ssh::socket_pair().unwrap();
+        let input = here.try_clone().unwrap();
+        let link = Arc::new(Link {
+            out: Mutex::new(Box::new(here)),
+            socket: None,
+            closer: None,
+            waiting: Mutex::default(),
+            conns: Mutex::default(),
+            next: AtomicU64::new(0),
+            up: AtomicBool::new(false),
+            version: Mutex::new(None),
+            jobs: Mutex::new(Vec::new()),
+            job_listeners: Mutex::default(),
+            home: String::new(),
+        });
+        let (mut reader, closed) = link.carry(1);
+        let (_stays, line_ended) = link.carry(2);
+        let (_other, another) = link.carry(3);
+        let l = Arc::clone(&link);
+        let listening = std::thread::spawn(move || l.listen(input));
+        let wait_for = |what: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while !what() && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            what()
+        };
+
+        // Still there, and what it says still arrives
+        let mut far = there;
+        far.write_all(Frame::Line { c: 1, l: "said".into() }.line().as_bytes()).unwrap();
+        let mut got = [0u8; 5];
+        reader.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"said\n");
+        assert!(!closed() && !line_ended() && !another());
+
+        // Only the one it closed
+        far.write_all(Frame::Close { c: 1 }.line().as_bytes()).unwrap();
+        assert!(wait_for(&closed), "a closed connection still looks connected");
+        assert!(!line_ended() && !another(), "a close reached another connection");
+
+        // All of them, when the line goes
+        drop(far);
+        listening.join().unwrap();
+        assert!(line_ended() && another(), "a connection outlived its line");
     }
 
     /// The line itself, both ends in this process: a connection over there is
