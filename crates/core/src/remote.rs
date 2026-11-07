@@ -3421,6 +3421,11 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
+            // Known by its name before the device hears the upgrade answered:
+            // the device opens `/ws-page-in` the moment it does, on a thread
+            // of its own here, and a name not yet known turns that away -- a
+            // device left able to hear asks and unable to answer any
+            pages_open.lock().unwrap().insert(name.clone(), line.clone());
             let stream = crate::ws::upgrade(req, &key);
             let (atx, arx) = channel::<String>();
             let who = match &by {
@@ -3428,7 +3433,6 @@ fn handle(
                 Opener::Pairing => String::new(),
             };
             line.attach(atx, &who);
-            pages_open.lock().unwrap().insert(name.clone(), line.clone());
             let pages_open = Arc::clone(pages_open);
             let gate = Arc::clone(gate);
             let session = session.clone();
