@@ -55,7 +55,10 @@ export default defineConfig({
       editLink: { baseUrl: `${REPO}/edit/main/site/` },
       lastUpdated: true,
       sidebar: [
-        // 手引きが先頭。アプリの歯車の隣の ? がここへ来る
+        // 入れるところから読む人のために、インストールが先頭。AI を何も
+        // 入れていない PC では、SHIKISHA-TERM を開いても使える AI が無い
+        { label: "Install", link: "/install/", translations: { ja: "インストール" } },
+        // アプリの歯車の隣の ? は、並びに関係なくここへ来る
         { label: "Manual", link: "/manual/", translations: { ja: "手引き" } },
         // スマホの画面は看板の売りのひとつだが、外出先から
         // 使うには他社製品 (Tailscale) の作業が挟まる。それを黙っていると

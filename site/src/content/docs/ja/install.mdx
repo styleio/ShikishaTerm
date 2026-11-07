@@ -1,0 +1,277 @@
+---
+title: "インストール"
+description: "AI を何も入れていない Windows の PC で、SHIKISHA-TERM を使い始めるまで。Claude のアカウントを作って Claude Code を入れ、GitHub の道具を入れ、最後に Microsoft Store から SHIKISHA-TERM を入れます。"
+sidebar:
+  order: 0
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+SHIKISHA-TERM は、AI そのものではありません。あなたの PC に入っている AI（Claude Code など）を、何体も並べて動かすためのソフトです。そのため、**先に AI を PC に入れておく必要があります。**
+
+このページでは、AI を何も入れていない Windows の PC から始めて、SHIKISHA-TERM で AI が動き出すまでを、順番に説明します。AI には Claude Code を例に使います。かかる時間は30分ほどです。
+
+1. **Claude** — Claude のアカウントを作り、Claude Code を入れて、ログインします。
+2. **GitHub** — Git と GitHub CLI（gh）を入れて、GitHub にログインします。
+3. **SHIKISHA-TERM** — Microsoft Store から入れて、起動します。
+
+**この順番どおりに進めてください。** SHIKISHA-TERM は、初めて起動したときに、PC に入っている AI と gh を探します。先に入れておけば、SHIKISHA-TERM はそれらを見つけて、そのまま使える状態で始まります。
+
+## 用意するもの
+
+- **Windows 10（バージョン 2004 以降）または Windows 11 の PC。** 64 ビット版が必要です。
+- **メールアドレス。** Claude と GitHub のアカウントを作るときに使います。Google のアカウントがあれば、それでも作れます。
+- **クレジットカード。** Claude Code は、Claude の有料プランでしか使えません。無料プランでは使えません。
+- **GitHub のアカウント（無料）。** まだ持っていなくても、手順 2 の中で作れます。
+
+## PowerShell の開き方
+
+このページでは、コマンドを入力する画面（PowerShell）を何度か使います。開き方は次のとおりです。
+
+<Steps>
+
+1. キーボードの **Windows キーを押しながら X キー** を押します。画面の左下にメニューが出ます。
+
+2. メニューの **ターミナル** を押します。Windows 10 では、**Windows PowerShell** を押します。
+
+3. 黒い（または青い）画面が開き、`PS C:\Users\あなたの名前>` と表示されます。行の先頭に `PS` が付いていれば、PowerShell です。
+
+</Steps>
+
+このページのコマンドは、コピーして PowerShell に貼り付けます。貼り付けは **Ctrl + V** か、**画面の上で右クリック** です。貼り付けたら **Enter** を押すと、コマンドが実行されます。
+
+コマンドを入力する画面では、マウスで項目を押せません。選択肢が出たら、**↑ ↓ キーで選んで Enter** で決めます。
+
+## 1. Claude を使えるようにする
+
+### 1-1. Claude のアカウントを作る
+
+<Steps>
+
+1. ブラウザで [claude.ai](https://claude.ai/) を開きます。
+
+2. **Google で続行** を押すか、メールアドレスを入力して続けます。メールアドレスで作る場合は、Claude から届くメールのリンクを開くか、メールに書かれたコードを入力します。
+
+3. 名前などを聞かれたら、画面の案内に従って入力します。電話番号の確認を求められたら、電話番号を入力し、SMS で届いたコードを入力します。
+
+4. Claude のチャット画面が開けば、アカウントの作成は完了です。
+
+</Steps>
+
+### 1-2. 有料プランに申し込む
+
+Claude Code を使うには、Claude の **Pro、Max、Ultra** のどれかのプランが必要です。初めてなら、いちばん安い **Pro** で十分です。AI をたくさん並べて使い、使える量が足りなくなったら、あとから Max や Ultra に上げられます。
+
+<Steps>
+
+1. ブラウザで [Claude の料金のページ](https://claude.com/pricing) を開きます。
+
+2. **Pro** のボタンを押します。
+
+3. 1-1 で作ったアカウントでログインしていることを確かめ、クレジットカードの情報を入力して申し込みます。
+
+</Steps>
+
+料金とプランの中身は、Claude の料金のページで確かめてください。料金は Anthropic（Claude を作っている会社）が決めていて、変わることがあります。
+
+### 1-3. Claude Code を PC に入れる
+
+<Steps>
+
+1. PowerShell を開きます（開き方は[上の説明](#powershell-の開き方)のとおりです）。
+
+2. 次の1行をコピーして PowerShell に貼り付け、**Enter** を押します。
+
+   ```powershell
+   irm https://claude.ai/install.ps1 | iex
+   ```
+
+   これは、Claude の公式サイトから Claude Code のインストーラーを取ってきて実行するコマンドです。
+
+3. しばらく何も表示されないことがありますが、ダウンロード中です。PowerShell を閉じずに待ちます。
+
+4. **Claude Code successfully installed!** と表示されたら、インストールは完了です。
+
+5. PowerShell の画面を右上の × で閉じます。インストールしたものを PowerShell に見つけさせるには、新しく開き直す必要があるからです。
+
+</Steps>
+
+Claude Code は、このあと自動で最新の版に更新されます。自分で更新する必要はありません。
+
+### 1-4. Claude Code にログインする
+
+<Steps>
+
+1. PowerShell を新しく開きます。
+
+2. 次のように入力して、**Enter** を押します。
+
+   ```powershell
+   claude
+   ```
+
+3. Claude Code が起動し、初回だけ、いくつか確認が出ます。文字の色の見え方を選ぶ画面は、そのまま **Enter** で進めて構いません。
+
+4. ログインの方法を聞かれたら、**Claude account with subscription**（Claude のサブスクリプションのアカウント）を選んで **Enter** を押します。
+
+5. ブラウザが開き、Claude のページに「Claude Code があなたのアカウントへの接続を求めている」という内容が表示されます。**承認する（Authorize）** を押します。
+
+   ブラウザが開かないときは、PowerShell の画面で **c** キーを押します。ログイン用のアドレスがコピーされるので、ブラウザのアドレス欄に貼り付けて開きます。ブラウザにコードが表示されたときは、そのコードをコピーして、PowerShell の `Paste code here if prompted` の欄に貼り付けます。
+
+6. PowerShell の画面に **Login successful** と表示されたら、**Enter** を押します。
+
+7. 残りの確認も、画面の案内に従って **Enter** で進めます。「このフォルダーを信頼するか」と聞かれたら、**Yes** を選びます。
+
+8. Claude Code の入力欄が出たら、ログインは完了です。`/exit` と入力して **Enter** を押し、Claude Code を終わらせます。
+
+</Steps>
+
+ログインは一度だけで済みます。SHIKISHA-TERM のタブで Claude Code を起動したときも、このログインがそのまま使われます。
+
+## 2. GitHub の道具を入れる
+
+SHIKISHA-TERM は、作業の記録と、AI ごとの作業場所（ワークツリー）を作るために **Git** を使います。また、GitHub のプルリクエストや Issue を画面に表示するために、**GitHub CLI（gh）** を使います。
+
+### 2-1. GitHub のアカウントを作る
+
+すでに GitHub のアカウントを持っていれば、2-2 へ進みます。
+
+<Steps>
+
+1. ブラウザで [github.com/signup](https://github.com/signup) を開きます。
+
+2. メールアドレス、パスワード、ユーザー名を入力し、画面の案内に従って進めます。GitHub から届くメールのコードを入力すると、アカウントが作られます。
+
+</Steps>
+
+アカウントは無料で作れます。
+
+### 2-2. Git と gh を PC に入れる
+
+<Steps>
+
+1. PowerShell を開きます。
+
+2. 次の1行を貼り付けて **Enter** を押します。Git が入ります。
+
+   ```powershell
+   winget install --id Git.Git -e --source winget
+   ```
+
+3. 初めて `winget` を使うときは、利用条件に同意するかを聞かれます。**Y** を入力して **Enter** を押します。
+
+4. 「このアプリがデバイスに変更を加えることを許可しますか？」と聞かれたら、**はい** を押します。
+
+5. **インストールが完了しました** と表示されたら、次の1行を貼り付けて **Enter** を押します。gh が入ります。
+
+   ```powershell
+   winget install --id GitHub.cli -e --source winget
+   ```
+
+6. こちらも、変更の許可を求められたら **はい** を押します。**インストールが完了しました** と表示されたら、PowerShell の画面を閉じます。
+
+</Steps>
+
+### 2-3. gh で GitHub にログインする
+
+<Steps>
+
+1. PowerShell を新しく開きます。
+
+2. 次の1行を貼り付けて **Enter** を押します。
+
+   ```powershell
+   gh auth login
+   ```
+
+3. 質問が4つ続けて出ます。**4つとも、最初から選ばれている答えのまま Enter を押せば正しく進みます。** 念のため、選ばれている答えが次のとおりかを確かめてください。
+
+   | 質問 | 選ぶ答え |
+   |---|---|
+   | Where do you use GitHub?（どこの GitHub を使うか） | **GitHub.com** |
+   | What is your preferred protocol for Git operations on this host?（Git の通信方法） | **HTTPS** |
+   | Authenticate Git with your GitHub credentials?（Git にも同じログインを使うか） | **Yes** |
+   | How would you like to authenticate GitHub CLI?（ログインの方法） | **Login with a web browser** |
+
+4. 画面に `XXXX-XXXX` の形の、8文字の **使い捨てのコード** が表示されます。このコードを控えて、**Enter** を押します。`copied to clipboard` と表示されたときは、コードがすでにコピーされているので、控える必要はありません。
+
+5. ブラウザで GitHub のページが開きます。GitHub にログインしていなければ、ログインします。
+
+6. コードの入力欄に、4 のコードを入力するか貼り付けて、**Continue** を押します。続けて **Authorize github** を押します。
+
+7. PowerShell の画面に **Logged in as あなたのユーザー名** と表示されたら、ログインは完了です。PowerShell の画面を閉じます。
+
+</Steps>
+
+## 3. SHIKISHA-TERM を入れる
+
+### 3-1. Microsoft Store から入れる
+
+<div class="asks">
+  <a class="ask" href="https://apps.microsoft.com/detail/9PB8XQVM87Z0" target="_blank" rel="noopener">
+    <strong>Microsoft Store で SHIKISHA-TERM を開く →</strong>
+    <span>Microsoft Store の SHIKISHA-TERM のページが開きます。「入手」を押してインストールします。</span>
+  </a>
+</div>
+
+<Steps>
+
+1. 上のボタンを押して、ブラウザで Microsoft Store の SHIKISHA-TERM のページを開きます。
+
+2. ページの **入手** を押します。ブラウザに「Microsoft Store を開きますか？」と出たら、**開く** を押します。
+
+3. PC の Microsoft Store のアプリが開き、SHIKISHA-TERM のページが表示されます。そこでも **入手** を押すと、インストールが始まります。
+
+4. インストールが終わると、ボタンが **開く** に変わります。**開く** を押します。
+
+</Steps>
+
+Microsoft Store から入れた SHIKISHA-TERM は、Microsoft の署名が付いているので、Windows の警告は出ません。更新も Microsoft Store が自動で行います。
+
+### 3-2. はじめの設定
+
+SHIKISHA-TERM を初めて起動すると、**はじめの設定** の画面が開きます。
+
+<img src="/lp/shot-setup.ja.webp" alt="SHIKISHA-TERM の「はじめの設定」の画面。優先AIを選択の欄に Claude Code と Codex CLI のカードが並び、その下に対応AIの欄、Yoloモードのチェック、続行のボタンがある" loading="lazy" style="display:block;margin:1em 0;width:100%;border-radius:8px;border:1px solid var(--sl-color-gray-5)" />
+
+<Steps>
+
+1. **優先AIを選択** の欄に、**Claude Code** のカードが出ていることを確かめて、押して選びます。新しいタブは、ここで選んだ AI で始まります。
+
+   Claude Code のカードが出ていないときは、右上の **更新** を押します。SHIKISHA-TERM が、PC に入っている AI を探し直します。それでも出ないときは、手順 1-3 からやり直してください。
+
+2. **Yoloモード** のチェックを確かめます。チェックが入っていると、AI はファイルの書き換えやコマンドの実行を、毎回あなたに確認せずに進めます。AI を何体も並べて動かすときは、確認のたびに止まらないので速く進みます。その代わり、AI が間違った操作をしても、実行される前に止められません。毎回確認したいときは、チェックを外します。
+
+3. **続行** を押します。
+
+4. **GitHub をセットアップ** の欄に **GitHub CLI（gh）はインストールされています** と出ていることを確かめます。出ていないときは、右上の **更新** を押します。
+
+5. **完了** を押します。
+
+</Steps>
+
+### 3-3. プロジェクトを追加して、AI を動かす
+
+<Steps>
+
+1. 画面に **「はじめにプロジェクトを追加してください」** と表示され、左の一覧の **PROJECT** の見出しを指します。その見出しの **+** を押します。
+
+2. AI に作業させるフォルダーを選びます。新しく始めるなら、空のフォルダーを作って選びます。
+
+3. 次に案内が指す **+** を押すと、そのフォルダーで Claude Code のタブが立ち上がります。
+
+4. タブの入力欄に、AI にしてほしいことを日本語で書いて送ります。
+
+</Steps>
+
+これで、SHIKISHA-TERM で AI が動き出しました。画面の見方は[手引き](/ja/manual/)に、外出先のスマホから AI の様子を見る方法は[スマホから使う](/ja/phone/)に書いてあります。
+
+## うまくいかないとき
+
+- **`claude` と入力すると「認識されません」と出る。** PowerShell を閉じて、新しく開き直してから、もう一度入力してください。それでも出るときは、[Claude Code の公式の手順](https://code.claude.com/docs/en/terminal-guide)の「Troubleshooting」を見てください。
+- **`irm` が「認識されません」と出る。** 開いているのが PowerShell ではなく、コマンドプロンプトです。行の先頭に `PS` が付いていません。一度閉じて、[PowerShell の開き方](#powershell-の開き方)のとおりに開き直してください。
+- **`gh` や `winget` が「認識されません」と出る。** `gh` のときは、PowerShell を新しく開き直してください。`winget` のときは、Microsoft Store で「アプリ インストーラー」を更新してから、もう一度試してください。
+- **はじめの設定で、Claude Code や gh が見つからない。** SHIKISHA-TERM を開いたまま 1 や 2 の手順をやったときは、右上の **更新** を押してください。
+- **ほかの AI も使いたい。** はじめの設定の **対応AI** の欄にある AI の名前を押すと、その AI のインストール方法のページが開きます。入れたあと **更新** を押すと、優先AI のカードに並びます。
+
+分からないところがあれば、[GitHub で教えてください](https://github.com/styleio/ShikishaTerm/issues)。このページを直します。
