@@ -98,6 +98,11 @@ serde_json = { workspace = true }
 # problem with well-known edge cases. Pure Rust with no dependencies of its own,
 # so it costs the build nothing
 similar = "2.7.0"
+# Reading a repository's issue forms (`issueform`), which GitHub has people
+# write in YAML. Pure Rust, read into a tree and never into types of its own:
+# a form is a few lists and strings, and a key GitHub adds next year must not
+# make the whole form unreadable
+yaml-rust2 = { version = "0.13.0", default-features = false }
 sha2 = { workspace = true }
 # The language the system is set to, each system asked its own way: Windows' user
 # locale, a Mac's list of preferred languages (what a program started from the

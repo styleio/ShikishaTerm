@@ -70,6 +70,7 @@ pub mod handover;
 pub mod hooks;
 pub mod adr;
 pub mod ideas;
+pub mod issueform;
 pub mod disk;
 pub mod mdkit;
 pub mod mdnew;

@@ -305,6 +305,8 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | MicroVM の git サーバーへのサインインの案内 | `drawSignIn(box, note, shown, change)`（アカウント・トークンの種類・fine-grained PAT 以外の注意を1か所で描く）。AI のログインは `drawAiSignIn(box, note)`。事実は欄の下の1行（11.5px `--dim`）、人がすることは §5.1 の `--warn` の箱に直す手段の並ボタンを入れて `warnBox(text, ...acts)` で描く | 盤面（`shell.rs`） |
 | `--warn` の箱（§5.1） | `warnBox(text, ...acts)`（人が知ること・することの一文と、直す手段の並ボタンを1つの箱に。盤面ではサインインの案内と、ワークツリーを作るときの時間のかかるコピー、設定では Windows の通知がオフのときの「このPCの通知を受け取る」が使う。2つは別のページの JavaScript なので同じ名前で1つずつ持つ） | 設定（`webui.rs`）・盤面（`shell.rs`） |
 | 進み具合の棒（`.pbar`） | `progressBar(pct)`（`{bar, set}` を返す。`set` に 0〜100 を渡して伸ばす）。言葉は棒の隣か上に置き、棒だけを出さない | 盤面（`shell.rs`） |
+| 一覧から名前を選ぶ（`.lpick`。ラベル・担当者） | `chipPick(chosen, all, done)`（選んだものは ✕ 付きの札、残りはその下に押せる札。`done` に新しい一覧を渡す） | 盤面（`shell.rs`） |
+| チェックボックスと文字（§5.1） | `issueTick(on, words, set)`（`words` は文字か要素。`set` に新しい状態を渡す） | 盤面（`shell.rs`） |
 | トースト | `toast(text, warn)`（`toast.rs` が両方のページに入れる） | 両方（`toast.rs`） |
 | 会話（右の列） | `drawConvo()`。行は `convoSay(r)`・`convoWork(r)`・`convoEvent(r)`、ツール実行の中身は `workPieces(inside, work, query)`（過去の会話を読むと共通） | 盤面（`shell.rs`） |
 | 右の列にパネルを呼び出す | `sideReveal(name)`（✕ は `sideDismiss(name)`、帯で選ぶのは `sideChoose(name)`。Lua からは `show_panel`） | 盤面（`shell.rs`） |

@@ -2345,6 +2345,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   /* A tick box and its words, beside each other (5.1) */
   #issuespanel .tick { display:flex; align-items:center; gap:var(--s2); font-size:13px; color:var(--text); cursor:pointer; }
   #issuespanel .tick input { width:15px; height:15px; margin:0; flex:none; }
+  /* A template's form: what it says to read, its "required" tags, boxes to tick,
+     and a field still empty that has to be written (5.1) */
+  #issuespanel .tnote { font-size:12.5px; color:var(--dim); }
+  #issuespanel .field > .name .req, #issuespanel .tick .req { margin-left:var(--s2); font-size:11px; font-weight:400; color:var(--warn); }
+  #issuespanel .ticks { display:flex; flex-direction:column; gap:var(--s2); }
+  #issuespanel textarea.code { font-family:var(--mono); font-size:12px; }
+  #issuespanel .field.bad > :is(input, textarea, select) { border-color:var(--warn); }
   #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
   #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
   /* A narrow pane or a phone: the title keeps the whole first line, and the
@@ -5771,7 +5778,7 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
           // Where a conflicted pull request's branch is on this PC, as last asked
           place:null,
-          create:{project:"", title:"", body:"", labels:[], assignee:"", kept:""},
+          create:issueBlank(),
           // A pull request being written: the folder and branch it comes from,
           // what it goes into, and the issue it closes when there is one
           pr:{project:"", folder:"", head:"", base:"", bases:null, title:"", body:"", draft:false,
@@ -5979,7 +5986,11 @@ window.__issues = function (d) {
   }
   if (d.act === "options") {
     if (d.ok) I.options[d.project] = d.data || {};
-    drawIssues();
+    // The new issue's form is opened with the cursor in its description, and
+    // the templates arrive after: drawn now, with the cursor put back, or the
+    // template to choose would not be there until somebody clicked away
+    if (d.ok && I.view === "create" && d.project === I.create.project) drawIssuesKeepingCursor();
+    else drawIssues();
     return;
   }
   if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
@@ -5996,6 +6007,8 @@ window.__issues = function (d) {
       send({kind:"issues", act:"detail", args:{kind: I.kind, seq, project: I.detail.project, number: I.detail.number}});
     }
     if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
+    // Not made for what its template still requires: those fields say so
+    if (d.act === "create") I.create.missing = (d.missing || []).map(m => m.at);
     drawIssues();
     return;
   }
@@ -6034,7 +6047,7 @@ window.__issues = function (d) {
       const idea = I.create.idea;
       const made = d.data || {};
       if (idea && made.number) ideasAsk("issued", {id: idea, number: made.number, url: made.url || ""});
-      I.create = {project: I.create.project, title:"", body:"", labels:[], assignee:"", kept:""};
+      I.create = issueBlank({project: I.create.project});
       I.said = (T["issues.created"] || "").replaceAll("{n}", (d.data || {}).number || "");
       I.made = "create"; I.madeSaid = I.said;
       issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
@@ -6049,12 +6062,24 @@ window.__issues = function (d) {
       let got = null;
       try { got = JSON.parse(d.data || ""); } catch (e) { got = null; }
       if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
+      // Written for another template than the one chosen since: not taken
+      if (got.file !== undefined && got.file !== c.tpl) break;
       c.title = got.title;
       if (typeof got.body === "string") c.body = got.body;
+      if (Array.isArray(got.values)) c.values = got.values;
+      // What the template put on stays; the AI's choice is added to it
       const known = opts.labels || [];
-      c.labels = (Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l));
-      c.assignee = (opts.assignees || []).includes(got.assignee) ? got.assignee : "";
-      I.said = T["issues.draft.done"] || "";
+      const keep = c.labels.filter(l => c.auto.labels.includes(l));
+      c.labels = keep.concat((Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l) && !keep.includes(l)));
+      const person = (opts.assignees || []).includes(got.assignee) ? [got.assignee] : [];
+      c.assignees = c.assignees.filter(p => c.auto.assignees.includes(p));
+      c.assignees = c.assignees.concat(person.filter(p => !c.assignees.includes(p)));
+      const short = Array.isArray(got.missing) ? got.missing : [];
+      c.missing = short.map(m => m.at);
+      if (short.length) {
+        I.said = (T["issues.draft.missing"] || "").replaceAll("{items}", short.map(m => m.label).join(T["list.sep"] || ", "));
+        I.bad = true;
+      } else I.said = T["issues.draft.done"] || "";
       break;
     }
     case "pr_bases": {
@@ -6139,6 +6164,22 @@ document.getElementById("issuespanel").addEventListener("mousedown", () => {
   if (box.dataset.pane) send({kind:"focuspane", id: Number(box.dataset.pane)});
 }, true);
 
+// Redrawn even while something is being typed in it, which a redraw is
+// otherwise held back for: the field with the cursor (named by `data-k`) gets
+// it back where it was. For an answer the form cannot wait for
+function drawIssuesKeepingCursor() {
+  const box = document.getElementById("issuespanel");
+  const a = document.activeElement;
+  const k = a && box && box.contains(a) && a.dataset ? a.dataset.k : "";
+  const at = k && "selectionStart" in a ? [a.selectionStart, a.selectionEnd] : null;
+  if (box && box.contains(a)) a.blur();
+  issuesSig = ""; drawIssues();
+  const back = k && box.querySelector('[data-k="' + k + '"]');
+  if (!back) return;
+  back.focus();
+  if (at) back.setSelectionRange(at[0], at[1]);
+}
+
 function drawIssues() {
   const box = document.getElementById("issuespanel");
   if (!box || box.hidden) return;
@@ -6196,7 +6237,8 @@ function drawIssueList(box) {
     ? el("button", {class:"go", onclick:() => {
         I.view = "create"; I.made = "";
         if (!I.create.project) I.create.project = I.project || (I.projects[0] || {}).name || "";
-        if (I.create.project && !I.options[I.create.project]) issuesAsk("options", {project: I.create.project});
+        // Asked again each time: a template changed on GitHub is in the next form
+        if (I.create.project) issuesAsk("options", {project: I.create.project});
         drawIssues();
       }}, "+ " + (T["issues.new"] || ""))
     : null;
@@ -6420,14 +6462,44 @@ function drawIssueCreate(box) {
   const field = (label, control, hint) => form.append(el("div", {class:"field"},
     el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
 
+  // The repository's issue templates, when it has any: chosen first, since
+  // a form's fields change what the description below is for
+  const tpls = (opts.templates || {}).items || [];
+  const t = issueTemplate(c);
+  const form_ = t && t.fields;
+  if (tpls.length) {
+    const which = el("select");
+    if (c.tpl === null) which.append(el("option", {value:"", disabled:"", selected:""}, T["issues.template.choose"] || ""));
+    for (const x of tpls) which.append(el("option", {value:x.file}, x.name));
+    if ((opts.templates || {}).blank) which.append(el("option", {value:"\u0000none"}, T["issues.template.none"] || ""));
+    which.value = c.tpl === null ? "" : (c.tpl || "\u0000none");
+    // Let go of first: the form is not redrawn under a field that has the
+    // cursor, and the fields this template brings are the point of choosing it
+    which.onchange = () => { issueTemplateUse(c, which.value === "\u0000none" ? "" : which.value); which.blur(); redraw(); };
+    const wrap = el("div", {class:"field" + (c.missing.includes(-2) ? " bad" : "")},
+      el("span", {class:"name"}, T["issues.template"] || ""), which);
+    if (t && t.about) wrap.append(el("span", {class:"hint"}, t.about));
+    if (c.missing.includes(-2)) wrap.append(warnBox(T["issues.template.need"] || ""));
+    form.append(wrap);
+  }
+  for (const p of (opts.templates || {}).problems || []) {
+    form.append(warnBox((T["issues.template.unreadable"] || "").replaceAll("{file}", p.file).replaceAll("{error}", p.error)));
+  }
+
   // The description first: it is what the AI works from. Its ✨ writes the
-  // title, the description, the labels and the person from it
+  // title, the description, the labels and the person from it -- or, for a
+  // form, its fields, and then the description is notes the issue leaves out
   const body = draftFields(form, c, {
     act: "draft", settings: "project-git-issue", folder: issueFolder(c.project),
-    title: T["issues.draft.ai"], placeholder: T["issues.new.body.ph"],
+    title: T["issues.draft.ai"],
+    name: form_ ? T["issues.template.notes"] : "",
+    placeholder: form_ ? T["issues.template.notes.ph"] : T["issues.new.body.ph"],
+    own: text => form_ ? "" : text,
     ask: () => {
+      if (tpls.length && c.tpl === null) { c.missing = [-2]; I.said = T["issues.template.need"] || ""; I.bad = true; redraw(); return false; }
       if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); return false; }
-      issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || []});
+      issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || [],
+        template: t || null, values: form_ ? c.values : []});
       return true;
     },
   });
@@ -6437,42 +6509,147 @@ function drawIssueCreate(box) {
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name + (p.repo ? "  (" + p.repo + ")" : "")));
   pick.value = c.project;
   pick.onchange = () => {
-    c.project = pick.value; c.labels = []; c.assignee = "";
-    if (!I.options[c.project]) issuesAsk("options", {project: c.project});
+    Object.assign(c, issueBlank({project: pick.value, title: c.title, body: c.body, kept: c.kept, idea: c.idea}));
+    pick.blur();
+    issuesAsk("options", {project: c.project});
     redraw();
   };
   field(T["issues.project"] || "", pick);
 
-  const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || ""});
+  const title = el("input", {type:"text", placeholder: T["issues.new.title.ph"] || "", "data-k": "title"});
   title.value = c.title; title.oninput = () => { c.title = title.value; };
-  field(T["issues.new.title"] || "", title);
+  form.append(issueField(T["issues.new.title"] || "", title, null, c.missing.includes(-1)));
 
-  // Labels the repository has: the chosen ones with a ✕, the rest under them
-  const chosen = el("div", {class:"chips"}, ...c.labels.map(l => el("span", {class:"lchip on"}, l,
-    el("button", {type:"button", title: T["issues.labels.remove"] || "", onclick:() => {
-      c.labels = c.labels.filter(x => x !== l); redraw();
-    }}, "\u2715"))));
-  const offered = (opts.labels || []).filter(l => !c.labels.includes(l));
-  const choices = el("div", {class:"chips"}, ...offered.map(l => el("button", {type:"button", class:"lchip",
-    onclick:() => { c.labels = c.labels.concat(l); redraw(); }}, "+ " + l)));
-  field(T["issues.labels"] || "", el("div", {class:"lpick"}, c.labels.length ? chosen : null, offered.length ? choices : null),
+  if (form_) issueFormFields(form, c, t);
+
+  // Labels the repository has, and the people it can assign: the chosen ones
+  // with a ✕, the rest under them
+  field(T["issues.labels"] || "", chipPick(c.labels, opts.labels || [], v => { c.labels = v; redraw(); }),
     !(opts.labels || []).length ? (T["issues.labels.none"] || "") : null);
-
-  // One person, or nobody: the people GitHub says can be assigned here
-  const who = el("select");
-  who.append(el("option", {value:""}, T["issues.assignee.nobody"] || ""));
-  for (const p of opts.assignees || []) who.append(el("option", {value:p}, p));
-  who.value = c.assignee;
-  who.onchange = () => { c.assignee = who.value; };
-  field(T["issues.assignees"] || "", who);
+  field(T["issues.assignees"] || "", chipPick(c.assignees, opts.assignees || [], v => { c.assignees = v; redraw(); }),
+    !(opts.assignees || []).length ? (T["issues.assignees.none"] || "") : null);
 
   form.append(makeFoot("create", () => { I.view = "list"; drawIssues(); }, T["issues.new.create"], () => {
-    if (!c.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
-    issuesAsk("create", {project: c.project, title: c.title, body: c.body, labels: c.labels,
-      assignees: c.assignee ? [c.assignee] : []});
+    if (tpls.length && c.tpl === null) { c.missing = [-2]; I.said = T["issues.template.need"] || ""; I.bad = true; redraw(); return; }
+    if (!c.title.trim()) { c.missing = [-1]; I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+    issuesAsk("create", {project: c.project, title: c.title, body: form_ ? "" : c.body, labels: c.labels,
+      assignees: c.assignees, template: t || null, values: form_ ? c.values : []});
   }));
   box.append(form);
   setTimeout(() => { if (!c.body && !drafting) body.focus(); }, 30);
+}
+
+// A new issue's form as it starts, with whatever is carried into it
+function issueBlank(extra) {
+  return Object.assign({project:"", title:"", body:"", labels:[], assignees:[], kept:"",
+    // The template chosen: its file, "" for none, `null` while not chosen yet
+    tpl:null, values:[], missing:[],
+    // What choosing the template put on the issue, taken off again when
+    // another is chosen
+    auto:{labels:[], assignees:[], title:"", body:""}}, extra || {});
+}
+
+// The template the form follows, or nothing
+function issueTemplate(c) {
+  const all = ((I.options[c.project] || {}).templates || {}).items || [];
+  return c.tpl ? all.find(x => x.file === c.tpl) || null : null;
+}
+
+// Follow a template ("" for none): what the last one put on the issue comes
+// off, and this one's title start, labels and people go on -- only labels and
+// people the repository has, as on GitHub's own page
+function issueTemplateUse(c, file) {
+  const opts = I.options[c.project] || {};
+  const was = c.auto;
+  const start = was.title.trim();
+  if (start && c.title.trim().startsWith(start)) c.title = c.title.trim().slice(start.length).trimStart();
+  c.labels = c.labels.filter(l => !was.labels.includes(l));
+  c.assignees = c.assignees.filter(p => !was.assignees.includes(p));
+  if (was.body && c.body === was.body) c.body = "";
+  c.tpl = file; c.missing = []; c.values = [];
+  c.auto = {labels:[], assignees:[], title:"", body:""};
+  const t = issueTemplate(c);
+  if (!t) return;
+  const named = (want, have) => want.map(w => have.find(h => h.toLowerCase() === w.toLowerCase())).filter(Boolean);
+  const labels = named(t.labels || [], opts.labels || []).filter(l => !c.labels.includes(l));
+  const people = named(t.assignees || [], opts.assignees || []).filter(p => !c.assignees.includes(p));
+  c.labels = c.labels.concat(labels);
+  c.assignees = c.assignees.concat(people);
+  if (t.title.trim() && !c.title.trim().startsWith(t.title.trim())) c.title = t.title + c.title.trim();
+  if (t.fields) c.values = JSON.parse(JSON.stringify(t.start || []));
+  else if (!c.body.trim()) c.body = t.body || "";
+  c.auto = {labels, assignees: people, title: t.title || "", body: t.fields ? "" : (t.body || "")};
+}
+
+// One field of the issue form (5.1): its name, the control, what it is for,
+// and, while it is required and empty, a box that says so
+function issueField(label, control, hint, bad, required) {
+  const name = el("span", {class:"name"}, label);
+  if (required) name.append(el("span", {class:"req"}, T["issues.field.required"] || ""));
+  return el("div", {class:"field" + (bad ? " bad" : "")}, name, control,
+    hint ? el("span", {class:"hint"}, hint) : null,
+    bad ? warnBox(T["issues.field.need"] || "") : null);
+}
+
+// A template's form, field by field, as GitHub's page draws it: guidance as
+// text, a line, several lines, a choice, boxes to tick. What is written is
+// kept in the form's values, in the template's order
+function issueFormFields(form, c, t) {
+  t.fields.forEach((f, i) => {
+    if (f.kind === "markdown") { form.append(el("div", {class:"tnote md"}, rdMarkup(f.value || "", {}))); return; }
+    let control;
+    if (f.kind === "input" || f.kind === "upload") {
+      control = el("input", {type:"text", placeholder: f.placeholder || ""});
+      control.value = c.values[i] || "";
+      control.oninput = () => { c.values[i] = control.value; };
+    } else if (f.kind === "textarea") {
+      control = el("textarea", {rows:"4", placeholder: f.placeholder || "", class: f.render ? "code" : ""});
+      control.value = c.values[i] || "";
+      control.oninput = () => { c.values[i] = control.value; };
+    } else if (f.kind === "dropdown" && !f.multiple) {
+      control = el("select");
+      control.append(el("option", {value:""}, T["issues.field.choose"] || ""));
+      f.options.forEach((o, n) => control.append(el("option", {value:String(n)}, o)));
+      control.value = (c.values[i] || []).length ? String(c.values[i][0]) : "";
+      control.onchange = () => { c.values[i] = control.value === "" ? [] : [Number(control.value)]; };
+    } else {
+      // Several to choose, or boxes to tick: one box per option
+      const many = f.kind === "dropdown";
+      control = el("div", {class:"ticks"}, ...f.options.map((o, n) => {
+        const on = many ? (c.values[i] || []).includes(n) : !!(c.values[i] || [])[n];
+        const words = rdInline(el("span", {}), o, {});
+        if (!many && (f.ticks_needed || [])[n]) words.append(el("span", {class:"req"}, T["issues.field.required"] || ""));
+        return issueTick(on, words, v => {
+          if (many) c.values[i] = (c.values[i] || []).filter(x => x !== n).concat(v ? [n] : []).sort((a, b) => a - b);
+          else { const all = (c.values[i] || []).slice(); all[n] = v; c.values[i] = all; }
+        });
+      }));
+    }
+    const wrap = issueField(f.label, control, f.kind === "upload" ? (T["issues.field.upload"] || "") : null,
+      c.missing.includes(i), f.required);
+    // What the field is for goes between its name and its control, as on GitHub
+    if (f.description) wrap.insertBefore(el("span", {class:"hint"}, rdInline(el("span", {}), f.description, {})), control);
+    form.append(wrap);
+  });
+}
+
+// A tick box and its words beside it (5.1). `words` is text or a node
+function issueTick(on, words, set) {
+  const box = el("input", {type:"checkbox"});
+  box.checked = on;
+  box.onchange = () => set(box.checked);
+  return el("label", {class:"tick"}, box, typeof words === "string" ? el("span", {}, words) : words);
+}
+
+// Names chosen from a list: the chosen ones with a ✕, the rest under them to
+// press. `done` is handed the new list
+function chipPick(chosen, all, done) {
+  const on = el("div", {class:"chips"}, ...chosen.map(l => el("span", {class:"lchip on"}, l,
+    el("button", {type:"button", title: T["issues.labels.remove"] || "", onclick:() => done(chosen.filter(x => x !== l))}, "✕"))));
+  const offered = all.filter(l => !chosen.includes(l));
+  const choices = el("div", {class:"chips"}, ...offered.map(l => el("button", {type:"button", class:"lchip",
+    onclick:() => done(chosen.concat(l))}, "+ " + l)));
+  return el("div", {class:"lpick"}, chosen.length ? on : null, offered.length ? choices : null);
 }
 
 // The part of a form the AI writes from: what was written before it rewrote
@@ -6491,7 +6668,7 @@ function draftFields(form, c, how) {
         el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.kept = ""; redraw(); }}, "\u2715")),
       el("div", {class:"kepttext"}, c.kept)));
   }
-  const body = el("textarea", {rows:"8", placeholder: how.placeholder || ""});
+  const body = el("textarea", {rows:"8", placeholder: how.placeholder || "", "data-k": "body"});
   body.value = c.body; body.oninput = () => { c.body = body.value; };
   const drafting = I.busy === how.act;
   body.disabled = drafting;
@@ -6512,7 +6689,7 @@ function draftFields(form, c, how) {
   // In the corner above the box rather than inside it: a long description has
   // a scrollbar where a button inside the box would sit
   form.append(el("div", {class:"field"},
-    el("div", {class:"namerow"}, el("span", {class:"name"}, T["issues.new.body"] || ""), ai),
+    el("div", {class:"namerow"}, el("span", {class:"name"}, how.name || T["issues.new.body"] || ""), ai),
     body));
   return body;
 }
@@ -6623,12 +6800,7 @@ function drawPrCreate(box) {
     field(name, list);
   }
 
-  const tick = (on, label, set) => {
-    const box = el("input", {type:"checkbox"});
-    box.checked = on;
-    box.onchange = () => { set(box.checked); redraw(); };
-    return el("label", {class:"tick"}, box, el("span", {}, label));
-  };
+  const tick = (on, label, set) => issueTick(on, label, v => { set(v); redraw(); });
   // Only when the folder was made for an issue: ticked, the description ends
   // with the line GitHub closes it by
   if (p.issue) {
@@ -22409,7 +22581,7 @@ function ideaToIssue(card) {
   I.kind = "issue";
   I.view = "create";
   I.said = ""; I.bad = false;
-  I.create = {project:"", title:"", body:text, labels:[], assignee:"", kept:"", at:(it && it.project) || "", idea:id};
+  I.create = issueBlank({body:text, at:(it && it.project) || "", idea:id});
   issuesSig = "";
   send({kind:"openissues"});
   drawIssues();

@@ -8,6 +8,23 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **A new issue can follow the repository's issue template.** When the
+  repository has templates in `.github/ISSUE_TEMPLATE` (or its owner keeps
+  them in a repository named `.github`), "New issue" asks which one first,
+  the way GitHub's own page does, and offers "No template" when the
+  repository allows blank issues. A form (`.yml`) shows its fields; a
+  Markdown template (`.md`) starts the description. The template's title
+  start, labels and assignees are put on the issue. The ✨ writes the fields
+  from the notes above them: only what the notes say, a choice only from the
+  template's options, and a required field the notes did not cover is named
+  before anything is made. The issue's description is written the way
+  GitHub's page writes it from the same form. A repository without templates
+  works as before.
+
+### Fixed
+- **Labels past a repository's hundredth are offered on a new issue.**
+
 ## [0.29.0] - 2026-11-09
 
 ### Added

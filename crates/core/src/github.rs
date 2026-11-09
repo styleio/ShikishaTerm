@@ -318,6 +318,23 @@ impl Hub {
 
     /// One request. The reply's JSON, or GitHub's own reason for saying no
     fn call(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        match self.call_unless_absent(method, path, body)? {
+            Some(v) => Ok(v),
+            // Missing, to an account that is asked by name: the repository is
+            // not there, or this account cannot see it
+            None => {
+                let (words, account) = refusal(404, "Not Found");
+                if account {
+                    bail!(AccountTrouble(words))
+                }
+                bail!(words)
+            }
+        }
+    }
+
+    /// One request, where "there is nothing there" is an answer rather than a
+    /// failure: `None` when GitHub says it has no such thing
+    fn call_unless_absent(&self, method: &str, path: &str, body: Option<Value>) -> Result<Option<Value>> {
         let url = format!("https://api.github.com/{}", path.trim_start_matches('/'));
         let auth = format!("Bearer {}", self.token);
         let ua = concat!("shikisha-term/", env!("CARGO_PKG_VERSION"));
@@ -354,7 +371,10 @@ impl Hub {
         let text = resp.body_mut().read_to_string().unwrap_or_default();
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
-            return Ok(v);
+            return Ok(Some(v));
+        }
+        if status == 404 {
+            return Ok(None);
         }
         // GitHub's reason is its message and, for a refused search, the reasons
         // listed under it -- "cannot be searched ... permission" is the useful half
@@ -833,18 +853,72 @@ impl Hub {
         Ok(json!({"merged": v.get("merged"), "sha": v.get("sha")}))
     }
 
-    /// The labels an issue can be given
+    /// The labels an issue can be given: all of them, a page at a time, so a
+    /// template's label is found among a repository's hundred-and-first. Ten
+    /// pages are a thousand labels, more than any repository has a use for
     pub fn labels(&self, repo: &Repo) -> Result<Vec<String>> {
-        let v = self.call(
-            "GET",
-            &format!("repos/{}/labels?per_page=100", repo.slug()),
-            None,
-        )?;
-        Ok(v.as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|l| l.get("name")?.as_str().map(str::to_string))
-            .collect())
+        let mut out = Vec::new();
+        for page in 1..=10 {
+            let v = self.call(
+                "GET",
+                &format!("repos/{}/labels?per_page=100&page={page}", repo.slug()),
+                None,
+            )?;
+            let got: Vec<String> = v
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|l| l.get("name")?.as_str().map(str::to_string))
+                .collect();
+            let full = got.len() == 100;
+            out.extend(got);
+            if !full {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// The issue templates GitHub offers on the repository's own "New issue"
+    /// page: its own, or when it has none, the ones its owner keeps for every
+    /// repository in a repository named `.github`. Read from the default
+    /// branch, which is the one GitHub's page reads
+    pub fn issue_templates(&self, repo: &Repo) -> Result<crate::issueform::Templates> {
+        let shared = Repo { owner: repo.owner.clone(), name: ".github".into() };
+        let places = [
+            (repo, crate::issueform::FOLDER),
+            (&shared, crate::issueform::FOLDER),
+            (&shared, "ISSUE_TEMPLATE"),
+        ];
+        for (at, folder) in places {
+            // The repository itself is asked as any other request is; the
+            // owner's shared one may simply not be there, or not be readable
+            // by this account, and either means it has nothing to offer
+            let listing = match self.call_unless_absent("GET", &format!("repos/{}/contents/{folder}", at.slug()), None) {
+                Ok(Some(v)) => v,
+                Ok(None) => continue,
+                Err(e) if std::ptr::eq(at, repo) => return Err(e),
+                Err(_) => continue,
+            };
+            let mut files = Vec::new();
+            for entry in listing.as_array().into_iter().flatten() {
+                let name = entry.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+                let lower = name.to_lowercase();
+                let wanted = entry.get("type").and_then(|t| t.as_str()) == Some("file")
+                    && [".yml", ".yaml", ".md"].iter().any(|ext| lower.ends_with(ext));
+                // A folder of a hundred files is not a folder of templates
+                if !wanted || files.len() >= 50 {
+                    continue;
+                }
+                let path = entry.get("path").and_then(|p| p.as_str()).unwrap_or(name);
+                let file = self.call("GET", &format!("repos/{}/contents/{}", at.slug(), path_in_url(path)), None)?;
+                files.push((name.to_string(), file_text(&file)?));
+            }
+            if !files.is_empty() {
+                return Ok(crate::issueform::read_folder(&files));
+            }
+        }
+        Ok(crate::issueform::Templates { blank: true, ..Default::default() })
     }
 
     /// The people an issue can be assigned to
@@ -1340,6 +1414,23 @@ pub fn answer(
             Err(e) => with(base, json!({"ok": false, "path": path, "error": format!("{e:#}")})),
         };
     }
+    // An issue from a template with something it requires left empty is not
+    // sent, and the screen is told which, so it can point at them. Asked
+    // before GitHub, whose own page would refuse it -- and whose API would not
+    let template = args
+        .get("template")
+        .filter(|t| !t.is_null())
+        .and_then(|t| serde_json::from_value::<crate::issueform::Template>(t.clone()).ok());
+    let values = args.get("values").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if act == "create"
+        && let Some(t) = &template
+        && let Err(e) = crate::issueform::issue_body(t, &s("title"), &s("body"), &values)
+    {
+        return with(
+            base,
+            json!({"ok": false, "error": format!("{e:#}"), "missing": crate::issueform::missing(t, &s("title"), &values)}),
+        );
+    }
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
@@ -1362,14 +1453,28 @@ pub fn answer(
             });
             json!({"prs": prs, "checks": checks})
         }),
-        "options" => Ok(json!({"labels": hub.labels(&repo)?, "assignees": hub.assignees(&repo)?})),
-        "create" => hub.create_issue(
-            &repo,
-            &s("title"),
-            &s("body"),
-            &list("labels"),
-            &list("assignees"),
-        ),
+        // With the repository's issue templates. Templates that cannot be
+        // read leave the labels and people readable, and say why beside them
+        "options" => {
+            let labels = hub.labels(&repo)?;
+            let assignees = hub.assignees(&repo)?;
+            let templates = hub.issue_templates(&repo).unwrap_or_else(|e| crate::issueform::Templates {
+                blank: true,
+                problems: vec![crate::issueform::Problem { file: crate::issueform::FOLDER.into(), error: format!("{e:#}") }],
+                ..Default::default()
+            });
+            Ok(json!({"labels": labels, "assignees": assignees, "templates": templates}))
+        }
+        // Made from a template: its description written the way GitHub writes
+        // it, and nothing sent while what the template requires is missing
+        "create" => {
+            let title = s("title");
+            let body = match &template {
+                None => Ok(s("body")),
+                Some(t) => crate::issueform::issue_body(t, &title, &s("body"), &values),
+            };
+            body.and_then(|body| hub.create_issue(&repo, &title, &body, &list("labels"), &list("assignees")))
+        }
         "create_pr" => hub.create_pull(
             &repo,
             &s("title"),
@@ -1764,6 +1869,29 @@ fn refusal(status: u16, said: &str) -> (String, bool) {
             false,
         ),
     }
+}
+
+/// A path in a repository written into an address: each part encoded, the
+/// slashes between them kept
+fn path_in_url(path: &str) -> String {
+    path.split('/').map(encode).collect::<Vec<_>>().join("/")
+}
+
+/// The text of a file as GitHub's contents answer carries it: base64, broken
+/// into lines
+fn file_text(file: &Value) -> Result<String> {
+    use base64::Engine;
+    let packed: String = file
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(packed)
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// A search written into a query string

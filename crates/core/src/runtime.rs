@@ -2635,6 +2635,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // A pull request's draft prompt for a folder on another machine, whose
     // commits and change are read there on a thread: (prompt, shape)
     let (pr_draft_tx, pr_draft_rx) = std::sync::mpsc::channel::<(String, String)>();
+    // The issue template the issue being drafted follows, and what its form
+    // held when the AI was asked: the answer is read against them when it is
+    // back. One at a time, as the draft itself is
+    let mut issue_draft_template: Option<(crate::issueform::Template, Vec<serde_json::Value>)> = None;
     // A pull request's base brought into its folder: the merge on a thread, and
     // a conflict handed to an AI tab back here, where the tabs are
     let (pr_tx, pr_rx) = std::sync::mpsc::channel::<PrCatchUp>();
@@ -9943,6 +9947,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // everything else to git
                 let issue = tag == DRAFT_ISSUE_TAG || tag == DRAFT_PR_TAG;
                 let act = if tag == DRAFT_ISSUE_TAG { "draft" } else if tag == DRAFT_PR_TAG { "pr_draft" } else { tag.as_str() };
+                // An issue that follows a template: the answer read against it,
+                // so only options it has are chosen and what is still missing
+                // is said before anything is made
+                let following = if tag == DRAFT_ISSUE_TAG { issue_draft_template.take() } else { None };
+                let said = match (said, following) {
+                    (Ok(text), Some((template, values))) => crate::issueform::read_answer(&template, &text, &values)
+                        .map(|v| v.to_string())
+                        .map_err(|e| format!("{e:#}")),
+                    (said, _) => said,
+                };
                 let payload = match said {
                     Ok(text) => serde_json::json!({"act": act, "ok": true, "data": text}),
                     Err(why) => serde_json::json!({"act": act, "ok": false, "error": why}),
@@ -10231,10 +10245,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         shell.push_issues(&js);
                         continue;
                     }
-                    let shape = i18n::tp("ai.issue.shape", &[
-                        ("labels", &list("labels").to_string()),
-                        ("assignees", &list("assignees").to_string()),
-                    ]);
+                    // Laid out by the repository's template when one was chosen;
+                    // the answer is read against it when it is back
+                    let template = args
+                        .get("template")
+                        .filter(|t| !t.is_null())
+                        .and_then(|t| serde_json::from_value::<crate::issueform::Template>(t.clone()).ok());
+                    let (labels, assignees) = (list("labels").to_string(), list("assignees").to_string());
+                    let shape = match &template {
+                        Some(t) => crate::issueform::ai_shape(t, &labels, &assignees),
+                        None => i18n::tp("ai.issue.shape", &[("labels", &labels), ("assignees", &assignees)]),
+                    };
+                    let values = args.get("values").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                    issue_draft_template = template.map(|t| (t, values));
                     // The project's prompt, by the name the issue list knows it by
                     let prompt = fill_or_append(
                         &desk.git_of_project(&text("project")).issue_prompt(),
