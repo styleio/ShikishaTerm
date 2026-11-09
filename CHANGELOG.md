@@ -8,7 +8,31 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-09
+
+### Added
+- **The app notices when it stops responding.** When the app's work or its
+  window does not respond for 20 seconds, the app writes that down, and says
+  for how long once it responds again. On Windows it also keeps a record of
+  where it had stopped (a dump, in `logs/dumps`; the newest 8 are kept). A run
+  that ended while it was frozen is told at the next start, in the bar at the
+  top, with where the record is. Nothing is sent from the PC.
+- **Gemini CLI can be spared asking about every new worktree.** Gemini CLI
+  asks whether to trust a folder the first time it starts there, and asks
+  again in every new worktree of a project it already trusts. When a worktree
+  is made in such a project, the app asks once whether it may write the same
+  yes into Gemini CLI's own list of trusted folders for each new worktree from
+  then on. A project Gemini CLI does not trust is never written. The answer is
+  kept under Settings > AI agents > Trusting new worktrees.
+- **Notifications turned off in Windows are pointed out.** Under "Show
+  notifications on this PC", the settings say when Windows will not show them
+  -- notifications off for the whole PC, off for SHIKISHA-TERM, or off by the
+  administrator -- with a button to Windows' notification settings.
+
 ### Changed
+- **The list of existing tabs for an empty pane opens in the folder of the tab
+  beside it**, and its way back climbs to that folder's project and then to
+  the top, instead of starting at the top every time.
 - **The reader (📖) is on the window too, not only on a phone.** A full-screen
   AI CLI keeps no scrollback, so a long answer cannot be selected past the
   rows on the screen. 📖 stands over the right edge of every AI tab whose CLI
@@ -79,6 +103,27 @@ once it reaches its first tagged release.
   `<@name>`s say which tabs a lead may ask. A request sent with a picture
   pasted beside it is read there too, where before it was passed over, and
   the CLI's note that a request was interrupted is not taken for one.
+- **A message that did not go in is sent again.** An AI tab with a long
+  conversation behind it could take the Enter at the end of a pasted message
+  as a new line, and the message sat unsent in its input box. When nothing
+  starts after a message is sent, the screen is still and the message is
+  still in the input box, Enter is pressed again, up to twice. Anything typed
+  meanwhile stops this.
+- **An answer reaches the inbox when the AI that asked stopped waiting.** An
+  AI that asked another tab with a time limit of its own (`timeout 40 shikisha
+  ask_tab ...`) kept the line it asked on open after it had gone, and the
+  answer went down that line and was lost. The answer now goes to the asking
+  tab's inbox. On a desk with no Lua of its own, saving the settings also no
+  longer stops the watch over tab states and waiting asks.
+- **No console window flashes up** when the app checks a worktree with git,
+  checks its version for a bug report, or reads an AI CLI's `--help` for the
+  settings. With Windows Terminal as the default terminal, each came to the
+  front for a moment and took the keyboard.
+- **The memory kept aside for a shortage is kept for the app.** It was given
+  back to Windows the moment an allocation was refused, and whatever was
+  growing fastest -- often another program -- took it first. Refused
+  allocations are now answered out of it, and each shortage it rides out is
+  written down.
 
 ## [0.28.1] - 2026-10-14
 
@@ -5398,7 +5443,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/styleio/ShikishaTerm/compare/v0.26.0...v0.27.0
