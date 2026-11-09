@@ -13,7 +13,7 @@ export const ja: LpCopy = {
   },
   nav: {
     links: [
-      { label: "手引き", href: "/ja/manual/" },
+      { label: "インストール", href: "/ja/install/" },
       { label: "自動化", href: "/ja/automation/" },
       { label: "スマホから", href: "/ja/phone/" },
       { label: "GitHub", href: REPO, external: true },

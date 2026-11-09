@@ -13,7 +13,7 @@ export const en: LpCopy = {
   },
   nav: {
     links: [
-      { label: "Manual", href: "/manual/" },
+      { label: "Install", href: "/install/" },
       { label: "Automation", href: "/automation/" },
       { label: "From your phone", href: "/phone/" },
       { label: "GitHub", href: REPO, external: true },

@@ -296,6 +296,7 @@ ol {
   letter-spacing: 0.02em;
   text-decoration: none;
   margin-right: auto;
+  white-space: nowrap;
 }
 .nav-brand img {
   width: 32px;
@@ -312,6 +313,7 @@ ol {
   font-weight: 700;
   font-size: 15px;
   text-decoration: none;
+  white-space: nowrap;
 }
 .nav-links a:hover {
   background: var(--paper-2);
@@ -360,7 +362,9 @@ ol {
   width: 24px;
   height: 24px;
 }
-@media (max-width: 768px) {
+/* Wider than the page's own phone break: the English bar (logo, four links,
+   the language switch, "Get it on the Store") needs about 960px in one row */
+@media (max-width: 1000px) {
   .nav .container {
     gap: 12px;
   }
