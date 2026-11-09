@@ -94,6 +94,23 @@ Claude Code を使うには、Claude の **Pro、Max、Ultra** のどれかの�
 
 5. PowerShell の画面を右上の × で閉じます。インストールしたものを PowerShell に見つけさせるには、新しく開き直す必要があるからです。
 
+6. PowerShell を新しく開いて、次のように入力し、**Enter** を押します。
+
+   ```powershell
+   claude --version
+   ```
+
+   `2.1.211 (Claude Code)` のように版の番号が出れば、PC は Claude Code を見つけられています。[1-4](#1-4-claude-code-にログインする) へ進んでください。
+
+7. 「'claude' という用語は、コマンドレット、関数、スクリプト ファイル、または操作可能なプログラムの名前として認識されません」と出たときは、Claude Code の置き場所が、環境変数 PATH（PC がコマンドを探しに行くフォルダーの一覧）に入っていません。インストーラーは、PATH を自分では書き換えないからです。次の2行をコピーして PowerShell に貼り付け、**Enter** を押します。この2行は、Claude Code の置き場所（`ユーザーのフォルダー\.local\bin`）をあなたの PATH の最後に足します。何も表示されなければ成功です。
+
+   ```powershell
+   $currentPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+   [Environment]::SetEnvironmentVariable('PATH', "$currentPath;$env:USERPROFILE\.local\bin", 'User')
+   ```
+
+   PATH の書き換えは1回だけで済みます。PowerShell を閉じて新しく開き直し、手順 6 の `claude --version` をもう一度入力して、版の番号が出ることを確かめてください。
+
 </Steps>
 
 Claude Code は、このあと自動で最新の版に更新されます。自分で更新する必要はありません。
@@ -102,7 +119,7 @@ Claude Code は、このあと自動で最新の版に更新されます。自�
 
 <Steps>
 
-1. PowerShell を新しく開きます。
+1. 手順 1-3 で版の番号が出た PowerShell を、そのまま使います。閉じてしまったときは、新しく開きます。
 
 2. 次のように入力して、**Enter** を押します。
 
@@ -268,8 +285,7 @@ SHIKISHA-TERM を初めて起動すると、**はじめの設定** の画面が�
 
 ## うまくいかないとき
 
-- **`claude` と入力すると「認識されません」と出る。** PowerShell を閉じて、新しく開き直してから、もう一度入力してください。それでも出るときは、[Claude Code の公式の手順](https://code.claude.com/docs/en/terminal-guide)の「Troubleshooting」を見てください。
-- **`irm` が「認識されません」と出る。** 開いているのが PowerShell ではなく、コマンドプロンプトです。行の先頭に `PS` が付いていません。一度閉じて、[PowerShell の開き方](#powershell-の開き方)のとおりに開き直してください。
+- **`claude` と入力すると「認識されません」と出る。** [1-3 の手順 7](#1-3-claude-code-を-pc-に入れる) の2行で、Claude Code の置き場所を PATH に足してから、PowerShell を新しく開き直してください。それでも出るときは、[Claude Code の公式のトラブルシューティング](https://code.claude.com/docs/en/troubleshoot-install)の「Verify your PATH」を見てください。- **`irm` が「認識されません」と出る。** 開いているのが PowerShell ではなく、コマンドプロンプトです。行の先頭に `PS` が付いていません。一度閉じて、[PowerShell の開き方](#powershell-の開き方)のとおりに開き直してください。
 - **`gh` や `winget` が「認識されません」と出る。** `gh` のときは、PowerShell を新しく開き直してください。`winget` のときは、Microsoft Store で「アプリ インストーラー」を更新してから、もう一度試してください。
 - **はじめの設定で、Claude Code や gh が見つからない。** SHIKISHA-TERM を開いたまま 1 や 2 の手順をやったときは、右上の **更新** を押してください。
 - **ほかの AI も使いたい。** はじめの設定の **対応AI** の欄にある AI の名前を押すと、その AI のインストール方法のページが開きます。入れたあと **更新** を押すと、優先AI のカードに並びます。

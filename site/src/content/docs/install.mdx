@@ -94,6 +94,23 @@ Check the prices and what each plan includes on Claude's pricing page. Anthropic
 
 5. Close PowerShell with the × at the top right. PowerShell only finds what was just installed once it is opened again.
 
+6. Open a new PowerShell, type this and press **Enter**.
+
+   ```powershell
+   claude --version
+   ```
+
+   If a version number such as `2.1.211 (Claude Code)` appears, the PC can find Claude Code. Go on to [1-4](#1-4-sign-in-to-claude-code).
+
+7. If it says "The term 'claude' is not recognized as the name of a cmdlet, function, script file, or operable program", the folder Claude Code is in is not on your PATH (the list of folders the PC looks in for commands). The installer does not change PATH itself. Copy these two lines, paste them into PowerShell and press **Enter**. They add Claude Code's folder (`your user folder\.local\bin`) to the end of your PATH. Nothing is shown when it works.
+
+   ```powershell
+   $currentPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+   [Environment]::SetEnvironmentVariable('PATH', "$currentPath;$env:USERPROFILE\.local\bin", 'User')
+   ```
+
+   This is needed only once. Close PowerShell, open a new one, type `claude --version` from step 6 again, and check that a version number appears.
+
 </Steps>
 
 Claude Code updates itself from now on. There is nothing to update by hand.
@@ -102,7 +119,7 @@ Claude Code updates itself from now on. There is nothing to update by hand.
 
 <Steps>
 
-1. Open a new PowerShell.
+1. Keep using the PowerShell that showed the version number in 1-3. If you closed it, open a new one.
 
 2. Type this and press **Enter**:
 
@@ -268,7 +285,7 @@ SHIKISHA-TERM now has an AI at work. How to read the screen is in the [Manual](/
 
 ## When something goes wrong
 
-- **Typing `claude` says it is not recognized.** Close PowerShell, open a new one, and type it again. If it still says so, see "Troubleshooting" in [Claude Code's own guide](https://code.claude.com/docs/en/terminal-guide).
+- **Typing `claude` says it is not recognized.** Add Claude Code's folder to your PATH with the two lines in [step 7 of 1-3](#1-3-install-claude-code), then open a new PowerShell. If it still says so, see "Verify your PATH" in [Claude Code's own troubleshooting](https://code.claude.com/docs/en/troubleshoot-install).
 - **`irm` is not recognized.** The window is the Command Prompt, not PowerShell: its lines do not start with `PS`. Close it and open PowerShell as in [Opening PowerShell](#opening-powershell).
 - **`gh` or `winget` is not recognized.** For `gh`, open a new PowerShell. For `winget`, update "App Installer" in the Microsoft Store and try again.
 - **Getting set up does not find Claude Code or gh.** If you did step 1 or 2 with SHIKISHA-TERM already open, press **Refresh** at the top right.
