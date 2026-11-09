@@ -66,6 +66,7 @@ pub mod github;
 pub mod grants;
 pub mod guest;
 pub mod guide;
+pub mod handed;
 pub mod handover;
 pub mod hooks;
 pub mod adr;

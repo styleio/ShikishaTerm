@@ -8365,7 +8365,16 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 .filter_map(|s| session_at(&surfaces, s).and_then(|i| tabs.get(i)))
                 .map(|t| t.uid().to_string())
                 .collect();
+            // Tabs given words on this pass: a second lot for the same tab
+            // (more of the same work, queued behind its first words) waits
+            // for the tab to take the first and be ready again, rather than
+            // being typed in on top of it
+            let mut given_now: Vec<String> = Vec::new();
             for p in std::mem::take(&mut pending_quicks) {
+                if given_now.contains(&p.uid) {
+                    still.push(p);
+                    continue;
+                }
                 let owner = tab_owner(&p.uid, desk_index, &tabs, &desk_tabs);
                 let away_surfaces: Vec<Surface>;
                 let mut away_ball = ball::Ball::default();
@@ -8384,7 +8393,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 });
                 let ready = at
                     .and_then(|s| session_at(surf, s).and_then(|i| list.get(i)))
-                    .is_some_and(|t| quick_ready(t, now_ms));
+                    .is_some_and(|t| quick_ready(t, now_ms) && !pending_send.iter().any(|q| q.serial == t.serial()));
                 // The run of a scheduled prompt this tab was opened for
                 let flight = p.routine.as_ref().and_then(|(id, n)| routine_flights.iter().position(|f| &f.id == id && f.n == *n));
                 // A tab opened for a scheduled prompt that somebody has typed
@@ -8418,6 +8427,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         {
                             crate::orch::glue::note_from_app(t.uid(), &p.text);
                         }
+                        given_now.push(p.uid.clone());
                         let landed = hand_over(list, surf, s, p.text, p.submit, now_ms, &mut pending_send, held);
                         // A desk not on screen: no place on this one is its
                         if owner.is_some_and(|o| o != desk_index) && landed && let Some(q) = pending_send.last_mut() {
@@ -8425,6 +8435,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         if landed && p.submit {
                             record_sent(list, surf, s, &said, p.from.clone());
+                        }
+                        if landed && let Some(n) = &p.handed {
+                            n.record();
                         }
                         if let Some(i) = flight {
                             if landed {
@@ -10001,11 +10014,28 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 (Ok(failed), Some(desk), Some(choice)) => {
                     let label = i18n::t(if review { "git.review.tab" } else { "git.ci.tab" });
                     let ci = ci_ran_on(number, &title, &url, &head, &sha);
-                    let opened = hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || {
-                        // What came from GitHub -- the title, the logs -- goes in last,
-                        // so nothing in it is taken for a word to fill in
+                    let all: Vec<serde_json::Value> = failed.as_array().cloned().unwrap_or_default();
+                    // What has not been handed to an AI before: the review
+                    // comments by their ids, the checks by commit and name.
+                    // A thread nobody marked resolved on GitHub is still open
+                    // there after the AI answered it
+                    let book = crate::handed::path();
+                    let pr_key = crate::handed::key(&project, number, &head);
+                    let queued: Vec<&crate::handed::Note> = pending_quicks.iter().filter_map(|p| p.handed.as_ref()).collect();
+                    let (fresh, _earlier) = if review {
+                        crate::handed::new_threads(&book, &pr_key, &all, &queued)
+                    } else if crate::handed::ci_is_new(&book, &pr_key, &sha, &all, &queued) {
+                        (all.clone(), 0)
+                    } else {
+                        (Vec::new(), all.len())
+                    };
+                    // The words for the AI, from the project's prompt, with
+                    // what is handed in last: nothing from GitHub is taken
+                    // for a word to fill in
+                    let words = |items: &[serde_json::Value], lead: &str| {
                         let git = desk.git_of(&at);
-                        match review {
+                        let shown = if review { crate::handed::for_prompt(items) } else { items.to_vec() };
+                        let body = match review {
                             true => git.review_prompt(),
                             false => git.ci_prompt(),
                         }
@@ -10022,16 +10052,56 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             .replace("{language}", &i18n::t("lang.self"))
                             .replace("{url}", &url)
                             .replace("{title}", &title)
-                            .replace(if review { "{comments}" } else { "{checks}" }, &serde_json::to_string_pretty(&failed).unwrap_or_default())
-                    });
-                    match opened {
-                        Ok(tab) => {
-                            if tab["already"] == false {
-                                watcher.poke();
-                            }
-                            serde_json::json!({"ok": true, "data": tab})
+                            .replace(if review { "{comments}" } else { "{checks}" }, &serde_json::to_string_pretty(&shown).unwrap_or_default());
+                        if lead.is_empty() { body } else { format!("{lead}\n\n{body}") }
+                    };
+                    // Remembered as handed once the words are in their tab
+                    let note = |items: &[serde_json::Value]| match review {
+                        true => crate::handed::Note::Review { key: pr_key.clone(), threads: items.to_vec() },
+                        false => crate::handed::Note::Ci { key: pr_key.clone(), sha: sha.clone(), checks: items.to_vec() },
+                    };
+                    let what = if review { "review" } else { "ci" };
+                    match opened_for(&label, &at, &tabs, &pending_quicks) {
+                        // A tab is at it already, and there is nothing new:
+                        // brought forward, and said
+                        Some((tab_title, name)) if fresh.is_empty() => {
+                            reveal = Some((name, Instant::now() + Duration::from_secs(20)));
+                            serde_json::json!({"ok": true, "data": {"title": tab_title, "state": "nothing", "what": what}})
                         }
-                        Err(why) => serde_json::json!({"ok": false, "error": why}),
+                        // Something new for the tab at it: sent there once it
+                        // is ready for it -- now if it is, after its turn if
+                        // it is busy -- as more of the same work
+                        Some((tab_title, name)) => {
+                            let lead = i18n::t(if review { "ai.review.more" } else { "ai.ci.more" });
+                            match follow_up_in_tab(&label, &at, &name, &tab_title, words(&fresh, &lead), note(&fresh), &tabs, &mut pending_quicks) {
+                                Some(busy) => {
+                                    reveal = Some((name, Instant::now() + Duration::from_secs(20)));
+                                    serde_json::json!({"ok": true, "data": {"title": tab_title, "state": if busy { "queued" } else { "sent" }, "n": fresh.len(), "what": what}})
+                                }
+                                None => serde_json::json!({"ok": false, "error": i18n::tp("msg.quick.open_failed", &[("label", &label)])}),
+                            }
+                        }
+                        // No tab at it: a new one, with what is new -- or,
+                        // when everything open was handed before (the tab
+                        // that had it is closed), all of it again, the AI
+                        // told it may be done already
+                        None => {
+                            let again = fresh.is_empty();
+                            let items = if again { &all } else { &fresh };
+                            let lead = if again { i18n::t(if review { "ai.review.again" } else { "ai.ci.again" }) } else { String::new() };
+                            let text = words(items, &lead);
+                            match hand_to_ai_tab(desk, &at, &label, choice, &tabs, &mut pending_quicks, &mut reveal, || text) {
+                                Ok(tab) => {
+                                    // The words just queued for the new tab
+                                    if let Some(p) = pending_quicks.last_mut().filter(|p| p.label == label) {
+                                        p.handed = Some(note(items));
+                                    }
+                                    watcher.poke();
+                                    serde_json::json!({"ok": true, "data": {"title": tab["title"], "state": if again { "again" } else { "opened" }, "n": items.len(), "what": what}})
+                                }
+                                Err(why) => serde_json::json!({"ok": false, "error": why}),
+                            }
+                        }
                     }
                 }
             };
@@ -20248,6 +20318,7 @@ fn open_and_say_as(
         until: Instant::now() + QUICK_WAIT,
         routine: None,
         yields: false,
+        handed: None,
     });
     Some(title)
 }
@@ -20665,6 +20736,50 @@ fn hand_to_ai_tab(
     }
 }
 
+/// The longest more of the same work waits for the tab already at it to
+/// finish its turn: an AI fixing a review can be at it for an hour and more
+const FOLLOW_UP_WAIT: Duration = Duration::from_secs(3 * 60 * 60);
+
+/// More of the same work for the tab already at it (`name`, as `opened_for`
+/// gives it): typed in and sent once the tab is ready for it -- at once if it
+/// is waiting, after its turn if it is busy. Whether it is busy now, or `None`
+/// when there is no such tab after all
+fn follow_up_in_tab(
+    label: &str,
+    at: &std::path::Path,
+    name: &str,
+    title: &str,
+    text: String,
+    handed: crate::handed::Note,
+    tabs: &[Tab],
+    pending: &mut Vec<PendingQuick>,
+) -> Option<bool> {
+    let tab = tabs.iter().find(|t| t.id.as_deref().unwrap_or(&t.title) == name && !t.exited());
+    let uid = match tab {
+        Some(t) => t.uid().to_string(),
+        // Still being opened: after its first words
+        None => pending.iter().find(|p| p.id == name)?.uid.clone(),
+    };
+    let busy = tab.is_none_or(|t| matches!(t.state, crate::detect::TabState::Busy | crate::detect::TabState::Question));
+    pending.push(PendingQuick {
+        id: name.to_string(),
+        uid,
+        title: title.to_string(),
+        label: label.to_string(),
+        at: at.to_path_buf(),
+        text,
+        submit: true,
+        from: crate::convo::Origin { by: crate::convo::By::Person, device: None, via: "button", sender: None, job: None },
+        until: Instant::now() + FOLLOW_UP_WAIT,
+        routine: None,
+        // The tab has been worked in already: what was typed there before is
+        // no reason to hold these words back
+        yields: false,
+        handed: Some(handed),
+    });
+    Some(busy)
+}
+
 /// What the failed checks of a pull request's commit were, as a thread read
 /// them from GitHub, for the tab that is to fix them
 /// One check's log, as it came back from GitHub
@@ -20764,6 +20879,9 @@ pub struct PendingQuick {
     /// the tab is theirs then, and the words are not put on top of theirs
     /// nor sent with them (a conversation carried on with another AI)
     pub yields: bool,
+    /// What of a pull request these words hand to the AI, remembered once
+    /// they are in ([`crate::handed`])
+    pub handed: Option<crate::handed::Note>,
 }
 
 /// A run of a scheduled prompt on its way: handed to its tab (or waiting for
@@ -22918,6 +23036,7 @@ mod survey_tests {
             until: Instant::now() + QUICK_WAIT,
             routine: None,
             yields: false,
+            handed: None,
         }];
         assert_eq!(
             opened_for("Resolve conflicts", &here, &[], &pending),

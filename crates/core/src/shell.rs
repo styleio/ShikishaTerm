@@ -25174,9 +25174,12 @@ function gitIssues(d) {
     G.quietFetch = true;
     gitAsk("fetch");
   } else if (d.act === "ci_fix" || d.act === "review_fix") {
+    // What became of the press, said either way: a tab only brought to the
+    // front looks like a button that did nothing
     const tab = d.data || {};
-    G.said = (T[tab.already ? "git.catch_up.resolving_already" : "git.catch_up.resolving"] || "").replaceAll("{title}", tab.title || "")
-      + " " + (T["git.prs.push"] || "");
+    const what = d.act === "review_fix" ? "review" : "ci";
+    G.said = (T["git." + what + "." + (tab.state || "opened")] || "").replaceAll("{title}", tab.title || "").replaceAll("{n}", tab.n || 0)
+      + (tab.state === "nothing" ? "" : " " + (T["git.prs.push"] || ""));
   } else if (d.act === "pr_resolve") {
     const r = d.data || {};
     G.said = r.state === "tab"

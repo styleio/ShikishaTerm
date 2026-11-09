@@ -30,6 +30,14 @@ once it reaches its first tagged release.
   returns the whole form to how it was when ✨ was pressed.
 
 ### Fixed
+- **Pressing "Hand the review to the AI" or "Fix CI with the AI" a second time
+  hands over what is new.** Before, a tab already at the work was only brought
+  to the front, and the new review comments or failed checks went nowhere.
+  Now they go to that tab: at once when it is waiting, after its turn when it
+  is busy. What was handed before is not handed again, even when nobody marked
+  the thread resolved on GitHub; when there is nothing new, the git column says
+  so. With the tab closed, what is still open is handed to a new one, which is
+  told some of it may already be done.
 - **Labels past a repository's hundredth are offered on a new issue.**
 
 ## [0.29.0] - 2026-11-09

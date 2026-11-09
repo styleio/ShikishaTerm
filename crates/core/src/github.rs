@@ -1825,7 +1825,7 @@ pub fn review_threads(
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
     let (repo, token) = target_of(source, look)?;
     let hub = Hub::new(token);
-    let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{author{login} body}}}}}}}";
+    let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{id author{login} body}}}}}}}";
     let mut out = Vec::new();
     let mut after = Value::Null;
     // A pull request with more threads than one page holds is read on; ten
@@ -1869,7 +1869,17 @@ fn open_threads(threads: &Value) -> Vec<Value> {
             continue;
         }
         let line = t.get("line").filter(|l| !l.is_null()).or_else(|| t.get("originalLine")).cloned().unwrap_or(Value::Null);
-        let mut row = json!({"path": t.get("path"), "line": line, "said": said});
+        // GitHub's id for each comment, beside what was said: what was handed
+        // to an AI is remembered by them (`crate::handed`), and taken off
+        // before the AI reads it
+        let ids: Vec<Value> = t
+            .pointer("/comments/nodes")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+            .map(|c| c.get("id").cloned().unwrap_or(Value::Null))
+            .collect();
+        let mut row = json!({"path": t.get("path"), "line": line, "said": said, "ids": ids});
         if let Some(from) = t.get("startLine").filter(|s| !s.is_null() && Some(*s) != Some(&line)) {
             row["from"] = from.clone();
         }
