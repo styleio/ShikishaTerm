@@ -295,6 +295,62 @@ const API_VERSION: &str = "2022-11-28";
 /// last byte of the answer
 const REQUEST_LIMIT: Duration = Duration::from_secs(20);
 
+/// The longest one file put on GitHub for an issue is waited for: a video at
+/// GitHub's largest over a line of a few megabits a second
+const UPLOAD_LIMIT: Duration = Duration::from_secs(600);
+
+/// The largest image and video GitHub takes from a paste, as its own command
+/// line tool counts them
+pub const IMAGE_BYTES: usize = 10 << 20;
+pub const VIDEO_BYTES: usize = 100 << 20;
+
+/// What can be put on GitHub for an issue to show, by the kind a browser
+/// names it, and how large each may be: the images and videos GitHub's page
+/// takes from a paste. Handed to the page too, which says so before sending
+pub const ATTACHABLE: &[(&str, usize)] = &[
+    ("image/png", IMAGE_BYTES),
+    ("image/jpeg", IMAGE_BYTES),
+    ("image/gif", IMAGE_BYTES),
+    ("image/webp", IMAGE_BYTES),
+    ("image/svg+xml", IMAGE_BYTES),
+    ("video/mp4", VIDEO_BYTES),
+    ("video/quicktime", VIDEO_BYTES),
+    ("video/webm", VIDEO_BYTES),
+];
+
+/// The largest a file of this kind may be, or `None` for a kind that cannot
+/// be attached
+pub fn attachable(kind: &str) -> Option<usize> {
+    ATTACHABLE.iter().find(|(k, _)| *k == kind).map(|(_, most)| *most)
+}
+
+/// Where the pieces of a file being put on GitHub gather until the last one
+/// is in: a page sends it a piece at a time, so a phone's request stays small
+fn upload_place(id: &str) -> Option<std::path::PathBuf> {
+    let ok = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    ok.then(|| std::env::temp_dir().join("shikisha-issue-files").join(id))
+}
+
+/// Write one piece of a file being put on GitHub, at its place in the file
+fn upload_piece(id: &str, at: u64, data: &str) -> Result<()> {
+    use base64::Engine;
+    use std::io::{Seek, SeekFrom, Write};
+    let place = upload_place(id).ok_or_else(|| anyhow!("bad upload id"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| anyhow!("{e}"))?;
+    if at as usize + bytes.len() > VIDEO_BYTES {
+        bail!(crate::i18n::t("err.github.upload_size"));
+    }
+    if let Some(dir) = place.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&place)?;
+    f.seek(SeekFrom::Start(at))?;
+    f.write_all(&bytes)?;
+    Ok(())
+}
+
 /// The longest a press that makes one thing on GitHub -- an issue, a pull
 /// request -- can take before it is answered either way: the account's
 /// sign-in read at its slowest, then the one request. A request that reached
@@ -879,6 +935,54 @@ impl Hub {
         Ok(out)
     }
 
+    /// Put an image or a video on GitHub for an issue or a comment to show,
+    /// the way pasting one into GitHub's own page does, and answer with its
+    /// address. Sent where GitHub's own command line tool sends the files it
+    /// attaches; an account that cannot write to the repository is refused
+    pub fn upload_asset(&self, repo: &Repo, name: &str, kind: &str, bytes: &[u8]) -> Result<String> {
+        let id = self
+            .call("GET", &format!("repos/{}", repo.slug()), None)?
+            .get("id")
+            .and_then(|i| i.as_u64())
+            .ok_or_else(|| anyhow!(crate::i18n::t("err.github.404")))?;
+        let url = format!(
+            "https://uploads.github.com/user-attachments/assets?name={}&content_type={}&repository_id={id}",
+            encode(name),
+            encode(kind)
+        );
+        // A file of a hundred megabytes over a slow line is not twenty seconds
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(UPLOAD_LIMIT))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let mut resp = agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("Content-Type", "application/octet-stream")
+            .header("User-Agent", concat!("shikisha-term/", env!("CARGO_PKG_VERSION")))
+            .send(bytes)
+            .map_err(|e| anyhow!(crate::i18n::tp("err.github.unreachable", &[("error", &e.to_string())])))?;
+        let status = resp.status().as_u16();
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        match status {
+            200..=299 => v
+                .get("url")
+                .and_then(|u| u.as_str())
+                .filter(|u| !u.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!(crate::i18n::t("err.github.upload_no_url"))),
+            // Refused for a lack of write access, said as a missing thing
+            404 => bail!(crate::i18n::t("err.github.upload_write")),
+            _ => {
+                let said = v.get("message").and_then(|m| m.as_str()).unwrap_or_default();
+                bail!(refusal(status, said).0)
+            }
+        }
+    }
+
     /// The issue templates GitHub offers on the repository's own "New issue"
     /// page: its own, or when it has none, the ones its owner keeps for every
     /// repository in a repository named `.github`. Read from the default
@@ -1257,6 +1361,8 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("detail", true) => "github_pr",
         ("options", _) => "github_labels",
         ("create", _) => "github_issue_create",
+        // A file put on GitHub for the issue or comment being written
+        ("upload_piece", _) | ("upload", _) => "github_issue_create",
         ("create_pr", _) => "github_pr_create",
         // The branches a pull request can go into are read off this PC's copy
         ("pr_bases", _) => "git_branches",
@@ -1414,6 +1520,20 @@ pub fn answer(
             Err(e) => with(base, json!({"ok": false, "path": path, "error": format!("{e:#}")})),
         };
     }
+    // A piece of a file on its way to GitHub, kept on this PC until the rest
+    // is in. Nothing is asked of GitHub until then
+    if act == "upload_piece" {
+        let at = args.get("at").and_then(|a| a.as_u64()).unwrap_or(0);
+        return match upload_piece(&s("id"), at, &s("data")) {
+            Ok(()) => with(base, json!({"ok": true})),
+            Err(e) => {
+                if let Some(p) = upload_place(&s("id")) {
+                    let _ = std::fs::remove_file(p);
+                }
+                with(base, json!({"ok": false, "error": format!("{e:#}")}))
+            }
+        };
+    }
     // An issue from a template with something it requires left empty is not
     // sent, and the screen is told which, so it can point at them. Asked
     // before GitHub, whose own page would refuse it -- and whose API would not
@@ -1431,6 +1551,14 @@ pub fn answer(
             json!({"ok": false, "error": format!("{e:#}"), "missing": crate::issueform::missing(t, &s("title"), &values)}),
         );
     }
+    // The file whose pieces are all in, read and let go of here, so they go
+    // whether or not the account can be signed in as
+    let mut uploaded = (act == "upload").then(|| {
+        let place = upload_place(&s("id")).ok_or_else(|| anyhow!("bad upload id"))?;
+        let read = std::fs::read(&place).map_err(|e| anyhow!("{e}"));
+        let _ = std::fs::remove_file(&place);
+        read
+    });
     let done = hub_for(source).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
@@ -1483,6 +1611,18 @@ pub fn answer(
             &s("base"),
             args.get("draft").and_then(|d| d.as_bool()).unwrap_or(false),
         ),
+        // The file whose pieces are all in: sent on, and the pieces let go of
+        // whatever GitHub says
+        "upload" => {
+            let kind = s("type");
+            let read = uploaded.take().unwrap_or_else(|| Err(anyhow!("bad upload id")));
+            read.and_then(|bytes| match attachable(&kind) {
+                None => bail!(crate::i18n::tp("err.github.upload_kind", &[("name", &s("name"))])),
+                Some(most) if bytes.len() > most => bail!(crate::i18n::t("err.github.upload_size")),
+                Some(_) if bytes.is_empty() => bail!(crate::i18n::t("err.github.upload_size")),
+                Some(_) => hub.upload_asset(&repo, &s("name"), &kind, &bytes).map(|url| json!({"url": url})),
+            })
+        }
         "comment" => hub.comment(&repo, number, &s("body")),
         "issue_state" => hub
             .set_issue_state(

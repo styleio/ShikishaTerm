@@ -76,6 +76,17 @@ export default {
       }) })});
       document.querySelector("#issuespanel .field.bad").scrollIntoView({block: "center"});
       "ok"`,
-    "markdown":`issueTemplateUse(I.create, "idea.md"); issuesSig = ""; drawIssues(); "ok"`,
+    // After the AI wrote: what was there before, kept to be put back
+    "drafted-undo": chosen + `;
+      I.create.asked = JSON.parse(JSON.stringify({title: I.create.title, body: I.create.body, values: I.create.values,
+        labels: I.create.labels, assignees: I.create.assignees}));
+      I.busy = "draft";
+      window.__issues(${JSON.stringify({ act: "draft", ok: true, data: JSON.stringify({
+        file: "bug.yml", title: "[不具合] 絞り込みを変えても合計金額が変わらない", labels: ["bug"], assignee: null,
+        values: [null, [1], "https://example.com/orders", "注文一覧で絞り込みを変えると、合計金額が前の絞り込みのままになる。", "", "Chrome"],
+        missing: [],
+      }) })});
+      "ok"`,
+    "markdown": `issueTemplateUse(I.create, "idea.md"); issuesSig = ""; drawIssues(); "ok"`,
   },
 };

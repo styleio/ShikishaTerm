@@ -481,15 +481,22 @@ fn option_named(options: &[String], said: &str) -> Option<usize> {
 }
 
 /// The AI's answer for a template, read into what the issue form holds.
-/// `values` is what the form held when the AI was asked: a field the AI said
-/// nothing of keeps it, a ticked box stays ticked, and only an option the
-/// template has can be chosen. Answers with the title (with the template's
-/// start), the description (a Markdown template's) or the fields (a form's),
-/// the labels and person it named, and what is still missing
-pub fn read_answer(t: &Template, answer: &str, values: &[Value]) -> Result<Value> {
+/// `title_now` and `values` are what the form held when the AI was asked.
+/// The AI only fills in: a field somebody wrote in keeps what they wrote, and
+/// only one still holding what the template started it with (or nothing) is
+/// written; a ticked box stays ticked; only an option the template has can be
+/// chosen; and a title somebody wrote stays. Answers with the title (with the
+/// template's start), the description (a Markdown template's) or the fields
+/// (a form's), the labels and person it named, and what is still missing
+pub fn read_answer(t: &Template, answer: &str, title_now: &str, values: &[Value]) -> Result<Value> {
     let got: Value = serde_json::from_str(answer).map_err(|e| anyhow!("{e}"))?;
-    let title = got.get("title").and_then(|v| v.as_str()).unwrap_or_default();
-    let title = with_prefix(&t.title, title);
+    let start = t.title.trim();
+    let written = title_now.trim();
+    let title = if written.strip_prefix(start).unwrap_or(written).trim().is_empty() {
+        with_prefix(&t.title, got.get("title").and_then(|v| v.as_str()).unwrap_or_default())
+    } else {
+        written.to_string()
+    };
     let mut out = json!({
         "file": t.file,
         "title": title,
@@ -502,7 +509,8 @@ pub fn read_answer(t: &Template, answer: &str, values: &[Value]) -> Result<Value
         out["missing"] = json!(missing(t, &title, &[]));
         return Ok(out);
     };
-    let mut now: Vec<Value> = start_values(t);
+    let first: Vec<Value> = start_values(t);
+    let mut now = first.clone();
     for (i, v) in values.iter().enumerate().take(now.len()) {
         if !v.is_null() {
             now[i] = v.clone();
@@ -511,6 +519,17 @@ pub fn read_answer(t: &Template, answer: &str, values: &[Value]) -> Result<Value
     let said = got.get("fields").cloned().unwrap_or(Value::Null);
     for (i, f) in fields.iter().enumerate() {
         let Some(answer) = said.get(&f.key).filter(|v| !v.is_null()) else { continue };
+        // Somebody wrote here: theirs stays. Boxes are only ever ticked, so
+        // they are open to it either way
+        let open = now[i] == first[i]
+            || match f.kind.as_str() {
+                "dropdown" => chosen_at(f, &now, i).is_empty(),
+                "checkboxes" => true,
+                _ => text_at(&now, i).is_empty(),
+            };
+        if !open {
+            continue;
+        }
         match f.kind.as_str() {
             "markdown" => {}
             "dropdown" => {
@@ -779,7 +798,7 @@ body:
             "assignee": null
         })
         .to_string();
-        let got = read_answer(&t, &answer, &before).unwrap();
+        let got = read_answer(&t, &answer, "", &before).unwrap();
         assert_eq!(got["title"], "[Bug] It crashes on start");
         let v = got["values"].as_array().unwrap();
         assert_eq!(v[1], "1.4.0");
@@ -792,10 +811,31 @@ body:
     }
 
     #[test]
+    fn what_somebody_wrote_is_never_written_over_by_the_ai() {
+        let t = form();
+        let mut before = start_values(&t);
+        before[1] = json!("9.9");
+        before[2] = json!([1]);
+        // Still the default it started on: the AI may choose
+        let answer = json!({
+            "title": "Something the AI thought of",
+            "fields": {"version": "1.4.0", "os": ["Linux"], "severity": "High", "what": "It crashes."}
+        })
+        .to_string();
+        let got = read_answer(&t, &answer, "[Bug] Crash on start", &before).unwrap();
+        assert_eq!(got["title"], "[Bug] Crash on start");
+        let v = got["values"].as_array().unwrap();
+        assert_eq!(v[1], "9.9");
+        assert_eq!(v[2], json!([1]));
+        assert_eq!(v[3], json!([1]));
+        assert_eq!(v[4], "It crashes.");
+    }
+
+    #[test]
     fn a_field_the_notes_did_not_cover_is_reported_missing() {
         let t = form();
         let answer = json!({"title": "Crash", "fields": {"what": "It crashes."}}).to_string();
-        let got = read_answer(&t, &answer, &start_values(&t)).unwrap();
+        let got = read_answer(&t, &answer, "[Bug] ", &start_values(&t)).unwrap();
         let short: Vec<&str> = got["missing"].as_array().unwrap().iter().map(|m| m["label"].as_str().unwrap()).collect();
         assert!(short.contains(&"Version"));
         assert!(!short.contains(&"What happened?"));
@@ -815,7 +855,7 @@ body:
         assert!(t.assignees.is_empty());
         assert_eq!(t.body, "\n## Problem\n\n## Proposal\n");
         assert!(t.fields.is_none());
-        let got = read_answer(&t, &json!({"title": "Dark mode", "body": "## Problem\n\nToo bright"}).to_string(), &[]).unwrap();
+        let got = read_answer(&t, &json!({"title": "Dark mode", "body": "## Problem\n\nToo bright"}).to_string(), "", &[]).unwrap();
         assert_eq!(got["title"], "[Idea] Dark mode");
         assert_eq!(got["body"], "## Problem\n\nToo bright");
     }

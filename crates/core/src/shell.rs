@@ -2351,6 +2351,10 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .field > .name .req, #issuespanel .tick .req { margin-left:var(--s2); font-size:11px; font-weight:400; color:var(--warn); }
   #issuespanel .ticks { display:flex; flex-direction:column; gap:var(--s2); }
   #issuespanel textarea.code { font-family:var(--mono); font-size:12px; }
+  /* Under a box that takes pictures: the quiet button that chooses one */
+  #issuespanel .attach { display:flex; margin-top:calc(-1 * var(--s1)); }
+  #issuespanel .attach button { height:24px; padding:0 var(--s2); font-size:12px; color:var(--dim); }
+  #issuespanel .attach button:hover { color:var(--text); }
   #issuespanel .field.bad > :is(input, textarea, select) { border-color:var(--warn); }
   #issuespanel .write { padding:0 var(--s3) var(--s3); max-width:760px; }
   #issuespanel .foot { display:flex; align-items:center; gap:var(--s2); justify-content:flex-end; }
@@ -5789,7 +5793,9 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // the page it made opens
           waits:{}, made:"", madeSaid:"",
           // The press that was answered with why it waits (makeFoot)
-          heldPress:"" };
+          heldPress:"",
+          // Comments being written, by project#number
+          comments:{} };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -5961,6 +5967,13 @@ window.__issues = function (d) {
   // The git column's own questions to GitHub: its pull requests, made, merged
   // and settled from there, answered there and nowhere on this tab
   if (typeof d.seq === "string" && d.seq.startsWith("git-")) { gitIssues(d); return; }
+  // A file being put on GitHub, a piece at a time: answered to whoever sent
+  // it, and on a screen that did not, to nobody
+  if (typeof d.seq === "string" && d.seq.startsWith("up-")) {
+    const done = issueUpWait[d.seq];
+    if (done) { delete issueUpWait[d.seq]; done(d); }
+    return;
+  }
   // The settings changed or another desk came to the front: the projects, their
   // accounts and so what could be read are asked for again, and what is on
   // screen stays until the answers replace it
@@ -5974,6 +5987,7 @@ window.__issues = function (d) {
   if (d.act === "projects") {
     I.projects = d.projects || [];
     I.waits = d.waits || {};
+    I.uploads = d.uploads || {};
     ghLabels = d.labels || {};
     ghAccounts = (d.accounts || []).map(a => ({name: a.name, label: a.label || a.name}))
       .concat(pcAcctChoices(d.pc).map(([name, label]) => ({name, label})))
@@ -6064,16 +6078,16 @@ window.__issues = function (d) {
       if (!got || typeof got.title !== "string") { I.said = T["issues.draft.failed"] || ""; I.bad = true; break; }
       // Written for another template than the one chosen since: not taken
       if (got.file !== undefined && got.file !== c.tpl) break;
-      c.title = got.title;
+      // The AI fills in and takes nothing away: a title somebody wrote stays
+      // (with a template, the app has already decided that, and the fields),
+      // and the labels and people chosen stay, with the AI's added
+      if (got.file !== undefined || !c.title.trim()) c.title = got.title;
       if (typeof got.body === "string") c.body = got.body;
       if (Array.isArray(got.values)) c.values = got.values;
-      // What the template put on stays; the AI's choice is added to it
       const known = opts.labels || [];
-      const keep = c.labels.filter(l => c.auto.labels.includes(l));
-      c.labels = keep.concat((Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l) && !keep.includes(l)));
-      const person = (opts.assignees || []).includes(got.assignee) ? [got.assignee] : [];
-      c.assignees = c.assignees.filter(p => c.auto.assignees.includes(p));
-      c.assignees = c.assignees.concat(person.filter(p => !c.assignees.includes(p)));
+      c.labels = c.labels.concat((Array.isArray(got.labels) ? got.labels : []).filter(l => known.includes(l) && !c.labels.includes(l)));
+      if ((opts.assignees || []).includes(got.assignee) && !c.assignees.includes(got.assignee)) c.assignees = c.assignees.concat(got.assignee);
+      c.before = c.asked || null;
       const short = Array.isArray(got.missing) ? got.missing : [];
       c.missing = short.map(m => m.at);
       if (short.length) {
@@ -6116,6 +6130,8 @@ window.__issues = function (d) {
       return;
     }
     case "comment":
+      // Said: what was being written is gone from the box
+      if (d.act === "comment") delete I.comments[d.project + "#" + d.number];
     case "issue_state":
     case "pr_state":
     case "merge":
@@ -6132,7 +6148,11 @@ window.__issues = function (d) {
       break;
     }
   }
-  drawIssues();
+  // What the AI wrote is shown even if the cursor was put back in a box
+  // while it wrote: a draft held back until somebody clicks away looks like
+  // nothing happened
+  if (d.act === "draft" || d.act === "pr_draft") drawIssuesKeepingCursor();
+  else drawIssues();
 };
 
 // The body of the pane showing the Issue tab, when one is and it is not the
@@ -6421,14 +6441,21 @@ function drawIssueDetail(box) {
   lines.forEach(l => talk.append(l.node));
   if (!lines.length) talk.append(el("div", {class:"empty"}, T["issues.activity.none"] || ""));
   box.append(el("h4", {}, T["issues.activity"] || ""), talk);
-  const write = el("textarea", {placeholder: T["issues.comment.ph"] || "", rows: "4"});
+  // What is being written is kept beside the page, so a picture arriving
+  // after a redraw still finds it
+  const thread = d.project + "#" + d.number;
+  const write = el("textarea", {placeholder: T["issues.comment.ph"] || "", rows: "4", "data-k": "comment"});
+  write.value = I.comments[thread] || "";
+  write.oninput = () => { I.comments[thread] = write.value; };
   const acct = proj && proj.account ? proj.account : "";
   box.append(el("h4", {}, T["issues.comment.label"] || ""));
   box.append(el("div", {class:"write field"}, write,
+    issueAttachable(write, d.project, issuePlace("comment", () => I.comments[thread] || "", v => { I.comments[thread] = v; })),
     acct ? el("span", {class:"hint"}, (T["issues.as"] || "").replaceAll("{account}", pcAcctLabel(acct))) : null,
     el("div", {class:"foot"},
       el("button", {onclick:() => {
         if (!write.value.trim()) return;
+        if (issueUploads) { I.said = T["issues.upload.wait"] || ""; I.bad = true; issuesSig = ""; drawIssuesKeepingCursor(); return; }
         issuesAsk("comment", {project: d.project, number: d.number, body: write.value});
       }}, T["issues.comment"] || ""))));
 }
@@ -6482,6 +6509,19 @@ function drawIssueCreate(box) {
     if (c.missing.includes(-2)) wrap.append(warnBox(T["issues.template.need"] || ""));
     form.append(wrap);
   }
+  // What the form held before the AI wrote in it, until put away: all of
+  // it comes back with one press
+  if (c.before) {
+    const was = c.before;
+    form.append(el("div", {class:"kept"},
+      el("div", {class:"keptbar"},
+        el("span", {class:"name"}, T["issues.draft.before"] || ""),
+        el("span", {class:"grow"}),
+        el("button", {class:"quiet", onclick:() => { Object.assign(c, was); c.before = null; c.missing = []; I.said = ""; I.bad = false; redraw(); }},
+          T["issues.draft.undo"] || ""),
+        el("button", {class:"quiet", title: T["issues.draft.dismiss"] || "", onclick:() => { c.before = null; redraw(); }}, "\u2715")),
+      was.body !== c.body && was.body.trim() ? el("div", {class:"kepttext"}, was.body) : null));
+  }
   for (const p of (opts.templates || {}).problems || []) {
     form.append(warnBox((T["issues.template.unreadable"] || "").replaceAll("{file}", p.file).replaceAll("{error}", p.error)));
   }
@@ -6490,15 +6530,18 @@ function drawIssueCreate(box) {
   // title, the description, the labels and the person from it -- or, for a
   // form, its fields, and then the description is notes the issue leaves out
   const body = draftFields(form, c, {
-    act: "draft", settings: "project-git-issue", folder: issueFolder(c.project),
+    act: "draft", settings: "project-git-issue", folder: issueFolder(c.project), project: c.project,
     title: T["issues.draft.ai"],
     name: form_ ? T["issues.template.notes"] : "",
     placeholder: form_ ? T["issues.template.notes.ph"] : T["issues.new.body.ph"],
-    own: text => form_ ? "" : text,
+    // What was there before is kept whole below (`c.before`), not as the
+    // description alone
+    own: () => "",
     ask: () => {
       if (tpls.length && c.tpl === null) { c.missing = [-2]; I.said = T["issues.template.need"] || ""; I.bad = true; redraw(); return false; }
       if (!c.body.trim()) { I.said = T["issues.draft.need"] || ""; I.bad = true; redraw(); return false; }
-      issuesAsk("draft", {project: c.project, text: c.body, labels: opts.labels || [], assignees: opts.assignees || [],
+      c.asked = JSON.parse(JSON.stringify({title: c.title, body: c.body, values: c.values, labels: c.labels, assignees: c.assignees}));
+      issuesAsk("draft", {project: c.project, text: c.body, title: c.title, labels: opts.labels || [], assignees: opts.assignees || [],
         template: t || null, values: form_ ? c.values : []});
       return true;
     },
@@ -6532,6 +6575,7 @@ function drawIssueCreate(box) {
   form.append(makeFoot("create", () => { I.view = "list"; drawIssues(); }, T["issues.new.create"], () => {
     if (tpls.length && c.tpl === null) { c.missing = [-2]; I.said = T["issues.template.need"] || ""; I.bad = true; redraw(); return; }
     if (!c.title.trim()) { c.missing = [-1]; I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
+    if (issueUploads) { I.said = T["issues.upload.wait"] || ""; I.bad = true; redraw(); return; }
     issuesAsk("create", {project: c.project, title: c.title, body: form_ ? "" : c.body, labels: c.labels,
       assignees: c.assignees, template: t || null, values: form_ ? c.values : []});
   }));
@@ -6544,6 +6588,9 @@ function issueBlank(extra) {
   return Object.assign({project:"", title:"", body:"", labels:[], assignees:[], kept:"",
     // The template chosen: its file, "" for none, `null` while not chosen yet
     tpl:null, values:[], missing:[],
+    // The form as it was when ✨ was pressed, and once the AI has written,
+    // what "put back" puts back
+    asked:null, before:null,
     // What choosing the template put on the issue, taken off again when
     // another is chosen
     auto:{labels:[], assignees:[], title:"", body:""}}, extra || {});
@@ -6597,15 +6644,19 @@ function issueField(label, control, hint, bad, required) {
 function issueFormFields(form, c, t) {
   t.fields.forEach((f, i) => {
     if (f.kind === "markdown") { form.append(el("div", {class:"tnote md"}, rdMarkup(f.value || "", {}))); return; }
-    let control;
+    let control, attach = null;
+    const place = () => issuePlace("f" + i, () => c.values[i] || "", v => { c.values[i] = v; });
     if (f.kind === "input" || f.kind === "upload") {
-      control = el("input", {type:"text", placeholder: f.placeholder || ""});
+      control = el("input", {type:"text", placeholder: f.placeholder || "", "data-k": "f" + i});
       control.value = c.values[i] || "";
       control.oninput = () => { c.values[i] = control.value; };
+      if (f.kind === "upload") attach = issueAttachable(control, c.project, place());
     } else if (f.kind === "textarea") {
-      control = el("textarea", {rows:"4", placeholder: f.placeholder || "", class: f.render ? "code" : ""});
+      control = el("textarea", {rows:"4", placeholder: f.placeholder || "", class: f.render ? "code" : "", "data-k": "f" + i});
       control.value = c.values[i] || "";
       control.oninput = () => { c.values[i] = control.value; };
+      // As on GitHub: a box that becomes a code block takes no pictures
+      if (!f.render) attach = issueAttachable(control, c.project, place());
     } else if (f.kind === "dropdown" && !f.multiple) {
       control = el("select");
       control.append(el("option", {value:""}, T["issues.field.choose"] || ""));
@@ -6625,8 +6676,8 @@ function issueFormFields(form, c, t) {
         });
       }));
     }
-    const wrap = issueField(f.label, control, f.kind === "upload" ? (T["issues.field.upload"] || "") : null,
-      c.missing.includes(i), f.required);
+    const wrap = issueField(f.label, control, null, c.missing.includes(i), f.required);
+    if (attach) wrap.insertBefore(attach, control.nextSibling);
     // What the field is for goes between its name and its control, as on GitHub
     if (f.description) wrap.insertBefore(el("span", {class:"hint"}, rdInline(el("span", {}), f.description, {})), control);
     form.append(wrap);
@@ -6639,6 +6690,102 @@ function issueTick(on, words, set) {
   box.checked = on;
   box.onchange = () => set(box.checked);
   return el("label", {class:"tick"}, box, typeof words === "string" ? el("span", {}, words) : words);
+}
+
+// Images and videos put on GitHub for what is being written, the way GitHub's
+// own page takes a paste: while one is on its way its place in the text says
+// so, and then it becomes the picture's link. Sent a piece at a time, so a
+// phone's request stays as small as any other
+const issueUpWait = {};
+let issueUploads = 0;
+const UPLOAD_PIECE = 384 * 1024;
+function issueCall(act, args, ms) {
+  return new Promise(done => {
+    const seq = "up-" + (++issuesSeq);
+    issueUpWait[seq] = done;
+    setTimeout(() => {
+      if (issueUpWait[seq]) { delete issueUpWait[seq]; done({ok: false, error: T["err.github.unreachable"] ? (T["err.github.unreachable"]).replaceAll("{error}", "timeout") : "timeout"}); }
+    }, ms);
+    send({kind:"issues", act, args: Object.assign({kind: I.kind, seq}, args)});
+  });
+}
+
+// One file into the text `place` holds ({get, set}), at `at` in it
+async function issueUpload(file, project, place, at) {
+  const name = file.name || "image.png";
+  const most = (I.uploads || {})[file.type];
+  const say = (key, extra) => {
+    I.said = (T[key] || "").replaceAll("{name}", name).replaceAll("{error}", extra || ""); I.bad = true;
+    issuesSig = ""; drawIssuesKeepingCursor();
+  };
+  if (!most) return say("issues.upload.kind");
+  if (file.size > most) return say("issues.upload.size");
+  const going = "![" + (T["issues.upload.going"] || "{name}").replaceAll("{name}", name) + "]()";
+  const now = place.get();
+  const where = Math.max(0, Math.min(at == null ? now.length : at, now.length));
+  const before = now.slice(0, where), after = now.slice(where);
+  place.set(before + (before && !before.endsWith("\n") ? "\n" : "") + going + (after.startsWith("\n") ? "" : "\n") + after);
+  issueUploads++;
+  let link = "", why = "";
+  try {
+    const buf = await file.arrayBuffer();
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    for (let n = 0; n < buf.byteLength && !why; n += UPLOAD_PIECE) {
+      const d = await issueCall("upload_piece", {project, id, at: n, data: bufToB64(buf.slice(n, n + UPLOAD_PIECE))}, 60000);
+      if (!d.ok) why = d.error || "";
+    }
+    if (!why) {
+      const d = await issueCall("upload", {project, id, name, type: file.type}, 660000);
+      if (d.ok && d.data && d.data.url) link = file.type.startsWith("video/") ? d.data.url : "![" + name.replace(/[\[\]]/g, "") + "](" + d.data.url + ")";
+      else why = d.error || "";
+    }
+  } catch (e) { why = String(e && e.message || e); }
+  issueUploads--;
+  // Where the words "uploading" were, wherever the writing has moved them to
+  const text = place.get();
+  place.set(text.includes(going) ? text.replace(going, link) : text + (link ? "\n" + link : ""));
+  if (!link) say("issues.upload.failed", why);
+}
+
+// Make a box take images and videos: pasted, dropped, or chosen with the
+// button this hands back to put under it. `place` is where its text is kept
+function issueAttachable(box, project, place) {
+  const take = files => {
+    for (const f of files) issueUpload(f, project, place, box.isConnected && document.activeElement === box ? box.selectionStart : null);
+  };
+  box.addEventListener("paste", e => {
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    take(files);
+  });
+  box.addEventListener("dragover", e => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault();
+  });
+  box.addEventListener("drop", e => {
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    take(files);
+  });
+  const pick = el("input", {type:"file", accept: Object.keys(I.uploads || {}).join(","), multiple:"", hidden:""});
+  pick.onchange = () => { take([...pick.files]); pick.value = ""; };
+  return el("div", {class:"attach"}, pick,
+    el("button", {type:"button", class:"quiet", title: T["issues.upload.how"] || "", onclick:() => pick.click()},
+      T["issues.upload.attach"] || ""));
+}
+
+// Where a box's text is kept, for a file arriving after the box was drawn: the
+// form's value, and the box itself when it is still the one on the screen
+function issuePlace(k, get, set) {
+  return {
+    get,
+    set: v => {
+      set(v);
+      const box = document.querySelector('#issuespanel [data-k="' + k + '"]');
+      if (box) { box.value = v; box.dispatchEvent(new Event("input")); }
+    },
+  };
 }
 
 // Names chosen from a list: the chosen ones with a ✕, the rest under them to
@@ -6690,7 +6837,9 @@ function draftFields(form, c, how) {
   // a scrollbar where a button inside the box would sit
   form.append(el("div", {class:"field"},
     el("div", {class:"namerow"}, el("span", {class:"name"}, how.name || T["issues.new.body"] || ""), ai),
-    body));
+    body,
+    // Pictures go where the description goes on GitHub
+    how.project ? issueAttachable(body, how.project, issuePlace("body", () => c.body, v => { c.body = v; })) : null));
   return body;
 }
 
@@ -6735,7 +6884,7 @@ function drawPrCreate(box) {
     el("span", {class:"name"}, label), control, hint ? el("span", {class:"hint"}, hint) : null));
 
   draftFields(form, p, {
-    act: "pr_draft", settings: "project-git-pr", folder: p.folder,
+    act: "pr_draft", settings: "project-git-pr", folder: p.folder, project: p.project,
     title: T["issues.pr.draft.ai"], placeholder: T["issues.pr.body.ph"],
     own: text => prFixes(text, Object.assign({}, p, {close: false})),
     ask: () => {
@@ -6813,6 +6962,7 @@ function drawPrCreate(box) {
   form.append(makeFoot("create_pr", () => { I.view = "list"; redraw(); }, T["issues.pr.create"], () => {
     if (!p.title.trim()) { I.said = T["issues.new.title.need"] || ""; I.bad = true; redraw(); return; }
     if (!p.base) { I.said = T["issues.pr.need.base"] || ""; I.bad = true; redraw(); return; }
+    if (issueUploads) { I.said = T["issues.upload.wait"] || ""; I.bad = true; redraw(); return; }
     issuesAsk("create_pr", {project: p.project, title: p.title, body: p.body, head: p.head, base: p.base, draft: p.draft});
   }));
   box.append(form);

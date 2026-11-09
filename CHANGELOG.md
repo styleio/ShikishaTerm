@@ -21,6 +21,13 @@ once it reaches its first tagged release.
   before anything is made. The issue's description is written the way
   GitHub's page writes it from the same form. A repository without templates
   works as before.
+- **Images and videos can be attached to an issue, a comment and a pull
+  request's description.** Paste or drop one into the box, or press "Attach
+  images or videos" under it (on a phone too). It goes on GitHub the way a
+  paste into GitHub's own page does, and its link goes where the cursor was.
+- **The ✨ only fills in.** A title, a field, labels or people somebody wrote
+  or chose stay as they are, and "Put back what was there before the AI"
+  returns the whole form to how it was when ✨ was pressed.
 
 ### Fixed
 - **Labels past a repository's hundredth are offered on a new issue.**

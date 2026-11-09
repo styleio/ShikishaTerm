@@ -2638,7 +2638,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // The issue template the issue being drafted follows, and what its form
     // held when the AI was asked: the answer is read against them when it is
     // back. One at a time, as the draft itself is
-    let mut issue_draft_template: Option<(crate::issueform::Template, Vec<serde_json::Value>)> = None;
+    let mut issue_draft_template: Option<(crate::issueform::Template, String, Vec<serde_json::Value>)> = None;
     // A pull request's base brought into its folder: the merge on a thread, and
     // a conflict handed to an AI tab back here, where the tabs are
     let (pr_tx, pr_rx) = std::sync::mpsc::channel::<PrCatchUp>();
@@ -9952,7 +9952,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // is said before anything is made
                 let following = if tag == DRAFT_ISSUE_TAG { issue_draft_template.take() } else { None };
                 let said = match (said, following) {
-                    (Ok(text), Some((template, values))) => crate::issueform::read_answer(&template, &text, &values)
+                    (Ok(text), Some((template, title, values))) => crate::issueform::read_answer(&template, &text, &title, &values)
                         .map(|v| v.to_string())
                         .map_err(|e| format!("{e:#}")),
                     (said, _) => said,
@@ -10257,7 +10257,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         None => i18n::tp("ai.issue.shape", &[("labels", &labels), ("assignees", &assignees)]),
                     };
                     let values = args.get("values").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                    issue_draft_template = template.map(|t| (t, values));
+                    issue_draft_template = template.map(|t| (t, text("title"), values));
                     // The project's prompt, by the name the issue list knows it by
                     let prompt = fill_or_append(
                         &desk.git_of_project(&text("project")).issue_prompt(),
@@ -10508,7 +10508,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 // seconds, for the bar under its button to fill toward
                 let make = crate::github::longest_make().as_secs();
                 let waits = serde_json::json!({"create": make, "create_pr": make});
-                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "gh": gh, "labels": labels, "waits": waits}).to_string();
+                // What can be attached to an issue, and how large
+                let uploads: serde_json::Map<String, serde_json::Value> = crate::github::ATTACHABLE
+                    .iter()
+                    .map(|(k, most)| (k.to_string(), serde_json::json!(most)))
+                    .collect();
+                let js = serde_json::json!({"act": "projects", "ok": true, "projects": projects, "accounts": accounts, "pc": pc, "gh": gh, "labels": labels, "waits": waits, "uploads": uploads}).to_string();
                 shell.push_issues(&js);
                 if let Some(r) = remote_ui.as_ref() {
                     r.push_state(format!("{{\"issues\":{js}}}"));

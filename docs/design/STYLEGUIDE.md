@@ -320,6 +320,7 @@ not on its page. A name changed is a name changed here too.
 | Progress bar (`.pbar`) | `progressBar(pct)` (returns `{bar, set}`; give `set` 0-100 to fill it). The words go beside or above it; never the bar alone | board (`shell.rs`) |
 | Names chosen from a list (`.lpick`: labels, assignees) | `chipPick(chosen, all, done)` (the chosen ones as chips with a ✕, the rest under them to press; `done` is handed the new list) | board (`shell.rs`) |
 | A tick box and its words (5.1) | `issueTick(on, words, set)` (`words` is text or a node; `set` is handed the new state) | board (`shell.rs`) |
+| A box that takes images and videos (paste, drop, or the quiet "Attach" button under it) | `issueAttachable(box, project, place)` (`place` is `issuePlace(k, get, set)`; the file goes on GitHub and its link into the text) | board (`shell.rs`) |
 | Toast | `toast(text, warn)` (`toast.rs` puts it into both pages) | both (`toast.rs`) |
 | Chat (the right-hand column) | `drawConvo()`. Rows are `convoSay(r)`, `convoWork(r)` and `convoEvent(r)`; a tool run's contents are `workPieces(inside, work, query)` (shared with the past-conversation reader) | the board (`shell.rs`) |
 | Calling a panel up in the right-hand column | `sideReveal(name)` (its ✕ is `sideDismiss(name)`, choosing on the strip `sideChoose(name)`; `show_panel` from Lua) | board (`shell.rs`) |
