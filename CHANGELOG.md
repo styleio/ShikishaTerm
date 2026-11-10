@@ -35,7 +35,14 @@ once it reaches its first tagged release.
   failed" likewise. When the review comes back -- findings or none -- and when
   CI ends, the desk's default destination is told, and with the window open a
   message appears with the button that hands the findings or the failure to
-  an AI. Turned on or off per project, under "Review and CI notifications".
+  an AI. A failed check is named by its workflow, as GitHub names it
+  ("lint / check"). A reviewing bot does not mark its own threads resolved,
+  so once it puts its 👍 on the newest commit, its threads on code changed
+  since are neither counted nor handed to an AI again. A bot that finds again
+  what its open thread already says posts nothing new and gives no 👍; its
+  round ends when its 👀 goes, or when its summary comment stops changing
+  with no 👀 up, and its open threads are what it found. Turned on or off per
+  project, under "Review and CI notifications".
   The rows of every desk are watched, and GitHub is asked one question per
   repository, more often only while something is awaited, and never once
   little of the account's hourly allowance is left.

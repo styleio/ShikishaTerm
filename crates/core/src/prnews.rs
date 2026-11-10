@@ -17,11 +17,17 @@
 //! - **With findings**: a review (GitHub's own object) by somebody other than
 //!   the author. Its threads are the findings.
 //! - **With nothing found**: a bot that found nothing leaves no review at all.
-//!   It puts a 👍 on the pull request, and edits the summary comment it keeps
-//!   there. Either counts once it is newer than the commit being waited on: a
-//!   👍 from an earlier round stays on the pull request after the next push.
-//!   A comment edited counts only from somebody whose review is being waited
-//!   for, since a deploy preview bot edits its comment on every push too.
+//!   It puts a 👍 on the pull request, which counts once it is newer than the
+//!   commit being waited on: a 👍 from an earlier round stays on the pull
+//!   request after the next push.
+//! - **With nothing new posted**: a bot that finds again what a thread of its
+//!   own still open says posts it no second time, and gives no 👍 either.
+//!   Its 👀 -- up while it reviews -- goes, and the summary comment it keeps
+//!   stops changing. Either ends the round: the 👀 seen and then gone, or the
+//!   comment edited since the commit with no 👀 up for [`QUIET`]. An edit
+//!   alone is no end, since the comment is edited as each part of a review
+//!   starts. Such a round is a review, whose findings are the threads still
+//!   open.
 //!
 //! Who is waited for after a push: the reviewers GitHub was asked for, whoever
 //! put 👀 on the pull request since the commit, and the bots that reviewed it
@@ -140,9 +146,14 @@ pub struct Mem {
     /// The reviews already told about (or there before anything was told)
     #[serde(default)]
     pub seen: Vec<String>,
-    /// The newest 👍 or edited comment already counted as an end
+    /// The newest 👍, or the end of a round with nothing posted, already
+    /// counted as an end
     #[serde(default)]
     pub ended_at: u64,
+    /// The commit a reviewer waited for was seen at with 👀: the round on it
+    /// has begun, and its 👀 going is its end
+    #[serde(default)]
+    pub eyed: String,
     /// How the last review that came back ended, and on which commit
     #[serde(default)]
     pub ended: Ended,
@@ -188,6 +199,11 @@ pub struct Judged {
     pub ci_ended: Option<Ci>,
 }
 
+/// How long a reviewer's summary comment, edited since the commit, stays
+/// unchanged with no 👀 up before its round is taken to have ended with
+/// nothing posted: it is first edited a moment before the 👀 goes up
+pub const QUIET: u64 = 90;
+
 /// What came of this look at a pull request, against what was remembered
 /// (`mem`, `Mem::default()` the first time). `now` is seconds since 1970.
 ///
@@ -222,18 +238,9 @@ pub fn judge(mem: &Mem, s: &Snapshot, now: u64) -> Judged {
     awaited.extend(s.requested.iter().map(|w| login(w)));
     awaited.extend(s.eyes.iter().filter(others).filter(|a| a.at >= since).map(|a| login(&a.who)));
     awaited.retain(|w| *w != author);
-    // A 👍 from a bot or one waited for, or an edit by a bot waited for,
-    // since the commit and newer than the last one counted. A person's 👍 on
-    // the description is liking it, and a person's comment ("I will look
-    // tomorrow") is not a review; a person reviewing leaves a review
-    let edited = s
-        .comments
-        .iter()
-        .filter(|a| a.bot && awaited.contains(&login(&a.who)))
-        .map(|a| a.at)
-        .filter(|at| *at > since)
-        .max()
-        .unwrap_or(0);
+    // A 👍 from a bot or one waited for, since the commit and newer than the
+    // last one counted. A person's 👍 on the description is liking it; a
+    // person reviewing leaves a review
     let thumb = s
         .thumbs
         .iter()
@@ -246,10 +253,24 @@ pub fn judge(mem: &Mem, s: &Snapshot, now: u64) -> Judged {
     let mut out = Judged::default();
     if first {
         m.seen = s.reviews.iter().map(|r| r.id.clone()).collect();
-        m.ended_at = thumb.max(edited);
+        m.ended_at = thumb;
         // Pushed a moment ago, with somebody to wait for and nothing back yet
         let back = s.reviews.iter().any(|r| r.commit == s.head && login(&r.by.who) != author) || thumb > 0;
         m.waiting = s.open && !awaited.is_empty() && !back && now.saturating_sub(s.committed) < WAIT_LIMIT;
+        // Not told, but said: what came back before this program looked is
+        // still what the row shows -- findings left to fix, or a clean round
+        // of the newest commit. A 👍 since the commit is the newer word on it
+        let reviewed = s.reviews.iter().rev().find(|r| login(&r.by.who) != author && !r.reply);
+        if thumb > 0 {
+            m.ended = Ended::Clean;
+            m.ended_on = s.head.clone();
+        } else if let Some(r) = reviewed {
+            m.ended = Ended::Reviewed;
+            m.ended_on = r.commit.clone();
+        }
+        if s.eyes.iter().filter(others).any(|a| awaited.contains(&login(&a.who))) {
+            m.eyed = s.head.clone();
+        }
         if s.ci == Ci::Running {
             m.ci_running = s.head.clone();
         }
@@ -273,24 +294,42 @@ pub fn judge(mem: &Mem, s: &Snapshot, now: u64) -> Judged {
         m.waiting = false;
         m.ended = Ended::Reviewed;
         m.ended_on = s.head.clone();
-        m.ended_at = m.ended_at.max(thumb).max(edited);
+        m.ended_at = m.ended_at.max(thumb);
         out.reviewed = true;
     } else {
-        // An edit only ends a wait: one waited for keeps their comment up to
-        // date on every push, and an edit when nothing is waited on is
-        // somebody tidying up. A 👍 ends a round whether it was waited for or
-        // not -- the first round of a new pull request is a review nobody
-        // here knew was coming
-        let ended = match m.waiting {
-            true => thumb.max(edited),
-            false => thumb,
-        };
-        if ended > m.ended_at && s.open {
-            m.ended_at = ended;
+        // A 👍 ends a round whether it was waited for or not -- the first
+        // round of a new pull request is a review nobody here knew was coming.
+        // A round waited for also ends with nothing posted (see the top)
+        let eyes_up = s.eyes.iter().filter(others).any(|a| awaited.contains(&login(&a.who)));
+        if eyes_up {
+            m.eyed = s.head.clone();
+        }
+        let edited = s
+            .comments
+            .iter()
+            .filter(|a| a.bot && awaited.contains(&login(&a.who)))
+            .map(|a| a.at)
+            .filter(|at| *at > since)
+            .max()
+            .unwrap_or(0);
+        let quiet = m.waiting
+            && !eyes_up
+            && (m.eyed == s.head || (edited > 0 && now.saturating_sub(edited) >= QUIET));
+        if thumb > m.ended_at && s.open {
+            m.ended_at = thumb;
             m.waiting = false;
             m.ended = Ended::Clean;
             m.ended_on = s.head.clone();
             out.clean = true;
+        } else if quiet && s.open {
+            // Over without a 👍: it found something, and posted nothing new
+            // -- a bot does not post again what its thread still open says.
+            // Told as a review, so what is left open is read and counted
+            m.ended_at = now.max(m.ended_at + 1);
+            m.waiting = false;
+            m.ended = Ended::Reviewed;
+            m.ended_on = s.head.clone();
+            out.reviewed = true;
         }
     }
     if m.seen.len() > SEEN_KEPT {
@@ -465,6 +504,28 @@ mod tests {
         assert_eq!(j.mem.reviewers, ["reviewer-bot"]);
         // Its review of this commit is back: nothing is waited for
         assert!(!j.mem.waiting);
+        // and the row says what it found, though nothing was told of it
+        assert_eq!(said(&j.mem, 1), Said::Found);
+        assert_eq!(said(&j.mem, 0), Said::Clean);
+    }
+
+    #[test]
+    fn the_first_look_says_findings_left_from_an_older_commit_and_a_clean_round_since() {
+        let mut s = pr("b", T0 + 1_000);
+        s.reviews = vec![review("r1", "reviewer-bot", "a", T0 + 60)];
+        let j = judge(&Mem::default(), &s, T0 + 5_000);
+        assert!(!j.reviewed && !j.clean);
+        // Left to fix from the review of the commit before; nothing to say of this one
+        assert_eq!(said(&j.mem, 2), Said::Found);
+        assert_eq!(said(&j.mem, 0), Said::None);
+        // The bot's 👍 since the newest commit: the round of it found nothing
+        s.thumbs = vec![bot("reviewer-bot[bot]", T0 + 1_100)];
+        let j = judge(&Mem::default(), &s, T0 + 5_000);
+        assert!(!j.reviewed && !j.clean);
+        assert_eq!(said(&j.mem, 2), Said::Clean);
+        // A 👍 from before the newest commit says nothing of it
+        s.thumbs = vec![bot("reviewer-bot[bot]", T0 + 900)];
+        assert_eq!(said(&judge(&Mem::default(), &s, T0 + 5_000).mem, 0), Said::None);
     }
 
     #[test]
@@ -511,21 +572,56 @@ mod tests {
         assert!(!judge(&j.mem, &s, T0 + 1_400).clean, "told twice");
     }
 
+
+    /// A round whose findings were all too slight to post: no review and no
+    /// 👍, only the 👀 going and the summary comment no longer changing
     #[test]
-    fn an_edited_comment_ends_a_wait_only_from_one_waited_for() {
+    fn a_round_that_posted_nothing_ends_when_its_eyes_go_or_its_comment_rests() {
         let mut s = pr("a", T0);
         s.reviews = vec![review("r1", "reviewer-bot", "a", T0 + 60)];
         let m = judge(&Mem::default(), &s, T0 + 100).mem;
-        let mut s = pr("b", T0 + 1_000);
-        s.reviews = vec![review("r1", "reviewer-bot", "a", T0 + 60)];
-        // A deploy preview bot writes on every push: not a review
-        s.comments = vec![bot("preview-bot", T0 + 1_050)];
-        let j = judge(&m, &s, T0 + 1_060);
+        let pushed = |m: &Mem| {
+            let mut s = pr("b", T0 + 1_000);
+            s.reviews = vec![review("r1", "reviewer-bot", "a", T0 + 60)];
+            (judge(m, &s, T0 + 1_010).mem, s)
+        };
+        // Seen at it, then gone: over
+        let (w, mut s) = pushed(&m);
+        assert!(w.waiting);
+        s.comments = vec![bot("reviewer-bot", T0 + 1_020)];
+        s.eyes = vec![bot("reviewer-bot[bot]", T0 + 1_021)];
+        let j = judge(&w, &s, T0 + 1_060);
+        assert!(j.mem.waiting && !j.clean, "its 👀 is up: still at it");
+        // Its comment edited again while at it is no end either
+        s.comments = vec![bot("reviewer-bot", T0 + 1_100)];
+        let j = judge(&j.mem, &s, T0 + 1_300);
         assert!(j.mem.waiting && !j.clean);
-        // The reviewing bot brings its summary up to date: done, nothing found
-        s.comments.push(bot("reviewer-bot", T0 + 1_200));
-        let j = judge(&j.mem, &s, T0 + 1_210);
-        assert!(j.clean && !j.mem.waiting);
+        s.eyes.clear();
+        let j = judge(&j.mem, &s, T0 + 1_360);
+        assert!(j.reviewed && !j.clean && !j.mem.waiting, "over without a 👍: a review");
+        // Its threads still open are what it found again; none left, nothing found
+        assert_eq!(said(&j.mem, 1), Said::Found);
+        assert_eq!(said(&j.mem, 0), Said::Clean);
+        let again = judge(&j.mem, &s, T0 + 1_420);
+        assert!(!again.reviewed && !again.clean, "told twice");
+        // Its 👀 came and went between two looks: the comment it edited since
+        // the commit, resting, ends it -- not a moment after the edit, when
+        // the 👀 may be about to go up
+        let (w, mut s) = pushed(&m);
+        s.comments = vec![bot("reviewer-bot", T0 + 1_020)];
+        let j = judge(&w, &s, T0 + 1_020 + QUIET - 10);
+        assert!(j.mem.waiting && !j.reviewed);
+        assert!(judge(&j.mem, &s, T0 + 1_020 + QUIET).reviewed);
+        // A bot nobody waits for writing on every push ends nothing
+        let (w, mut s) = pushed(&m);
+        s.comments = vec![bot("preview-bot", T0 + 1_020)];
+        let j = judge(&w, &s, T0 + 1_020 + QUIET * 5);
+        assert!(!j.reviewed && !j.clean);
+        // nor does an edit from the round before
+        let (w, mut s) = pushed(&m);
+        s.comments = vec![bot("reviewer-bot", T0 + 900)];
+        let j = judge(&w, &s, T0 + 1_020 + QUIET * 5);
+        assert!(!j.reviewed && !j.clean);
     }
 
     #[test]

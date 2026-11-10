@@ -509,7 +509,7 @@ fn question(branches: &[&str]) -> (String, Value) {
         "query({params}){{repository(owner:$o,name:$n){{{asks}}}}}\
          fragment P on PullRequest{{number title url state isDraft headRefOid headRepositoryOwner{{login}} author{{login}} \
          commits(last:1){{nodes{{commit{{committedDate statusCheckRollup{{contexts(first:50){{nodes{{__typename \
-         ...on CheckRun{{name status conclusion}} ...on StatusContext{{context state}}}}}}}}}}}}}} \
+         ...on CheckRun{{name status conclusion checkSuite{{workflowRun{{workflow{{name}}}}}}}} ...on StatusContext{{context state}}}}}}}}}}}}}} \
          reviews(last:20){{nodes{{id state body author{{login __typename}} submittedAt commit{{oid}} comments(first:1){{nodes{{replyTo{{id}}}}}}}}}} \
          reviewRequests(first:10){{nodes{{requestedReviewer{{__typename ...on User{{login}} ...on Bot{{login}} ...on Mannequin{{login}} ...on Team{{slug}}}}}}}} \
          reactions(last:20){{nodes{{content createdAt user{{login}}}}}} \
@@ -541,12 +541,22 @@ fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
     for c in commit.pointer("/commit/statusCheckRollup/contexts/nodes").and_then(|n| n.as_array()).into_iter().flatten() {
         let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default();
         let (name, verdict) = match s("__typename") {
-            "StatusContext" => (s("context"), crate::github::status_verdict(s("state"))),
-            _ => (s("name"), crate::github::check_verdict(s("status") == "COMPLETED", s("conclusion"))),
+            "StatusContext" => (s("context").to_string(), crate::github::status_verdict(s("state"))),
+            // Named as GitHub's own page names it, by its workflow first: a
+            // job called "check" or "test" says nothing on its own
+            _ => {
+                let flow = c.pointer("/checkSuite/workflowRun/workflow/name").and_then(|x| x.as_str()).unwrap_or_default();
+                let name = match flow {
+                    "" => s("name").to_string(),
+                    f if f == s("name") => f.to_string(),
+                    f => format!("{f} / {}", s("name")),
+                };
+                (name, crate::github::check_verdict(s("status") == "COMPLETED", s("conclusion")))
+            }
         };
         match verdict {
             "pending" => running = true,
-            "failed" => failed.push(name.to_string()),
+            "failed" => failed.push(name),
             "passed" => passed = true,
             _ => {}
         }
@@ -1152,7 +1162,10 @@ mod tests {
             "state": "OPEN", "isDraft": false, "headRefOid": "f9b0", "author": {"login": "me"},
             "headRepositoryOwner": {"login": "o"},
             "commits": {"nodes": [{"commit": {"committedDate": "2026-11-09T05:11:26Z", "statusCheckRollup": {"contexts": {"nodes": [
-                {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "checkSuite": {"workflowRun": {"workflow": {"name": "ci"}}}},
+                {"__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "FAILURE",
+                    "checkSuite": {"workflowRun": {"workflow": {"name": "build"}}}},
                 {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
                 {"__typename": "StatusContext", "context": "deploy", "state": "SUCCESS"}
             ]}}}}]},
@@ -1168,7 +1181,8 @@ mod tests {
         assert_eq!((pr.number, pr.state), (115, State::Open));
         assert_eq!((s.head.as_str(), s.author.as_str(), s.committed), ("f9b0", "me", prnews::seconds("2026-11-09T05:11:26Z")));
         assert_eq!(s.ci, Ci::Failed);
-        assert_eq!(s.failed, ["test"]);
+        // Named by its workflow first, as GitHub's page does, and once when both are the same
+        assert_eq!(s.failed, ["ci / test", "build"]);
         assert_eq!(s.reviews.len(), 1);
         assert!(s.reviews[0].by.bot);
         assert_eq!(s.reviews[0].commit, "425c");

@@ -14900,8 +14900,13 @@ window.__state = function (json) {
   if (S.flash !== lastFlash) {
     lastFlash = S.flash;
     // A message going away takes its toast with it -- not a pull request's,
-    // which is up for the button on it
-    if (S.flash) toast(S.flash); else if (!PRN.up) hideToast();
+    // which is up for the button on it; and one coming while a pull request's
+    // is up waits its turn rather than covering the button
+    if (S.flash && PRN.up) {
+      if (!PRN.queue.some(q => q.flash === S.flash)) PRN.queue.unshift({flash: S.flash});
+    }
+    else if (S.flash) toast(S.flash);
+    else if (!PRN.up) hideToast();
   }
   prNewsArrived(S.pr_news);
   askAboutLeft();
@@ -25282,7 +25287,8 @@ function prNewsArrived(list) {
 }
 function prNewsNext() {
   if (PRN.up || !PRN.queue.length) return;
-  const ms = prNewsToast(PRN.queue.shift());
+  const n = PRN.queue.shift();
+  const ms = n.flash ? (toast(n.flash), toastMs(n.flash)) : prNewsToast(n);
   PRN.up = setTimeout(() => { PRN.up = 0; prNewsNext(); }, ms + 300);
 }
 // Work a merge would be started on top of: a change to a file git follows.

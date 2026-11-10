@@ -1844,7 +1844,7 @@ impl Hub {
     /// The review threads of a pull request nobody has marked resolved, as
     /// [`review_threads`] gives them
     pub fn open_review_threads(&self, repo: &Repo, number: u64) -> Result<Vec<Value>> {
-        let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{id author{login} body}}}}}}}";
+        let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){commits(last:1){nodes{commit{committedDate}}} reactions(content:THUMBS_UP,last:30){nodes{createdAt user{login}}} reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{id author{login __typename} body}}}}}}}";
         let mut out = Vec::new();
         let mut after = Value::Null;
         // A pull request with more threads than one page holds is read on; ten
@@ -1854,8 +1854,9 @@ impl Hub {
             if let Some(e) = v.pointer("/errors/0/message").and_then(|m| m.as_str()) {
                 bail!("{e}");
             }
-            let threads = v.pointer("/data/repository/pullRequest/reviewThreads").cloned().unwrap_or(Value::Null);
-            out.extend(open_threads(&threads));
+            let pull = v.pointer("/data/repository/pullRequest").cloned().unwrap_or(Value::Null);
+            let threads = pull.get("reviewThreads").cloned().unwrap_or(Value::Null);
+            out.extend(open_threads(&threads, &clean_since_head(&pull)));
             match threads.pointer("/pageInfo/hasNextPage").and_then(|h| h.as_bool()) {
                 Some(true) => after = threads.pointer("/pageInfo/endCursor").cloned().unwrap_or(Value::Null),
                 _ => break,
@@ -1865,14 +1866,45 @@ impl Hub {
     }
 }
 
+/// Who has put a 👍 on the pull request since its newest commit was made:
+/// the way a bot that reviews every push says its round found nothing at all
+/// -- nothing new, and nothing it said before still standing
+fn clean_since_head(pull: &Value) -> Vec<String> {
+    let since = pull
+        .pointer("/commits/nodes/0/commit/committedDate")
+        .and_then(|d| d.as_str())
+        .map(crate::prnews::seconds)
+        .unwrap_or(u64::MAX);
+    let list = |p: &str| pull.pointer(p).and_then(|n| n.as_array()).cloned().unwrap_or_default();
+    list("/reactions/nodes")
+        .into_iter()
+        .filter(|r| r.get("createdAt").and_then(|d| d.as_str()).map(crate::prnews::seconds).is_some_and(|at| at > since))
+        .filter_map(|r| r.pointer("/user/login").and_then(|l| l.as_str()).map(crate::prnews::login))
+        .collect()
+}
+
 /// The threads of one page of an answer that are still open, shaped for the
 /// prompt: `path`, `line` (and `from`, for one about several lines),
 /// `outdated` when the code under it has changed since, and `said` -- who
-/// said what, in order
-fn open_threads(threads: &Value) -> Vec<Value> {
+/// said what, in order.
+///
+/// A bot's thread on code that has changed since, when that bot has put a 👍
+/// on the newest commit (`clean`), is not open work either: such a bot does
+/// not mark its own threads resolved, and left in, a finding already fixed
+/// would be counted and handed to an AI on every round after. Without its 👍
+/// the thread stays, outdated or not -- a bot that finds the same thing again
+/// does not post it a second time, so its old thread is all that says it. A
+/// person's thread stays until the person resolves it
+fn open_threads(threads: &Value, clean: &[String]) -> Vec<Value> {
     let mut out = Vec::new();
     for t in threads.get("nodes").and_then(|n| n.as_array()).into_iter().flatten() {
         if t.get("isResolved").and_then(|r| r.as_bool()) == Some(true) {
+            continue;
+        }
+        let first = t.pointer("/comments/nodes/0/author");
+        let named = first.and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or_default();
+        let by_bot = first.and_then(|a| a.get("__typename")).and_then(|k| k.as_str()) == Some("Bot") || named.ends_with("[bot]");
+        if t.get("isOutdated").and_then(|o| o.as_bool()) == Some(true) && by_bot && clean.contains(&crate::prnews::login(named)) {
             continue;
         }
         let said: Vec<Value> = t
@@ -2427,7 +2459,7 @@ mod tests {
             {"isResolved": false, "isOutdated": true, "path": "b.rs", "line": null, "startLine": null, "originalLine": 7,
              "comments": {"nodes": [{"author": {"login": "rev"}, "body": "off by one"}]}},
         ]});
-        let open = open_threads(&page);
+        let open = open_threads(&page, &[]);
         assert_eq!(open.len(), 2, "a resolved thread was handed on: {open:?}");
         assert_eq!(open[0]["path"], "a.rs");
         assert_eq!((open[0]["from"].clone(), open[0]["line"].clone()), (json!(10), json!(12)), "the lines it is about");
@@ -2435,6 +2467,30 @@ mod tests {
         assert_eq!(open[1]["line"], 7, "a thread whose line moved away says where it was");
         assert_eq!(open[1]["outdated"], true);
         assert!(open[0].get("outdated").is_none());
+    }
+
+    /// A bot that reviews every push does not resolve its own threads: one on
+    /// code changed since is done with once the bot has put a 👍 on the newest
+    /// commit. A person's thread, or one the bot has not said is done, stays
+    #[test]
+    fn a_bots_outdated_thread_is_done_once_its_thumb_is_on_the_newest_commit() {
+        let thread = |outdated: bool, who: &str, kind: &str| {
+            json!({"isResolved": false, "isOutdated": outdated, "path": "a.py", "line": 3, "startLine": null, "originalLine": 3,
+                   "comments": {"nodes": [{"id": "c", "author": {"login": who, "__typename": kind}, "body": "x"}]}})
+        };
+        let page = json!({"nodes": [
+            thread(true, "review-bot", "Bot"), thread(false, "review-bot", "Bot"), thread(true, "alice", "User"),
+        ]});
+        let left = open_threads(&page, &["review-bot".into()]);
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left[0].get("outdated").is_none() && left[1]["said"][0]["who"] == "alice");
+        assert_eq!(open_threads(&page, &[]).len(), 3, "no 👍 from the bot: all of it is still open");
+        let pull = |thumb_at: &str| {
+            json!({"commits": {"nodes": [{"commit": {"committedDate": "2026-11-10T03:14:38Z"}}]},
+                   "reactions": {"nodes": [{"createdAt": thumb_at, "user": {"login": "review-bot[bot]"}}]}})
+        };
+        assert_eq!(clean_since_head(&pull("2026-11-10T03:17:07Z")), ["review-bot"]);
+        assert!(clean_since_head(&pull("2026-11-10T03:00:00Z")).is_empty(), "the 👍 was of the commit before");
     }
 
     #[test]
