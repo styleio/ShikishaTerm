@@ -8,6 +8,8 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-10
+
 ### Added
 - **A new issue can follow the repository's issue template.** When the
   repository has templates in `.github/ISSUE_TEMPLATE` (or its owner keeps
@@ -5499,7 +5501,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/styleio/ShikishaTerm/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/styleio/ShikishaTerm/compare/v0.27.0...v0.28.0
