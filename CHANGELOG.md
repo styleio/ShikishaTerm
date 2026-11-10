@@ -8,6 +8,15 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-10
+
+### Fixed
+- **0.30.0 did not come out for Windows; this is it.** One of the tests
+  the Windows build runs waited for a terminal that never started, because
+  it did not answer the terminal's question of where the cursor is. The
+  test now answers as a tab does. The app itself is the same as 0.30.0,
+  and everything listed under 0.30.0 is in this version.
+
 ## [0.30.0] - 2026-11-10
 
 ### Added
@@ -5501,7 +5510,8 @@ The first public release. It is pre-1.0 and evolving quickly. Highlights:
   forwarding, session logs, legacy encodings, IME input, and the mouse.
 - Interface localization (English base, Japanese complete; more welcome).
 
-[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/styleio/ShikishaTerm/compare/v0.30.1...HEAD
+[0.30.1]: https://github.com/styleio/ShikishaTerm/compare/v0.30.0...v0.30.1
 [0.30.0]: https://github.com/styleio/ShikishaTerm/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/styleio/ShikishaTerm/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/styleio/ShikishaTerm/compare/v0.28.0...v0.28.1
