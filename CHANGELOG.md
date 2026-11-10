@@ -56,8 +56,8 @@ once it reaches its first tagged release.
   to it.
 
 ### Fixed
-- **Pressing "Hand the review to the AI" or "Fix CI with the AI" a second time
-  hands over what is new.** Before, a tab already at the work was only brought
+- **Pressing "Have the AI answer the review" or "Have the AI fix the failed CI"
+  a second time hands over what is new.** Before, a tab already at the work was only brought
   to the front, and the new review comments or failed checks went nowhere.
   Now they go to that tab: at once when it is waiting, after its turn when it
   is busy. What was handed before is not handed again, even when nobody marked
