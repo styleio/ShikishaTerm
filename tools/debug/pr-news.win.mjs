@@ -200,17 +200,20 @@ try {
   // What the screen said of each pull request's review, as it keeps it: in
   // time for a window still loading when the news came. The pushes set up
   // here are noticed, so CI ending is told about as well; that is not this
+  // Each said the way the words for it say it: the part between the number
+  // and the title, which names what came back
+  const middle = (key) => `(T["${key}"] || "").split("{n}").pop().split("{count}").pop().split("{title}")[0]`;
   const toastOf = (n) => board.run(`JSON.stringify(PRN.said.find(t => t.text.includes("#${n}")
-    && [T["pr.told.found"].split("{count}").pop(), T["pr.told.clean"].split("{title}").pop()].some(end => t.text.endsWith(end))) || null)`).then(JSON.parse);
+    && [${middle("pr.told.found")}, ${middle("pr.told.clean")}].some(m => t.text.includes(m))) || null)`).then(JSON.parse);
   await until(async () => (await toastOf(withFindings.number)) && (await toastOf(thumbed.number)), 'both toasts', 120000);
   const a = await toastOf(withFindings.number), b = await toastOf(thumbed.number);
   console.log('   ' + a.text + '\n   ' + b.text);
   check(/\d/.test(a.text) && a.act === await board.run('T["git.review.fix"]'), 'the findings are counted, with the button that hands them to an AI');
-  const clean = await board.run('(T["pr.told.clean"] || "").split("{title}").pop()');
-  check(b.act === null && b.text.endsWith(clean), 'the 👍 is a review that found nothing, without a button');
+  const clean = await board.run(middle("pr.told.clean"));
+  check(b.act === null && b.text.includes(clean), 'the 👍 is a review that found nothing, without a button');
   // The lines the default destination was sent about each one's review
   const reviewSent = (log, n) => lines(log).filter((l) => l.includes(`pr news ${REPO}#${n}:`) && /NOTIFY\[/.test(l)
-    && /レビューが付きました|レビューが終わりました|a review came back|the review of pull request/.test(l));
+    && /レビューが付きました|レビューが終わりました|a review came back|the review came back/.test(l));
   check(reviewSent(hooksLog(), withFindings.number).length === 1, 'the desk\'s default destination was sent the review');
   check(reviewSent(hooksLog(), thumbed.number).length === 1, 'the desk\'s default destination was sent the 👍');
 
