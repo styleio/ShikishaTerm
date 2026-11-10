@@ -407,6 +407,9 @@ mod tests {
             let text = format!("{}\n", serde_json::to_string(&f).unwrap());
             (&*conn).write_all(text.as_bytes()).unwrap();
         };
+        // Who owns each terminal on this line, as its "attached" said: the
+        // owner answers its terminal's questions, under that name
+        let owners = std::cell::RefCell::new(std::collections::HashMap::<u64, u64>::new());
         let hear = |reader: &mut std::io::BufReader<crate::keepipe::Conn>, want: &str| -> Value {
             let until = Instant::now() + Duration::from_secs(20);
             loop {
@@ -417,9 +420,25 @@ mod tests {
                     Ok(_) => {}
                     Err(e) => panic!("nothing came for a minute while waiting for {want}: {e}"),
                 }
-                if let Ok(crate::farlink::Frame::Job { m, .. }) = serde_json::from_str(&l)
-                    && m["did"] == want
+                let Ok(crate::farlink::Frame::Job { m, .. }) = serde_json::from_str::<crate::farlink::Frame>(&l) else { continue };
+                if let (Some(term), Some(owner)) = (m["term"].as_u64(), m["owner"].as_u64())
+                    && m["did"] == "attached"
                 {
+                    owners.borrow_mut().insert(term, owner);
+                }
+                // A pseudo console asks where the cursor is and holds the
+                // program back until it is told -- PowerShell does not start
+                // what it was given until then. Answered as a tab's parser
+                // does, whatever is being waited for here
+                if m["did"] == "out"
+                    && let Some(term) = m["term"].as_u64()
+                    && b64(&m["b"]).windows(4).any(|w| w == b"\x1b[6n")
+                {
+                    let owner = owners.borrow().get(&term).copied().unwrap_or(1);
+                    let reply = base64::engine::general_purpose::STANDARD.encode(b"\x1b[1;1R");
+                    say(reader.get_ref(), json!({ "do": "in", "term": term, "owner": owner, "b": reply }));
+                }
+                if m["did"] == want {
                     return m;
                 }
             }
