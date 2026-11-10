@@ -936,6 +936,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     white-space:nowrap; }
   .tab .place .pr, .tab .place .pt { flex:none; white-space:nowrap; }
   .tab .place .pr { color:var(--brand); }
+  /* What the pull request's review and checks are doing: quiet while waited
+     for, in the colour of what to do once something came back */
+  .tab .place .prnews { flex:none; white-space:nowrap; }
+  .prnews.need { color:var(--warn); }
+  .prnews.bad { color:var(--stop); }
+  .prnews.ok { color:var(--text); }
   /* The name a person gave a server ("Production"), worn wherever something
      on that server is named. A mark the way a project's colour is one: a
      square of the colour they chose and the word beside it. Never the colour
@@ -1258,6 +1264,9 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .tab.folder.wcard .fbr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
     font-family:var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .tab.folder.wcard .fbr .smark { margin-right:var(--s1); vertical-align:middle; min-width:0; }
+  .tab.folder.wcard .fpr { flex-basis:100%; padding-left:14px; font-size:10px; color:var(--dim);
+    display:flex; gap:var(--s2); white-space:nowrap; overflow:hidden; }
+  .tab.folder.wcard .fpr .pr { color:var(--brand); font-family:var(--mono); }
   /* A name written from what the folder's AIs were asked, rather than by a
      person: a shade quieter, until somebody names it themselves */
   .tab.folder .nm.auto { color:var(--dim); }
@@ -2717,6 +2726,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #gitpanel .gpr .st.ok { color:var(--text); }
   #gitpanel .gpr button:not(.link) { flex:0 0 auto; padding:2px var(--s2); font-size:12px; }
   #gitpanel .gpr button.armed { border-color:var(--stop); color:var(--stop); }
+  /* Under a pull request: what its review is doing, and the step it calls for */
+  #gitpanel .grev { display:flex; align-items:center; flex-wrap:wrap; gap:var(--s2);
+    padding-left:var(--s4); font-size:11.5px; color:var(--dim); }
+  #gitpanel .grev.need { color:var(--warn); }
+  #gitpanel .grev.ok { color:var(--text); }
+  #gitpanel .grev span { flex:1 1 12em; min-width:0; overflow-wrap:anywhere; }
+  #gitpanel .grev button { flex:0 0 auto; padding:2px var(--s2); font-size:12px; }
   /* CI: a count for each verdict in its colour, and the checks under it */
   #gitpanel button.gci { display:flex; align-items:center; justify-content:flex-start; align-self:flex-start;
     gap:var(--s2); border:none; background:none; padding:0;
@@ -5964,6 +5980,9 @@ window.__issues = function (d) {
   if (!d || !d.act) return;
   // The worktree dialog's own questions, under numbers of its own
   if (typeof d.seq === "string" && d.seq.startsWith("wt-")) { ghAnswer(d); return; }
+  // The step a pull request's news calls for, pressed on its toast: answered the way the git column says it,
+  // in a toast of its own, since the column may not be open
+  if (typeof d.seq === "string" && d.seq.startsWith("news-")) { toast(gitFixSaid(d), !d.ok); return; }
   // The git column's own questions to GitHub: its pull requests, made, merged
   // and settled from there, answered there and nowhere on this tab
   if (typeof d.seq === "string" && d.seq.startsWith("git-")) { gitIssues(d); return; }
@@ -8726,7 +8745,7 @@ function folderRow(g, mine, card) {
   // the + is the heading's: one worktree at a time is cut from the project
   row.append(...[drifted(g), card ? null : worktreePlus(g)].filter(Boolean));
   if (card) {
-    row.append(...[folderSummary(g), folderWhere(g, mine)].filter(Boolean));
+    row.append(...[folderSummary(g), folderWhere(g, mine), folderPr(mine)].filter(Boolean));
   }
   // Everything else a folder can do is a shortcut, not a door: its settings
   // are on the settings page, a repair is the ⚠ it is already wearing, and a
@@ -8801,6 +8820,19 @@ function folderWhere(g, tabs) {
     ...[serverMark(g.mark), (g.host ? g.host + ":" : "") + (g.branch || leafOf(g.folder))].filter(Boolean),
     ...ports.map(port => el("span", {class:"pt go", title:T["tui.ports.chip"] || "",
       onclick:e => { e.stopPropagation(); showPorts(g); }}, ":" + port)));
+}
+
+// A card's line for the pull request its branch is on, when there is one: the
+// number and its state, then what its review and CI are doing. A line of its
+// own, since the branch above it is cut short when it is long and this is the
+// part that changes while nobody is looking
+function folderPr(tabs) {
+  const t = (tabs || []).find(t => t.place && t.place.pr);
+  if (!t) return null;
+  const words = prNewsWords(t.place.pr_news);
+  return el("span", {class:"fpr", title: words.map(w => w.long).join("\n")},
+    el("span", {class:"pr"}, t.place.pr),
+    ...words.map(w => el("span", {class:"prnews " + w.tone}, w.short)));
 }
 
 // Whether this folder is the one whose tab is in front, so its row can say so
@@ -9032,6 +9064,9 @@ function tabRow(t, g, deep, head) {
       line.append(el("span", {class:"br"}, short));
     }
     if (p.pr) line.append(el("span", {class:"pr"}, p.pr));
+    // What its review and checks are doing, while there is something to say
+    const news = prNewsWords(p.pr_news);
+    for (const w of news) line.append(el("span", {class:"prnews " + w.tone, title: w.long}, w.short));
     // A port is a way into the ports panel. The press goes on to the row as
     // well, which brings this tab -- and so its folder -- to the front: the
     // panel stands on the folder in front
@@ -9039,7 +9074,7 @@ function tabRow(t, g, deep, head) {
       line.append(el("span", {class:"pt go", title:T["tui.ports.chip"] || "", onclick:() => sideReveal("ports")}, ":" + port));
     }
     // The whole of it on hover, since the row cannot hold it all
-    line.title = [p.branch, p.pr].filter(Boolean)
+    line.title = [p.branch, p.pr].concat(news.map(w => w.long)).filter(Boolean)
       .concat((p.ports || []).map(x => ":" + x)).join("  ");
     row.append(line);
   }
@@ -14864,8 +14899,11 @@ window.__state = function (json) {
   // can't resurrect a message that has already faded or been dismissed.
   if (S.flash !== lastFlash) {
     lastFlash = S.flash;
-    if (S.flash) toast(S.flash); else hideToast();
+    // A message going away takes its toast with it -- not a pull request's,
+    // which is up for the button on it
+    if (S.flash) toast(S.flash); else if (!PRN.up) hideToast();
   }
+  prNewsArrived(S.pr_news);
   askAboutLeft();
   askAboutTrust();
   askAboutUnlinked();
@@ -24940,6 +24978,24 @@ function gitAskPrs() {
   if (!g || !g.project || !b.name || !gitOnGithub()) { G.prs = null; G.checks = null; G.prsWhy = ""; return; }
   gitIssuesAsk("branch_prs", {project: g.project, head: b.name, sha: b.upstream_sha || ""});
 }
+// What an open pull request's review and checks are doing, in words: short
+// for a row, whole for its hover and the git column, and the colour of what
+// to do about it. The review first, since it is what a person acts on;
+// nothing when there is nothing to say
+function prNewsWords(n) {
+  if (!n) return [];
+  const say = (k, tone, long) => {
+    const fill = s => (s || "").replaceAll("{n}", n.found || 0);
+    return {short: fill(T[k]), tone, long: fill(T[long || k])};
+  };
+  const out = [];
+  if (n.review === "waiting") out.push(say("pr.row.waiting", "", "git.prs.review.waiting"));
+  else if (n.review === "found") out.push(say("pr.row.found", "need", "git.prs.review.found"));
+  else if (n.review === "clean") out.push(say("pr.row.clean", "ok", "git.prs.review.clean"));
+  if (n.ci === "running") out.push(say("pr.row.ci_running", ""));
+  else if (n.ci === "failed") out.push(say("pr.row.ci_failed", "bad"));
+  return out;
+}
 function gitPrsOpen() {
   return (Array.isArray(G.prs) ? G.prs : []).filter(p => p.state === "open");
 }
@@ -25174,12 +25230,7 @@ function gitIssues(d) {
     G.quietFetch = true;
     gitAsk("fetch");
   } else if (d.act === "ci_fix" || d.act === "review_fix") {
-    // What became of the press, said either way: a tab only brought to the
-    // front looks like a button that did nothing
-    const tab = d.data || {};
-    const what = d.act === "review_fix" ? "review" : "ci";
-    G.said = (T["git." + what + "." + (tab.state || "opened")] || "").replaceAll("{title}", tab.title || "").replaceAll("{n}", tab.n || 0)
-      + (tab.state === "nothing" ? "" : " " + (T["git.prs.push"] || ""));
+    G.said = gitFixSaid(d);
   } else if (d.act === "pr_resolve") {
     const r = d.data || {};
     G.said = r.state === "tab"
@@ -25192,6 +25243,47 @@ function gitIssues(d) {
   }
   gitAskPrs();
   drawGit();
+}
+// What became of handing a review or a failed CI run to an AI, said either
+// way: a tab only brought to the front looks like a button that did nothing
+function gitFixSaid(d) {
+  if (!d.ok) return d.error || "";
+  const tab = d.data || {};
+  const what = d.act === "review_fix" ? "review" : "ci";
+  return (T["git." + what + "." + (tab.state || "opened")] || "").replaceAll("{title}", tab.title || "").replaceAll("{n}", tab.n || 0)
+    + (tab.state === "nothing" ? "" : " " + (T["git.prs.push"] || ""));
+}
+// A review or a CI run that came back, said where the person is. Findings, or
+// checks that failed, come with the button that hands them to an AI -- the
+// same press the git column's menu makes. Answers how long it stays up
+function prNewsToast(n) {
+  const hand = act => () => send({kind:"issues", act, args:{kind:"pr", seq:"news-" + act, project:n.project,
+    number:n.number, head:n.head, sha:n.sha, title:n.title || "", url:n.url || ""}});
+  const step = !n.project ? null
+    : n.what === "found" ? {label: T["git.review.fix"] || "", run: hand("review_fix")}
+    : n.what === "ci_failed" ? {label: T["git.ci.fix"] || "", run: hand("ci_fix")}
+    : null;
+  const warn = n.what === "ci_failed";
+  toast(n.text || "", warn, step);
+  PRN.said.push({id: n.id, text: n.text || "", act: step ? step.label : null});
+  return toastMs(n.text || "", warn, !!step);
+}
+// What came back on pull requests, as the app's state carries it for a
+// minute: each said once, and one after another, so two that came back
+// together are both read
+const PRN = {seen: new Set(), queue: [], up: 0, said: []};
+function prNewsArrived(list) {
+  for (const n of list || []) {
+    if (n.id == null || PRN.seen.has(n.id)) continue;
+    PRN.seen.add(n.id);
+    PRN.queue.push(n);
+  }
+  prNewsNext();
+}
+function prNewsNext() {
+  if (PRN.up || !PRN.queue.length) return;
+  const ms = prNewsToast(PRN.queue.shift());
+  PRN.up = setTimeout(() => { PRN.up = 0; prNewsNext(); }, ms + 300);
 }
 // Work a merge would be started on top of: a change to a file git follows.
 // Files git does not follow are not counted
@@ -25457,7 +25549,11 @@ function drawGitPrs(u, next) {
   const b = G.branch || {};
   const prs = Array.isArray(G.prs) ? G.prs : [];
   const another = prs.length > 0 && !gitPrsDone() && !gitPrFormShown() && !!b.name && !b.protected && !!b.upstream && !b.ahead;
-  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another, G.checks, G.ciOpen, G.ciLog]);
+  // What the rows know of the open pull request's review, from the same
+  // asking that tells when it comes back
+  const t = gitTab();
+  const news = (t && t.place && t.place.pr_news) || null;
+  const sig = JSON.stringify([prs, G.prsWhy, G.armed, G.prsWatch, !!G.busy, next.pr || 0, another, G.checks, G.ciOpen, G.ciLog, news]);
   if (u.prs.dataset.sig === sig) return;
   u.prs.dataset.sig = sig;
   u.prs.textContent = "";
@@ -25480,6 +25576,16 @@ function drawGitPrs(u, next) {
       row.append(go);
     }
     u.prs.append(row);
+    const review = news && news.number === p.number && p.state === "open" ? prNewsWords({review: news.review, found: news.found}) : [];
+    for (const w of review) {
+      const line = el("div", {class:"grev " + w.tone}, el("span", {}, w.long));
+      if (news.review === "found") {
+        const fix = el("button", {type:"button", onclick: gitReviewFix}, T["git.review.fix"] || "");
+        fix.disabled = !!G.busy;
+        line.append(fix);
+      }
+      u.prs.append(line);
+    }
   }
   // CI, once for the branch: the checks run on the commit the server has,
   // whichever base it was sent to and whether a pull request was made from it
@@ -30634,7 +30740,7 @@ mod tests {
         assert!(PAGE.contains(r#"title:folderAbout(g), onclick:() => send({kind:"folderview""#), "a card's tooltip is not its summary");
         assert!(PAGE.contains(r#"return g.summary ? name + "\n" + g.summary : name;"#));
         assert!(PAGE.contains("@media (hover: none) {\n    .tab.folder.wcard .fsum { display:block;"), "a phone has no summary on the card");
-        assert!(PAGE.contains(r#"row.append(...[folderSummary(g), folderWhere(g, mine)].filter(Boolean));"#));
+        assert!(PAGE.contains(r#"row.append(...[folderSummary(g), folderWhere(g, mine), folderPr(mine)].filter(Boolean));"#));
         assert_eq!(PAGE.matches("holdOpens(row, e => folderMenu(e, g));").count(), 2, "a held press opens no menu on a folder");
         assert!(PAGE.contains(r#"g.summary ? el("div", {class:"fabout"},"#), "the menu does not hold the whole summary");
         assert!(PAGE.contains(r#"return "nm" + (g.auto ? " auto" : "");"#) && PAGE.contains(".tab.folder .nm.auto { color:var(--dim); }"));

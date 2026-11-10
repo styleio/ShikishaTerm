@@ -424,6 +424,10 @@ impl Hub {
             ))
         })?;
         let status = resp.status().as_u16();
+        let headers = resp.headers().clone();
+        note_allowance(&self.token, status, &|k| {
+            headers.get(k).and_then(|v| v.to_str().ok()).map(str::to_string)
+        });
         let text = resp.body_mut().read_to_string().unwrap_or_default();
         let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if (200..300).contains(&status) {
@@ -726,11 +730,7 @@ impl Hub {
             .into_iter()
             .flatten()
         {
-            let verdict = match s.get("state").and_then(|x| x.as_str()).unwrap_or_default() {
-                "success" => "passed",
-                "pending" => "pending",
-                _ => "failed",
-            };
+            let verdict = status_verdict(s.get("state").and_then(|x| x.as_str()).unwrap_or_default());
             match verdict {
                 "failed" => failed += 1,
                 "pending" => pending += 1,
@@ -835,7 +835,7 @@ impl Hub {
             &format!("repos/{}/pulls", repo.slug()),
             Some(json!({"title": title, "body": body, "head": head.trim(), "base": base.trim(), "draft": draft})),
         )?;
-        Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
+        Ok(json!({"number": v.get("number"), "url": v.get("html_url"), "head": head.trim()}))
     }
 
     /// Say something on an issue or a pull request
@@ -1824,28 +1824,45 @@ pub fn review_threads(
         .find(|s| s.name == project)
         .ok_or_else(|| anyhow!(crate::i18n::t("err.github.no_project")))?;
     let (repo, token) = target_of(source, look)?;
-    let hub = Hub::new(token);
-    let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{id author{login} body}}}}}}}";
-    let mut out = Vec::new();
-    let mut after = Value::Null;
-    // A pull request with more threads than one page holds is read on; ten
-    // pages is a thousand threads, more than anybody hands to one AI tab
-    for _ in 0..10 {
-        let v = hub.call("POST", "graphql", Some(json!({
-            "query": query,
-            "variables": {"owner": repo.owner, "name": repo.name, "number": number, "after": after},
-        })))?;
-        if let Some(e) = v.pointer("/errors/0/message").and_then(|m| m.as_str()) {
+    Ok(Value::Array(Hub::new(token).open_review_threads(&repo, number)?))
+}
+
+impl Hub {
+    /// One question to GitHub's GraphQL. Its answer whole -- `data`, and
+    /// `errors` beside it when part of the question could not be answered --
+    /// or the reason, when none of it could
+    pub fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
+        let v = self.call("POST", "graphql", Some(json!({"query": query, "variables": variables})))?;
+        if v.get("data").is_none_or(|d| d.is_null())
+            && let Some(e) = v.pointer("/errors/0/message").and_then(|m| m.as_str())
+        {
             bail!("{e}");
         }
-        let threads = v.pointer("/data/repository/pullRequest/reviewThreads").cloned().unwrap_or(Value::Null);
-        out.extend(open_threads(&threads));
-        match threads.pointer("/pageInfo/hasNextPage").and_then(|h| h.as_bool()) {
-            Some(true) => after = threads.pointer("/pageInfo/endCursor").cloned().unwrap_or(Value::Null),
-            _ => break,
-        }
+        Ok(v)
     }
-    Ok(Value::Array(out))
+
+    /// The review threads of a pull request nobody has marked resolved, as
+    /// [`review_threads`] gives them
+    pub fn open_review_threads(&self, repo: &Repo, number: u64) -> Result<Vec<Value>> {
+        let query = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}nodes{isResolved isOutdated path line startLine originalLine comments(first:50){nodes{id author{login} body}}}}}}}";
+        let mut out = Vec::new();
+        let mut after = Value::Null;
+        // A pull request with more threads than one page holds is read on; ten
+        // pages is a thousand threads, more than anybody hands to one AI tab
+        for _ in 0..10 {
+            let v = self.graphql(query, json!({"owner": repo.owner, "name": repo.name, "number": number, "after": after}))?;
+            if let Some(e) = v.pointer("/errors/0/message").and_then(|m| m.as_str()) {
+                bail!("{e}");
+            }
+            let threads = v.pointer("/data/repository/pullRequest/reviewThreads").cloned().unwrap_or(Value::Null);
+            out.extend(open_threads(&threads));
+            match threads.pointer("/pageInfo/hasNextPage").and_then(|h| h.as_bool()) {
+                Some(true) => after = threads.pointer("/pageInfo/endCursor").cloned().unwrap_or(Value::Null),
+                _ => break,
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// The threads of one page of an answer that are still open, shaped for the
@@ -1984,8 +2001,11 @@ fn without_colour(line: &str) -> String {
     out
 }
 
-fn check_verdict(done: bool, conclusion: &str) -> &'static str {
-    match (done, conclusion) {
+/// What one check run says, from whether it has finished and how. GitHub's
+/// REST answer spells the conclusion in small letters and its GraphQL answer
+/// in capitals; both are read here
+pub(crate) fn check_verdict(done: bool, conclusion: &str) -> &'static str {
+    match (done, conclusion.to_ascii_lowercase().as_str()) {
         (false, _) => "pending",
         (
             true,
@@ -1993,6 +2013,85 @@ fn check_verdict(done: bool, conclusion: &str) -> &'static str {
         ) => "failed",
         (true, "success" | "skipped") => "passed",
         _ => "neutral",
+    }
+}
+
+/// What one commit status (the older kind of check, set by a service rather
+/// than run by an app) says, from its state, in either spelling
+pub(crate) fn status_verdict(state: &str) -> &'static str {
+    match state.to_ascii_lowercase().as_str() {
+        "success" => "passed",
+        "pending" | "expected" => "pending",
+        _ => "failed",
+    }
+}
+
+/// How much of an account's GitHub allowance is left, by the kind of request
+/// (`core` for REST, `graphql`), as the answers to its own requests said.
+///
+/// GitHub gives each account so many requests an hour of each kind, shared by
+/// everything that signs in as it -- this program, `gh`, the AI tabs. Kept so
+/// that what this program asks of its own accord, without anybody pressing
+/// anything, stops well before the allowance runs out, and waits out a
+/// refusal rather than asking into it
+struct Allowance {
+    remaining: u64,
+    /// When GitHub fills it again, in seconds since 1970
+    reset: u64,
+    /// Asked to wait until then, in seconds since 1970 (a refusal, or GitHub
+    /// saying to slow down)
+    hold: u64,
+}
+
+static ALLOWANCE: std::sync::Mutex<Option<std::collections::HashMap<(u64, String), Allowance>>> =
+    std::sync::Mutex::new(None);
+
+/// What a token is known by here: never the token itself
+fn token_mark(token: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut h);
+    h.finish()
+}
+
+/// What is kept back for what people press: the requests this program makes
+/// on its own stop while fewer than this are left of the hour's
+const KEPT_FOR_PEOPLE: u64 = 500;
+
+/// Write down what one answer said of the allowance
+fn note_allowance(token: &str, status: u16, header: &dyn Fn(&str) -> Option<String>) {
+    let num = |k: &str| header(k).and_then(|v| v.trim().parse::<u64>().ok());
+    let Some(kind) = header("x-ratelimit-resource") else { return };
+    let now = crate::prnews::now();
+    let mut held = ALLOWANCE.lock().unwrap_or_else(|p| p.into_inner());
+    let map = held.get_or_insert_with(Default::default);
+    let a = map.entry((token_mark(token), kind)).or_insert(Allowance { remaining: u64::MAX, reset: 0, hold: 0 });
+    if let Some(r) = num("x-ratelimit-remaining") {
+        a.remaining = r;
+    }
+    if let Some(r) = num("x-ratelimit-reset") {
+        a.reset = r;
+    }
+    // Refused for asking too much, or too fast: GitHub says how long to wait,
+    // or failing that, until the allowance is filled again -- and at least a
+    // minute, the shortest wait its own advice gives
+    if status == 403 || status == 429 {
+        let wait = num("retry-after").map(|s| now + s).unwrap_or(0);
+        let refill = if a.remaining == 0 { a.reset } else { 0 };
+        a.hold = wait.max(refill).max(now + 60);
+    }
+}
+
+/// Whether this program may ask GitHub something of its own accord as this
+/// account: not while it was told to wait, and not when what is left of the
+/// hour is what people pressing buttons will need
+pub fn spare(token: &str, kind: &str) -> bool {
+    let now = crate::prnews::now();
+    let held = ALLOWANCE.lock().unwrap_or_else(|p| p.into_inner());
+    match held.as_ref().and_then(|m| m.get(&(token_mark(token), kind.to_string()))) {
+        None => true,
+        Some(a) if a.hold > now => false,
+        Some(a) => a.remaining >= KEPT_FOR_PEOPLE || a.reset <= now,
     }
 }
 

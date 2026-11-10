@@ -308,7 +308,8 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | 一覧から名前を選ぶ（`.lpick`。ラベル・担当者） | `chipPick(chosen, all, done)`（選んだものは ✕ 付きの札、残りはその下に押せる札。`done` に新しい一覧を渡す） | 盤面（`shell.rs`） |
 | チェックボックスと文字（§5.1） | `issueTick(on, words, set)`（`words` は文字か要素。`set` に新しい状態を渡す） | 盤面（`shell.rs`） |
 | 画像・動画を添付できる欄（貼り付け・ドロップ・下の静かな［画像・動画を添付］） | `issueAttachable(box, project, place)`（`place` は `issuePlace(k, get, set)`。ファイルを GitHub に送り、文にそのリンクを入れる） | 盤面（`shell.rs`） |
-| トースト | `toast(text, warn)`（`toast.rs` が両方のページに入れる） | 両方（`toast.rs`） |
+| トースト | `toast(text, warn, act)`（`toast.rs` が両方のページに入れる）。`act` はその知らせが求める次の操作 `{label, run}` で、文の横に専用のボタンが付き、トーストは 15 秒出たままになる。知らせから次の操作が明らかなとき（レビューが付いた → AI に渡す）だけ使う | 両方（`toast.rs`） |
+| プルリクエストのレビューと CI の状態を言葉にする | `prNewsWords(news)`（行には短く、行の上のポインターと git 欄には全文で。色は、指摘ありが `need`、CI 失敗が `bad`、指摘なしが `ok`） | 盤面（`shell.rs`） |
 | 会話（右の列） | `drawConvo()`。行は `convoSay(r)`・`convoWork(r)`・`convoEvent(r)`、ツール実行の中身は `workPieces(inside, work, query)`（過去の会話を読むと共通） | 盤面（`shell.rs`） |
 | 右の列にパネルを呼び出す | `sideReveal(name)`（✕ は `sideDismiss(name)`、帯で選ぶのは `sideChoose(name)`。Lua からは `show_panel`） | 盤面（`shell.rs`） |
 | 作業フォルダ管理 | `openFolderManager()`・`drawFolderManager()`（共通の質問の枠で一覧を更新する） | 盤面（`shell.rs`） |

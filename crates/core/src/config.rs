@@ -4294,9 +4294,26 @@ pub struct GitSpec {
     /// repository is entitled to want
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protect: Option<Vec<String>>,
+    /// Whether the desk's default destination is told when a review of one
+    /// of this project's pull requests comes back, findings or none. Absent
+    /// is yes, which the settings show ticked
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_review: Option<bool>,
+    /// The same, for the checks on a pull request's newest commit ending,
+    /// passed or failed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_ci: Option<bool>,
 }
 
 impl GitSpec {
+    /// Whether a review that came back is told
+    pub fn tells_review(&self) -> bool {
+        self.notify_review != Some(false)
+    }
+    /// Whether checks that ended are told
+    pub fn tells_ci(&self) -> bool {
+        self.notify_ci != Some(false)
+    }
     /// The prompt the commit message is asked with, before `{ai}` and `{diff}`
     /// are filled in: the one written, else the default -- carrying on the end
     /// an instruction an earlier version kept apart from it

@@ -113,9 +113,9 @@ Open a SHIKISHA server's board in a window of its own
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 
-### Notifications
+### Phones
 
-The phones that receive notifications
+Register the phones that receive notifications
 
 This screen has nothing to fill in. What it shows depends on what is set elsewhere.
 

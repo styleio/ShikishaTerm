@@ -139,10 +139,10 @@ pub fn read_folder(files: &[(String, String)]) -> Templates {
     for (name, text) in files {
         let lower = name.to_lowercase();
         if lower == "config.yml" || lower == "config.yaml" {
-            if let Ok(v) = yaml_value(text) {
-                if v.get("blank_issues_enabled").and_then(|b| b.as_bool()) == Some(false) {
-                    out.blank = false;
-                }
+            if let Ok(v) = yaml_value(text)
+                && v.get("blank_issues_enabled").and_then(|b| b.as_bool()) == Some(false)
+            {
+                out.blank = false;
             }
             continue;
         }

@@ -81,6 +81,12 @@ panel's ▾ hands the threads nobody has marked resolved -- each with its file, 
 and who said what -- to an AI tab in the same folder. It fixes what should be fixed and
 commits, and asks you about questions and anything it disagrees with. Replying on
 GitHub and resolving the threads stays with you.
+After a push, while its review is awaited, the row in the list on the left says
+**awaiting review**. When the review comes back it changes to **3 to fix** (the findings
+not yet given to an AI) or **no findings**, and the desk's default destination is told.
+CI ending is told too. With the window open it also appears on screen, where findings
+and a failed CI run can be handed to an AI from the message. Whether either is told is
+chosen in the project's settings, under **Review and CI notifications**.
 An address or a file path in a terminal is underlined under the pointer. Press it
 for what it can be opened with -- a browser tab, the editor at that line, the
 default app, its folder -- or Ctrl+click to open it straight away (Settings >
@@ -577,7 +583,7 @@ settings screen, so it cannot fall behind.
 - **Worktrees** — Host-dependent project markers
 - **Remote access** — Remote control & QR
 - **Server version** — Open a SHIKISHA server's board in a window of its own
-- **Notifications** — The phones that receive notifications
+- **Phones** — Register the phones that receive notifications
 - **Site notifications** — Sites you allowed or blocked
 - **Shortcuts** — What each key does
 - **Quick commands** — Buttons that send a command or a prompt

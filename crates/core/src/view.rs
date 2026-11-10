@@ -811,6 +811,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         // The ball moves by session number; what we display is the screen number
         ball: crate::uistate::BallState::of(&ui.ball, ui.max_chain, ui.now_ms),
         flash: flash.map(str::to_string),
+        pr_news: ui.pr_news.clone(),
         help_open: ui.help_open,
         help_rows: ui.help_rows.clone(),
         vault: ui.vault.clone(),
@@ -1735,6 +1736,8 @@ pub fn surfaces_written(
 pub struct Ui {
     /// First-ever run, before config exists (shows onboarding on INDEX)
     pub first_run: bool,
+    /// What came back on pull requests a moment ago (see UiState::pr_news)
+    pub pr_news: Vec<serde_json::Value>,
     /// How many times the settings have been read in since the start (see
     /// UiState::settings_gen)
     pub settings_gen: u64,

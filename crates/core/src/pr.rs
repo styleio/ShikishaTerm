@@ -1,29 +1,65 @@
-//! The pull request a branch is on, when there is one.
+//! The pull request a branch is on, when there is one -- and what its review
+//! and its checks are doing.
 //!
 //! The third thing you would otherwise go and look up, after the branch and
 //! the ports. With several agents each on their own branch, "has that one been
 //! merged yet" is a question about every row at once, and answering it means
-//! leaving the terminal entirely.
+//! leaving the terminal entirely. So is "has the review come back" after a
+//! push: [`crate::prnews`] works that out from what is read here, and what it
+//! says is worth telling comes out of [`Watch::take_told`].
 //!
 //! **It asks as the account somebody chose.** A folder's project chooses the git
-//! account its column signs in with, and the pull request number is read with
-//! that same account: a token it was given, or -- when the choice was "the way
-//! git on this PC signs in" -- what git's own credential store hands out for
+//! account its column signs in with, and the pull request is read with that
+//! same account: a token it was given, or -- when the choice was "the way git
+//! on this PC signs in" -- what git's own credential store hands out for
 //! GitHub. Nothing is chosen for anybody, so a row with no number is a row
 //! whose project has no account chosen, and the settings say which.
+//!
+//! **One question per repository.** Every branch of a repository due to be
+//! asked about is asked in one GraphQL question, and each is asked about as
+//! often as it can change: every minute while a review or checks are being
+//! waited for, every five otherwise, and every half hour once it is merged or
+//! closed. A push this PC made is asked about at once. The account's hourly
+//! allowance is shared with everything else that signs in as it, so nothing
+//! is asked of GitHub's own accord once little of it is left
+//! ([`crate::github::spare`]).
 //!
 //! The asking happens on a thread of its own and the answers are left where
 //! the window can pick them up. A window that stops drawing because GitHub is
 //! slow would be a poor way to learn that a branch has been merged.
 
+use crate::prnews::{self, Ci, Said};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long an answer is good for. A pull request opens, gets reviewed and
-/// merges over hours; asking every minute is already generous
-const FRESH: Duration = Duration::from_secs(60);
+/// How often a branch is asked about, by what its pull request is doing.
+/// Waited on: a bot's review and a CI run each take a few minutes, and a
+/// minute late is still before anybody would have gone to look
+const WAITING_EVERY: Duration = Duration::from_secs(60);
+/// Open, with nothing waited on: a push made elsewhere is noticed this late
+/// at worst. A push from this PC is asked about at once (see [`Watch::of`])
+const OPEN_EVERY: Duration = Duration::from_secs(300);
+/// No pull request yet: one made on the website shows up this late at worst.
+/// One made here is asked about at once
+const NONE_EVERY: Duration = Duration::from_secs(120);
+/// Merged or closed: only a new pull request from the same branch changes it
+const DONE_EVERY: Duration = Duration::from_secs(1800);
+
+/// How many branches go in one question. GitHub counts what a question costs
+/// by how many things it could return; this many costs a few points of the
+/// hour's five thousand
+const BRANCHES_PER_QUESTION: usize = 25;
+
+/// How long the asking thread waits for more branches before asking: the
+/// rows of one desk are drawn together, and asked about together
+const GATHER: Duration = Duration::from_millis(300);
+
+/// How long what this PC's git hands out for GitHub is trusted before it is
+/// asked again. Somebody signing in again should not wait for a restart
+const PC_FRESH: Duration = Duration::from_secs(600);
 
 /// What a branch's pull request is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +90,60 @@ impl Pr {
             State::Closed => format!("#{} closed", self.number),
         }
     }
+
+    fn open(&self) -> bool {
+        matches!(self.state, State::Open | State::Draft)
+    }
+}
+
+/// What a row shows of an open pull request's review and checks, beside its
+/// number. The words are the screen's; this is what they are about
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct News {
+    pub number: u64,
+    pub review: Said,
+    /// With [`Said::Found`]: how many open threads have something not yet
+    /// handed to an AI
+    pub found: usize,
+    pub ci: Ci,
+    /// A push noticed a moment ago, whose review and checks may start any
+    /// minute ([`prnews::settling`]): asked about as often as a wait is
+    #[serde(skip)]
+    pub settling: bool,
+}
+
+impl News {
+    /// Whether there is anything to show
+    pub fn any(&self) -> bool {
+        self.review != Said::None || matches!(self.ci, Ci::Running | Ci::Failed)
+    }
+}
+
+/// Something to tell somebody about a pull request
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Told {
+    pub account: String,
+    pub repo: String,
+    pub branch: String,
+    /// The project the row that asked belongs to
+    pub project: String,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    /// The commit it is about
+    pub head: String,
+    pub what: Tell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tell {
+    /// A review came back with this many threads not yet handed to an AI
+    Found(usize),
+    /// A review came back with nothing to do
+    Clean,
+    CiPassed,
+    /// The names of the checks that failed
+    CiFailed(Vec<String>),
 }
 
 /// One branch of one repository, as one account sees it: (account, repo,
@@ -63,33 +153,60 @@ type Key = (String, String, String);
 
 struct Slot {
     asked: Instant,
+    /// How long until it is asked again, by what was last found
+    every: Duration,
     pr: Option<Pr>,
+    news: News,
+    /// The project of the row that last asked: what was handed to an AI is
+    /// remembered by it ([`crate::handed`])
+    project: String,
+    /// Where the branch has been seen on the server, as this PC's git knows
+    /// it: a push from here moves it, and is asked about at once. Each of
+    /// them, not only the last: two clones of one repository on one branch,
+    /// fetched at different times, say two different commits, and asking
+    /// whenever the two disagreed would be asking on every frame
+    pushed: Vec<String>,
 }
 
-/// How long what this PC's git hands out for GitHub is trusted before it is
-/// asked again. Somebody signing in again should not wait for a restart
-const PC_FRESH: Duration = Duration::from_secs(600);
+/// How many of those are kept per branch
+const PUSHED_KEPT: usize = 8;
+
+/// How long until a branch is asked about again
+fn every(pr: Option<&Pr>, news: &News) -> Duration {
+    match pr {
+        None => NONE_EVERY,
+        Some(p) if !p.open() => DONE_EVERY,
+        _ if news.review == Said::Waiting || news.ci == Ci::Running || news.settling => WAITING_EVERY,
+        _ => OPEN_EVERY,
+    }
+}
+
+/// What the asking thread is handed: the branch, and the project of the row
+/// that asked about it
+type Ask = (Key, String);
 
 /// Somewhere to ask, that never keeps the window waiting.
 pub struct Watch {
-    ask: Sender<Key>,
+    ask: Sender<Ask>,
     known: Arc<Mutex<HashMap<Key, Slot>>>,
     /// The tokens of the desk on screen, by account name. Held here rather
     /// than handed to the thread once, because the thread outlives any one
     /// desk. Never handed back out
     tokens: Arc<Mutex<HashMap<String, String>>>,
+    told: Receiver<Told>,
 }
 
 impl Watch {
     pub fn start() -> Watch {
         let known: Arc<Mutex<HashMap<Key, Slot>>> = Arc::new(Mutex::new(HashMap::new()));
         let tokens: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-        let (ask, inbox) = channel::<Key>();
+        let (ask, inbox) = channel::<Ask>();
+        let (tell, told) = channel::<Told>();
         std::thread::spawn({
             let (known, tokens) = (Arc::clone(&known), Arc::clone(&tokens));
-            move || serve(inbox, known, tokens)
+            move || serve(inbox, known, tokens, tell)
         });
-        Watch { ask, known, tokens }
+        Watch { ask, known, tokens, told }
     }
 
     /// The tokens the desk now on screen asks with, by account.
@@ -113,66 +230,397 @@ impl Watch {
     /// find out if it is time.
     ///
     /// Returning what we have and asking in the background is the whole shape
-    /// of this: the row draws now with whatever is known, including nothing
-    pub fn of(&self, account: &str, repo: &str, branch: &str) -> Option<Pr> {
+    /// of this: the row draws now with whatever is known, including nothing.
+    /// `project` is the project the row belongs to; `pushed` is the commit
+    /// this PC's git last saw the branch at on the server, when it knows --
+    /// a push from here changes it, and the branch is asked about at once
+    pub fn of(&self, account: &str, repo: &str, branch: &str, project: &str, pushed: Option<&str>) -> (Option<Pr>, News) {
         let key = (account.to_string(), repo.to_string(), branch.to_string());
-        let mut known = self.known.lock().ok()?;
-        match known.get(&key) {
-            Some(slot) if slot.asked.elapsed() < FRESH => slot.pr,
+        let Ok(mut known) = self.known.lock() else { return (None, News::default()) };
+        let pushed = pushed.unwrap_or_default();
+        match known.get_mut(&key) {
+            Some(slot) if slot.asked.elapsed() < slot.every && (pushed.is_empty() || slot.pushed.iter().any(|p| p == pushed)) => {
+                slot.project = project.to_string();
+                (slot.pr, slot.news)
+            }
             found => {
-                let had = found.and_then(|s| s.pr);
+                let (had, news, mut seen) = found.map(|s| (s.pr, s.news, std::mem::take(&mut s.pushed))).unwrap_or_default();
+                if !pushed.is_empty() && !seen.iter().any(|p| p == pushed) {
+                    seen.push(pushed.to_string());
+                    if seen.len() > PUSHED_KEPT {
+                        seen.remove(0);
+                    }
+                }
                 // Marked as asked before the answer arrives, so a slow reply
                 // does not turn into one request per frame
-                known.insert(key.clone(), Slot { asked: Instant::now(), pr: had });
+                known.insert(key.clone(), Slot {
+                    asked: Instant::now(),
+                    every: every(had.as_ref(), &news),
+                    pr: had,
+                    news,
+                    project: project.to_string(),
+                    pushed: seen,
+                });
                 drop(known);
-                let _ = self.ask.send(key);
-                had
+                let _ = self.ask.send((key, project.to_string()));
+                (had, news)
+            }
+        }
+    }
+
+    /// Ask about this branch again the next time a row draws it: something
+    /// here just changed what GitHub would say (a pull request made, its
+    /// review handed to an AI)
+    /// (`None` for every repository with a branch of that name)
+    pub fn again(&self, repo: Option<&str>, branch: &str) {
+        if let Ok(mut known) = self.known.lock() {
+            for ((_, r, b), slot) in known.iter_mut() {
+                if repo.is_none_or(|repo| r.eq_ignore_ascii_case(repo)) && b == branch {
+                    slot.every = Duration::ZERO;
+                }
+            }
+        }
+    }
+
+    /// Ask about the pull request [`crate::handed::key`] names again the
+    /// next time a row draws it: what was handed of it to an AI has changed,
+    /// and with it how many findings its row says are left
+    pub fn again_handed(&self, key: &str) {
+        if let Ok(mut known) = self.known.lock() {
+            for ((_, _, b), slot) in known.iter_mut() {
+                let n = slot.pr.map(|p| p.number).unwrap_or(0);
+                if n != 0 && crate::handed::key(&slot.project, n, b) == key {
+                    slot.every = Duration::ZERO;
+                }
+            }
+        }
+    }
+
+    /// What has happened since last time that somebody is to be told
+    pub fn take_told(&self) -> Vec<Told> {
+        self.told.try_iter().collect()
+    }
+}
+
+/// What the asking thread keeps between questions
+struct Memory {
+    /// The review threads of a pull request last read, by its
+    /// [`prnews::key`]: counted again against what was handed to an AI each
+    /// time it is asked about, without reading them again
+    threads: HashMap<String, Vec<Value>>,
+}
+
+fn serve(
+    inbox: Receiver<Ask>,
+    known: Arc<Mutex<HashMap<Key, Slot>>>,
+    tokens: Arc<Mutex<HashMap<String, String>>>,
+    tell: Sender<Told>,
+) {
+    // By how this PC's sign-ins were chosen: git's as it is or as one of its
+    // accounts, or one of GitHub CLI's. Asked of the program that holds them,
+    // and kept a while: neither answers instantly
+    let mut pc: HashMap<String, (Instant, Option<String>)> = HashMap::new();
+    let mut memory = Memory { threads: HashMap::new() };
+    while let Ok(first) = inbox.recv() {
+        std::thread::sleep(GATHER);
+        let mut asks: Vec<Ask> = vec![first];
+        asks.extend(inbox.try_iter());
+        // By account and repository, each branch once
+        let mut groups: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
+        for ((account, repo, branch), project) in asks {
+            let list = groups.entry((account, repo)).or_default();
+            match list.iter_mut().find(|(b, _)| *b == branch) {
+                Some(found) => found.1 = project,
+                None => list.push((branch, project)),
+            }
+        }
+        for ((account, repo), branches) in groups {
+            // Read for each question rather than once: the desk, and with it
+            // the accounts, can have changed since the last one
+            let held: Option<Box<dyn Fn() -> Option<String>>> = match crate::config::pc_choice(&account) {
+                Some(login) => {
+                    let login = login.map(str::to_string);
+                    Some(Box::new(move || pc_token(login.as_deref()).ok()))
+                }
+                None => crate::config::gh_choice(&account).map(|(host, login)| {
+                    let (host, login) = (host.to_string(), login.to_string());
+                    Box::new(move || gh_token_of(&host, &login)) as Box<dyn Fn() -> Option<String>>
+                }),
+            };
+            let token = match held {
+                Some(ask) => {
+                    if pc.get(&account).is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
+                        pc.insert(account.clone(), (Instant::now(), ask()));
+                    }
+                    pc.get(&account).and_then(|(_, t)| t.clone())
+                }
+                None => tokens.lock().ok().and_then(|t| t.get(&account).cloned()),
+            };
+            let Some(token) = token else { continue };
+            // Little of the hour left, or told to wait: asked again when the
+            // row next comes due, by which time it may be filled again
+            if !crate::github::spare(&token, "graphql") {
+                continue;
+            }
+            for part in branches.chunks(BRANCHES_PER_QUESTION) {
+                look(&token, &account, &repo, part, &known, &tell, &mut memory);
             }
         }
     }
 }
 
-fn serve(
-    inbox: Receiver<Key>,
-    known: Arc<Mutex<HashMap<Key, Slot>>>,
-    tokens: Arc<Mutex<HashMap<String, String>>>,
+/// Ask about these branches of one repository, in one question, and leave
+/// what was found where the rows read it
+fn look(
+    token: &str,
+    account: &str,
+    repo: &str,
+    branches: &[(String, String)],
+    known: &Mutex<HashMap<Key, Slot>>,
+    tell: &Sender<Told>,
+    memory: &mut Memory,
 ) {
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .build()
-        .new_agent();
-    // By how this PC's sign-ins were chosen: git's as it is or as one of its
-    // accounts, or one of GitHub CLI's. Asked of the program that holds them,
-    // and kept a while: neither answers instantly
-    let mut pc: HashMap<String, (Instant, Option<String>)> = HashMap::new();
-    while let Ok((account, repo, branch)) = inbox.recv() {
-        // Read for each question rather than once: the desk, and with it the
-        // accounts, can have changed since the last one
-        let held: Option<Box<dyn Fn() -> Option<String>>> = match crate::config::pc_choice(&account) {
-            Some(login) => {
-                let login = login.map(str::to_string);
-                Some(Box::new(move || pc_token(login.as_deref()).ok()))
-            }
-            None => crate::config::gh_choice(&account).map(|(host, login)| {
-                let (host, login) = (host.to_string(), login.to_string());
-                Box::new(move || gh_token_of(&host, &login)) as Box<dyn Fn() -> Option<String>>
-            }),
-        };
-        let token = match held {
-            Some(ask) => {
-                if pc.get(&account).is_none_or(|(at, _)| at.elapsed() > PC_FRESH) {
-                    pc.insert(account.clone(), (Instant::now(), ask()));
+    let Some(r) = crate::github::Repo::parse(repo) else { return };
+    let hub = crate::github::Hub::new(token.to_string());
+    let names: Vec<&str> = branches.iter().map(|(b, _)| b.as_str()).collect();
+    let (query, mut vars) = question(&names);
+    vars["o"] = json!(r.owner);
+    vars["n"] = json!(r.name);
+    // Not answered at all (the network, a refusal): what was known stays, and
+    // is asked about again when it next comes due
+    let Ok(answer) = hub.graphql(&query, vars) else { return };
+    let file = prnews::path();
+    let mut mems = prnews::read(&file);
+    let handed = crate::handed::path();
+    let now = prnews::now();
+    for (i, (branch, project)) in branches.iter().enumerate() {
+        // A repository this account cannot see answers with nothing at all,
+        // which is the same "no pull request" a row shows for one not made
+        let nodes = answer.pointer(&format!("/data/repository/b{i}/nodes")).and_then(|n| n.as_array());
+        let read = nodes
+            .into_iter()
+            .flatten()
+            .find(|n| {
+                n.pointer("/headRepositoryOwner/login")
+                    .and_then(|o| o.as_str())
+                    .is_some_and(|o| o.eq_ignore_ascii_case(&r.owner))
+            })
+            .and_then(read_node);
+        let mut news = News::default();
+        let pr = read.as_ref().map(|(pr, _)| *pr);
+        if let Some((pr, snap)) = &read {
+            let k = prnews::key(repo, pr.number);
+            let judged = prnews::judge(mems.get(&k).cloned().as_ref().unwrap_or(&Default::default()), snap, now);
+            let m = judged.mem;
+            let handed_key = crate::handed::key(project, pr.number, branch);
+            // The threads are read again when a review came back, and while
+            // any of them are still to be handed over: one resolved on
+            // GitHub since is gone from them
+            let had = memory.threads.get(&k).map(|t| crate::handed::new_threads(&handed, &handed_key, t, &[]).0.len());
+            let read_again = judged.reviewed
+                || (m.ended == prnews::Ended::Reviewed && had.is_none_or(|n| n > 0) && !project.is_empty());
+            match read_again.then(|| hub.open_review_threads(&r, pr.number)) {
+                Some(Ok(threads)) => {
+                    memory.threads.insert(k.clone(), threads);
                 }
-                pc.get(&account).and_then(|(_, t)| t.clone())
+                // A review came back and what it found could not be read:
+                // nothing is told and nothing is remembered of this look, so
+                // the next one reads it again rather than calling it clean
+                Some(Err(_)) if judged.reviewed => {
+                    if let Ok(mut k) = known.lock()
+                        && let Some(slot) = k.get_mut(&(account.to_string(), repo.to_string(), branch.clone()))
+                    {
+                        slot.asked = Instant::now();
+                        slot.pr = Some(*pr);
+                        slot.every = WAITING_EVERY;
+                    }
+                    continue;
+                }
+                _ => {}
             }
-            None => tokens.lock().ok().and_then(|t| t.get(&account).cloned()),
-        };
-        let Some(token) = token else { continue };
-        let pr = look_up(&agent, &token, &repo, &branch);
-        if let Ok(mut k) = known.lock() {
-            k.insert((account, repo, branch), Slot { asked: Instant::now(), pr });
+            let fresh = memory
+                .threads
+                .get(&k)
+                .map(|t| crate::handed::new_threads(&handed, &handed_key, t, &[]).0.len())
+                .unwrap_or(0);
+            news = News {
+                number: pr.number,
+                review: prnews::said(&m, fresh),
+                found: fresh,
+                ci: snap.ci,
+                settling: prnews::settling(&m, now),
+            };
+            let say = |what: Tell| {
+                let _ = tell.send(Told {
+                    account: account.to_string(),
+                    repo: repo.to_string(),
+                    branch: branch.clone(),
+                    project: project.clone(),
+                    number: pr.number,
+                    title: snap.title.clone(),
+                    url: snap.url.clone(),
+                    head: snap.head.clone(),
+                    what,
+                });
+            };
+            if judged.reviewed {
+                say(if fresh > 0 { Tell::Found(fresh) } else { Tell::Clean });
+            } else if judged.clean {
+                say(Tell::Clean);
+            }
+            match judged.ci_ended {
+                Some(Ci::Passed) => say(Tell::CiPassed),
+                Some(Ci::Failed) => say(Tell::CiFailed(snap.failed.clone())),
+                _ => {}
+            }
+            mems.insert(k, m);
+        }
+        if let Ok(mut k) = known.lock()
+            && let Some(slot) = k.get_mut(&(account.to_string(), repo.to_string(), branch.clone()))
+        {
+            slot.asked = Instant::now();
+            slot.pr = pr;
+            slot.news = news;
+            slot.every = every(pr.as_ref(), &news);
         }
     }
+    prnews::write(&file, mems);
+}
+
+/// The question for these branches, and its variables but the repository's:
+/// each branch's newest pull requests under a name of its own (`b0`, `b1`...),
+/// with what [`read_node`] reads of each. A branch name goes in as a
+/// variable, never into the text of the question
+fn question(branches: &[&str]) -> (String, Value) {
+    let mut params = String::from("$o:String!,$n:String!");
+    let mut asks = String::new();
+    let mut vars = json!({});
+    for (i, b) in branches.iter().enumerate() {
+        params.push_str(&format!(",$b{i}:String!"));
+        // Newest first, and two of them: a branch can have had several pull
+        // requests over its life and the newest is the one that matters, but
+        // a fork's branch of the same name is one of them too
+        asks.push_str(&format!(
+            "b{i}:pullRequests(headRefName:$b{i},first:2,orderBy:{{field:CREATED_AT,direction:DESC}}){{nodes{{...P}}}} "
+        ));
+        vars[format!("b{i}")] = json!(b);
+    }
+    let query = format!(
+        "query({params}){{repository(owner:$o,name:$n){{{asks}}}}}\
+         fragment P on PullRequest{{number title url state isDraft headRefOid headRepositoryOwner{{login}} author{{login}} \
+         commits(last:1){{nodes{{commit{{committedDate statusCheckRollup{{contexts(first:50){{nodes{{__typename \
+         ...on CheckRun{{name status conclusion}} ...on StatusContext{{context state}}}}}}}}}}}}}} \
+         reviews(last:20){{nodes{{id state body author{{login __typename}} submittedAt commit{{oid}} comments(first:1){{nodes{{replyTo{{id}}}}}}}}}} \
+         reviewRequests(first:10){{nodes{{requestedReviewer{{__typename ...on User{{login}} ...on Bot{{login}} ...on Mannequin{{login}} ...on Team{{slug}}}}}}}} \
+         reactions(last:20){{nodes{{content createdAt user{{login}}}}}} \
+         comments(last:10){{nodes{{author{{login __typename}} updatedAt}}}} \
+         early:comments(first:3){{nodes{{author{{login __typename}} updatedAt}}}}}}"
+    );
+    (query, vars)
+}
+
+/// One pull request, as the question above has GitHub describe it: what a row
+/// shows of it, and what [`prnews::judge`] reads
+fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
+    let number = v.get("number")?.as_u64()?;
+    let text = |p: &str| v.pointer(p).and_then(|s| s.as_str()).unwrap_or_default().to_string();
+    let draft = v.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+    // GitHub says MERGED itself here, unlike its REST answer -- and a merged
+    // one reported as closed would be the most misleading thing a row could say
+    let state = match text("/state").as_str() {
+        "MERGED" => State::Merged,
+        "CLOSED" => State::Closed,
+        _ if draft => State::Draft,
+        _ => State::Open,
+    };
+    let pr = Pr { number, state };
+    let list = |p: &str| v.pointer(p).and_then(|n| n.as_array()).cloned().unwrap_or_default();
+    let commit = list("/commits/nodes").into_iter().next().unwrap_or(Value::Null);
+    let mut failed = Vec::new();
+    let (mut running, mut passed) = (false, false);
+    for c in commit.pointer("/commit/statusCheckRollup/contexts/nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+        let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default();
+        let (name, verdict) = match s("__typename") {
+            "StatusContext" => (s("context"), crate::github::status_verdict(s("state"))),
+            _ => (s("name"), crate::github::check_verdict(s("status") == "COMPLETED", s("conclusion"))),
+        };
+        match verdict {
+            "pending" => running = true,
+            "failed" => failed.push(name.to_string()),
+            "passed" => passed = true,
+            _ => {}
+        }
+    }
+    // Ended only once every check has: one still running may yet fail
+    let ci = match () {
+        _ if running => Ci::Running,
+        _ if !failed.is_empty() => Ci::Failed,
+        _ if passed => Ci::Passed,
+        _ => Ci::None,
+    };
+    let who = |n: &Value, p: &str| prnews::login(n.pointer(p).and_then(|s| s.as_str()).unwrap_or_default());
+    let is_bot = |n: &Value, p: &str| n.pointer(p).and_then(|s| s.as_str()) == Some("Bot");
+    let at = |n: &Value, k: &str| prnews::seconds(n.get(k).and_then(|s| s.as_str()).unwrap_or_default());
+    let reviews = list("/reviews/nodes")
+        .iter()
+        // One being written and not yet sent is nobody's review yet
+        .filter(|n| n.get("state").and_then(|s| s.as_str()) != Some("PENDING"))
+        .map(|n| prnews::Review {
+            id: n.get("id").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+            by: prnews::Act { who: who(n, "/author/login"), bot: is_bot(n, "/author/__typename"), at: at(n, "submittedAt") },
+            commit: n.pointer("/commit/oid").and_then(|s| s.as_str()).unwrap_or_default().to_string(),
+            // An answer in a thread: no words of its own, and its comment
+            // answers one already there
+            reply: n.get("body").and_then(|b| b.as_str()).unwrap_or_default().trim().is_empty()
+                && n.pointer("/comments/nodes/0/replyTo/id").is_some_and(|i| !i.is_null()),
+        })
+        .filter(|r| !r.id.is_empty())
+        .collect();
+    let requested = list("/reviewRequests/nodes")
+        .iter()
+        .filter_map(|n| {
+            let r = n.get("requestedReviewer")?;
+            r.get("login").or_else(|| r.get("slug")).and_then(|s| s.as_str()).map(prnews::login)
+        })
+        .collect();
+    // A reaction names its giver as a user, a bot's with `[bot]` after it
+    let reacted = |content: &str| {
+        list("/reactions/nodes")
+            .iter()
+            .filter(|n| n.get("content").and_then(|c| c.as_str()) == Some(content))
+            .map(|n| {
+                let login = n.pointer("/user/login").and_then(|s| s.as_str()).unwrap_or_default();
+                prnews::Act { who: prnews::login(login), bot: login.ends_with("[bot]"), at: at(n, "createdAt") }
+            })
+            .filter(|a| !a.who.is_empty())
+            .collect::<Vec<_>>()
+    };
+    // The newest, and the first few: a reviewing bot's summary is usually
+    // among the first comments, and on a busy pull request it is long out of
+    // the newest by the time it is edited
+    let comments = list("/early/nodes")
+        .iter()
+        .chain(list("/comments/nodes").iter())
+        .map(|n| prnews::Act { who: who(n, "/author/login"), bot: is_bot(n, "/author/__typename"), at: at(n, "updatedAt") })
+        .filter(|a| !a.who.is_empty())
+        .collect();
+    let snap = prnews::Snapshot {
+        number,
+        title: text("/title"),
+        url: text("/url"),
+        open: pr.open(),
+        author: prnews::login(&text("/author/login")),
+        head: text("/headRefOid"),
+        committed: prnews::seconds(commit.pointer("/commit/committedDate").and_then(|s| s.as_str()).unwrap_or_default()),
+        ci,
+        failed,
+        reviews,
+        requested,
+        thumbs: reacted("THUMBS_UP"),
+        eyes: reacted("EYES"),
+        comments,
+    };
+    Some((pr, snap))
 }
 
 /// Why git on this PC handed out no GitHub credential
@@ -495,48 +943,6 @@ pub fn pc_forget(login: &str) -> Result<(), String> {
 /// credential store and answers at once; longer is something wrong
 const GH_LIMIT: Duration = Duration::from_secs(10);
 
-fn look_up(agent: &ureq::Agent, token: &str, repo: &str, branch: &str) -> Option<Pr> {
-    let (owner, _) = repo.split_once('/')?;
-    // Newest first, and only one: a branch can have had several pull requests
-    // over its life, and the one that matters is the last one
-    let url = format!(
-        "https://api.github.com/repos/{repo}/pulls\
-         ?head={owner}:{branch}&state=all&sort=created&direction=desc&per_page=1"
-    );
-    let mut resp = agent
-        .get(&url)
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header(
-            "User-Agent",
-            concat!("shikisha-term/", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .ok()?;
-    let v: serde_json::Value = resp.body_mut().read_json().ok()?;
-    read_one(v.as_array()?.first()?)
-}
-
-/// One pull request, as GitHub describes it.
-fn read_one(v: &serde_json::Value) -> Option<Pr> {
-    let number = v.get("number")?.as_u64()?;
-    // Merged is not one of the states GitHub reports; a merged one is closed
-    // with a date on it. Saying "closed" to someone whose work went in would
-    // be the most misleading thing this line could do
-    let merged = v.get("merged_at").is_some_and(|m| !m.is_null());
-    let draft = v.get("draft").and_then(|d| d.as_bool()).unwrap_or(false);
-    let closed = v.get("state").and_then(|s| s.as_str()) == Some("closed");
-    Some(Pr {
-        number,
-        state: match (merged, closed, draft) {
-            (true, _, _) => State::Merged,
-            (_, true, _) => State::Closed,
-            (_, _, true) => State::Draft,
-            _ => State::Open,
-        },
-    })
-}
-
 /// The token to ask with: the one the account was given, and nothing else.
 ///
 /// Never written anywhere, never logged, and sent to nowhere but GitHub's own
@@ -717,31 +1123,101 @@ mod tests {
         assert_eq!(account_names("styleio\n\nstyleio\n"), ["styleio"]);
         assert!(account_names("").is_empty());
     }
-
     #[test]
     fn merged_is_not_reported_as_closed() {
-        // GitHub has no "merged" state: a merged one is closed with a date on
-        // it. Telling someone their work was closed when it went in would be
-        // the most misleading thing this line could say
-        let merged = serde_json::json!({
-            "number": 7, "state": "closed", "draft": false,
-            "merged_at": "2026-08-25T00:00:00Z"
-        });
-        assert_eq!(read_one(&merged).unwrap().state, State::Merged);
-        let closed = serde_json::json!({
-            "number": 8, "state": "closed", "draft": false, "merged_at": null
-        });
-        assert_eq!(read_one(&closed).unwrap().state, State::Closed);
-        let draft = serde_json::json!({
-            "number": 9, "state": "open", "draft": true, "merged_at": null
-        });
-        assert_eq!(read_one(&draft).unwrap().state, State::Draft);
+        // Telling someone their work was closed when it went in would be the
+        // most misleading thing this line could say
+        let merged = json!({"number": 7, "state": "MERGED", "isDraft": false});
+        assert_eq!(read_node(&merged).unwrap().0.state, State::Merged);
+        let closed = json!({"number": 8, "state": "CLOSED", "isDraft": false});
+        assert_eq!(read_node(&closed).unwrap().0.state, State::Closed);
+        let draft = json!({"number": 9, "state": "OPEN", "isDraft": true});
+        assert_eq!(read_node(&draft).unwrap().0.state, State::Draft);
+        assert!(read_node(&draft).unwrap().1.open);
     }
 
     #[test]
     fn a_reply_that_is_not_a_pull_request_is_not_guessed_at() {
-        assert!(read_one(&serde_json::json!({})).is_none());
-        assert!(read_one(&serde_json::json!({"state": "open"})).is_none());
+        assert!(read_node(&json!({})).is_none());
+        assert!(read_node(&json!({"state": "OPEN"})).is_none());
+    }
+
+    /// A pull request as GitHub's GraphQL describes one a reviewing bot has
+    /// been at: its review, its 👍 (named with `[bot]`), its summary comment,
+    /// and checks of both kinds
+    #[test]
+    fn what_a_reviewing_bot_left_is_read() {
+        let node = json!({
+            "number": 115, "title": "Fix the login", "url": "https://github.com/o/r/pull/115",
+            "state": "OPEN", "isDraft": false, "headRefOid": "f9b0", "author": {"login": "me"},
+            "headRepositoryOwner": {"login": "o"},
+            "commits": {"nodes": [{"commit": {"committedDate": "2026-11-09T05:11:26Z", "statusCheckRollup": {"contexts": {"nodes": [
+                {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "StatusContext", "context": "deploy", "state": "SUCCESS"}
+            ]}}}}]},
+            "reviews": {"nodes": [{"id": "PRR_1", "author": {"login": "review-bot", "__typename": "Bot"},
+                "submittedAt": "2026-11-09T05:10:24Z", "commit": {"oid": "425c"}}]},
+            "reviewRequests": {"nodes": [{"requestedReviewer": {"__typename": "User", "login": "alice"}},
+                {"requestedReviewer": {"__typename": "Team", "slug": "core"}}]},
+            "reactions": {"nodes": [{"content": "THUMBS_UP", "createdAt": "2026-11-09T05:15:09Z", "user": {"login": "review-bot[bot]"}},
+                {"content": "HEART", "createdAt": "2026-11-09T05:16:00Z", "user": {"login": "bob"}}]},
+            "comments": {"nodes": [{"author": {"login": "review-bot", "__typename": "Bot"}, "updatedAt": "2026-11-09T05:15:06Z"}]}
+        });
+        let (pr, s) = read_node(&node).unwrap();
+        assert_eq!((pr.number, pr.state), (115, State::Open));
+        assert_eq!((s.head.as_str(), s.author.as_str(), s.committed), ("f9b0", "me", prnews::seconds("2026-11-09T05:11:26Z")));
+        assert_eq!(s.ci, Ci::Failed);
+        assert_eq!(s.failed, ["test"]);
+        assert_eq!(s.reviews.len(), 1);
+        assert!(s.reviews[0].by.bot);
+        assert_eq!(s.reviews[0].commit, "425c");
+        assert_eq!(s.requested, ["alice", "core"]);
+        assert_eq!(s.thumbs.len(), 1);
+        assert_eq!(s.thumbs[0].who, "review-bot");
+        assert!(s.thumbs[0].bot);
+        assert!(s.eyes.is_empty());
+        assert_eq!(s.comments[0].at, prnews::seconds("2026-11-09T05:15:06Z"));
+    }
+
+    /// The checks have ended only when every one of them has
+    #[test]
+    fn checks_still_running_are_not_an_end() {
+        let node = |runs: Value| json!({"number": 1, "state": "OPEN",
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": runs}}}}]}});
+        let running = node(json!([
+            {"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"__typename": "CheckRun", "name": "b", "status": "IN_PROGRESS", "conclusion": null}
+        ]));
+        assert_eq!(read_node(&running).unwrap().1.ci, Ci::Running);
+        let waiting = node(json!([{"__typename": "StatusContext", "context": "c", "state": "PENDING"}]));
+        assert_eq!(read_node(&waiting).unwrap().1.ci, Ci::Running);
+        let passed = node(json!([{"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "SKIPPED"}]));
+        assert_eq!(read_node(&passed).unwrap().1.ci, Ci::Passed);
+        assert_eq!(read_node(&node(json!([]))).unwrap().1.ci, Ci::None);
+    }
+
+    /// Each branch goes in as a variable of its own, never into the question's
+    /// text, so a branch named like a piece of a query is only a name
+    #[test]
+    fn branch_names_are_variables() {
+        let (q, vars) = question(&["fix/login", "x\"){evil}"]);
+        assert!(q.contains("b0:pullRequests(headRefName:$b0"));
+        assert!(q.contains("b1:pullRequests(headRefName:$b1"));
+        assert!(!q.contains("evil"));
+        assert_eq!(vars["b1"], "x\"){evil}");
+    }
+
+    #[test]
+    fn a_row_is_asked_about_as_often_as_it_can_change() {
+        let open = Pr { number: 1, state: State::Open };
+        let waiting = News { number: 1, review: Said::Waiting, ..Default::default() };
+        let running = News { number: 1, ci: Ci::Running, ..Default::default() };
+        assert_eq!(every(Some(&open), &waiting), WAITING_EVERY);
+        assert_eq!(every(Some(&open), &running), WAITING_EVERY);
+        assert_eq!(every(Some(&open), &News::default()), OPEN_EVERY);
+        assert_eq!(every(None, &News::default()), NONE_EVERY);
+        assert_eq!(every(Some(&Pr { number: 1, state: State::Merged }), &waiting), DONE_EVERY);
     }
 
     /// Only the desk's own token is asked with. One machine, two accounts:
@@ -821,13 +1297,13 @@ mod tests {
     fn with_no_token_nothing_is_asked_and_nothing_pretends_to_know() {
         // No token: every answer is "nothing known" rather than a made-up one
         let w = Watch::start();
-        assert_eq!(w.of("work", "owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main", "proj", None).0, None);
         // Asking twice must not queue twice; the slot is marked before the
         // answer arrives so a slow reply is not one request per frame
-        assert_eq!(w.of("work", "owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main", "proj", None).0, None);
         assert_eq!(w.known.lock().unwrap().len(), 1);
         // Another account asking about the same branch is another question
-        assert_eq!(w.of("home", "owner/name", "main"), None);
+        assert_eq!(w.of("home", "owner/name", "main", "proj", None).0, None);
         assert_eq!(w.known.lock().unwrap().len(), 2);
     }
 
@@ -873,14 +1349,14 @@ mod tests {
     #[test]
     fn changing_the_token_forgets_what_the_other_one_saw() {
         let w = Watch::start();
-        assert_eq!(w.of("work", "owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main", "proj", None).0, None);
         assert_eq!(w.known.lock().unwrap().len(), 1);
         let ours = HashMap::from([("work".to_string(), "ours".to_string())]);
         w.use_tokens(ours.clone());
         assert!(w.known.lock().unwrap().is_empty(), "the previous account's answer is still there");
         // Saying the same thing twice is not a change, and must not throw away
         // answers that are still this token's
-        assert_eq!(w.of("work", "owner/name", "main"), None);
+        assert_eq!(w.of("work", "owner/name", "main", "proj", None).0, None);
         w.use_tokens(ours);
         assert_eq!(w.known.lock().unwrap().len(), 1);
     }

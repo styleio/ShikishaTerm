@@ -20,7 +20,10 @@
 //! they were carrying to paste. Getting rid of a message must cost nothing.
 //!
 //! A page drops [`CSS`] into its stylesheet, [`HTML`] into its body and [`JS`]
-//! into its script, then calls `toast(text, warn)`. Two things stay the page's
+//! into its script, then calls `toast(text, warn)`. A message that comes with
+//! the obvious next step (a review came back: hand it to an AI) passes it as a
+//! third argument, `{label, run}`: a button of its own, pressed or left, and
+//! the toast stays up long enough to reach it. Two things stay the page's
 //! own business, because they genuinely differ per surface, and each is a hook
 //! the page may define:
 //!
@@ -69,20 +72,35 @@ pub const CSS: &str = r#"
    padding:3px 7px; font-family:inherit; font-size:13px; line-height:1.3;
    cursor:pointer; color:inherit; background:rgba(0,0,0,.16); }
  #toastcopy:hover { background:rgba(0,0,0,.3); }
+ /* With a step to take, the words and the copy button keep the first line
+    and the step's button has a line of its own under them. Squeezed beside
+    the words in a narrow pane, the words were one letter wide. The words are
+    what the step is about, so they are never cut short */
+ #toast.acting { flex-wrap:wrap; row-gap:8px; }
+ #toast.acting #toastmsg { flex:1 1 calc(100% - 52px); max-height:none; }
+ #toast.acting #toastcopy { order:1; }
+ #toast.acting #toastact { order:2; }
+ #toastact { flex:none; align-self:center; max-width:100%; border:1px solid currentColor; border-radius:6px;
+   padding:3px 9px; font-family:inherit; font-size:13px; font-weight:600; line-height:1.3;
+   cursor:pointer; color:inherit; background:transparent; overflow-wrap:anywhere; }
+ #toastact:hover { background:rgba(0,0,0,.16); }
+ #toastact[hidden] { display:none; }
 "#;
 
 /// The element itself. One per page, near the end of the body.
 ///
 /// The live region is the message alone: a screen reader announcing the copy
 /// button's label along with every notice would be reading out furniture.
-pub const HTML: &str = r#"<div id="toast"><span id="toastmsg" role="status" aria-live="polite"></span><button id="toastcopy" type="button"></button></div>"#;
+pub const HTML: &str = r#"<div id="toast"><span id="toastmsg" role="status" aria-live="polite"></span><button id="toastact" type="button" hidden></button><button id="toastcopy" type="button"></button></div>"#;
 
 /// Showing, timing, copying and dismissing. `toast(text, warn)` is the whole
 /// API; `hideToast()` is there for a page that knows a message has stopped
 /// applying.
 pub const JS: &str = r#"
 let toastTimer = null;
-function toast(text, warn) {
+// The next step a message carries, while it is up
+let toastAct = null;
+function toast(text, warn, act) {
   const t = document.getElementById("toast"), m = document.getElementById("toastmsg");
   if (!t || !m) return;
   const s = String(text === null || text === undefined ? "" : text);
@@ -93,6 +111,13 @@ function toast(text, warn) {
   if (typeof toastElsewhere === "function" && toastElsewhere(said, !!warn)) { hideToast(); return; }
   m.textContent = said;
   t.classList.toggle("warn", !!warn);
+  toastAct = act && act.label && typeof act.run === "function" ? act : null;
+  const a = document.getElementById("toastact");
+  if (a) {
+    a.hidden = !toastAct;
+    a.textContent = toastAct ? toastAct.label : "";
+  }
+  t.classList.toggle("acting", !!toastAct);
   const b = document.getElementById("toastcopy");
   if (b) {
     b.textContent = "📋";
@@ -103,17 +128,20 @@ function toast(text, warn) {
   }
   t.classList.add("show");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(hideToast, toastMs(m.textContent, warn));
+  toastTimer = setTimeout(hideToast, toastMs(m.textContent, warn, !!toastAct));
 }
 // Roughly how long it takes to read: a floor so a single word doesn't blink
 // past, a ceiling so nothing overstays its welcome, and a warning gets long
 // enough to be acted on
-function toastMs(text, warn) {
-  return Math.min(9000, Math.max(warn ? 6000 : 3000, 500 + text.length * 90));
+// -- and one with a button to press stays long enough to decide and reach it
+function toastMs(text, warn, act) {
+  const read = Math.min(9000, Math.max(warn ? 6000 : 3000, 500 + text.length * 90));
+  return act ? Math.max(read, 15000) : read;
 }
 function hideToast() {
   clearTimeout(toastTimer);
   toastTimer = null;
+  toastAct = null;
   const t = document.getElementById("toast");
   if (t) t.classList.remove("show");
 }
@@ -137,8 +165,11 @@ document.addEventListener("click", e => {
   if (!t || !t.classList.contains("show") || !t.contains(e.target)) return;
   e.preventDefault();
   e.stopPropagation();
-  const b = document.getElementById("toastcopy");
-  if (b && b.contains(e.target)) copyToast(); else hideToast();
+  const b = document.getElementById("toastcopy"), a = document.getElementById("toastact");
+  if (b && b.contains(e.target)) { copyToast(); return; }
+  const act = a && a.contains(e.target) ? toastAct : null;
+  hideToast();
+  if (act) act.run();
 }, true);
 "#;
 
@@ -240,9 +271,12 @@ mod tests {
             .nth(1)
             .expect("nobody listens for the click");
         assert!(
-            handler.contains("if (b && b.contains(e.target)) copyToast(); else hideToast();"),
+            handler.contains("if (b && b.contains(e.target)) { copyToast(); return; }"),
             "clicking and copying are not kept apart"
         );
+        // Anywhere else takes it away, and only the step's own button runs the step
+        assert!(handler.contains("const act = a && a.contains(e.target) ? toastAct : null;"));
+        assert!(handler.contains("hideToast();\n  if (act) act.run();") || handler.contains("hideToast();\r\n  if (act) act.run();"));
         assert_eq!(JS.matches("copyText(").count(), 1, "only copyToast should reach the clipboard");
     }
 

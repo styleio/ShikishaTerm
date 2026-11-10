@@ -110,6 +110,7 @@ pub mod paste;
 pub mod placed;
 pub mod portinfo;
 pub mod pr;
+pub mod prnews;
 pub mod pressure;
 pub mod profile;
 pub mod push;

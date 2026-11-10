@@ -50,6 +50,9 @@ pub struct Place {
     /// The pull request this branch is on, already written out. Filled in from
     /// elsewhere: it is the one thing here that has to be asked over a network
     pub pr: Option<String>,
+    /// What that pull request's review and checks are doing, when it is
+    /// open and there is something to say ([`crate::pr::News`])
+    pub pr_news: Option<crate::pr::News>,
 }
 
 impl Place {
@@ -164,6 +167,35 @@ fn git_dir(cwd: &Path) -> Option<PathBuf> {
         at = here.parent();
     }
     None
+}
+
+/// The commit git on this PC last saw `branch` at on `origin`, read from the
+/// files git keeps it in: a push from any terminal here moves it, which is
+/// how a push is noticed without anybody saying so. Nothing when git has not
+/// seen the branch there
+pub fn pushed_head(cwd: &Path, branch: &str) -> Option<String> {
+    let dir = git_dir(cwd)?;
+    // A worktree's refs are its checkout's: the shared folder holds them
+    let common = match std::fs::read_to_string(dir.join("commondir")) {
+        Ok(t) if !t.trim().is_empty() => {
+            let p = PathBuf::from(t.trim());
+            if p.is_absolute() { p } else { dir.join(p) }
+        }
+        _ => dir,
+    };
+    let sha = |s: &str| s.len() >= 40 && s.chars().all(|c| c.is_ascii_hexdigit());
+    let name = format!("refs/remotes/origin/{branch}");
+    if let Ok(t) = std::fs::read_to_string(common.join(&name))
+        && sha(t.trim())
+    {
+        return Some(t.trim().to_string());
+    }
+    // Packed away: one line each, `<commit> <ref>`
+    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
+    packed.lines().find_map(|l| {
+        let (s, r) = l.split_once(' ')?;
+        (r.trim() == name && sha(s)).then(|| s.to_string())
+    })
 }
 
 /// What two folders share when they are the same repository.
@@ -774,6 +806,38 @@ mod tests {
         assert!(found.iter().any(|(f, b)| f == &here && b.as_deref() == Some("feature/login")), "the branch was not read: {found:?}");
         assert!(found.iter().any(|(f, b)| f == &here && b.is_none()), "a detached worktree was dropped: {found:?}");
         assert!(worktrees_of(&root.join("nowhere")).is_empty());
+    }
+
+    /// Where a branch was last seen on the server is read the way git keeps
+    /// it: loose, or packed away, and from a worktree out of its checkout
+    #[test]
+    fn where_a_branch_was_pushed_is_read_from_gits_own_files() {
+        let root = std::env::temp_dir().join(format!("shikisha-pushed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let checkout = root.join("app");
+        let git = checkout.join(".git");
+        std::fs::create_dir_all(git.join("refs/remotes/origin/feature")).unwrap();
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        std::fs::write(git.join("refs/remotes/origin/feature/login"), format!("{a}
+")).unwrap();
+        std::fs::write(git.join("packed-refs"), format!("# pack-refs with: peeled
+{b} refs/remotes/origin/main
+")).unwrap();
+        assert_eq!(pushed_head(&checkout, "feature/login").as_deref(), Some(a.as_str()));
+        assert_eq!(pushed_head(&checkout, "main").as_deref(), Some(b.as_str()));
+        assert_eq!(pushed_head(&checkout, "never-pushed"), None);
+        // A worktree: its own git folder, pointing back at the shared one
+        let wt = root.join("app-login");
+        let own = git.join("worktrees").join("app-login");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}
+", own.display())).unwrap();
+        std::fs::write(own.join("commondir"), "../..
+").unwrap();
+        assert_eq!(pushed_head(&wt, "feature/login").as_deref(), Some(a.as_str()));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A helper's worktree inside the checkout is the tool's; the same names

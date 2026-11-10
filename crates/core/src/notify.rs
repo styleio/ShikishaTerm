@@ -145,6 +145,10 @@ impl Notifier {
     /// Send to a named destination, or — with `None` — to the primary.
     /// The return value is a message for on-screen display
     pub fn send_opt(&self, name: Option<&str>, text: &str) -> String {
+        self.send_opt_about(name, text, None)
+    }
+    /// The same, saying which tab the message is about (see [`Self::send_about`])
+    pub fn send_opt_about(&self, name: Option<&str>, text: &str, tab: Option<usize>) -> String {
         let resolved = name
             .map(str::to_string)
             .or_else(|| self.reach.borrow().primary.clone())
@@ -154,7 +158,7 @@ impl Notifier {
                 (reaching.len() == 1).then(|| reaching.remove(0))
             });
         match resolved {
-            Some(n) => self.send(&n, text),
+            Some(n) => self.send_about(&n, text, tab),
             None => crate::i18n::t("err.notify.no_primary"),
         }
     }

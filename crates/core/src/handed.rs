@@ -204,6 +204,13 @@ pub enum Note {
 }
 
 impl Note {
+    /// The pull request it is about, as [`key`] names it
+    pub fn key(&self) -> &str {
+        match self {
+            Note::Review { key, .. } | Note::Ci { key, .. } => key,
+        }
+    }
+
     pub fn record(&self) {
         let file = path();
         match self {

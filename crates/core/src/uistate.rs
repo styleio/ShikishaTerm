@@ -412,6 +412,10 @@ pub struct PlaceState {
     /// pull requests and CI from one whose server has neither
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// What the open pull request's review and checks are doing, when there
+    /// is something to say: the words are the screen's
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_news: Option<crate::pr::News>,
 }
 
 /// The colours a project is given when nobody has chosen one. Eight, because
@@ -2641,6 +2645,13 @@ pub struct UiState {
     pub ball: BallState,
     /// Transient notification (saved, emergency stop, etc.)
     pub flash: Option<String>,
+    /// A review or CI run that came back on a pull request a moment ago, each
+    /// with an `id` of its own: carried in the state for a minute rather than
+    /// sent once, so a window still loading when it came -- the app just
+    /// started -- and a phone connecting a moment later still say it. The
+    /// screen says each id once
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pr_news: Vec<serde_json::Value>,
     /// Whether help is being shown
     pub help_open: bool,
     /// What this whole app is costing the machine, for the board header --
@@ -2774,6 +2785,7 @@ impl TabState {
                 loose: t.place.loose.clone(),
                 about: t.place.about.clone(),
                 repo: t.place.repo.clone(),
+                pr_news: t.place.pr_news,
             }),
             cost: t.usage.line(),
             readable: readable(t),

@@ -3165,6 +3165,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     // than at the sixty-odd places that set one.
     let mut flash_shown: Option<String> = None;
     let mut flash_at = Instant::now();
+    // What came back on pull requests for the screen to say, each by a number
+    // of its own (see `tell_pr`) -- and this run's, since a phone that stays
+    // connected across a restart still holds the numbers it said
+    let mut pr_news: Vec<(Instant, serde_json::Value)> = Vec::new();
+    let mut pr_news_count: u64 = 0;
+    let pr_news_run = crate::prnews::now();
     let mut last_detect = Instant::now() - Duration::from_secs(1);
     // The browser currently being screen-relayed (only streams while someone's watching)
     let mut casting: Option<String> = None;
@@ -4688,10 +4694,19 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         (Some(d), Some(c)) => d.git_use_of_folder(c),
                         _ => (Default::default(), None),
                     };
-                    // ...and the pull request number is read as that account
-                    let pr = match (&repo, &branch, t.git_use.pr_account()) {
-                        (Some(r), Some(b), Some(who)) => prs.of(&who, r, b).map(|p| p.short()),
-                        _ => None,
+                    // ...and the pull request is read as that account. A push
+                    // from a terminal here moves where git last saw the
+                    // branch on the server, and is asked about at once
+                    let (pr, pr_news) = match (&repo, &branch, t.git_use.pr_account()) {
+                        (Some(r), Some(b), Some(who)) => {
+                            let pushed = match far {
+                                Some(_) => None,
+                                None => t.cwd().and_then(|c| crate::repo::pushed_head(c, b)),
+                            };
+                            let (p, news) = prs.of(&who, r, b, t.git_project.as_deref().unwrap_or_default(), pushed.as_deref());
+                            (p.map(|p| p.short()), Some(news).filter(|n| n.any() && p.is_some()))
+                        }
+                        _ => (None, None),
                     };
                     // Which project this folder belongs to, and whether it is
                     // the checkout or a branch cut from it. Same kind of look
@@ -4711,9 +4726,34 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         about,
                         repo,
                         pr,
+                        pr_news,
                         family,
                         linked,
                     };
+                }
+                // The other desks' rows are asked about as well, where they
+                // were last seen: a review that comes back while another desk
+                // is in front is told all the same
+                for (d, list) in desk_tabs.iter().enumerate() {
+                    if d == desk_index {
+                        continue;
+                    }
+                    for t in list {
+                        let p = &t.place;
+                        let (Some(r), Some(b), Some(who)) = (&p.repo, &p.branch, t.git_use.pr_account()) else { continue };
+                        let pushed = match tab_machine(t) {
+                            Some(_) => None,
+                            None => t.cwd().and_then(|c| crate::repo::pushed_head(c, b)),
+                        };
+                        let _ = prs.of(&who, r, b, t.git_project.as_deref().unwrap_or_default(), pushed.as_deref());
+                    }
+                }
+                for told in prs.take_told() {
+                    if let Some(mut said) = tell_pr(&told, &desks, desk_index, &tabs, &desk_tabs, &notifier, &caps) {
+                        pr_news_count += 1;
+                        said["id"] = serde_json::json!(format!("{pr_news_run}-{pr_news_count}"));
+                        pr_news.push((Instant::now(), said));
+                    }
                 }
             }
 
@@ -7170,7 +7210,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             let c = f.cwd.as_ref()?;
             Some(std::path::PathBuf::from(crate::uistate::place_key(f.host.as_ref().map(|h| h.name.as_str()), c)))
         };
+        // What came back on pull requests, carried for a while (PR_NEWS_LIFE)
+        pr_news.retain(|(at, _)| at.elapsed() < PR_NEWS_LIFE);
         let ui = Ui {
+            pr_news: pr_news.iter().map(|(_, v)| v.clone()).collect(),
             folder_manage: folder_manager.view(desks.get(desk_index).map(|d| d.uid.as_str()).unwrap_or_default()),
             ais: ai_choices.clone(),
             skills: skill_view.clone(),
@@ -8438,6 +8481,8 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         if landed && let Some(n) = &p.handed {
                             n.record();
+                            // What its row says of the findings left changes
+                            prs.again_handed(n.key());
                         }
                         if let Some(i) = flight {
                             if landed {
@@ -10964,6 +11009,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             eng.start_snippet(DRAFT_PR_TAG, crate::hooks::DRAFT_LUA);
         }
         while let Ok(js) = issues_rx.try_recv() {
+            // A pull request just made: its row is asked about at once, and
+            // the review it is about to get is waited for from the start
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&js)
+                && v["act"] == "create_pr"
+                && v["ok"] == true
+                && let Some(head) = v.pointer("/data/head").and_then(|h| h.as_str())
+            {
+                prs.again(None, head);
+            }
             shell.push_issues(&js);
             if let Some(r) = remote_ui.as_ref() {
                 r.push_state(format!("{{\"issues\":{js}}}"));
@@ -20744,6 +20798,7 @@ const FOLLOW_UP_WAIT: Duration = Duration::from_secs(3 * 60 * 60);
 /// gives it): typed in and sent once the tab is ready for it -- at once if it
 /// is waiting, after its turn if it is busy. Whether it is busy now, or `None`
 /// when there is no such tab after all
+#[allow(clippy::too_many_arguments)]
 fn follow_up_in_tab(
     label: &str,
     at: &std::path::Path,
@@ -20794,6 +20849,103 @@ struct CiLog {
     /// is listed
     folder: String,
     result: anyhow::Result<crate::readview::Tail>,
+}
+
+/// Tell somebody about a pull request's review or checks.
+///
+/// Told for the desk whose rows are on its branch -- the one in front first
+/// -- through that desk's default destination, when the project says to
+/// (`GitSpec::notify_review`, `GitSpec::notify_ci`). On the desk in front it
+/// is also a toast, carrying the button that hands the findings or the
+/// failure to an AI -- answered here as what the screen is to say, carried
+/// in its state (`UiState::pr_news`). A branch no row is on any more is
+/// nobody's to be told about
+fn tell_pr(
+    told: &crate::pr::Told,
+    desks: &[config::Desk],
+    desk_index: usize,
+    tabs: &[Tab],
+    desk_tabs: &[Vec<Tab>],
+    notifier: &notify::Notifier,
+    caps: &hooks::Caps,
+) -> Option<serde_json::Value> {
+    use crate::pr::Tell;
+    let on = |t: &Tab| {
+        t.place.branch.as_deref() == Some(told.branch.as_str())
+            && t.place.repo.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(&told.repo))
+    };
+    // The desk in front, with the tab a banner on this PC opens when clicked;
+    // failing that, the first other desk with a row on the branch
+    let found = tabs.iter().position(on).map(|i| (desk_index, Some(i + 1))).or_else(|| {
+        desk_tabs
+            .iter()
+            .enumerate()
+            .find(|(d, list)| *d != desk_index && list.iter().any(on))
+            .map(|(d, _)| (d, None))
+    });
+    let (d, tab) = found?;
+    let desk = desks.get(d)?;
+    let git = desk.git_of_project(&told.project);
+    let review = matches!(told.what, Tell::Found(_) | Tell::Clean);
+    if (review && !git.tells_review()) || (!review && !git.tells_ci()) {
+        return None;
+    }
+    let text = pr_told_words(told);
+    let line = format!("{text}\n{}", told.url);
+    let status = match d == desk_index {
+        true => notifier.send_opt_about(None, &line, tab),
+        false => notifier
+            .for_desk(config::desk_notify(desk, &|k| caps.secret_value(k).ok()), desk.primary_notify.clone())
+            .send_opt(None, &line),
+    };
+    append_hook_log(&format!("pr news {}#{}: {status}", told.repo, told.number));
+    if d != desk_index {
+        return None;
+    }
+    let what = match &told.what {
+        Tell::Found(_) => "found",
+        Tell::Clean => "clean",
+        Tell::CiPassed => "ci_passed",
+        Tell::CiFailed(_) => "ci_failed",
+    };
+    Some(serde_json::json!({
+        "text": text, "what": what, "project": told.project, "number": told.number,
+        "head": told.branch, "sha": told.head, "title": told.title, "url": told.url,
+    }))
+}
+
+/// How long what came back on a pull request stays in the screen's state:
+/// long enough for a window still loading, or a phone connecting, to say it
+const PR_NEWS_LIFE: Duration = Duration::from_secs(60);
+
+/// What is said of a pull request's review or checks, in the screen's
+/// language: which project's, which pull request, and what came of it
+fn pr_told_words(told: &crate::pr::Told) -> String {
+    use crate::pr::Tell;
+    // A folder in no project is known by its repository
+    let project = match told.project.is_empty() {
+        true => told.repo.as_str(),
+        false => told.project.as_str(),
+    };
+    let n = told.number.to_string();
+    let mut words = vec![("project", project), ("n", n.as_str()), ("title", told.title.as_str())];
+    let count;
+    let checks;
+    let key = match &told.what {
+        Tell::Found(k) => {
+            count = k.to_string();
+            words.push(("count", count.as_str()));
+            "pr.told.found"
+        }
+        Tell::Clean => "pr.told.clean",
+        Tell::CiPassed => "pr.told.ci_passed",
+        Tell::CiFailed(names) => {
+            checks = names.join(&i18n::t("list.sep"));
+            words.push(("checks", checks.as_str()));
+            if names.is_empty() { "pr.told.ci_failed_some" } else { "pr.told.ci_failed" }
+        }
+    };
+    i18n::tp(key, &words)
 }
 
 struct CiFix {

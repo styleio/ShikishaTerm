@@ -34,6 +34,9 @@ export default {
     project: projectPage,
     // The branches a commit will not land on, as the project says them
     protect: cardOf('project-protect'),
+    // Whether a review coming back, and CI ending, are told: opened by its
+    // address, the way a link to it lands
+    notify: { query: 'section=project-git-notify&folder=D:/work/shop&desk=0', run: wait(1200) },
     // What the AI is told when it writes the commit message
     prompts: cardOf('project-git'),
     // A folder of the project: its own answer is off, so the box shows the

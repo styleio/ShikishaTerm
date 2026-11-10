@@ -13363,7 +13363,32 @@ function projectGitCards(holder, touched) {
   guard.id = "project-protect";
   const prompts = card(T["settings.sec.git"], ...gitFields(holder, touched));
   prompts.id = "project-git";
-  return [guard, prompts];
+  return [guard, notifyGitCard(holder, touched), prompts];
+}
+
+// Whether a review coming back on one of the project's pull requests, and its
+// CI ending, are told -- to the desk's default destination, which is set up
+// in the desk's notifications and reached from here. Both on unless turned off
+function notifyGitCard(holder, touched) {
+  // The same object the prompts below write into. A tick says nothing while
+  // it is on, which is what a project nobody touched says too
+  const g = holder.git = holder.git || {};
+  const tick = (key, label) => {
+    const box = checkDefaultOn(g, key, label);
+    box.querySelector("input").addEventListener("change", () => {
+      if (touched) touched();
+      refreshSave();
+    });
+    return box;
+  };
+  const c = card(T["settings.project.notify.title"],
+    el("div", {class:"hint"}, T["settings.project.notify.hint"]),
+    tick("notify_review", T["settings.project.notify.review"]),
+    tick("notify_ci", T["settings.project.notify.ci"]),
+    el("div", {class:"row"},
+      el("a", {href:"#", onclick: e => { e.preventDefault(); goDeskSection("notify"); }}, T["settings.project.notify.where"])));
+  c.id = "project-git-notify";
+  return c;
 }
 
 // Where the program says something when a tab has finished, or when a script
@@ -13441,7 +13466,9 @@ function notifyCard(desk) {
     tickDestination(desk, "windows", T["settings.notify.pc.name"], T["settings.notify.pc.label"],
       T["settings.notify.windows.hint"], draw),
     tickDestination(desk, "phone", T["settings.notify.phone.name"], T["settings.desk.notify.phone.label"],
-      T["settings.desk.notify.phone.hint"], draw),
+      el("span", {}, T["settings.desk.notify.phone.hint"], " ",
+        el("a", {href:"#", onclick: e => { e.preventDefault(); goSection("notify"); }}, T["settings.desk.notify.phone.go"])),
+      draw),
     row(T["settings.desk.notify.primary"], prim));
   c.id = "desk-notify-desk";
   setTimeout(draw, 0);

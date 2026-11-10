@@ -28,6 +28,23 @@ once it reaches its first tagged release.
 - **The ✨ only fills in.** A title, a field, labels or people somebody wrote
   or chose stay as they are, and "Put back what was there before the AI"
   returns the whole form to how it was when ✨ was pressed.
+- **You are told when a pull request's review or CI comes back.** After a
+  push, a row on a pull request says "awaiting review" while a reviewer is
+  expected (one asked for, or a bot that reviewed it before), then "3 to fix"
+  (findings not yet given to an AI) or "no findings"; "CI running" and "CI
+  failed" likewise. When the review comes back -- findings or none -- and when
+  CI ends, the desk's default destination is told, and with the window open a
+  message appears with the button that hands the findings or the failure to
+  an AI. Turned on or off per project, under "Review and CI notifications".
+  The rows of every desk are watched, and GitHub is asked one question per
+  repository, more often only while something is awaited, and never once
+  little of the account's hourly allowance is left.
+
+### Changed
+- **The global "Notifications" settings are now called "Phones",** which is
+  what they are: registering the phones that receive notifications. Where a
+  desk's notifications go is still the desk's "Notifications", which links
+  to it.
 
 ### Fixed
 - **Pressing "Hand the review to the AI" or "Fix CI with the AI" a second time
