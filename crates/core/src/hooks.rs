@@ -4278,6 +4278,57 @@ impl HookEngine {
                 let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
                 crate::ghproject::set_value(&hub, &id(0), &id(1), &id(2), &arg(&args, 3)).map(|()| serde_json::Value::Bool(true))
             });
+            // The cards themselves: a new one (a draft, or an issue or pull
+            // request put on the board) with the values and place it starts
+            // with, a card's place, one archived or brought back, one taken
+            // off, a draft's words, and the issue made of a draft
+            github!("github_project_add", |lua, repo, hub, args| {
+                let _ = &repo;
+                let opts = arg(&args, 2);
+                let values: Vec<serde_json::Value> = match opts.get("values") {
+                    // Given as a table of field id = value, the way Lua writes it
+                    Some(serde_json::Value::Object(m)) => {
+                        m.iter().map(|(k, v)| serde_json::json!({"field": k, "value": v})).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                crate::ghproject::add(
+                    &hub,
+                    arg(&args, 0).as_str().unwrap_or_default(),
+                    &arg(&args, 1),
+                    &values,
+                    opts.get("after").and_then(|a| a.as_str()),
+                )
+            });
+            github!("github_project_move", |lua, repo, hub, args| {
+                let _ = &repo;
+                let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
+                let after = arg(&args, 2);
+                crate::ghproject::move_card(&hub, &id(0), &id(1), after.as_str()).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_archive", |lua, repo, hub, args| {
+                let _ = &repo;
+                let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
+                let restore = arg(&args, 2).get("restore").and_then(|r| r.as_bool()).unwrap_or(false);
+                crate::ghproject::archive(&hub, &id(0), &id(1), restore).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_remove", |lua, repo, hub, args| {
+                let _ = &repo;
+                let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
+                crate::ghproject::remove(&hub, &id(0), &id(1)).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_draft", |lua, repo, hub, args| {
+                let _ = &repo;
+                let o = arg(&args, 1);
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                crate::ghproject::draft(&hub, arg(&args, 0).as_str().unwrap_or_default(), &s("title"), &s("body"))
+                    .map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_to_issue", |lua, repo, hub, args| {
+                // Into the tab's own repository unless another is named
+                let into = arg(&args, 1).as_str().map(str::to_string).unwrap_or_else(|| format!("{}/{}", repo.owner, repo.name));
+                crate::ghproject::to_issue(&hub, arg(&args, 0).as_str().unwrap_or_default(), &into, None)
+            });
         }
         {
             // Every primitive there is, read off the table itself at the moment
