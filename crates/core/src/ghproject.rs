@@ -319,7 +319,7 @@ fn cards(hub: &Hub, root: &str, at: &GhRef, filter: &str) -> Result<Vec<Value>> 
          nodes{{id type isArchived content{{__typename \
          ... on Issue{{number title url state stateReason updatedAt repository{{nameWithOwner}} assignees(first:5){{nodes{{login}}}} labels(first:8){{nodes{{name color}}}}}} \
          ... on PullRequest{{number title url state isDraft updatedAt repository{{nameWithOwner}} assignees(first:5){{nodes{{login}}}} labels(first:8){{nodes{{name color}}}}}} \
-         ... on DraftIssue{{title updatedAt}}}} \
+         ... on DraftIssue{{title updatedAt assignees(first:5){{nodes{{login}}}}}}}} \
          fieldValues(first:50){{nodes{{__typename \
          ... on ProjectV2ItemFieldTextValue{{text field{{{FIELD_ID}}}}} \
          ... on ProjectV2ItemFieldNumberValue{{number field{{{FIELD_ID}}}}} \
@@ -601,8 +601,11 @@ mod tests {
         let hidden = json!({"id": "PVTI_2", "type": "REDACTED", "isArchived": false, "content": null, "fieldValues": {"nodes": []}});
         assert_eq!(read_card(&hidden).unwrap()["kind"], "hidden");
         let draft = json!({"id": "PVTI_3", "type": "DRAFT_ISSUE", "isArchived": false,
-            "content": {"__typename": "DraftIssue", "title": "Idea", "updatedAt": null}, "fieldValues": {"nodes": []}});
-        assert_eq!(read_card(&draft).unwrap()["kind"], "draft");
+            "content": {"__typename": "DraftIssue", "title": "Idea", "updatedAt": null,
+                "assignees": {"nodes": [{"login": "lee"}]}}, "fieldValues": {"nodes": []}});
+        let d = read_card(&draft).unwrap();
+        assert_eq!(d["kind"], "draft");
+        assert_eq!(d["assignees"], json!(["lee"]), "a draft card has people on it too");
         let archived = json!({"id": "PVTI_4", "isArchived": true});
         assert!(read_card(&archived).is_none());
     }

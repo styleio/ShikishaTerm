@@ -40,6 +40,7 @@ const SHOTS = path.join(ROOT, 'target', 'shots', 'github-project');
 const REPO = process.env.GHP_REPO || '';
 const ACCOUNT = process.env.GHP_ACCOUNT || 'token';
 const WRITE = process.env.GHP_WRITE === '1';
+const VIEWS = process.env.GHP_VIEWS === '1';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -96,6 +97,196 @@ const portOf = () => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
+// What GitHub itself says a view holds: its cards (the view's filter applied
+// by GitHub) and the name of each card's value in every field
+const truth = async (owner, org, number, view) => {
+  const field = '... on ProjectV2FieldCommon { name }';
+  const q = `query($o: String!, $n: Int!, $v: Int!, $q: String) { ${org ? 'organization' : 'user'}(login: $o) { projectV2(number: $n) {
+    view(number: $v) { filter }
+    items(first: 100, query: $q) { nodes { content { ... on DraftIssue { title assignees(first: 5) { nodes { login } } } ... on Issue { title assignees(first: 5) { nodes { login } } } ... on PullRequest { title assignees(first: 5) { nodes { login } } } }
+      fieldValues(first: 50) { nodes {
+        ... on ProjectV2ItemFieldSingleSelectValue { name field { ${field} } }
+        ... on ProjectV2ItemFieldIterationValue { title field { ${field} } }
+        ... on ProjectV2ItemFieldNumberValue { number field { ${field} } }
+        ... on ProjectV2ItemFieldDateValue { date field { ${field} } }
+        ... on ProjectV2ItemFieldTextValue { text field { ${field} } } } } } } } } }`;
+  const ask = async (variables) => {
+    const r = await (await fetch('https://api.github.com/graphql', { method: 'POST', headers: { Authorization: 'bearer ' + PAT },
+      body: JSON.stringify({ query: q, variables }) })).json();
+    if (r.errors) throw new Error(JSON.stringify(r.errors));
+    return (r.data.organization || r.data.user).projectV2;
+  };
+  const filter = (await ask({ o: owner, n: number, v: view })).view.filter || null;
+  const p = await ask({ o: owner, n: number, v: view, q: filter });
+  return p.items.nodes.map((i) => ({ title: (i.content || {}).title || '',
+    people: (((i.content || {}).assignees || {}).nodes || []).map((a) => a.login).join(', '), values: Object.fromEntries(i.fieldValues.nodes
+    .filter((v) => v.field).map((v) => [v.field.name, v.name ?? v.title ?? v.number ?? v.date ?? v.text])) }));
+};
+
+// Every view of the GitHub Project opened, each drawn as GitHub lays it out:
+// the cards GitHub's filter leaves, a board's columns in the field's order with
+// each card in the column of its value, a table's groups and its order
+async function everyView(run, shot, views) {
+  const at = JSON.parse(await run('JSON.stringify({owner: I.gh.data.owner, org: I.gh.data.org, number: I.gh.data.number, none: T["ghp.no_value"] || ""})'));
+  T_NONE = (field) => at.none.replaceAll('{field}', field);
+  for (const [n, layout] of views) {
+    await run(`ghpView(${n}); true`);
+    await until(() => run(`!!I.gh.data && I.gh.data.view === ${n} && !I.gh.sending.length`), 'view ' + n, 60000);
+    await sleep(300);
+    const v = JSON.parse(await run(`JSON.stringify((() => { const d = I.gh.data, w = d.views.find(x => x.number === ${n}), f = id => (d.fields.find(x => x.id === id) || {});
+      return {name: w.name, layout: w.layout, group: w.group && f(w.group).name, lanes: d.columns && f(d.columns).name, sort: (w.sort || []).map(s => [f(s.field).name, f(s.field).type, s.desc]),
+        options: d.columns ? (f(d.columns).options || f(d.columns).iterations || []).map(o => o.name || o.title) : [],
+        none: (T["ghp.no_value"] || "").replaceAll("{field}", d.columns ? f(d.columns).name : "") }; })())`));
+    const real = await truth(at.owner, at.org, at.number, n);
+    console.log(`   view ${n} "${v.name}" (${layout}): GitHub has ${real.length} cards` + (v.group ? `, grouped by ${v.group}` : '') + (v.sort.length ? `, sorted by ${v.sort.map((s) => s[0] + (s[2] ? ' desc' : '')).join(', ')}` : ''));
+    await shot('view-' + n);
+    const titles = real.map((c) => c.title).sort();
+    if (layout === 'board') {
+      const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ghlane")].length
+        ? [...document.querySelectorAll("#issuespanel .ghlane")].map(l => ({lane: l.querySelector(".ghlanehead .grow").textContent, cols: [...l.querySelectorAll(".ghcol")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}))
+        : [{lane: null, cols: [...document.querySelectorAll("#issuespanel .ghcol")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}])`));
+      const all = drawn.flatMap((l) => l.cols.flatMap((c) => c.cards)).sort();
+      check(JSON.stringify(all) === JSON.stringify(titles), `view ${n}: the cards are the ones GitHub's filter leaves (${all.length})`);
+      let placed = true;
+      for (const l of drawn) for (const c of l.cols) for (const t of c.cards) {
+        const card = real.find((x) => x.title === t) || { values: {} };
+        const want = card.values[v.lanes] ?? v.none;
+        if (want !== c.name) { placed = false; console.log(`     "${t}" is under ${c.name}, GitHub has ${want}`); }
+        if (l.lane !== null) {
+          const lane = card.values[v.group] ?? (T_NONE(v.group));
+          if (lane !== l.lane) { placed = false; console.log(`     "${t}" is in the lane ${l.lane}, GitHub has ${lane}`); }
+        }
+      }
+      check(placed, `view ${n}: each card is in the column${v.group ? ' and the lane' : ''} of its ${v.lanes}${v.group ? ' and ' + v.group : ''}`);
+      const names = drawn[0].cols.map((c) => c.name).filter((x) => x !== v.none);
+      check(JSON.stringify(names) === JSON.stringify(v.options.filter((o) => names.includes(o))) && drawn[0].cols[0].name === v.none,
+        `view ${n}: the columns are ${drawn[0].cols.map((c) => c.name).join(' | ')} (the cards with none first, then the field's order)`);
+      if (v.group) check(drawn.length > 1, `view ${n}: the board is split into lanes by ${v.group} (${drawn.map((l) => l.lane).join(' | ')})`);
+    } else {
+      const heads = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ght thead th")].map(h => h.textContent))`));
+      const who = heads.indexOf('Assignees');
+      const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ght tbody tr")].map(r => r.classList.contains("grp") ? {group: r.firstChild.firstChild.textContent.trim()} : {title: r.querySelector(".ttl").textContent, people: ${who} < 0 ? null : r.children[${who}].textContent}))`));
+      if (who >= 0) {
+        const wrong = drawn.filter((r) => r.title !== undefined && r.people !== real.find((c) => c.title === r.title).people);
+        for (const r of wrong) console.log(`     "${r.title}" shows "${r.people}" as its assignees, GitHub has "${real.find((c) => c.title === r.title).people}"`);
+        check(!wrong.length, `view ${n}: each row shows the people GitHub has on the card`);
+      }
+      if (layout === 'roadmap') check(['Start', 'Due', 'Sprint'].every((h) => heads.includes(h)), `view ${n}: the roadmap, shown as a table, has its dates and iterations: ${heads.join(' | ')}`);
+      const rows = drawn.filter((r) => r.title !== undefined).map((r) => r.title);
+      check(JSON.stringify(rows.slice().sort()) === JSON.stringify(titles), `view ${n}: the rows are the cards GitHub's filter leaves (${rows.length})`);
+      if (v.group) {
+        const groups = drawn.filter((r) => r.group !== undefined).map((r) => r.group);
+        let ok = true, lane = null;
+        for (const r of drawn) {
+          if (r.group !== undefined) { lane = r.group; continue; }
+          const want = real.find((x) => x.title === r.title).values[v.group] ?? T_NONE(v.group);
+          if (want !== lane) { ok = false; console.log(`     "${r.title}" is under ${lane}, GitHub has ${want}`); }
+        }
+        check(ok, `view ${n}: the rows are grouped by ${v.group}: ${groups.join(' | ')}`);
+      }
+      for (const [name, type, desc] of v.sort) {
+        let ok = true, lane = null, last;
+        for (const r of drawn) {
+          if (r.group !== undefined) { lane = r.group; last = undefined; continue; }
+          const x = real.find((c) => c.title === r.title).values[name];
+          if (x === undefined) { last = null; continue; }
+          if (last === null) ok = false;
+          else if (last !== undefined && (desc ? x > last : x < last)) ok = false;
+          last = x;
+        }
+        check(ok, `view ${n}: the rows are in ${name} order${desc ? ', highest first' : ''}, the ones with none last` + (type ? '' : ''));
+      }
+    }
+  }
+}
+let T_NONE = () => '';
+
+// One card as GitHub has it now: the name of its value in every field
+const cardOnGithub = async (id) => {
+  const field = '... on ProjectV2FieldCommon { name }';
+  const r = await (await fetch('https://api.github.com/graphql', { method: 'POST', headers: { Authorization: 'bearer ' + PAT },
+    body: JSON.stringify({ query: `query($id: ID!) { node(id: $id) { ... on ProjectV2Item { fieldValues(first: 50) { nodes {
+      ... on ProjectV2ItemFieldSingleSelectValue { name field { ${field} } }
+      ... on ProjectV2ItemFieldIterationValue { title field { ${field} } }
+      ... on ProjectV2ItemFieldNumberValue { number field { ${field} } }
+      ... on ProjectV2ItemFieldDateValue { date field { ${field} } }
+      ... on ProjectV2ItemFieldTextValue { text field { ${field} } } } } } } }`, variables: { id } }) })).json();
+  if (r.errors) throw new Error(JSON.stringify(r.errors));
+  return Object.fromEntries(r.data.node.fieldValues.nodes.filter((v) => v.field)
+    .map((v) => [v.field.name, v.name ?? v.title ?? v.number ?? v.date ?? v.text]));
+};
+const settled = (run) => until(() => run('!I.gh.sending.length && !I.bad'), 'the changes to reach GitHub', 60000);
+const githubHas = async (id, name, want) => {
+  const end = Date.now() + 30000;
+  let now;
+  while (Date.now() < end) { now = (await cardOnGithub(id))[name]; if (now === want) return true; await sleep(1000); }
+  console.log(`     GitHub has ${name} = ${JSON.stringify(now)}, not ${JSON.stringify(want)}`);
+  return false;
+};
+
+// Each kind of field a card's value can be changed in, as a table's cell
+// changes it: put to another value, read back from GitHub, taken off, read
+// back, and put back as it was
+async function everyField(run) {
+  console.log('4. each kind of field changed in place, read back, taken off, and put back');
+  const plan = JSON.parse(await run(`JSON.stringify((() => { const d = I.gh.data, c = d.cards.find(x => x.kind === "draft") || d.cards.find(x => x.kind !== "hidden");
+    return {card: c.id, title: c.title, fields: d.fields.filter(f => ["NUMBER", "DATE", "TEXT", "SINGLE_SELECT", "ITERATION"].includes(f.type)).map(f => {
+      const v = c.values[f.id] || null, choices = f.options || f.iterations || [];
+      const other = choices.find(o => o.id !== (v && (v.option || v.iteration)));
+      const to = f.type === "NUMBER" ? {number: (v && v.number || 0) + 7} : f.type === "DATE" ? {date: v && v.date === "2026-12-24" ? "2026-12-25" : "2026-12-24"}
+        : f.type === "TEXT" ? {text: "Changed from the Issue tab"} : f.type === "SINGLE_SELECT" ? {option: other.id} : {iteration: other.id};
+      const name = x => x === null ? undefined : x.option ? choices.find(o => o.id === x.option).name : x.iteration ? choices.find(o => o.id === x.iteration).title
+        : x.number !== undefined ? x.number : x.date !== undefined ? x.date : x.text;
+      const back = v === null ? null : v.option ? {option: v.option} : v.iteration ? {iteration: v.iteration} : v.number !== undefined ? {number: v.number} : v.date ? {date: v.date} : {text: v.text};
+      return {id: f.id, name: f.name, type: f.type, to, toName: name(to), back, backName: name(back)}; })}; })())`));
+  const put = (f, value) => run(`(() => { const d = I.gh.data; ghpSet(d.cards.find(x => x.id === ${JSON.stringify(plan.card)}), d.fields.find(x => x.id === ${JSON.stringify(f.id)}), ${JSON.stringify(value)}); return true; })()`);
+  for (const f of plan.fields) {
+    await put(f, f.to); await settled(run);
+    const set = await githubHas(plan.card, f.name, f.toName);
+    await put(f, null); await settled(run);
+    const off = await githubHas(plan.card, f.name, undefined);
+    if (f.back !== null) { await put(f, f.back); await settled(run); }
+    const back = await githubHas(plan.card, f.name, f.backName);
+    check(set && off && back, `"${plan.title}": ${f.name} (${f.type}) put to ${JSON.stringify(f.toName)}, taken off, and put back to ${JSON.stringify(f.backName)} on GitHub`);
+  }
+}
+
+// A board grouped by a field: a card dragged into another lane's column takes
+// that column's value and that lane's, and is dragged back
+async function acrossLanes(run, views) {
+  const laned = [];
+  for (const [n, layout] of views) if (layout === 'board' && await run(`(() => { const w = I.gh.data.views.find(x => x.number === ${n}); return !!(w.group && w.group !== I.gh.data.columns); })()`)) laned.push(n);
+  if (!laned.length) { console.log('5. (no board view grouped into lanes)'); return; }
+  const n = laned[0];
+  console.log(`5. a card dragged into another lane on view ${n}, and dragged back`);
+  await run(`ghpView(${n}); true`);
+  await until(() => run(`I.gh.data.view === ${n}`), 'view ' + n, 60000);
+  const drag = (title, lane, column) => run(`(() => {
+    const lanes = [...document.querySelectorAll("#issuespanel .ghlane")];
+    const card = lanes.flatMap(l => [...l.querySelectorAll(".ghcard")]).find(c => c.querySelector(".t").textContent === ${JSON.stringify(title)});
+    const into = lanes.find(l => l.querySelector(".ghlanehead .grow").textContent === ${JSON.stringify(lane)});
+    const col = into && [...into.querySelectorAll(".ghcol")].find(c => c.querySelector(".ghhead .grow").textContent === ${JSON.stringify(column)});
+    if (!card || !col) return false;
+    const dt = new DataTransfer();
+    card.dispatchEvent(new DragEvent("dragstart", {dataTransfer: dt, bubbles: true}));
+    col.dispatchEvent(new DragEvent("dragover", {dataTransfer: dt, bubbles: true, cancelable: true}));
+    col.dispatchEvent(new DragEvent("drop", {dataTransfer: dt, bubbles: true, cancelable: true}));
+    return true; })()`);
+  const plan = JSON.parse(await run(`JSON.stringify((() => { const d = I.gh.data, w = d.views.find(x => x.number === ${n});
+    const g = d.fields.find(f => f.id === w.group), col = d.fields.find(f => f.id === d.columns);
+    const c = d.cards.find(x => x.kind !== "hidden" && ghpKey(x, g) !== null && ghpKey(x, col) !== null);
+    const gTo = (g.options || g.iterations).find(o => o.id !== ghpKey(c, g)), cTo = (col.options || col.iterations).find(o => o.id !== ghpKey(c, col));
+    return {card: c.id, title: c.title, lane: g.name, column: col.name, from: [ghpWords(c, g), ghpWords(c, col)], to: [gTo.name || gTo.title, cTo.name || cTo.title]}; })())`));
+  check(await drag(plan.title, plan.to[0], plan.to[1]), `"${plan.title}" dragged from ${plan.from.join(' / ')} into ${plan.to.join(' / ')}`);
+  await settled(run);
+  check(await githubHas(plan.card, plan.lane, plan.to[0]) && await githubHas(plan.card, plan.column, plan.to[1]),
+    `GitHub has it in ${plan.lane} ${plan.to[0]} and ${plan.column} ${plan.to[1]}`);
+  await sleep(2500);
+  check(await drag(plan.title, plan.from[0], plan.from[1]), 'and dragged back');
+  await settled(run);
+  check(await githubHas(plan.card, plan.lane, plan.from[0]) && await githubHas(plan.card, plan.column, plan.from[1]), 'GitHub has it back where it was');
+}
+
 let ws;
 try {
   spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
@@ -150,6 +341,7 @@ try {
     await until(() => run(`(I.projects.find(p => p.name === "repo") || {}).gh_project === ${JSON.stringify(pick)}`), 'the choice kept in the settings', 15000)
       .then(() => check(true, 'the GitHub Project chosen is kept on the project'))
       .catch(() => check(false, 'the GitHub Project chosen is kept on the project'));
+    if (VIEWS) await everyView(run, shot, read.d.views);
     if (WRITE) {
       console.log('3. a card moved, read back, and moved back');
       const plan = JSON.parse(await run(`(() => { const d = I.gh.data; const f = d.fields.find(x => x.id === d.columns);
@@ -171,6 +363,7 @@ try {
         await move(plan.now);
         check(true, 'the card was moved back');
       }
+      if (VIEWS) { await everyField(run); await acrossLanes(run, read.d.views); }
     }
   }
 } catch (e) {

@@ -2210,6 +2210,13 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .ghhead { display:flex; gap:var(--s2); align-items:center; padding:var(--s2) var(--s3);
     font-size:12px; font-weight:600; border-bottom:1px solid var(--line); }
   #issuespanel .ghhead .n { color:var(--faint); font-weight:400; }
+  /* A board grouped by a field: its lanes one under another, scrolled sideways
+     together so each lane's columns stay under the same columns above */
+  #issuespanel .ghlanes { overflow-x:auto; padding:var(--s3); display:flex; flex-direction:column; gap:var(--s4); }
+  #issuespanel .ghlanes .ghcols { padding:0; overflow:visible; width:max-content; }
+  #issuespanel .ghlanehead { position:sticky; left:0; display:flex; gap:var(--s2); align-items:center; width:max-content;
+    margin-bottom:var(--s2); font-size:12.5px; font-weight:600; }
+  #issuespanel .ghlanehead .n { color:var(--faint); font-weight:400; }
   #issuespanel .ghcard { margin:var(--s2) var(--s2) 0; padding:var(--s2) var(--s3); background:var(--bg);
     border:1px solid var(--line); border-radius:var(--r-ctl); cursor:pointer; display:flex; flex-direction:column; gap:4px; }
   #issuespanel .ghcard:hover { border-color:var(--edge-hi); }
@@ -6640,29 +6647,44 @@ function ghpCell(card, field) {
   }
   return el("td", {class:"dim"}, ghpWords(card, field));
 }
+// The field a view groups its cards by (a table's groups, a board's lanes)
+function ghpGroupField(d, view) {
+  return view && view.group ? (d.fields || []).find(f => f.id === view.group) || null : null;
+}
+// The cards by their value in a field, in the field's own order, the cards
+// with no value in it last, as GitHub shows the groups
+function ghpGroups(cards, field) {
+  const order = (field.options || field.iterations || []).map(o => o.id);
+  const keys = [];
+  for (const c of cards) { const k = ghpKey(c, field); if (!keys.includes(k)) keys.push(k); }
+  keys.sort((a, b) => (a === null) - (b === null) || (order.indexOf(a) - order.indexOf(b))
+    || (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))));
+  return keys.map(k => {
+    const these = cards.filter(c => ghpKey(c, field) === k);
+    return {key: k, cards: these,
+      name: k === null ? (T["ghp.no_value"] || "{field}").replaceAll("{field}", field.name) : ghpWords(these[0], field)};
+  });
+}
 function ghpTable(d, view) {
   const all = d.fields || [];
   let shown = ((view && view.fields) || []).map(id => all.find(f => f.id === id)).filter(Boolean);
   if (!shown.length) shown = all.slice();
   const title = all.find(f => f.type === "TITLE");
   if (title && !shown.includes(title)) shown.unshift(title);
-  const group = view && view.group ? all.find(f => f.id === view.group) : null;
+  // A roadmap shown as a table: with the dates and iterations it lays the
+  // cards out by, which GitHub does not list among the view's fields
+  if (view && view.layout === "roadmap") {
+    for (const f of all) if ((f.type === "DATE" || f.type === "ITERATION") && !shown.includes(f)) shown.push(f);
+  }
+  const group = ghpGroupField(d, view);
   const cards = ghpSorted(d.cards || [], view, all);
   const table = el("table", {class:"ght"}, el("thead", {}, el("tr", {}, ...shown.map(f => el("th", {}, f.name)))));
   const body = el("tbody");
   const row = c => el("tr", {}, ...shown.map(f => ghpCell(c, f)));
   if (group) {
-    // In the field's own order, the cards with no value in it last
-    const order = (group.options || group.iterations || []).map(o => o.id);
-    const keys = [];
-    for (const c of cards) { const k = ghpKey(c, group); if (!keys.includes(k)) keys.push(k); }
-    keys.sort((a, b) => (a === null) - (b === null) || (order.indexOf(a) - order.indexOf(b))
-      || (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))));
-    for (const k of keys) {
-      const these = cards.filter(c => ghpKey(c, group) === k);
-      const name = k === null ? (T["ghp.no_value"] || "{field}").replaceAll("{field}", group.name) : ghpWords(these[0], group);
-      body.append(el("tr", {class:"grp"}, el("td", {colspan: String(shown.length)}, name + "  ", el("span", {class:"faint"}, String(these.length)))));
-      for (const c of these) body.append(row(c));
+    for (const g of ghpGroups(cards, group)) {
+      body.append(el("tr", {class:"grp"}, el("td", {colspan: String(shown.length)}, g.name + "  ", el("span", {class:"faint"}, String(g.cards.length)))));
+      for (const c of g.cards) body.append(row(c));
     }
   } else for (const c of cards) body.append(row(c));
   table.append(body);
@@ -6692,44 +6714,80 @@ function ghpCard(c, field, cols) {
   card.addEventListener("dragend", () => { ghpDragging = ""; });
   return card;
 }
+// The value that puts a card in a group of a field, for the kinds of field a
+// card's group can be changed in by moving it; undefined for the others
+function ghpGroupValue(field, key) {
+  if (key === null) return null;
+  switch (field.type) {
+    case "SINGLE_SELECT": return {option: key};
+    case "ITERATION": return {iteration: key};
+    case "DATE": return {date: key};
+    case "NUMBER": return {number: key};
+    case "TEXT": return {text: key};
+    default: return undefined;
+  }
+}
 function ghpBoard(d, view) {
   const all = d.fields || [];
   const field = all.find(f => f.id === d.columns);
   if (!field) return null;
-  // Every choice a column, in the field's order and empty or not; a value whose
-  // choice is gone from the field a column that cannot be dropped on; the
-  // cards with no value last, dropping on which takes the value off
+  // As GitHub lays a board out: the cards with no value first, dropping on
+  // which takes the value off; then every choice a column, in the field's
+  // order and empty or not; a value whose choice is gone from the field a
+  // column that cannot be dropped on
   const iter = field.type === "ITERATION";
-  const cols = (iter ? (field.iterations || []).map(i => ({id: i.id, name: i.title, done: i.done}))
-    : (field.options || []).map(o => ({id: o.id, name: o.name}))).map(c => Object.assign(c, {drop: iter ? {iteration: c.id} : {option: c.id}}));
+  const cols = [{id: null, name: (T["ghp.no_value"] || "{field}").replaceAll("{field}", field.name), drop: null}].concat(
+    (iter ? (field.iterations || []).map(i => ({id: i.id, name: i.title, done: i.done}))
+      : (field.options || []).map(o => ({id: o.id, name: o.name}))).map(c => Object.assign(c, {drop: iter ? {iteration: c.id} : {option: c.id}})));
   const cards = ghpSorted(d.cards || [], view, all);
   for (const c of cards) {
     const k = ghpKey(c, field);
     if (k !== null && !cols.some(col => col.id === k)) cols.push({id: k, name: ghpWords(c, field), drop: undefined});
   }
-  cols.push({id: null, name: (T["ghp.no_value"] || "{field}").replaceAll("{field}", field.name), drop: null});
-  const wrap = el("div", {class:"ghcols"});
-  for (const col of cols) {
-    const these = cards.filter(c => ghpKey(c, field) === col.id);
-    // A finished iteration with nothing in it is history, not a place to work
-    if (col.done && !these.length) continue;
-    const box = el("div", {class:"ghcol"},
-      el("div", {class:"ghhead"}, el("span", {class:"grow"}, col.name), el("span", {class:"n"}, String(these.length))),
-      ...these.map(c => ghpCard(c, field, cols)));
-    if (col.drop !== undefined) {
-      box.addEventListener("dragover", e => { if (ghpDragging) { e.preventDefault(); box.classList.add("drop"); } });
-      box.addEventListener("dragleave", () => box.classList.remove("drop"));
-      box.addEventListener("drop", e => {
-        e.preventDefault();
-        box.classList.remove("drop");
-        const c = (d.cards || []).find(x => x.id === e.dataTransfer.getData("text/plain"));
-        ghpDragging = "";
-        if (c && ghpKey(c, field) !== col.id) ghpSet(c, field, col.drop);
-      });
+  // A finished iteration with nothing in it is history, not a place to work;
+  // left out of every lane alike, so the lanes' columns stay one under another
+  const shown = cols.filter(col => !(col.done && !cards.some(c => ghpKey(c, field) === col.id)));
+  const columns = (these, lane) => {
+    const wrap = el("div", {class:"ghcols"});
+    for (const col of shown) {
+      const mine = these.filter(c => ghpKey(c, field) === col.id);
+      const box = el("div", {class:"ghcol"},
+        el("div", {class:"ghhead"}, el("span", {class:"grow"}, col.name), el("span", {class:"n"}, String(mine.length))),
+        ...mine.map(c => ghpCard(c, field, shown)));
+      if (col.drop !== undefined) {
+        box.addEventListener("dragover", e => { if (ghpDragging) { e.preventDefault(); box.classList.add("drop"); } });
+        box.addEventListener("dragleave", () => box.classList.remove("drop"));
+        box.addEventListener("drop", e => {
+          e.preventDefault();
+          box.classList.remove("drop");
+          const c = (d.cards || []).find(x => x.id === e.dataTransfer.getData("text/plain"));
+          ghpDragging = "";
+          if (!c) return;
+          if (ghpKey(c, field) !== col.id) ghpSet(c, field, col.drop);
+          // Into another lane: its value too, where the lane's field is one a
+          // value can be put in by moving (not its assignees, say)
+          if (lane && ghpKey(c, lane.field) !== lane.key) {
+            const v = ghpGroupValue(lane.field, lane.key);
+            if (v !== undefined) ghpSet(c, lane.field, v);
+          }
+        });
+      }
+      wrap.append(box);
     }
-    wrap.append(box);
+    return wrap;
+  };
+  // A view grouped by a field: a lane of the columns for each of its values,
+  // in the order the table puts its groups. Grouped by the columns' own field,
+  // there is nothing to split
+  const group = ghpGroupField(d, view);
+  if (!group || group.id === field.id) return columns(cards, null);
+  const lanes = el("div", {class:"ghlanes"});
+  for (const g of ghpGroups(cards, group)) {
+    lanes.append(el("div", {class:"ghlane"},
+      el("div", {class:"ghlanehead"}, el("span", {class:"grow"}, g.name), el("span", {class:"n"}, String(g.cards.length))),
+      columns(g.cards, {field: group, key: g.key})));
   }
-  return wrap;
+  return lanes;
 }
 // The choosing of a GitHub Project: the ones the account can see that matter
 // to this project's repository, and a place to put one's address

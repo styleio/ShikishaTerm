@@ -16,10 +16,14 @@ once it reaches its first tagged release.
   the account the repository already uses. Its saved views are shown as
   GitHub keeps them:
   - **A board** is in columns by its Status, or by the field the view
-    groups by. A card is moved to another column by dragging it or with its
-    ⋯ button, which also works on a phone.
+    sets for its columns, with the cards that have none first. A view
+    grouped by a field is split into a lane for each of its values. A card
+    is moved to another column by dragging it or with its ⋯ button, which
+    also works on a phone. Dragged into another lane, it takes that lane's
+    value too.
   - **A table** groups and sorts as the view does. Status, iteration, date,
     number and text are changed in place.
+  - **A roadmap** is shown as a table, with its dates and iterations.
 
   The view's filter is GitHub's own search and can be replaced for a look.
   A card opens on this tab when its repository is one of the desk's

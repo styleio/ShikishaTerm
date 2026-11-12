@@ -65,6 +65,7 @@ const cards = [
 ];
 const views = [
   { number: 1, name: 'Board', layout: 'board', filter: '', fields: [], group: null, lanes: 'F_status', sort: [] },
+  { number: 3, name: 'By priority', layout: 'board', filter: '', fields: [], group: 'F_pri', lanes: 'F_status', sort: [] },
   { number: 2, name: 'Plan', layout: 'table', filter: 'is:open', fields: ['F_title', 'F_assignees', 'F_status', 'F_pri', 'F_due', 'F_size'],
     group: 'F_pri', lanes: null, sort: [{ field: 'F_due', desc: false }] },
 ];
@@ -100,6 +101,7 @@ export default {
       if (I.gh.sending.length !== 2 || I.gh.sending[1].args.value.option !== "s_doing") throw new Error("not queued in order");
       "ok"`,
     'table': `I.gh.view = 2; ghpRead(); ` + put(answer(2)),
+    'lanes': `I.gh.view = 3; ghpRead(); ` + put(answer(3)),
     'choose': `I.gh.picking = true; issuesSig = ""; drawIssues();
       window.__issues(${JSON.stringify({ act: 'gh_projects', ok: true, project: 'shop', data: { hidden: 1, projects: [
         { id: 'PVT_1', number: 3, title: 'Shop roadmap', owner: 'acme', org: true, url: ADDRESS, closed: false, cards: 6, from: 'repository' },
