@@ -4181,6 +4181,7 @@
   "err.hooks.file_gone": "The file command stopped without answering",
   "err.hooks.no_screen_wait": "Waiting for a tab's screen cannot be done from here; call it from a hook",
   "err.hooks.snippet_empty": "The snippet did not return any text",
+  "err.hooks.snippet_stopped": "Stopped by the emergency stop. Press it again to try again",
   "grant.group.git": "git",
   "grant.sftp_ls": "List a folder on the machine a tab is connected to",
   "grant.sftp_ls_here": "List a folder on this machine, on that tab's side of a transfer",

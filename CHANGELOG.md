@@ -8,6 +8,16 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Fixed
+- **The git panel's ✨ no longer stays on "The AI is writing the message"
+  for good.** The message the AI wrote was lost when the settings were
+  saved while it wrote, which happens on its own, for example when a new
+  worktree is named. It was also lost when automation was off: turning
+  automation off left the AI's answer unread. Turning automation off now
+  leaves what a person pressed running. The emergency stop (Ctrl+B x) still
+  stops it, and the button then says it was stopped. The same goes for the
+  ✨ that writes an issue or a pull request.
+
 ## [0.30.1] - 2026-11-10
 
 ### Fixed

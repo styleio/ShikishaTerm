@@ -2508,6 +2508,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
     let mut first_paint_done = false;
     let slot = desk_index.min(engines.len().saturating_sub(1));
     let mut engine = engines[slot].take();
+    // Engines a save of the settings replaced while a button's answer was
+    // still owed from them, kept only until it comes
+    let mut retired: Vec<crate::hooks::HookEngine> = Vec::new();
     // The page currently being driven from words (🗣), as (its pane, its key).
     // One at a time: a second one would be a second thing typing into pages
     // while the person watches only one of them
@@ -4027,12 +4030,21 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         driving = None;
                     }
                 }
+                // A button's answer still on its way (the commit message, a
+                // draft) is waited for in the engine it started in. Dropped
+                // with it, the panel waited for good: naming a new worktree
+                // saves the settings, and the message asked for meanwhile
+                // never came (reported 2026-11-12)
+                let replaced = engine.take();
                 engine = build_engine(
                     Some(&newcfg),
                     desks.get(desk_index),
                     &mut startup_errors,
                     &caps,
                 );
+                if let Some(old) = replaced.filter(|e| e.owes_snippets()) {
+                    retired.push(old);
+                }
                 started_fired.clear();
                 started_fired.resize(tabs.len(), false);
                 // `active` is a row of the list this pass is holding, and the
@@ -6853,9 +6865,11 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     }
                     remote::RemoteCmd::SetAuto(on) => {
                         auto_enabled = on;
+                        // The same switch as Ctrl+B a: automation stops, and
+                        // what a person asked for from a panel goes on
                         if !on
                             && let Some(eng) = engine.as_mut() {
-                                eng.cancel_all();
+                                eng.cancel_automation();
                             }
                         flash = Some(i18n::t(if on {
                             "msg.remote_auto_on"
@@ -9914,8 +9928,18 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             }
         }
         // Answers from the Lua that was left running (the commit message)
+        // -- and from the engines the settings replaced while one was asked
+        let mut finished = Vec::new();
+        for old in retired.iter_mut() {
+            old.tick_snippets();
+            finished.extend(old.take_snippets());
+        }
+        retired.retain(|e| e.owes_snippets());
         if let Some(eng) = engine.as_mut() {
-            for (tag, said) in eng.take_snippets() {
+            finished.extend(eng.take_snippets());
+        }
+        {
+            for (tag, said) in finished {
                 // The decision-record panel's AI work: the draft, the answer,
                 // the pull request -- handed back as the panel asked
                 if let Some(job) = adr_jobs.remove(&tag) {
@@ -16260,7 +16284,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             // ...and no Enter goes in again after it either
                             landing.clear();
                             // Discard every waiting loop too (don't let them revive on resume)
-                            for eng in engine.iter_mut().chain(engines.iter_mut().flatten()) {
+                            for eng in engine.iter_mut().chain(engines.iter_mut().flatten()).chain(retired.iter_mut()) {
                                 eng.cancel_all();
                                 eng.drain_commands();
                             }

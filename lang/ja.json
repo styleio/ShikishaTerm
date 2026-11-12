@@ -4143,6 +4143,7 @@
   "err.hooks.file_gone": "ファイルの命令が答えないまま終わりました",
   "err.hooks.no_screen_wait": "タブの画面を待つ処理は、ここからは使えません。フックの中から呼んでください",
   "err.hooks.snippet_empty": "この処理は文字列を返しませんでした",
+  "err.hooks.snippet_stopped": "緊急停止で止めました。もう一度押してください",
   "grant.group.git": "git",
   "grant.sftp_ls": "つないだ先のフォルダの中身を見る",
   "grant.sftp_ls_here": "そのタブのこちら側のフォルダの中身を見る",

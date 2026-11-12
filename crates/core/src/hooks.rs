@@ -4606,7 +4606,28 @@ impl HookEngine {
 
     /// Drop every waiting loop (emergency stop)
     pub fn cancel_all(&mut self) {
+        self.cancel_where(&|_| true);
+    }
+
+    /// Drop what automation is waiting on, and leave what a person started
+    /// from a panel or a button: turning automation off is not a stop of
+    /// those (see `tick_panel_pending`)
+    pub fn cancel_automation(&mut self) {
+        self.cancel_where(&|p| p.hook != PANEL_HOOK && !p.hook.starts_with(SNIPPET));
+    }
+
+    /// A snippet dropped here is answered that it was stopped: somebody is
+    /// waiting on it, and a button left saying "the AI is writing" waits for
+    /// good (reported 2026-11-12)
+    fn cancel_where(&mut self, dropped: &dyn Fn(&Pending) -> bool) {
         for p in std::mem::take(&mut self.pending) {
+            if !dropped(&p) {
+                self.pending.push(p);
+                continue;
+            }
+            if let Some(tag) = p.hook.strip_prefix(SNIPPET) {
+                self.snippets.push((tag.to_string(), Err(crate::i18n::t("err.hooks.snippet_stopped"))));
+            }
             let _ = self.lua.remove_registry_value(p.key);
         }
     }
@@ -5729,9 +5750,26 @@ return o"#,
     /// them: it is a person's own transfer, the same kind of thing as sending a
     /// single file, which runs on a thread and never cared whether automation
     /// was on. Without this it sat at "looking through the folder" for as long
-    /// as automation stayed stopped
+    /// as automation stayed stopped.
+    ///
+    /// A snippet is the same kind of thing: a button somebody pressed (the
+    /// commit message, a draft) waiting on its answer. With automation stopped
+    /// the AI answered and nobody read it, and the git panel said "the AI is
+    /// writing the message" for good (reported 2026-11-12)
     pub fn tick_panel_pending(&mut self) {
-        self.tick_pending_where(&|p| p.hook == PANEL_HOOK, &|_| None)
+        self.tick_pending_where(&|p| p.hook == PANEL_HOOK || p.hook.starts_with(SNIPPET), &|_| None)
+    }
+
+    /// Move on only the snippets, for an engine the settings replaced: what
+    /// it still owes is answered from it, and nothing else of it runs again
+    pub fn tick_snippets(&mut self) {
+        self.tick_pending_where(&|p| p.hook.starts_with(SNIPPET), &|_| None)
+    }
+
+    /// Whether a snippet started here has not answered yet. Each one ends --
+    /// the AI's wait has a deadline -- so an engine kept for this is let go
+    pub fn owes_snippets(&self) -> bool {
+        self.pending.iter().any(|p| p.hook.starts_with(SNIPPET))
     }
 
     fn tick_pending_where(
@@ -6493,6 +6531,52 @@ mod tests {
         eprintln!("name: {name}\nsummary: {summary}");
         assert!(!name.is_empty() && !summary.is_empty());
         assert!(!name.is_ascii(), "the name was not written in the language asked for");
+    }
+
+    /// A button's answer comes back with automation stopped, and from an
+    /// engine the settings have since replaced: the loop moves only the
+    /// person's own waits then, and this is one of them
+    #[test]
+    fn a_snippet_answers_with_automation_stopped_and_after_its_engine_is_replaced() {
+        let mut eng = super::HookEngine::new().expect("engine");
+        eng.start_snippet("message", "shikisha.sleep(20)\nreturn 'written'");
+        assert!(eng.owes_snippets(), "the snippet should be waiting on its sleep");
+        let t0 = std::time::Instant::now();
+        // Automation stopped: only what a person started moves
+        let said = loop {
+            eng.tick_panel_pending();
+            if let Some(done) = eng.take_snippets().into_iter().next() {
+                break done;
+            }
+            assert!(t0.elapsed() < std::time::Duration::from_secs(5), "the answer never came");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert_eq!(said, ("message".to_string(), Ok("written".to_string())));
+        assert!(!eng.owes_snippets(), "nothing is owed once it answered");
+
+        // Kept aside after a reload: only its snippets move, and they finish
+        let mut old = super::HookEngine::new().expect("engine");
+        old.start_snippet("message", "shikisha.sleep(20)\nreturn 'kept'");
+        let t0 = std::time::Instant::now();
+        while old.owes_snippets() {
+            old.tick_snippets();
+            assert!(t0.elapsed() < std::time::Duration::from_secs(5), "the kept engine never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(old.take_snippets(), vec![("message".to_string(), Ok("kept".to_string()))]);
+
+        // Turning automation off leaves it waiting; the emergency stop ends
+        // it, and says so to whoever pressed the button
+        let mut eng = super::HookEngine::new().expect("engine");
+        eng.start_snippet("message", "shikisha.sleep(60000)\nreturn 'never'");
+        eng.cancel_automation();
+        assert!(eng.owes_snippets() && eng.take_snippets().is_empty(), "automation off is not a stop of a button");
+        eng.cancel_all();
+        assert!(!eng.owes_snippets());
+        assert_eq!(
+            eng.take_snippets(),
+            vec![("message".to_string(), Err(crate::i18n::t("err.hooks.snippet_stopped")))]
+        );
     }
 
     /// Every built-in orchestrator must actually compile.
