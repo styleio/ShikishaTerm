@@ -10,7 +10,10 @@
 //!
 //! What is read is what GitHub keeps: the board's fields, its saved views and
 //! its cards. A view's filter is GitHub's own search and is handed to GitHub as
-//! written, never read here. What is written is one card's value in one field.
+//! written, never read here. What is written is a card: its value in a field,
+//! its place among the others, a new one (a draft, or an issue or pull request
+//! put on the board), a draft's words or the issue made of it, and a card put
+//! away (archived, or taken off the board).
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
@@ -319,7 +322,7 @@ fn cards(hub: &Hub, root: &str, at: &GhRef, filter: &str) -> Result<Vec<Value>> 
          nodes{{id type isArchived content{{__typename \
          ... on Issue{{number title url state stateReason updatedAt repository{{nameWithOwner}} assignees(first:5){{nodes{{login}}}} labels(first:8){{nodes{{name color}}}}}} \
          ... on PullRequest{{number title url state isDraft updatedAt repository{{nameWithOwner}} assignees(first:5){{nodes{{login}}}} labels(first:8){{nodes{{name color}}}}}} \
-         ... on DraftIssue{{title updatedAt assignees(first:5){{nodes{{login}}}}}}}} \
+         ... on DraftIssue{{id title body updatedAt assignees(first:5){{nodes{{login}}}}}}}} \
          fieldValues(first:50){{nodes{{__typename \
          ... on ProjectV2ItemFieldTextValue{{text field{{{FIELD_ID}}}}} \
          ... on ProjectV2ItemFieldNumberValue{{number field{{{FIELD_ID}}}}} \
@@ -400,13 +403,20 @@ pub fn read_card(node: &Value) -> Option<Value> {
         },
         _ => "",
     };
-    Some(json!({
+    let mut card = json!({
         "id": node["id"], "kind": kind,
         "number": c["number"], "title": c["title"].as_str().unwrap_or_default(), "url": c["url"],
         "state": state, "repo": c.pointer("/repository/nameWithOwner"),
         "assignees": names("/assignees/nodes", "login"), "labels": labels,
         "updated": c["updatedAt"], "values": values,
-    }))
+    });
+    // A draft is written here, not on GitHub's page of an issue: what it says,
+    // and the draft's own id it is written to by
+    if kind == "draft" {
+        card["draft"] = c["id"].clone();
+        card["body"] = json!(c["body"].as_str().unwrap_or_default());
+    }
+    Some(card)
 }
 
 /// A card's value in one field, set -- or taken off, for `value` null. The
@@ -463,6 +473,164 @@ pub fn field_value(value: &Value) -> Result<Value> {
         return Ok(json!({"date": d}));
     }
     Err(bad())
+}
+
+/// What GitHub answered at `at`, or why it refused: a mutation GitHub did not
+/// carry out has nothing there, and says why in its errors
+fn carried<'a>(v: &'a Value, at: &str) -> Result<&'a Value> {
+    match v.pointer(at) {
+        Some(x) if !x.is_null() => Ok(x),
+        _ => Err(refused(v)),
+    }
+}
+
+/// An issue or pull request named the ways people name one: its page on
+/// GitHub, or `owner/repo#12`. As the page's address, which GitHub can find
+/// it by whichever it turns out to be
+pub fn content_url(text: &str) -> Option<String> {
+    let text = text.trim();
+    let name_ok = |s: &str| !s.is_empty() && s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    let number_ok = |s: &str| !s.is_empty() && s.len() <= 10 && s.chars().all(|c| c.is_ascii_digit()) && s != "0" && !s.starts_with('0');
+    if let Some(path) = text.strip_prefix("https://github.com/").or_else(|| text.strip_prefix("github.com/")) {
+        let path = path.split(['?', '#']).next().unwrap_or_default().trim_end_matches('/');
+        return match path.split('/').collect::<Vec<_>>().as_slice() {
+            [owner, repo, "issues" | "pull", n] if name_ok(owner) && name_ok(repo) && number_ok(n) => {
+                Some(format!("https://github.com/{path}"))
+            }
+            _ => None,
+        };
+    }
+    let (repo, n) = text.split_once('#')?;
+    let (owner, name) = repo.split_once('/')?;
+    (name_ok(owner) && name_ok(name) && number_ok(n)).then(|| format!("https://github.com/{owner}/{name}/issues/{n}"))
+}
+
+/// A new card on a board. `what` is a draft -- `{"title": .., "body": ..}` --
+/// or an issue or pull request already on GitHub -- `{"content": <its page or
+/// owner/repo#n>}`. Then, as one press does on GitHub's page, the values it
+/// is given (the column or group it was added in: `[{"field": id, "value":
+/// ..}]`) and its place: after the card `after`, else where GitHub puts a new
+/// one (last). Answers with the new card's id -- and, when the card is made
+/// but a value or its place could not be given, `incomplete` with why: the
+/// card is there all the same, and adding it again would make a second one
+pub fn add(hub: &Hub, board: &str, what: &Value, values: &[Value], after: Option<&str>) -> Result<Value> {
+    let card = if let Some(content) = what.get("content").and_then(|c| c.as_str()) {
+        let url = content_url(content).ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_content")))?;
+        let found = hub.graphql_whole(
+            "query($url:URI!){resource(url:$url){__typename ... on Issue{id} ... on PullRequest{id}}}",
+            json!({"url": url}),
+        )?;
+        let id = found
+            .pointer("/data/resource/id")
+            .and_then(|i| i.as_str())
+            .ok_or_else(|| match found.pointer("/data/resource") {
+                // Found, but not something a board holds (a discussion, say)
+                Some(r) if !r.is_null() => anyhow!(crate::i18n::t("err.ghproject.bad_content")),
+                _ => anyhow!(crate::i18n::tp("err.ghproject.no_content", &[("what", content.trim())])),
+            })?
+            .to_string();
+        let v = hub.graphql_whole(
+            "mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}",
+            json!({"project": board, "content": id}),
+        )?;
+        carried(&v, "/data/addProjectV2ItemById/item/id")?.clone()
+    } else {
+        let title = what.get("title").and_then(|t| t.as_str()).unwrap_or_default().trim().to_string();
+        if title.is_empty() {
+            bail!(crate::i18n::t("err.ghproject.no_title"));
+        }
+        let body = what.get("body").and_then(|b| b.as_str()).unwrap_or_default();
+        let v = hub.graphql_whole(
+            "mutation($project:ID!,$title:String!,$body:String){addProjectV2DraftIssue(input:{projectId:$project,title:$title,body:$body}){projectItem{id}}}",
+            json!({"project": board, "title": title, "body": body}),
+        )?;
+        carried(&v, "/data/addProjectV2DraftIssue/projectItem/id")?.clone()
+    };
+    let id = card.as_str().unwrap_or_default().to_string();
+    let then = || -> Result<()> {
+        for v in values {
+            let field = v.get("field").and_then(|f| f.as_str()).unwrap_or_default();
+            if !field.is_empty() {
+                set_value(hub, board, &id, field, v.get("value").unwrap_or(&Value::Null))?;
+            }
+        }
+        if let Some(after) = after {
+            move_card(hub, board, &id, Some(after))?;
+        }
+        Ok(())
+    };
+    Ok(match then() {
+        Ok(()) => json!({"card": id}),
+        Err(e) => json!({"card": id, "incomplete": format!("{e:#}")}),
+    })
+}
+
+/// A card's place among the others: right after `after`, or first of all for
+/// None. The order every view without its own sorting shows them in
+pub fn move_card(hub: &Hub, board: &str, card: &str, after: Option<&str>) -> Result<()> {
+    let v = hub.graphql_whole(
+        "mutation($project:ID!,$item:ID!,$after:ID){updateProjectV2ItemPosition(input:{projectId:$project,itemId:$item,afterId:$after}){items(first:1){totalCount}}}",
+        json!({"project": board, "item": card, "after": after}),
+    )?;
+    carried(&v, "/data/updateProjectV2ItemPosition/items").map(|_| ())
+}
+
+/// A card put away in the board's archive, where GitHub keeps it to be
+/// brought back -- or, `restore`, brought back from there
+pub fn archive(hub: &Hub, board: &str, card: &str, restore: bool) -> Result<()> {
+    let (q, at) = if restore {
+        ("mutation($project:ID!,$item:ID!){unarchiveProjectV2Item(input:{projectId:$project,itemId:$item}){item{id}}}",
+            "/data/unarchiveProjectV2Item/item/id")
+    } else {
+        ("mutation($project:ID!,$item:ID!){archiveProjectV2Item(input:{projectId:$project,itemId:$item}){item{id}}}",
+            "/data/archiveProjectV2Item/item/id")
+    };
+    let v = hub.graphql_whole(q, json!({"project": board, "item": card}))?;
+    carried(&v, at).map(|_| ())
+}
+
+/// A card taken off the board. The issue or pull request stays where it is;
+/// a draft, which is nowhere else, is gone
+pub fn remove(hub: &Hub, board: &str, card: &str) -> Result<()> {
+    let v = hub.graphql_whole(
+        "mutation($project:ID!,$item:ID!){deleteProjectV2Item(input:{projectId:$project,itemId:$item}){deletedItemId}}",
+        json!({"project": board, "item": card}),
+    )?;
+    carried(&v, "/data/deleteProjectV2Item/deletedItemId").map(|_| ())
+}
+
+/// A draft's title and words. A draft must keep a title
+pub fn draft(hub: &Hub, draft: &str, title: &str, body: &str) -> Result<()> {
+    let title = title.trim();
+    if title.is_empty() {
+        bail!(crate::i18n::t("err.ghproject.no_title"));
+    }
+    let v = hub.graphql_whole(
+        "mutation($draft:ID!,$title:String!,$body:String!){updateProjectV2DraftIssue(input:{draftIssueId:$draft,title:$title,body:$body}){draftIssue{id}}}",
+        json!({"draft": draft, "title": title, "body": body}),
+    )?;
+    carried(&v, "/data/updateProjectV2DraftIssue/draftIssue/id").map(|_| ())
+}
+
+/// A draft made an issue of `repo` (`owner/name`), with its title and words;
+/// the card stays where it was and is the issue's from then on. Answers with
+/// the issue's number and page. `words`, the draft's id with a title and
+/// words, are written to the draft first -- and nothing is made unless they
+/// are, so the issue never carries words older than those on screen
+pub fn to_issue(hub: &Hub, card: &str, repo: &str, words: Option<(&str, &str, &str)>) -> Result<Value> {
+    if let Some((id, title, body)) = words {
+        draft(hub, id, title, body)?;
+    }
+    let (owner, name) = repo.split_once('/').filter(|(o, n)| !o.is_empty() && !n.is_empty() && !n.contains('/'))
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_repo")))?;
+    let found = hub.graphql_whole("query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}", json!({"owner": owner, "name": name}))?;
+    let repo_id = carried(&found, "/data/repository/id")?.clone();
+    let v = hub.graphql_whole(
+        "mutation($item:ID!,$repo:ID!){convertProjectV2DraftIssueItemToIssue(input:{itemId:$item,repositoryId:$repo}){item{id content{... on Issue{number url}}}}}",
+        json!({"item": card, "repo": repo_id}),
+    )?;
+    let issue = carried(&v, "/data/convertProjectV2DraftIssueItemToIssue/item/content")?;
+    Ok(json!({"card": card, "number": issue["number"], "url": issue["url"]}))
 }
 
 #[cfg(test)]
@@ -601,13 +769,28 @@ mod tests {
         let hidden = json!({"id": "PVTI_2", "type": "REDACTED", "isArchived": false, "content": null, "fieldValues": {"nodes": []}});
         assert_eq!(read_card(&hidden).unwrap()["kind"], "hidden");
         let draft = json!({"id": "PVTI_3", "type": "DRAFT_ISSUE", "isArchived": false,
-            "content": {"__typename": "DraftIssue", "title": "Idea", "updatedAt": null,
+            "content": {"__typename": "DraftIssue", "id": "DI_1", "title": "Idea", "body": "Why and how", "updatedAt": null,
                 "assignees": {"nodes": [{"login": "lee"}]}}, "fieldValues": {"nodes": []}});
         let d = read_card(&draft).unwrap();
         assert_eq!(d["kind"], "draft");
         assert_eq!(d["assignees"], json!(["lee"]), "a draft card has people on it too");
+        assert_eq!((d["draft"].as_str(), d["body"].as_str()), (Some("DI_1"), Some("Why and how")), "a draft is written to by its own id");
+        let issue = read_card(&json!({"id": "PVTI_5", "isArchived": false, "fieldValues": {"nodes": []},
+            "content": {"__typename": "Issue", "id": "I_1", "number": 4, "title": "x", "body": "not read"}})).unwrap();
+        assert!(issue.get("draft").is_none() && issue.get("body").is_none(), "an issue is written to on its own page");
         let archived = json!({"id": "PVTI_4", "isArchived": true});
         assert!(read_card(&archived).is_none());
+    }
+
+    #[test]
+    fn an_issue_or_pull_request_to_put_on_a_board_is_named_by_its_page_or_owner_repo_and_number() {
+        assert_eq!(content_url("https://github.com/acme/shop/issues/12").as_deref(), Some("https://github.com/acme/shop/issues/12"));
+        assert_eq!(content_url(" https://github.com/acme/shop/pull/7/?x=1#top ").as_deref(), Some("https://github.com/acme/shop/pull/7"));
+        assert_eq!(content_url("acme/shop.web#40").as_deref(), Some("https://github.com/acme/shop.web/issues/40"));
+        for bad in ["https://github.com/acme/shop", "https://github.com/acme/shop/issues/0", "https://github.com/acme/shop/tree/main",
+            "https://example.com/acme/shop/issues/1", "acme/shop#", "acme#3", "a/b/c#3", "acme/shop#01", "acme/shop#1x", "Fix the thing", ""] {
+            assert_eq!(content_url(bad), None, "{bad}");
+        }
     }
 
     #[test]

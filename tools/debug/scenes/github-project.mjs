@@ -61,7 +61,8 @@ const cards = [
   card('c3', 39, 'Speed up the product search', 's_review', { kind: 'pr', state: 'open', url: 'https://github.com/acme/shop/pull/39',
     assignees: ['lee'], values: { F_status: { option: 's_review', name: 'In review' }, F_pri: { option: 'p_high', name: 'High' }, F_start: { date: '2026-10-19' }, F_due: { date: '2026-11-13' }, F_size: { number: 5 } } }),
   card('c4', 37, 'Gift wrapping option', 's_done', { state: 'closed', assignees: ['kim'] }),
-  card('c5', 0, 'Ask support which refund cases come up most', 's_todo', { kind: 'draft', number: null, url: null, repo: null }),
+  card('c5', 0, 'Ask support which refund cases come up most', 's_todo', { kind: 'draft', number: null, url: null, repo: null,
+    draft: 'DI_5', body: 'Sort last month\x27s refund tickets by reason, then ask support which they see most.' }),
   card('c6', 12, 'Translate the emails into German', null, { repo: 'acme/mailer', url: 'https://github.com/acme/mailer/issues/12' }),
 ];
 const views = [
@@ -105,6 +106,13 @@ export default {
     'table': `I.gh.view = 2; ghpRead(); ` + put(answer(2)),
     'lanes': `I.gh.view = 3; ghpRead(); ` + put(answer(3)),
     'roadmap': `I.gh.view = 4; ghpRead(); ` + put(answer(4)),
+    // A draft opened to be written, its fields under it
+    'draft': `ghpRead(); ` + put(answer(1)).replace(/; "ok"$/, '') + `; ghpEdit(I.gh.data.cards.find(c => c.id === "c5")); "ok"`,
+    // A card being typed into the Todo column's box
+    'adding': `ghpRead(); ` + put(answer(1)).replace(/; "ok"$/, '') + `; Object.assign(I.gh, {adding: "board  s_todo", addText: "Wrap gifts in recycled paper"}); issuesSig = ""; drawIssues(); "ok"`,
+    // A card about to be taken off, waiting for a yes; and one just archived
+    'remove': `ghpRead(); ` + put(answer(1)).replace(/; "ok"$/, '') + `; I.gh.confirm = {card: "c5", title: "Ask support which refund cases come up most"}; drawIssues(); "ok"`,
+    'archived': `I.gh.view = 2; ghpRead(); ` + put(answer(2)).replace(/; "ok"$/, '') + `; I.gh.undo = {card: "c4", title: "Gift wrapping option", was: null}; drawIssues(); "ok"`,
     'choose': `I.gh.picking = true; issuesSig = ""; drawIssues();
       window.__issues(${JSON.stringify({ act: 'gh_projects', ok: true, project: 'shop', data: { hidden: 1, projects: [
         { id: 'PVT_1', number: 3, title: 'Shop roadmap', owner: 'acme', org: true, url: ADDRESS, closed: false, cards: 6, from: 'repository' },

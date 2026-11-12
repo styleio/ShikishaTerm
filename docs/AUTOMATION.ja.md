@@ -1348,6 +1348,12 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_projects(タブ)` | リポジトリに関係する GitHub Project の一覧。リポジトリに紐づくもの、持ち主（組織・人）のもの、アカウント自身のものの順。`{projects, hidden}` を返し、各 `{id, number, title, owner, org, url, closed, cards, from}`。`hidden` はトークンで見られなかった数。トークンに Projects の権限が要る |
 | `shikisha.github_project(タブ, アドレス, {view=…, filter=…})` | GitHub Project を 1 つ、ビューの見せ方で読む。`アドレス` は Project のページ（`https://github.com/orgs/<持ち主>/projects/<番号>`）か `持ち主/番号`。`{id, title, url, fields, views, view, filter, columns, cards}` を返す。`fields` は各 `{id, name, type, options, iterations}`、`views` は各 `{number, name, layout, filter, fields, group, lanes, sort}`、`columns` はボードの列になる項目、`cards` は各 `{id, kind, number, title, url, state, repo, assignees, labels, updated, values}`（`values` は項目の id ごと）。`view` はビューの番号（無ければ最初のビュー）、`filter` はビューの絞り込みの代わりに使う GitHub の検索語。カードが 1000 枚を超えるビューは断る |
 | `shikisha.github_project_set(タブ, project_id, card_id, field_id, 値)` | カード 1 枚の 1 項目を書き換える。値は `{option=id}`・`{iteration=id}`・`{text=…}`・`{number=…}`・`{date="YYYY-MM-DD"}`、`nil` で消す。id は `github_project` が返したもの |
+| `shikisha.github_project_add(タブ, project_id, 中身, {values=…, after=…})` | カードを追加する。`中身` は下書き（`{title=…, body=…}`）か、GitHub にある Issue・プルリクエスト（`{content="https://github.com/<持ち主>/<リポジトリ>/issues/<番号>"}` か `{content="持ち主/リポジトリ#番号"}`）。`values` は「項目の id = 値」の表で、追加と同時に付ける（入れる列やグループ）。`after` はこのカードの前に来るカード。答えは `{card}`（新しいカードの id）。カードはできたが値や位置を付けられなかったときは、理由が `incomplete` に入る（カードはあるので、もう一度追加すると 2 枚になる） |
+| `shikisha.github_project_move(タブ, project_id, card_id, after_id)` | カードを Project 自体の並び順で `after_id` のすぐ後ろへ移す。`nil` なら先頭。並べ替えを設定したビューは、その順で表示する |
+| `shikisha.github_project_archive(タブ, project_id, card_id, {restore=true})` | カードをアーカイブする。`restore=true` ならアーカイブから元に戻す |
+| `shikisha.github_project_remove(タブ, project_id, card_id)` | カードを Project から外す。Issue・プルリクエストそのものは残る。下書きは消える |
+| `shikisha.github_project_draft(タブ, draft_id, {title=…, body=…})` | 下書きカードを書き換える。`draft_id` は `github_project` の答えのカードの `draft`。題名は空にできない |
+| `shikisha.github_project_to_issue(タブ, card_id, リポジトリ)` | 下書きカードを `リポジトリ`（`持ち主/名前`。`nil` ならタブのリポジトリ）の Issue にする。カードはその Issue のカードとして残る。答えは `{card, number, url}` |
 
 ### ファイル・通信
 

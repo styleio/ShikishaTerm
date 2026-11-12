@@ -1377,6 +1377,14 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("gh_projects", _) => "github_projects",
         ("gh_project", _) => "github_project",
         ("gh_project_set", _) => "github_project_set",
+        // ...and the cards themselves: one added, put in its place, archived
+        // or taken off, a draft's words, and the issue made of a draft
+        ("gh_project_add", _) => "github_project_add",
+        ("gh_project_move", _) => "github_project_move",
+        ("gh_project_archive", _) => "github_project_archive",
+        ("gh_project_remove", _) => "github_project_remove",
+        ("gh_project_draft", _) => "github_project_draft",
+        ("gh_project_to_issue", _) => "github_project_to_issue",
         // Bringing a pull request's branch here is a fetch, and is allowed as one
         ("prepare", _) => "git_fetch",
         _ => return None,
@@ -1662,6 +1670,29 @@ pub fn answer(
             args.get("value").unwrap_or(&Value::Null),
         )
         .map(|()| json!({"card": s("card"), "field": s("field")})),
+        "gh_project_add" => crate::ghproject::add(
+            &hub,
+            &s("id"),
+            args.get("what").unwrap_or(&Value::Null),
+            args.get("values").and_then(|v| v.as_array()).map(|v| v.as_slice()).unwrap_or_default(),
+            args.get("after").and_then(|a| a.as_str()),
+        ),
+        "gh_project_move" => crate::ghproject::move_card(&hub, &s("id"), &s("card"), args.get("after").and_then(|a| a.as_str()))
+            .map(|()| json!({"card": s("card")})),
+        "gh_project_archive" => crate::ghproject::archive(
+            &hub,
+            &s("id"),
+            &s("card"),
+            args.get("restore").and_then(|r| r.as_bool()).unwrap_or(false),
+        )
+        .map(|()| json!({"card": s("card")})),
+        "gh_project_remove" => crate::ghproject::remove(&hub, &s("id"), &s("card")).map(|()| json!({"card": s("card")})),
+        "gh_project_draft" => crate::ghproject::draft(&hub, &s("draft"), &s("title"), &s("body")).map(|()| json!({"card": s("card")})),
+        "gh_project_to_issue" => {
+            let (draft, title, body) = (s("draft"), s("title"), s("body"));
+            let words = (!draft.is_empty() && args.get("title").is_some()).then_some((draft.as_str(), title.as_str(), body.as_str()));
+            crate::ghproject::to_issue(&hub, &s("card"), &s("repo"), words)
+        }
         other => Err(anyhow!("unknown request {other}")),
     });
     match done {

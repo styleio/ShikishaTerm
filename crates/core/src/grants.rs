@@ -328,6 +328,14 @@ pub const CATALOG: &[Entry] = &[
     e("github_project", Group::GitHub, true, false, false),
     // A card moved on a team's board is seen by the whole team
     e("github_project_set", Group::GitHub, true, false, false),
+    // ...and adding, ordering, archiving and taking off its cards, writing a
+    // draft and making an issue of it: the same team sees each
+    e("github_project_add", Group::GitHub, true, false, false),
+    e("github_project_move", Group::GitHub, true, false, false),
+    e("github_project_archive", Group::GitHub, true, false, false),
+    e("github_project_remove", Group::GitHub, true, false, false),
+    e("github_project_draft", Group::GitHub, true, false, false),
+    e("github_project_to_issue", Group::GitHub, true, false, false),
     // -- Orchestration: a job handed out between AI tabs (`orch`) -------------
     // Open to an AI: they are how one AI sees work through with others, and
     // every one of them is bounded by the record (a tab named or opened for
@@ -576,6 +584,12 @@ mod tests {
                 "github_projects",
                 "github_project",
                 "github_project_set",
+                "github_project_add",
+                "github_project_move",
+                "github_project_archive",
+                "github_project_remove",
+                "github_project_draft",
+                "github_project_to_issue",
                 "read_path",
                 "list_path",
                 "write_path",
