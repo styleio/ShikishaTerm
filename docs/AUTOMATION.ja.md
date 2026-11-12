@@ -1345,6 +1345,9 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_issue_state(タブ, 番号, 状態, {duplicate_of=…})` | `open`・`completed`・`not_planned`・`duplicate`（`duplicate_of` と一緒に。「Duplicate of #番号」のコメントも付く） |
 | `shikisha.github_pr_state(タブ, 番号, "open" か "closed")` | プルリクエストをマージせずに閉じる、または開き直す |
 | `shikisha.github_pr_merge(タブ, 番号, 方法)` | マージする: `squash`（既定）・`merge`・`rebase`。ブランチはそのまま残す |
+| `shikisha.github_projects(タブ)` | リポジトリに関係する GitHub Project の一覧。リポジトリに紐づくもの、持ち主（組織・人）のもの、アカウント自身のものの順。`{projects, hidden}` を返し、各 `{id, number, title, owner, org, url, closed, cards, from}`。`hidden` はトークンで見られなかった数。トークンに Projects の権限が要る |
+| `shikisha.github_project(タブ, アドレス, {view=…, filter=…})` | GitHub Project を 1 つ、ビューの見せ方で読む。`アドレス` は Project のページ（`https://github.com/orgs/<持ち主>/projects/<番号>`）か `持ち主/番号`。`{id, title, url, fields, views, view, filter, columns, cards}` を返す。`fields` は各 `{id, name, type, options, iterations}`、`views` は各 `{number, name, layout, filter, fields, group, lanes, sort}`、`columns` はボードの列になる項目、`cards` は各 `{id, kind, number, title, url, state, repo, assignees, labels, updated, values}`（`values` は項目の id ごと）。`view` はビューの番号（無ければ最初のビュー）、`filter` はビューの絞り込みの代わりに使う GitHub の検索語。カードが 1000 枚を超えるビューは断る |
+| `shikisha.github_project_set(タブ, project_id, card_id, field_id, 値)` | カード 1 枚の 1 項目を書き換える。値は `{option=id}`・`{iteration=id}`・`{text=…}`・`{number=…}`・`{date="YYYY-MM-DD"}`、`nil` で消す。id は `github_project` が返したもの |
 
 ### ファイル・通信
 

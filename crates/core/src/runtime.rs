@@ -10368,6 +10368,43 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 }
                 continue;
             }
+            // The GitHub Project chosen on the Issue tab for one of the desk's
+            // projects, written into that project's git settings as its plain
+            // address (what the page had after it, a card opened, is not
+            // kept). An address that is not one is refused before it is
+            // written; an empty one takes the choice off
+            if act == "gh_project_pick" {
+                let text = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let (name, at) = (text("project"), text("ref"));
+                let parsed = crate::ghproject::GhRef::parse(&at);
+                let wrote = if !at.is_empty() && parsed.is_none() {
+                    Err(i18n::t("err.ghproject.bad_ref"))
+                } else if !desk.projects.iter().any(|p| p.name == name) {
+                    // Found through a folder, never written down: there is no
+                    // line of the settings to keep it on, and the tab keeps it
+                    Ok(None)
+                } else {
+                    let key = project_key_of(Some(desk), &name);
+                    // Written as it was given when it named its owner's kind;
+                    // `owner/number` stays that, to be looked up when read
+                    let kept = parsed.map(|r| if r.org.is_some() { r.url() } else { format!("{}/{}", r.owner, r.number) });
+                    config::set_project_git_value(&desk.uid, &key, "github_project", kept.clone().map(|k| serde_json::json!(k)))
+                        .map(|()| Some(kept.unwrap_or_default()))
+                        .map_err(|e| format!("{e:#}"))
+                };
+                let js = match wrote {
+                    // What the settings now say, for the tab to know its
+                    // choice when the settings are read back
+                    Ok(kept) => serde_json::json!({"act": act, "ok": true, "project": name, "kept": kept.is_some(), "ref": kept}),
+                    Err(why) => serde_json::json!({"act": act, "ok": false, "project": name, "error": why}),
+                }
+                .to_string();
+                shell.push_issues(&js);
+                if let Some(r) = remote_ui.as_ref() {
+                    r.push_state(format!("{{\"issues\":{js}}}"));
+                }
+                continue;
+            }
             // Something for the AI to write into a form: an issue from the notes
             // in its description, or a pull request from a branch's commits. The
             // desk's prompt with its words filled in, then the shape of the answer;
@@ -10628,6 +10665,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             "at": s.at.display().to_string(),
                             "repo": s.repo,
                             "account": s.git.written(),
+                            // The GitHub Project chosen for it on the Issue tab.
+                            // Only a project written in the settings can keep one
+                            "gh_project": desk.git_of_project(&s.name).github_project,
+                            "kept": desk.projects.iter().any(|p| p.name == s.name),
                         })
                     })
                     .collect();

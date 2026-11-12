@@ -1372,6 +1372,11 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("issue_state", _) => "github_issue_state",
         ("pr_state", _) => "github_pr_state",
         ("merge", _) => "github_pr_merge",
+        // A GitHub Project: the ones there are, one read as a view shows it,
+        // and one card's value in one field changed
+        ("gh_projects", _) => "github_projects",
+        ("gh_project", _) => "github_project",
+        ("gh_project_set", _) => "github_project_set",
         // Bringing a pull request's branch here is a fetch, and is allowed as one
         ("prepare", _) => "git_fetch",
         _ => return None,
@@ -1637,13 +1642,33 @@ pub fn answer(
             .map(|()| json!(true)),
         "merge" => hub.merge_pull(&repo, number, &s("method")),
         "prepare" => prepare_pull(source, &hub, &repo, number, look),
+        // A GitHub Project is read as the account of the project it is
+        // reached through, wherever on GitHub it is
+        "gh_projects" => crate::ghproject::list(&hub, &repo),
+        "gh_project" => {
+            let at = crate::ghproject::GhRef::parse(&s("ref")).ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_ref")))?;
+            let view = args.get("view").and_then(|v| v.as_u64());
+            let filter = args.get("filter").and_then(|f| f.as_str());
+            crate::ghproject::read(&hub, &at, view, filter).map(|mut v| {
+                v["ref"] = json!(s("ref"));
+                v
+            })
+        }
+        "gh_project_set" => crate::ghproject::set_value(
+            &hub,
+            &s("id"),
+            &s("card"),
+            &s("field"),
+            args.get("value").unwrap_or(&Value::Null),
+        )
+        .map(|()| json!({"card": s("card"), "field": s("field")})),
         other => Err(anyhow!("unknown request {other}")),
     });
     match done {
         Ok(data) => with(base, json!({"ok": true, "number": number, "data": data})),
         Err(e) => with(
             base,
-            json!({"ok": false, "number": number, "error": format!("{e:#}")}),
+            json!({"ok": false, "number": number, "error": format!("{e:#}"), "settings": settings_fix(&e)}),
         ),
     }
 }
@@ -1839,6 +1864,13 @@ impl Hub {
             bail!("{e}");
         }
         Ok(v)
+    }
+
+    /// GitHub's answer to a query as it came, errors and all, even when it
+    /// carries no data: for a caller that reads GitHub's reasons itself (an
+    /// answer refused for a token's missing scope has no data at all)
+    pub fn graphql_whole(&self, query: &str, variables: Value) -> Result<Value> {
+        self.call("POST", "graphql", Some(json!({"query": query, "variables": variables})))
     }
 
     /// The review threads of a pull request nobody has marked resolved, as

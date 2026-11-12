@@ -4251,6 +4251,33 @@ impl HookEngine {
                 let _ = &args;
                 hub.assignees(&repo).map(|l| serde_json::json!(l))
             });
+            // GitHub Projects, read and written as the account of the project
+            // the tab is in: the ones that matter to its repository, one as a
+            // view of it shows it, and one card's value in one field
+            github!("github_projects", |lua, repo, hub, args| {
+                let _ = &args;
+                crate::ghproject::list(&hub, &repo)
+            });
+            github!("github_project", |lua, repo, hub, args| {
+                let _ = &repo;
+                let at = arg(&args, 0);
+                let opts = arg(&args, 1);
+                crate::ghproject::GhRef::parse(at.as_str().unwrap_or_default())
+                    .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.ghproject.bad_ref")))
+                    .and_then(|at| {
+                        crate::ghproject::read(
+                            &hub,
+                            &at,
+                            opts.get("view").and_then(|v| number(v).ok()),
+                            opts.get("filter").and_then(|f| f.as_str()),
+                        )
+                    })
+            });
+            github!("github_project_set", |lua, repo, hub, args| {
+                let _ = &repo;
+                let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
+                crate::ghproject::set_value(&hub, &id(0), &id(1), &id(2), &arg(&args, 3)).map(|()| serde_json::Value::Bool(true))
+            });
         }
         {
             // Every primitive there is, read off the table itself at the moment

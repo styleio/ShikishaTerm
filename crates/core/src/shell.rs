@@ -2198,6 +2198,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     border-top:1px solid var(--line); cursor:pointer; }
   #issuespanel .irow:first-child { border-top:0; }
   #issuespanel .irow:hover { background:var(--panel2); }
+  #issuespanel .faint { color:var(--faint); }
+  #issuespanel > .bwarn { margin:var(--s2) var(--s3) 0; }
+  /* A GitHub Project: its views and filter under the bar, then a board of
+     columns side by side, or a table that scrolls both ways inside its frame */
+  #issuespanel .bar.sub { position:static; border-bottom:0; padding-bottom:0; }
+  #issuespanel .ghcols { display:flex; gap:var(--s3); padding:var(--s3); overflow-x:auto; align-items:flex-start; }
+  #issuespanel .ghcol { flex:0 0 264px; background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--r-ctl); padding-bottom:var(--s2); }
+  #issuespanel .ghcol.drop { border-color:var(--brand); }
+  #issuespanel .ghhead { display:flex; gap:var(--s2); align-items:center; padding:var(--s2) var(--s3);
+    font-size:12px; font-weight:600; border-bottom:1px solid var(--line); }
+  #issuespanel .ghhead .n { color:var(--faint); font-weight:400; }
+  #issuespanel .ghcard { margin:var(--s2) var(--s2) 0; padding:var(--s2) var(--s3); background:var(--bg);
+    border:1px solid var(--line); border-radius:var(--r-ctl); cursor:pointer; display:flex; flex-direction:column; gap:4px; }
+  #issuespanel .ghcard:hover { border-color:var(--edge-hi); }
+  #issuespanel .ghcard.shut { cursor:default; color:var(--dim); }
+  #issuespanel .ghcard .row { display:flex; align-items:flex-start; gap:var(--s2); }
+  #issuespanel .ghcard .t { line-height:1.45; overflow-wrap:anywhere; padding-top:6px; }
+  #issuespanel .ghcard .mv { padding:0 var(--s2); margin:0 calc(-1 * var(--s2)) 0 0; }
+  #issuespanel .ghcard .m { font-size:11.5px; color:var(--dim); }
+  #issuespanel .ghtwrap { margin:var(--s3); overflow:auto; border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #issuespanel table.ght { border-collapse:collapse; width:max-content; min-width:100%; font-size:12.5px; }
+  #issuespanel .ght th { text-align:left; font-weight:500; color:var(--dim); padding:var(--s2) var(--s3);
+    border-bottom:1px solid var(--line); background:var(--bg); white-space:nowrap; }
+  #issuespanel .ght td { padding:2px var(--s3); border-top:1px solid var(--line); max-width:420px; }
+  #issuespanel .ght td.tt { white-space:normal; min-width:240px; }
+  #issuespanel .ght .ttl { cursor:pointer; }
+  #issuespanel .ght .ttl:hover { text-decoration:underline; }
+  #issuespanel .ght td input { width:150px; }
+  #issuespanel .ght tr.grp td { background:var(--panel); font-weight:600; font-size:12px; padding:var(--s2) var(--s3); }
   #issuespanel .irow .num { flex:0 0 48px; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
   #issuespanel .irow .main { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:var(--s1); }
   #issuespanel .irow .title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -5795,7 +5825,7 @@ window.addEventListener("message", e => {
 // its own and asks again after anything that changes something.
 let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:1,
           list:null, problems:[], total:0, busy:"", said:"", bad:false,
-          view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0},
+          view:"list", detail:null, options:{}, armed:"", dupOf:"", want:{list:0, detail:0, gh_project:0, gh_projects:0},
           // Where a conflicted pull request's branch is on this PC, as last asked
           place:null,
           create:issueBlank(),
@@ -5811,7 +5841,18 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // The press that was answered with why it waits (makeFoot)
           heldPress:"",
           // Comments being written, by project#number
-          comments:{} };
+          comments:{},
+          // The GitHub Project shown as the third kind: which project of the
+          // desk it is read through, its address and view, the filter written
+          // here (null: the view's own), what GitHub answered, and the list
+          // of them to choose from
+          gh:{project:"", ref:"", view:null, filter:null, data:null, err:"", errFix:false,
+              list:null, listErr:"", listFix:false, hidden:0, picking:false, typed:"",
+              // Each change of what GitHub answered, so the screen can tell it
+              // has changed without comparing every card; changes on their way
+              // to GitHub, oldest first; a choice on its way into the
+              // settings; and the choices of projects the settings do not have
+              rev:0, sending:[], pickPending:null, unkept:{}} };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -5829,12 +5870,12 @@ function issuesAsk(act, args) {
   // Only the newest list and the newest detail count: a slow answer to a
   // question since replaced (another project, another filter, back) is dropped
   const seq = ++issuesSeq;
-  if (act === "list" || act === "detail") I.want[act] = seq;
+  if (act === "list" || act === "detail" || act === "gh_project" || act === "gh_projects") I.want[act] = seq;
   send({kind:"issues", act, args: Object.assign({kind: I.kind, seq}, args || {})});
   drawIssues();
 }
 // Requests that fill part of a page without holding the whole of it
-const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file", "pr_place"]);
+const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file", "pr_place", "gh_project_set", "gh_project_pick"]);
 // While something is being waited for, the seconds on the busy line move once a
 // second -- only that number, never the page under it
 let issuesTick = 0;
@@ -5885,6 +5926,8 @@ function issuesSecs() {
     : (T["issues.busy.secs"] || "{n}").replaceAll("{n}", n);
 }
 function issuesList(page) {
+  // A GitHub Project is not a list of pages: it is read whole, as its view shows it
+  if (I.kind === "ghp") { ghpRead(I.gh.data !== null); return; }
   I.page = page || 1;
   const preset = (ISSUE_PRESETS[I.kind].find(p => p[0] === I.preset) || ISSUE_PRESETS[I.kind][0])[1];
   issuesAsk("list", Object.assign({project: I.project, text: I.text, page: I.page}, preset));
@@ -5999,7 +6042,7 @@ window.__issues = function (d) {
   if (d.act === "reload") {
     if (I.projects === null) return;
     issuesAsk("projects", {});
-    if (I.view === "detail" && I.detail) issuesAsk("detail", {project: I.detail.project, number: I.detail.number});
+    if (I.view === "detail" && I.detail) issuesAsk("detail", {project: I.detail.project, number: I.detail.number, kind: I.detail.kind});
     issuesList(I.page);
     return;
   }
@@ -6013,7 +6056,8 @@ window.__issues = function (d) {
       .concat((d.gh || []).map(a => { const name = "@gh:" + a.host + "/" + a.login; return {name, label: pcAcctLabel(name)}; }));
     if (ghWaiting) { ghWaiting = false; ghSearch(ghText); }
     if (I.project && !issueProject(I.project)) I.project = "";
-    if (!I.list) issuesList(1);
+    ghpProjects();
+    if (!I.list && I.kind !== "ghp") issuesList(1);
     drawIssues();
     return;
   }
@@ -6026,7 +6070,10 @@ window.__issues = function (d) {
     else drawIssues();
     return;
   }
+  if (d.act === "gh_projects" || d.act === "gh_project" || d.act === "gh_project_set" || d.act === "gh_project_pick") { ghpAnswer(d); return; }
   if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
+  // A list asked for before the tab was switched to something else
+  if (d.act === "list" && (d.kind || "issue") !== I.kind) return;
   if (!ISSUE_QUIET.has(d.act)) I.busy = "";
   if (!d.ok) {
     I.said = d.error || ""; I.bad = true;
@@ -6037,7 +6084,7 @@ window.__issues = function (d) {
     if (d.act === "merge" && I.detail) {
       const seq = ++issuesSeq;
       I.want.detail = seq;
-      send({kind:"issues", act:"detail", args:{kind: I.kind, seq, project: I.detail.project, number: I.detail.number}});
+      send({kind:"issues", act:"detail", args:{kind: I.detail.kind || I.kind, seq, project: I.detail.project, number: I.detail.number}});
     }
     if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
     // Not made for what its template still requires: those fields say so
@@ -6156,7 +6203,9 @@ window.__issues = function (d) {
     case "merge":
       I.armed = ""; I.dupOf = "";
       if (d.act === "merge") I.said = T["issues.merged"] || "";
-      issuesAsk("detail", {project: d.project, number: d.number});
+      // As what it is: a pull request opened from a GitHub Project's card is
+      // one while the tab lists something else
+      issuesAsk("detail", {project: d.project, number: d.number, kind: (I.detail && I.detail.kind) || d.kind});
       issuesList(I.page);
       return;
     case "prepare": {
@@ -6226,7 +6275,9 @@ function drawIssues() {
   // is being typed in: a list redrawn under the cursor takes the words away
   const typing = document.activeElement && box.contains(document.activeElement)
     && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
-  const sig = JSON.stringify([I, (S && S.groups || []).map(g => g.work_item)]);
+  // A GitHub Project's cards are many: they count by their change number
+  const sig = JSON.stringify([I, (S && S.groups || []).map(g => g.work_item)],
+    (k, v) => v !== null && v === I.gh.data ? "rev" + I.gh.rev : v);
   if (sig === issuesSig || typing) return;
   issuesSig = sig;
   box.textContent = "";
@@ -6238,6 +6289,7 @@ function drawIssues() {
   if (I.view === "detail" && I.detail) return drawIssueDetail(box);
   if (I.view === "create") return drawIssueCreate(box);
   if (I.view === "newpr") return drawPrCreate(box);
+  if (I.kind === "ghp") return drawGhProject(box);
   drawIssueList(box);
 }
 
@@ -6258,15 +6310,21 @@ function issueSaid() {
   return words ? el("div", {class:"said" + (I.bad ? " bad" : "")}, words) : null;
 }
 
-function drawIssueList(box) {
-  // First line: what is listed, and the one thing to make. Second: how it is narrowed
+// What the tab lists: issues, pull requests, or a GitHub Project
+function issueKinds() {
   const kinds = el("span", {class:"seg"});
-  for (const k of ["issue", "pr"]) {
+  for (const k of ["issue", "pr", "ghp"]) {
     kinds.append(el("button", {class: I.kind === k ? "on" : "", onclick:() => {
       if (I.kind === k) return;
-      I.kind = k; I.preset = "open"; I.list = null; issuesList(1);
+      I.kind = k; I.preset = "open"; I.list = null; I.said = ""; I.bad = false;
+      if (k === "ghp") { ghpRead(); drawIssues(); } else issuesList(1);
     }}, T["issues.kind." + k] || k));
   }
+  return kinds;
+}
+function drawIssueList(box) {
+  // First line: what is listed, and the one thing to make. Second: how it is narrowed
+  const kinds = issueKinds();
   const pick = el("select", {title: T["issues.project"] || ""});
   pick.append(el("option", {value:""}, T["issues.project.all"] || ""));
   for (const p of I.projects) pick.append(el("option", {value:p.name}, p.name));
@@ -6340,6 +6398,424 @@ function drawIssueList(box) {
       el("span", {}, (T["issues.page"] || "{n}").replaceAll("{n}", I.page).replaceAll("{total}", Math.ceil(I.total / 36))),
       el("button", {class:"quiet", onclick:() => issuesList(I.page + 1)}, (T["issues.page.next"] || "") + " ›")));
   }
+}
+
+// ── GitHub Projects, the Issue tab's third kind ───────────
+// A GitHub Project is read through one of the desk's projects, as that
+// project's account: the one the desk already chose for the repository the
+// board is about. Which GitHub Project is kept in that project's git
+// settings; which of its views was looked at is this screen's own, kept in
+// the browser beside it -- a setting written on every press of a view would
+// read every setting of the app again each time. What is on screen is what
+// GitHub answered last; a value changed here is shown at once, sent in the
+// order it was changed, and read back from GitHub once all of them are in
+let ghpDragging = "";
+function ghpViews() {
+  try { return JSON.parse(localStorage.getItem("ghp.views") || "{}") || {}; } catch (e) { return {}; }
+}
+function ghpKeepView(ref, n) {
+  try { const v = ghpViews(); v[ref] = n; localStorage.setItem("ghp.views", JSON.stringify(v)); } catch (e) { /* only a convenience */ }
+}
+// The GitHub Project a project of the desk has: the one its settings keep,
+// or for a project the settings do not have, the one chosen on this screen
+function ghpChosen(p) {
+  return (p && (p.kept ? p.gh_project : I.gh.unkept[p.name])) || "";
+}
+function ghpHome() {
+  const g = I.gh;
+  if (g.project && issueProject(g.project)) return issueProject(g.project);
+  const p = (I.projects || []).find(x => x.gh_project) || issueProject(I.project) || (I.projects || [])[0] || null;
+  if (p) ghpAt(p);
+  return p;
+}
+// Stand on a project of the desk, with the GitHub Project it has
+function ghpAt(p) {
+  const g = I.gh;
+  const ref = ghpChosen(p);
+  Object.assign(g, {project: p.name, ref, view: ghpViews()[ref] || null, filter: null, data: null, err: "",
+    list: null, listErr: "", picking: false});
+  g.rev++;
+}
+// The projects of the desk as the app has just said them: a GitHub Project
+// chosen elsewhere -- another screen, the settings, another desk with a
+// project of the same name -- is taken up, unless this screen has just
+// chosen one that is still on its way into the settings
+function ghpProjects() {
+  const g = I.gh;
+  const p = g.project && issueProject(g.project);
+  if (!p) { if (g.project) { g.project = ""; g.ref = ""; g.data = null; g.rev++; } return; }
+  const ref = ghpChosen(p);
+  if (g.pickPending !== null) { if (ref === g.pickPending) g.pickPending = null; return; }
+  if (ref !== g.ref) { ghpAt(p); if (I.kind === "ghp") ghpRead(); }
+}
+// Read the GitHub Project as its view shows it. Quiet after a change: the cards
+// stay on screen while GitHub is asked again, with no band over them
+function ghpRead(quiet) {
+  const g = I.gh, p = ghpHome();
+  if (!p) return;
+  if (!g.ref) { g.picking = true; if (g.list === null) ghpList(); drawIssues(); return; }
+  const args = {project: p.name, ref: g.ref, view: g.view, filter: g.filter};
+  if (!quiet) { issuesAsk("gh_project", args); return; }
+  const seq = ++issuesSeq;
+  I.want.gh_project = seq;
+  send({kind:"issues", act:"gh_project", args: Object.assign({kind:"ghp", seq}, args)});
+}
+function ghpList() {
+  const p = ghpHome();
+  if (p) issuesAsk("gh_projects", {project: p.name});
+}
+// The choice, kept on the project's settings line (on this screen, for a
+// project the settings do not have) and read at once
+function ghpPick(ref) {
+  const g = I.gh, p = ghpHome();
+  if (!p) return;
+  Object.assign(g, {ref, view: ghpViews()[ref] || null, filter: null, data: null, err: "", picking: false, typed: ""});
+  g.rev++;
+  if (p.kept) g.pickPending = ref;
+  else g.unkept[p.name] = ref;
+  send({kind:"issues", act:"gh_project_pick", args:{kind:"ghp", project: p.name, ref}});
+  ghpRead();
+}
+function ghpView(n) {
+  const g = I.gh;
+  if (g.view === n) return;
+  Object.assign(g, {view: n, filter: null});
+  ghpKeepView(g.ref, n);
+  ghpRead();
+}
+function ghpAnswer(d) {
+  const g = I.gh;
+  if ((d.act === "gh_project" || d.act === "gh_projects") && d.seq !== I.want[d.act]) return;
+  if (!ISSUE_QUIET.has(d.act)) I.busy = "";
+  switch (d.act) {
+    case "gh_projects":
+      g.list = d.ok ? ((d.data || {}).projects || []) : [];
+      g.hidden = d.ok ? ((d.data || {}).hidden || 0) : 0;
+      g.listErr = d.ok ? "" : (d.error || "");
+      g.listFix = !d.ok && !!d.settings;
+      break;
+    case "gh_project":
+      // Not while changes are still on their way: what GitHub says now is
+      // from before them, and would put the cards back for a moment
+      if (g.sending.length) break;
+      if (d.ok) { g.data = d.data || null; g.view = (d.data || {}).view || null; g.err = ""; g.errFix = false; }
+      else { g.err = d.error || ""; g.errFix = !!d.settings; }
+      g.rev++;
+      break;
+    case "gh_project_set":
+      if (!d.ok) { I.said = d.error || ""; I.bad = true; }
+      g.sending.shift();
+      // The next change goes once this one is in, so GitHub has them in the
+      // order they were made; after the last, the board is read back
+      if (g.sending.length) send(g.sending[0]);
+      else ghpRead(true);
+      break;
+    case "gh_project_pick":
+      if (!d.ok) { I.said = d.error || ""; I.bad = true; g.pickPending = null; }
+      // Kept as its plain address: that is what the settings will be read back with
+      else if (d.kept && g.pickPending !== null && d.project === g.project) {
+        if (d.ref !== g.ref && g.view !== null) ghpKeepView(d.ref, g.view);
+        g.pickPending = d.ref; g.ref = d.ref;
+      }
+      break;
+  }
+  drawIssues();
+}
+// What a value is shown as until GitHub has been read again
+function ghpShown(field, value) {
+  if (value.option) return {option: value.option, name: ((field.options || []).find(o => o.id === value.option) || {}).name || ""};
+  if (value.iteration) return Object.assign({iteration: value.iteration}, ((field.iterations || []).find(i => i.id === value.iteration) || {}));
+  return value;
+}
+function ghpSet(card, field, value) {
+  const g = I.gh, d = g.data;
+  if (!d || card.kind === "hidden") return;
+  if (value === null) delete card.values[field.id];
+  else card.values[field.id] = ghpShown(field, value);
+  g.rev++;
+  g.sending.push({kind:"issues", act:"gh_project_set", args:{kind:"ghp", project: g.project, id: d.id, card: card.id, field: field.id, value}});
+  if (g.sending.length === 1) send(g.sending[0]);
+  drawIssues();
+}
+// A card is opened where its issue or pull request already opens: the page of
+// it on this tab, when its repository is one of the desk's projects. Else on GitHub
+function ghpOpen(c) {
+  const repo = String(c.repo || "").toLowerCase();
+  const p = repo && (I.projects || []).find(x => String(x.repo || "").toLowerCase() === repo);
+  if (p && (c.kind === "issue" || c.kind === "pr") && c.number) {
+    issuesAsk("detail", {project: p.name, number: c.number, kind: c.kind});
+    return;
+  }
+  if (c.url) ghpAway(c.url);
+}
+function ghpAway(url) {
+  if (typeof REMOTE !== "undefined" && REMOTE) { window.open(url, "_blank", "noopener"); return; }
+  send({kind:"issues", act:"link", args:{url}});
+}
+// A field's value on a card, as the cards are put in order, in groups and in
+// columns. The fields GitHub fills in from the issue itself are read off it
+function ghpKey(card, field) {
+  if (field.type === "ASSIGNEES") return (card.assignees || []).join(", ") || null;
+  if (field.type === "LABELS") return (card.labels || []).map(l => l.name).join(", ") || null;
+  if (field.type === "REPOSITORY") return card.repo || null;
+  const v = card.values[field.id];
+  if (!v) return null;
+  return field.type === "ITERATION" ? v.iteration : field.type === "SINGLE_SELECT" ? v.option
+    : v.milestone !== undefined ? v.milestone
+    : v.text !== undefined ? v.text : v.number !== undefined ? v.number : v.date !== undefined ? v.date : null;
+}
+function ghpWords(card, field) {
+  const v = card.values[field.id];
+  if (field.type === "TITLE") return card.title || "";
+  if (field.type === "ASSIGNEES") return (card.assignees || []).join(", ");
+  if (field.type === "LABELS") return (card.labels || []).map(l => l.name).join(", ");
+  if (field.type === "REPOSITORY") return card.repo || "";
+  if (!v) return "";
+  return v.name || v.title || v.milestone || (v.text !== undefined ? v.text : v.number !== undefined ? String(v.number) : v.date || "");
+}
+// The view's own order: each field it sorts by, the empty ones last, then the
+// board's own order (the order GitHub listed them in)
+function ghpSorted(cards, view, fields) {
+  const sort = (view && view.sort || []).map(s => ({f: fields.find(x => x.id === s.field), desc: s.desc})).filter(s => s.f);
+  if (!sort.length) return cards.slice();
+  const rank = (f, c) => {
+    const k = ghpKey(c, f);
+    if (f.type === "TITLE") return c.title || "";
+    if (k === null || k === undefined || k === "") return null;
+    if (f.type === "SINGLE_SELECT") return (f.options || []).findIndex(o => o.id === k);
+    if (f.type === "ITERATION") return (f.iterations || []).findIndex(i => i.id === k);
+    return k;
+  };
+  return cards.map((c, i) => ({c, i})).sort((a, b) => {
+    for (const s of sort) {
+      const x = rank(s.f, a.c), y = rank(s.f, b.c);
+      if (x === y) continue;
+      if (x === null) return 1;
+      if (y === null) return -1;
+      const n = typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y));
+      if (n) return s.desc ? -n : n;
+    }
+    return a.i - b.i;
+  }).map(e => e.c);
+}
+// The choices a field offers, as a list under what was pressed
+function ghpChoose(anchor, card, field) {
+  const rows = [];
+  const pick = (value) => el("div", {onclick:() => { closeFolderMenu(); ghpSet(card, field, value); }});
+  if (field.type === "SINGLE_SELECT") {
+    for (const o of field.options || []) { const r = pick({option: o.id}); r.textContent = o.name; rows.push(r); }
+  } else {
+    for (const i of field.iterations || []) { const r = pick({iteration: i.id}); r.textContent = i.title + (i.start ? "  " + i.start : ""); rows.push(r); }
+  }
+  if (card.values[field.id]) { const r = pick(null); r.textContent = T["ghp.clear"] || ""; rows.push(r); }
+  openList(anchor, rows, rows.length > 10);
+}
+function ghpCell(card, field) {
+  const v = card.values[field.id];
+  const shut = card.kind === "hidden";
+  if (field.type === "TITLE") {
+    const kind = card.kind === "draft" ? T["ghp.draft_card"] : card.kind === "hidden" ? T["ghp.hidden_card"] : "";
+    return el("td", {class:"tt"},
+      el("span", {class:"ttl", onclick:() => ghpOpen(card)}, card.title || kind || ""),
+      card.number ? el("span", {class:"faint"}, " #" + card.number) : null,
+      kind && card.title ? el("span", {class:"faint"}, " · " + kind) : null);
+  }
+  if (field.type === "SINGLE_SELECT" || field.type === "ITERATION") {
+    const b = el("button", {class:"quiet"}, ghpWords(card, field) || "—");
+    b.disabled = shut;
+    b.onclick = e => { e.stopPropagation(); ghpChoose(b, card, field); };
+    return el("td", {}, b);
+  }
+  if (field.type === "DATE" || field.type === "NUMBER" || field.type === "TEXT") {
+    const type = field.type === "DATE" ? "date" : field.type === "NUMBER" ? "number" : "text";
+    const box = el("input", {type});
+    box.value = v ? (v.date || (v.number !== undefined ? String(v.number) : v.text) || "") : "";
+    box.disabled = shut;
+    box.onkeydown = e => { if (e.key === "Enter" && !typingIME(e)) box.blur(); };
+    box.onchange = () => {
+      const t = box.value.trim();
+      ghpSet(card, field, !t ? null : type === "date" ? {date: t} : type === "number" ? {number: Number(t)} : {text: box.value});
+    };
+    return el("td", {}, box);
+  }
+  return el("td", {class:"dim"}, ghpWords(card, field));
+}
+function ghpTable(d, view) {
+  const all = d.fields || [];
+  let shown = ((view && view.fields) || []).map(id => all.find(f => f.id === id)).filter(Boolean);
+  if (!shown.length) shown = all.slice();
+  const title = all.find(f => f.type === "TITLE");
+  if (title && !shown.includes(title)) shown.unshift(title);
+  const group = view && view.group ? all.find(f => f.id === view.group) : null;
+  const cards = ghpSorted(d.cards || [], view, all);
+  const table = el("table", {class:"ght"}, el("thead", {}, el("tr", {}, ...shown.map(f => el("th", {}, f.name)))));
+  const body = el("tbody");
+  const row = c => el("tr", {}, ...shown.map(f => ghpCell(c, f)));
+  if (group) {
+    // In the field's own order, the cards with no value in it last
+    const order = (group.options || group.iterations || []).map(o => o.id);
+    const keys = [];
+    for (const c of cards) { const k = ghpKey(c, group); if (!keys.includes(k)) keys.push(k); }
+    keys.sort((a, b) => (a === null) - (b === null) || (order.indexOf(a) - order.indexOf(b))
+      || (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))));
+    for (const k of keys) {
+      const these = cards.filter(c => ghpKey(c, group) === k);
+      const name = k === null ? (T["ghp.no_value"] || "{field}").replaceAll("{field}", group.name) : ghpWords(these[0], group);
+      body.append(el("tr", {class:"grp"}, el("td", {colspan: String(shown.length)}, name + "  ", el("span", {class:"faint"}, String(these.length)))));
+      for (const c of these) body.append(row(c));
+    }
+  } else for (const c of cards) body.append(row(c));
+  table.append(body);
+  return el("div", {class:"ghtwrap"}, table);
+}
+// One card on the board: what it is about, whose, and the way to move it that
+// works without a mouse too (a phone cannot drag)
+function ghpCard(c, field, cols) {
+  const meta = [c.number ? "#" + c.number : "", c.repo ? String(c.repo).split("/").pop() : "",
+    c.kind === "draft" ? T["ghp.draft_card"] : "", c.state && c.state !== "open" ? (T["issues.state." + c.state] || c.state) : ""].filter(Boolean).join(" · ");
+  const move = el("button", {class:"quiet", title: T["ghp.move"] || ""}, "⋯");
+  move.onclick = e => {
+    e.stopPropagation();
+    const rows = cols.filter(col => col.drop !== undefined && col.id !== ghpKey(c, field)).map(col =>
+      el("div", {onclick:() => { closeFolderMenu(); ghpSet(c, field, col.drop); }}, col.name));
+    openList(move, rows, rows.length > 10);
+  };
+  const card = el("div", {class:"ghcard" + (c.kind === "hidden" ? " shut" : ""), draggable: c.kind === "hidden" ? "false" : "true",
+      onclick:() => ghpOpen(c)},
+    el("div", {class:"row"}, el("span", {class:"t grow"}, c.title || T["ghp.hidden_card"] || ""), c.kind === "hidden" ? null : move),
+    meta ? el("div", {class:"m"}, meta) : null,
+    (c.assignees || []).length || (c.labels || []).length
+      ? el("div", {class:"m"}, [...(c.assignees || []), ...(c.labels || []).slice(0, 3).map(l => l.name)].join(" · ")) : null);
+  // Kept out of the tab's state: the board is drawn again whenever that
+  // changes, and drawn again under a drag it would lose the card being dragged
+  card.addEventListener("dragstart", e => { e.dataTransfer.setData("text/plain", c.id); e.dataTransfer.effectAllowed = "move"; ghpDragging = c.id; });
+  card.addEventListener("dragend", () => { ghpDragging = ""; });
+  return card;
+}
+function ghpBoard(d, view) {
+  const all = d.fields || [];
+  const field = all.find(f => f.id === d.columns);
+  if (!field) return null;
+  // Every choice a column, in the field's order and empty or not; a value whose
+  // choice is gone from the field a column that cannot be dropped on; the
+  // cards with no value last, dropping on which takes the value off
+  const iter = field.type === "ITERATION";
+  const cols = (iter ? (field.iterations || []).map(i => ({id: i.id, name: i.title, done: i.done}))
+    : (field.options || []).map(o => ({id: o.id, name: o.name}))).map(c => Object.assign(c, {drop: iter ? {iteration: c.id} : {option: c.id}}));
+  const cards = ghpSorted(d.cards || [], view, all);
+  for (const c of cards) {
+    const k = ghpKey(c, field);
+    if (k !== null && !cols.some(col => col.id === k)) cols.push({id: k, name: ghpWords(c, field), drop: undefined});
+  }
+  cols.push({id: null, name: (T["ghp.no_value"] || "{field}").replaceAll("{field}", field.name), drop: null});
+  const wrap = el("div", {class:"ghcols"});
+  for (const col of cols) {
+    const these = cards.filter(c => ghpKey(c, field) === col.id);
+    // A finished iteration with nothing in it is history, not a place to work
+    if (col.done && !these.length) continue;
+    const box = el("div", {class:"ghcol"},
+      el("div", {class:"ghhead"}, el("span", {class:"grow"}, col.name), el("span", {class:"n"}, String(these.length))),
+      ...these.map(c => ghpCard(c, field, cols)));
+    if (col.drop !== undefined) {
+      box.addEventListener("dragover", e => { if (ghpDragging) { e.preventDefault(); box.classList.add("drop"); } });
+      box.addEventListener("dragleave", () => box.classList.remove("drop"));
+      box.addEventListener("drop", e => {
+        e.preventDefault();
+        box.classList.remove("drop");
+        const c = (d.cards || []).find(x => x.id === e.dataTransfer.getData("text/plain"));
+        ghpDragging = "";
+        if (c && ghpKey(c, field) !== col.id) ghpSet(c, field, col.drop);
+      });
+    }
+    wrap.append(box);
+  }
+  return wrap;
+}
+// The choosing of a GitHub Project: the ones the account can see that matter
+// to this project's repository, and a place to put one's address
+function ghpPicker(box) {
+  const g = I.gh;
+  const typed = el("input", {type:"text", placeholder: T["ghp.address"] || "", "data-k": "ghpref"});
+  typed.value = g.typed || "";
+  typed.oninput = () => { g.typed = typed.value; };
+  const go = () => { const t = typed.value.trim(); if (t) ghpPick(t); };
+  typed.onkeydown = e => { if (e.key === "Enter" && !typingIME(e)) go(); };
+  box.append(el("div", {class:"bar"}, el("div", {class:"line"}, typed, el("button", {class:"go", onclick: go}, T["ghp.open"] || ""))));
+  if (g.listErr) box.append(warnBox(g.listErr, ...(g.listFix ? [ghpFix()] : [])));
+  const rows = el("div", {class:"irows"});
+  if (g.list === null) rows.append(el("div", {class:"empty"}, T["issues.busy"] || "…"));
+  else if (!g.list.length && !g.listErr) rows.append(el("div", {class:"empty"}, T["ghp.none"] || ""));
+  for (const p of g.list || []) {
+    const from = p.from === "repository" ? T["ghp.from.repository"] : p.from === "mine" ? T["ghp.from.mine"]
+      : (T["ghp.from.owner"] || "{owner}").replaceAll("{owner}", p.owner);
+    rows.append(el("div", {class:"irow", onclick:() => ghpPick(p.url)},
+      el("span", {class:"main"},
+        el("span", {class:"title"}, p.title || ""),
+        el("span", {class:"meta"}, [p.owner + "/" + p.number, from, (T["ghp.cards"] || "{n}").replaceAll("{n}", p.cards || 0),
+          p.closed ? T["ghp.closed"] : ""].filter(Boolean).join(" · "))),
+      el("span", {class:"go-in"}, "›")));
+  }
+  box.append(rows);
+  if (g.hidden) box.append(el("div", {class:"said"}, (T["ghp.hidden"] || "{n}").replaceAll("{n}", g.hidden)));
+}
+// The account's settings, for a token that may not see GitHub Projects
+function ghpFix() {
+  const p = ghpHome();
+  return el("button", {onclick:() => openSettings("project-gitacct", true, p ? (p.at || p.dir) : null)}, T["issues.open_settings"] || "");
+}
+function drawGhProject(box) {
+  const g = I.gh;
+  const home = ghpHome();
+  const pick = el("select", {title: T["issues.project"] || ""});
+  for (const p of I.projects) pick.append(el("option", {value: p.name}, p.name));
+  pick.value = g.project;
+  pick.onchange = () => {
+    const p = issueProject(pick.value);
+    if (!p) return;
+    ghpAt(p);
+    ghpRead();
+  };
+  const d = g.ref ? g.data : null;
+  const which = el("button", {onclick:() => {
+    g.picking = !g.picking;
+    if (g.picking) ghpList();
+    drawIssues();
+  }}, el("span", {}, (d && d.title) || (g.ref && !g.picking ? g.ref : T["ghp.choose"] || "")), "▾");
+  const away = d && d.url ? (() => { const a = mdLink(d.url, (T["ghp.on_github"] || "") + " ↗"); a.classList.add("away"); return a; })() : null;
+  box.append(el("div", {class:"bar"},
+    el("div", {class:"line"}, issueKinds(), pick, which, el("span", {class:"grow"}), away,
+      el("button", {class:"quiet", title: T["issues.refresh"] || "", onclick:() => g.picking ? ghpList() : ghpRead()},
+        "↻", el("span", {class:"wide-only"}, T["issues.refresh"] || "")))));
+  const said = issueSaid();
+  if (said) box.append(said);
+  if (!home) return;
+  if (g.picking || !g.ref) { ghpPicker(box); return; }
+  if (g.err) box.append(warnBox(g.err, ...(g.errFix ? [ghpFix()] : [])));
+  if (!d) { if (!g.err) box.append(el("div", {class:"empty"}, T["issues.busy"] || "…")); return; }
+  const view = (d.views || []).find(w => w.number === d.view) || null;
+  // The views as GitHub keeps them, and the filter: the view's own until
+  // something else is written here, which is GitHub's search and not kept
+  const views = el("span", {class:"seg"});
+  for (const w of d.views || []) {
+    views.append(el("button", {class: w.number === d.view ? "on" : "", title: T["ghp.layout." + w.layout] || "",
+      onclick:() => ghpView(w.number)}, w.name || ("#" + w.number)));
+  }
+  const filter = el("input", {type:"search", placeholder: (view && view.filter) || T["ghp.filter"] || "", "data-k": "ghpfilter"});
+  filter.value = g.filter !== null ? g.filter : (d.filter || "");
+  filter.onkeydown = e => {
+    if (typingIME(e) || e.key !== "Enter") return;
+    g.filter = filter.value.trim() === ((view && view.filter) || "") ? null : filter.value.trim();
+    ghpRead();
+  };
+  box.append(el("div", {class:"bar sub"}, el("div", {class:"line"}, views, filter,
+    el("span", {class:"faint"}, (T["ghp.count"] || "{n}").replaceAll("{n}", (d.cards || []).length)))));
+  if (!(d.cards || []).length) { box.append(el("div", {class:"empty"}, T["ghp.empty"] || "")); return; }
+  if (view && view.layout === "board") {
+    const board = ghpBoard(d, view);
+    if (board) { box.append(board); return; }
+    box.append(el("div", {class:"said"}, T["ghp.no_columns"] || ""));
+  } else if (view && view.layout === "roadmap") box.append(el("div", {class:"said"}, T["ghp.roadmap"] || ""));
+  box.append(ghpTable(d, view));
 }
 
 function drawIssueDetail(box) {

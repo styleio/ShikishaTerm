@@ -4091,6 +4091,24 @@ pub fn set_project_value(desk_id: &str, project: &str, key: &str, value: Option<
     set_project_property(desk_id, project, key, value.map(|v| serde_json::Value::String(v.into())))
 }
 
+/// Writes one of a project's git settings (see [`GitSpec`]), by name: `None`
+/// takes it off, and git settings left with nothing in them go too
+pub fn set_project_git_value(desk_id: &str, project: &str, key: &str, value: Option<serde_json::Value>) -> Result<()> {
+    with_project(&config_file_path(), desk_id, project, None, |p| {
+        let mut git = p.get("git").and_then(|g| g.as_object()).cloned().unwrap_or_default();
+        match value {
+            Some(v) => { git.insert(key.into(), v); }
+            None => { git.shift_remove(key); }
+        }
+        if git.is_empty() {
+            p.shift_remove("git");
+        } else {
+            p.insert("git".into(), serde_json::Value::Object(git));
+        }
+        Ok(())
+    })
+}
+
 fn set_project_property(desk: &str, project: &str, key: &str, value: Option<serde_json::Value>) -> Result<()> {
     with_project(&config_file_path(), desk, project, None, |p| {
         match value {
@@ -4303,6 +4321,11 @@ pub struct GitSpec {
     /// passed or failed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_ci: Option<bool>,
+    /// The GitHub Project the Issue tab shows for this project: its address
+    /// on GitHub (`https://github.com/orgs/<owner>/projects/<n>`) or
+    /// `owner/number`. Chosen on that tab; absent until somebody chooses one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_project: Option<String>,
 }
 
 impl GitSpec {

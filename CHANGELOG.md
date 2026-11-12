@@ -8,6 +8,32 @@ once it reaches its first tagged release.
 
 ## [Unreleased]
 
+### Added
+- **GitHub Projects on the Issue tab.** Beside Issues and Pull requests
+  there is now Project. It lists the GitHub Projects that matter to the
+  repository: the ones linked to it first, then its owner's, then your own.
+  A project can also be opened by its address. The project is read with
+  the account the repository already uses. Its saved views are shown as
+  GitHub keeps them:
+  - **A board** is in columns by its Status, or by the field the view
+    groups by. A card is moved to another column by dragging it or with its
+    ⋯ button, which also works on a phone.
+  - **A table** groups and sorts as the view does. Status, iteration, date,
+    number and text are changed in place.
+
+  The view's filter is GitHub's own search and can be replaced for a look.
+  A card opens on this tab when its repository is one of the desk's
+  projects, else on GitHub. The GitHub Project chosen is kept in the
+  project's git settings, and the view last looked at is remembered on the
+  screen.
+
+  The token needs the Projects permission. Without it, the tab says what to
+  add and offers the account's settings, and the token help in the
+  settings now lists the permission. For automation there are
+  `shikisha.github_projects`, `shikisha.github_project` and
+  `shikisha.github_project_set`, each with its own row in the permission
+  table. Roadmap views are shown as a table for now.
+
 ### Fixed
 - **The git panel's ✨ no longer stays on "The AI is writing the message"
   for good.** The message the AI wrote was lost when the settings were

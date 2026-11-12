@@ -14420,11 +14420,13 @@ function gitTokenPermissions(method = "token") {
     ...(method === "gh" ? [] : [
       el("p", {class:"hint"}, T["settings.gitacct.token_repos"]),
       el("ul", {class:"hint"}, ...[T["settings.gitacct.token_perm_contents"], T["settings.gitacct.token_perm_pulls"],
-        T["settings.gitacct.token_perm_issues"], T["settings.gitacct.token_perm_actions"], T["settings.gitacct.token_perm_workflows"]]
+        T["settings.gitacct.token_perm_issues"], T["settings.gitacct.token_perm_actions"], T["settings.gitacct.token_perm_workflows"],
+        T["settings.gitacct.token_perm_projects"]]
         .map(text => el("li", {}, text)))]),
     el("p", {}, el("strong", {}, T["settings.gitacct.kind_full.classic"])),
     el("p", {class:"hint"}, T[method === "gh" ? "settings.gitacct.permissions.gh" : "settings.gitacct.token_classic"]),
     method === "gh" ? el("p", {class:"hint"}, T["settings.gitacct.permissions.workflow_classic"]) : null,
+    el("p", {class:"hint"}, T["settings.gitacct.permissions.projects_classic"]),
     el("a", {href:"https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens",
       target:"_blank", rel:"noopener noreferrer"}, T["settings.gitacct.token_docs"]));
 }

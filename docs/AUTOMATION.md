@@ -1396,6 +1396,9 @@ The issues and pull requests of the repository a tab works in, signed in as the 
 | `shikisha.github_issue_state(tab, number, state, {duplicate_of=…})` | `open`, `completed`, `not_planned`, or `duplicate` (with `duplicate_of`, which also posts "Duplicate of #n") |
 | `shikisha.github_pr_state(tab, number, "open" or "closed")` | Close a pull request without merging it, or open it again |
 | `shikisha.github_pr_merge(tab, number, method)` | Merge: `squash` (default), `merge` or `rebase`. The branch is left where it is |
+| `shikisha.github_projects(tab)` | The GitHub Projects that matter to the repository: those linked to it first, then its owner's, then the account's own. `{projects, hidden}`, each `{id, number, title, owner, org, url, closed, cards, from}`; `hidden` counts those the token may not see. The token needs the Projects permission |
+| `shikisha.github_project(tab, address, {view=…, filter=…})` | One GitHub Project as one of its views shows it. `address` is its page (`https://github.com/orgs/<owner>/projects/<n>`) or `owner/number`. Answers `{id, title, url, fields, views, view, filter, columns, cards}`: `fields` each `{id, name, type, options, iterations}`, `views` each `{number, name, layout, filter, fields, group, lanes, sort}`, `columns` the field a board view is in columns by, and `cards` each `{id, kind, number, title, url, state, repo, assignees, labels, updated, values}` with `values` by field id. `view` is the view's number (else the first); `filter` replaces the view's own, in GitHub's search words. A view of more than 1000 cards is refused |
+| `shikisha.github_project_set(tab, project_id, card_id, field_id, value)` | Change one card's value in one field: `{option=id}`, `{iteration=id}`, `{text=…}`, `{number=…}` or `{date="YYYY-MM-DD"}`; `nil` takes the value off. The ids are the `id`s `github_project` answers with |
 
 ### Files and the network
 

@@ -63,6 +63,7 @@ pub mod folders;
 pub mod git;
 pub mod gitops;
 pub mod github;
+pub mod ghproject;
 pub mod grants;
 pub mod guest;
 pub mod guide;
