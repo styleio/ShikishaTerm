@@ -3,7 +3,8 @@
  *
  * A folder whose origin is GHP_REPO (owner/name) is made a project of a copy
  * of this checkout's build, signed in as GHP_ACCOUNT: "pc" for the account
- * git on this PC holds, else the token GITHUB_PAT in .private/.env. The Issue
+ * git on this PC holds, else the token GITHUB_PAT in .private/.env (GHP_PAT_VAR
+ * names another variable there to take it from). The Issue
  * tab is opened and switched to Project. ("pc:<login>" picks one of several
  * accounts git on this PC holds.) Then, by what the token may do:
  *
@@ -53,8 +54,9 @@ if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) die('set GHP_REPO to owner/name');
 const envFile = process.env.PRIVATE_ENV || path.join(ROOT, '.private', '.env');
 const dotenv = fs.existsSync(envFile) ? Object.fromEntries(lines(fs.readFileSync(envFile, 'utf8'))
   .map((l) => l.match(/^([A-Z0-9_]+)=(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].replace(/^"|"$/g, '')])) : {};
-const PAT = dotenv.GITHUB_PAT;
-if (!ACCOUNT.startsWith('pc') && !PAT) die('GITHUB_PAT is needed in .private/.env (or GHP_ACCOUNT=pc)');
+const PAT_VAR = process.env.GHP_PAT_VAR || 'GITHUB_PAT';
+const PAT = dotenv[PAT_VAR];
+if (!ACCOUNT.startsWith('pc') && !PAT) die(PAT_VAR + ' is needed in .private/.env (or GHP_ACCOUNT=pc)');
 const exe = path.join(ROOT, 'target', 'debug', 'SHIKISHA-TERM.exe');
 if (!fs.existsSync(exe)) die('no build at target\\debug -- run cargo build first');
 
