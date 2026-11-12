@@ -23,7 +23,10 @@ once it reaches its first tagged release.
     value too.
   - **A table** groups and sorts as the view does. Status, iteration, date,
     number and text are changed in place.
-  - **A roadmap** is shown as a table, with its dates and iterations.
+  - **A roadmap** is a timeline: each card a bar from its start date to
+    its end date (or over its iteration), grouped as the view groups, with
+    a line at today. It is shown by months, quarters or years, and the
+    choice is remembered. Cards with no dates are listed and counted.
 
   The view's filter is GitHub's own search and can be replaced for a look.
   A card opens on this tab when its repository is one of the desk's

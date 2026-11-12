@@ -2217,6 +2217,36 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel .ghlanehead { position:sticky; left:0; display:flex; gap:var(--s2); align-items:center; width:max-content;
     margin-bottom:var(--s2); font-size:12.5px; font-weight:600; }
   #issuespanel .ghlanehead .n { color:var(--faint); font-weight:400; }
+  /* A roadmap: the cards' names in a column that stays put, and beside each
+     its bar on the line of time, which scrolls sideways under the steps */
+  #issuespanel .ghroad { margin:var(--s3); overflow:auto; border:1px solid var(--line); border-radius:var(--r-ctl); }
+  #issuespanel .ghrrow { display:flex; min-height:34px; width:max-content; min-width:100%; border-top:1px solid var(--line); }
+  #issuespanel .ghrrow:first-child { border-top:0; }
+  #issuespanel .ghrname { position:sticky; left:0; z-index:2; flex:0 0 240px; width:240px; box-sizing:border-box;
+    display:flex; align-items:center; gap:4px; padding:var(--s1) var(--s3); background:var(--bg);
+    border-right:1px solid var(--line); font-size:12.5px; white-space:nowrap; overflow:hidden; }
+  #issuespanel .ghrname .ttl { overflow:hidden; text-overflow:ellipsis; }
+  #issuespanel .ghrname .ttl.go { cursor:pointer; }
+  #issuespanel .ghrname .ttl.go:hover { text-decoration:underline; }
+  #issuespanel .ghrname .nodate { margin-left:auto; font-size:11px; }
+  #issuespanel .ghrline { position:relative; flex:none; }
+  #issuespanel .ghrhead .ghrname { color:var(--dim); font-size:11.5px; }
+  #issuespanel .ghrhead .ghrline { display:flex; }
+  #issuespanel .ghrstep { flex:none; box-sizing:border-box; padding:var(--s2); border-left:1px solid var(--line);
+    font-size:11.5px; color:var(--dim); }
+  #issuespanel .ghrstep b { font-weight:600; color:var(--text); }
+  #issuespanel .ghrgroup, #issuespanel .ghrgroup .ghrname { background:var(--panel); font-weight:600; }
+  #issuespanel .ghrnow { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--brand);
+    opacity:.55; pointer-events:none; }
+  #issuespanel .ghrbar { position:absolute; top:50%; transform:translateY(-50%); height:22px; box-sizing:border-box;
+    display:flex; align-items:center; gap:6px; padding:0 var(--s2); border-radius:var(--r-ctl); cursor:pointer;
+    border:1px solid var(--tint); background:color-mix(in srgb, var(--tint) 28%, var(--bg)); color:var(--text);
+    font-size:11.5px; white-space:nowrap; overflow:hidden; }
+  #issuespanel .ghrbar:hover { background:color-mix(in srgb, var(--tint) 42%, var(--bg)); }
+  #issuespanel .ghrbar.point { max-width:240px; }
+  #issuespanel .ghrbar.shut { opacity:.6; cursor:default; }
+  #issuespanel .ghrbar .dia { flex:none; width:8px; height:8px; transform:rotate(45deg); background:var(--tint); }
+  #issuespanel .ghrbar .bt { overflow:hidden; text-overflow:ellipsis; }
   #issuespanel .ghcard { margin:var(--s2) var(--s2) 0; padding:var(--s2) var(--s3); background:var(--bg);
     border:1px solid var(--line); border-radius:var(--r-ctl); cursor:pointer; display:flex; flex-direction:column; gap:4px; }
   #issuespanel .ghcard:hover { border-color:var(--edge-hi); }
@@ -2414,6 +2444,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
     #issuespanel .irow .when { flex:1 1 auto; text-align:left; }
     #issuespanel .bar .line input { flex:1 1 calc(100% - 32px - var(--s3)); }
     #issuespanel .bar .line .wide-only { display:none; }
+    #issuespanel .ghrname { flex-basis:140px; width:140px; }
   }
   /* A tab that could not start, and a tab waiting for somewhere to work.
      Where its terminal would be: what happened, and the ways on from here, in
@@ -5859,7 +5890,9 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
               // has changed without comparing every card; changes on their way
               // to GitHub, oldest first; a choice on its way into the
               // settings; and the choices of projects the settings do not have
-              rev:0, sending:[], pickPending:null, unkept:{}} };
+              rev:0, sending:[], pickPending:null, unkept:{},
+              // How much time a roadmap's width holds: months, quarters or years
+              zoom: ghpZoomKept()} };
 let issuesSig = "";
 let issuesSeq = 0;
 
@@ -6287,6 +6320,17 @@ function drawIssues() {
     (k, v) => v !== null && v === I.gh.data ? "rev" + I.gh.rev : v);
   if (sig === issuesSig || typing) return;
   issuesSig = sig;
+  // What scrolls sideways inside the tab (a board, a table, a timeline) stays
+  // where it was looked at: the redraw after a change would put it back at the start
+  const scrolled = [...box.querySelectorAll("[data-scroll]")].map(e => [e.dataset.scroll, e.scrollLeft, e.scrollTop]);
+  drawIssuesNow(box);
+  for (const [k, x, y] of scrolled) {
+    const e = box.querySelector('[data-scroll="' + k + '"]');
+    if (e) { e.scrollLeft = x; e.scrollTop = y; }
+  }
+  ghpRoadToToday(box);
+}
+function drawIssuesNow(box) {
   box.textContent = "";
   if (I.projects === null) { box.append(el("div", {class:"empty"}, "…")); return; }
   if (!I.projects.length) {
@@ -6671,11 +6715,6 @@ function ghpTable(d, view) {
   if (!shown.length) shown = all.slice();
   const title = all.find(f => f.type === "TITLE");
   if (title && !shown.includes(title)) shown.unshift(title);
-  // A roadmap shown as a table: with the dates and iterations it lays the
-  // cards out by, which GitHub does not list among the view's fields
-  if (view && view.layout === "roadmap") {
-    for (const f of all) if ((f.type === "DATE" || f.type === "ITERATION") && !shown.includes(f)) shown.push(f);
-  }
   const group = ghpGroupField(d, view);
   const cards = ghpSorted(d.cards || [], view, all);
   const table = el("table", {class:"ght"}, el("thead", {}, el("tr", {}, ...shown.map(f => el("th", {}, f.name)))));
@@ -6688,7 +6727,7 @@ function ghpTable(d, view) {
     }
   } else for (const c of cards) body.append(row(c));
   table.append(body);
-  return el("div", {class:"ghtwrap"}, table);
+  return el("div", {class:"ghtwrap", "data-scroll": ghpScrollKey("table")}, table);
 }
 // One card on the board: what it is about, whose, and the way to move it that
 // works without a mouse too (a phone cannot drag)
@@ -6717,6 +6756,7 @@ function ghpCard(c, field, cols) {
 // The value that puts a card in a group of a field, for the kinds of field a
 // card's group can be changed in by moving it; undefined for the others
 function ghpGroupValue(field, key) {
+  if (!["SINGLE_SELECT", "ITERATION", "DATE", "NUMBER", "TEXT"].includes(field.type)) return undefined;
   if (key === null) return null;
   switch (field.type) {
     case "SINGLE_SELECT": return {option: key};
@@ -6780,8 +6820,12 @@ function ghpBoard(d, view) {
   // in the order the table puts its groups. Grouped by the columns' own field,
   // there is nothing to split
   const group = ghpGroupField(d, view);
-  if (!group || group.id === field.id) return columns(cards, null);
-  const lanes = el("div", {class:"ghlanes"});
+  if (!group || group.id === field.id) {
+    const board = columns(cards, null);
+    board.dataset.scroll = ghpScrollKey("board");
+    return board;
+  }
+  const lanes = el("div", {class:"ghlanes", "data-scroll": ghpScrollKey("lanes")});
   for (const g of ghpGroups(cards, group)) {
     lanes.append(el("div", {class:"ghlane"},
       el("div", {class:"ghlanehead"}, el("span", {class:"grow"}, g.name), el("span", {class:"n"}, String(g.cards.length))),
@@ -6820,6 +6864,217 @@ function ghpPicker(box) {
 function ghpFix() {
   const p = ghpHome();
   return el("button", {onclick:() => openSettings("project-gitacct", true, p ? (p.at || p.dir) : null)}, T["issues.open_settings"] || "");
+}
+// What a part of the tab that scrolls sideways is, so it is put back where it
+// was when the tab is drawn again -- and only for the same view of the same project
+function ghpScrollKey(part) {
+  return ["ghp", I.gh.ref, I.gh.view, part, part === "road" ? I.gh.zoom : ""].join(" ");
+}
+
+// A roadmap: each card a bar on a line of time, from its start to its end.
+// GitHub does not say which fields a roadmap view lays its cards out by, so
+// they are found the way people name them: a date field for the start and one
+// for the end, else the first two dates, else an iteration, else one date as
+// a point. The view's own fields are asked first, then the project's
+const GHP_ROAD_START = /start|begin|kick.?off|開始|着手/i;
+const GHP_ROAD_END = /due|end|target|deadline|finish|ship|release|期限|終了|締切|完了|リリース/i;
+const GHP_ROAD_ZOOMS = ["month", "quarter", "year"];
+// Months a step of the line holds, the fewest steps drawn, and how wide a step is
+const GHP_ROAD_STEP = {month: {months: 1, least: 7, px: 132}, quarter: {months: 3, least: 5, px: 120}, year: {months: 12, least: 4, px: 168}};
+// A mistyped year must not draw thousands of steps
+const GHP_ROAD_MOST_STEPS = 400;
+const GHP_DAY_MS = 86400000;
+// Called while the tab's state is first made, before the lines above have
+// run: so it names the zooms itself rather than reading GHP_ROAD_ZOOMS
+function ghpZoomKept() {
+  let z = "";
+  try { z = localStorage.getItem("ghp.zoom") || ""; } catch (e) { /* only a convenience */ }
+  return ["month", "quarter", "year"].includes(z) ? z : "month";
+}
+function ghpRoadFields(d, view) {
+  const all = d.fields || [];
+  const asked = [];
+  const add = f => { if (f && !asked.includes(f)) asked.push(f); };
+  for (const id of (view && view.fields) || []) add(all.find(f => f.id === id));
+  for (const s of (view && view.sort) || []) add(all.find(f => f.id === s.field));
+  add(ghpGroupField(d, view));
+  const pick = fields => {
+    const dates = fields.filter(f => f.type === "DATE");
+    const start = dates.find(f => GHP_ROAD_START.test(f.name));
+    const end = dates.find(f => f !== start && GHP_ROAD_END.test(f.name));
+    if (start && end) return {start, end};
+    // One named for its part keeps that part, with another date for the other
+    if (start) { const other = dates.find(f => f !== start); if (other) return {start, end: other}; }
+    if (end) { const other = dates.find(f => f !== end); if (other) return {start: other, end}; }
+    if (dates.length > 1) return {start: dates[0], end: dates[1]};
+    const iter = fields.find(f => f.type === "ITERATION");
+    if (iter) return {iter};
+    return dates.length ? {point: dates[0]} : null;
+  };
+  // A start and an end anywhere in the project before anything less: the view
+  // may show only its due date while the project has the start too
+  const mine = pick(asked), any = pick(all);
+  return mine && mine.start ? mine : any && any.start ? any : mine || any;
+}
+// A YYYY-MM-DD day as the number of milliseconds at its start, in UTC so a
+// day is a day wherever the screen is; null for one that is not a real day
+function ghpDay(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ""));
+  if (!m) return null;
+  const t = Date.UTC(+m[1], +m[2] - 1, +m[3]);
+  const back = new Date(t);
+  return back.getUTCFullYear() === +m[1] && back.getUTCMonth() === +m[2] - 1 && back.getUTCDate() === +m[3] ? t : null;
+}
+// Where a card is on the line: from the start of its first day to the end of
+// its last (a point, when only one day is known); null, when it has no days
+function ghpRoadSpan(card, by) {
+  const v = f => ghpDay((card.values[f.id] || {}).date);
+  if (by.iter) {
+    const it = card.values[by.iter.id];
+    const from = it ? ghpDay(it.start) : null;
+    return from === null ? null : {from, to: from + Math.max(1, it.days || 1) * GHP_DAY_MS, point: false};
+  }
+  if (by.point) { const t = v(by.point); return t === null ? null : {from: t, to: t + GHP_DAY_MS, point: true}; }
+  const a = v(by.start), b = v(by.end);
+  if (a === null || b === null) {
+    const t = a !== null ? a : b;
+    return t === null ? null : {from: t, to: t + GHP_DAY_MS, point: true};
+  }
+  // Written the wrong way round, it is still the time between them
+  return {from: Math.min(a, b), to: Math.max(a, b) + GHP_DAY_MS, point: false};
+}
+// The steps of the line: from one before the earliest card to one after the
+// latest, today always on it, and never fewer than can be read
+function ghpRoadSteps(spans, zoom, today) {
+  const step = GHP_ROAD_STEP[zoom];
+  const index = t => { const d = new Date(t); return Math.floor((d.getUTCFullYear() * 12 + d.getUTCMonth()) / step.months); };
+  const startOf = i => { const m = i * step.months; return Date.UTC(Math.floor(m / 12), m % 12, 1); };
+  let lo = today, hi = today;
+  for (const s of spans) { lo = Math.min(lo, s.from); hi = Math.max(hi, s.to); }
+  let first = index(lo) - 1, last = index(hi - 1) + 2;
+  if (last - first < step.least) last = first + step.least;
+  if (last - first > GHP_ROAD_MOST_STEPS) {
+    // Kept around today: the side reaching further from it gives way first,
+    // then both alike, so a mistyped year far off cannot crowd out the rest
+    const now = index(today);
+    let over = last - first - GHP_ROAD_MOST_STEPS;
+    const before = now - first, after = last - now;
+    const cut = Math.min(over, Math.abs(before - after));
+    if (before > after) first += cut; else last -= cut;
+    over -= cut;
+    first += Math.ceil(over / 2);
+    last -= Math.floor(over / 2);
+  }
+  const steps = [];
+  for (let i = first; i < last; i++) steps.push({from: startOf(i), to: startOf(i + 1)});
+  return steps;
+}
+// How far along the line a moment is, each step measured on its own so the
+// edges of a bar fall on the right day in a short month as in a long one
+function ghpRoadX(t, steps, px) {
+  if (!steps.length || t <= steps[0].from) return 0;
+  if (t >= steps[steps.length - 1].to) return steps.length * px;
+  let lo = 0, hi = steps.length - 1;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (t >= steps[mid].to) lo = mid + 1; else hi = mid; }
+  return (lo + (t - steps[lo].from) / (steps[lo].to - steps[lo].from)) * px;
+}
+function ghpRoadLabel(step, zoom, first) {
+  const d = new Date(step.from), year = String(d.getUTCFullYear());
+  if (zoom === "year") return [year, ""];
+  if (zoom === "quarter") return ["Q" + (Math.floor(d.getUTCMonth() / 3) + 1), year];
+  const month = d.toLocaleDateString(document.documentElement.lang || undefined, {month: "short", timeZone: "UTC"});
+  return [month, first || d.getUTCMonth() === 0 ? year : ""];
+}
+function ghpRoadDays(span) {
+  const f = t => new Date(t).toLocaleDateString(document.documentElement.lang || undefined, {year: "numeric", month: "short", day: "numeric", timeZone: "UTC"});
+  return span.point ? f(span.from) : f(span.from) + " – " + f(span.to - GHP_DAY_MS);
+}
+// GitHub's colours for a single-select choice, as a bar's tint
+const GHP_TINTS = {GRAY: "#8b949e", BLUE: "#388bfd", GREEN: "#3fb950", YELLOW: "#d29922", ORANGE: "#db6d28",
+  RED: "#f85149", PINK: "#db61a2", PURPLE: "#a371f7"};
+// Today as the screen's own calendar has it, on the line's UTC days
+function ghpToday() { const n = new Date(); return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()); }
+// The line is brought to today when a roadmap is first shown, or shown at
+// another zoom; after that it stays where it was scrolled to
+let ghpRoadShown = "";
+function ghpRoadToToday(box) {
+  const road = box.querySelector(".ghroad");
+  // Gone from the tab (another view, another kind): shown again, it is shown anew
+  if (!road) { ghpRoadShown = ""; return; }
+  const key = road.dataset.scroll;
+  if (ghpRoadShown === key) return;
+  ghpRoadShown = key;
+  const label = road.querySelector(".ghrname");
+  road.scrollLeft = Math.max(0, Number(road.dataset.today) - (road.clientWidth - (label ? label.offsetWidth : 0)) / 4);
+}
+function ghpRoadmap(d, view) {
+  const by = ghpRoadFields(d, view);
+  if (!by) return null;
+  const all = d.fields || [];
+  const zoom = I.gh.zoom, px = GHP_ROAD_STEP[zoom].px, today = ghpToday();
+  const cards = ghpSorted(d.cards || [], view, all);
+  const spans = new Map();
+  for (const c of cards) { const s = ghpRoadSpan(c, by); if (s) spans.set(c.id, s); }
+  const steps = ghpRoadSteps([...spans.values()], zoom, today);
+  const width = steps.length * px, now = ghpRoadX(today, steps, px);
+  // A faint line at the start of every step, under the bars
+  const ruled = "width:" + width + "px;background-image:linear-gradient(to right, var(--line) 0 1px, transparent 1px);background-size:" + px + "px 100%";
+  // A bar takes the colour of the choice its card has in the view's group, or
+  // else in the board's column field (Status)
+  const group = ghpGroupField(d, view);
+  const tint = group && group.type === "SINGLE_SELECT" ? group : all.find(f => f.id === d.columns) || null;
+  const names = by.iter ? [by.iter.name] : by.point ? [by.point.name] : [by.start.name, by.end.name];
+  const undated = cards.length - spans.size;
+  const zooms = el("span", {class:"seg"});
+  for (const z of GHP_ROAD_ZOOMS) {
+    zooms.append(el("button", {class: z === zoom ? "on" : "", onclick:() => {
+      I.gh.zoom = z;
+      try { localStorage.setItem("ghp.zoom", z); } catch (e) { /* only a convenience */ }
+      drawIssues();
+    }}, T["ghp.road.zoom." + z] || z));
+  }
+  const toToday = el("button", {class:"quiet", onclick:() => { ghpRoadShown = ""; ghpRoadToToday(document.getElementById("issuespanel")); }}, T["ghp.road.today"] || "");
+  const head = el("div", {class:"ghrrow ghrhead"}, el("div", {class:"ghrname"}, T["ghp.road.card"] || ""),
+    el("div", {class:"ghrline", style:"width:" + width + "px"},
+      ...steps.map((s, i) => { const [a, b] = ghpRoadLabel(s, zoom, i === 0);
+        return el("div", {class:"ghrstep", style:"width:" + px + "px"}, el("b", {}, a), b ? el("span", {class:"faint"}, " " + b) : null); }),
+      el("div", {class:"ghrnow", style:"left:" + now + "px"})));
+  const lane = c => {
+    const s = spans.get(c.id);
+    const label = el("div", {class:"ghrname"},
+      el("span", {class:"ttl" + (c.kind === "hidden" ? "" : " go"), onclick:() => { if (c.kind !== "hidden") ghpOpen(c); }},
+        c.title || T["ghp.hidden_card"] || ""),
+      c.number ? el("span", {class:"faint"}, " #" + c.number) : null,
+      s ? null : el("span", {class:"faint nodate"}, T["ghp.road.no_dates"] || ""));
+    const line = el("div", {class:"ghrline", style: ruled}, el("div", {class:"ghrnow", style:"left:" + now + "px"}));
+    if (s) {
+      const left = ghpRoadX(s.from, steps, px), right = ghpRoadX(s.to, steps, px);
+      const o = tint && c.values[tint.id] ? (tint.options || []).find(x => x.id === c.values[tint.id].option) : null;
+      const color = GHP_TINTS[(o && o.color) || ""] || "var(--dim)";
+      const bar = el("div", {class:"ghrbar" + (s.point ? " point" : "") + (c.kind === "hidden" ? " shut" : ""),
+          title: (c.title || "") + "\n" + ghpRoadDays(s),
+          style:"left:" + (s.point ? Math.max(0, left - 5) : left) + "px;" + (s.point ? "" : "width:" + Math.max(right - left, 20) + "px;") + "--tint:" + color,
+          onclick:() => { if (c.kind !== "hidden") ghpOpen(c); }},
+        s.point ? el("span", {class:"dia"}) : null, el("span", {class:"bt"}, (c.number ? "#" + c.number + " " : "") + (c.title || "")));
+      line.append(bar);
+    }
+    return el("div", {class:"ghrrow"}, label, line);
+  };
+  const rows = [];
+  if (group) {
+    for (const g of ghpGroups(cards, group)) {
+      rows.push(el("div", {class:"ghrrow ghrgroup"}, el("div", {class:"ghrname"}, g.name + "  ", el("span", {class:"faint"}, String(g.cards.length))),
+        el("div", {class:"ghrline", style: ruled})));
+      for (const c of g.cards) rows.push(lane(c));
+    }
+  } else for (const c of cards) rows.push(lane(c));
+  return [
+    el("div", {class:"bar sub"}, el("div", {class:"line"},
+      el("span", {class:"faint"}, (T["ghp.road.by"] || "{fields}").replaceAll("{fields}", names.join(" → "))),
+      undated ? el("span", {class:"faint"}, (T["ghp.road.undated"] || "{n}").replaceAll("{n}", undated)) : null,
+      el("span", {class:"grow"}), toToday, zooms)),
+    el("div", {class:"ghroad", "data-scroll": ghpScrollKey("road"), "data-today": String(now)}, head, ...rows),
+  ];
 }
 function drawGhProject(box) {
   const g = I.gh;
@@ -6872,7 +7127,11 @@ function drawGhProject(box) {
     const board = ghpBoard(d, view);
     if (board) { box.append(board); return; }
     box.append(el("div", {class:"said"}, T["ghp.no_columns"] || ""));
-  } else if (view && view.layout === "roadmap") box.append(el("div", {class:"said"}, T["ghp.roadmap"] || ""));
+  } else if (view && view.layout === "roadmap") {
+    const road = ghpRoadmap(d, view);
+    if (road) { box.append(...road); return; }
+    box.append(el("div", {class:"said"}, T["ghp.roadmap"] || ""));
+  }
   box.append(ghpTable(d, view));
 }
 

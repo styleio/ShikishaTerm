@@ -43,6 +43,7 @@ const fields = [
     { id: 's_review', name: 'In review', color: 'BLUE' }, { id: 's_done', name: 'Done', color: 'GREEN' }] },
   { id: 'F_pri', name: 'Priority', type: 'SINGLE_SELECT', options: [
     { id: 'p_high', name: 'High' }, { id: 'p_mid', name: 'Medium' }, { id: 'p_low', name: 'Low' }] },
+  { id: 'F_start', name: 'Start', type: 'DATE' },
   { id: 'F_due', name: 'Due', type: 'DATE' },
   { id: 'F_size', name: 'Estimate', type: 'NUMBER' },
   { id: 'F_labels', name: 'Labels', type: 'LABELS' },
@@ -54,17 +55,18 @@ const card = (id, number, title, status, extra) => Object.assign({
 }, extra);
 const cards = [
   card('c1', 41, 'Checkout total ignores the coupon', 's_doing', { assignees: ['kim'], labels: [{ name: 'bug', color: 'd73a4a' }],
-    values: { F_status: { option: 's_doing', name: 'In progress' }, F_pri: { option: 'p_high', name: 'High' }, F_due: { date: '2026-11-20' }, F_size: { number: 3 } } }),
+    values: { F_status: { option: 's_doing', name: 'In progress' }, F_pri: { option: 'p_high', name: 'High' }, F_start: { date: '2026-11-02' }, F_due: { date: '2026-11-20' }, F_size: { number: 3 } } }),
   card('c2', 44, 'Show the delivery date on the order page', 's_todo', { labels: [{ name: 'ui', color: '0e8a16' }],
-    values: { F_status: { option: 's_todo', name: 'Todo' }, F_pri: { option: 'p_mid', name: 'Medium' } } }),
+    values: { F_status: { option: 's_todo', name: 'Todo' }, F_pri: { option: 'p_mid', name: 'Medium' }, F_start: { date: '2026-11-24' }, F_due: { date: '2026-12-18' } } }),
   card('c3', 39, 'Speed up the product search', 's_review', { kind: 'pr', state: 'open', url: 'https://github.com/acme/shop/pull/39',
-    assignees: ['lee'], values: { F_status: { option: 's_review', name: 'In review' }, F_pri: { option: 'p_high', name: 'High' }, F_size: { number: 5 } } }),
+    assignees: ['lee'], values: { F_status: { option: 's_review', name: 'In review' }, F_pri: { option: 'p_high', name: 'High' }, F_start: { date: '2026-10-19' }, F_due: { date: '2026-11-13' }, F_size: { number: 5 } } }),
   card('c4', 37, 'Gift wrapping option', 's_done', { state: 'closed', assignees: ['kim'] }),
   card('c5', 0, 'Ask support which refund cases come up most', 's_todo', { kind: 'draft', number: null, url: null, repo: null }),
   card('c6', 12, 'Translate the emails into German', null, { repo: 'acme/mailer', url: 'https://github.com/acme/mailer/issues/12' }),
 ];
 const views = [
   { number: 1, name: 'Board', layout: 'board', filter: '', fields: [], group: null, lanes: 'F_status', sort: [] },
+  { number: 4, name: 'Timeline', layout: 'roadmap', filter: '', fields: [], group: 'F_pri', lanes: null, sort: [] },
   { number: 3, name: 'By priority', layout: 'board', filter: '', fields: [], group: 'F_pri', lanes: 'F_status', sort: [] },
   { number: 2, name: 'Plan', layout: 'table', filter: 'is:open', fields: ['F_title', 'F_assignees', 'F_status', 'F_pri', 'F_due', 'F_size'],
     group: 'F_pri', lanes: null, sort: [{ field: 'F_due', desc: false }] },
@@ -102,6 +104,7 @@ export default {
       "ok"`,
     'table': `I.gh.view = 2; ghpRead(); ` + put(answer(2)),
     'lanes': `I.gh.view = 3; ghpRead(); ` + put(answer(3)),
+    'roadmap': `I.gh.view = 4; ghpRead(); ` + put(answer(4)),
     'choose': `I.gh.picking = true; issuesSig = ""; drawIssues();
       window.__issues(${JSON.stringify({ act: 'gh_projects', ok: true, project: 'shop', data: { hidden: 1, projects: [
         { id: 'PVT_1', number: 3, title: 'Shop roadmap', owner: 'acme', org: true, url: ADDRESS, closed: false, cards: 6, from: 'repository' },

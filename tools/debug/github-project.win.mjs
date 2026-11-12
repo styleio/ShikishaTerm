@@ -141,6 +141,39 @@ async function everyView(run, shot, views) {
     console.log(`   view ${n} "${v.name}" (${layout}): GitHub has ${real.length} cards` + (v.group ? `, grouped by ${v.group}` : '') + (v.sort.length ? `, sorted by ${v.sort.map((s) => s[0] + (s[2] ? ' desc' : '')).join(', ')}` : ''));
     await shot('view-' + n);
     const titles = real.map((c) => c.title).sort();
+    // A card by its name in GitHub's answer; an empty one for a name it does not have
+    const named = (title) => real.find((c) => c.title === title) || { values: {}, people: '' };
+    if (layout === 'roadmap' && await run('!!document.querySelector("#issuespanel .ghroad")')) {
+      // On the line of time: every card by name, a bar from its start to its
+      // end where it has both, a point where it has one, none where it has neither
+      const drawn = JSON.parse(await run(`JSON.stringify({by: [...document.querySelectorAll("#issuespanel .bar.sub .faint")].map(e => e.textContent).join(" | "),
+        rows: [...document.querySelectorAll("#issuespanel .ghroad .ghrrow:not(.ghrhead):not(.ghrgroup)")].map(r => { const b = r.querySelector(".ghrbar");
+          return {title: r.querySelector(".ttl").textContent, bar: b ? {left: b.offsetLeft, width: b.offsetWidth, point: b.classList.contains("point")} : null}; })})`));
+      console.log('     ' + drawn.by);
+      check(JSON.stringify(drawn.rows.map((r) => r.title).sort()) === JSON.stringify(titles), `view ${n}: the timeline has every card GitHub's filter leaves (${drawn.rows.length})`);
+      const ends = await run('JSON.stringify((() => { const d = I.gh.data, w = d.views.find(x => x.number === d.view), b = ghpRoadFields(d, w); return b.iter ? [b.iter.name, null, "iter"] : b.point ? [b.point.name, null, "point"] : [b.start.name, b.end.name, "range"]; })())');
+      const [from, to, kind] = JSON.parse(ends);
+      // A card GitHub's answer does not have by that name (one the token
+      // cannot see, or two with one name) cannot be checked against it
+      const of = (title) => named(title).values;
+      let ok = true;
+      for (const r of drawn.rows) {
+        const v = of(r.title);
+        const want = kind === 'iter' ? (v[from] ? 'bar' : 'none') : kind === 'point' ? (v[from] ? 'point' : 'none')
+          : v[from] && v[to] ? 'bar' : v[from] || v[to] ? 'point' : 'none';
+        const got = !r.bar ? 'none' : r.bar.point ? 'point' : 'bar';
+        if (want !== got) { ok = false; console.log(`     "${r.title}" is drawn as ${got}, GitHub's ${from}/${to} make it a ${want}`); }
+      }
+      check(ok, kind === 'range' ? `view ${n}: a bar for each card with ${from} and ${to}, a point for one with only one, nothing for one with neither`
+        : `view ${n}: each card with ${from} drawn by it, nothing for one without`);
+      // Iterations are named, not dated, in GitHub's answer: their order is the field's
+      if (kind !== 'iter') {
+        const placed = drawn.rows.filter((r) => r.bar).map((r) => ({ at: of(r.title), ...r.bar }))
+          .map((r) => ({ day: [r.at[from], to && r.at[to]].filter(Boolean).sort()[0] || '', left: r.left })).sort((a, b) => a.day.localeCompare(b.day) || a.left - b.left);
+        check(placed.every((p, i) => !i || p.left >= placed[i - 1].left), `view ${n}: the bars begin further along the earlier their first day is`);
+      }
+      continue;
+    }
     if (layout === 'board') {
       const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ghlane")].length
         ? [...document.querySelectorAll("#issuespanel .ghlane")].map(l => ({lane: l.querySelector(".ghlanehead .grow").textContent, cols: [...l.querySelectorAll(".ghcol")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}))
@@ -149,7 +182,7 @@ async function everyView(run, shot, views) {
       check(JSON.stringify(all) === JSON.stringify(titles), `view ${n}: the cards are the ones GitHub's filter leaves (${all.length})`);
       let placed = true;
       for (const l of drawn) for (const c of l.cols) for (const t of c.cards) {
-        const card = real.find((x) => x.title === t) || { values: {} };
+        const card = named(t);
         const want = card.values[v.lanes] ?? v.none;
         if (want !== c.name) { placed = false; console.log(`     "${t}" is under ${c.name}, GitHub has ${want}`); }
         if (l.lane !== null) {
@@ -167,8 +200,8 @@ async function everyView(run, shot, views) {
       const who = heads.indexOf('Assignees');
       const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ght tbody tr")].map(r => r.classList.contains("grp") ? {group: r.firstChild.firstChild.textContent.trim()} : {title: r.querySelector(".ttl").textContent, people: ${who} < 0 ? null : r.children[${who}].textContent}))`));
       if (who >= 0) {
-        const wrong = drawn.filter((r) => r.title !== undefined && r.people !== real.find((c) => c.title === r.title).people);
-        for (const r of wrong) console.log(`     "${r.title}" shows "${r.people}" as its assignees, GitHub has "${real.find((c) => c.title === r.title).people}"`);
+        const wrong = drawn.filter((r) => r.title !== undefined && r.people !== named(r.title).people);
+        for (const r of wrong) console.log(`     "${r.title}" shows "${r.people}" as its assignees, GitHub has "${named(r.title).people}"`);
         check(!wrong.length, `view ${n}: each row shows the people GitHub has on the card`);
       }
       if (layout === 'roadmap') check(['Start', 'Due', 'Sprint'].every((h) => heads.includes(h)), `view ${n}: the roadmap, shown as a table, has its dates and iterations: ${heads.join(' | ')}`);
@@ -179,7 +212,7 @@ async function everyView(run, shot, views) {
         let ok = true, lane = null;
         for (const r of drawn) {
           if (r.group !== undefined) { lane = r.group; continue; }
-          const want = real.find((x) => x.title === r.title).values[v.group] ?? T_NONE(v.group);
+          const want = named(r.title).values[v.group] ?? T_NONE(v.group);
           if (want !== lane) { ok = false; console.log(`     "${r.title}" is under ${lane}, GitHub has ${want}`); }
         }
         check(ok, `view ${n}: the rows are grouped by ${v.group}: ${groups.join(' | ')}`);
@@ -188,7 +221,7 @@ async function everyView(run, shot, views) {
         let ok = true, lane = null, last;
         for (const r of drawn) {
           if (r.group !== undefined) { lane = r.group; last = undefined; continue; }
-          const x = real.find((c) => c.title === r.title).values[name];
+          const x = named(r.title).values[name];
           if (x === undefined) { last = null; continue; }
           if (last === null) ok = false;
           else if (last !== undefined && (desc ? x > last : x < last)) ok = false;
