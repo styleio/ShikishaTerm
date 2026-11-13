@@ -710,7 +710,9 @@ async function everyBoardAct(run, shot, views) {
     const said = await run('I.said');
     console.log('   GitHub said: ' + said);
     check(!!said && !/doesn't exist on type|isn't a defined|Variable \$|Expected|Parse error/i.test(said), 'a change to its sub-issues is a question GitHub can read');
-    await run('I.view = "list"; I.detail = null; I.said = ""; I.bad = false; issuesSig = ""; drawIssues(); true');
+    check(await press('#issuespanel .bar button.quiet'), 'and the way back to the board is pressed');
+    await until(() => run('I.view === "list" && !I.detail'), 'the board again', 15000);
+    await run('I.said = ""; I.bad = false; issuesSig = ""; drawIssues(); true');
   }
 
   // A board made from the list of them, copied, and both deleted

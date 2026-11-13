@@ -4296,6 +4296,7 @@
   "ghp.person_ph": "A GitHub username",
   "ghp.person_add": "Add",
   "ghp.open_card": "Open",
+  "ghp.issue_made_only": "Issue #{n} was created, but it could not be added to this Project: {why}",
   "ghp.back": "Back",
   "ghp.found.there": "already on this Project",
   "ghp.add_issue": "Create it as an issue in {repo}",

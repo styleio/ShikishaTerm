@@ -660,7 +660,9 @@ pub fn content_url(text: &str) -> Option<String> {
 /// or an issue or pull request already on GitHub -- `{"content": <its page or
 /// owner/repo#n>}` -- or an issue made for it there and then -- `{"issue":
 /// {"repo": "owner/name", "title": .., "body": ..}}`, answered with its
-/// `number` and `url` too. Then, as one press does on GitHub's page, the values it
+/// `number` and `url` too (and when the issue is made but the board will not
+/// take it, with `card` null and `incomplete` saying why). Then, as one press
+/// does on GitHub's page, the values it
 /// is given (the column or group it was added in: `[{"field": id, "value":
 /// ..}]`) and its place: after the card `after`, else where GitHub puts a new
 /// one (last). Answers with the new card's id -- and, when the card is made
@@ -696,7 +698,15 @@ pub fn add(hub: &Hub, board: &str, what: &Value, values: &[Value], after: Option
             "mutation($project:ID!,$content:ID!){addProjectV2ItemById(input:{projectId:$project,contentId:$content}){item{id}}}",
             json!({"project": board, "content": id}),
         )?;
-        carried(&v, "/data/addProjectV2ItemById/item/id")?.clone()
+        match carried(&v, "/data/addProjectV2ItemById/item/id") {
+            Ok(card) => card.clone(),
+            // The issue is made and the board would not take it: said with
+            // the issue, which is there -- making it again would make a second
+            Err(e) => match &made {
+                Some(m) => return Ok(json!({"card": null, "number": m["number"], "url": m["url"], "incomplete": format!("{e:#}")})),
+                None => return Err(e),
+            },
+        }
     } else {
         let title = what.get("title").and_then(|t| t.as_str()).unwrap_or_default().trim().to_string();
         if title.is_empty() {

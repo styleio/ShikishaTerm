@@ -1343,7 +1343,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_pr_create(タブ, {title=…, body=…, head=…, base=…, draft=…})` | ブランチ `head` から `base` へのプルリクエストを作る。`draft = true` なら下書き。`{number, url}` を返す |
 | `shikisha.github_comment(タブ, 番号, "本文")` | Issue やプルリクエストにコメントする。`{id, url}` を返す |
 | `shikisha.github_issue_state(タブ, 番号, 状態, {duplicate_of=…})` | `open`・`completed`・`not_planned`・`duplicate`（`duplicate_of` と一緒に。「Duplicate of #番号」のコメントも付く） |
-| `shikisha.github_issue_edit(タブ, 番号, {title=…, body=…, assignees=…, labels=…, milestone=…, type=…})` | Issue やプルリクエストをその場で変える。指定したものだけが変わる。`assignees` と `labels` は名前の一覧の全部、`milestone` は開いているマイルストーンのタイトル、`type` は Issue の種類の名前。担当者・ラベルを空にするには空の一覧を、マイルストーン・種類を外すには `""` を渡す。答えは `{number, title, assignees, labels, milestone, type}` |
+| `shikisha.github_issue_edit(タブ, 番号, {title=…, body=…, assignees=…, labels=…, milestone=…, type=…})` | Issue やプルリクエストをその場で変える。指定したものだけが変わる。`assignees` と `labels` は名前の一覧の全部、`milestone` は開いているマイルストーンのタイトル、`type` は Issue の種類の名前。担当者・ラベルを空にするには空の一覧を、マイルストーン・種類を外すには `""` を渡す。`add_assignees`・`remove_assignees`・`add_labels`・`remove_labels` は、ほかを置き換えずに名前を足す・外す。答えは `{number, title, assignees, labels, milestone, type}` |
 | `shikisha.github_sub_issue_add(タブ, 番号, サブ, {replace=true})` | Issue を、`番号` の Issue のサブ Issue にする。`サブ` はアドレス、`持ち主/リポジトリ#番号`、同じリポジトリなら `#番号`。すでに親がある Issue は、`replace=true` のときだけ移す |
 | `shikisha.github_sub_issue_remove(タブ, 番号, sub_id)` / `shikisha.github_sub_issue_move(タブ, 番号, sub_id, after_id)` | `番号` の Issue からサブ Issue を外す。または、別のサブ Issue のすぐ後ろへ移す（`nil` なら先頭）。id は `github_issue` の `subs` の `id` |
 | `shikisha.github_pr_state(タブ, 番号, "open" か "closed")` | プルリクエストをマージせずに閉じる、または開き直す |

@@ -828,12 +828,46 @@ impl Hub {
     /// `labels` (all of them by name), its `milestone` (by title; null or
     /// empty for none) and -- an issue's -- its `type` (by name; null or
     /// empty for none: Lua has no null to put in a table). Only what
-    /// `change` names is touched. Answers with what it then has
+    /// `change` names is touched. Answers with what it then has.
+    ///
+    /// People and labels can also be said as what to add and what to take
+    /// off -- `add_assignees`, `remove_assignees`, `add_labels`,
+    /// `remove_labels` -- which is how a screen changes them: it may not
+    /// have every label an issue carries, and a whole list from it would
+    /// take the rest off. Those are worked out against what the issue has
+    /// at the moment, read here
     pub fn edit_issue(&self, repo: &Repo, number: u64, change: &Value) -> Result<Value> {
         let mut payload = serde_json::Map::new();
-        let names = |v: &Value| -> Vec<String> {
-            v.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(|s| s.trim().trim_start_matches('@').to_string())).collect()
+        // A person may be written with an @; a label's name is as it is
+        let names = |v: &Value, person: bool| -> Vec<String> {
+            v.as_array().into_iter().flatten().filter_map(|x| x.as_str())
+                .map(|s| if person { s.trim().trim_start_matches('@').to_string() } else { s.trim().to_string() })
+                .filter(|s| !s.is_empty()).collect()
         };
+        let path = format!("repos/{}/issues/{number}", repo.slug());
+        let mut now: Option<Value> = None;
+        for (key, person) in [("assignees", true), ("labels", false)] {
+            let (add, remove) = (change.get(format!("add_{key}")), change.get(format!("remove_{key}")));
+            if add.is_none() && remove.is_none() {
+                continue;
+            }
+            if now.is_none() {
+                now = Some(self.call("GET", &path, None)?);
+            }
+            let have = now.as_ref().and_then(|i| i.get(key)).and_then(|l| l.as_array()).cloned().unwrap_or_default();
+            let mut list: Vec<String> = have.iter()
+                .filter_map(|x| x.get(if person { "login" } else { "name" }).and_then(|n| n.as_str()).map(str::to_string)).collect();
+            let same = |a: &str, b: &str| if person { a.eq_ignore_ascii_case(b) } else { a == b };
+            for gone in remove.map(|r| names(r, person)).unwrap_or_default() {
+                list.retain(|x| !same(x, &gone));
+            }
+            for more in add.map(|a| names(a, person)).unwrap_or_default() {
+                if !list.iter().any(|x| same(x, &more)) {
+                    list.push(more);
+                }
+            }
+            payload.insert(key.into(), json!(list));
+        }
         if let Some(t) = change.get("title").and_then(|t| t.as_str()) {
             if t.trim().is_empty() {
                 bail!(crate::i18n::t("err.github.no_title"));
@@ -843,9 +877,9 @@ impl Hub {
         if let Some(b) = change.get("body").and_then(|b| b.as_str()) {
             payload.insert("body".into(), json!(b));
         }
-        for key in ["assignees", "labels"] {
+        for (key, person) in [("assignees", true), ("labels", false)] {
             if let Some(list) = change.get(key).filter(|l| l.is_array()) {
-                payload.insert(key.into(), json!(names(list)));
+                payload.insert(key.into(), json!(names(list, person)));
             }
         }
         let none = |v: &Value| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty());
@@ -875,7 +909,7 @@ impl Hub {
         if payload.is_empty() {
             bail!(crate::i18n::t("err.github.no_change"));
         }
-        let v = self.call("PATCH", &format!("repos/{}/issues/{number}", repo.slug()), Some(Value::Object(payload)))?;
+        let v = self.call("PATCH", &path, Some(Value::Object(payload)))?;
         Ok(json!({
             "number": v.get("number"), "title": v.get("title"),
             "assignees": logins(v.get("assignees")),
@@ -1624,8 +1658,11 @@ pub fn answer(
         .unwrap_or_default();
     // `seq` goes back as it came, so the screen can tell the answer to its last
     // question from one it has since stopped waiting for
+    // `tag` goes back as it came too: what the screen marked its request
+    // with, to know which of its own it is the answer to
     let base = json!({"act": act, "kind": if pulls { "pr" } else { "issue" }, "project": wanted,
         "at_repo": args.get("at_repo").cloned().unwrap_or(Value::Null),
+        "tag": args.get("tag").cloned().unwrap_or(Value::Null),
         "seq": args.get("seq").cloned().unwrap_or(Value::Null)});
     let with = |mut v: Value, extra: Value| {
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {

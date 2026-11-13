@@ -4258,6 +4258,7 @@
   "ghp.person_ph": "GitHub のユーザー名",
   "ghp.person_add": "追加",
   "ghp.open_card": "開く",
+  "ghp.issue_made_only": "Issue #{n} は作成されましたが、この Project には追加できませんでした: {why}",
   "ghp.back": "戻る",
   "ghp.found.there": "この Project に追加済み",
   "ghp.add_issue": "{repo} の Issue として作る",

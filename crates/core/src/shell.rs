@@ -2266,10 +2266,12 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #issuespanel svg.ghtime .lbl { fill:var(--faint); font-size:10px; }
   #issuespanel svg.ghtime .lbl.end { text-anchor:end; }
   /* Where a card is added: what was found for what is typed, under the box */
-  #issuespanel .ghadd { flex-wrap:wrap; }
-  #issuespanel .ghfound { flex:1 0 100%; min-width:0; margin-top:var(--s1); border:1px solid var(--line); border-radius:var(--r-ctl);
+  #issuespanel .ghadd.on { flex-direction:column; align-items:stretch; }
+  #issuespanel .ghadd .in { display:flex; gap:var(--s1); align-items:center; }
+  #issuespanel .ghfound { min-width:0; border:1px solid var(--line); border-radius:var(--r-ctl);
     background:var(--bg); font-size:12px; }
-  #issuespanel .ghfound > div { display:flex; gap:var(--s2); align-items:baseline; padding:var(--s1) var(--s2); }
+  #issuespanel .ghfound > div { display:flex; flex-wrap:wrap; gap:0 var(--s2); align-items:baseline; padding:var(--s1) var(--s2); }
+  #issuespanel .ghfound .row > .faint:last-child { flex:1 0 100%; font-size:11.5px; }
   #issuespanel .ghfound .row { cursor:pointer; }
   #issuespanel .ghfound .row:hover { background:var(--panel2); }
   #issuespanel .ghfound .row.there { cursor:default; color:var(--dim); }
@@ -5990,6 +5992,8 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // people, labels, milestone, type or parent), its title and words
           // being rewritten ({title, body}), and what is typed to add a sub-issue
           factEdit:"", rewrite:null, subText:"",
+          // Its title and words on their way to GitHub ({thread, words})
+          wordsSent:null,
           // The GitHub Project shown as the third kind: which project of the
           // desk it is read through, its address and view, the filter written
           // here (null: the view's own), what GitHub answered, and the list
@@ -6112,10 +6116,22 @@ function issueReread() {
 }
 // Changes to the issue itself, made on its page: shown at once, read back after
 const ISSUE_EDITS = new Set(["edit", "sub_add", "sub_remove", "sub_move"]);
-function issueEdit(change) {
-  const d = I.detail;
-  Object.assign(d, change);
-  issuesAsk("edit", Object.assign({kind: d.kind, change}, issueAt(d)));
+// `d` is the issue the page was drawn for, which is the one changed --
+// whatever the tab has gone on to since. `shown` is what the page shows at
+// once; `tag` marks the request, to know its answer by
+function issueEdit(d, change, shown, tag) {
+  if (I.detail && issueThread(I.detail) === issueThread(d)) Object.assign(I.detail, shown || change);
+  issuesAsk("edit", Object.assign({kind: d.kind, change, tag: tag || ""}, issueAt(d)));
+}
+// One name put on an issue's list of people or labels, or taken off it: said
+// as that, so two presses one after the other cannot undo each other
+function issueListEdit(d, key, list) {
+  const was = d[key] || [];
+  const change = {};
+  const add = list.filter(x => !was.includes(x)), remove = was.filter(x => !list.includes(x));
+  if (add.length) change["add_" + key] = add;
+  if (remove.length) change["remove_" + key] = remove;
+  if (add.length || remove.length) issueEdit(d, change, {[key]: list});
 }
 // Requests that fill part of a page without holding the whole of it
 const ISSUE_QUIET = new Set(["projects", "options", "pr_bases", "pr_files", "pr_file", "pr_place", "gh_project_set", "gh_project_pick",
@@ -6344,6 +6360,11 @@ window.__issues = function (d) {
     // A change to the issue itself that did not go in: read again, so the
     // page shows what GitHub has rather than what was pressed
     if (ISSUE_EDITS.has(d.act) && I.detail) issueReread();
+    // Its title and words did not go in: the form again, with them
+    if (d.act === "edit" && d.tag === "words" && I.wordsSent && !I.rewrite && I.detail && issueThread(I.detail) === I.wordsSent.thread) {
+      I.rewrite = I.wordsSent.words;
+    }
+    if (d.act === "edit" && d.tag === "words") I.wordsSent = null;
     if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
     // Not made for what its template still requires: those fields say so
     if (d.act === "create") I.create.missing = (d.missing || []).map(m => m.at);
@@ -6372,7 +6393,7 @@ window.__issues = function (d) {
     // The issue itself changed, or its sub-issues: read again as GitHub has it
     case "edit": case "sub_add": case "sub_remove": case "sub_move":
       if (d.act === "sub_add") I.subText = "";
-      if (d.act === "edit") I.rewrite = null;
+      if (d.act === "edit" && d.tag === "words") I.wordsSent = null;
       if (I.detail) issueReread();
       drawIssues();
       return;
@@ -6725,7 +6746,8 @@ function ghpAfresh() {
 }
 // Another board: nothing said of the last one holds
 function ghpAboutAfresh() {
-  Object.assign(I.gh, {panel: "", about: null, aboutErr: "", aboutEdit: null, del: false, linkText: "",
+  // ...and an answer about the last one still on its way is not this one's
+  Object.assign(I.gh, {panel: "", about: null, aboutErr: "", aboutEdit: null, aboutWant: 0, del: false, linkText: "",
     who: {login: "", role: "writer", people: null}, copy: {title: "", owner: "", drafts: false}});
 }
 // The projects of the desk as the app has just said them: a GitHub Project
@@ -6845,6 +6867,11 @@ function ghpAnswer(d) {
             card.id = id;
             if (was.gen === g.gen) ghpExpect(id, true, card);
           }
+          // An issue made that the board would not take: not shown as a card
+          if (card && !id && g.data) g.data.cards = g.data.cards.filter(c => c !== card);
+          if ((d.data || {}).incomplete && (d.data || {}).number) {
+            d.data.incomplete = (T["ghp.issue_made_only"] || "{n}").replaceAll("{n}", d.data.number).replaceAll("{why}", d.data.incomplete);
+          }
           // Made, but not all of it: said, so it is not added a second time
           if ((d.data || {}).incomplete) { I.said = d.data.incomplete; I.bad = true; }
         } else if (d.act === "gh_project_to_issue") {
@@ -6876,8 +6903,13 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_status") g.status = {status: "on_track", body: "", start: "", target: ""};
           if (d.act === "gh_project_link") g.linkText = "";
           if (d.act === "gh_project_access") g.who = {login: "", role: g.who.role, people: (d.data || {}).people || []};
-          if (d.act === "gh_project_update") g.aboutEdit = null;
+          // Its words saved: the page shows them as GitHub has them. Any
+          // other change to it leaves what is being written there alone
+          const c = was.change || {};
+          if (d.act === "gh_project_update" && ("title" in c || "description" in c || "readme" in c)) g.aboutEdit = null;
         }
+        // A column that was not added is typed again
+        if (!d.ok && d.act === "gh_project_field_set" && g.colNew) g.colNew.sent = false;
       }
       g.sending.shift();
       if (g.sending.length) send(g.sending[0]);
@@ -7160,8 +7192,8 @@ function ghpAdder(key, values) {
     if (e.key === "Enter") ghpAdd(box.value, values);
     if (e.key === "Escape") leave();
   };
-  return el("div", {class:"ghadd on"}, box,
-    el("button", {class:"quiet", title: T["ghp.cancel"] || "", onclick: leave}, "×"),
+  return el("div", {class:"ghadd on"},
+    el("div", {class:"in"}, box, el("button", {class:"quiet", title: T["ghp.cancel"] || "", onclick: leave}, "×")),
     ghpFoundList(values));
 }
 // ── Cards chosen to be changed together ──────────────────
@@ -7733,7 +7765,7 @@ function ghpChoose(anchor, card, field) {
 // A list of names to choose among, under what was pressed: each with a tick
 // when it is chosen; over a handful, a box that narrows them as it is typed
 // in; and -- `typed` -- a name not on the list taken as it is written
-function ghpPickList(anchor, items, o) {
+function tickList(anchor, items, o) {
   const rows = [];
   const typed = (o && o.typed) || null;
   const box = items.length > 8 || typed ? el("input", {type:"text", placeholder: (o && o.ph) || T["ghp.narrow"] || ""}) : null;
@@ -7802,9 +7834,19 @@ function ghpOwnSet(card, key, value) {
   if (card.kind === "draft") {
     card.assignees = value;
     ghpSend("gh_project_draft", {card: card.id, draft: card.draft, title: card.title || "", body: card.body || "", assignees: value});
-  } else {
+  } else if (key === "labels" || key === "assignees") {
+    // Said as the names put on and taken off: the card may not carry every
+    // label its issue has, and the whole list from here would take the rest off
+    const was = key === "labels" ? (card.labels || []).map(l => l.name) : (card.assignees || []);
+    const change = {};
+    const add = value.filter(x => !was.includes(x)), remove = was.filter(x => !value.includes(x));
+    if (add.length) change["add_" + key] = add;
+    if (remove.length) change["remove_" + key] = remove;
     if (key === "labels") card.labels = value.map(n => (card.labels || []).find(l => l.name === n) || {name: n, color: ""});
-    else card[key] = value;
+    else card.assignees = value;
+    if (add.length || remove.length) ghpSend("edit", {number: card.number, at_repo: card.repo, card: card.id, change});
+  } else {
+    card[key] = value;
     ghpSend("edit", {number: card.number, at_repo: card.repo, card: card.id, change: {[key]: value}});
   }
   g.rev++;
@@ -7816,7 +7858,7 @@ function ghpCellPick(anchor, card, field) {
   const g = I.gh, again = () => ghpPickAgain(card.id, field.id);
   if (field.type === "MULTI_SELECT") {
     const now = ((card.values[field.id] || {}).options || []).map(o => o.id);
-    ghpPickList(anchor, (field.options || []).map(o => ({name: o.name, on: now.includes(o.id), pick: () => {
+    tickList(anchor, (field.options || []).map(o => ({name: o.name, on: now.includes(o.id), pick: () => {
       const next = now.includes(o.id) ? now.filter(x => x !== o.id) : now.concat([o.id]);
       // In the field's own order, as GitHub shows them
       const ids = (field.options || []).map(x => x.id).filter(x => next.includes(x));
@@ -7839,14 +7881,14 @@ function ghpCellPick(anchor, card, field) {
     const all = (opts[key] || []).slice();
     for (const x of now) if (!all.includes(x)) all.push(x);
     const toggle = name => { ghpOwnSet(card, key, now.includes(name) ? now.filter(x => x !== name) : now.concat([name])); again(); };
-    ghpPickList(anchor, all.map(name => ({name, on: now.includes(name), pick: () => toggle(name)})),
+    tickList(anchor, all.map(name => ({name, on: now.includes(name), pick: () => toggle(name)})),
       {typed: draft ? name => { if (!now.includes(name)) toggle(name); } : null, ph: draft ? T["ghp.person_ph"] || "" : "",
         note: opts.error || "", bad: !!opts.error});
     return;
   }
   const all = key === "milestone" ? (opts.milestones || []).map(m => m.title) : (opts.types || []);
   const set = v => { closeFolderMenu(); ghpOwnSet(card, key, v); };
-  ghpPickList(anchor, all.map(name => ({name, on: card[key] === name, pick: () => set(name)})),
+  tickList(anchor, all.map(name => ({name, on: card[key] === name, pick: () => set(name)})),
     {clear: card[key] ? () => set(null) : null, note: opts.error || "", bad: !!opts.error,
       none: T[key === "milestone" ? "issues.milestone.none" : "issues.type.none"] || ""});
 }
@@ -8184,15 +8226,19 @@ function ghpFieldEditor(f) {
     }
     redraw();
   }}, "+ " + (T[e.options ? "ghp.fields.option_add" : "ghp.fields.iter_add"] || ""))));
-  const ok = list.length > 0 && list.every(o => (e.options ? o.name : o.title).trim() && (e.options || ghpDay(o.start) !== null));
+  // Asked again at every key: a name typed into a new row is what makes it savable
+  const ok = () => list.length > 0 && list.every(o => (e.options ? o.name : o.title).trim() && (e.options || ghpDay(o.start) !== null));
   const save = el("button", {class:"go", onclick:() => {
+    if (!ok()) return;
     const change = e.options
       ? {options: e.options.map(o => Object.assign({}, o, {name: o.name.trim()})), type: f.type === "MULTI_SELECT" ? "multi_select" : "single_select"}
       : {iteration: {days: e.days, iterations: e.iterations.map(i => ({id: i.id, title: i.title.trim(), start: i.start, days: i.days || e.days}))}};
     ghpSend("gh_project_field_set", {field: f.id, change});
     redraw();
   }}, T["ghp.save"] || "");
-  save.disabled = !ok;
+  save.disabled = !ok();
+  wrap.addEventListener("input", () => { save.disabled = !ok(); });
+  wrap.addEventListener("change", () => { save.disabled = !ok(); });
   wrap.append(el("div", {class:"said"}, T[e.options ? "ghp.fields.option_says" : "ghp.fields.iter_says"] || ""),
     el("div", {class:"row"}, el("button", {class:"quiet", onclick:() => { g.fedit = null; redraw(); }}, T["ghp.cancel"] || ""), save));
   return wrap;
@@ -8396,7 +8442,9 @@ function ghpAboutPage(box, d) {
   const redraw = () => { issuesSig = ""; drawIssues(); };
   ghpPanelBar(box, T["ghp.about"] || "");
   if (g.aboutErr) box.append(warnBox(g.aboutErr));
-  if (!a) { if (!g.aboutErr) box.append(el("div", {class:"empty"}, T["issues.busy"] || "…")); return; }
+  // Only what was read of the board that is on the tab: anything else is
+  // another board's, and what is pressed here goes to this one
+  if (!a || a.id !== d.id) { if (!g.aboutErr) box.append(el("div", {class:"empty"}, T["issues.busy"] || "…")); return; }
   const can = a.can_update;
   if (!can) box.append(el("div", {class:"said"}, T["ghp.read_only"] || ""));
   const sect = (title, ...kids) => box.append(el("div", {class:"sect"}, el("h4", {}, title), ...kids));
@@ -9073,8 +9121,10 @@ function drawIssueDetail(box) {
   const proj = issueProject(d.project);
   // The folder made for it, or -- for a pull request -- the one its branch is
   // checked out in: opened rather than made a second time
-  const place = pr && I.place && I.place.key === d.project + "#" + d.number && I.place.folder ? I.place : null;
-  const made = issueWorktree(d.kind, (proj || {}).repo, d.number) || (place ? {folder: place.folder} : null);
+  // Of a repository the desk has no project for there is no folder here: a
+  // worktree made for the same number of the desk's own repository is not its
+  const place = !d.at_repo && pr && I.place && I.place.key === d.project + "#" + d.number && I.place.folder ? I.place : null;
+  const made = d.at_repo ? null : issueWorktree(d.kind, (proj || {}).repo, d.number) || (place ? {folder: place.folder} : null);
   box.append(el("div", {class:"bar"}, el("div", {class:"line"},
     el("button", {class:"quiet", onclick:() => {
       I.view = "list"; I.detail = null; I.want.detail = 0; I.busy = "";
@@ -9112,7 +9162,10 @@ function drawIssueDetail(box) {
         el("button", {class:"quiet", onclick:() => { I.rewrite = null; drawIssues(); }}, T["ghp.cancel"] || ""),
         el("button", {class:"go", onclick:() => {
           if (!rw.title.trim()) return;
-          issueEdit({title: rw.title.trim(), body: rw.body});
+          // Kept until GitHub has them, to be written again if it does not
+          I.wordsSent = {thread: issueThread(d), words: rw};
+          I.rewrite = null;
+          issueEdit(d, {title: rw.title.trim(), body: rw.body}, null, "words");
         }}, T["ghp.save"] || ""))));
   }
   box.append(el("div", {class:"head"},
@@ -9309,7 +9362,7 @@ function issueFactEditor(d) {
   if (key === "assignees" || key === "labels") {
     const all = (opts[key] || []).slice();
     for (const x of d[key] || []) if (!all.includes(x)) all.push(x);
-    wrap.append(chipPick(d[key] || [], all, list => issueEdit({[key]: list})));
+    wrap.append(chipPick(d[key] || [], all, list => issueListEdit(d, key, list)));
     return wrap;
   }
   // One of a list, or none
@@ -9318,7 +9371,7 @@ function issueFactEditor(d) {
   pick.append(el("option", {value: ""}, T["issues.none_chosen"] || "—"));
   for (const x of all.concat(d[key] && !all.includes(d[key]) ? [d[key]] : [])) pick.append(el("option", {value: x}, x));
   pick.value = d[key] || "";
-  pick.onchange = () => { pick.blur(); issueEdit({[key]: pick.value || null}); };
+  pick.onchange = () => { pick.blur(); issueEdit(d, {[key]: pick.value || null}); };
   wrap.append(pick);
   if (!all.length) wrap.append(el("span", {class:"faint"}, " " + (T[key === "milestone" ? "issues.milestone.none" : "issues.type.none"] || "")));
   return wrap;
