@@ -212,6 +212,10 @@ export default {
       ghpOpen(I.gh.data.cards.find(c => c.id === "c6"));
       window.__issues({act: "detail", ok: true, project: "shop", at_repo: "acme/mailer", kind: "issue", seq: I.want.detail, number: 12, data: ${JSON.stringify(far)}});
       if (!I.detail || I.detail.at_repo !== "acme/mailer") throw new Error("the card's issue did not open on this tab");
+      // Two labels pressed one after the other: each said as the one name it
+      // adds, and the second held until the first is answered
+      issueListEdit(I.detail, "labels", ["docs", "bug"]); issueListEdit(I.detail, "labels", ["docs", "bug", "ui"]);
+      if (I.edits.length !== 2 || JSON.stringify(I.edits.map(e => e.change)) !== '[{"add_labels":["bug"]},{"add_labels":["ui"]}]') throw new Error("not sent one name at a time, in order: " + JSON.stringify(I.edits));
       I.factEdit = "labels"; issuesSig = ""; drawIssues(); "ok"`,
     'denied': {
       run: `ghpRead(); window.__issues(Object.assign({act: "gh_project", ok: false, project: "shop", settings: true,

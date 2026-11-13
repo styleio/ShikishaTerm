@@ -190,8 +190,8 @@ async function everyView(run, shot, views) {
     }
     if (layout === 'board') {
       const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ghlane")].length
-        ? [...document.querySelectorAll("#issuespanel .ghlane")].map(l => ({lane: l.querySelector(".ghlanehead .grow").textContent, cols: [...l.querySelectorAll(".ghcol")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}))
-        : [{lane: null, cols: [...document.querySelectorAll("#issuespanel .ghcol")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}])`));
+        ? [...document.querySelectorAll("#issuespanel .ghlane")].map(l => ({lane: l.querySelector(".ghlanehead .grow").textContent, cols: [...l.querySelectorAll(".ghcol:not(.new)")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}))
+        : [{lane: null, cols: [...document.querySelectorAll("#issuespanel .ghcol:not(.new)")].map(c => ({name: c.querySelector(".ghhead .grow").textContent, cards: [...c.querySelectorAll(".ghcard .t")].map(t => t.textContent)}))}])`));
       const all = drawn.flatMap((l) => l.cols.flatMap((c) => c.cards)).sort();
       check(JSON.stringify(all) === JSON.stringify(titles), `view ${n}: the cards are the ones GitHub's filter leaves (${all.length})`);
       let placed = true;
@@ -214,7 +214,8 @@ async function everyView(run, shot, views) {
       const who = heads.indexOf('Assignees');
       const drawn = JSON.parse(await run(`JSON.stringify([...document.querySelectorAll("#issuespanel .ght tbody tr:not(.addrow)")].map(r => r.classList.contains("grp") ? {group: r.firstChild.firstChild.textContent.trim()} : {title: r.querySelector(".ttl").textContent, people: ${who} < 0 ? null : r.children[${who}].textContent}))`));
       if (who >= 0) {
-        const wrong = drawn.filter((r) => r.title !== undefined && r.people !== named(r.title).people);
+        // A cell with nobody in it is a button that says so with a dash
+        const wrong = drawn.filter((r) => r.title !== undefined && (r.people === "—" ? "" : r.people) !== named(r.title).people);
         for (const r of wrong) console.log(`     "${r.title}" shows "${r.people}" as its assignees, GitHub has "${named(r.title).people}"`);
         check(!wrong.length, `view ${n}: each row shows the people GitHub has on the card`);
       }
@@ -344,8 +345,8 @@ async function everyCardAct(run, shot, views) {
     await run(`ghpView(${n}); true`);
     await until(() => run(`I.gh.data.view === ${n} && !I.gh.sending.length`), 'view ' + n, 60000);
     const where = JSON.parse(await run(`JSON.stringify((() => { const l = document.querySelectorAll("#issuespanel .ghlane")[0];
-      const col = [...l.querySelectorAll(".ghcol")][1]; return {lane: l.querySelector(".ghlanehead .grow").textContent, column: col.querySelector(".ghhead .grow").textContent}; })())`));
-    await run(`(() => { const col = [...document.querySelectorAll("#issuespanel .ghlane")[0].querySelectorAll(".ghcol")][1]; col.querySelector(".ghadd button").click(); return true; })()`);
+      const col = [...l.querySelectorAll(".ghcol:not(.new)")][1]; return {lane: l.querySelector(".ghlanehead .grow").textContent, column: col.querySelector(".ghhead .grow").textContent}; })())`));
+    await run(`(() => { const col = [...document.querySelectorAll("#issuespanel .ghlane")[0].querySelectorAll(".ghcol:not(.new)")][1]; col.querySelector(".ghadd button").click(); return true; })()`);
     await sleep(300);
     const typed = await run(`(() => { const b = document.querySelector('#issuespanel [data-k="ghpadd"]'); if (!b) return false;
       b.value = ${JSON.stringify(stamp)}; b.dispatchEvent(new Event("input"));
@@ -474,7 +475,7 @@ async function acrossLanes(run, views) {
     const lanes = [...document.querySelectorAll("#issuespanel .ghlane")];
     const card = lanes.flatMap(l => [...l.querySelectorAll(".ghcard")]).find(c => c.querySelector(".t").textContent === ${JSON.stringify(title)});
     const into = lanes.find(l => l.querySelector(".ghlanehead .grow").textContent === ${JSON.stringify(lane)});
-    const col = into && [...into.querySelectorAll(".ghcol")].find(c => c.querySelector(".ghhead .grow").textContent === ${JSON.stringify(column)});
+    const col = into && [...into.querySelectorAll(".ghcol:not(.new)")].find(c => c.querySelector(".ghhead .grow").textContent === ${JSON.stringify(column)});
     if (!card || !col) return false;
     const dt = new DataTransfer();
     card.dispatchEvent(new DragEvent("dragstart", {dataTransfer: dt, bubbles: true}));
@@ -799,7 +800,7 @@ try {
     if (read.err) { check(false, 'the GitHub Project was read: ' + read.err); throw new Error('stop'); }
     console.log('   ' + JSON.stringify(read.d));
     const layout = (read.d.views.find(([n]) => n === read.d.view) || [])[1];
-    const drawn = await run('JSON.stringify({cards: document.querySelectorAll("#issuespanel .ghcard").length, rows: document.querySelectorAll("#issuespanel .ght tbody tr:not(.grp):not(.addrow)").length, cols: document.querySelectorAll("#issuespanel .ghcol").length})');
+    const drawn = await run('JSON.stringify({cards: document.querySelectorAll("#issuespanel .ghcard").length, rows: document.querySelectorAll("#issuespanel .ght tbody tr:not(.grp):not(.addrow)").length, cols: document.querySelectorAll("#issuespanel .ghcol:not(.new)").length})');
     console.log('   drawn: ' + drawn);
     const n = JSON.parse(drawn);
     check(layout === 'board' && read.d.columns ? n.cards === read.d.cards && n.cols > 0 : n.rows === read.d.cards,

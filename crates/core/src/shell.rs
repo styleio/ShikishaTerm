@@ -5992,8 +5992,10 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // people, labels, milestone, type or parent), its title and words
           // being rewritten ({title, body}), and what is typed to add a sub-issue
           factEdit:"", rewrite:null, subText:"",
-          // Its title and words on their way to GitHub ({thread, words})
-          wordsSent:null,
+          // Its title and words on their way to GitHub, by issue; the ones
+          // GitHub did not take, kept for when that issue's page is shown;
+          // and the changes to issues waiting their turn, oldest first
+          wordsSent:{}, wordsKept:{}, edits:[],
           // The GitHub Project shown as the third kind: which project of the
           // desk it is read through, its address and view, the filter written
           // here (null: the view's own), what GitHub answered, and the list
@@ -6119,9 +6121,36 @@ const ISSUE_EDITS = new Set(["edit", "sub_add", "sub_remove", "sub_move"]);
 // `d` is the issue the page was drawn for, which is the one changed --
 // whatever the tab has gone on to since. `shown` is what the page shows at
 // once; `tag` marks the request, to know its answer by
+// Sent one at a time, in the order they were pressed: the people and labels
+// are worked out against what the issue has when each arrives, and two at
+// once would each start from the same list and the later would undo the earlier
 function issueEdit(d, change, shown, tag) {
   if (I.detail && issueThread(I.detail) === issueThread(d)) Object.assign(I.detail, shown || change);
-  issuesAsk("edit", Object.assign({kind: d.kind, change, tag: tag || ""}, issueAt(d)));
+  I.edits.push(Object.assign({kind: d.kind, change, tag: tag || ""}, issueAt(d)));
+  if (I.edits.length === 1) issuesAsk("edit", I.edits[0]);
+  else drawIssues();
+}
+// The one answered is done with; the next goes, and after the last the page
+// is read again as GitHub has it
+function issueEdited() {
+  I.edits.shift();
+  if (I.edits.length) issuesAsk("edit", I.edits[0]);
+  else if (I.detail) issueReread();
+}
+// An issue's title and words that GitHub did not take, by issue: its page
+// shows the form again with them -- now, when it is the one on the tab, or
+// when it is next opened
+function issueWordsBack(thread) {
+  const words = I.wordsSent[thread];
+  delete I.wordsSent[thread];
+  if (words) I.wordsKept[thread] = words;
+  issueWordsShow();
+}
+function issueWordsShow() {
+  const d = I.detail, thread = d && issueThread(d);
+  if (!thread || !I.wordsKept[thread] || I.rewrite) return;
+  I.rewrite = I.wordsKept[thread];
+  delete I.wordsKept[thread];
 }
 // One name put on an issue's list of people or labels, or taken off it: said
 // as that, so two presses one after the other cannot undo each other
@@ -6359,12 +6388,10 @@ window.__issues = function (d) {
     }
     // A change to the issue itself that did not go in: read again, so the
     // page shows what GitHub has rather than what was pressed
-    if (ISSUE_EDITS.has(d.act) && I.detail) issueReread();
     // Its title and words did not go in: the form again, with them
-    if (d.act === "edit" && d.tag === "words" && I.wordsSent && !I.rewrite && I.detail && issueThread(I.detail) === I.wordsSent.thread) {
-      I.rewrite = I.wordsSent.words;
-    }
-    if (d.act === "edit" && d.tag === "words") I.wordsSent = null;
+    if (d.act === "edit" && d.tag === "words") issueWordsBack(issueThread(d));
+    if (d.act === "edit") issueEdited();
+    else if (ISSUE_EDITS.has(d.act) && I.detail) issueReread();
     if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
     // Not made for what its template still requires: those fields say so
     if (d.act === "create") I.create.missing = (d.missing || []).map(m => m.at);
@@ -6387,14 +6414,16 @@ window.__issues = function (d) {
       I.made = "";
       I.armed = ""; I.dupOf = "";
       if (!same) { I.factEdit = ""; I.rewrite = null; I.subText = ""; }
+      issueWordsShow();
       prPlaceAsk();
       break;
     }
     // The issue itself changed, or its sub-issues: read again as GitHub has it
     case "edit": case "sub_add": case "sub_remove": case "sub_move":
       if (d.act === "sub_add") I.subText = "";
-      if (d.act === "edit" && d.tag === "words") I.wordsSent = null;
-      if (I.detail) issueReread();
+      if (d.act === "edit" && d.tag === "words") delete I.wordsSent[issueThread(d)];
+      if (d.act === "edit") issueEdited();
+      else if (I.detail) issueReread();
       drawIssues();
       return;
     case "pr_place":
@@ -9163,7 +9192,7 @@ function drawIssueDetail(box) {
         el("button", {class:"go", onclick:() => {
           if (!rw.title.trim()) return;
           // Kept until GitHub has them, to be written again if it does not
-          I.wordsSent = {thread: issueThread(d), words: rw};
+          I.wordsSent[issueThread(d)] = rw;
           I.rewrite = null;
           issueEdit(d, {title: rw.title.trim(), body: rw.body}, null, "words");
         }}, T["ghp.save"] || ""))));
