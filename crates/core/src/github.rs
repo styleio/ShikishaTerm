@@ -504,6 +504,17 @@ impl Hub {
         out["body"] = item.get("body").cloned().unwrap_or(Value::Null);
         out["assignees"] = logins(item.get("assignees"));
         out["created"] = item.get("created_at").cloned().unwrap_or(Value::Null);
+        out["milestone"] = item.pointer("/milestone/title").cloned().unwrap_or(Value::Null);
+        out["type"] = item.pointer("/type/name").cloned().unwrap_or(Value::Null);
+        // The issue above it and those under it are worth having and not
+        // worth failing over, the same as what happened to it
+        if item.get("pull_request").is_none()
+            && let Ok(f) = self.family(repo, number)
+        {
+            out["node"] = f["node"].clone();
+            out["parent"] = f["parent"].clone();
+            out["subs"] = f["subs"].clone();
+        }
         out["comments"] = self.comments(repo, number)?;
         // What happened to it is worth having and not worth failing over: a
         // repository can refuse the timeline and still show the issue
@@ -810,6 +821,188 @@ impl Hub {
             Some(payload),
         )?;
         Ok(json!({"number": v.get("number"), "url": v.get("html_url")}))
+    }
+
+    /// An issue or a pull request changed in place: any of its `title`, its
+    /// `body`, who it is assigned to (`assignees`, all of them by name), its
+    /// `labels` (all of them by name), its `milestone` (by title; null or
+    /// empty for none) and -- an issue's -- its `type` (by name; null or
+    /// empty for none: Lua has no null to put in a table). Only what
+    /// `change` names is touched. Answers with what it then has
+    pub fn edit_issue(&self, repo: &Repo, number: u64, change: &Value) -> Result<Value> {
+        let mut payload = serde_json::Map::new();
+        let names = |v: &Value| -> Vec<String> {
+            v.as_array().into_iter().flatten().filter_map(|x| x.as_str().map(|s| s.trim().trim_start_matches('@').to_string())).collect()
+        };
+        if let Some(t) = change.get("title").and_then(|t| t.as_str()) {
+            if t.trim().is_empty() {
+                bail!(crate::i18n::t("err.github.no_title"));
+            }
+            payload.insert("title".into(), json!(t.trim()));
+        }
+        if let Some(b) = change.get("body").and_then(|b| b.as_str()) {
+            payload.insert("body".into(), json!(b));
+        }
+        for key in ["assignees", "labels"] {
+            if let Some(list) = change.get(key).filter(|l| l.is_array()) {
+                payload.insert(key.into(), json!(names(list)));
+            }
+        }
+        let none = |v: &Value| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty());
+        match change.get("milestone") {
+            Some(v) if none(v) => {
+                payload.insert("milestone".into(), Value::Null);
+            }
+            Some(Value::String(title)) => {
+                let all = self.milestones(repo)?;
+                let found = all.iter().find(|m| m["title"].as_str() == Some(title.trim()));
+                let Some(m) = found else {
+                    bail!(crate::i18n::tp("err.github.no_milestone", &[("title", title)]));
+                };
+                payload.insert("milestone".into(), m["number"].clone());
+            }
+            _ => {}
+        }
+        match change.get("type") {
+            Some(v) if none(v) => {
+                payload.insert("type".into(), Value::Null);
+            }
+            Some(Value::String(name)) => {
+                payload.insert("type".into(), json!(name.trim()));
+            }
+            _ => {}
+        }
+        if payload.is_empty() {
+            bail!(crate::i18n::t("err.github.no_change"));
+        }
+        let v = self.call("PATCH", &format!("repos/{}/issues/{number}", repo.slug()), Some(Value::Object(payload)))?;
+        Ok(json!({
+            "number": v.get("number"), "title": v.get("title"),
+            "assignees": logins(v.get("assignees")),
+            "labels": v.get("labels").and_then(|l| l.as_array()).map(|l| l.iter().filter_map(|x| x.get("name").cloned()).collect::<Vec<_>>()).unwrap_or_default(),
+            "milestone": v.pointer("/milestone/title"), "type": v.pointer("/type/name"),
+        }))
+    }
+
+    /// The milestones a repository's issues can be given, the open ones:
+    /// `[{number, title}]`
+    pub fn milestones(&self, repo: &Repo) -> Result<Vec<Value>> {
+        let v = self.call("GET", &format!("repos/{}/milestones?state=open&per_page=100", repo.slug()), None)?;
+        Ok(v.as_array().into_iter().flatten().map(|m| json!({"number": m.get("number"), "title": m.get("title")})).collect())
+    }
+
+    /// The types an issue of the repository can be (Bug, Feature, ...), by
+    /// name. A repository with none -- a person's own -- has an empty list
+    pub fn issue_types(&self, repo: &Repo) -> Result<Vec<String>> {
+        let v = self.graphql_whole(
+            "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){issueTypes(first:50){nodes{name isEnabled}}}}",
+            json!({"owner": repo.owner, "name": repo.name}),
+        )?;
+        Ok(v.pointer("/data/repository/issueTypes/nodes")
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|t| t["isEnabled"].as_bool().unwrap_or(true))
+            .filter_map(|t| t["name"].as_str().map(str::to_string))
+            .collect())
+    }
+
+    /// The issue an issue is part of and the ones that are part of it, in
+    /// their order: `{node, parent, subs}`, each of them `{id, number, title,
+    /// state, url, repo}`. `node` and each `id` are what the changes below
+    /// name an issue by
+    pub fn family(&self, repo: &Repo, number: u64) -> Result<Value> {
+        const ONE: &str = "id number title state url repository{nameWithOwner}";
+        let v = self.graphql(
+            &format!(
+                "query($owner:String!,$name:String!,$number:Int!){{repository(owner:$owner,name:$name){{issue(number:$number){{id parent{{{ONE}}} subIssues(first:100){{nodes{{{ONE}}}}}}}}}}}"
+            ),
+            json!({"owner": repo.owner, "name": repo.name, "number": number}),
+        )?;
+        let issue = v.pointer("/data/repository/issue").filter(|i| !i.is_null()).ok_or_else(|| anyhow!(crate::i18n::t("err.github.number")))?;
+        let one = |i: &Value| {
+            json!({"id": i["id"], "number": i["number"], "title": i["title"], "url": i["url"],
+                "state": if i["state"] == "OPEN" { "open" } else { "closed" }, "repo": i.pointer("/repository/nameWithOwner")})
+        };
+        Ok(json!({
+            "node": issue["id"],
+            "parent": issue.get("parent").filter(|p| p.is_object()).map(one),
+            "subs": issue.pointer("/subIssues/nodes").and_then(|n| n.as_array()).into_iter().flatten().map(one).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// The id GitHub knows an issue by
+    fn issue_node(&self, repo: &Repo, number: u64) -> Result<String> {
+        let v = self.graphql(
+            "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){id}}}",
+            json!({"owner": repo.owner, "name": repo.name, "number": number}),
+        )?;
+        v.pointer("/data/repository/issue/id")
+            .and_then(|i| i.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!(crate::i18n::t("err.github.number")))
+    }
+
+    /// GitHub's answer to a change of an issue's sub-issues, or why it refused
+    fn sub_change(&self, query: &str, vars: Value, at: &str) -> Result<()> {
+        let v = self.graphql_whole(query, vars)?;
+        match v.pointer(at) {
+            Some(x) if !x.is_null() => Ok(()),
+            _ => bail!("{}", v.pointer("/errors/0/message").and_then(|m| m.as_str()).unwrap_or("GitHub did not answer")),
+        }
+    }
+
+    /// An issue made part of another, as its sub-issue. `sub` is the issue's
+    /// page, `owner/repo#n`, or `#n` / `n` for one of the same repository.
+    /// One that is already part of another issue is moved only when `replace`
+    pub fn sub_add(&self, repo: &Repo, number: u64, sub: &str, replace: bool) -> Result<()> {
+        let sub = sub.trim();
+        let same = sub.trim_start_matches('#');
+        let url = if !same.is_empty() && same.chars().all(|c| c.is_ascii_digit()) {
+            format!("https://github.com/{}/issues/{same}", repo.slug())
+        } else {
+            crate::ghproject::content_url(sub).ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_content")))?
+        };
+        self.sub_change(
+            "mutation($issue:ID!,$url:String!,$replace:Boolean){addSubIssue(input:{issueId:$issue,subIssueUrl:$url,replaceParent:$replace}){issue{id}}}",
+            json!({"issue": self.issue_node(repo, number)?, "url": url, "replace": replace}),
+            "/data/addSubIssue/issue/id",
+        )
+    }
+
+    /// A sub-issue no longer part of the issue. `sub` is its `id`, as
+    /// [`Hub::family`] answers it
+    pub fn sub_remove(&self, repo: &Repo, number: u64, sub: &str) -> Result<()> {
+        self.sub_change(
+            "mutation($issue:ID!,$sub:ID!){removeSubIssue(input:{issueId:$issue,subIssueId:$sub}){issue{id}}}",
+            json!({"issue": self.issue_node(repo, number)?, "sub": sub}),
+            "/data/removeSubIssue/issue/id",
+        )
+    }
+
+    /// A sub-issue put right after another of the same issue (`after`, its
+    /// id), or first of them for None
+    pub fn sub_move(&self, repo: &Repo, number: u64, sub: &str, after: Option<&str>) -> Result<()> {
+        let issue = self.issue_node(repo, number)?;
+        match after {
+            Some(after) => self.sub_change(
+                "mutation($issue:ID!,$sub:ID!,$after:ID!){reprioritizeSubIssue(input:{issueId:$issue,subIssueId:$sub,afterId:$after}){issue{id}}}",
+                json!({"issue": issue, "sub": sub, "after": after}),
+                "/data/reprioritizeSubIssue/issue/id",
+            ),
+            // First: before the one that is first now
+            None => {
+                let first = self.family(repo, number)?["subs"].as_array().and_then(|s| s.first()).and_then(|s| s["id"].as_str().map(str::to_string));
+                match first.filter(|f| f != sub) {
+                    Some(first) => self.sub_change(
+                        "mutation($issue:ID!,$sub:ID!,$before:ID!){reprioritizeSubIssue(input:{issueId:$issue,subIssueId:$sub,beforeId:$before}){issue{id}}}",
+                        json!({"issue": issue, "sub": sub, "before": first}),
+                        "/data/reprioritizeSubIssue/issue/id",
+                    ),
+                    None => Ok(()),
+                }
+            }
+        }
     }
 
     /// Open a pull request from `head` into `base`, as a draft when asked.
@@ -1369,6 +1562,11 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         // What it would carry is a diff on this PC
         ("pr_files", _) | ("pr_file", _) => "git_diff",
         ("comment", _) => "github_comment",
+        // An issue or pull request changed in place, and an issue's sub-issues
+        ("edit", _) => "github_issue_edit",
+        ("sub_add", _) => "github_sub_issue_add",
+        ("sub_remove", _) => "github_sub_issue_remove",
+        ("sub_move", _) => "github_sub_issue_move",
         ("issue_state", _) => "github_issue_state",
         ("pr_state", _) => "github_pr_state",
         ("merge", _) => "github_pr_merge",
@@ -1385,6 +1583,25 @@ pub fn command_for(act: &str, pulls: bool) -> Option<&'static str> {
         ("gh_project_remove", _) => "github_project_remove",
         ("gh_project_draft", _) => "github_project_draft",
         ("gh_project_to_issue", _) => "github_project_to_issue",
+        // ...and the board itself: its views, its fields, its own words, the
+        // reports of how it stands, what it is linked to and who may see it
+        ("gh_project_view_add", _) => "github_project_view_add",
+        ("gh_project_view_set", _) => "github_project_view_set",
+        ("gh_project_view_remove", _) => "github_project_view_remove",
+        ("gh_project_field_add", _) => "github_project_field_add",
+        ("gh_project_field_set", _) => "github_project_field_set",
+        ("gh_project_field_remove", _) => "github_project_field_remove",
+        ("gh_project_about", _) => "github_project_about",
+        ("gh_project_create", _) => "github_project_create",
+        ("gh_project_copy", _) => "github_project_copy",
+        ("gh_project_update", _) => "github_project_update",
+        ("gh_project_delete", _) => "github_project_delete",
+        ("gh_project_template", _) => "github_project_template",
+        ("gh_project_status", _) => "github_project_status",
+        ("gh_project_status_remove", _) => "github_project_status_remove",
+        ("gh_project_link", _) => "github_project_link",
+        ("gh_project_access", _) => "github_project_access",
+        ("gh_project_workflow_remove", _) => "github_project_workflow_remove",
         // Bringing a pull request's branch here is a fetch, and is allowed as one
         ("prepare", _) => "git_fetch",
         _ => return None,
@@ -1408,6 +1625,7 @@ pub fn answer(
     // `seq` goes back as it came, so the screen can tell the answer to its last
     // question from one it has since stopped waiting for
     let base = json!({"act": act, "kind": if pulls { "pr" } else { "issue" }, "project": wanted,
+        "at_repo": args.get("at_repo").cloned().unwrap_or(Value::Null),
         "seq": args.get("seq").cloned().unwrap_or(Value::Null)});
     let with = |mut v: Value, extra: Value| {
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
@@ -1572,7 +1790,17 @@ pub fn answer(
         let _ = std::fs::remove_file(&place);
         read
     });
-    let done = hub_for(source).and_then(|(repo, hub)| match act {
+    // A card of a GitHub Project can be about any repository the account
+    // sees, not only the desk's: named, it is the one read and written, as
+    // the account of the project the board is reached through
+    let elsewhere = match s("at_repo") {
+        r if r.is_empty() => None,
+        r => match Repo::parse(&r) {
+            Some(repo) => Some(repo),
+            None => return with(base, json!({"ok": false, "number": number, "error": crate::i18n::t("err.ghproject.bad_repo")})),
+        },
+    };
+    let done = hub_for(source).map(|(repo, hub)| (elsewhere.unwrap_or(repo), hub)).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
         // With what CI says of the commit the branch is at on the server: the
@@ -1604,8 +1832,18 @@ pub fn answer(
                 problems: vec![crate::issueform::Problem { file: crate::issueform::FOLDER.into(), error: format!("{e:#}") }],
                 ..Default::default()
             });
-            Ok(json!({"labels": labels, "assignees": assignees, "templates": templates}))
+            // What an issue already there can be given besides: neither is
+            // worth losing the labels and people over
+            let milestones = hub.milestones(&repo).unwrap_or_default();
+            let types = hub.issue_types(&repo).unwrap_or_default();
+            Ok(json!({"labels": labels, "assignees": assignees, "templates": templates, "milestones": milestones, "types": types}))
         }
+        "edit" => hub.edit_issue(&repo, number, args.get("change").unwrap_or(&Value::Null)),
+        "sub_add" => hub
+            .sub_add(&repo, number, &s("sub"), args.get("replace").and_then(|r| r.as_bool()).unwrap_or(false))
+            .map(|()| json!(true)),
+        "sub_remove" => hub.sub_remove(&repo, number, &s("sub")).map(|()| json!(true)),
+        "sub_move" => hub.sub_move(&repo, number, &s("sub"), args.get("after").and_then(|a| a.as_str())).map(|()| json!(true)),
         // Made from a template: its description written the way GitHub writes
         // it, and nothing sent while what the template requires is missing
         "create" => {
@@ -1655,9 +1893,13 @@ pub fn answer(
         "gh_projects" => crate::ghproject::list(&hub, &repo),
         "gh_project" => {
             let at = crate::ghproject::GhRef::parse(&s("ref")).ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_ref")))?;
-            let view = args.get("view").and_then(|v| v.as_u64());
-            let filter = args.get("filter").and_then(|f| f.as_str());
-            crate::ghproject::read(&hub, &at, view, filter).map(|mut v| {
+            let want = crate::ghproject::Want {
+                view: args.get("view").and_then(|v| v.as_u64()),
+                filter: args.get("filter").and_then(|f| f.as_str()),
+                most: args.get("most").and_then(|m| m.as_u64()),
+                archived: args.get("archived").and_then(|a| a.as_bool()).unwrap_or(false),
+            };
+            crate::ghproject::read(&hub, &at, want).map(|mut v| {
                 v["ref"] = json!(s("ref"));
                 v
             })
@@ -1687,7 +1929,50 @@ pub fn answer(
         )
         .map(|()| json!({"card": s("card")})),
         "gh_project_remove" => crate::ghproject::remove(&hub, &s("id"), &s("card")).map(|()| json!({"card": s("card")})),
-        "gh_project_draft" => crate::ghproject::draft(&hub, &s("draft"), &s("title"), &s("body")).map(|()| json!({"card": s("card")})),
+        "gh_project_draft" => {
+            let people = args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees"));
+            crate::ghproject::draft(&hub, &s("draft"), &s("title"), &s("body"), people.as_deref()).map(|()| json!({"card": s("card")}))
+        }
+        "gh_project_view_add" => crate::ghproject::view_make(&hub, &s("id"), &s("name"), &s("layout")),
+        "gh_project_view_set" => crate::ghproject::view_change(&hub, &s("view_id"), args.get("change").unwrap_or(&Value::Null)).map(|()| json!(true)),
+        "gh_project_view_remove" => crate::ghproject::view_remove(&hub, &s("view_id")).map(|()| json!(true)),
+        "gh_project_field_add" => crate::ghproject::field_make(&hub, &s("id"), args.get("field").unwrap_or(&Value::Null)),
+        "gh_project_field_set" => crate::ghproject::field_change(&hub, &s("field"), args.get("change").unwrap_or(&Value::Null)).map(|()| json!(true)),
+        "gh_project_field_remove" => crate::ghproject::field_remove(&hub, &s("field")).map(|()| json!(true)),
+        "gh_project_about" => {
+            let at = crate::ghproject::GhRef::parse(&s("ref")).ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_ref")))?;
+            crate::ghproject::about(&hub, &at)
+        }
+        "gh_project_create" => {
+            let linked = s("link");
+            crate::ghproject::make(&hub, &s("owner"), &s("title"), Some(linked.as_str()))
+        }
+        "gh_project_copy" => crate::ghproject::copy(
+            &hub,
+            &s("id"),
+            &s("owner"),
+            &s("title"),
+            args.get("drafts").and_then(|d| d.as_bool()).unwrap_or(false),
+        ),
+        "gh_project_update" => crate::ghproject::change(&hub, &s("id"), args.get("change").unwrap_or(&Value::Null)).map(|()| json!(true)),
+        "gh_project_delete" => crate::ghproject::delete(&hub, &s("id")).map(|()| json!(true)),
+        "gh_project_template" => {
+            crate::ghproject::template(&hub, &s("id"), args.get("on").and_then(|o| o.as_bool()).unwrap_or(true)).map(|()| json!(true))
+        }
+        "gh_project_status" => {
+            let update = s("update");
+            crate::ghproject::status_write(&hub, &s("id"), (!update.is_empty()).then_some(update.as_str()), args.get("status").unwrap_or(&Value::Null))
+        }
+        "gh_project_status_remove" => crate::ghproject::status_remove(&hub, &s("update")).map(|()| json!(true)),
+        "gh_project_link" => {
+            crate::ghproject::link(&hub, &s("id"), &s("link"), args.get("on").and_then(|o| o.as_bool()).unwrap_or(true)).map(|()| json!(true))
+        }
+        "gh_project_access" => crate::ghproject::access(
+            &hub,
+            &s("id"),
+            args.get("people").and_then(|p| p.as_array()).map(|p| p.as_slice()).unwrap_or_default(),
+        ),
+        "gh_project_workflow_remove" => crate::ghproject::workflow_remove(&hub, &s("workflow")).map(|()| json!(true)),
         "gh_project_to_issue" => {
             let (draft, title, body) = (s("draft"), s("title"), s("body"));
             let words = (!draft.is_empty() && args.get("title").is_some()).then_some((draft.as_str(), title.as_str(), body.as_str()));

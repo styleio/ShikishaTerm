@@ -46,6 +46,15 @@ const VIEWS = process.env.GHP_VIEWS === '1';
 // issue put on the GitHub Project for a moment and taken off again
 const CARDS = process.env.GHP_CARDS === '1';
 const ISSUE = process.env.GHP_ISSUE || '';
+// With GHP_WRITE=1: the board itself changed through the tab and read back
+// from GitHub each time -- a field added, its choices changed and a card
+// given several of them, a column added to a board, a view added, renamed,
+// given a filter and deleted, a draft assigned, the archive opened and a
+// card brought back from it, the board's own words and a report of how it
+// stands, and a board made, copied and deleted. Everything it makes is
+// named "Check ..." and taken away again. GHP_ISSUE, an issue of a
+// repository that is not GHP_REPO, is opened on the tab from its card
+const BOARD = process.env.GHP_BOARD === '1';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const die = (why) => { console.error(why); process.exit(2); };
@@ -253,7 +262,12 @@ const cardOnGithub = async (id) => {
   return Object.fromEntries(r.data.node.fieldValues.nodes.filter((v) => v.field)
     .map((v) => [v.field.name, v.name ?? v.title ?? v.number ?? v.date ?? v.text]));
 };
-const settled = (run) => until(() => run('!I.gh.sending.length && !I.bad'), 'the changes to reach GitHub', 60000);
+// Every change sent has been answered, and none was refused: a refusal is
+// said here in GitHub's words, since nothing after it would mean anything
+const settled = async (run) => {
+  await until(() => run('!I.gh.sending.length'), 'the changes to reach GitHub', 60000);
+  if (await run('I.bad')) throw new Error('refused: ' + await run('I.said'));
+};
 const githubHas = async (id, name, want) => {
   const end = Date.now() + 30000;
   let now;
@@ -482,6 +496,262 @@ async function acrossLanes(run, views) {
   check(await githubHas(plan.card, plan.lane, plan.from[0]) && await githubHas(plan.card, plan.column, plan.from[1]), 'GitHub has it back where it was');
 }
 
+const gq = async (query, variables) => {
+  const r = await (await fetch('https://api.github.com/graphql', { method: 'POST', headers: { Authorization: 'bearer ' + PAT },
+    body: JSON.stringify({ query, variables }) })).json();
+  if (r.errors && !r.data) throw new Error(JSON.stringify(r.errors));
+  return r.data;
+};
+// The board as GitHub has it: its fields with their choices, its views, its words
+const boardShape = async (id) => (await gq(`query($id: ID!) { node(id: $id) { ... on ProjectV2 { title shortDescription
+  fields(first: 50) { nodes { ... on ProjectV2FieldCommon { id name dataType } ... on ProjectV2SingleSelectField { options { id name color } }
+    ... on ProjectV2MultiSelectField { multiSelectOptions { id name color } } } }
+  views(first: 30) { nodes { id number name layout filter } }
+  statusUpdates(first: 10) { nodes { id body status } } } } }`, { id })).node;
+
+// The board itself, changed the way a person changes it on the tab
+async function everyBoardAct(run, shot, views) {
+  console.log('7. the board itself: fields, a column, views, a draft\'s people, the archive, its words, a board made and deleted');
+  const projectId = await run('I.gh.data.id');
+  const stamp = 'Check ' + new Date().toISOString().slice(11, 19).replaceAll(':', '');
+  const press = (sel) => run(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return false; b.click(); return true; })()`);
+  const type = (sel, text, key) => run(`(() => { const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return false;
+    b.focus(); b.value = ${JSON.stringify(text)}; b.dispatchEvent(new Event("input")); b.dispatchEvent(new Event("change"));
+    ${key ? `b.dispatchEvent(new KeyboardEvent("keydown", {key: ${JSON.stringify(key)}, bubbles: true}));` : ''} return true; })()`);
+  const pressText = async (text) => {
+    const done = await run(`(() => { const b = [...document.querySelectorAll("#issuespanel button")].find(x => x.textContent.trim() === ${JSON.stringify(text)}); if (!b || b.disabled) return false; b.click(); return true; })()`);
+    // What was there instead, when it was not
+    if (!done) console.log('     no "' + text + '" to press among: ' + await run(`[...document.querySelectorAll("#issuespanel button")].map(x => x.textContent.trim() + (x.disabled ? "(off)" : "")).join(" | ").slice(0, 600)`));
+    return done;
+  };
+  const t = (key) => run(`T[${JSON.stringify(key)}] || ""`);
+  const page = async (name) => { await run(`document.activeElement && document.activeElement.blur(); Object.assign(I.gh, {panel: ${JSON.stringify(name)}}); ${name === 'about' ? 'ghpAboutAsk();' : ''} issuesSig = ""; drawIssues(); true`); await sleep(300); };
+  const before = await boardShape(projectId);
+  const statusBefore = before.fields.nodes.find((f) => f.name === 'Status');
+
+  // A field of several choices: added from the fields page, a card given
+  // two of them, a choice renamed, the field deleted
+  await page('fields');
+  const fname = stamp + ' area';
+  await type('#issuespanel [data-k="ghpfnew"]', fname);
+  await run(`(() => { const s = document.querySelector('#issuespanel .ghset select'); const all = [...document.querySelectorAll('#issuespanel .sect')].pop().querySelector('select');
+    document.activeElement.blur(); all.value = "MULTI_SELECT"; all.dispatchEvent(new Event("change")); return true; })()`);
+  await sleep(300);
+  await type('#issuespanel [data-k="ghpfnewo"]', 'Web, App, Email');
+  check(await pressText(await t('ghp.fields.add')), 'a multi-select field typed into the fields page and added');
+  await settled(run);
+  let made;
+  check(await eventually(async () => { made = (await boardShape(projectId)).fields.nodes.find((f) => f.name === fname);
+    return made && made.dataType === 'MULTI_SELECT' && made.multiSelectOptions.map((o) => o.name).join() === 'Web,App,Email'; }),
+    'GitHub has the field, with its three choices in order');
+  await until(() => run(`!!I.gh.data.fields.find(f => f.name === ${JSON.stringify(fname)})`), 'the field read back', 30000);
+  await run(`Object.assign(I.gh, {panel: ""}); issuesSig = ""; drawIssues(); true`);
+  const draft = JSON.parse(await run(`JSON.stringify((() => { const c = I.gh.data.cards.find(x => x.kind === "draft"); return c ? {id: c.id, title: c.title} : null; })())`));
+  if (!draft) check(false, 'a draft card to give values to');
+  else {
+    await run(`(() => { const d = I.gh.data, f = d.fields.find(x => x.name === ${JSON.stringify(fname)}), c = d.cards.find(x => x.id === ${JSON.stringify(draft.id)});
+      ghpSet(c, f, {options: [f.options[0].id, f.options[2].id]}); return true; })()`);
+    await settled(run);
+    const picked = async () => ((await gq(`query($id: ID!) { node(id: $id) { ... on ProjectV2Item { fieldValues(first: 50) { nodes {
+      ... on ProjectV2ItemFieldMultiSelectValue { options { name } field { ... on ProjectV2FieldCommon { name } } } } } } } }`, { id: draft.id }))
+      .node.fieldValues.nodes.find((v) => v.field && v.field.name === fname) || { options: [] }).options.map((o) => o.name).join();
+    check(await eventually(async () => await picked() === 'Web,Email'), 'a card given two of its choices has them on GitHub');
+    check(await run(`(() => { const d = I.gh.data, f = d.fields.find(x => x.name === ${JSON.stringify(fname)}), c = d.cards.find(x => x.id === ${JSON.stringify(draft.id)});
+      return ghpWords(c, f) === "Web, Email"; })()`), 'and the tab shows them as GitHub reads them back');
+  }
+  await page('fields');
+  await run(`(() => { const f = I.gh.data.fields.find(x => x.name === ${JSON.stringify(fname)}); ghpFieldOpen(f); I.gh.fedit.options[1].name = "Mobile"; I.gh.fedit.options[1].color = "PURPLE"; issuesSig = ""; drawIssues(); return true; })()`);
+  await sleep(200);
+  check(await pressText(await t('ghp.save')), 'a choice renamed and recoloured in the field\'s editor');
+  await settled(run);
+  check(await eventually(async () => { const f = (await boardShape(projectId)).fields.nodes.find((x) => x.name === fname);
+    return f && f.multiSelectOptions.map((o) => o.name + ':' + o.color).join() === 'Web:GRAY,Mobile:PURPLE,Email:GRAY'
+      && f.multiSelectOptions.map((o) => o.id).join() === made.multiSelectOptions.map((o) => o.id).join(); }),
+    'GitHub has the choice renamed, every choice still by the id it had');
+  await until(() => run(`!I.gh.fedit && !I.gh.sending.length`), 'the editor closed', 30000);
+  await run(`I.gh.fdel = I.gh.data.fields.find(x => x.name === ${JSON.stringify(fname)}).id; issuesSig = ""; drawIssues(); true`);
+  check(await press('#issuespanel .ghset .bwarn button.bad'), 'the field deleted after a yes');
+  await settled(run);
+  check(await eventually(async () => !(await boardShape(projectId)).fields.nodes.some((f) => f.name === fname)), 'GitHub no longer has the field');
+
+  // A column added at the end of a board, and taken off again in the field's editor
+  const boardView = (views.find(([, l]) => l === 'board') || [])[0];
+  await run(`Object.assign(I.gh, {panel: ""}); ghpView(${boardView}); true`);
+  await until(() => run(`I.gh.data.view === ${boardView} && !I.gh.sending.length && I.gh.data.columns === ${JSON.stringify(statusBefore.id)}`), 'the board by Status', 60000).catch(() => {});
+  if (await run(`I.gh.data.columns === ${JSON.stringify(statusBefore.id)} && !!document.querySelector("#issuespanel .ghcol.new button")`)) {
+    await press('#issuespanel .ghcol.new button');
+    await sleep(300);
+    check(await type('#issuespanel [data-k="ghpcol"]', stamp + ' col', 'Enter'), 'a column typed at the end of the board');
+    await settled(run);
+    check(await eventually(async () => { const f = (await boardShape(projectId)).fields.nodes.find((x) => x.id === statusBefore.id);
+      return f.options.length === statusBefore.options.length + 1 && f.options[f.options.length - 1].name === stamp + ' col'
+        && statusBefore.options.every((o, i) => f.options[i].id === o.id && f.options[i].name === o.name && f.options[i].color === o.color); }),
+      'GitHub has the new choice last, the others as they were, by the ids they had');
+    await until(() => run(`[...document.querySelectorAll("#issuespanel .ghhead .grow")].some(h => h.textContent === ${JSON.stringify(stamp + ' col')})`), 'the column drawn', 30000)
+      .then(() => check(true, 'the board shows the new column')).catch(() => check(false, 'the board shows the new column'));
+    await page('fields');
+    await run(`(() => { const f = I.gh.data.fields.find(x => x.id === ${JSON.stringify(statusBefore.id)}); ghpFieldOpen(f); I.gh.fedit.options.pop(); issuesSig = ""; drawIssues(); return true; })()`);
+    await pressText(await t('ghp.save'));
+    await settled(run);
+    check(await eventually(async () => { const f = (await boardShape(projectId)).fields.nodes.find((x) => x.id === statusBefore.id);
+      return f.options.map((o) => o.id + o.name).join() === statusBefore.options.map((o) => o.id + o.name).join(); }), 'and Status is as it was once the column is taken off');
+  } else check(false, 'a board in columns by Status to add a column to');
+
+  // A view: added, renamed, given a filter kept on GitHub, deleted
+  await page('views');
+  await type('#issuespanel [data-k="ghpvnew"]', stamp + ' view');
+  check(await pressText(await t('ghp.views.add')), 'a view typed into the views page and added');
+  await settled(run);
+  let view;
+  check(await eventually(async () => { view = (await boardShape(projectId)).views.nodes.find((w) => w.name === stamp + ' view'); return !!view && view.layout === 'TABLE_LAYOUT'; }),
+    'GitHub has the view, a table');
+  await until(() => run(`!!view0() `.replace('view0()', `I.gh.data.views.find(w => w.name === ${JSON.stringify(stamp + ' view')})`)), 'the view read back', 30000);
+  check(await run(`I.gh.data.view === ${view ? view.number : -1} && I.gh.panel === ""`), 'and the tab has gone to the new view');
+  await type('#issuespanel [data-k="ghpfilter"]', 'is:draft', 'Enter');
+  await until(() => run('I.gh.filter === "is:draft" && !!I.gh.data && !I.busy'), 'the filter applied', 60000);
+  check(await pressText(await t('ghp.filter.keep')), 'a filter written here kept as the view\'s own');
+  await settled(run);
+  check(await eventually(async () => ((await boardShape(projectId)).views.nodes.find((w) => w.id === view.id) || {}).filter === 'is:draft'), 'GitHub has the filter on the view');
+  await page('views');
+  await run(`(() => { const w = I.gh.data.views.find(x => x.id === ${JSON.stringify(view.id)}); const b = document.querySelector('#issuespanel [data-k="ghpvn' + w.number + '"]');
+    b.focus(); b.value = ${JSON.stringify(stamp + ' renamed')}; b.dispatchEvent(new Event("change")); b.blur(); return true; })()`);
+  await run(`(() => { const w = I.gh.data.views.find(x => x.id === ${JSON.stringify(view.id)}); w.layout = "board"; ghpSend("gh_project_view_set", {view_id: w.id, change: {layout: "board"}}); return true; })()`);
+  await settled(run);
+  check(await eventually(async () => { const w = (await boardShape(projectId)).views.nodes.find((x) => x.id === view.id); return w && w.name === stamp + ' renamed' && w.layout === 'BOARD_LAYOUT'; }),
+    'GitHub has the view renamed and made a board');
+  await page('views');
+  await run(`I.gh.vdel = ${view.number}; issuesSig = ""; drawIssues(); true`);
+  check(await press('#issuespanel .ghset .bwarn button.bad'), 'the view deleted after a yes');
+  await settled(run);
+  check(await eventually(async () => (await boardShape(projectId)).views.nodes.map((w) => w.id).join() === before.views.nodes.map((w) => w.id).join()), 'GitHub has the views it had before');
+  await until(() => run('!!I.gh.data && I.gh.data.view !== ' + view.number + ' && !I.gh.sending.length'), 'another view shown', 60000);
+
+  // A draft assigned to the account itself from its cell, and to nobody again
+  if (draft) {
+    const me = (await gq('query { viewer { login } }')).viewer.login;
+    const people = async () => ((await gq(`query($id: ID!) { node(id: $id) { ... on ProjectV2Item { content { ... on DraftIssue { assignees(first: 5) { nodes { login } } } } } } }`, { id: draft.id }))
+      .node.content.assignees.nodes.map((a) => a.login).join());
+    const was = await people();
+    await run(`(() => { const c = I.gh.data.cards.find(x => x.id === ${JSON.stringify(draft.id)}); ghpOwnSet(c, "assignees", [${JSON.stringify(me)}]); return true; })()`);
+    await settled(run);
+    check(await eventually(async () => await people() === me), 'a draft assigned from its cell is assigned on GitHub');
+    await run(`(() => { const c = I.gh.data.cards.find(x => x.id === ${JSON.stringify(draft.id)}); ghpOwnSet(c, "assignees", ${JSON.stringify(was ? was.split(',') : [])}); return true; })()`);
+    await settled(run);
+    check(await eventually(async () => await people() === was), 'and assigned as it was again');
+  }
+
+  // The archive: a card put away is listed there, and brought back from it
+  await run(`Object.assign(I.gh, {panel: ""}); issuesSig = ""; drawIssues(); true`);
+  await run(`ghpAdd(${JSON.stringify(stamp + ' archive me')}, []); true`);
+  await settled(run);
+  let temp;
+  check(await eventually(async () => { temp = (await board(projectId)).find((c) => c.title === stamp + ' archive me'); return !!temp; }), 'a draft added to be put away');
+  await until(() => run(`!!I.gh.data.cards.find(c => c.id === ${JSON.stringify(temp.id)} && c.kind === "draft")`), 'the draft read back', 30000);
+  await run(`ghpArchive(I.gh.data.cards.find(c => c.id === ${JSON.stringify(temp.id)})); true`);
+  await settled(run);
+  check(await eventually(async () => await isArchived(temp.id) === true), 'archived on GitHub');
+
+  await run(`ghpArchiveShow(true); true`);
+  check(await until(() => run(`!!I.gh.data && I.gh.data.archived === true && I.gh.data.cards.some(c => c.id === ${JSON.stringify(temp.id)})`), 'the archive', 90000).catch(() => false),
+    'the archive lists the card put away');
+  console.log('   ' + await run('JSON.stringify({archive: I.gh.archive, read: I.gh.data && I.gh.data.archived, cards: I.gh.data && I.gh.data.cards.map(c => c.title), err: I.gh.err, said: I.said, busy: I.busy, sending: I.gh.sending.length, expect: I.gh.expect.length})'));
+  await shot('7-archive');
+  check(await run(`(() => { const r = document.querySelector('#issuespanel tr[data-card="${temp ? temp.id : ''}"] button'); if (!r) return false; r.click(); return true; })()`), 'Restore pressed on its row');
+  await settled(run);
+  check(await eventually(async () => await isArchived(temp.id) === false), 'GitHub has it back on the board');
+  await run(`ghpArchiveShow(false); true`);
+  await until(() => run(`!!I.gh.data && I.gh.data.archived === false && I.gh.data.cards.some(c => c.id === ${JSON.stringify(temp.id)})`), 'the board again', 90000);
+  await run(`ghpRemove(I.gh.data.cards.find(c => c.id === ${JSON.stringify(temp.id)})); true`);
+  await settled(run);
+
+  // Its own words and a report of how it stands
+  await page('about');
+  await until(() => run('!!I.gh.about || !!I.gh.aboutErr'), 'what the board says of itself', 60000);
+  const about = JSON.parse(await run('JSON.stringify({err: I.gh.aboutErr, a: I.gh.about && {title: I.gh.about.title, can: I.gh.about.can_update, flows: I.gh.about.workflows && I.gh.about.workflows.length, updates: I.gh.about.updates.length, description: I.gh.about.description}})'));
+  console.log('   ' + JSON.stringify(about));
+  check(!about.err && about.a && about.a.title === before.title && about.a.can, 'the board\'s own page is read, and says this account may change it');
+  check(about.a && about.a.flows > 0, 'its workflows are listed');
+  await shot('7-about');
+  await type('#issuespanel [data-k="ghpadescription"]', stamp + ' words');
+  check(await run(`(() => { const b = [...document.querySelectorAll("#issuespanel .sect")][0].querySelector("button.go"); if (!b || b.disabled) return false; b.click(); return true; })()`), 'the short description rewritten and saved');
+  await settled(run);
+  check(await eventually(async () => (await boardShape(projectId)).shortDescription === stamp + ' words'), 'GitHub has the new description');
+  await run(`ghpSend("gh_project_update", {change: {description: ${JSON.stringify(before.shortDescription || '')}}}); true`);
+  await settled(run);
+  check(await eventually(async () => ((await boardShape(projectId)).shortDescription || '') === (before.shortDescription || '')), 'and the one it had again');
+  await page('about');
+  await until(() => run('!!I.gh.about'), 'the board\'s page again', 60000);
+  await type('#issuespanel [data-k="ghpsb"]', stamp + ' report');
+  check(await pressText(await t('ghp.status.write')), 'a report of how it stands written');
+  await settled(run);
+  let report;
+  check(await eventually(async () => { report = (await boardShape(projectId)).statusUpdates.nodes.find((s) => s.body === stamp + ' report'); return !!report && report.status === 'ON_TRACK'; }),
+    'GitHub has the report, on track');
+  await until(() => run(`!!I.gh.about && I.gh.about.updates.some(u => u.id === ${JSON.stringify(report ? report.id : '')})`), 'the report listed', 30000)
+    .then(() => check(true, 'the page lists it')).catch(() => check(false, 'the page lists it'));
+  await run(`ghpSend("gh_project_status_remove", {update: ${JSON.stringify(report ? report.id : '')}}); true`);
+  await settled(run);
+  check(await eventually(async () => !(await boardShape(projectId)).statusUpdates.nodes.some((s) => s.body === stamp + ' report')), 'and deleted again');
+
+  // An issue of a repository the desk has no project for: opened on the tab
+  if (ISSUE && ISSUE.split('#')[0].toLowerCase() !== REPO.toLowerCase()) {
+    const [repo, n] = ISSUE.split('#');
+    await run(`document.activeElement && document.activeElement.blur(); Object.assign(I.gh, {panel: ""}); issueOpenAt(I.gh.project, ${JSON.stringify(repo)}, ${Number(n)}, "issue"); true`);
+    check(await until(() => run(`I.view === "detail" && !!I.detail && I.detail.at_repo === ${JSON.stringify(repo)} && I.detail.number === ${Number(n)} && !!I.detail.title`), 'the issue', 60000).catch(() => false),
+      `${ISSUE}, of a repository the desk has no project for, opens on this tab`);
+    check(await run('document.querySelector("#issuespanel .crumb").textContent.includes(' + JSON.stringify(repo) + ')'), 'with its repository named');
+    console.log('   its sub-issues ' + (await run('Array.isArray(I.detail.subs)') ? 'were read' : 'could not be read with this token, and are left out'));
+    await shot('7-far-issue');
+    // What changes an issue is asked of GitHub in words it understands: a
+    // sub-issue that is not there is refused as not found, never as a
+    // question GitHub cannot read
+    await run(`issuesAsk("sub_remove", Object.assign({kind: "issue", sub: "I_kwDOnotanissue"}, issueAt(I.detail))); true`);
+    await until(() => run('I.bad && !!I.said'), 'GitHub\'s refusal', 30000).catch(() => {});
+    const said = await run('I.said');
+    console.log('   GitHub said: ' + said);
+    check(!!said && !/doesn't exist on type|isn't a defined|Variable \$|Expected|Parse error/i.test(said), 'a change to its sub-issues is a question GitHub can read');
+    await run('I.view = "list"; I.detail = null; I.said = ""; I.bad = false; issuesSig = ""; drawIssues(); true');
+  }
+
+  // A board made from the list of them, copied, and both deleted
+  const owner = await run('I.gh.data.owner');
+  const address = await run('I.gh.ref');
+  await run(`document.activeElement && document.activeElement.blur(); I.gh.picking = true; I.gh.newp = {title: ${JSON.stringify(stamp + ' board')}, owner: ${JSON.stringify(owner)}, link: false}; issuesSig = ""; drawIssues(); true`);
+  check(await pressText(await t('ghp.new.go')), 'a new board named and made');
+  check(await until(() => run(`!!I.gh.data && I.gh.data.title === ${JSON.stringify(stamp + ' board')}`), 'the new board', 90000).catch(() => false), 'the tab is on the new board');
+  const newId = await run('I.gh.data && I.gh.data.id');
+  const gone = async (id) => { try { return (await gq('query($id: ID!) { node(id: $id) { ... on ProjectV2 { id } } }', { id })).node === null; } catch (e) { return true; } };
+  if (newId && newId !== projectId) {
+    await page('about');
+    await until(() => run('!!I.gh.about'), 'the new board\'s page', 60000);
+    await run(`I.gh.copy = {title: ${JSON.stringify(stamp + ' copy')}, owner: ${JSON.stringify(owner)}, drafts: false}; issuesSig = ""; drawIssues(); true`);
+    check(await pressText(await t('ghp.copy.go')), 'the board copied');
+    check(await until(() => run(`!!I.gh.data && I.gh.data.title === ${JSON.stringify(stamp + ' copy')}`), 'the copy', 120000).catch(() => false), 'the tab is on the copy');
+    const copyId = await run('I.gh.data && I.gh.data.id');
+    for (const [id, what] of [[copyId, 'the copy'], [newId, 'the new board']]) {
+      if (!id || id === projectId) { check(false, what + ' to delete'); continue; }
+      if (await run('I.gh.data && I.gh.data.id') !== id) {
+        await run(`ghpPick((I.gh.list || []).concat([]).length ? ${JSON.stringify('')} : ""); true`);
+        const url = (await gq('query($id: ID!) { node(id: $id) { ... on ProjectV2 { url } } }', { id })).node.url;
+        await run(`ghpPick(${JSON.stringify(url)}); true`);
+        await until(() => run(`!!I.gh.data && I.gh.data.id === ${JSON.stringify(id)}`), what, 90000);
+      }
+      await page('about');
+      await until(() => run('!!I.gh.about && I.gh.about.id === ' + JSON.stringify(id)), what + '\'s page', 60000);
+      await run('I.gh.del = true; issuesSig = ""; drawIssues(); true');
+      check(await press('#issuespanel .sect .bwarn button.bad'), what + ' deleted after a yes');
+      await until(() => run('!I.gh.ref && !I.gh.making'), 'no board chosen', 60000).catch(() => {});
+      check(await eventually(async () => await gone(id)), 'GitHub no longer has ' + what);
+    }
+  }
+  await run(`ghpPick(${JSON.stringify(address)}); true`);
+  await until(() => run(`!!I.gh.data && I.gh.data.id === ${JSON.stringify(projectId)}`), 'the board the check began on', 90000);
+  const after = await boardShape(projectId);
+  check(after.fields.nodes.map((f) => f.id).join() === before.fields.nodes.map((f) => f.id).join()
+    && after.views.nodes.map((w) => w.id + w.name + w.layout + (w.filter || '')).join() === before.views.nodes.map((w) => w.id + w.name + w.layout + (w.filter || '')).join(),
+    'the board has the fields and views it began with');
+}
+
 let ws;
 try {
   spawn(path.join(APP, 'SHIKISHA-TERM.exe'), ['--behind'], { cwd: APP, env, detached: true, stdio: 'ignore' }).unref();
@@ -560,6 +830,7 @@ try {
       }
       if (VIEWS) { await everyField(run); await acrossLanes(run, read.d.views); }
       if (CARDS) await everyCardAct(run, shot, read.d.views);
+      if (BOARD) await everyBoardAct(run, shot, read.d.views);
     }
   }
 } catch (e) {

@@ -40,11 +40,53 @@ once it reaches its first tagged release.
     change its fields, and to make it an issue of one of the desk's
     repositories. Words GitHub did not take are kept and offered again.
 
+  - **Every card opens on this tab**, whichever repository it is of: an
+    issue or pull request of a repository the desk has no project for is
+    read, commented on and changed here, as the board's account.
+  - **An issue's own fields are changed from the table** and on its page:
+    assignees, labels, milestone and issue type. A draft is assigned from
+    its cell and on its page. A multi-select field takes several choices.
+    Linked pull requests, reviewers, the parent issue, sub-issue progress,
+    the issue type and the created, updated and closed dates are shown.
+  - **An issue's page** now edits its title and description, and lists its
+    sub-issues: opened, put in order, removed, and another issue added as
+    one. Its parent issue is set and removed there too.
+  - **Several cards at once.** Select puts a box on every card; the
+    selected ones are given a field's value, archived, or taken off
+    together.
+  - **Where a card is added, typing finds** the issues and pull requests
+    of the desk's repositories with those words, to add with one press,
+    and offers to create what is typed as a new issue of a repository.
+  - **The archive** (under the board's ⋯) lists the archived cards, each
+    with Restore.
+  - **A roadmap's bars are dragged** to other dates, or by an end to
+    change one date; a card's ⋯ sets the dates exactly, which is also the
+    way on a phone.
+  - **A view with more than 1000 cards** is shown by its first thousand,
+    says how many there are, and reads the next thousand when asked.
+  - **Views** (under ⋯): add, rename, change the layout, delete, choose
+    and order the fields shown, and save the filter written on the tab as
+    the view's own. Grouping, sorting, a board's column field and a slice
+    are chosen here too and kept in this app only: GitHub has no way to
+    change those from outside its own page.
+  - **Fields** (under ⋯): add a text, number, date, single-select,
+    multi-select or iteration field, rename or delete one, and edit a
+    field's options (name, colour, order) or iterations. A board has
+    "Add column" at the end of its columns.
+  - **Charts** (under ⋯): cards counted, or a number field summed, by a
+    field and stacked by another; or how many cards there were and how
+    many were closed over time. Drawn from the cards read, and kept in
+    this app.
+  - **Project settings** (under ⋯): name, description, README, public or
+    private, close and reopen, status updates, linked repositories,
+    who has access, the workflows (listed, and deleted; GitHub lets them
+    be made and changed only on its own page), make an organization's
+    project a template, copy the project, delete it. A new project is made
+    from the list of projects.
+
   The view's filter is GitHub's own search and can be replaced for a look.
-  A card opens on this tab when its repository is one of the desk's
-  projects, else on GitHub. The GitHub Project chosen is kept in the
-  project's git settings, and the view last looked at is remembered on the
-  screen.
+  The GitHub Project chosen is kept in the project's git settings, and the
+  view last looked at is remembered on the screen.
 
   The token needs the Projects permission. Without it, the tab says what to
   add and offers the account's settings, and the token help in the
@@ -55,8 +97,14 @@ once it reaches its first tagged release.
   `shikisha.github_project`, `shikisha.github_project_set`,
   `shikisha.github_project_add`, `shikisha.github_project_move`,
   `shikisha.github_project_archive`, `shikisha.github_project_remove`,
-  `shikisha.github_project_draft` and `shikisha.github_project_to_issue`,
-  each with its own row in the permission table.
+  `shikisha.github_project_draft`, `shikisha.github_project_to_issue`,
+  `shikisha.github_issue_edit`, the `shikisha.github_sub_issue_*` commands
+  and, for the board itself, `shikisha.github_project_about`, `_create`,
+  `_copy`, `_update`, `_delete`, `_template`, `_view_add`, `_view_set`,
+  `_view_remove`, `_field_add`, `_field_set`, `_field_remove`, `_status`,
+  `_status_remove`, `_link`, `_access` and `_workflow_remove`, each with
+  its own row in the permission table. `github_issue`, `github_pr`,
+  `github_comment` and the state commands also take `"owner/repo#12"`.
 
 ### Fixed
 - **The git panel's ✨ no longer stays on "The AI is writing the message"
