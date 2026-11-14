@@ -3227,10 +3227,13 @@ fn handle(
                 return Ok(());
             }
             // Asking for the state IS watching, and this is the only trace a
-            // viewer without a socket leaves (see `watched`).
+            // viewer without a socket leaves (see `watched`). A page that is
+            // only finding its way back after its line dropped says so
+            // (`again=1`), and takes no terminal's width for it
+            let came_back = req.url().split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv == "again=1"));
             if !gate.is_here(&session) {
                 let mut last = last_poll.lock().unwrap();
-                if last.is_none_or(|t| t.elapsed() >= RemoteUi::POLL_LIFE) {
+                if last.is_none_or(|t| t.elapsed() >= RemoteUi::POLL_LIFE) && !came_back {
                     let _ = tx.send(RemoteCmd::Viewing);
                 }
                 *last = Some(Instant::now());
@@ -3666,12 +3669,24 @@ fn handle(
                 return Ok(());
             };
             let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            // A line the page sends again because it never heard that the
+            // first went in (the answer was lost on the way back, not the
+            // line) carries the mark of the first, and is not carried out
+            // twice
+            let once = v.get("once").and_then(|o| o.as_str()).filter(|o| !o.is_empty());
+            if once.is_some_and(taken_before) {
+                req.respond(json_response(serde_json::json!({"ok": true})))?;
+                return Ok(());
+            }
             let mut took = false;
             if let Some(ev) = shikisha_shared::parse_intent(&v)
                 && gate.admits(&session, &ev) {
                     let _ = tx.send(gate.command(&session, ev));
                     took = true;
                 }
+            if let (true, Some(once)) = (took, once) {
+                taken_now(once);
+            }
             req.respond(json_response(serde_json::json!({"ok": took})))?;
         }
         // Watching the screen as video instead of as a run of JPEGs. The page
@@ -4053,8 +4068,40 @@ fn proxy_settings(
 }
 
 
+/// The marks of the lines taken lately (`once`), newest last. A page marks
+/// each line it sends; one it sends again with the same mark was taken
+/// already. Enough of them for every page's last few, and no more
+fn taken_marks() -> &'static Mutex<std::collections::VecDeque<String>> {
+    static TAKEN: std::sync::OnceLock<Mutex<std::collections::VecDeque<String>>> = std::sync::OnceLock::new();
+    TAKEN.get_or_init(Default::default)
+}
+
+fn taken_before(once: &str) -> bool {
+    taken_marks().lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m == once)
+}
+
+fn taken_now(once: &str) {
+    let mut marks = taken_marks().lock().unwrap_or_else(|e| e.into_inner());
+    if marks.len() >= 256 {
+        marks.pop_front();
+    }
+    marks.push_back(once.to_string());
+}
+
 #[cfg(test)]
 mod tests {
+    /// A line sent again under the mark it first went out with is the same
+    /// line: the page never heard that the first one went in, and the PC
+    /// must not carry it out twice
+    #[test]
+    fn a_line_sent_again_under_its_mark_was_taken_already() {
+        let mark = format!("mark-{}", crate::random_hex(6));
+        assert!(!taken_before(&mark));
+        taken_now(&mark);
+        assert!(taken_before(&mark));
+        assert!(!taken_before("another-mark"));
+    }
+
     #[test]
     fn cookies_do_not_authorize_other_origins_or_websocket_handshakes() {
         use super::*;

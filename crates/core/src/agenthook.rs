@@ -1773,7 +1773,7 @@ fn far_swap_script(path: &str, new: &str, was: Option<&str>, bak: &str) -> Strin
     format!(
         "f={f}; n={n}; w={w}; b={b}\n\
          chmod 600 \"$n\" 2>/dev/null; [ -n \"$w\" ] && chmod 600 \"$w\" 2>/dev/null\n\
-         if [ -L \"$f\" ]; then r=$(readlink -f \"$f\" 2>/dev/null) && [ -n \"$r\" ] && f=$r; fi\n\
+         if [ -L \"$f\" ]; then r=$(readlink -f \"$f\" 2>/dev/null); [ -n \"$r\" ] || {{ rm -f \"$n\" \"$w\"; echo 'the settings file is a link that could not be followed' >&2; exit 5; }}; f=$r; fi\n\
          if [ -n \"$w\" ]; then\n\
          \x20 if ! cmp -s \"$f\" \"$w\"; then rm -f \"$n\" \"$w\"; exit 3; fi\n\
          elif [ -e \"$f\" ]; then rm -f \"$n\"; exit 3; fi\n\
@@ -1808,6 +1808,19 @@ fn far_swap(at: &crate::elsewhere::Elsewhere, t: &Target, path: &str, base: Opti
     let clean = || {
         let _ = crate::elsewhere::exec(at, &format!("rm -f {} {}", crate::ssh::sh_quote(&new), crate::ssh::sh_quote(&was)), 30_000);
     };
+    // Made first, empty and closed to everyone else: a file that is sent is
+    // made with whatever rights the server gives a new file, and what is
+    // about to be sent may hold the CLI's keys. Sent over a file already
+    // there, it keeps that file's rights from its first byte
+    let made = crate::elsewhere::exec(
+        at,
+        &format!("umask 077 && : > {} && : > {}", crate::ssh::sh_quote(&new), crate::ssh::sh_quote(&was)),
+        30_000,
+    );
+    if !made.is_ok_and(|r| r.ok()) {
+        clean();
+        return Err(fail(format!("could not make room for the new {} hook file beside {} on {}", t.name, path, at.address())));
+    }
     if let Err(e) = send(&new, text.as_bytes()) {
         clean();
         return Err(fail(format!("could not send the new {} hook file to {} on {}: {e:#}", t.name, path, at.address())));

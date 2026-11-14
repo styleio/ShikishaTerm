@@ -2215,6 +2215,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .collect();
     let start = Instant::now();
     let _ = LOOP_START.set(start);
+    crate::keeps_the_log();
     // Width comes from config if given; otherwise it's auto-computed from tab names
     // (finalized once tabs are launched).
     let (mut rows, mut cols) = pty_dims(shell.size()?);
@@ -18672,9 +18673,14 @@ fn files_there(
             };
             let had = str_of("mark");
             let (panel, args) = (panel.clone(), args.clone());
-            // By the whole path on the machine: the same file asked for
-            // through another folder of the desk is the same file
-            let turn = far_file_turn(&at.machine_key(), &named(&path));
+            // By the path the write itself goes to, as it was worked out for
+            // the machine: the same file asked for through another folder of
+            // the desk, or spelled with a `..` in it, is the same file
+            let goes_to = match &write {
+                ssh::FileJob::Write { to, .. } => to.clone(),
+                _ => named(&path),
+            };
+            let turn = far_file_turn(&at.machine_key(), &goes_to);
             std::thread::spawn(move || {
                 // Looking at the mark and writing are two trips to the
                 // machine. Two saves of one file at once (a page that came

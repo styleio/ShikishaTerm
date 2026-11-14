@@ -15862,7 +15862,8 @@ window.__state = function (json) {
   // Not under somebody's fingers: while the box has the cursor and words in
   // it the reload waits (the words are kept either way; the keyboard going
   // down in the middle of a sentence is what it spares)
-  const typing = castInput && document.activeElement === castInput && castInput.value;
+  // ...nor while a line is on its way: its answer would have nowhere to land
+  const typing = (castInput && document.activeElement === castInput && castInput.value) || sayFlying;
   if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading && !typing) {
     window.__reloading = true;
     location.reload();
@@ -22557,7 +22558,7 @@ if (REMOTE) {
     if (pulling || wsUp || remoteCut || moving || MOVE_CODE || Date.now() < pullAfter) return;
     pulling = true;
     try {
-      const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN), {cache:"no-store"});
+      const r = await fetch("api/state?t=" + encodeURIComponent(TOKEN) + (beenUp ? "&again=1" : ""), {cache:"no-store"});
       if (wsUp || remoteCut || moving) return;
       // The app was locked with its master password: loaded again, this
       // address is the page that unlocks it
@@ -28651,9 +28652,13 @@ function ensureBar() {
   castInput.addEventListener("input", mentionInput);
   castInput.addEventListener("input", growCastInput);
   castInput.addEventListener("input", draftKept);
-  // What was being typed when this page last loaded itself again
+  // What was being typed when this page last loaded itself again -- and a
+  // line that was on its way then, which comes back into the box under the
+  // mark it went out with
   try {
-    const kept = sessionStorage.getItem("shikisha_draft");
+    const flying = JSON.parse(sessionStorage.getItem("shikisha_sending") || "null");
+    if (flying && flying.text && flying.once) sayOut = flying;
+    const kept = sessionStorage.getItem("shikisha_draft") || (sayOut ? sayOut.text : "");
     if (kept && !castInput.value) castInput.value = kept;
   } catch (e) {}
   castInput.addEventListener("scroll", () => { if (castMirror) castMirror.scrollTop = castInput.scrollTop; });
@@ -28743,11 +28748,11 @@ function closeBar() {
 // A model pane has no command line, so an empty line has nothing to accept and
 // does nothing; at a prompt a bare Enter is itself the instruction (accept a
 // default, insert a newline), so it is still sent.
-function sendLine(text) {
+function sendLine(text, once) {
   // Say who it is for: the pane in front as this page sees it. Left unsaid, a
   // line is handed to whatever pane happens to be in front when it arrives,
   // and a view switch still on its way would take it somewhere else.
-  if (text) return send({kind:"say", tab: S.active, text});
+  if (text) return send({kind:"say", tab: S.active, text, once});
   // An empty Send is a bare Enter: meaningful at a prompt (accept a default,
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
@@ -28763,6 +28768,26 @@ function lineNotSent(text) {
     draftKept();
   }
   toast(T["tui.cast.not_sent"] || "");
+}
+// The line on its way to the PC, until the PC says it took it: {text, sent,
+// once}. `once` marks it, so that sent again -- by hand after "not sent", or
+// by this page after loading itself again in the middle of sending -- it is
+// the same line to the PC, which carries it out one time. Kept across the
+// page's own reload, where the words would otherwise be in neither the box
+// nor the PC
+let sayOut = null, sayFlying = false;
+function sayKept() {
+  try {
+    if (sayOut) sessionStorage.setItem("shikisha_sending", JSON.stringify(sayOut));
+    else sessionStorage.removeItem("shikisha_sending");
+  } catch (e) {}
+}
+function sayMark(text) {
+  if (!(sayOut && sayOut.text === text)) {
+    sayOut = {text, once: Date.now().toString(36) + Math.random().toString(36).slice(2, 10)};
+  }
+  sayKept();
+  return sayOut.once;
 }
 // What is in the box, kept for this page's own reload (a new version of the
 // app, a phone that put the page away): typed words are not lost to either
@@ -28802,6 +28827,7 @@ function sendBar() {
       send({kind:"words", on:true, goal:t});
       castInput.value = "";
       growCastInput();
+      draftKept();
     }
     return;
   }
@@ -28818,8 +28844,15 @@ function sendBar() {
   } else {
     // Hand the line to the pane in front, whatever kind of pane it is -- with
     // each @ badge written as the tab id it stands for
-    const went = sendLine(mentionize(t));
-    if (went && went.then) went.then(r => { if (!r || !r.ok) lineNotSent(t); });
+    const went = sendLine(mentionize(t), sayMark(t));
+    if (went && went.then) {
+      sayFlying = true;
+      went.then(r => {
+        sayFlying = false;
+        if (r && r.ok) { sayOut = null; sayKept(); }
+        else lineNotSent(t);
+      });
+    } else { sayOut = null; sayKept(); }
   }
   castInput.value = "";
   castInput.focus();
@@ -30215,11 +30248,11 @@ mod tests {
         );
         // One place decides where a finished line goes, and both doors that
         // finish a line go through it
-        assert!(p.contains("function sendLine(text) {"), "there is no single place that decides how a line is handed over");
+        assert!(p.contains("function sendLine(text, once) {"), "there is no single place that decides how a line is handed over");
         // (the @ badges written as the ids they stand for on the way)
-        assert!(p.contains("    const went = sendLine(mentionize(t));"), "the input bar's Send sends on its own");
+        assert!(p.contains("    const went = sendLine(mentionize(t), sayMark(t));"), "the input bar's Send sends on its own");
         // A line that did not reach the PC comes back into the box and is said
-        assert!(p.contains("if (!r || !r.ok) lineNotSent(t);"), "a line that was not delivered is lost without a word");
+        assert!(p.contains("else lineNotSent(t);"), "a line that was not delivered is lost without a word");
         // No look-behind written as a literal: on WebKit before 16.4 that is a
         // syntax error, and the whole board does not draw on that phone
         for line in p.lines().filter(|l| l.contains("(?<!") || l.contains("(?<=")) {
@@ -30233,7 +30266,7 @@ mod tests {
             "there is more than one way to hand over a line"
         );
         assert!(
-            p.contains(r#"return send({kind:"say", tab: S.active, text});"#),
+            p.contains(r#"return send({kind:"say", tab: S.active, text, once});"#),
             "the line handed over has no addressee"
         );
         // Actions only there (plus the key row on a phone) -- no 🤖, no 📼

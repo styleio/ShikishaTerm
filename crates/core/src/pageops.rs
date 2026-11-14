@@ -286,6 +286,10 @@ fn secret_fill(
         const box = this.getBoundingClientRect();
         if (this.disabled || this.readOnly || !(box.width > 0 && box.height > 0)) return "not_ready";
         this.focus();
+        // Asked again now: taking the focus runs the page's own code, which
+        // can have made a field for words into one for a number
+        if (!editable && !(this instanceof HTMLTextAreaElement)
+            && !["text", "password", "email", "search", "tel", "url"].includes(this.type)) return "not_a_field";
         if (editable) {
             this.textContent = value;
         } else {
@@ -296,7 +300,7 @@ fn secret_fill(
         // sits inside (`composed`), or the page's own model never hears
         this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
         this.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-        return "written";
+        return "written " + this.tagName.toLowerCase();
     }"#;
     const STEP_MS: u64 = 2_000;
     let until = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
@@ -373,11 +377,6 @@ fn secret_fill(
             pause();
             continue;
         };
-        // Which field, asked before it holds anything: afterwards the page
-        // has seen the value and can put it where a description is read
-        // from (a placeholder, a name), and the description goes back to
-        // the script that asked
-        let echo = field_desc(s, to, &object, step);
         let said = or_again!(s.cdp(
             to,
             "Runtime.callFunctionOn",
@@ -392,8 +391,15 @@ fn secret_fill(
             pause();
             continue;
         }
-        match said.pointer("/result/value").and_then(serde_json::Value::as_str).unwrap_or_default() {
-            "written" => return Ok(SecretFill::Done(OpReport { state: Found::Visible, echo, anchor: None })),
+        let said = said.pointer("/result/value").and_then(serde_json::Value::as_str).unwrap_or_default();
+        // What comes back says what kind of thing was written into and no
+        // more. Anything the page can write -- a placeholder, a name, a
+        // label -- it can write a password into, this one or the last one,
+        // and what comes back goes to the script that asked
+        if let Some(kind) = said.strip_prefix("written ") {
+            return Ok(SecretFill::Done(OpReport { state: Found::Visible, echo: Some(kind.to_string()), anchor: None }));
+        }
+        match said {
             "framed" => anyhow::bail!(crate::i18n::t("err.browser.secret_in_frame")),
             "not_a_field" => anyhow::bail!(crate::i18n::t("err.browser.secret_not_a_field")),
             // It went somewhere else, or is not ready to be written into:
@@ -1313,8 +1319,25 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
     };
     let before = read();
     if value.is_empty() {
+        // Only something that holds what is typed can be emptied: a box
+        // around a field reads as empty already, with the field inside it
+        // still holding what it held
+        const HOLDS: &str = r#"function () {
+            return this.isContentEditable || this instanceof HTMLInputElement
+                || this instanceof HTMLTextAreaElement || this instanceof HTMLSelectElement;
+        }"#;
+        let holds = s
+            .cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid, "functionDeclaration": HOLDS, "returnByValue": true }),
+                timeout_ms,
+            )
+            .ok()
+            .and_then(|v| v.pointer("/result/value").and_then(serde_json::Value::as_bool))
+            .unwrap_or(false);
         let _ = set_native();
-        if read().as_deref() != Some("") {
+        if !holds || read().as_deref() != Some("") {
             anyhow::bail!(crate::i18n::tp("err.browser.ref_not_a_field", &[("ref", &r.to_string())]));
         }
         return Ok(OpReport { state: Found::Visible, echo: desc, anchor });

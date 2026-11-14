@@ -30,8 +30,36 @@ const WHAT: &str = "the record of tokens used";
 pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
     (2, "codex_again", Step::Sql(include_str!("migrations/0002_codex_again.sql"))),
-    (3, "codex_by_turn", Step::Sql(include_str!("migrations/0003_codex_by_turn.sql"))),
+    (3, "codex_by_turn", Step::Code(codex_by_turn)),
 ];
+
+/// Codex's counts read again, now that a call is known by its turn and the
+/// conversation's total after it. A conversation branched from another
+/// begins with the other's counts, written again under new times: by time
+/// they were other calls, and what was read before this is kept by time.
+/// Read again, both are known the new way and counted once.
+///
+/// Only the conversations whose record is still on this PC. One that Codex
+/// or the person has since deleted cannot be read again, and what was
+/// counted from it is all there is of it: it is kept, as it was counted
+fn codex_by_turn(tx: &rusqlite::Transaction) -> Result<()> {
+    let records: Vec<(String, String)> = tx
+        .prepare("SELECT path, carry FROM read_files WHERE cli = 'codex'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (path, carry) in records {
+        let session = serde_json::from_str::<serde_json::Value>(&carry)
+            .ok()
+            .and_then(|c| c.get("session").and_then(|s| s.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        if session.is_empty() || !Path::new(&path).is_file() {
+            continue;
+        }
+        tx.execute("DELETE FROM calls WHERE cli = 'codex' AND session = ?1", rusqlite::params![session])?;
+        tx.execute("DELETE FROM read_files WHERE path = ?1", rusqlite::params![path])?;
+    }
+    Ok(())
+}
 
 /// How long a call is kept: a year, and a month over it, so the year view
 /// always has a whole year to show
@@ -608,6 +636,40 @@ mod tests {
             .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
         assert_eq!(left, ["claude", "claude"]);
         assert!(dir.join("tokens.v1.bak").exists() || std::fs::read_dir(&dir).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".bak")), "copied aside first");
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Codex's counts are read again by turn only where there is still a
+    /// record to read. What was counted from a record since deleted is all
+    /// there is of it, and stays
+    #[test]
+    fn codex_is_read_again_only_from_records_still_there() {
+        let dir = scratch("by-turn");
+        let db = dir.join("tokens.db");
+        let here = dir.join("rollout-here.jsonl");
+        std::fs::write(&here, "{}\n").unwrap();
+        let gone = dir.join("rollout-gone.jsonl");
+        {
+            let conn = crate::sqlite::open(&db, &STEPS[..2], WHAT).unwrap();
+            for (key, session, record) in [("x:here", "s-here", &here), ("x:gone", "s-gone", &gone)] {
+                conn.execute(
+                    "INSERT INTO calls (key, cli, at, day, session) VALUES (?1, 'codex', 0, '2026-10-12', ?2)",
+                    params![key, session],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO read_files (path, cli, size, read_to, head, edge, carry, read_at) VALUES (?1, 'codex', 1, 1, '', '', ?2, 0)",
+                    params![record.display().to_string(), format!(r#"{{"session":"{session}"}}"#)],
+                )
+                .unwrap();
+            }
+        }
+        let conn = crate::sqlite::open(&db, STEPS, WHAT).unwrap();
+        let calls: Vec<String> = conn.prepare("SELECT key FROM calls").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(calls, ["x:gone"], "what was counted from a record no longer there was thrown away, or one still there was kept twice");
+        let files: i64 = conn.query_row("SELECT COUNT(*) FROM read_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(files, 1, "the record still there is not read again from its start");
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }

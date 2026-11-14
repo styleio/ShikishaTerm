@@ -205,15 +205,30 @@ pub fn append_hook_log(msg: &str) {
     // before it goes) and a new one is begun. Nothing here ever cut it, and
     // an app left running for months wrote a file read whole each time
     // diagnostics were gathered
-    if SAID.fetch_add(1, Ordering::Relaxed) % HOOK_LOG_LOOK == 0
-        && std::fs::metadata(&path).is_ok_and(|m| m.len() > HOOK_LOG_MOST)
-    {
-        let _ = std::fs::rename(&path, config::logs_dir().join("hooks.log.1"));
+    // Only by the app that keeps the log (a hook is a program of a moment,
+    // and two of them putting it aside at once would put the new, small log
+    // over the old, large one), and by one thread of it at a time, which
+    // looks again once it has the turn
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if KEEPS_LOG.load(std::sync::atomic::Ordering::Relaxed) && SAID.fetch_add(1, Ordering::Relaxed) % HOOK_LOG_LOOK == 0 {
+        let _mine = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > HOOK_LOG_MOST) {
+            let _ = std::fs::rename(&path, config::logs_dir().join("hooks.log.1"));
+        }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write as _;
         let _ = writeln!(f, "[{t:>8.3}] {msg}");
     }
+}
+
+/// Whether this process is the app itself (the one that runs the tabs),
+/// which is the one that keeps the log to its size
+static KEEPS_LOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Said once by the app as its work loop begins
+pub fn keeps_the_log() {
+    KEEPS_LOG.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// How large `hooks.log` may grow before it is put aside, and how many lines

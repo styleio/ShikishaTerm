@@ -95,7 +95,40 @@ printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(printf '%s' \"$c\" | grep -c 
             ));
         }
     }
+    // A submodule put away (`git submodule deinit`) has no files to walk
+    // into, and the walk above passes it by -- but its repository is still
+    // kept inside this one's, with whatever was committed there and pushed
+    // nowhere. Each one named is asked by where it is kept
+    let kept_in = crate::git::run(folder, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
+    for line in listed_names(folder) {
+        let dir = format!("{}/modules/{line}", kept_in.trim().trim_end_matches('/'));
+        let at = |args: &[&str]| crate::git::run(folder, &[&["--git-dir", dir.as_str()], args].concat());
+        // Never fetched: nothing of its own is kept
+        if at(&["rev-parse", "--git-dir"]).is_err() {
+            continue;
+        }
+        let commits: u64 = at(&["rev-list", "--count", "--all", "--not", "--remotes"])?.trim().parse()?;
+        let stashes = at(&["stash", "list"])?.lines().count() as u64;
+        if commits + stashes > 0 {
+            return Ok((
+                true,
+                crate::i18n::tp(
+                    "err.worktree.submodule_work",
+                    &[("path", line.as_str()), ("changes", "0"), ("commits", &commits.to_string()), ("stashes", &stashes.to_string())],
+                ),
+            ));
+        }
+    }
     Ok((true, String::new()))
+}
+
+/// The names of a project's submodules, as its list of them has them
+fn listed_names(folder: &Path) -> Vec<String> {
+    crate::git::run(folder, &["config", "--file", ".gitmodules", "--name-only", "--get-regexp", "^submodule\\..*\\.path$"])
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("submodule.")?.strip_suffix(".path").map(str::to_string))
+        .collect()
 }
 
 pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<Review> {
@@ -137,8 +170,10 @@ pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<
     let blocked = if machine {
         // A whole machine also loses its repository. Dirty-file consent must
         // never double as permission to lose commits that exist only there.
-        let count = crate::git::run(folder, &["rev-list", "--count", "@{u}..HEAD"])
-            .or_else(|_| crate::git::run(folder, &["rev-list", "--count", "HEAD", "--not", "--remotes"]))?;
+        // Under every name it has for a commit, not only the branch it is
+        // on: another branch, a tag and a stash are deleted with the machine
+        // just the same
+        let count = crate::git::run(folder, &["rev-list", "--count", "--all", "--not", "--remotes"])?;
         let count: usize = count.trim().parse()?;
         if count > 0 { crate::i18n::tp("err.worktree.unpushed", &[("count", &count.to_string())]) } else { String::new() }
     } else { String::new() };

@@ -2421,6 +2421,17 @@ mod tests {
         let copied = pages.fill_only_on(Some("p"), &Sel::Css("#copies".into()), secret, &sites, t).unwrap();
         assert!(matches!(copied, SecretFill::Done(ref r) if !r.echo.clone().unwrap_or_default().contains(secret)), "{copied:?}");
         assert_eq!(holds("#copies").as_deref(), Some(secret));
+        // ...the second time as well, when the description already holds
+        // the first password
+        let again = pages.fill_only_on(Some("p"), &Sel::Css("#copies".into()), "another-secret", &sites, t).unwrap();
+        assert!(
+            matches!(again, SecretFill::Done(ref r) if !r.echo.clone().unwrap_or_default().contains("ecret")),
+            "the description handed back a password: {again:?}"
+        );
+        // A field that turns into one for a number as it takes the focus
+        // is not written into: the browser would log what it refused
+        assert!(pages.fill_only_on(Some("p"), &Sel::Css("#turns".into()), secret, &sites, t).is_err(), "a password went into a field that became a number field");
+        assert_eq!(holds("#turns").as_deref(), Some(""));
 
         // A field inside the other site's frame, named by its ref: refused
         // (its node is looked up in the browser and handed out as ref 1, the
@@ -2484,6 +2495,7 @@ mod tests {
     const MINE: &str = r#"<!doctype html><meta charset=utf-8><title>mine</title><body>
 <input id=pw type=password oninput="window.__heard = 'input'">
 <input id=count type=number>
+<input id=turns type=password onfocus="this.type = 'number'">
 <input id=copies placeholder="word" oninput="this.placeholder = this.value; this.name = this.value">
 <div id=label tabindex=0>a label</div>
 <iframe src="OTHERframe" width=300 height=80></iframe>

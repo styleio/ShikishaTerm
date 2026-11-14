@@ -1029,8 +1029,13 @@ pub fn forget_entry(main: &Path, folder: &Path) {
     // but only when it is the only one: a folder set to tell case apart can
     // hold `Topic` and `topic` side by side, and one of them going must not
     // take the other's index and HEAD with it
-    let exact: Vec<&PathBuf> = named.iter().filter(|(_, n)| *n == want).map(|(p, _)| p).collect();
-    let loose: Vec<&PathBuf> = named.iter().filter(|(_, n)| cfg!(windows) && n.eq_ignore_ascii_case(&want)).map(|(p, _)| p).collect();
+    // ...and never one whose own folder is still there: after git has let go
+    // of `topic` and of its entry, `Topic` is the only name left that looks
+    // like it, and it is somebody's worktree
+    let left = |n: &String| !Path::new(n).exists();
+    let exact: Vec<&PathBuf> = named.iter().filter(|(_, n)| *n == want && left(n)).map(|(p, _)| p).collect();
+    let loose: Vec<&PathBuf> =
+        named.iter().filter(|(_, n)| cfg!(windows) && n.eq_ignore_ascii_case(&want) && left(n)).map(|(p, _)| p).collect();
     let gone = match (exact.len(), loose.len()) {
         (1.., _) => exact,
         (0, 1) => loose,
@@ -2637,7 +2642,7 @@ pub fn far_ready_to_discard_reviewed(host: &crate::config::HostSpec, folder: &st
         // branch
         true => format!(
             "cd {dir} || exit 1; git status --porcelain=v1 -z --untracked-files=all || exit 1; echo; echo {SPLIT}; \
-(git rev-list --count @{{u}}..HEAD 2>/dev/null || git rev-list --count HEAD --not --remotes)"
+git rev-list --count --all --not --remotes"
         ),
         // Gone already, and nothing to lose; else what is not committed, then
         // whether it is a worktree -- its own git folder is not the
@@ -6094,6 +6099,20 @@ tools/conpty.ps1"));
         let why = ready_to_discard(&cut.folder).expect_err("a file git was told not to list was not seen").to_string();
         assert!(why.contains("vendor/lib"), "{why}");
         std::fs::remove_file(sub.join("not-listed.md")).unwrap();
+
+        // Put away (deinit), its repository is still kept inside this
+        // one's: a commit made there and pushed nowhere is still seen
+        std::fs::write(sub.join("late.md"), "x\n").unwrap();
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-qm", "late, and only here"]);
+        git(&cut.folder, &["submodule", "deinit", "-q", "-f", "vendor/lib"]);
+        git(&cut.folder, &["checkout", "-q", "--", "."]);
+        let why = ready_to_discard(&cut.folder).expect_err("a commit in a submodule put away was not seen").to_string();
+        assert!(why.contains("vendor/lib"), "{why}");
+        git(&cut.folder, &["submodule", "update", "-q", "--init"]);
+        // (its branch put back where the remote is: the commit was the branch's)
+        git(&sub, &["checkout", "-q", "-B", "main", "origin/main"]);
+        git(&cut.folder, &["checkout", "-q", "--", "."]);
 
         // Nothing of the submodule's own left to lose: it goes, forced
         ready_to_discard(&cut.folder).unwrap();

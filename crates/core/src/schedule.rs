@@ -122,9 +122,20 @@ pub fn last_time(when: When, now: u64, local: &dyn Fn(u64) -> Local) -> Option<u
         // wall clock shows, so a zone half an hour off the hour is still right
         let into_hour = u64::from(local(now).4) * 60 + now % 60;
         let want = u64::from(minute) * 60;
-        let at = now.checked_sub(into_hour)? + want;
+        // Put right by what the wall clock reads there: where the clocks
+        // change by half an hour, an hour back is not the same minute
+        let settled = |at: u64| -> u64 {
+            let mut off = i64::from(local(at).4) - i64::from(minute);
+            if off > 30 {
+                off -= 60;
+            } else if off < -30 {
+                off += 60;
+            }
+            (at as i64 - off * 60).max(0) as u64
+        };
+        let at = settled(now.checked_sub(into_hour)? + want);
         return match at > now {
-            true => at.checked_sub(3600),
+            true => at.checked_sub(3600).map(settled),
             false => Some(at),
         };
     }
@@ -200,7 +211,7 @@ pub fn due(when: When, last: Option<u64>, now: u64, grace: u64, local: &dyn Fn(u
             // day, already run the first time round
             Some(at)
                 if matches!(when, When::At { .. })
-                    && last_time(when, last, local).is_some_and(|ran| ran != at && at - ran <= 7_200 && local(ran) == local(at)) =>
+                    && last_time(when, last, local).is_some_and(|ran| ran < at && at - ran <= 7_200 && local(ran) == local(at)) =>
             {
                 (Due::Not, last)
             }
