@@ -30,6 +30,7 @@ const WHAT: &str = "the record of tokens used";
 pub const STEPS: &[(i64, &str, Step)] = &[
     (1, "first", Step::Sql(include_str!("migrations/0001_first.sql"))),
     (2, "codex_again", Step::Sql(include_str!("migrations/0002_codex_again.sql"))),
+    (3, "codex_by_turn", Step::Sql(include_str!("migrations/0003_codex_by_turn.sql"))),
 ];
 
 /// How long a call is kept: a year, and a month over it, so the year view

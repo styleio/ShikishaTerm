@@ -100,6 +100,7 @@ fn fact(t: &Tab, profiles: &mut Profiles, here: bool) -> TabFact {
         typed_request,
         failure: t.record_failure().map(str::to_string),
         refused: t.record_failure().is_some() && t.record_fail_kind() == crate::reader::FailKind::Refused,
+        being_typed_in: crate::runtime::touched_recently(t, crate::runtime::loop_ms()),
         here,
     }
 }

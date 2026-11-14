@@ -2209,6 +2209,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
         .filter(|a| !matches!(a.as_str(), "--settings" | crate::BEHIND))
         .collect();
     let start = Instant::now();
+    let _ = LOOP_START.set(start);
     // Width comes from config if given; otherwise it's auto-computed from tab names
     // (finalized once tabs are launched).
     let (mut rows, mut cols) = pty_dims(shell.size()?);
@@ -18666,7 +18667,9 @@ fn files_there(
             };
             let had = str_of("mark");
             let (panel, args) = (panel.clone(), args.clone());
-            let turn = far_file_turn(&at.machine_key(), &path);
+            // By the whole path on the machine: the same file asked for
+            // through another folder of the desk is the same file
+            let turn = far_file_turn(&at.machine_key(), &named(&path));
             std::thread::spawn(move || {
                 // Looking at the mark and writing are two trips to the
                 // machine. Two saves of one file at once (a page that came
@@ -21416,6 +21419,15 @@ pub const VIEW_GUARD_MS: u64 = 8_000;
 /// Treating time 0 as "touched" here would silently drop every auto-send for
 /// the guard period after app startup (this used to be why startup automation
 /// didn't run).
+/// When the work loop began: what every `*_ms` it keeps on a tab counts from
+static LOOP_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// The loop's own clock, for somebody outside it who has to compare with a
+/// time it kept (`Tab::last_manual_ms`). Zero where no loop is running
+pub fn loop_ms() -> u64 {
+    LOOP_START.get().map_or(0, |s| s.elapsed().as_millis() as u64)
+}
+
 pub fn touched_recently(t: &Tab, now_ms: u64) -> bool {
     t.last_manual_ms
         .is_some_and(|m| now_ms.saturating_sub(m) < MANUAL_GUARD_MS)

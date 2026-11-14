@@ -2413,6 +2413,14 @@ mod tests {
         let err = pages.fill_only_on(Some("p"), &Sel::Css("#label".into()), secret, &sites, t).unwrap_err().to_string();
         assert!(!err.is_empty());
         assert_eq!(holds("#label").as_deref(), Some("a label"));
+        // Nor a field for a number: handed words, the browser refuses them
+        // and writes what it refused into its log
+        assert!(pages.fill_only_on(Some("p"), &Sel::Css("#count".into()), secret, &sites, t).is_err(), "a password was handed to a number field");
+        // A page that copies what it is given into the field's own
+        // description: what comes back says which field, and not what went in
+        let copied = pages.fill_only_on(Some("p"), &Sel::Css("#copies".into()), secret, &sites, t).unwrap();
+        assert!(matches!(copied, SecretFill::Done(ref r) if !r.echo.clone().unwrap_or_default().contains(secret)), "{copied:?}");
+        assert_eq!(holds("#copies").as_deref(), Some(secret));
 
         // A field inside the other site's frame, named by its ref: refused
         // (its node is looked up in the browser and handed out as ref 1, the
@@ -2475,6 +2483,8 @@ mod tests {
     /// page would: replaces the helpers, and embeds another site
     const MINE: &str = r#"<!doctype html><meta charset=utf-8><title>mine</title><body>
 <input id=pw type=password oninput="window.__heard = 'input'">
+<input id=count type=number>
+<input id=copies placeholder="word" oninput="this.placeholder = this.value; this.name = this.value">
 <div id=label tabindex=0>a label</div>
 <iframe src="OTHERframe" width=300 height=80></iframe>
 <script>

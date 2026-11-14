@@ -2234,6 +2234,13 @@ impl Place {
         Self::split(text)
     }
 
+    /// Whether this entry is the whole site: no path, `/`, or `/*`. The
+    /// same reading of its path as [`Self::covers`] makes
+    fn whole(&self) -> bool {
+        let want = self.path.trim_end_matches('*');
+        want.strip_suffix('/').unwrap_or(want).is_empty()
+    }
+
     /// Whether this entry reaches that page
     fn covers(&self, page: &Self) -> bool {
         if self.scheme != page.scheme || self.port != page.port {
@@ -2427,7 +2434,7 @@ pub fn site_allows(sites: &[String], url: &str) -> bool {
 
 /// The entries of `sites` that name a whole site: no path, or `/`
 pub fn whole_sites(sites: &[String]) -> Vec<String> {
-    sites.iter().filter(|u| Place::entry(u).is_some_and(|e| e.path == "/")).cloned().collect()
+    sites.iter().filter(|u| Place::entry(u).is_some_and(|e| e.whole())).cloned().collect()
 }
 
 /// Whether a password challenge (CDP's `Fetch.authRequired`) is one the
@@ -11120,6 +11127,7 @@ mod tests {
         let sites: Vec<String> =
             ["https://a.example.com", "https://b.example.com/", "https://c.example.com/private", "http://d.local/x/*"].map(String::from).to_vec();
         assert_eq!(whole_sites(&sites), ["https://a.example.com", "https://b.example.com/"]);
+        assert_eq!(whole_sites(&["https://e.example.com/*".to_string()]), ["https://e.example.com/*"], "/* is the whole site too");
         assert!(!site_allows(&whole_sites(&sites), "https://c.example.com/private/page"));
     }
 

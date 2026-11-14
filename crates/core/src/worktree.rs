@@ -942,15 +942,11 @@ fn take_back(plan: &Plan, added: bool) {
     let folder = plan.folder.display().to_string();
     let main = plan.main.display().to_string();
     if !added {
-        // On this machine the folder was seen not to exist before git was
-        // asked (`free_to_make`), so whatever git left of it on its way to
-        // failing is this making's, and goes. On another machine nothing was
-        // looked at, and nothing is touched
-        if plan.host.is_none() && plan.folder.exists() {
-            unhook_links(&plan.folder);
-            let _ = std::fs::remove_dir_all(&plan.folder);
-            forget_entry(&plan.main, &plan.folder);
-        }
+        // Nothing is touched, here or on another machine. Git takes back
+        // what it began of a worktree it could not finish; and a folder
+        // standing there now is not proof it is this making's -- it was not
+        // there when looked for (`free_to_make`), which another git, or
+        // another copy of this app, had every chance to change since
         return;
     }
     // Whatever was already linked in when the making stopped is unhooked
@@ -1022,17 +1018,26 @@ pub fn forget_entry(main: &Path, folder: &Path) {
     }
     let Some(common) = crate::repo::family_of(main) else { return };
     let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else { return };
-    let spelled = |p: &Path| {
-        let s = p.to_string_lossy().replace('\\', "/");
-        let s = s.trim_start_matches("//?/").trim_end_matches('/').to_string();
-        if cfg!(windows) { s.to_lowercase() } else { s }
-    };
+    let spelled = |p: &Path| p.to_string_lossy().replace('\\', "/").trim_start_matches("//?/").trim_end_matches('/').to_string();
     let want = spelled(&folder.join(".git"));
-    for entry in entries.flatten() {
-        let Ok(named) = std::fs::read_to_string(entry.path().join("gitdir")) else { continue };
-        if spelled(Path::new(named.trim())) == want {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
+    let named: Vec<(PathBuf, String)> = entries
+        .flatten()
+        .filter_map(|e| Some((e.path(), spelled(Path::new(std::fs::read_to_string(e.path().join("gitdir")).ok()?.trim())))))
+        .collect();
+    // Spelled exactly so. On Windows a path is usually the same path in any
+    // case (`C:` and `c:`), so one that differs only in case is taken too --
+    // but only when it is the only one: a folder set to tell case apart can
+    // hold `Topic` and `topic` side by side, and one of them going must not
+    // take the other's index and HEAD with it
+    let exact: Vec<&PathBuf> = named.iter().filter(|(_, n)| *n == want).map(|(p, _)| p).collect();
+    let loose: Vec<&PathBuf> = named.iter().filter(|(_, n)| cfg!(windows) && n.eq_ignore_ascii_case(&want)).map(|(p, _)| p).collect();
+    let gone = match (exact.len(), loose.len()) {
+        (1.., _) => exact,
+        (0, 1) => loose,
+        _ => Vec::new(),
+    };
+    for entry in gone {
+        let _ = std::fs::remove_dir_all(entry);
     }
 }
 
@@ -2648,20 +2653,21 @@ pub fn far_ready_to_discard_reviewed(host: &crate::config::HostSpec, folder: &st
         bail!(crate::i18n::tp("err.worktree.failed", &[("said", &ran.said()), ("command", &line)]));
     }
     match host.is_made() {
-        true => far_unsaved(&ran.out, SPLIT),
+        true => far_unsaved(&ran.out, SPLIT)?,
         false => {
             server_unsaved(&ran.out, SPLIT)?;
-            // A folder already gone has nothing more to ask about. One that
-            // is there is asked about its submodules, as one here is
+            // A folder already gone has nothing more to ask about
             if ran.out.trim() == GONE {
                 return Ok(());
             }
-            let (_, blocked) = review::submodules(Path::new(folder), Some(host))?;
-            match blocked.is_empty() {
-                true => Ok(()),
-                false => Err(Refused(blocked).into()),
-            }
         }
+    }
+    // One that is there is asked about its submodules, as one here is: on a
+    // server and on a machine of its own alike
+    let (_, blocked) = review::submodules(Path::new(folder), Some(host))?;
+    match blocked.is_empty() {
+        true => Ok(()),
+        false => Err(Refused(blocked).into()),
     }
 }
 
@@ -6072,9 +6078,24 @@ tools/conpty.ps1"));
         assert!(why.contains("vendor/lib"), "{why}");
         assert!(cut.folder.exists());
 
-        // Nothing of the submodule's own left to lose: it goes, forced
+        // Put back where its remote is, but still named by a tag: kept by
+        // nothing else, and still refused
+        git(&sub, &["tag", "kept-by-a-tag"]);
         git(&sub, &["reset", "-q", "--hard", "origin/main"]);
         git(&cut.folder, &["commit", "-qam", "back"]);
+        let why = ready_to_discard(&cut.folder).expect_err("a commit only a tag holds was not seen").to_string();
+        assert!(why.contains("vendor/lib"), "{why}");
+        git(&sub, &["tag", "-d", "kept-by-a-tag"]);
+        ready_to_discard(&cut.folder).unwrap();
+
+        // A file git was told not to list is still a file that would go
+        git(&sub, &["config", "status.showUntrackedFiles", "no"]);
+        std::fs::write(sub.join("not-listed.md"), "x\n").unwrap();
+        let why = ready_to_discard(&cut.folder).expect_err("a file git was told not to list was not seen").to_string();
+        assert!(why.contains("vendor/lib"), "{why}");
+        std::fs::remove_file(sub.join("not-listed.md")).unwrap();
+
+        // Nothing of the submodule's own left to lose: it goes, forced
         ready_to_discard(&cut.folder).unwrap();
         discard_waiting(&cut.folder).unwrap();
         assert!(!cut.folder.exists(), "the folder is still there");

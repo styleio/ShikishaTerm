@@ -245,8 +245,21 @@ fn main_frame(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Resu
         anyhow::bail!("the browser did not say which page this is");
     }
     // The part after `#` is kept apart there, and is part of the address a
-    // page says it is at
-    Ok((id, format!("{}{}", text("url"), text("urlFragment"))))
+    // page says it is at. A name and password written into the address
+    // (`https://me:pw@host/`) are kept here and not in what the page says:
+    // they are how it was reached, not where it is, and they are not shown
+    // to anybody
+    Ok((id, without_userinfo(&format!("{}{}", text("url"), text("urlFragment")))))
+}
+
+/// An address without the `name:password@` in front of its host
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    let host_ends = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..host_ends].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
 }
 
 fn secret_fill(
@@ -264,7 +277,11 @@ fn secret_fill(
         if (location.href !== page) return "moved";
         if (this.ownerDocument !== document) return "framed";
         const editable = this.isContentEditable;
-        const field = this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement;
+        // A field for words. One for a number, a date or a colour refuses
+        // what is not one -- and the browser then writes the refused value
+        // into its log, which is read back as the page's console
+        const worded = this instanceof HTMLInputElement && ["text", "password", "email", "search", "tel", "url"].includes(this.type);
+        const field = worded || this instanceof HTMLTextAreaElement;
         if (!editable && !field) return "not_a_field";
         const box = this.getBoundingClientRect();
         if (this.disabled || this.readOnly || !(box.width > 0 && box.height > 0)) return "not_ready";
@@ -275,8 +292,10 @@ fn secret_fill(
             const proto = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
             Object.getOwnPropertyDescriptor(proto, "value").set.call(this, value);
         }
-        this.dispatchEvent(new Event("input", { bubbles: true }));
-        this.dispatchEvent(new Event("change", { bubbles: true }));
+        // Told as typing is told: across the edge of a component the field
+        // sits inside (`composed`), or the page's own model never hears
+        this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        this.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
         return "written";
     }"#;
     const STEP_MS: u64 = 2_000;
@@ -354,6 +373,11 @@ fn secret_fill(
             pause();
             continue;
         };
+        // Which field, asked before it holds anything: afterwards the page
+        // has seen the value and can put it where a description is read
+        // from (a placeholder, a name), and the description goes back to
+        // the script that asked
+        let echo = field_desc(s, to, &object, step);
         let said = or_again!(s.cdp(
             to,
             "Runtime.callFunctionOn",
@@ -369,10 +393,7 @@ fn secret_fill(
             continue;
         }
         match said.pointer("/result/value").and_then(serde_json::Value::as_str).unwrap_or_default() {
-            "written" => {
-                let echo = field_desc(s, to, &object, step);
-                return Ok(SecretFill::Done(OpReport { state: Found::Visible, echo, anchor: None }));
-            }
+            "written" => return Ok(SecretFill::Done(OpReport { state: Found::Visible, echo, anchor: None })),
             "framed" => anyhow::bail!(crate::i18n::t("err.browser.secret_in_frame")),
             "not_a_field" => anyhow::bail!(crate::i18n::t("err.browser.secret_not_a_field")),
             // It went somewhere else, or is not ready to be written into:
@@ -1257,8 +1278,8 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
             const d = Object.getOwnPropertyDescriptor(proto, "value");
             if (d && d.set) d.set.call(this, v); else this.value = v;
         }
-        this.dispatchEvent(new Event("input", { bubbles: true }));
-        this.dispatchEvent(new Event("change", { bubbles: true }));
+        this.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+        this.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
         return true;
     }"#;
     let set_native = || {
@@ -1292,7 +1313,10 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
     };
     let before = read();
     if value.is_empty() {
-        set_native()?;
+        let _ = set_native();
+        if read().as_deref() != Some("") {
+            anyhow::bail!(crate::i18n::tp("err.browser.ref_not_a_field", &[("ref", &r.to_string())]));
+        }
         return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
     }
     // The focus did not land: nothing is typed (it would go elsewhere). The

@@ -152,6 +152,10 @@ pub struct TabFact {
     pub failure: Option<String>,
     /// ...and that error was its AI's provider refusing what was asked
     pub refused: bool,
+    /// A person typed into it a moment ago. Nothing is typed into it by a
+    /// job meanwhile: a line about mail put into a prompt somebody is in
+    /// the middle of writing is appended to their words and sent with them
+    pub being_typed_in: bool,
     /// On the desk in front. A name means a tab there; a tab on a desk not
     /// in front is found only by who it is (`glue::scene_everywhere`)
     pub here: bool,
@@ -1795,7 +1799,7 @@ impl Orchestra {
                             "<@{}> is waiting for the person to approve or choose something; nothing was sent. Tell the person",
                             s.name
                         )))
-                    } else if t.turn_over() {
+                    } else if t.turn_over() && !t.being_typed_in {
                         let brief = self.brief_for(s.assignment);
                         let lead = t.typed_request.then(|| text::LEAD_LINE.to_string());
                         // Whose words these are, for the record of
@@ -1989,7 +1993,7 @@ impl Orchestra {
                 continue;
             };
             let Some(t) = scene.by_uid(&reader) else { continue };
-            if !t.turn_over() || self.starting.iter().any(|s| s.tab == reader) {
+            if !t.turn_over() || t.being_typed_in || self.starting.iter().any(|s| s.tab == reader) {
                 continue;
             }
             let line = text::mail_line(count);

@@ -663,16 +663,14 @@ fn glob_body(p: &[char], dialect: Dialect) -> String {
                     (false, _) => "[",
                 });
                 let mut k = 0usize;
-                // In a POSIX set the slash goes in front, where it is only
-                // ever a member: at the end it would make a range of a
-                // closing `-` (`[^a-/]`). A `]` that is a member has to
-                // stay first, so the slash follows that one
-                if not && !rust {
-                    if inner.first() == Some(&']') {
-                        re.push(']');
-                        k = 1;
-                    }
-                    re.push('/');
+                // In a POSIX set the slash is added at the end, or just
+                // before a `-` that closes the set: anywhere else it would
+                // sit beside a `-` and make a range of it (`[^a-/]`,
+                // `[^/-a]`), or push a leading `]` out of the one place it
+                // is a member
+                let dash_last = not && !rust && inner.len() > 1 && inner.last() == Some(&'-');
+                if dash_last {
+                    inner = &inner[..inner.len() - 1];
                 }
                 while k < inner.len() {
                     let m = inner[k];
@@ -690,7 +688,12 @@ fn glob_body(p: &[char], dialect: Dialect) -> String {
                     re.push(m);
                     k += 1;
                 }
-                re.push_str(if not && rust { "]]" } else { "]" });
+                re.push_str(match (not, rust, dash_last) {
+                    (true, true, _) => "]]",
+                    (true, false, true) => "/-]",
+                    (true, false, false) => "/]",
+                    (false, ..) => "]",
+                });
                 i = end + 1;
             }
             c if rust => re.push_str(&regex::escape(&c.to_string())),
@@ -1334,10 +1337,13 @@ mod tests {
         let not = patterns("src/a[!x]b/*.rs");
         assert!(kept("src/aYb/c.rs", &not, &[]) && !kept("src/a/b/c.rs", &not, &[]) && !kept("src/axb/c.rs", &not, &[]));
         let far_not = posix_paths("src/a[!x]b").unwrap();
-        assert!(far_not.contains("a[^/x]b"), "{far_not}");
+        assert!(far_not.contains("a[^x/]b"), "{far_not}");
         // ...and a `-` or a `]` that is a member stays one beside the slash
-        assert!(posix_paths("n[!a-]").unwrap().contains("n[^/a-]"));
-        assert!(posix_paths("n[!]a]").unwrap().contains("n[^]/a]"));
+        assert!(posix_paths("n[!a-]").unwrap().contains("n[^a/-]"));
+        assert!(posix_paths("n[!-a]").unwrap().contains("n[^-a/]"));
+        assert!(posix_paths("n[!-]").unwrap().contains("n[^-/]"));
+        assert!(posix_paths("n[!]a]").unwrap().contains("n[^]a/]"));
+        assert!(posix_paths("n[![:digit:]]").unwrap().contains("n[^[:digit:]/]"));
         let dash = patterns("n[!a-], m[!]a]");
         assert!(kept("nb", &dash, &[]) && !kept("na", &dash, &[]) && !kept("n-", &dash, &[]));
         assert!(kept("mb", &dash, &[]) && !kept("m]", &dash, &[]) && !kept("ma", &dash, &[]));
@@ -1371,7 +1377,12 @@ mod tests {
     fn a_file_that_is_not_utf8_is_read_as_the_editor_reads_it() {
         // "日本語" in Shift_JIS
         let sjis = vec![0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, b'\n', b'a', b'b', b'c'];
-        assert!(text_of(sjis, false).contains("\u{65e5}\u{672c}\u{8a9e}"));
+        // Whatever the editor makes of it on this machine (a short sample is
+        // guessed by the machine's own language too), the search makes the
+        // same -- and that is not UTF-8 with holes in it
+        let as_the_editor = crate::charset::read(&sjis).text;
+        assert_eq!(text_of(sjis.clone(), false), as_the_editor);
+        assert!(!as_the_editor.contains('\u{fffd}') || as_the_editor != String::from_utf8_lossy(&sjis));
         // A head cut in the middle of a character stays UTF-8
         let cut = "\u{65e5}\u{672c}".as_bytes()[..5].to_vec();
         assert!(text_of(cut, true).starts_with('\u{65e5}'));

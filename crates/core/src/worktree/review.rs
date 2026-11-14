@@ -57,15 +57,29 @@ pub(super) fn submodules(folder: &Path, host: Option<&crate::config::HostSpec>) 
         return Ok((false, String::new()));
     }
     // One line a submodule that is checked out: its path, what is not
-    // committed, what is committed on no remote, and its stashes
-    const EACH: &str = "printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(git status --porcelain | wc -l)\" \
-\"$(git rev-list --count --branches HEAD --not --remotes 2>/dev/null || echo 0)\" \"$(git stash list | wc -l)\"";
+    // committed, what is committed on no remote, and its stashes.
+    //
+    // - Files git was told not to list (`status.showUntrackedFiles=no`) are
+    //   listed all the same: they are deleted all the same.
+    // - What is on no remote is counted from every name the submodule has
+    //   for a commit -- its branches, its tags, HEAD -- since a commit kept
+    //   only by a tag is as gone as any other once the repository is.
+    // - Each question that cannot be answered stops the lot (`|| exit 1`):
+    //   a submodule whose index cannot be read is not one with nothing in
+    //   it, and counting the lines of an answer that never came counts none
+    const EACH: &str = "c=$(git status --porcelain --untracked-files=all) || exit 1; \
+u=$(git rev-list --count --all --not --remotes) || exit 1; \
+s=$(git stash list) || exit 1; \
+printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(printf '%s' \"$c\" | grep -c '')\" \"$u\" \"$(printf '%s' \"$s\" | grep -c '')\"";
     let each = crate::git::run(folder, &["submodule", "foreach", "--quiet", "--recursive", EACH])?;
     for line in each.lines() {
         let mut cols = line.split('\t');
         let path = cols.next().unwrap_or_default();
         let count = |c: Option<&str>| c.and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(0);
         let (changes, commits, stashes) = (count(cols.next()), count(cols.next()), count(cols.next()));
+        if path.is_empty() {
+            continue;
+        }
         if changes + commits + stashes > 0 {
             return Ok((
                 true,
@@ -128,11 +142,12 @@ pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<
         let count: usize = count.trim().parse()?;
         if count > 0 { crate::i18n::tp("err.worktree.unpushed", &[("count", &count.to_string())]) } else { String::new() }
     } else { String::new() };
-    // A worktree's submodules go with it (a machine's go with the machine,
-    // and what is not pushed there is already asked about above)
-    let (forced, blocked) = match machine || !blocked.is_empty() {
-        true => (false, blocked),
-        false => submodules(folder, host)?,
+    // Its submodules go with it, on a machine as in a worktree: what a
+    // submodule holds is in a repository of its own, which the count of the
+    // project's own commits above says nothing about
+    let (forced, blocked) = match blocked.is_empty() {
+        false => (false, blocked),
+        true => submodules(folder, host)?,
     };
     Ok(Review {
         files: changes.into_iter().map(|c| File { untracked: c.index == '?', staged: !matches!(c.index, ' ' | '?'), work: c.work != ' ', path: c.path }).collect(),

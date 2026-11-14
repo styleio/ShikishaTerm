@@ -26,6 +26,7 @@ fn tab(id: &str, state: TabState) -> TabFact {
         typed_request: id.starts_with("claude"),
         failure: None,
         refused: false,
+        being_typed_in: false,
         here: true,
     }
 }
@@ -340,6 +341,24 @@ fn a_tab_with_mail_and_nothing_to_do_is_told_once() {
         vec![Effect::Type { tab: uid("lead"), lead: None, text: text::mail_line(1) }]
     );
     assert!(w.o.tick(&w.scene).is_empty(), "told once");
+}
+
+/// A tab somebody is typing into is not typed into by a job: a line about
+/// mail put into a prompt half written would be sent along with their words.
+/// It waits until their hands are off, and is said then
+#[test]
+fn nothing_is_typed_into_a_tab_a_person_is_typing_in() {
+    let mut w = World::new();
+    w.o.mail_tab(&uid("codex"), "claude", "The reply of <@claude>", "Done.");
+    let typing = |w: &mut World, on: bool| {
+        for t in w.scene.tabs.iter_mut().filter(|t| t.uid == uid("codex")) {
+            t.being_typed_in = on;
+        }
+    };
+    typing(&mut w, true);
+    assert!(w.o.tick(&w.scene).is_empty(), "a line was typed over what a person was writing");
+    typing(&mut w, false);
+    assert_eq!(w.o.tick(&w.scene), vec![Effect::Type { tab: uid("codex"), lead: None, text: text::mail_line(1) }]);
 }
 
 /// The line saying there is mail did not go in (its terminal's line had

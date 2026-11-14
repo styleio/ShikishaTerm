@@ -1752,15 +1752,28 @@ enum Swap {
 /// write are a network round trip apart, and whatever the CLI or the person
 /// writes in between is lost. On the machine they are two commands apart.
 /// `cmp` and `mv` are in every POSIX shell's reach, and a `mv` within one
-/// folder replaces the file whole or not at all. Exit 3 says it had changed
+/// folder replaces the file whole or not at all. Exit 3 says it had changed.
+///
+/// Who may read it is kept as it was. A CLI's settings can hold its keys,
+/// and many people keep the file to themselves (0600); the two files sent
+/// beside it arrive readable by whoever the server lets read a new file. So
+/// both are closed to everyone else before anything is done with them, and
+/// then given exactly the rights of the file they replace -- asked for in
+/// the two ways `stat` is spelled, since the GNU one is not everywhere. A
+/// settings file that is a link to the real one (kept in a folder of
+/// dotfiles) is written through, not replaced by a file of its own
 fn far_swap_script(path: &str, new: &str, was: Option<&str>, bak: &str) -> String {
     let q = crate::ssh::sh_quote;
     format!(
         "f={f}; n={n}; w={w}; b={b}\n\
+         chmod 600 \"$n\" 2>/dev/null; [ -n \"$w\" ] && chmod 600 \"$w\" 2>/dev/null\n\
+         if [ -L \"$f\" ]; then r=$(readlink -f \"$f\" 2>/dev/null) && [ -n \"$r\" ] && f=$r; fi\n\
          if [ -n \"$w\" ]; then\n\
          \x20 if ! cmp -s \"$f\" \"$w\"; then rm -f \"$n\" \"$w\"; exit 3; fi\n\
          elif [ -e \"$f\" ]; then rm -f \"$n\"; exit 3; fi\n\
-         [ -e \"$f\" ] && {{ chmod --reference=\"$f\" \"$n\" 2>/dev/null || true; }}\n\
+         if [ -e \"$f\" ]; then m=$(stat -c %a \"$f\" 2>/dev/null || stat -f %Lp \"$f\" 2>/dev/null)\n\
+         \x20 if [ -n \"$m\" ]; then chmod \"$m\" \"$n\" 2>/dev/null; [ -n \"$w\" ] && chmod \"$m\" \"$w\" 2>/dev/null; fi\n\
+         fi\n\
          if [ -n \"$w\" ]; then mv -f \"$w\" \"$b\" || {{ rm -f \"$n\" \"$w\"; exit 4; }}; fi\n\
          mv -f \"$n\" \"$f\"\n",
         f = q(path),
@@ -2023,12 +2036,28 @@ mod tests {
         let (f, new, was, bak) = (p("settings.json"), p("s.new"), p("s.was"), p("settings.bak"));
         let run = |script: &str| std::process::Command::new(sh).arg("-c").arg(script).output().unwrap().status.code();
         std::fs::write(&f, "theirs").unwrap();
+        // Kept to its owner, as a file holding keys is
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         // Still the file it was worked out from: replaced, way back kept
         std::fs::write(&new, "ours").unwrap();
         std::fs::write(&was, "theirs").unwrap();
         assert_eq!(run(&far_swap_script(&f, &new, Some(&was), &bak)), Some(0));
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "ours");
         assert_eq!(std::fs::read_to_string(&bak).unwrap(), "theirs");
+        // ...and neither the new file nor the way back is open to anybody
+        // the old file was not open to
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            for kept in [&f, &bak] {
+                let mode = std::fs::metadata(kept).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "{kept} is readable by others: {mode:o}");
+            }
+        }
         assert!(!std::path::Path::new(&new).exists() && !std::path::Path::new(&was).exists(), "the sent files were left lying about");
         // Changed since it was read: left alone, and says so
         std::fs::write(&new, "ours again").unwrap();
