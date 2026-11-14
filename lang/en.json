@@ -4690,6 +4690,7 @@
   "err.ghproject.no_content": "{what} is not found on GitHub. Check that this account can see it",
   "err.ghproject.no_title": "Write a title",
   "err.ghproject.bad_repo": "Write the repository as owner/name",
+  "err.ghproject.options_moved": "This field's choices are different on GitHub now. They are read again: change them from there.",
   "err.ghproject.not_found": "This GitHub Project was not found. Check its address",
   "err.ghproject.bad_value": "That value cannot go in this field",
   "err.ghproject.bad_ref": "Enter a GitHub Project address (https://github.com/orgs/…/projects/number) or \"owner/number\"",

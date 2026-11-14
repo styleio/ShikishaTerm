@@ -1746,6 +1746,14 @@ pub fn answer(
             .filter_map(|x| x.as_str().map(str::to_string))
             .collect()
     };
+    // Who a draft is given to: the whole list when it is said whole, else
+    // worked out from who is put on and taken off, against who it has now
+    let draft_people = |hub: &Hub, draft: &str| -> Result<Option<Vec<String>>> {
+        if args.get("add_assignees").is_some() || args.get("remove_assignees").is_some() {
+            return crate::ghproject::draft_people(hub, draft, &list("add_assignees"), &list("remove_assignees")).map(Some);
+        }
+        Ok(args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees")))
+    };
     // Read here, not asked of GitHub: the branches this PC knows the server
     // has, the one its server calls the default first
     if act == "pr_bases" {
@@ -1983,7 +1991,7 @@ pub fn answer(
         .map(|()| json!({"card": s("card")})),
         "gh_project_remove" => crate::ghproject::remove(&hub, &s("id"), &s("card")).map(|()| json!({"card": s("card")})),
         "gh_project_draft" => {
-            let people = args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees"));
+            let people = draft_people(&hub, &s("draft"))?;
             let said = |k: &str| args.get(k).and_then(|x| x.as_str());
             crate::ghproject::draft(&hub, &s("draft"), said("title"), said("body"), people.as_deref()).map(|()| json!({"card": s("card")}))
         }
@@ -2030,7 +2038,7 @@ pub fn answer(
         "gh_project_to_issue" => {
             let (draft, title, body) = (s("draft"), s("title"), s("body"));
             let words = (!draft.is_empty() && args.get("title").is_some()).then_some((draft.as_str(), title.as_str(), body.as_str()));
-            let people = args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees"));
+            let people = draft_people(&hub, &draft)?;
             crate::ghproject::to_issue(&hub, &s("card"), &s("repo"), words, people.as_deref())
         }
         other => Err(anyhow!("unknown request {other}")),

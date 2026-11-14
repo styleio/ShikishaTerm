@@ -569,8 +569,31 @@ pub fn read_card(node: &Value) -> Option<Value> {
 /// value is said the way the field holds it: `{"option": id}`, `{"options":
 /// [id, ..]}` (a field of several choices), `{"iteration": id}`, `{"text":
 /// ..}`, `{"number": ..}` or `{"date": "YYYY-MM-DD"}`
+///
+/// A field of several choices can also be told what to put on and take off,
+/// `{"add_options": [id, ..], "remove_options": [id, ..]}`: worked out against
+/// the choices the card has on GitHub now, so one ticked from a board read
+/// some time ago does not take off what was ticked elsewhere since
 pub fn set_value(hub: &Hub, board: &str, card: &str, field: &str, value: &Value) -> Result<()> {
     let ids = json!({"project": board, "item": card, "field": field});
+    let after;
+    let value = if value.get("add_options").is_some() || value.get("remove_options").is_some() {
+        let found = hub.graphql_whole(
+            &format!("query($item:ID!){{node(id:$item){{... on ProjectV2Item{{fieldValues(first:100){{nodes{{... on ProjectV2ItemFieldMultiSelectValue{{options{{id}} field{{{FIELD_ID}}}}}}}}}}}}}}}"),
+            json!({"item": card}),
+        )?;
+        let now: Vec<String> = carried(&found, "/data/node/fieldValues/nodes")?
+            .as_array().into_iter().flatten()
+            .filter(|n| n.pointer("/field/id").and_then(|i| i.as_str()) == Some(field))
+            .flat_map(|n| n["options"].as_array().cloned().unwrap_or_default())
+            .filter_map(|o| o["id"].as_str().map(str::to_string))
+            .collect();
+        let list = options_after(now, value);
+        after = if list.is_empty() { Value::Null } else { json!({"options": list}) };
+        &after
+    } else {
+        value
+    };
     let v = if value.is_null() {
         hub.graphql_whole(
             "mutation($project:ID!,$item:ID!,$field:ID!){clearProjectV2ItemFieldValue(input:{projectId:$project,itemId:$item,fieldId:$field}){projectV2Item{id}}}",
@@ -591,6 +614,22 @@ pub fn set_value(hub: &Hub, board: &str, card: &str, field: &str, value: &Value)
         return Err(refused(&v));
     }
     Ok(())
+}
+
+/// The choices a card has after `change` puts some on and takes some off:
+/// those it had, in their order, less the ones taken off, then the new ones
+pub fn options_after(now: Vec<String>, change: &Value) -> Vec<String> {
+    let ids = |k: &str| -> Vec<String> {
+        change[k].as_array().into_iter().flatten().filter_map(|i| i.as_str().or_else(|| i["id"].as_str())).map(str::to_string).collect()
+    };
+    let (add, remove) = (ids("add_options"), ids("remove_options"));
+    let mut list: Vec<String> = now.into_iter().filter(|x| !remove.contains(x)).collect();
+    for id in add {
+        if !list.contains(&id) {
+            list.push(id);
+        }
+    }
+    list
 }
 
 /// The value as GitHub takes it. Anything else is refused here, before
@@ -800,6 +839,31 @@ fn user_ids(hub: &Hub, logins: &[String]) -> Result<Vec<String>> {
                 .ok_or_else(|| anyhow!(crate::i18n::tp("err.ghproject.no_user", &[("login", l)])))
         })
         .collect()
+}
+
+/// Who a draft is assigned to after `add` are put on it and `remove` taken
+/// off, worked out against who it has on GitHub now
+pub fn draft_people(hub: &Hub, draft: &str, add: &[String], remove: &[String]) -> Result<Vec<String>> {
+    let found = hub.graphql_whole(
+        "query($draft:ID!){node(id:$draft){... on DraftIssue{assignees(first:100){nodes{login}}}}}",
+        json!({"draft": draft}),
+    )?;
+    let now: Vec<String> = carried(&found, "/data/node/assignees/nodes")?
+        .as_array().into_iter().flatten().filter_map(|n| n["login"].as_str().map(str::to_string)).collect();
+    Ok(people_after(now, add, remove))
+}
+
+/// The people of `now`, less `remove`, then `add`; a name is the same
+/// whatever its case, and may be written with an @
+pub fn people_after(now: Vec<String>, add: &[String], remove: &[String]) -> Vec<String> {
+    let plain = |s: &str| s.trim().trim_start_matches('@').to_string();
+    let mut list: Vec<String> = now.into_iter().filter(|x| !remove.iter().any(|r| plain(r).eq_ignore_ascii_case(x))).collect();
+    for more in add.iter().map(|a| plain(a)).filter(|a| !a.is_empty()) {
+        if !list.iter().any(|x| x.eq_ignore_ascii_case(&more)) {
+            list.push(more);
+        }
+    }
+    list
 }
 
 /// A draft's title, its words, and who it is assigned to, by their names on
@@ -1049,10 +1113,57 @@ pub fn field_make(hub: &Hub, board: &str, spec: &Value) -> Result<Value> {
     Ok(json!({"field": carried(&v, "/data/createProjectV2Field/projectV2Field/id")?}))
 }
 
+/// The choices a field has on GitHub now, and whether it is one of several choices
+fn options_now(hub: &Hub, field: &str) -> Result<(Vec<Value>, bool)> {
+    let found = hub.graphql_whole(
+        "query($field:ID!){node(id:$field){__typename ... on ProjectV2SingleSelectField{options{id name color description}} \
+         ... on ProjectV2MultiSelectField{multiSelectOptions{id name color description}}}}",
+        json!({"field": field}),
+    )?;
+    let node = carried(&found, "/data/node")?;
+    let multi = node["__typename"] == "ProjectV2MultiSelectField";
+    let options = node.get("options").or_else(|| node.get("multiSelectOptions")).and_then(|o| o.as_array()).cloned()
+        .ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.no_options")))?;
+    Ok((options, multi))
+}
+
+/// Whether the choices a change was worked out from (`seen`, their ids) are
+/// still the ones the field has (`now`), in whatever order
+pub fn options_same(now: &[Value], seen: &[Value]) -> bool {
+    let mut now: Vec<&str> = now.iter().filter_map(|o| o["id"].as_str()).collect();
+    let mut seen: Vec<&str> = seen.iter().filter_map(|s| s.as_str()).collect();
+    now.sort_unstable();
+    seen.sort_unstable();
+    now == seen
+}
+
 /// A field changed: its `name`, its `options` (all of them, as
 /// [`options_given`] reads them; `type` says "multi_select" for a field of
-/// several choices) or its `iteration` plan. Only what `change` names is touched
+/// several choices) or its `iteration` plan. Only what `change` names is touched.
+///
+/// GitHub takes a field's choices whole, and one left out is taken off every
+/// card that had it. So `add_option` (one choice, `{name, color,
+/// description}`) is put after the choices the field has on GitHub now, not
+/// after the ones somebody read a while ago; and `options` with `seen` (the
+/// ids they were worked out from) are refused when the field has others by now
 pub fn field_change(hub: &Hub, field: &str, change: &Value) -> Result<()> {
+    let added;
+    let change = if change.get("add_option").is_some_and(|o| !o.is_null()) {
+        let (mut options, multi) = options_now(hub, field)?;
+        options.push(change["add_option"].clone());
+        let mut whole = change.clone();
+        whole["options"] = json!(options);
+        whole["type"] = json!(if multi { "multi_select" } else { "single_select" });
+        added = whole;
+        &added
+    } else {
+        change
+    };
+    if let (Some(_), Some(seen)) = (change.get("options").and_then(|o| o.as_array()), change.get("seen").and_then(|s| s.as_array())) {
+        if !options_same(&options_now(hub, field)?.0, seen) {
+            bail!(crate::i18n::t("err.ghproject.options_moved"));
+        }
+    }
     let mut vars = json!({"field": field});
     let mut sig = vec!["$field:ID!".to_string()];
     let mut input = vec!["fieldId:$field".to_string()];
@@ -1566,6 +1677,20 @@ mod tests {
     #[test]
     fn what_changes_a_board_itself_is_said_the_way_github_takes_it() {
         assert_eq!(field_value(&json!({"options": ["a", {"id": "b"}]})).unwrap(), json!({"multiSelectOptionIds": ["a", "b"]}));
+        // A choice put on or taken off is worked out against what the card has
+        // now: one ticked elsewhere since stays
+        let now = || vec!["a".to_string(), "c".to_string()];
+        assert_eq!(options_after(now(), &json!({"add_options": ["b"]})), ["a", "c", "b"]);
+        assert_eq!(options_after(now(), &json!({"remove_options": ["a"], "add_options": ["c"]})), ["c"]);
+        assert!(options_after(now(), &json!({"remove_options": ["a", "c"]})).is_empty());
+        // ...and so is who a draft is given to, whatever the case of a name
+        let people = || vec!["Alice".to_string(), "carol".to_string()];
+        assert_eq!(people_after(people(), &["@bob".to_string(), "ALICE".to_string()], &[]), ["Alice", "carol", "bob"]);
+        assert_eq!(people_after(people(), &[], &["alice".to_string()]), ["carol"]);
+        // A field's choices changed whole only from the ones it still has
+        let has = [json!({"id": "x"}), json!({"id": "y"})];
+        assert!(options_same(&has, &[json!("y"), json!("x")]));
+        assert!(!options_same(&has, &[json!("x")]) && !options_same(&has, &[json!("x"), json!("y"), json!("z")]));
         assert!(field_value(&json!({"options": [1]})).is_err());
         assert_eq!((layout_word("Board").unwrap(), layout_word("roadmap_layout").unwrap()), ("BOARD_LAYOUT", "ROADMAP_LAYOUT"));
         assert!(layout_word("kanban").is_err());

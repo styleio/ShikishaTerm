@@ -4355,8 +4355,16 @@ impl HookEngine {
                 let _ = &repo;
                 let o = arg(&args, 1);
                 let s = |k: &str| o.get(k).and_then(|x| x.as_str());
-                let people = o.get("assignees").map(&strings);
-                crate::ghproject::draft(&hub, arg(&args, 0).as_str().unwrap_or_default(), s("title"), s("body"), people.as_deref())
+                let draft = arg(&args, 0).as_str().unwrap_or_default().to_string();
+                let given = |k: &str| o.get(k).map(&strings).unwrap_or_default();
+                // Said whole, or as who is put on and taken off those it has now
+                let people = if o.get("add_assignees").is_some() || o.get("remove_assignees").is_some() {
+                    crate::ghproject::draft_people(&hub, &draft, &given("add_assignees"), &given("remove_assignees")).map(Some)
+                } else {
+                    Ok(o.get("assignees").map(&strings))
+                };
+                people
+                    .and_then(|people| crate::ghproject::draft(&hub, &draft, s("title"), s("body"), people.as_deref()))
                     .map(|()| serde_json::Value::Bool(true))
             });
             github!("github_project_to_issue", |lua, repo, hub, args| {

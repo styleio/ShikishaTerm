@@ -6977,6 +6977,9 @@ function ghpAnswer(d) {
         if (!d.ok && d.act === "gh_project_field_set" && g.colNew) g.colNew.sent = false;
         // Choices that were not taken are changed again, and saved again
         if (!d.ok && d.act === "gh_project_field_set" && g.fedit && g.fedit.field === was.field) g.fedit.sent = false;
+        // -- unless they were worked out from choices GitHub no longer has:
+        // the board is read again after this, and they are changed from that
+        if (!d.ok && d.act === "gh_project_field_set" && g.fedit && g.fedit.field === was.field && (was.change || {}).seen && d.error === T["err.ghproject.options_moved"]) g.fedit = null;
       }
       g.sending.shift();
       if (g.sending.length) send(g.sending[0]);
@@ -7059,13 +7062,15 @@ function ghpSend(act, args) {
 // A card nothing can be done to yet: one the token cannot see, or one still
 // on its way onto the board
 function ghpShut(c) { return c.kind === "hidden" || c.kind === "adding"; }
-function ghpSet(card, field, value) {
+// `said` is how the change is told to GitHub when that is not the value
+// itself: a choice put on or taken off a field of several
+function ghpSet(card, field, value, said) {
   const g = I.gh, d = g.data;
   if (!d || ghpShut(card)) return;
   if (value === null) delete card.values[field.id];
   else card.values[field.id] = ghpShown(field, value);
   g.rev++;
-  ghpSend("gh_project_set", {card: card.id, field: field.id, value});
+  ghpSend("gh_project_set", {card: card.id, field: field.id, value: said || value});
   drawIssues();
 }
 // Cards can be put in order by hand only in a view that does not sort them:
@@ -7636,14 +7641,21 @@ function ghpLeavePage() {
   const a = document.activeElement, box = document.getElementById("issuespanel");
   if (a && box && box.contains(a)) a.blur();
 }
+// Who is put on a draft and who is taken off, between two lists of people;
+// null when they are the same
+function ghpPeopleChange(was, now) {
+  const add = now.filter(x => !was.includes(x)), remove = was.filter(x => !now.includes(x));
+  return add.length || remove.length ? {add_assignees: add, remove_assignees: remove} : null;
+}
 function ghpSaveDraft(card) {
   const g = I.gh, e = g.edit;
   if (!e || !e.title.trim()) return;
   const seq = ghpWriting(card, e);
+  const people = ghpPeopleChange(card.assignees || [], e.people || []);
   card.title = e.title.trim(); card.body = e.body; card.assignees = (e.people || []).slice();
   g.edit = null;
   g.rev++;
-  ghpSend("gh_project_draft", {card: card.id, draft: card.draft, title: card.title, body: card.body, assignees: card.assignees, wseq: seq});
+  ghpSend("gh_project_draft", Object.assign({card: card.id, draft: card.draft, title: card.title, body: card.body, wseq: seq}, people || {}));
   ghpLeavePage();
   drawIssues();
 }
@@ -7655,8 +7667,8 @@ function ghpToIssue(card) {
   // in -- so the issue never carries older words, even while an earlier save
   // of them is still on its way, or did not go in. Kept until GitHub has made it
   const seq = ghpWriting(card, e);
-  ghpSend("gh_project_to_issue", {card: card.id, repo: e.repo, draft: card.draft, title: e.title.trim(), body: e.body,
-    assignees: (e.people || []).slice(), wseq: seq});
+  ghpSend("gh_project_to_issue", Object.assign({card: card.id, repo: e.repo, draft: card.draft, title: e.title.trim(), body: e.body, wseq: seq},
+    ghpPeopleChange(card.assignees || [], e.people || []) || {}));
   card.kind = "adding";
   g.edit = null;
   g.rev++;
@@ -7920,10 +7932,12 @@ function ghpOwnSet(card, key, value) {
   const g = I.gh;
   if (!g.data || ghpShut(card)) return;
   if (card.kind === "draft") {
+    // Only who is put on it and taken off: its title and words, and the
+    // people it was given elsewhere, stay as GitHub has them, which may be
+    // newer than what this board was read with
+    const change = ghpPeopleChange(card.assignees || [], value);
     card.assignees = value;
-    // Only who it is given to: its title and words stay as GitHub has them,
-    // which may be newer than the ones this board was read with
-    ghpSend("gh_project_draft", {card: card.id, draft: card.draft, assignees: value});
+    if (change) ghpSend("gh_project_draft", Object.assign({card: card.id, draft: card.draft}, change));
   } else if (key === "labels" || key === "assignees") {
     // Said as the names put on and taken off: the card may not carry every
     // label its issue has, and the whole list from here would take the rest off
@@ -7952,7 +7966,9 @@ function ghpCellPick(anchor, card, field) {
       const next = now.includes(o.id) ? now.filter(x => x !== o.id) : now.concat([o.id]);
       // In the field's own order, as GitHub shows them
       const ids = (field.options || []).map(x => x.id).filter(x => next.includes(x));
-      ghpSet(card, field, ids.length ? {options: ids} : null);
+      // Said as the one put on or taken off: the card may have others on
+      // GitHub by now, and the whole list from here would take them off
+      ghpSet(card, field, ids.length ? {options: ids} : null, now.includes(o.id) ? {remove_options: [o.id]} : {add_options: [o.id]});
       again();
     }})));
     return;
@@ -8256,7 +8272,9 @@ function ghpColAdder(field) {
     if (e.key === "Escape") { g.colNew = null; issuesSig = ""; drawIssues(); }
     if (e.key !== "Enter" || !box.value.trim() || g.fstale) return;
     n.sent = true;
-    ghpSend("gh_project_field_set", {field: field.id, change: {options: ghpOptionsOf(field).concat([{name: box.value.trim(), color: "GRAY", description: ""}])}});
+    // Said as the one choice added: GitHub takes a field's choices whole, and
+    // the list from here would take off any made elsewhere since it was read
+    ghpSend("gh_project_field_set", {field: field.id, change: {add_option: {name: box.value.trim(), color: "GRAY", description: ""}}});
     box.blur();
     issuesSig = ""; drawIssues();
   };
@@ -8278,7 +8296,7 @@ function ghpFieldOpen(f) {
   if (g.fstale) return;
   g.fedit = f.type === "ITERATION"
     ? {field: f.id, days: f.days || 14, iterations: (f.iterations || []).map(i => ({id: i.id, title: i.title, start: i.start, days: i.days}))}
-    : {field: f.id, options: ghpOptionsOf(f)};
+    : {field: f.id, options: ghpOptionsOf(f), seen: (f.options || []).map(o => o.id)};
   issuesSig = ""; drawIssues();
 }
 function ghpFieldEditor(f) {
@@ -8327,7 +8345,7 @@ function ghpFieldEditor(f) {
   const save = el("button", {class:"go", onclick:() => {
     if (!ok() || g.fstale) return;
     const change = e.options
-      ? {options: e.options.map(o => Object.assign({}, o, {name: o.name.trim()})), type: f.type === "MULTI_SELECT" ? "multi_select" : "single_select"}
+      ? {options: e.options.map(o => Object.assign({}, o, {name: o.name.trim()})), type: f.type === "MULTI_SELECT" ? "multi_select" : "single_select", seen: e.seen}
       : {iteration: {days: e.days, iterations: e.iterations.map(i => ({id: i.id, title: i.title.trim(), start: i.start, days: i.days || e.days}))}};
     ghpSend("gh_project_field_set", {field: f.id, change});
     // Shut until GitHub has answered: what is typed on after would not be in it

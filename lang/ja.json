@@ -4653,6 +4653,7 @@
   "err.ghproject.no_content": "{what} は GitHub に見つかりません。このアカウントで見られるか確かめてください",
   "err.ghproject.no_title": "題名を入れてください",
   "err.ghproject.bad_repo": "リポジトリは「持ち主/名前」で書いてください",
+  "err.ghproject.options_moved": "このフィールドの選択肢は、GitHub 側で変わっています。読み直した選択肢から変更してください。",
   "err.ghproject.not_found": "この GitHub Project が見つかりません。アドレスを確かめてください",
   "err.ghproject.bad_value": "この項目には入れられない値です",
   "err.ghproject.bad_ref": "GitHub Project のアドレス（https://github.com/orgs/…/projects/番号）か「持ち主/番号」を入れてください",
