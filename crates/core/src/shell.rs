@@ -6953,18 +6953,20 @@ function ghpAnswer(d) {
         const was = (g.sending[0] || {}).args || {};
         if (!d.ok) { I.said = d.error || ""; I.bad = true; }
         else {
-          if (d.act === "gh_project_view_add" && (d.data || {}).view) { g.view = d.data.view; ghpKeepView(g.ref, g.view); g.vnew = {name: "", layout: "table"}; }
+          if (d.act === "gh_project_view_add" && (d.data || {}).view) { g.view = d.data.view; ghpKeepView(g.ref, g.view); if (g.vnew.name.trim() === was.name) g.vnew = {name: "", layout: "table"}; }
           if (d.act === "gh_project_view_remove" && was.number === g.view) { g.view = null; ghpKeepView(g.ref, null); }
-          if (d.act === "gh_project_field_add") g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
+          // A form is emptied when what it holds is what went in: anything
+          // typed into it since it was sent is not in GitHub, and stays
+          if (d.act === "gh_project_field_add" && g.fnew.name.trim() === (was.field || {}).name) g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
           // The field that was being changed is done with -- not another one
           // opened since; and the column that was on its way is there
           // -- nor its choices still being changed when only its name was sent
           const whole = d.act === "gh_project_field_remove" || !!((was.change || {}).options || (was.change || {}).iteration);
           if ((d.act === "gh_project_field_set" || d.act === "gh_project_field_remove") && whole && g.fedit && g.fedit.field === was.field) g.fedit = null;
           if (d.act === "gh_project_field_set" && g.colNew && g.colNew.sent) g.colNew = null;
-          if (d.act === "gh_project_status") g.status = {status: "on_track", body: "", start: "", target: ""};
-          if (d.act === "gh_project_link") g.linkText = "";
-          if (d.act === "gh_project_access") g.who = {login: "", role: g.who.role, people: (d.data || {}).people || []};
+          if (d.act === "gh_project_status" && ["status", "body", "start", "target"].every(k => g.status[k] === (was.status || {})[k])) g.status = {status: "on_track", body: "", start: "", target: ""};
+          if (d.act === "gh_project_link" && was.on && g.linkText.trim() === was.link) g.linkText = "";
+          if (d.act === "gh_project_access") g.who = {login: g.who.login.trim().replace(/^@/, "") === ((was.people || [])[0] || {}).user ? "" : g.who.login, role: g.who.role, people: (d.data || {}).people || []};
           // Its words saved: the page shows them as GitHub has them. Any
           // other change to it leaves what is being written there alone
           // -- and so does anything written on since they were sent
