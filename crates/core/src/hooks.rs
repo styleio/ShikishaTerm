@@ -4197,11 +4197,41 @@ impl HookEngine {
             github!("github_prs", |lua, repo, hub, args| {
                 hub.pulls(&repo, &crate::github::Query::from_json(&arg(&args, 0)))
             });
+            // An issue or pull request named by its number in the tab's own
+            // repository, or -- one of another repository the account sees,
+            // as a GitHub Project's cards can be -- as "owner/repo#12"
+            let target = move |repo: &crate::github::Repo, v: &serde_json::Value| -> anyhow::Result<(crate::github::Repo, u64)> {
+                if let Some((slug, n)) = v.as_str().and_then(|s| s.trim().split_once('#')).filter(|(slug, _)| slug.contains('/')) {
+                    let other = crate::github::Repo::parse(slug).ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.ghproject.bad_repo")))?;
+                    return Ok((other, number(&serde_json::json!(n))?));
+                }
+                Ok((repo.clone(), number(v)?))
+            };
             github!("github_issue", |lua, repo, hub, args| {
-                number(&arg(&args, 0)).and_then(|n| hub.issue(&repo, n))
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.issue(&repo, n))
             });
             github!("github_pr", |lua, repo, hub, args| {
-                number(&arg(&args, 0)).and_then(|n| hub.pull(&repo, n))
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.pull(&repo, n))
+            });
+            github!("github_issue_edit", |lua, repo, hub, args| {
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.edit_issue(&repo, n, &arg(&args, 1)))
+            });
+            github!("github_sub_issue_add", |lua, repo, hub, args| {
+                let replace = arg(&args, 2).get("replace").and_then(|r| r.as_bool()).unwrap_or(false);
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| {
+                    hub.sub_add(&repo, n, arg(&args, 1).as_str().unwrap_or_default(), replace).map(|()| serde_json::Value::Bool(true))
+                })
+            });
+            github!("github_sub_issue_remove", |lua, repo, hub, args| {
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| {
+                    hub.sub_remove(&repo, n, arg(&args, 1).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
+                })
+            });
+            github!("github_sub_issue_move", |lua, repo, hub, args| {
+                let after = arg(&args, 2);
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| {
+                    hub.sub_move(&repo, n, arg(&args, 1).as_str().unwrap_or_default(), after.as_str()).map(|()| serde_json::Value::Bool(true))
+                })
             });
             github!("github_issue_create", |lua, repo, hub, args| {
                 let o = arg(&args, 0);
@@ -4228,17 +4258,17 @@ impl HookEngine {
                 )
             });
             github!("github_comment", |lua, repo, hub, args| {
-                number(&arg(&args, 0)).and_then(|n| hub.comment(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.comment(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
             });
             github!("github_issue_state", |lua, repo, hub, args| {
                 let state = arg(&args, 1).as_str().unwrap_or_default().to_string();
                 let of = arg(&args, 2).get("duplicate_of").and_then(|d| number(d).ok());
-                number(&arg(&args, 0))
-                    .and_then(|n| hub.set_issue_state(&repo, n, &state, of).map(|()| serde_json::Value::Bool(true)))
+                target(&repo, &arg(&args, 0))
+                    .and_then(|(repo, n)| hub.set_issue_state(&repo, n, &state, of).map(|()| serde_json::Value::Bool(true)))
             });
             github!("github_pr_state", |lua, repo, hub, args| {
                 let open = arg(&args, 1).as_str() == Some("open");
-                number(&arg(&args, 0)).and_then(|n| hub.set_pull_state(&repo, n, open).map(|()| serde_json::Value::Bool(true)))
+                target(&repo, &arg(&args, 0)).and_then(|(repo, n)| hub.set_pull_state(&repo, n, open).map(|()| serde_json::Value::Bool(true)))
             });
             github!("github_pr_merge", |lua, repo, hub, args| {
                 number(&arg(&args, 0)).and_then(|n| hub.merge_pull(&repo, n, arg(&args, 1).as_str().unwrap_or_default()))
@@ -4268,8 +4298,12 @@ impl HookEngine {
                         crate::ghproject::read(
                             &hub,
                             &at,
-                            opts.get("view").and_then(|v| number(v).ok()),
-                            opts.get("filter").and_then(|f| f.as_str()),
+                            crate::ghproject::Want {
+                                view: opts.get("view").and_then(|v| number(v).ok()),
+                                filter: opts.get("filter").and_then(|f| f.as_str()),
+                                most: opts.get("most").and_then(|m| number(m).ok()),
+                                archived: opts.get("archived").and_then(|a| a.as_bool()).unwrap_or(false),
+                            },
                         )
                     })
             });
@@ -4320,14 +4354,120 @@ impl HookEngine {
             github!("github_project_draft", |lua, repo, hub, args| {
                 let _ = &repo;
                 let o = arg(&args, 1);
-                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
-                crate::ghproject::draft(&hub, arg(&args, 0).as_str().unwrap_or_default(), &s("title"), &s("body"))
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str());
+                let draft = arg(&args, 0).as_str().unwrap_or_default().to_string();
+                let given = |k: &str| o.get(k).map(&strings).unwrap_or_default();
+                // Said whole, or as who is put on and taken off those it has now
+                let _turn = crate::ghproject::turn();
+                let people = if o.get("add_assignees").is_some() || o.get("remove_assignees").is_some() {
+                    crate::ghproject::draft_people(&hub, &draft, &given("add_assignees"), &given("remove_assignees")).map(Some)
+                } else {
+                    Ok(o.get("assignees").map(&strings))
+                };
+                people
+                    .and_then(|people| crate::ghproject::draft(&hub, &draft, s("title"), s("body"), people.as_deref()))
                     .map(|()| serde_json::Value::Bool(true))
             });
             github!("github_project_to_issue", |lua, repo, hub, args| {
                 // Into the tab's own repository unless another is named
                 let into = arg(&args, 1).as_str().map(str::to_string).unwrap_or_else(|| format!("{}/{}", repo.owner, repo.name));
-                crate::ghproject::to_issue(&hub, arg(&args, 0).as_str().unwrap_or_default(), &into, None)
+                crate::ghproject::to_issue(&hub, arg(&args, 0).as_str().unwrap_or_default(), &into, None, None)
+            });
+            // The board itself: its views, its fields and their choices, its
+            // own words, the reports of how it stands, what it is linked to,
+            // who may do what on it, and a workflow taken off
+            github!("github_project_view_add", |lua, repo, hub, args| {
+                let _ = &repo;
+                let id = |i: usize| arg(&args, i).as_str().unwrap_or_default().to_string();
+                crate::ghproject::view_make(&hub, &id(0), &id(1), arg(&args, 2).as_str().unwrap_or("table"))
+            });
+            github!("github_project_view_set", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::view_change(&hub, arg(&args, 0).as_str().unwrap_or_default(), &arg(&args, 1)).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_view_remove", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::view_remove(&hub, arg(&args, 0).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_field_add", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::field_make(&hub, arg(&args, 0).as_str().unwrap_or_default(), &arg(&args, 1))
+            });
+            github!("github_project_field_set", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::field_change(&hub, arg(&args, 0).as_str().unwrap_or_default(), &arg(&args, 1)).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_field_remove", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::field_remove(&hub, arg(&args, 0).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_about", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::GhRef::parse(arg(&args, 0).as_str().unwrap_or_default())
+                    .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.ghproject.bad_ref")))
+                    .and_then(|at| crate::ghproject::about(&hub, &at))
+            });
+            github!("github_project_create", |lua, repo, hub, args| {
+                // The tab's own repository's owner unless another is named;
+                // linked to the tab's repository unless told not to
+                let o = arg(&args, 1);
+                let owner = o.get("owner").and_then(|x| x.as_str()).unwrap_or(&repo.owner).to_string();
+                let linked = match o.get("link") {
+                    Some(serde_json::Value::Bool(false)) => None,
+                    Some(serde_json::Value::String(r)) => Some(r.clone()),
+                    _ => Some(format!("{}/{}", repo.owner, repo.name)),
+                };
+                crate::ghproject::make(&hub, &owner, arg(&args, 0).as_str().unwrap_or_default(), linked.as_deref())
+            });
+            github!("github_project_copy", |lua, repo, hub, args| {
+                let o = arg(&args, 2);
+                let owner = o.get("owner").and_then(|x| x.as_str()).unwrap_or(&repo.owner).to_string();
+                crate::ghproject::copy(
+                    &hub,
+                    arg(&args, 0).as_str().unwrap_or_default(),
+                    &owner,
+                    arg(&args, 1).as_str().unwrap_or_default(),
+                    o.get("drafts").and_then(|d| d.as_bool()).unwrap_or(false),
+                )
+            });
+            github!("github_project_update", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::change(&hub, arg(&args, 0).as_str().unwrap_or_default(), &arg(&args, 1)).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_delete", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::delete(&hub, arg(&args, 0).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_template", |lua, repo, hub, args| {
+                let _ = &repo;
+                let on = arg(&args, 1).as_bool().unwrap_or(true);
+                crate::ghproject::template(&hub, arg(&args, 0).as_str().unwrap_or_default(), on).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_status", |lua, repo, hub, args| {
+                let _ = &repo;
+                let what = arg(&args, 1);
+                let update = what.get("update").and_then(|u| u.as_str()).map(str::to_string);
+                crate::ghproject::status_write(&hub, arg(&args, 0).as_str().unwrap_or_default(), update.as_deref(), &what)
+            });
+            github!("github_project_status_remove", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::status_remove(&hub, arg(&args, 0).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_link", |lua, repo, hub, args| {
+                // The tab's own repository unless another is named
+                let o = arg(&args, 1);
+                let to = o.get("repo").and_then(|x| x.as_str()).map(str::to_string).unwrap_or_else(|| format!("{}/{}", repo.owner, repo.name));
+                let on = o.get("on").and_then(|x| x.as_bool()).unwrap_or(true);
+                crate::ghproject::link(&hub, arg(&args, 0).as_str().unwrap_or_default(), &to, on).map(|()| serde_json::Value::Bool(true))
+            });
+            github!("github_project_access", |lua, repo, hub, args| {
+                let _ = &repo;
+                let people = arg(&args, 1);
+                crate::ghproject::access(&hub, arg(&args, 0).as_str().unwrap_or_default(), people.as_array().map(|p| p.as_slice()).unwrap_or_default())
+            });
+            github!("github_project_workflow_remove", |lua, repo, hub, args| {
+                let _ = &repo;
+                crate::ghproject::workflow_remove(&hub, arg(&args, 0).as_str().unwrap_or_default()).map(|()| serde_json::Value::Bool(true))
             });
         }
         {
