@@ -4354,9 +4354,9 @@ impl HookEngine {
             github!("github_project_draft", |lua, repo, hub, args| {
                 let _ = &repo;
                 let o = arg(&args, 1);
-                let s = |k: &str| o.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
+                let s = |k: &str| o.get(k).and_then(|x| x.as_str());
                 let people = o.get("assignees").map(&strings);
-                crate::ghproject::draft(&hub, arg(&args, 0).as_str().unwrap_or_default(), &s("title"), &s("body"), people.as_deref())
+                crate::ghproject::draft(&hub, arg(&args, 0).as_str().unwrap_or_default(), s("title"), s("body"), people.as_deref())
                     .map(|()| serde_json::Value::Bool(true))
             });
             github!("github_project_to_issue", |lua, repo, hub, args| {

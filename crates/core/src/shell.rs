@@ -7921,7 +7921,9 @@ function ghpOwnSet(card, key, value) {
   if (!g.data || ghpShut(card)) return;
   if (card.kind === "draft") {
     card.assignees = value;
-    ghpSend("gh_project_draft", {card: card.id, draft: card.draft, title: card.title || "", body: card.body || "", assignees: value});
+    // Only who it is given to: its title and words stay as GitHub has them,
+    // which may be newer than the ones this board was read with
+    ghpSend("gh_project_draft", {card: card.id, draft: card.draft, assignees: value});
   } else if (key === "labels" || key === "assignees") {
     // Said as the names put on and taken off: the card may not carry every
     // label its issue has, and the whole list from here would take the rest off

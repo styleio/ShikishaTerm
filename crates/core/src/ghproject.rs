@@ -802,24 +802,35 @@ fn user_ids(hub: &Hub, logins: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
-/// A draft's title and words, and -- when `people` is given -- who it is
-/// assigned to, by their names on GitHub (all of them: an empty list assigns
-/// it to nobody). A draft must keep a title
-pub fn draft(hub: &Hub, draft: &str, title: &str, body: &str, people: Option<&[String]>) -> Result<()> {
-    let title = title.trim();
-    if title.is_empty() {
+/// A draft's title, its words, and who it is assigned to, by their names on
+/// GitHub (all of them: an empty list assigns it to nobody) -- each written
+/// only when it is given, so what is not being changed stays as GitHub has
+/// it, whatever a screen read some time ago says. A draft must keep a title
+pub fn draft(hub: &Hub, draft: &str, title: Option<&str>, body: Option<&str>, people: Option<&[String]>) -> Result<()> {
+    let title = title.map(str::trim);
+    if title == Some("") {
         bail!(crate::i18n::t("err.ghproject.no_title"));
     }
-    let v = match people {
-        None => hub.graphql_whole(
-            "mutation($draft:ID!,$title:String!,$body:String!){updateProjectV2DraftIssue(input:{draftIssueId:$draft,title:$title,body:$body}){draftIssue{id}}}",
-            json!({"draft": draft, "title": title, "body": body}),
-        )?,
-        Some(people) => hub.graphql_whole(
-            "mutation($draft:ID!,$title:String!,$body:String!,$people:[ID!]){updateProjectV2DraftIssue(input:{draftIssueId:$draft,title:$title,body:$body,assigneeIds:$people}){draftIssue{id}}}",
-            json!({"draft": draft, "title": title, "body": body, "people": user_ids(hub, people)?}),
-        )?,
-    };
+    if title.is_none() && body.is_none() && people.is_none() {
+        bail!(crate::i18n::t("err.github.no_change"));
+    }
+    let (mut takes, mut gives, mut vars) = (String::from("$draft:ID!"), String::from("draftIssueId:$draft"), json!({"draft": draft}));
+    if let Some(title) = title {
+        takes.push_str(",$title:String!");
+        gives.push_str(",title:$title");
+        vars["title"] = json!(title);
+    }
+    if let Some(body) = body {
+        takes.push_str(",$body:String!");
+        gives.push_str(",body:$body");
+        vars["body"] = json!(body);
+    }
+    if let Some(people) = people {
+        takes.push_str(",$people:[ID!]");
+        gives.push_str(",assigneeIds:$people");
+        vars["people"] = json!(user_ids(hub, people)?);
+    }
+    let v = hub.graphql_whole(&format!("mutation({takes}){{updateProjectV2DraftIssue(input:{{{gives}}}){{draftIssue{{id}}}}}}"), vars)?;
     carried(&v, "/data/updateProjectV2DraftIssue/draftIssue/id").map(|_| ())
 }
 
@@ -831,7 +842,7 @@ pub fn draft(hub: &Hub, draft: &str, title: &str, body: &str, people: Option<&[S
 /// are who it is given to, written with the words: the issue has them
 pub fn to_issue(hub: &Hub, card: &str, repo: &str, words: Option<(&str, &str, &str)>, people: Option<&[String]>) -> Result<Value> {
     if let Some((id, title, body)) = words {
-        draft(hub, id, title, body, people)?;
+        draft(hub, id, Some(title), Some(body), people)?;
     }
     let (owner, name) = repo.split_once('/').filter(|(o, n)| !o.is_empty() && !n.is_empty() && !n.contains('/'))
         .ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_repo")))?;

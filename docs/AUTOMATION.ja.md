@@ -1355,7 +1355,7 @@ SSHのタブがつながっている先のファイルです。**どのマシン
 | `shikisha.github_project_move(タブ, project_id, card_id, after_id)` | カードを Project 自体の並び順で `after_id` のすぐ後ろへ移す。`nil` なら先頭。並べ替えを設定したビューは、その順で表示する |
 | `shikisha.github_project_archive(タブ, project_id, card_id, {restore=true})` | カードをアーカイブする。`restore=true` ならアーカイブから元に戻す |
 | `shikisha.github_project_remove(タブ, project_id, card_id)` | カードを Project から外す。Issue・プルリクエストそのものは残る。下書きは消える |
-| `shikisha.github_project_draft(タブ, draft_id, {title=…, body=…, assignees=…})` | 下書きカードを書き換える。`assignees`（GitHub のユーザー名の一覧の全部）を渡すと、担当者も変える。`draft_id` は `github_project` の答えのカードの `draft`。題名は空にできない |
+| `shikisha.github_project_draft(タブ, draft_id, {title=…, body=…, assignees=…})` | 下書きカードを書き換える。題名 `title`、本文 `body`、担当者 `assignees`（GitHub のユーザー名の一覧の全部）のうち、渡したものだけを書き換える。渡さないものはそのまま残る。`draft_id` は `github_project` の答えのカードの `draft`。題名は空にできない |
 | `shikisha.github_project_to_issue(タブ, card_id, リポジトリ)` | 下書きカードを `リポジトリ`（`持ち主/名前`。`nil` ならタブのリポジトリ）の Issue にする。カードはその Issue のカードとして残る。答えは `{card, number, url}` |
 | `shikisha.github_project_view_add(タブ, project_id, 名前, レイアウト)` | ビューを追加する。レイアウトは `table`・`board`・`roadmap`。答えは `{id, view}`（ビューの id と番号） |
 | `shikisha.github_project_view_set(タブ, view_id, {name=…, layout=…, filter=…, fields=…})` | ビューを変える。名前・レイアウト・ビューに保存する絞り込み・表示する項目（id を表示順に）。指定したものだけが変わる。ビューのグループ分けと並べ替えは、GitHub が自分の画面の外から受け付けない |

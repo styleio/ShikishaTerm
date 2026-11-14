@@ -1984,7 +1984,8 @@ pub fn answer(
         "gh_project_remove" => crate::ghproject::remove(&hub, &s("id"), &s("card")).map(|()| json!({"card": s("card")})),
         "gh_project_draft" => {
             let people = args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees"));
-            crate::ghproject::draft(&hub, &s("draft"), &s("title"), &s("body"), people.as_deref()).map(|()| json!({"card": s("card")}))
+            let said = |k: &str| args.get(k).and_then(|x| x.as_str());
+            crate::ghproject::draft(&hub, &s("draft"), said("title"), said("body"), people.as_deref()).map(|()| json!({"card": s("card")}))
         }
         "gh_project_view_add" => crate::ghproject::view_make(&hub, &s("id"), &s("name"), &s("layout")),
         "gh_project_view_set" => crate::ghproject::view_change(&hub, &s("view_id"), args.get("change").unwrap_or(&Value::Null)).map(|()| json!(true)),
