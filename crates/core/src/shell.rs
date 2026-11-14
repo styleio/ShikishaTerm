@@ -6429,10 +6429,10 @@ window.__issues = function (d) {
     case "detail": {
       // The same issue read again keeps what is being changed on its page open
       const same = I.detail && I.view === "detail" && issueThread(I.detail) === issueThread({project: d.project, at_repo: d.at_repo, number: (d.data || {}).number});
-      // With the repository it was read from: the one it was asked of, else
-      // the one the desk's project stands for now
+      // With the repository it was read from: the one it was asked of, which
+      // is said when it is asked for and held to by the answer
       I.detail = Object.assign({project: d.project, kind: d.kind, at_repo: d.at_repo || "",
-        in_repo: d.at_repo ? "" : (d.in_repo || (issueProject(d.project) || {}).repo || "")}, d.data || {});
+        in_repo: d.at_repo ? "" : (d.in_repo || "")}, d.data || {});
       I.view = "detail";
       I.made = "";
       I.armed = ""; I.dupOf = "";
@@ -6471,7 +6471,7 @@ window.__issues = function (d) {
       I.create = issueBlank({project: I.create.project});
       I.said = (T["issues.created"] || "").replaceAll("{n}", (d.data || {}).number || "");
       I.made = "create"; I.madeSaid = I.said;
-      issuesAsk("detail", {project: d.project, number: (d.data || {}).number});
+      issuesAsk("detail", issueAt({project: d.project, number: (d.data || {}).number}));
       issuesList(1);
       return;
     }
@@ -6532,7 +6532,7 @@ window.__issues = function (d) {
       I.kind = "pr"; I.preset = "open"; I.list = null;
       I.said = (T["issues.pr.created"] || "").replaceAll("{n}", n);
       I.made = "create_pr"; I.madeSaid = I.said;
-      issuesAsk("detail", {project: d.project, number: n});
+      issuesAsk("detail", issueAt({project: d.project, number: n}));
       issuesList(1);
       return;
     }
@@ -6724,7 +6724,7 @@ function drawIssueList(box) {
     const state = r.draft && r.state === "open" ? "draft" : r.state;
     // The row opens the record; the button beside it is the one other thing to
     // do with it, and stays quiet so the page keeps one primary button
-    const row = el("div", {class:"irow", onclick:() => issuesAsk("detail", {project: r.project, number: r.number})},
+    const row = el("div", {class:"irow", onclick:() => issuesAsk("detail", issueAt({project: r.project, number: r.number}))},
       el("span", {class:"num"}, "#" + r.number),
       el("span", {class:"main"},
         el("span", {class:"title"}, r.title || ""),
@@ -6973,6 +6973,8 @@ function ghpAnswer(d) {
         }
         // A column that was not added is typed again
         if (!d.ok && d.act === "gh_project_field_set" && g.colNew) g.colNew.sent = false;
+        // Choices that were not taken are changed again, and saved again
+        if (!d.ok && d.act === "gh_project_field_set" && g.fedit && g.fedit.field === was.field) g.fedit.sent = false;
       }
       g.sending.shift();
       if (g.sending.length) send(g.sending[0]);
@@ -8323,6 +8325,8 @@ function ghpFieldEditor(f) {
       ? {options: e.options.map(o => Object.assign({}, o, {name: o.name.trim()})), type: f.type === "MULTI_SELECT" ? "multi_select" : "single_select"}
       : {iteration: {days: e.days, iterations: e.iterations.map(i => ({id: i.id, title: i.title.trim(), start: i.start, days: i.days || e.days}))}};
     ghpSend("gh_project_field_set", {field: f.id, change});
+    // Shut until GitHub has answered: what is typed on after would not be in it
+    e.sent = true;
     redraw();
   }}, T["ghp.save"] || "");
   save.disabled = !ok();
@@ -8330,6 +8334,7 @@ function ghpFieldEditor(f) {
   wrap.addEventListener("change", () => { save.disabled = !ok(); });
   wrap.append(el("div", {class:"said"}, T[e.options ? "ghp.fields.option_says" : "ghp.fields.iter_says"] || ""),
     el("div", {class:"row"}, el("button", {class:"quiet", onclick:() => { g.fedit = null; redraw(); }}, T["ghp.cancel"] || ""), save));
+  if (e.sent) for (const b of wrap.querySelectorAll("input, select, button")) b.disabled = true;
   return wrap;
 }
 function ghpFieldsPage(box, d) {
@@ -28134,7 +28139,7 @@ function gitPrResolve(p) {
 function gitPrShow(p) {
   const g = gitGroup();
   if (!g) return;
-  issuesAsk("detail", {kind:"pr", project: g.project, number: p.number});
+  issuesAsk("detail", Object.assign({kind:"pr"}, issueAt({project: g.project, number: p.number})));
   send({kind:"openissues"});
 }
 // The pull request being written, on the page in the middle: the same one,
