@@ -7550,12 +7550,15 @@ function ghpViewsPage(box, d, saved) {
   const now = (saved.fields || []).filter(id => all.some(f => f.id === id));
   const base = now.length ? now : all.map(f => f.id);
   const order = base.concat(all.map(f => f.id).filter(id => !base.includes(id)));
-  const keep = ids => { ghpLeavePage(); saved.fields = ids; g.rev++; ghpSend("gh_project_view_set", {view_id: saved.id, change: {fields: ids}}); drawIssues(); };
+  // Shown here at once as `ids`; said to GitHub as the one field shown,
+  // hidden or moved, against the fields the view shows there now -- the list
+  // from here would undo what was shown or hidden elsewhere since it was read
+  const keep = (ids, one) => { ghpLeavePage(); saved.fields = ids; g.rev++; ghpSend("gh_project_view_set", {view_id: saved.id, change: Object.assign({else_from: base}, one)}); drawIssues(); };
   const shown = el("div", {class:"ghset"});
   order.forEach(id => {
     const f = all.find(x => x.id === id), on = base.includes(id), i = base.indexOf(id);
-    const tick = issueTick(on, f.name, v => keep(v ? base.concat([id]) : base.filter(x => x !== id)));
-    const move = by => { const next = base.slice(); next.splice(i, 1); next.splice(i + by, 0, id); keep(next); };
+    const tick = issueTick(on, f.name, v => keep(v ? base.concat([id]) : base.filter(x => x !== id), v ? {show: id} : {hide: id}));
+    const move = by => { const next = base.slice(); next.splice(i, 1); next.splice(i + by, 0, id); keep(next, {move: {field: id, by}}); };
     const up = el("button", {class:"quiet", title: T["ghp.up"] || "", onclick:() => move(-1)}, "↑");
     const down = el("button", {class:"quiet", title: T["ghp.down"] || "", onclick:() => move(1)}, "↓");
     up.disabled = !can || !on || i <= 0;

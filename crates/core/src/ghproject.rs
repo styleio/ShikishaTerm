@@ -950,6 +950,33 @@ fn layout_word(layout: &str) -> Result<&'static str> {
     })
 }
 
+/// The fields a view shows after one is shown, hidden or moved: `now` as
+/// GitHub has them -- or `else_from` of `change` when it names none -- with
+/// `show` put last, `hide` taken out, and `move`'s field put `by` places on
+pub fn fields_after(now: Vec<String>, change: &Value) -> Vec<String> {
+    let mut list = if now.is_empty() {
+        change["else_from"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_string)).collect()
+    } else {
+        now
+    };
+    if let Some(id) = change["hide"].as_str() {
+        list.retain(|x| x != id);
+    }
+    if let Some(id) = change["show"].as_str() {
+        if !list.iter().any(|x| x == id) {
+            list.push(id.to_string());
+        }
+    }
+    if let (Some(id), Some(by)) = (change["move"]["field"].as_str(), change["move"]["by"].as_i64()) {
+        if let Some(at) = list.iter().position(|x| x == id) {
+            let to = (at as i64 + by).clamp(0, list.len() as i64 - 1) as usize;
+            let it = list.remove(at);
+            list.insert(to, it);
+        }
+    }
+    list
+}
+
 /// A new view of a board: a table, a board or a roadmap, by a name. Answers
 /// with its `id` and its `view` number
 pub fn view_make(hub: &Hub, board: &str, name: &str, layout: &str) -> Result<Value> {
@@ -969,7 +996,30 @@ pub fn view_make(hub: &Hub, board: &str, name: &str, layout: &str) -> Result<Val
 /// search words; empty for none) and the `fields` it shows, by their ids, in
 /// order. Only what `change` names is touched. How a view groups and sorts
 /// its cards GitHub keeps to its own page, and takes no word of here
+///
+/// The fields it shows can also be changed one at a time -- `show` (an id,
+/// put last), `hide` (an id) or `move` (`{field, by}`, a place up or down)
+/// -- worked out against the fields the view shows on GitHub now, so one
+/// changed from a board read some time ago does not undo what was shown or
+/// hidden elsewhere since. `else_from` is the list to start from when the
+/// view names none of its own (it then shows every field)
 pub fn view_change(hub: &Hub, view: &str, change: &Value) -> Result<()> {
+    let _turn = turn();
+    let shown;
+    let change = if ["show", "hide", "move"].iter().any(|k| change.get(k).is_some_and(|v| !v.is_null())) {
+        let found = hub.graphql_whole(
+            &format!("query($view:ID!){{node(id:$view){{... on ProjectV2View{{fields(first:100){{nodes{{{FIELD_ID}}}}}}}}}}}"),
+            json!({"view": view}),
+        )?;
+        let now: Vec<String> = carried(&found, "/data/node/fields/nodes")?
+            .as_array().into_iter().flatten().filter_map(|n| n["id"].as_str().map(str::to_string)).collect();
+        let mut whole = change.clone();
+        whole["fields"] = json!(fields_after(now, change));
+        shown = whole;
+        &shown
+    } else {
+        change
+    };
     let mut vars = json!({"view": view});
     let mut sig = vec!["$view:ID!"];
     let mut input = vec!["viewId:$view"];
@@ -1701,6 +1751,14 @@ mod tests {
         let people = || vec!["Alice".to_string(), "carol".to_string()];
         assert_eq!(people_after(people(), &["@bob".to_string(), "ALICE".to_string()], &[]), ["Alice", "carol", "bob"]);
         assert_eq!(people_after(people(), &[], &["alice".to_string()]), ["carol"]);
+        // A view's fields shown, hidden and moved against the ones it shows
+        // now: one shown elsewhere since stays
+        let shown = || vec!["t".to_string(), "a".to_string(), "m".to_string()];
+        assert_eq!(fields_after(shown(), &json!({"hide": "a"})), ["t", "m"]);
+        assert_eq!(fields_after(shown(), &json!({"show": "s"})), ["t", "a", "m", "s"]);
+        assert_eq!(fields_after(shown(), &json!({"move": {"field": "m", "by": -1}})), ["t", "m", "a"]);
+        assert_eq!(fields_after(shown(), &json!({"move": {"field": "t", "by": -1}})), ["t", "a", "m"]);
+        assert_eq!(fields_after(vec![], &json!({"hide": "a", "else_from": ["t", "a"]})), ["t"]);
         // A field's choices changed whole only from the ones it still has
         let has = [json!({"id": "x"}), json!({"id": "y"})];
         assert!(options_same(&has, &[json!("y"), json!("x")]));
