@@ -306,6 +306,7 @@ AI の名前。ほかは太くしない。字間 `.02em` は 11〜12px の見出
 | `--warn` の箱（§5.1） | `warnBox(text, ...acts)`（人が知ること・することの一文と、直す手段の並ボタンを1つの箱に。盤面ではサインインの案内と、ワークツリーを作るときの時間のかかるコピー、設定では Windows の通知がオフのときの「このPCの通知を受け取る」が使う。2つは別のページの JavaScript なので同じ名前で1つずつ持つ） | 設定（`webui.rs`）・盤面（`shell.rs`） |
 | 進み具合の棒（`.pbar`） | `progressBar(pct)`（`{bar, set}` を返す。`set` に 0〜100 を渡して伸ばす）。言葉は棒の隣か上に置き、棒だけを出さない | 盤面（`shell.rs`） |
 | 一覧から名前を選ぶ（`.lpick`。ラベル・担当者） | `chipPick(chosen, all, done)`（選んだものは ✕ 付きの札、残りはその下に押せる札。`done` に新しい一覧を渡す） | 盤面（`shell.rs`） |
+| 浮かぶ一覧でチェックを付けて名前を選ぶ（表のセルの担当者・ラベル・選択肢） | `tickList(anchor, items, opts)`（`openList` の上に作る。項目は `{name, on, pick}` で、`on` のものにチェックが付く。8 件を超えると、入力して絞り込む欄が付く。`opts.typed` は一覧に無い名前を受け取り、`opts.clear` は「値を消す」を足し、`opts.note` は下に 1 行の言葉を出す） | 盤面（`shell.rs`） |
 | チェックボックスと文字（§5.1） | `issueTick(on, words, set)`（`words` は文字か要素。`set` に新しい状態を渡す） | 盤面（`shell.rs`） |
 | 画像・動画を添付できる欄（貼り付け・ドロップ・下の静かな［画像・動画を添付］） | `issueAttachable(box, project, place)`（`place` は `issuePlace(k, get, set)`。ファイルを GitHub に送り、文にそのリンクを入れる） | 盤面（`shell.rs`） |
 | トースト | `toast(text, warn, act)`（`toast.rs` が両方のページに入れる）。`act` はその知らせが求める次の操作 `{label, run}` で、文の横に専用のボタンが付き、トーストは 15 秒出たままになる。知らせから次の操作が明らかなとき（レビューが付いた → AI に渡す）だけ使う | 両方（`toast.rs`） |
