@@ -6957,7 +6957,7 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_view_remove" && was.number === g.view) { g.view = null; ghpKeepView(g.ref, null); }
           // A form is emptied when what it holds is what went in: anything
           // typed into it since it was sent is not in GitHub, and stays
-          if (d.act === "gh_project_field_add" && JSON.stringify(g.fnew) === g.fnewSent) g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
+          if (d.act === "gh_project_field_add" && JSON.stringify(g.fnew) === ghpFormSent.get(g.sending[0])) g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
           // The field that was being changed is done with -- not another one
           // opened since; and the column that was on its way is there
           // -- nor its choices still being changed when only its name was sent
@@ -7032,6 +7032,7 @@ function ghpShown(field, value) {
 // A change to the board, sent once those before it are in, so GitHub has them
 // in the order they were made; the board is read back after the last
 let ghpSeq = 0;
+const ghpFormSent = new WeakMap();
 // The answers that are not to a change sent in line
 const GHP_ASKED = new Set(["gh_project", "gh_projects", "gh_project_about", "gh_project_create", "gh_project_copy", "gh_project_delete", "gh_project_pick"]);
 // A mark for a request of this screen's: its answer comes back to the
@@ -8415,9 +8416,10 @@ function ghpFieldsPage(box, d) {
       field.iteration = {days: n.days, iterations: [0, 1, 2].map(i => ({title: title + " " + (i + 1), start: ghpDayAfter(start, i * n.days), days: n.days}))};
     }
     ghpLeavePage();
-    // The form as it is sent, to know it by when GitHub has answered
-    g.fnewSent = JSON.stringify(n);
     ghpSend("gh_project_field_add", {field});
+    // The form as it is sent, kept with the request, to know it by when
+    // GitHub has answered that one
+    ghpFormSent.set(g.sending[g.sending.length - 1], JSON.stringify(n));
     redraw();
   };
   name.onkeydown = e => { if (e.key === "Enter" && !typingIME(e)) add(); };
