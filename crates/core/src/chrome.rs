@@ -900,7 +900,7 @@ struct Seen {
     /// touch's coordinates are a fraction of
     cast: std::collections::HashMap<String, (f64, f64)>,
     /// Credentials armed for a page's 401s, by page
-    auth: std::collections::HashMap<String, (String, String)>,
+    auth: std::collections::HashMap<String, (String, String, Vec<String>)>,
     /// Pages whose console somebody is listening to
     console: std::collections::HashSet<String>,
     /// What the other pages have said since they last loaded. A page here
@@ -1140,11 +1140,14 @@ impl Pages {
                 // armed one for this page, and with "you deal with it"
                 // everywhere else -- which is a 401 the page can show
                 "Fetch.authRequired" => {
+                    // ...and only for a challenge from a site the password
+                    // belongs to: not another site's picture on the page,
+                    // not a proxy, not wherever the page went since
                     let answer = match book.auth.get(&page) {
-                        Some((user, pass)) => serde_json::json!({
+                        Some((user, pass, sites)) if crate::config::challenge_allowed(sites, &ev.params) => serde_json::json!({
                             "response": "ProvideCredentials", "username": user, "password": pass,
                         }),
-                        None => serde_json::json!({ "response": "Default" }),
+                        _ => serde_json::json!({ "response": "Default" }),
                     };
                     speaker.tell(
                         Some(&session),
@@ -1529,14 +1532,14 @@ impl shikisha_shared::BrowserHost for Pages {
     /// Armed rather than sent: a 401 is not something to wait for, and the
     /// page it belongs to may be several redirects away. The credentials are
     /// already resolved from a secret before they arrive here
-    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> anyhow::Result<()> {
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> anyhow::Result<()> {
         let name = to.unwrap_or_default().to_string();
         let (chrome, session) = self.at(to)?;
         self.seen
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .auth
-            .insert(name, (user.to_string(), pass.to_string()));
+            .insert(name, (user.to_string(), pass.to_string(), sites.to_vec()));
         chrome.call_page(
             &session,
             "Fetch.enable",
@@ -1655,6 +1658,9 @@ impl shikisha_shared::BrowserHost for Pages {
     }
     fn fill(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, timeout_ms: u64) -> anyhow::Result<shikisha_shared::OpReport> {
         crate::pageops::fill(self, to, sel, value, timeout_ms)
+    }
+    fn fill_only_at(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<shikisha_shared::OpReport>> {
+        crate::pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &shikisha_shared::Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)

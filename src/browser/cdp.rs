@@ -84,7 +84,8 @@ pub struct AuthArm {
     _heard: Vec<Heard>,
     port: Port,
     /// The credentials to return (user, pass). Held shared so it can be swapped out
-    pub creds: std::rc::Rc<std::cell::RefCell<(String, String)>>,
+    /// The user, the password, and the sites they may go to
+    pub creds: std::rc::Rc<std::cell::RefCell<(String, String, Vec<String>)>>,
 }
 
 impl Drop for AuthArm {
@@ -96,8 +97,8 @@ impl Drop for AuthArm {
     }
 }
 
-pub fn arm_basic_auth(port: &Port, user: &str, pass: &str) -> Option<AuthArm> {
-    let creds = std::rc::Rc::new(std::cell::RefCell::new((user.to_string(), pass.to_string())));
+pub fn arm_basic_auth(port: &Port, user: &str, pass: &str, sites: Vec<String>) -> Option<AuthArm> {
+    let creds = std::rc::Rc::new(std::cell::RefCell::new((user.to_string(), pass.to_string(), sites)));
 
     // Pass a caught, ordinary request straight through (not continuing it would stall the page)
     let through = port.clone();
@@ -112,19 +113,19 @@ pub fn arm_basic_auth(port: &Port, user: &str, pass: &str) -> Option<AuthArm> {
     let creds_h = std::rc::Rc::clone(&creds);
     let required = port.listen("Fetch.authRequired", move |v| {
         let id = v.get("requestId").and_then(|x| x.as_str()).unwrap_or_default();
-        let (u, p) = {
+        // Only a challenge from a site the password belongs to is answered:
+        // not another site's picture on the page, not a proxy, not wherever
+        // the page went since. Anything else gets the browser's own answer,
+        // which is a 401 the page can show
+        let response = {
             let c = creds_h.borrow();
-            (c.0.clone(), c.1.clone())
-        };
-        let params = serde_json::json!({
-            "requestId": id,
-            "authChallengeResponse": {
-                "response": "ProvideCredentials",
-                "username": u,
-                "password": p,
+            if shikisha_core::config::challenge_allowed(&c.2, v) {
+                serde_json::json!({"response": "ProvideCredentials", "username": c.0, "password": c.1})
+            } else {
+                serde_json::json!({"response": "Default"})
             }
-        })
-        .to_string();
+        };
+        let params = serde_json::json!({"requestId": id, "authChallengeResponse": response}).to_string();
         answer.call("Fetch.continueWithAuth", &params);
     })?;
 

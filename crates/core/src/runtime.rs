@@ -1581,6 +1581,11 @@ const TYPED_BY_APP_MS: i64 = 10 * 60 * 1000;
 
 /// Whose conversation a tab's CLI is having: the tab and its CLI's own id for
 /// the conversation. What a conversation of AIs grows from (`convo::db::Store::thread_for`)
+/// What to say when what was typed could not be written into a terminal
+fn not_typed(e: &dyn std::fmt::Display) -> String {
+    i18n::tp("msg.not_typed", &[("why", &e.to_string())])
+}
+
 fn origin_of(t: &Tab) -> String {
     // By uid: a tab with no conversation yet is "<uid>/", and by name that
     // was every earlier tab of the name with none either
@@ -6581,9 +6586,12 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Paste) => {
                         if let Some(t) = session_at(&surfaces, active).and_then(|i| tabs.get(i))
                             && !t.locked
-                            && let Ok(Some(why)) = crate::paste::clipboard_into(t)
                         {
-                            flash = Some(why);
+                            match crate::paste::clipboard_into(t) {
+                                Ok(Some(why)) => flash = Some(why),
+                                Ok(None) => {}
+                                Err(e) => flash = Some(not_typed(&e)),
+                            }
                         }
                     }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::Sftp { panel, act, args }) => {
@@ -11115,7 +11123,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 continue;
             }
             // An editor showing held text reads it from here
-            let held = views.answer(&panel, &act, &args);
+            let held = views.answer(&panel, &act, &args).map(|js| tagged_text(js, &args));
             if let Some(js) = held.or_else(|| files_answer(&panel, &act, &args, &surfaces, &tabs, &caps, &far_tx)) {
                 shell.push_files(&js);
                 if let Some(r) = remote_ui.as_ref() {
@@ -16187,8 +16195,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         }
                         // Ctrl+B b sends a literal Ctrl+B through to the child process
                         KeyCode::Char('b') => {
-                            if let Some(t) = session_mut(&mut tabs, &surfaces, active) {
-                                t.write_bytes(&[0x02])?;
+                            if let Some(t) = session_mut(&mut tabs, &surfaces, active)
+                                && let Err(e) = t.write_bytes(&[0x02])
+                            {
+                                flash = Some(not_typed(&e));
                             }
                         }
                         // Ctrl+B r restarts this tab (recovers from exit/disconnect)
@@ -16628,7 +16638,13 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                             to_live(t);
                             finish_paste(&mut pending_send, t, now_ms);
                             record_keys(t, &bytes, device);
-                            t.write_bytes(&bytes)?;
+                            // A terminal that cannot be written to (its
+                            // connection is lost, its program has ended) is
+                            // said on the board. It is one tab's trouble: it
+                            // must never end the loop every other tab runs on
+                            if let Err(e) = t.write_bytes(&bytes) {
+                                flash = Some(not_typed(&e));
+                            }
                         }
                     }
                     if locked_hit {
@@ -16647,7 +16663,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         to_live(t);
                         finish_paste(&mut pending_send, t, now_ms);
                         record_keys(t, text.as_bytes(), device);
-                        t.write_bytes(text.as_bytes())?;
+                        if let Err(e) = t.write_bytes(text.as_bytes()) {
+                            flash = Some(not_typed(&e));
+                        }
                     }
             }
             // A viewer remeasured itself. Nothing to carry out here: it has
@@ -17499,13 +17517,34 @@ pub fn files_answer(
     caps: &crate::caps::Capabilities,
     far: &std::sync::mpsc::Sender<FarFiles>,
 ) -> Option<String> {
-    match files_at(panel, surfaces, tabs) {
+    let said = match files_at(panel, surfaces, tabs) {
         Some(FilesAt::Here(root)) => Some(files_here(panel, act, args, &root)),
         Some(FilesAt::There { at, root }) => files_there(panel, act, args, at, root, caps, far),
         None => Some(
             serde_json::json!({"act": act, "panel": panel, "ok": false, "error": i18n::t("err.files.no_folder")})
                 .to_string(),
         ),
+    };
+    said.map(|js| tagged_text(js, args))
+}
+
+/// [`tagged`], for an answer already written out
+fn tagged_text(js: String, args: &serde_json::Value) -> String {
+    match (args.get("tag"), serde_json::from_str::<serde_json::Value>(&js)) {
+        (Some(tag), Ok(mut v)) => {
+            tagged(&mut v, Some(tag));
+            v.to_string()
+        }
+        _ => js,
+    }
+}
+
+/// Put the `tag` a page sent with what it asked onto the answer, so the page
+/// can tell which of its asks this answers (a save's answer is only that
+/// save's: one that arrives late must not be read as the next one's)
+fn tagged(answer: &mut serde_json::Value, tag: Option<&serde_json::Value>) {
+    if let (Some(tag), Some(fields)) = (tag, answer.as_object_mut()) {
+        fields.entry("tag").or_insert_with(|| tag.clone());
     }
 }
 
@@ -18488,7 +18527,9 @@ fn files_there(
     let tx = far.clone();
     // What every answer is sent back in: the page's words, and the file's
     // stamp when this work learned it
-    let answer = move |js: serde_json::Value, path: String, stamp: Option<String>| {
+    let tag = args.get("tag").cloned();
+    let answer = move |mut js: serde_json::Value, path: String, stamp: Option<String>| {
+        tagged(&mut js, tag.as_ref());
         let _ = tx.send(FarFiles { key: key.clone(), path, js: Some(js.to_string()), stamp, asked, polled: false });
     };
     let failed = |act: &str, panel: &str, e: String| serde_json::json!({"act": act, "panel": panel, "ok": false, "error": e});

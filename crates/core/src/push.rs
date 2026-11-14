@@ -349,10 +349,24 @@ pub fn public_key() -> Result<String, String> {
 // ── The subscriptions ───────────────────────────────────────────────────────
 
 pub fn subs() -> Vec<Sub> {
-    std::fs::read_to_string(subs_path())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    subs_to_write().unwrap_or_default()
+}
+
+/// The list for somebody about to write it back: `None` when the file is
+/// there and could not be read this once (another program holding it), so an
+/// empty list is not written over every phone's registration. Read a row at
+/// a time, so one row that is not a registration costs only itself
+fn subs_to_write() -> Option<Vec<Sub>> {
+    let text = match std::fs::read_to_string(subs_path()) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(e) => {
+            crate::append_hook_log(&format!("push: could not read {}: {e}", subs_path().display()));
+            return None;
+        }
+    };
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
+    Some(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
 }
 
 fn write_subs(list: &[Sub]) {
@@ -365,7 +379,7 @@ fn write_subs(list: &[Sub]) {
 /// Remember a phone. The endpoint is the identity: a browser that subscribes
 /// twice hands back the same one, and storing it twice would mean two buzzes.
 pub fn remember(sub: Sub) {
-    let mut list = subs();
+    let Some(mut list) = subs_to_write() else { return };
     match list.iter_mut().find(|s| s.endpoint == sub.endpoint) {
         Some(existing) => *existing = sub,
         None => list.push(sub),
@@ -382,7 +396,7 @@ pub fn remember(sub: Sub) {
 /// time it opens the board (`shikishaSubscribed`). `None` forgets every
 /// device's, for when every key is taken away. Answers how many went
 pub fn forget_device(id: Option<&str>) -> usize {
-    let mut list = subs();
+    let Some(mut list) = subs_to_write() else { return 0 };
     let before = list.len();
     list.retain(|s| s.device == HERE || id.is_some_and(|id| !s.device.is_empty() && s.device != id));
     let gone = before - list.len();
@@ -395,7 +409,7 @@ pub fn forget_device(id: Option<&str>) -> usize {
 
 /// Forget one phone, by endpoint. Answers whether there was one.
 pub fn forget(endpoint: &str) -> bool {
-    let mut list = subs();
+    let Some(mut list) = subs_to_write() else { return false };
     let before = list.len();
     list.retain(|s| s.endpoint != endpoint);
     let gone = list.len() != before;

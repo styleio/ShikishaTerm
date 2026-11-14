@@ -64,10 +64,43 @@ impl Client {
 }
 
 /// The book, as it sits on disk.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct Book {
-    #[serde(default)]
     pub clients: Vec<Client>,
+    /// Rows this version could not read (written by a newer one, or damaged),
+    /// exactly as they were found. They let nobody in, and they are written
+    /// back untouched: one row that cannot be read is not a reason to drop it,
+    /// and certainly not the readable rows beside it
+    unread: Vec<serde_json::Value>,
+}
+
+impl Book {
+    /// The book in a file's text; `None` when the text is not a book at all
+    fn parse(text: &str) -> Option<Book> {
+        let whole: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+        let rows = match whole.get("clients") {
+            Some(serde_json::Value::Array(rows)) => rows.clone(),
+            None if whole.is_object() => Vec::new(),
+            _ => return None,
+        };
+        let mut book = Book::default();
+        for row in rows {
+            match serde_json::from_value::<Client>(row.clone()) {
+                Ok(c) => book.clients.push(c),
+                Err(_) => book.unread.push(row),
+            }
+        }
+        Some(book)
+    }
+
+    fn text(&self) -> anyhow::Result<String> {
+        let mut rows: Vec<serde_json::Value> = Vec::with_capacity(self.clients.len() + self.unread.len());
+        for c in &self.clients {
+            rows.push(serde_json::to_value(c)?);
+        }
+        rows.extend(self.unread.iter().cloned());
+        Ok(serde_json::to_string_pretty(&serde_json::json!({ "clients": rows }))?)
+    }
 }
 
 fn path() -> std::path::PathBuf {
@@ -97,15 +130,35 @@ fn now() -> u64 {
 /// a runtime that refused to start because of a damaged list would be a
 /// runtime locked out of itself, and the list is rebuildable by pairing again
 pub fn load() -> Book {
-    std::fs::read_to_string(path())
-        .ok()
-        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
-        .unwrap_or_default()
+    std::fs::read_to_string(path()).ok().and_then(|t| Book::parse(&t)).unwrap_or_default()
+}
+
+/// The book for somebody about to write it back.
+///
+/// Reading for a write is held to more than reading to let somebody in: an
+/// empty book written back is every device shut out. So a file that is there
+/// and could not be read this once (another program holding it: a virus
+/// scanner, a sync client) is an error and nothing is written; only a file
+/// that is not there is an empty book. A file that is not a book at all is
+/// moved aside under another name before a new one takes its place
+fn load_to_write() -> anyhow::Result<Book> {
+    let path = path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Book::default()),
+        Err(e) => anyhow::bail!(crate::i18n::tp("err.clients.unreadable", &[("why", &e.to_string())])),
+    };
+    if let Some(book) = Book::parse(&text) {
+        return Ok(book);
+    }
+    let aside = path.with_extension(format!("unreadable-{}.json", now()));
+    let _ = std::fs::rename(&path, &aside);
+    crate::append_hook_log(&format!("clients: {} is not a device list; kept as {}", path.display(), aside.display()));
+    Ok(Book::default())
 }
 
 fn save(book: &Book) -> anyhow::Result<()> {
-    let text = serde_json::to_string_pretty(book)?;
-    crate::crypto::write_atomic(&path(), &text)
+    crate::crypto::write_atomic(&path(), &book.text()?)
 }
 
 /// Read the book, change it, write it back, with nobody else in between.
@@ -122,7 +175,7 @@ fn save(book: &Book) -> anyhow::Result<()> {
 fn with_book<T>(change: impl FnOnce(&mut Book) -> T) -> anyhow::Result<T> {
     static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _held = WRITING.lock().unwrap_or_else(|e| e.into_inner());
-    let mut book = load();
+    let mut book = load_to_write()?;
     let out = change(&mut book);
     save(&book)?;
     Ok(out)
@@ -241,7 +294,12 @@ pub fn revoke(id: &str) -> anyhow::Result<bool> {
 /// Take every device's key away. For the day something is wrong and working
 /// out which device it was costs more than pairing them all again
 pub fn revoke_all() -> anyhow::Result<()> {
-    with_book(|book| book.clients.clear())?;
+    // Every row, the ones this version cannot read too: one of them may be
+    // a key
+    with_book(|book| {
+        book.clients.clear();
+        book.unread.clear();
+    })?;
     crate::push::forget_device(None);
     Ok(())
 }
@@ -397,6 +455,43 @@ pub(crate) mod tests {
             revoke_all().unwrap();
             assert!(who(&a).is_none() && who(&b).is_none(), "someone is still there");
             assert!(load().clients.is_empty());
+        });
+    }
+
+    /// One row this version cannot read costs nobody else their key, and is
+    /// still there afterwards for the version that can
+    #[test]
+    fn a_row_that_cannot_be_read_takes_nothing_with_it() {
+        alone(|| {
+            let (_, key) = pair("phone").unwrap();
+            let mut whole: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path()).unwrap()).unwrap();
+            whole["clients"].as_array_mut().unwrap().push(serde_json::json!({"id": 7, "from": "a newer version"}));
+            std::fs::write(path(), whole.to_string()).unwrap();
+            assert!(who(&key).is_some(), "the readable row stopped letting its device in");
+            let (_, other) = pair("tablet").unwrap();
+            assert!(who(&key).is_some() && who(&other).is_some());
+            let after = std::fs::read_to_string(path()).unwrap();
+            assert!(after.contains("a newer version"), "the row was dropped on the next write: {after}");
+            revoke_all().unwrap();
+            assert!(!std::fs::read_to_string(path()).unwrap().contains("a newer version"), "shutting everyone out left a row");
+        });
+    }
+
+    /// A book that is there and cannot be read right now is not an empty
+    /// book to write back: that would shut every device out
+    #[test]
+    fn a_book_that_cannot_be_read_right_now_is_not_written_over() {
+        alone(|| {
+            let (_, key) = pair("phone").unwrap();
+            let kept = std::fs::read_to_string(path()).unwrap();
+            // A folder where the file should be: reading it fails, and not
+            // with "there is none"
+            std::fs::remove_file(path()).unwrap();
+            std::fs::create_dir(path()).unwrap();
+            assert!(pair("tablet").is_err(), "it wrote over a book it could not read");
+            std::fs::remove_dir(path()).unwrap();
+            std::fs::write(path(), kept).unwrap();
+            assert!(who(&key).is_some());
         });
     }
 

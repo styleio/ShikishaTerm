@@ -114,9 +114,22 @@ pub fn act_with_wait(
     s: &dyn Speaks,
     to: Option<&str>,
     func: &str,
-    mut args: Vec<serde_json::Value>,
+    args: Vec<serde_json::Value>,
     timeout_ms: u64,
 ) -> anyhow::Result<Found> {
+    Ok(act_until(s, to, func, args, timeout_ms, None)?.unwrap_or(Found::NotFound))
+}
+
+/// [`act_with_wait`], with one answer of the page's that ends the wait at
+/// once: `None` comes back when the page said `stop`
+fn act_until(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    func: &str,
+    mut args: Vec<serde_json::Value>,
+    timeout_ms: u64,
+    stop: Option<&str>,
+) -> anyhow::Result<Option<Found>> {
     const SLICE_MS: u64 = 1_200;
     // The JS answers a bit before the slice so the result beats the wait
     const CUSHION_MS: u64 = 300;
@@ -129,7 +142,7 @@ pub fn act_with_wait(
         if left < CUSHION_MS + 100 {
             return match last_err {
                 Some(e) => Err(e),
-                None => Ok(Found::NotFound),
+                None => Ok(Some(Found::NotFound)),
             };
         }
         let slice = left.min(SLICE_MS);
@@ -137,12 +150,13 @@ pub fn act_with_wait(
         let res = call(s, to, func, &args, slice + CUSHION_MS);
         args.pop();
         match res {
+            Ok(v) if stop.is_some_and(|word| v.trim_matches('"') == word) => return Ok(None),
             Ok(v) => match Found::parse(&v) {
                 Found::NotFound => {
                     last_err = None;
                     continue;
                 }
-                found => return Ok(found),
+                found => return Ok(Some(found)),
             },
             // Mid-navigation the evaluation context dies — that's the
             // moment auto-wait exists for, not a failure yet. Pace the
@@ -198,6 +212,46 @@ pub fn fill(
     );
     s.wake(to, false);
     Ok(OpReport::bare(out?))
+}
+
+/// [`fill`], made only while the page is still at `page`: `None` when it
+/// has gone somewhere else, with nothing written.
+///
+/// For a value that belongs to one site (a stored password). The caller has
+/// checked that `page` is such a site; this is what makes that check hold
+/// at the moment of writing, where a wait for the field would otherwise
+/// follow the page across a navigation and write into whatever came next.
+/// A `{ref=N}` names an element of one document and dies with it, so there
+/// the address is asked once more just before the keys go
+pub fn fill_only_at(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    sel: &Sel,
+    value: &str,
+    page: &str,
+    timeout_ms: u64,
+) -> anyhow::Result<Option<OpReport>> {
+    if let Sel::Ref(r) = sel {
+        s.wake(to, true);
+        let out = match href(s, to, timeout_ms) {
+            Ok(at) if at == page => fill_ref_inner(s, to, *r, value, timeout_ms).map(Some),
+            Ok(_) => Ok(None),
+            Err(e) => Err(e),
+        };
+        s.wake(to, false);
+        return out;
+    }
+    s.wake(to, true);
+    let out = act_until(
+        s,
+        to,
+        "__shikisha_fill_at",
+        vec![sel.json(), serde_json::Value::String(value.to_string()), serde_json::Value::String(page.to_string())],
+        timeout_ms,
+        Some("moved"),
+    );
+    s.wake(to, false);
+    Ok(out?.map(OpReport::bare))
 }
 
 /// Wait for the page to stop reacting to whatever was just done to it, and
@@ -1030,6 +1084,10 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
         )));
     }
     // Select everything so the typed characters replace the current value
+    // ...and say whether the focus is really on it afterwards. Keys go to
+    // whatever has the focus: an element that cannot take it (a wrapper, a
+    // label, something disabled) would have the value typed into the field
+    // that had it before -- a search box, a chat box -- in plain sight
     const FOCUS_SELECT: &str = r#"function () {
         this.focus();
         if (typeof this.select === "function") {
@@ -1041,15 +1099,20 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
             s.removeAllRanges();
             s.addRange(r);
         }
-        return true;
+        const root = this.getRootNode();
+        return !!root && root.activeElement === this;
     }"#;
-    s.cdp(
-        to,
-        "Runtime.callFunctionOn",
-        serde_json::json!({ "objectId": oid, "functionDeclaration": FOCUS_SELECT,
-                           "returnByValue": true }),
-        timeout_ms,
-    )?;
+    let focused = s
+        .cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": FOCUS_SELECT,
+                               "returnByValue": true }),
+            timeout_ms,
+        )?
+        .pointer("/result/value")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     // The framework-aware write __shikisha_fill also uses: the native
     // setter plus input/change events. Works regardless of visibility
     const SET_VALUE: &str = r#"function (v) {
@@ -1084,7 +1147,9 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
         set_native()?;
         return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
     }
-    for ch in value.chars() {
+    // The focus did not land: nothing is typed (it would go elsewhere). The
+    // value is written into the element itself, and read back below
+    for ch in value.chars().take(if focused { usize::MAX } else { 0 }) {
         s.cdp(
             to,
             "Input.dispatchKeyEvent",
@@ -1121,6 +1186,22 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
             "ref fill {r}: keystrokes didn't land (page hidden?) — falling back to native setter"
         ));
         set_native()?;
+        // An element that holds no value (the wrapper, not the field in it)
+        // took neither: say so, rather than report a fill that wrote nothing
+        let now = s
+            .cdp(
+                to,
+                "Runtime.callFunctionOn",
+                serde_json::json!({ "objectId": oid, "functionDeclaration": READ, "returnByValue": true }),
+                timeout_ms,
+            )
+            .ok()
+            .and_then(|v| v.pointer("/result/value").and_then(serde_json::Value::as_str).map(str::to_string));
+        // (A field that took the focus and reshapes what is typed -- a phone
+        // number, a date -- reads back differently and is still filled)
+        if !focused && now.as_deref() != Some(value) {
+            anyhow::bail!(crate::i18n::tp("err.browser.ref_not_a_field", &[("ref", &r.to_string())]));
+        }
     }
     Ok(OpReport { state: Found::Visible, echo: desc, anchor })
 }

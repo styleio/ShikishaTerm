@@ -588,12 +588,12 @@ pub(super) fn run_window(
                         });
                     }
                 }
-                Cmd::BasicAuth { to, user, pass } => {
+                Cmd::BasicAuth { to, user, pass, sites } => {
                     // If credentials are already armed, swap them; otherwise enable Fetch and arm them
                     if let Some(arm) = auths.get(&to) {
-                        *arm.creds.borrow_mut() = (user, pass);
+                        *arm.creds.borrow_mut() = (user, pass, sites);
                     } else if let Some(v) = target(main_view(&shell), &children, &overlays, &to) {
-                        match cdp::arm_basic_auth(&v.port(), &user, &pass) {
+                        match cdp::arm_basic_auth(&v.port(), &user, &pass, sites) {
                             Some(arm) => {
                                 auths.insert(to.clone(), arm);
                             }

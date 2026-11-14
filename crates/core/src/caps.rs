@@ -1618,14 +1618,30 @@ impl Capabilities {
         who: crate::grants::Subject,
     ) -> Result<shikisha_shared::OpReport> {
         let (value, terms) = self.script_secret(secret_key, who)?;
-        let at = self.with(name, |b, to| b.href(to, OP_MS))?;
-        if !terms.may_fill(&at) {
-            bail!(refused(crate::i18n::tp(
-                "err.caps.secret_wrong_site",
-                &[("key", secret_key), ("host", &at)]
-            )));
+        // The page is asked where it is, and the value is written only while
+        // it is still there: waiting for the field must not follow the page
+        // to another site and type the password into that one. A page that
+        // moved is asked again, and the new address has to be allowed too
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(ACT_MS);
+        loop {
+            let at = self.with(name, |b, to| b.href(to, OP_MS))?;
+            if !terms.may_fill(&at) {
+                bail!(refused(crate::i18n::tp(
+                    "err.caps.secret_wrong_site",
+                    &[("key", secret_key), ("host", &at)]
+                )));
+            }
+            let left = until.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
+            if let Some(done) = self.with(name, |b, to| b.fill_only_at(to, sel, &value, &at, left.max(1_000)))? {
+                return Ok(done);
+            }
+            if left == 0 {
+                bail!(refused(crate::i18n::tp(
+                    "err.caps.secret_wrong_site",
+                    &[("key", secret_key), ("host", &at)]
+                )));
+            }
         }
-        self.browser_fill(name, sel, &value)
     }
 
     pub fn browser_auth(
@@ -1650,7 +1666,10 @@ impl Capabilities {
                 &[("secret_key", secret_key)]
             ))
         })?;
-        self.with(name, |b, to| b.basic_auth(to, user, pass))
+        // The same sites decide each challenge as it comes: the page may show
+        // another site's picture, or go somewhere else later, and neither is
+        // where this password belongs
+        self.with(name, |b, to| b.basic_auth(to, user, pass, &terms.urls))
     }
 
     /// Line pages up to match config exactly.

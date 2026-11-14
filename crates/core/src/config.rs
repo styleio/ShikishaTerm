@@ -2411,14 +2411,27 @@ impl SecretMeta {
     ///   the whole site
     /// - what comes after `?` is never part of the decision
     pub fn may_fill(&self, url: &str) -> bool {
-        let Some(page) = Place::page(url) else {
-            return false;
-        };
-        self.urls
-            .iter()
-            .filter_map(|u| Place::entry(u))
-            .any(|e| e.covers(&page))
+        site_allows(&self.urls, url)
     }
+}
+
+/// Whether `url` is one of the places `sites` name, by the rules of
+/// [`SecretMeta::may_fill`]. The one test for "may a secret go here", for a
+/// field being typed into and for a password challenge being answered alike
+pub fn site_allows(sites: &[String], url: &str) -> bool {
+    let Some(page) = Place::page(url) else {
+        return false;
+    };
+    sites.iter().filter_map(|u| Place::entry(u)).any(|e| e.covers(&page))
+}
+
+/// Whether a password challenge (CDP's `Fetch.authRequired`) is one the
+/// armed credentials may answer: the server of the request itself asked (not
+/// a proxy on the way), and the request is to an allowed site
+pub fn challenge_allowed(sites: &[String], params: &serde_json::Value) -> bool {
+    let from_server = params.pointer("/authChallenge/source").and_then(|s| s.as_str()).is_none_or(|s| s == "Server");
+    let url = params.pointer("/request/url").and_then(|u| u.as_str()).unwrap_or_default();
+    from_server && site_allows(sites, url)
 }
 
 /// secrets.json: a file holding only credentials, kept separate (never share)
@@ -11076,6 +11089,23 @@ mod tests {
         assert!(!inside.may_fill("https://intranet.local/login"), "it differs from the path written");
         assert!(inside.may_fill("https://github.com/login"));
         assert!(!inside.may_fill("http://github.com/login"), "it gets through downgraded to plain text");
+    }
+
+    /// Armed credentials answer the site they belong to, and nobody else who
+    /// asks while they are armed
+    #[test]
+    fn a_password_challenge_is_answered_only_for_its_own_site() {
+        let sites = vec!["https://staging.example.com".to_string()];
+        let ask = |source: &str, url: &str| serde_json::json!({
+            "requestId": "1", "request": {"url": url},
+            "authChallenge": {"source": source, "origin": "ignored", "scheme": "basic", "realm": "r"},
+        });
+        assert!(challenge_allowed(&sites, &ask("Server", "https://staging.example.com/admin")));
+        assert!(!challenge_allowed(&sites, &ask("Server", "https://tracker.example.net/pixel.png")), "another site's picture on the page");
+        assert!(!challenge_allowed(&sites, &ask("Proxy", "https://staging.example.com/admin")), "a proxy on the way");
+        assert!(!challenge_allowed(&sites, &ask("Server", "http://staging.example.com/admin")), "the plain-text twin");
+        assert!(!challenge_allowed(&[], &ask("Server", "https://staging.example.com/")), "no site named is nowhere");
+        assert!(!challenge_allowed(&sites, &serde_json::json!({"requestId": "1"})), "a challenge that says nothing of itself");
     }
 
     /// What is offered for deletion is only what nothing claims. Getting this

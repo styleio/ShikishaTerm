@@ -15964,7 +15964,7 @@ window.__state = function (json) {
           ED.outside = true;
         } else {
           ED.stamp = stamp;
-          ED.loading = true; ED.follow = true;
+          ED.loading = true;
           edRead();
         }
       }
@@ -17061,13 +17061,17 @@ const ED = {
   asked: null,      // the opts of the save waiting for an answer
   said: "", bad: false,
   loading: false,
-  // A read nobody asked for (the file changed on disk, an encoding picked):
-  // its answer gives way to anything typed while it was on its way
-  follow: false,
-  // The save on its way, as {text}: the text it carried is what the file
-  // holds when it lands, whatever was typed since. And the one save pressed
-  // while it was out (its opts), sent when the first comes back
-  saving: null, saveNext: null,
+  // The person chose the file over what is typed (Reload). Every other read
+  // of the file on screen -- it changed on disk, an encoding was picked --
+  // gives way to anything typed while its answer was on its way, however
+  // many of them are out at once
+  replace: false,
+  // The save on its way, as {text, tag, at}: the text it carried is what the
+  // file holds when it lands, whatever was typed since; the tag comes back
+  // on its answer, so an answer is never taken for another save's. And the
+  // one save pressed while it was out (its opts), sent when the first comes
+  // back
+  saving: null, saveNext: null, saveTag: 0,
   goto: null,       // {path, line, col}: where a pressed place asked to be taken
   reading: false,   // a read's text is on its way into the editor
 };
@@ -17085,7 +17089,7 @@ function edStash() {
   mdRichFlush();
   // The editor is leaving this file: the answer of a save still out is not
   // shown here any more, so nothing waits for it
-  ED.saving = null; ED.saveNext = null; ED.follow = false;
+  ED.saving = null; ED.saveNext = null; ED.replace = false;
   if (!ED.path || !ED.dirty || !edAce) return;
   edDrafts.set(edDraftKey(ED.path),
     {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
@@ -17175,13 +17179,15 @@ function editHeard(d) {
   if (d.path != null && d.path !== ED.path) return;
   if (d.act === "read") {
     ED.loading = false;
-    const follow = ED.follow;
-    ED.follow = false;
+    const replace = ED.replace;
+    ED.replace = false;
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
     // Rule 1 again: something was typed while this read was on its way (a
     // moment here, seconds on another machine). The typing stays, with the
-    // mark it was typed against, and the person is told the file moved on
-    if (follow && edAce && ED.shown === ED.path && ED.dirty) {
+    // mark it was typed against, and the person is told the file moved on.
+    // Only Reload, which is the person choosing the file, reads over it
+    mdRichFlush();
+    if (!replace && edAce && ED.shown === ED.path && ED.dirty) {
       ED.outside = true;
       drawEdit();
       return;
@@ -17229,8 +17235,16 @@ function editHeard(d) {
     return;
   }
   if (d.act === "write") {
+    // The answer of a save this editor is not waiting for: one sent before
+    // the file was left and come back to, or one given up on. What it says
+    // is about text that is no longer the question, so nothing is taken
+    // from it -- above all not "saved"
+    if (!ED.saving || d.tag !== ED.saving.tag) return;
     const sent = ED.saving, next = ED.saveNext;
     ED.saving = null; ED.saveNext = null;
+    // The visual editor's words first: what was typed there since is part
+    // of "is everything saved"
+    mdRichFlush();
     // Characters its encoding cannot hold: nothing was written, and the
     // person picks what to lose or what to change
     if (!d.ok && d.why === "unwritable") {
@@ -17246,7 +17260,7 @@ function editHeard(d) {
     // What the file holds now is the text this save carried -- not what is
     // in the editor, which may have been typed in since and is not on disk
     const now = edAce ? edAce.getValue() : ED.text;
-    const carried = sent ? sent.text : now;
+    const carried = sent.text;
     if (typeof d.text === "string") {
       // Saved with question marks: what is in the file is what is shown,
       // unless more was typed meanwhile, which stays as typed
@@ -17271,14 +17285,16 @@ function editSave() { if (!(editorTab() && editorTab().read_only)) editWrite({})
 // writes ? for what the encoding cannot hold, and `encoding` changes it
 function editWrite(opts) {
   if (!ED.path || ED.loading || !editorTab()) return;
-  // One save at a time: a second sent before the first answers would carry
-  // the old mark and be refused as if somebody else had written the file (or,
-  // on another machine, land in either order). It waits, and takes the text
-  // as it is when its turn comes
-  if (ED.saving) { ED.saveNext = opts; return; }
   // The visual editor's words are what is saved: written into the text now,
   // not a moment later
   mdRichFlush();
+  // One save at a time: a second sent before the first answers would carry
+  // the old mark and be refused as if somebody else had written the file (or,
+  // on another machine, land in either order). It waits, and takes the text
+  // as it is when its turn comes. A save whose answer never came (the line
+  // dropped under it) stops being waited for after a while: the next one
+  // goes with the same mark, and is refused if the lost one did land
+  if (ED.saving && Date.now() - ED.saving.at < ED_SAVE_WAIT_MS) { ED.saveNext = opts; return; }
   // Read in an encoding that lost characters: saving writes the loss into the
   // file, so it is asked before anything is sent
   if (!ED.exact && !opts.lossy) {
@@ -17288,11 +17304,25 @@ function editWrite(opts) {
   }
   ED.asked = opts;
   const text = edAce ? edAce.getValue() : ED.text;
-  ED.saving = {text};
+  const tag = ++ED.saveTag;
+  ED.saving = {text, tag, at: Date.now()};
+  ED.saveNext = null;
   // Rule 2: the mark says what we were given. The app refuses the write if the
   // file has moved on since, and says so -- it does not win the race
-  editAsk("write", {path: ED.path, text,
+  editAsk("write", {path: ED.path, text, tag,
     mark: opts.overwrite ? "" : ED.mark, encoding: opts.encoding || ED.encoding, replace: !!opts.replace});
+}
+// How long a save's answer is waited for before the next save may go: longer
+// than a save to another machine takes on a slow line (a read, a write and a
+// look, each with its own limit)
+const ED_SAVE_WAIT_MS = 45000;
+// The line to the app came back after a drop: an answer sent while it was
+// down is not coming. A save that was waiting behind one goes now
+function edLineBack() {
+  if (!ED.saving) return;
+  const next = ED.saveNext;
+  ED.saving = null; ED.saveNext = null;
+  if (next) editWrite(next);
 }
 // Keep what is here, over what changed on disk. The one save that does not
 // carry the mark, and so the one the app does not refuse: offered only once the
@@ -17310,13 +17340,15 @@ function editPickEncoding(v) {
     drawEdit();
     return;
   }
-  ED.said = ""; ED.loading = true; ED.follow = true;
+  ED.said = ""; ED.loading = true;
   edRead();
 }
 function editReload() {
   if (!ED.path) return;
-  // Reloading is choosing the file over the draft, so no draft comes back
+  // Reloading is choosing the file over the draft, so no draft comes back,
+  // and the answer of a save still out is no longer waited for
   edDrafts.delete(edDraftKey(ED.path));
+  ED.replace = true; ED.saving = null; ED.saveNext = null;
   ED.loading = true; ED.said = ""; ED.bad = false; ED.stop = null;
   edRead();
 }
@@ -18874,7 +18906,7 @@ function filesSearchSoon() {
 // is numbered: the newest is the only one drawn, and the app stops the rest
 function filesSearchNow() {
   clearTimeout(fsTimer);
-  if (!FS.q) { FS.hits = null; FS.spots = null; FS.capped = false; FS.rev++; drawFiles(); return; }
+  if (!FS.q.trim()) { FS.hits = null; FS.spots = null; FS.capped = false; FS.rev++; drawFiles(); return; }
   if (FS.mode === "name") { filesAsk("find", {q: FS.q}); return; }
   FS.seq = Math.max(FS.seq + 1, Date.now());
   filesAsk("spots", Object.assign({q: FS.q, seq: FS.seq}, FS.opt));
@@ -18884,7 +18916,8 @@ function filesBuild(box) {
   const search = el("div", {class: "fsearch"});
   const q = el("input", {type: "text", autocomplete: "off", spellcheck: "false",
     placeholder: T["files.find.ph"] || "Search this folder"});
-  q.oninput = () => { FS.q = q.value.trim(); filesSearchSoon(); };
+  // As typed: a space at either end is part of what is looked for
+  q.oninput = () => { FS.q = q.value; filesSearchSoon(); };
   search.append(q);
   const mode = el("div", {class: "fmode"});
   const modes = {};
@@ -22374,7 +22407,7 @@ if (REMOTE) {
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
         "&panes=1");
     } catch (e) { setTimeout(connectState, 1500); return; }
-    sws.onopen = () => { wsUp = true; connected(); };
+    sws.onopen = () => { wsUp = true; connected(); edLineBack(); };
     sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
     sws.onclose = () => { wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
     sws.onerror = () => { try { sws.close(); } catch (x) {} };
@@ -30331,6 +30364,115 @@ mod tests {
                 String::from_utf8_lossy(&done.stderr)
             ),
             Err(e) => eprintln!("node is missing, so the syntax check did not run ({e}). It runs in CI"),
+        }
+    }
+
+    /// The editor's saves and reloads, run as the page runs them: the real
+    /// functions are taken out of the page and driven through the orders of
+    /// events that lose typing when they are got wrong (an answer arriving
+    /// after more was typed, after the file was left, never; two reloads out
+    /// at once). Reading the page as text cannot show any of these.
+    #[test]
+    fn the_editor_never_calls_unsaved_typing_saved() {
+        const DRIVE: &str = r##"
+const fs = require("fs");
+const page = fs.readFileSync(process.argv[2], "utf8");
+// One declaration of the page, from its first line to its matching brace
+function piece(start) {
+  const at = page.indexOf(start);
+  if (at < 0) throw new Error("not in the page: " + start);
+  let depth = 0, i = page.indexOf("{", at);
+  for (; i < page.length; i++) {
+    if (page[i] === "{") depth++;
+    else if (page[i] === "}" && --depth === 0) break;
+  }
+  return page.slice(at, i + 1) + ";\n";
+}
+const wait = page.match(/const ED_SAVE_WAIT_MS = \d+;/)[0];
+const src = [
+  "const ED = {", "function edStash() {", "function editHeard(d) {", "function editWrite(opts) {",
+  "function edLineBack() {", "function editReload() {",
+].map(piece).join("") + wait;
+let text = "", rich = null, asks = [];
+const changed = () => { ED.dirty = text !== ED.text; };        // the editor's own change handler
+const type = t => { text = t; changed(); };
+const edAce = {
+  getValue: () => text, clearSelection() {}, moveCursorToPosition() {},
+  getCursorPosition: () => ({row: 0, column: 0}),
+  session: {doc: {setValue: v => { text = v; changed(); }}, getUndoManager: () => ({reset() {}}),
+            getScrollTop: () => 0, setScrollTop() {}},
+};
+const edDrafts = new Map(), edDraftKey = p => p, T = {};
+const drawEdit = () => {}, edGotoNow = () => {}, editorTab = () => ({id: "e"});
+const editAsk = (act, args) => asks.push({act, args});
+const edRead = () => editAsk("read", {path: ED.path});
+const mdRichFlush = () => { if (rich !== null) { text = rich; rich = null; changed(); } };
+eval(src + "; globalThis.ED = ED;");
+const say = (ok, why) => { if (!ok) { console.error("FAILED: " + why); process.exitCode = 1; } };
+const open = body => {
+  asks = []; text = ""; rich = null;
+  Object.assign(ED, {key: "e", path: "a.md", shown: null, dirty: false, outside: false, loading: true,
+    saving: null, saveNext: null, replace: false, exact: true});
+  editHeard({act: "read", ok: true, path: "a.md", mark: "m0", text: body});
+};
+const saved = (mark, more) => editHeard(Object.assign({act: "write", ok: true, path: "a.md", mark, tag: ED.saving && ED.saving.tag}, more || {}));
+const writes = () => asks.filter(a => a.act === "write");
+
+// 1. What is typed while a save is out is not what was saved
+open("A"); type("B"); editWrite({}); type("C"); saved("m1");
+say(ED.dirty && ED.text === "B" && ED.mark === "m1", "typing during a save was called saved");
+
+// 2. Save pressed again while one is out goes when the first answers, with the newer text and mark
+open("A"); type("B"); editWrite({}); type("C"); editWrite({});
+say(writes().length === 1, "two saves were out at once");
+saved("m1");
+say(writes().length === 2 && writes()[1].args.text === "C" && writes()[1].args.mark === "m1", "the waiting save did not go as typed");
+saved("m2");
+say(!ED.dirty && ED.text === "C", "everything saved still reads as unsaved");
+
+// 3. The answer of a save from before the file was left is nobody's
+open("A"); type("B"); editWrite({}); const old = ED.saving.tag;
+edStash(); type("C");
+editHeard({act: "write", ok: true, path: "a.md", mark: "m1", tag: old});
+say(ED.dirty && ED.text === "A", "an answer from before leaving the file called newer typing saved");
+
+// 4. An answer that never comes does not stop every later save
+open("A"); type("B"); editWrite({}); type("C"); editWrite({});
+edLineBack();
+say(writes().length === 2 && writes()[1].args.text === "C", "a lost answer left the next save waiting for ever");
+const lost = writes()[0].args.tag;
+editHeard({act: "write", ok: true, path: "a.md", mark: "mX", tag: lost});
+say(ED.saving && ED.text === "A", "the lost save's late answer was taken for the next one's");
+
+// 5. Two reloads out at once: neither reads over what was typed meanwhile
+open("A"); ED.loading = true; type("mine");
+editHeard({act: "read", ok: true, path: "a.md", mark: "m1", text: "theirs 1"});
+editHeard({act: "read", ok: true, path: "a.md", mark: "m2", text: "theirs 2"});
+say(text === "mine" && ED.outside && ED.mark === "m0", "a reload read over what was being typed");
+
+// 6. Reload is the person choosing the file
+editReload();
+editHeard({act: "read", ok: true, path: "a.md", mark: "m2", text: "theirs 2"});
+say(text === "theirs 2" && !ED.dirty && !ED.outside, "Reload kept the typing it was asked to drop");
+
+// 7. Words still in the visual editor count as typed, for a save waiting its turn
+open("A"); type("B"); editWrite({}); rich = "C"; editWrite({}); saved("m1");
+say(writes().length === 2 && writes()[1].args.text === "C", "the visual editor's words were left out of the waiting save");
+"##;
+        let page = super::page();
+        let dir = std::env::temp_dir();
+        let (pagefile, drive) = (
+            dir.join(format!("shikisha-ed-page-{}.html", std::process::id())),
+            dir.join(format!("shikisha-ed-drive-{}.js", std::process::id())),
+        );
+        std::fs::write(&pagefile, page).expect("could not write the page out");
+        std::fs::write(&drive, DRIVE).expect("could not write the script out");
+        let ran = std::process::Command::new("node").arg(&drive).arg(&pagefile).output();
+        let _ = std::fs::remove_file(&pagefile);
+        let _ = std::fs::remove_file(&drive);
+        match ran {
+            Ok(done) => assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr)),
+            Err(e) => eprintln!("node is missing, so the editor was not driven ({e}). It runs in CI"),
         }
     }
 

@@ -1181,7 +1181,11 @@ pub trait BrowserHost {
     fn go(&self, to: Option<&str>, go: Go) -> anyhow::Result<()>;
     fn focus(&self, to: Option<&str>) -> anyhow::Result<()>;
     fn ask_where(&self, to: Option<&str>) -> anyhow::Result<()>;
-    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> anyhow::Result<()>;
+    /// `sites` are the addresses the credentials may go to, written the way
+    /// a secret's allowed sites are: a challenge from anywhere else (another
+    /// site's picture on the page, a proxy, a page gone to later) is left
+    /// unanswered
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> anyhow::Result<()>;
     fn eval_in(&self, to: Option<&str>, js: &str) -> anyhow::Result<u64>;
     fn inject(&self, to: Option<&str>, input: Input) -> anyhow::Result<()>;
     fn screencast(&self, to: Option<&str>, on: bool) -> anyhow::Result<()>;
@@ -1236,6 +1240,9 @@ pub trait BrowserHost {
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
     fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<OpReport>;
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;
+    /// `fill`, made only while the page is still at the address `page`:
+    /// `None`, and nothing written, when it has gone somewhere else
+    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<OpReport>>;
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>>;
     /// Choose a value in a native dropdown, by the text a person reads
     fn select(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;

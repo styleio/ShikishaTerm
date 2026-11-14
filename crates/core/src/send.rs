@@ -241,20 +241,39 @@ pub struct PendingSend {
     pub went_wrong: bool,
 }
 
+/// Text as the bytes that paste it into a tab: its line ends as the Enter a
+/// terminal sends, and, where the program in the tab asked to be told what is
+/// a paste, wrapped in the marks that say so (multi-line text then arrives as
+/// one input, not a line run at each Enter).
+///
+/// Inside the marks no escape character is let through. The closing mark is
+/// itself an escape sequence, so text carrying one -- a web page copied, a
+/// message from a phone, another AI's answer -- would end the paste early and
+/// have its remainder typed and run as if by hand. Each is replaced by the
+/// picture of one (U+241B), the way terminals that guard against this do.
+///
+/// The one place this is built, for the clipboard and for every send
+pub fn paste_text(t: &Tab, text: &str) -> String {
+    let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
+    pasted(text, bracketed)
+}
+
+fn pasted(text: &str, bracketed: bool) -> String {
+    let body = text.replace("\r\n", "\r").replace('\n', "\r");
+    if bracketed {
+        format!("\x1b[200~{}\x1b[201~", body.replace('\x1b', "\u{241b}"))
+    } else {
+        body
+    }
+}
+
 /// The paste to hand a tab, cut into chunks small enough for it to swallow one
 /// at a time. Cut before encoding, so a character never straddles two writes.
 ///
 /// One place builds this, for every door that pastes into a tab: a person's
 /// line, an automated hand-off, and a draft left for someone to finish.
 pub fn paste_chunks(t: &Tab, text: &str) -> Vec<Vec<u8>> {
-    let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
-    let body = text.replace("\r\n", "\r").replace('\n', "\r");
-    // If bracketed paste is supported, multi-line text still arrives as a single input
-    let payload = if bracketed {
-        format!("\x1b[200~{body}\x1b[201~")
-    } else {
-        body
-    };
+    let payload = paste_text(t, text);
     let mut chunks = Vec::new();
     let mut rest = payload.as_str();
     while !rest.is_empty() {
@@ -366,5 +385,23 @@ impl PendingSend {
         } else {
             Step::Wait
         }
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::pasted;
+
+    /// The closing mark of a paste is an escape sequence, so a paste that
+    /// carries one would end itself and have the rest typed as if by hand
+    #[test]
+    fn a_paste_cannot_end_itself() {
+        let out = pasted("echo hi\x1b[201~\nrm -rf x\n", true);
+        assert!(out.starts_with("\x1b[200~") && out.ends_with("\x1b[201~"));
+        let body = &out[6..out.len() - 6];
+        assert!(!body.contains('\x1b'), "an escape got through: {body:?}");
+        assert!(body.contains("\u{241b}[201~"), "{body:?}");
+        // Not a paste to the program: the text goes as it is
+        assert_eq!(pasted("a\r\nb\x1b", false), "a\rb\x1b");
     }
 }

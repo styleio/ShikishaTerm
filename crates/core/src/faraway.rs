@@ -44,7 +44,15 @@ pub enum Ask {
     /// Where the page is now. The answer comes back as a report, not as an
     /// answer -- the same way it does from a window on this machine
     Where { to: Option<String> },
-    Auth { to: Option<String>, user: String, pass: String },
+    /// `sites`: where the credentials may go. Absent (an older sender) is
+    /// nowhere, which answers no challenge rather than every one
+    Auth {
+        to: Option<String>,
+        user: String,
+        pass: String,
+        #[serde(default)]
+        sites: Vec<String>,
+    },
     Inject { to: Option<String>, input: Input },
     Record { to: Option<String>, on: bool },
     RecordAllOff,
@@ -303,11 +311,12 @@ impl BrowserHost for Far {
         self.inner.tell(&Ask::Where { to: to.map(str::to_string) })
     }
 
-    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> anyhow::Result<()> {
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> anyhow::Result<()> {
         self.inner.tell(&Ask::Auth {
             to: to.map(str::to_string),
             user: user.to_string(),
             pass: pass.to_string(),
+            sites: sites.to_vec(),
         })
     }
 
@@ -342,6 +351,9 @@ impl BrowserHost for Far {
     }
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport> {
         crate::pageops::fill(self, to, sel, value, timeout_ms)
+    }
+    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<OpReport>> {
+        crate::pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)
@@ -477,7 +489,7 @@ pub fn perform<B: BrowserHost + Speaks>(ask: &Ask, browser: &B) -> (bool, serde_
         Ask::Go { to, go } => done(browser.go(to.as_deref(), go.clone())),
         Ask::Focus { to } => done(browser.focus(to.as_deref())),
         Ask::Where { to } => done(browser.ask_where(to.as_deref())),
-        Ask::Auth { to, user, pass } => done(browser.basic_auth(to.as_deref(), user, pass)),
+        Ask::Auth { to, user, pass, sites } => done(browser.basic_auth(to.as_deref(), user, pass, sites)),
         Ask::Inject { to, input } => done(browser.inject(to.as_deref(), input.clone())),
         Ask::Record { to, on } => done(browser.record(to.as_deref(), *on)),
         Ask::RecordAllOff => {
@@ -898,7 +910,7 @@ mod tests {
         fn go(&self, _t: Option<&str>, _g: Go) -> anyhow::Result<()> { Ok(()) }
         fn focus(&self, _t: Option<&str>) -> anyhow::Result<()> { Ok(()) }
         fn ask_where(&self, _t: Option<&str>) -> anyhow::Result<()> { Ok(()) }
-        fn basic_auth(&self, _t: Option<&str>, _u: &str, _p: &str) -> anyhow::Result<()> { Ok(()) }
+        fn basic_auth(&self, _t: Option<&str>, _u: &str, _p: &str, _s: &[String]) -> anyhow::Result<()> { Ok(()) }
         fn eval_in(&self, _t: Option<&str>, _js: &str) -> anyhow::Result<u64> { Ok(1) }
         fn inject(&self, _t: Option<&str>, _i: Input) -> anyhow::Result<()> { Ok(()) }
         fn screencast(&self, _t: Option<&str>, _o: bool) -> anyhow::Result<()> { Ok(()) }
@@ -907,6 +919,9 @@ mod tests {
         }
         fn click(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<OpReport> {
             crate::pageops::click(self, to, sel, ms)
+        }
+        fn fill_only_at(&self, to: Option<&str>, sel: &Sel, v: &str, page: &str, ms: u64) -> anyhow::Result<Option<OpReport>> {
+            crate::pageops::fill_only_at(self, to, sel, v, page, ms)
         }
         fn fill(&self, to: Option<&str>, sel: &Sel, v: &str, ms: u64) -> anyhow::Result<OpReport> {
             crate::pageops::fill(self, to, sel, v, ms)

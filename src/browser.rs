@@ -314,6 +314,8 @@ pub enum Cmd {
         to: Option<String>,
         user: String,
         pass: String,
+        /// Where they may go: a challenge from anywhere else is not answered
+        sites: Vec<String>,
     },
     /// Start or stop hearing a page's console. While on, every line it says
     /// comes back as `Ev::ConsoleLine`
@@ -960,6 +962,15 @@ impl Browser {
 
     /// Navigate a placed page
     pub fn go(&self, to: Option<&str>, go: Go) -> Result<()> {
+        // The same door as opening a page: the web only. `file:/C:/…`,
+        // `edge://`, `javascript:` and the rest are not addresses a tab goes
+        // to, however they are spelled (a file is served over HTTP before it
+        // gets here, by `Caps::browser_go`)
+        if let Go::To(url) = &go {
+            if !is_openable(url) {
+                return Err(anyhow!(shikisha_core::i18n::tp("err.browser.bad_url", &[("url", url)])));
+            }
+        }
         self.send(Cmd::Move {
             to: to.map(str::to_string),
             go,
@@ -999,8 +1010,9 @@ impl Browser {
 
     /// Arm basic auth. From then on, returns credentials for this page's
     /// 401s. user/pass are already resolved from secrets (only the caller touches them)
-    pub fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
+    pub fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> Result<()> {
         self.send(Cmd::BasicAuth {
+            sites: sites.to_vec(),
             to: to.map(str::to_string),
             user: user.to_string(),
             pass: pass.to_string(),
@@ -3035,8 +3047,8 @@ impl BrowserHost for Browser {
     }
     fn cancel_download(&self, id: &str) -> Result<()> { Browser::cancel_download(self, id) }
     fn find_keys(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::find_keys(self, to, on) }
-    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> Result<()> {
-        Browser::basic_auth(self, to, user, pass)
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> Result<()> {
+        Browser::basic_auth(self, to, user, pass, sites)
     }
     fn eval_in(&self, to: Option<&str>, js: &str) -> Result<u64> { Browser::eval_in(self, to, js) }
     fn inject(&self, to: Option<&str>, input: Input) -> Result<()> { Browser::inject(self, to, input) }
@@ -3061,6 +3073,9 @@ impl BrowserHost for Browser {
     }
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> Result<OpReport> {
         pageops::fill(self, to, sel, value, timeout_ms)
+    }
+    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> Result<Option<OpReport>> {
+        pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
         pageops::text(self, to, sel, timeout_ms)

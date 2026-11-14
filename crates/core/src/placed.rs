@@ -207,8 +207,8 @@ impl BrowserHost for Placed {
     fn ask_where(&self, to: Option<&str>) -> anyhow::Result<()> {
         self.on(to, |b| b.ask_where(to))
     }
-    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str) -> anyhow::Result<()> {
-        self.on(to, |b| b.basic_auth(to, user, pass))
+    fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> anyhow::Result<()> {
+        self.on(to, |b| b.basic_auth(to, user, pass, sites))
     }
     fn eval_in(&self, to: Option<&str>, js: &str) -> anyhow::Result<u64> {
         self.on(to, |b| b.eval_in(to, js))
@@ -246,6 +246,9 @@ impl BrowserHost for Placed {
     }
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, ms: u64) -> anyhow::Result<OpReport> {
         self.on(to, |b| b.fill(to, sel, value, ms))
+    }
+    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, ms: u64) -> anyhow::Result<Option<OpReport>> {
+        self.on(to, |b| b.fill_only_at(to, sel, value, page, ms))
     }
     fn text(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<Option<String>> {
         self.on(to, |b| b.text(to, sel, ms))

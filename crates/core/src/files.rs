@@ -117,15 +117,32 @@ pub fn to_bin(path: &Path) -> Result<(), String> {
     if meta.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.map_err(|e| e.to_string())
 }
 
-/// Whether two paths name one entry of the disk, as `readme.md` and
-/// `README.md` do where case is not told apart. A link is never the thing it
-/// points at: renaming onto it would replace it
+/// Whether two names in one folder are one entry of the disk, as
+/// `readme.md` and `README.md` are where case is not told apart.
+///
+/// Asked of the folder's own list, not of where the names lead: a folder
+/// that lists both names holds two entries, and one that lists only one of
+/// them (while both can be opened) is folding case. Nothing is followed, so
+/// a link is an entry like any other -- the same one under another case, and
+/// never the thing it points at
 pub fn same_entry(a: &Path, b: &Path) -> bool {
-    let plain = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink());
-    if !plain(a) || !plain(b) {
+    let (Some(dir), Some(name_a), Some(name_b)) = (a.parent(), a.file_name(), b.file_name()) else {
+        return false;
+    };
+    if b.parent() != Some(dir) || std::fs::symlink_metadata(a).is_err() || std::fs::symlink_metadata(b).is_err() {
         return false;
     }
-    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+    if name_a == name_b {
+        return true;
+    }
+    let Ok(rows) = std::fs::read_dir(dir) else { return false };
+    let (mut has_a, mut has_b) = (false, false);
+    for row in rows.flatten() {
+        let name = row.file_name();
+        has_a |= name == name_a;
+        has_b |= name == name_b;
+    }
+    !(has_a && has_b)
 }
 
 /// What the disk says about a file without reading it: when it was last
@@ -478,7 +495,13 @@ fn globs(list: &str) -> Vec<(bool, impl Fn(Dialect) -> String)> {
             let p = p.replace('\\', "/");
             let anchored = p.trim_end_matches('/').contains('/');
             let p: Vec<char> = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/').chars().collect();
-            (anchored, move |dialect: Dialect| glob_body(&p, dialect))
+            // A pattern that does not come out as an expression (`[z-a]`)
+            // names the file spelled exactly so, here and on another machine
+            // alike. Left out instead, a list of only such patterns would be
+            // an empty list, and an empty list of files to look in is every
+            // file
+            let sound = regex::Regex::new(&format!("^{}$", glob_body(&p, Dialect::Rust))).is_ok();
+            (anchored, move |dialect: Dialect| if sound { glob_body(&p, dialect) } else { literal_body(&p, dialect) })
         })
         .collect()
 }
@@ -516,11 +539,16 @@ fn split_patterns(list: &str) -> Vec<String> {
 }
 
 /// Whether the `{` at `at` opens a group that is closed further on. One that
-/// is not is a brace in a file's name
+/// is not is a brace in a file's name, and so is any brace inside a set
 fn group_closes(p: &[char], at: usize) -> bool {
     let mut depth = 0usize;
-    for c in &p[at..] {
-        match c {
+    let mut i = at;
+    while i < p.len() {
+        if let Some(end) = (p[i] == '[').then(|| class_end(p, i)).flatten() {
+            i = end + 1;
+            continue;
+        }
+        match p[i] {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
@@ -530,8 +558,20 @@ fn group_closes(p: &[char], at: usize) -> bool {
             }
             _ => {}
         }
+        i += 1;
     }
     false
+}
+
+/// A pattern taken letter for letter, as the body of an expression
+fn literal_body(p: &[char], dialect: Dialect) -> String {
+    p.iter()
+        .map(|c| match dialect {
+            Dialect::Rust => regex::escape(&c.to_string()),
+            Dialect::Posix if ".[]\\()*+?{}|^$".contains(*c) => format!("\\{c}"),
+            Dialect::Posix => c.to_string(),
+        })
+        .collect()
 }
 
 /// Where the set opened by the `[` at `at` ends, if it is one: a `]` right
@@ -549,10 +589,26 @@ fn class_end(p: &[char], at: usize) -> Option<usize> {
         match c {
             ']' => return Some(i),
             '/' => return None,
+            // A named class inside the set (`[[:digit:]]`) has a `]` of its
+            // own, which does not end the set
+            '[' if p.get(i + 1) == Some(&':') => match named_class_end(p, i) {
+                Some(end) => i = end + 1,
+                None => i += 1,
+            },
             _ => i += 1,
         }
     }
     None
+}
+
+/// Where the named class opened by the `[:` at `at` ends (the index of its
+/// closing `]`), if it is one: `[:alpha:]`
+fn named_class_end(p: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 2;
+    while p.get(i).is_some_and(|c| c.is_ascii_alphabetic()) {
+        i += 1;
+    }
+    (i > at + 2 && p.get(i) == Some(&':') && p.get(i + 1) == Some(&']')).then_some(i + 1)
 }
 
 /// One pattern as the body of a regular expression of a dialect
@@ -588,21 +644,42 @@ fn glob_body(p: &[char], dialect: Dialect) -> String {
             }
             '[' if class_end(p, i - 1).is_some() => {
                 let end = class_end(p, i - 1).unwrap_or(i);
-                re.push('[');
                 let mut inner = &p[i..end];
-                if let Some(('!' | '^', rest)) = inner.split_first() {
-                    re.push('^');
-                    inner = rest;
+                let not = matches!(inner.first(), Some('!' | '^'));
+                if not {
+                    inner = &inner[1..];
                 }
-                for &m in inner {
+                // "Not one of these" is still one character of a name: it
+                // never reaches over a slash into the next folder. Written
+                // as two tests side by side, since a slash cannot be added
+                // to a POSIX set that already holds a named class's `]`
+                re.push_str(match (not, rust) {
+                    (true, true) => "[[^/]&&[^",
+                    (true, false) => "[^",
+                    (false, _) => "[",
+                });
+                let mut k = 0usize;
+                while k < inner.len() {
+                    let m = inner[k];
+                    // A named class goes as it is, in both dialects
+                    if let Some(close) = (m == '[' && inner.get(k + 1) == Some(&':')).then(|| named_class_end(inner, k)).flatten() {
+                        re.extend(&inner[k..=close]);
+                        k = close + 1;
+                        continue;
+                    }
                     // POSIX takes every member as written; this program's
                     // expressions give these a meaning inside a set
-                    if rust && matches!(m, '\\' | '[' | '^' | '&' | '~') {
+                    if rust && matches!(m, '\\' | '[' | ']' | '^' | '&' | '~') {
                         re.push('\\');
                     }
                     re.push(m);
+                    k += 1;
                 }
-                re.push(']');
+                re.push_str(match (not, rust) {
+                    (true, true) => "]]",
+                    (true, false) => "/]",
+                    (false, _) => "]",
+                });
                 i = end + 1;
             }
             c if rust => re.push_str(&regex::escape(&c.to_string())),
@@ -825,18 +902,21 @@ fn read_whole(path: &Path) -> Read {
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return Read::Not;
     }
-    Read::Text(text_of(bytes))
+    Read::Text(text_of(bytes, false))
 }
 
 /// A file's bytes as the text the editor would show for them: UTF-8 when
 /// they are that (nearly every file, and the cheap test), else whatever they
 /// most likely are -- a word in a Shift_JIS file is found as it is read
-fn text_of(bytes: Vec<u8>) -> String {
+///
+/// `cut`: the bytes are a file's head, and stop where the reading stopped
+fn text_of(bytes: Vec<u8>, cut: bool) -> String {
     match String::from_utf8(bytes) {
         Ok(text) => text,
-        // Cut off in the middle of a character (only a file's head was
-        // read): UTF-8 all the same
-        Err(e) if e.utf8_error().error_len().is_none() => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        // The head ends in the middle of a character: UTF-8 all the same.
+        // (A whole file that ends so is not UTF-8: `caf` and one byte of
+        // windows-1252 is "café")
+        Err(e) if cut && e.utf8_error().error_len().is_none() => String::from_utf8_lossy(e.as_bytes()).into_owned(),
         Err(e) => crate::charset::read(e.as_bytes()).text,
     }
 }
@@ -1185,7 +1265,7 @@ fn read_head(path: &Path) -> Option<String> {
     let mut buf = vec![0u8; READ_CAP];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
-    Some(text_of(buf))
+    Some(text_of(buf, n == READ_CAP))
 }
 
 #[cfg(test)]
@@ -1236,6 +1316,25 @@ mod tests {
         // A brace or a bracket that closes nothing is a character of a name
         let odd = patterns("a{b, c[d");
         assert!(kept("a{b", &odd, &[]) && kept("c[d", &odd, &[]));
+        // "Not one of these" stays inside one name
+        let not = patterns("src/a[!x]b/*.rs");
+        assert!(kept("src/aYb/c.rs", &not, &[]) && !kept("src/a/b/c.rs", &not, &[]) && !kept("src/axb/c.rs", &not, &[]));
+        let far_not = posix_paths("src/a[!x]b").unwrap();
+        assert!(far_not.contains("a[^x/]b"), "{far_not}");
+        // A named class is a set like any other, here and there
+        let digit = patterns("[[:digit:]].txt, n[![:digit:]]");
+        assert!(kept("1.txt", &digit, &[]) && !kept("d].txt", &digit, &[]) && !kept("d.txt", &digit, &[]));
+        assert!(kept("na", &digit, &[]) && !kept("n1", &digit, &[]));
+        assert!(posix_paths("[[:digit:]].txt").unwrap().contains("[[:digit:]]\\.txt"));
+        // A brace inside a set is a member of the set
+        assert_eq!(split_patterns("{[{],a}, b"), ["{[{],a}", "b"]);
+        let in_set = patterns("{[{],a}x, {[}],b}y");
+        assert!(kept("{x", &in_set, &[]) && kept("ax", &in_set, &[]) && kept("}y", &in_set, &[]) && kept("by", &in_set, &[]));
+        // A pattern that is not an expression names its own spelling, and
+        // is never dropped: an empty list would be every file
+        let bad = patterns("[z-a]");
+        assert_eq!(bad.len(), 1);
+        assert!(kept("[z-a]", &bad, &[]) && !kept("m", &bad, &[]) && !kept("src/main.rs", &bad, &[]));
         // The other machine is asked for the same files
         let far = posix_paths("*.{ts,tsx}").unwrap();
         assert!(far.contains("\\.(ts|tsx)"), "{far}");
@@ -1252,10 +1351,12 @@ mod tests {
     fn a_file_that_is_not_utf8_is_read_as_the_editor_reads_it() {
         // "日本語" in Shift_JIS
         let sjis = vec![0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, b'\n', b'a', b'b', b'c'];
-        assert!(text_of(sjis).contains("\u{65e5}\u{672c}\u{8a9e}"));
+        assert!(text_of(sjis, false).contains("\u{65e5}\u{672c}\u{8a9e}"));
         // A head cut in the middle of a character stays UTF-8
         let cut = "\u{65e5}\u{672c}".as_bytes()[..5].to_vec();
-        assert!(text_of(cut).starts_with('\u{65e5}'));
+        assert!(text_of(cut, true).starts_with('\u{65e5}'));
+        // A whole file that ends in a lone high byte is not UTF-8 cut short
+        assert_eq!(text_of(vec![b'c', b'a', b'f', 0xe9], false), "caf\u{e9}");
     }
 
     #[test]
@@ -1272,6 +1373,15 @@ mod tests {
         std::fs::write(&other, "y").unwrap();
         assert!(!same_entry(&a, &other));
         assert!(same_entry(&a, &a));
+        // A link is an entry like any other: the same one under another
+        // case where case folds, and never the file it points at
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.md");
+            std::os::unix::fs::symlink(&a, &link).unwrap();
+            assert!(!same_entry(&link, &a), "a link was taken for what it points at");
+            assert_eq!(same_entry(&link, &dir.join("LINK.md")), dir.join("LINK.md").exists());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

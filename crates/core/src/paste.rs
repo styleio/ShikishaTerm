@@ -24,16 +24,7 @@ pub fn clipboard_into(t: &Tab) -> anyhow::Result<Option<String>> {
     }
     match got {
         Ok(text) => {
-            let bracketed = t.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().bracketed_paste();
-            let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
-            if bracketed {
-                let mut bytes = b"\x1b[200~".to_vec();
-                bytes.extend_from_slice(normalized.as_bytes());
-                bytes.extend_from_slice(b"\x1b[201~");
-                t.write_bytes(&bytes)?;
-            } else {
-                t.write_bytes(normalized.as_bytes())?;
-            }
+            t.write_bytes(crate::send::paste_text(t, &text).as_bytes())?;
             Ok(None)
         }
         Err(e) => Ok(Some(crate::i18n::tp("msg.paste_failed", &[("error", &e.to_string())]))),
