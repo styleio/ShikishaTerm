@@ -379,6 +379,9 @@ fn cli_help(prog: &str) -> Result<String, String> {
     let argv = crate::tab::launch_argv(&[prog.to_string(), "--help".into()]);
     let mut cmd = Command::new(&argv[0]);
     cmd.args(&argv[1..]);
+    for name in crate::tab::STARTER_ENV {
+        cmd.env_remove(name);
+    }
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     crate::detach_console(&mut cmd);
     let (tx, rx) = mpsc::channel();
@@ -1062,6 +1065,10 @@ fn run_in_own_folder(
         std::fs::write(dir.join(file), body)?;
     }
     let mut spawner = std::process::Command::new(&cmd);
+    // A CLI asked one question from here is nobody's child session
+    for name in crate::tab::STARTER_ENV {
+        spawner.env_remove(name);
+    }
     spawner
         .args(&args)
         .current_dir(&dir)

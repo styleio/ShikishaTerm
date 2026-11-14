@@ -2425,6 +2425,11 @@ pub fn site_allows(sites: &[String], url: &str) -> bool {
     sites.iter().filter_map(|u| Place::entry(u)).any(|e| e.covers(&page))
 }
 
+/// The entries of `sites` that name a whole site: no path, or `/`
+pub fn whole_sites(sites: &[String]) -> Vec<String> {
+    sites.iter().filter(|u| Place::entry(u).is_some_and(|e| e.path == "/")).cloned().collect()
+}
+
 /// Whether a password challenge (CDP's `Fetch.authRequired`) is one the
 /// armed credentials may answer: the server of the request itself asked (not
 /// a proxy on the way), and the request is to an allowed site
@@ -11106,6 +11111,16 @@ mod tests {
         assert!(!challenge_allowed(&sites, &ask("Server", "http://staging.example.com/admin")), "the plain-text twin");
         assert!(!challenge_allowed(&[], &ask("Server", "https://staging.example.com/")), "no site named is nowhere");
         assert!(!challenge_allowed(&sites, &serde_json::json!({"requestId": "1"})), "a challenge that says nothing of itself");
+    }
+
+    /// A password prompt is answered for a whole site, so only an entry
+    /// that allows a whole site can stand behind one
+    #[test]
+    fn only_a_whole_site_can_answer_a_password_prompt() {
+        let sites: Vec<String> =
+            ["https://a.example.com", "https://b.example.com/", "https://c.example.com/private", "http://d.local/x/*"].map(String::from).to_vec();
+        assert_eq!(whole_sites(&sites), ["https://a.example.com", "https://b.example.com/"]);
+        assert!(!site_allows(&whole_sites(&sites), "https://c.example.com/private/page"));
     }
 
     /// What is offered for deletion is only what nothing claims. Getting this

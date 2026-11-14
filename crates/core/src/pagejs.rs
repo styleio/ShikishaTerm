@@ -195,29 +195,14 @@ pub const AUTOMATION: &str = r##"
     return "visible";
   };
 
-  window.__shikisha_fill = function (sel, value, deadline_ms) {
-    return fillWhere(sel, value, null, deadline_ms);
-  };
-
-  // The same write, made only while this document is still the page at
-  // `page`. The address is read after every wait and immediately before the
-  // write, in the document being written to, so a page that went somewhere
-  // else in between is never typed into: it answers "moved" instead
-  window.__shikisha_fill_at = function (sel, value, page, deadline_ms) {
-    return fillWhere(sel, value, String(page), deadline_ms);
-  };
-
-  async function fillWhere(sel, value, page, deadline_ms) {
+  window.__shikisha_fill = async function (sel, value, deadline_ms) {
     const deadline = performance.now() + (deadline_ms || 4000);
-    const here = () => page === null || location.href === page;
-    if (!here()) return "moved";
     const el = await window.__shikisha_resolve(sel, deadline);
-    if (!el) return here() ? "not_found" : "moved";
+    if (!el) return "not_found";
     await window.__shikisha_ready(el, {
       deadline: deadline - performance.now(),
       enabled: true,
     });
-    if (!here()) return "moved";
     el.focus();
     if (el.isContentEditable) {
       el.textContent = value;
@@ -238,7 +223,7 @@ pub const AUTOMATION: &str = r##"
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     return "visible";
-  }
+  };
 
   window.__shikisha_html = function () {
     return document.documentElement.outerHTML;

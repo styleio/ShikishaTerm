@@ -64,6 +64,7 @@ fn listed(model: &str) -> Option<Price> {
     let fast = |rate: Rate| Price { rate, long: None, fast: Some(2.0) };
     let long_openai = |rate: Rate, over: Rate| Price { rate, long: Some((BANDS[1], over)), fast: None };
     Some(match model {
+        "claude-fable-5-2" | "claude-mythos-5-2" => plain(claude(8.0, 10.0, 16.0, 0.2, 40.0)),
         "claude-fable-5-1" | "claude-mythos-5-1" => plain(claude(10.0, 12.5, 20.0, 0.25, 50.0)),
         "claude-fable-5" | "claude-mythos-5" => plain(claude(10.0, 12.5, 20.0, 1.0, 50.0)),
         "claude-opus-5-5" => fast(claude(4.0, 5.0, 8.0, 0.2, 20.0)),

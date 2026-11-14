@@ -17090,10 +17090,16 @@ function edStash() {
   // The editor is leaving this file: the answer of a save still out is not
   // shown here any more, so nothing waits for it
   ED.saving = null; ED.saveNext = null; ED.replace = false;
-  if (!ED.path || !ED.dirty || !edAce) return;
-  edDrafts.set(edDraftKey(ED.path),
-    {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
-     encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked});
+  if (ED.path && ED.dirty && edAce) {
+    edDrafts.set(edDraftKey(ED.path),
+      {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
+       encoding: ED.encoding, exact: ED.exact, encPicked: ED.encPicked});
+  }
+  // Nothing of this file is on screen as far as the next read is concerned:
+  // what was typed is in the draft now. Left set, a file of the same name in
+  // another editor tab (two projects' README.md) would be taken for this
+  // one, and its text kept out to protect typing that is not its own
+  ED.shown = null; ED.dirty = false;
 }
 // Read the file again, in the encoding somebody chose for it if they did
 function edRead() {
@@ -17294,7 +17300,15 @@ function editWrite(opts) {
   // as it is when its turn comes. A save whose answer never came (the line
   // dropped under it) stops being waited for after a while: the next one
   // goes with the same mark, and is refused if the lost one did land
-  if (ED.saving && Date.now() - ED.saving.at < ED_SAVE_WAIT_MS) { ED.saveNext = opts; return; }
+  const waited = ED.saving ? Date.now() - ED.saving.at : 0;
+  if (ED.saving && waited < ED_SAVE_WAIT_MS) {
+    ED.saveNext = opts;
+    // ...and it goes by itself once the wait is over, with nothing more
+    // pressed: a save that was asked for is not left lying
+    const again = setTimeout(() => { if (ED.saveNext) editWrite(ED.saveNext); }, ED_SAVE_WAIT_MS - waited + 50);
+    if (again && again.unref) again.unref();
+    return;
+  }
   // Read in an encoding that lost characters: saving writes the loss into the
   // file, so it is asked before anything is sent
   if (!ED.exact && !opts.lossy) {
@@ -17304,7 +17318,10 @@ function editWrite(opts) {
   }
   ED.asked = opts;
   const text = edAce ? edAce.getValue() : ED.text;
-  const tag = ++ED.saveTag;
+  // This page's own, so the answer to another page's save of the same file
+  // (the phone and the PC both have it open, and both hear every answer) is
+  // never taken for this one's
+  const tag = ED_PAGE + ":" + (++ED.saveTag);
   ED.saving = {text, tag, at: Date.now()};
   ED.saveNext = null;
   // Rule 2: the mark says what we were given. The app refuses the write if the
@@ -17314,8 +17331,12 @@ function editWrite(opts) {
 }
 // How long a save's answer is waited for before the next save may go: longer
 // than a save to another machine takes on a slow line (a read, a write and a
-// look, each with its own limit)
-const ED_SAVE_WAIT_MS = 45000;
+// look, each allowed 45 seconds). A save sent while an earlier one is still
+// being carried out waits its turn in the app, file by file, and is refused
+// there if the earlier one changed the file
+const ED_SAVE_WAIT_MS = 150000;
+// What marks this page's saves among every page's
+const ED_PAGE = Math.random().toString(36).slice(2, 10);
 // The line to the app came back after a drop: an answer sent while it was
 // down is not coming. A save that was waiting behind one goes now
 function edLineBack() {
@@ -30388,7 +30409,7 @@ function piece(start) {
   }
   return page.slice(at, i + 1) + ";\n";
 }
-const wait = page.match(/const ED_SAVE_WAIT_MS = \d+;/)[0];
+const wait = page.match(/const ED_SAVE_WAIT_MS = \d+;/)[0] + page.match(/const ED_PAGE = [^;]+;/)[0];
 const src = [
   "const ED = {", "function edStash() {", "function editHeard(d) {", "function editWrite(opts) {",
   "function edLineBack() {", "function editReload() {",
@@ -30402,7 +30423,7 @@ const edAce = {
   session: {doc: {setValue: v => { text = v; changed(); }}, getUndoManager: () => ({reset() {}}),
             getScrollTop: () => 0, setScrollTop() {}},
 };
-const edDrafts = new Map(), edDraftKey = p => p, T = {};
+const edDrafts = new Map(), edDraftKey = p => JSON.stringify([ED.key, p]), T = {};
 const drawEdit = () => {}, edGotoNow = () => {}, editorTab = () => ({id: "e"});
 const editAsk = (act, args) => asks.push({act, args});
 const edRead = () => editAsk("read", {path: ED.path});
@@ -30458,6 +30479,18 @@ say(text === "theirs 2" && !ED.dirty && !ED.outside, "Reload kept the typing it 
 // 7. Words still in the visual editor count as typed, for a save waiting its turn
 open("A"); type("B"); editWrite({}); rich = "C"; editWrite({}); saved("m1");
 say(writes().length === 2 && writes()[1].args.text === "C", "the visual editor's words were left out of the waiting save");
+
+// 8. Another page's save of the same file (the phone's, heard here too) is not this page's
+open("A"); type("B"); editWrite({});
+editHeard({act: "write", ok: true, path: "a.md", mark: "mP", tag: "another-page:1"});
+say(ED.saving && ED.dirty && ED.mark === "m0", "another page's saved answer was taken for this page's");
+say(String(writes()[0].args.tag).includes(":"), "a save's tag does not name its page");
+
+// 9. A file of the same name in another editor tab is read, not kept out
+open("A"); type("unsaved in the first tab");
+edStash(); ED.key = "other"; ED.path = "a.md"; ED.loading = true;
+editHeard({act: "read", ok: true, path: "a.md", mark: "n0", text: "the other tab's file"});
+say(text === "the other tab's file" && !ED.dirty && !ED.outside && ED.mark === "n0", "the other tab's file was kept out by the first tab's typing");
 "##;
         let page = super::page();
         let dir = std::env::temp_dir();

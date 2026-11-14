@@ -137,7 +137,11 @@ pub fn same_entry(a: &Path, b: &Path) -> bool {
     }
     let Ok(rows) = std::fs::read_dir(dir) else { return false };
     let (mut has_a, mut has_b) = (false, false);
-    for row in rows.flatten() {
+    for row in rows {
+        // A list that stops part of the way through proves nothing about
+        // the names it did not get to, and "the same entry" is the answer
+        // that lets a rename go ahead
+        let Ok(row) = row else { return false };
         let name = row.file_name();
         has_a |= name == name_a;
         has_b |= name == name_b;
@@ -659,6 +663,17 @@ fn glob_body(p: &[char], dialect: Dialect) -> String {
                     (false, _) => "[",
                 });
                 let mut k = 0usize;
+                // In a POSIX set the slash goes in front, where it is only
+                // ever a member: at the end it would make a range of a
+                // closing `-` (`[^a-/]`). A `]` that is a member has to
+                // stay first, so the slash follows that one
+                if not && !rust {
+                    if inner.first() == Some(&']') {
+                        re.push(']');
+                        k = 1;
+                    }
+                    re.push('/');
+                }
                 while k < inner.len() {
                     let m = inner[k];
                     // A named class goes as it is, in both dialects
@@ -675,11 +690,7 @@ fn glob_body(p: &[char], dialect: Dialect) -> String {
                     re.push(m);
                     k += 1;
                 }
-                re.push_str(match (not, rust) {
-                    (true, true) => "]]",
-                    (true, false) => "/]",
-                    (false, _) => "]",
-                });
+                re.push_str(if not && rust { "]]" } else { "]" });
                 i = end + 1;
             }
             c if rust => re.push_str(&regex::escape(&c.to_string())),
@@ -1262,10 +1273,13 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
 fn read_head(path: &Path) -> Option<String> {
     use std::io::Read as _;
     let mut f = std::fs::File::open(path).ok()?;
-    let mut buf = vec![0u8; READ_CAP];
-    let n = f.read(&mut buf).ok()?;
-    buf.truncate(n);
-    Some(text_of(buf, n == READ_CAP))
+    // One byte past the cap, to tell a file that ends exactly there from one
+    // that goes on: only the second was cut
+    let mut buf = Vec::with_capacity(READ_CAP + 1);
+    f.by_ref().take(READ_CAP as u64 + 1).read_to_end(&mut buf).ok()?;
+    let cut = buf.len() > READ_CAP;
+    buf.truncate(READ_CAP);
+    Some(text_of(buf, cut))
 }
 
 #[cfg(test)]
@@ -1320,7 +1334,13 @@ mod tests {
         let not = patterns("src/a[!x]b/*.rs");
         assert!(kept("src/aYb/c.rs", &not, &[]) && !kept("src/a/b/c.rs", &not, &[]) && !kept("src/axb/c.rs", &not, &[]));
         let far_not = posix_paths("src/a[!x]b").unwrap();
-        assert!(far_not.contains("a[^x/]b"), "{far_not}");
+        assert!(far_not.contains("a[^/x]b"), "{far_not}");
+        // ...and a `-` or a `]` that is a member stays one beside the slash
+        assert!(posix_paths("n[!a-]").unwrap().contains("n[^/a-]"));
+        assert!(posix_paths("n[!]a]").unwrap().contains("n[^]/a]"));
+        let dash = patterns("n[!a-], m[!]a]");
+        assert!(kept("nb", &dash, &[]) && !kept("na", &dash, &[]) && !kept("n-", &dash, &[]));
+        assert!(kept("mb", &dash, &[]) && !kept("m]", &dash, &[]) && !kept("ma", &dash, &[]));
         // A named class is a set like any other, here and there
         let digit = patterns("[[:digit:]].txt, n[![:digit:]]");
         assert!(kept("1.txt", &digit, &[]) && !kept("d].txt", &digit, &[]) && !kept("d.txt", &digit, &[]));

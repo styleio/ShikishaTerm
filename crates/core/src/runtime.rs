@@ -16661,7 +16661,10 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                         to_live(t);
                         finish_paste(&mut pending_send, t, now_ms);
                         record_keys(t, text.as_bytes(), device);
-                        if let Err(e) = t.write_bytes(text.as_bytes()) {
+                        // As a paste, where the program in the tab asked to
+                        // be told what is one: several lines are then one
+                        // input, not a line run at each Enter
+                        if let Err(e) = t.write_bytes(crate::send::paste_text(t, &text).as_bytes()) {
                             flash = Some(not_typed(&e));
                         }
                     }
@@ -17535,6 +17538,18 @@ fn tagged_text(js: String, args: &serde_json::Value) -> String {
         }
         _ => js,
     }
+}
+
+/// The turn to save one file on another machine: held from the look at its
+/// mark to the end of the write, by whichever save got there first
+fn far_file_turn(machine: &str, path: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static TURNS: std::sync::Mutex<Option<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>> = std::sync::Mutex::new(None);
+    let mut turns = TURNS.lock().unwrap_or_else(|e| e.into_inner());
+    let turns = turns.get_or_insert_with(std::collections::HashMap::new);
+    // The ones nobody holds or waits for are let go, so the table is as
+    // long as the saves under way
+    turns.retain(|_, turn| std::sync::Arc::strong_count(turn) > 1);
+    turns.entry(format!("{machine}\n{path}")).or_default().clone()
 }
 
 /// Put the `tag` a page sent with what it asked onto the answer, so the page
@@ -18646,7 +18661,15 @@ fn files_there(
             };
             let had = str_of("mark");
             let (panel, args) = (panel.clone(), args.clone());
+            let turn = far_file_turn(&at.machine_key(), &path);
             std::thread::spawn(move || {
+                // Looking at the mark and writing are two trips to the
+                // machine. Two saves of one file at once (a page that came
+                // back from a dropped line sends the next while the last is
+                // still being carried out) would both look, both see the old
+                // mark, and write in either order. One at a time, the second
+                // sees what the first wrote and is refused
+                let _mine = turn.lock().unwrap_or_else(|e| e.into_inner());
                 if !had.is_empty() {
                     let now = match crate::elsewhere::files(&at, check, SFTP_WAIT_MS) {
                         Ok(ssh::FileAnswer::Bytes(b)) => crate::files::mark_of(&b),

@@ -349,7 +349,12 @@ pub fn public_key() -> Result<String, String> {
 // ── The subscriptions ───────────────────────────────────────────────────────
 
 pub fn subs() -> Vec<Sub> {
-    subs_to_write().unwrap_or_default()
+    // Only looking: a file that is not a list is nobody, and stays where it is
+    std::fs::read_to_string(subs_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<Vec<serde_json::Value>>(&t).ok())
+        .map(|rows| rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+        .unwrap_or_default()
 }
 
 /// The list for somebody about to write it back: `None` when the file is
@@ -365,8 +370,25 @@ fn subs_to_write() -> Option<Vec<Sub>> {
             return None;
         }
     };
-    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
-    Some(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect())
+    match serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+        Ok(rows) => Some(rows.into_iter().filter_map(|row| serde_json::from_value(row).ok()).collect()),
+        // Not a list at all: put aside under another name before a new one
+        // is begun, and left alone if it cannot be
+        Err(_) => {
+            let path = subs_path();
+            let aside = path.with_extension(format!("unreadable-{}.json", crate::sqlite::now_ms()));
+            match std::fs::rename(&path, &aside) {
+                Ok(()) => {
+                    crate::append_hook_log(&format!("push: {} is not a list of registrations; kept as {}", path.display(), aside.display()));
+                    Some(Vec::new())
+                }
+                Err(e) => {
+                    crate::append_hook_log(&format!("push: {} is not a list of registrations and could not be put aside: {e}", path.display()));
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn write_subs(list: &[Sub]) {
@@ -562,7 +584,12 @@ struct Message<'a> {
 /// final: a push service having a bad minute is not a reason to lose a phone.
 pub fn send(title: &str, body: &str, url: Option<&str>) -> Result<usize, String> {
     // Never to a device that is no longer let in, whichever way its key went
-    let book = crate::clients::load();
+    // The list of devices could not be read this once: nobody can be told
+    // from somebody shut out, so nothing is sent and, above all, nothing is
+    // forgotten. The next notice finds the list again
+    let Some(book) = crate::clients::load_surely() else {
+        return Err(crate::i18n::t("err.push.nobody"));
+    };
     let (list, shut_out): (Vec<Sub>, Vec<Sub>) = subs().into_iter().partition(|s| s.still_let_in(&book));
     for s in &shut_out {
         crate::append_hook_log(&format!("push: {} belongs to a device no longer let in; forgetting it", s.endpoint));

@@ -1659,8 +1659,8 @@ impl shikisha_shared::BrowserHost for Pages {
     fn fill(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, timeout_ms: u64) -> anyhow::Result<shikisha_shared::OpReport> {
         crate::pageops::fill(self, to, sel, value, timeout_ms)
     }
-    fn fill_only_at(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<shikisha_shared::OpReport>> {
-        crate::pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
+    fn fill_only_on(&self, to: Option<&str>, sel: &shikisha_shared::Sel, value: &str, sites: &[String], timeout_ms: u64) -> anyhow::Result<shikisha_shared::SecretFill> {
+        crate::pageops::fill_only_on(self, to, sel, value, sites, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &shikisha_shared::Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)
@@ -2358,6 +2358,142 @@ mod tests {
         }
         None
     }
+
+    /// A stored password goes into the page it belongs to and nowhere else,
+    /// whatever the page says about itself. Each case here is a way it got
+    /// out before: a page that answers "where are you?" with a lie and takes
+    /// what the helper is handed, a field inside another site's frame, a
+    /// page that goes elsewhere while the field is waited for
+    #[test]
+    #[ignore = "needs a browser on this machine"]
+    fn a_stored_password_goes_only_into_the_page_it_belongs_to() {
+        use crate::pageops::Speaks as _;
+        use shikisha_shared::{BrowserHost, BrowserProfile, Found, Go, SecretFill, Sel};
+
+        assert!(found().is_some(), "this machine has no browser");
+        // Two sites: the one the password belongs to, and somebody else's
+        let other = site_of(|_, _| OTHERS.to_string());
+        let theirs = other.clone();
+        let mine = site_of(move |path, me| match path {
+            p if p.starts_with("/hop") => {
+                let to = format!("{theirs}?as={me}");
+                format!("<!doctype html><body><script>setTimeout(() => location.href = {to:?}, 400)</script>")
+            }
+            _ => MINE.replace("OTHER", &theirs),
+        });
+        let sites = vec![mine.trim_end_matches('/').to_string()];
+        let store = std::env::temp_dir().join(format!("shikisha-secret-{}", crate::random_hex(8)));
+        let pages = Pages::under(store, true);
+        let t = 10_000;
+        let secret = "S3cret-not-for-others";
+        let said = |js: &str| pages.eval(Some("p"), js, t).unwrap_or_default();
+        // What a field holds, asked without any helper the page could have replaced
+        let holds = |css: &str| {
+            let ask = format!("(e => e ? String(e.value ?? e.textContent) : null)(document.querySelector({css:?}))");
+            pages
+                .cdp(Some("p"), "Runtime.evaluate", serde_json::json!({ "expression": ask, "returnByValue": true }), t)
+                .ok()
+                .and_then(|v| v.pointer("/result/value").and_then(|x| x.as_str()).map(str::to_string))
+        };
+        pages.open_child("p", &mine, (0, 0, 900, 700), BrowserProfile::shared_default()).expect("the page does not open");
+        wait_ready(&pages).expect("the page does not report that loading finished");
+
+        // The page has replaced the helpers every other operation calls, to
+        // say it is somewhere allowed and to keep what it is handed. The
+        // password is written all the same, and the page's script saw none
+        // of it on the way
+        assert!(said("return String(window.__shikisha_href())").contains("allowed.example"), "the page's lie is not in place");
+        let done = pages.fill_only_on(Some("p"), &Sel::Css("#pw".into()), secret, &sites, t).unwrap();
+        assert!(matches!(done, SecretFill::Done(ref r) if r.state == Found::Visible), "{done:?}");
+        assert_eq!(holds("#pw").as_deref(), Some(secret));
+        assert_eq!(said("return String(window.__taken)"), "\"undefined\"", "the page's own script was handed the password");
+        assert_eq!(said("return String(window.__heard)"), "\"input\"", "the page was not told its field changed");
+
+        // Not a field: said, not written around
+        let err = pages.fill_only_on(Some("p"), &Sel::Css("#label".into()), secret, &sites, t).unwrap_err().to_string();
+        assert!(!err.is_empty());
+        assert_eq!(holds("#label").as_deref(), Some("a label"));
+
+        // A field inside the other site's frame, named by its ref: refused
+        // (its node is looked up in the browser and handed out as ref 1, the
+        // way a digest that reaches into frames hands it out)
+        let framed_field = (0..50)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let doc = pages.cdp(Some("p"), "DOM.getDocument", serde_json::json!({ "depth": -1, "pierce": true }), t).ok()?;
+                fn find(n: &serde_json::Value) -> Option<i64> {
+                    let named = n.get("attributes").and_then(|a| a.as_array()).is_some_and(|a| a.iter().any(|v| v == "in-the-frame"));
+                    if named {
+                        return n.get("backendNodeId").and_then(serde_json::Value::as_i64);
+                    }
+                    ["children", "contentDocument", "shadowRoots"].iter().find_map(|k| match n.get(*k) {
+                        Some(serde_json::Value::Array(kids)) => kids.iter().find_map(find),
+                        Some(one) => find(one),
+                        None => None,
+                    })
+                }
+                find(doc.get("root")?)
+            })
+            .expect("the frame never loaded its field");
+        pages.refs().lock().unwrap().insert(Some("p".to_string()), vec![framed_field]);
+        let n = 1;
+        let framed = pages.fill_only_on(Some("p"), &Sel::Ref(n), secret, &sites, t);
+        assert!(framed.is_err(), "a password went into another site's frame: {framed:?}");
+
+        // A page that goes to the other site while the field is waited for:
+        // the field turns up there, and stays empty
+        pages.go(Some("p"), Go::To(format!("{mine}hop"))).unwrap();
+        let went = pages.fill_only_on(Some("p"), &Sel::Css("#late".into()), secret, &sites, t).unwrap();
+        assert!(matches!(went, SecretFill::WrongSite(ref at) if at.starts_with(&other)), "{went:?}");
+        assert_eq!(holds("#late").as_deref(), Some(""), "the password followed the page to another site");
+
+        // ...and on the other site, saying it is the first one changes nothing
+        assert!(said("return String(window.__shikisha_href())").starts_with(&format!("\"{}", mine.trim_end_matches('/'))), "the page's lie is not in place");
+        let lied = pages.fill_only_on(Some("p"), &Sel::Css("#late".into()), secret, &sites, 3_000).unwrap();
+        assert!(matches!(lied, SecretFill::WrongSite(_)), "{lied:?}");
+        assert_eq!(holds("#late").as_deref(), Some(""));
+    }
+
+    /// A site on 127.0.0.1 whose pages are whatever `page` writes for a path
+    /// (and its own address, known only once it is up)
+    fn site_of(page: impl Fn(&str, &str) -> String + Send + 'static) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let at = format!("http://127.0.0.1:{}/", server.server_addr().to_ip().unwrap().port());
+        let me = at.clone();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let body = page(req.url(), &me).replace("SELF", me.trim_end_matches('/'));
+                let _ = req.respond(tiny_http::Response::from_string(body).with_header(
+                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]).unwrap(),
+                ));
+            }
+        });
+        at
+    }
+
+    /// The page the password belongs to -- which also does what a hostile
+    /// page would: replaces the helpers, and embeds another site
+    const MINE: &str = r#"<!doctype html><meta charset=utf-8><title>mine</title><body>
+<input id=pw type=password oninput="window.__heard = 'input'">
+<div id=label tabindex=0>a label</div>
+<iframe src="OTHERframe" width=300 height=80></iframe>
+<script>
+  window.__shikisha_href = () => "https://allowed.example/";
+  for (const name of ["__shikisha_fill", "__shikisha_fill_at", "__shikisha_q", "__shikisha_resolve"]) {
+    window[name] = function () { window.__taken = Array.from(arguments).join("|"); return "visible"; };
+  }
+</script>
+"#;
+
+    /// Somebody else's site: a field waiting to be filled, a frame's worth
+    /// of one, and the claim to be the first site
+    const OTHERS: &str = r#"<!doctype html><meta charset=utf-8><title>other</title><body>
+<input id=late placeholder="in-the-frame">
+<script>
+  const first = new URLSearchParams(location.search).get("as") || document.referrer || "";
+  window.__shikisha_href = () => (first || "http://127.0.0.1/").replace(/\/[^/]*$/, "") + "/";
+</script>
+"#;
 
     /// A site of two pages on 127.0.0.1, which is what the browser is pointed
     /// at: `data:` and `file:` are not pages a runtime will open, and a test

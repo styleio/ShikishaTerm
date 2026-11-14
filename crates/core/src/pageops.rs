@@ -114,22 +114,9 @@ pub fn act_with_wait(
     s: &dyn Speaks,
     to: Option<&str>,
     func: &str,
-    args: Vec<serde_json::Value>,
-    timeout_ms: u64,
-) -> anyhow::Result<Found> {
-    Ok(act_until(s, to, func, args, timeout_ms, None)?.unwrap_or(Found::NotFound))
-}
-
-/// [`act_with_wait`], with one answer of the page's that ends the wait at
-/// once: `None` comes back when the page said `stop`
-fn act_until(
-    s: &dyn Speaks,
-    to: Option<&str>,
-    func: &str,
     mut args: Vec<serde_json::Value>,
     timeout_ms: u64,
-    stop: Option<&str>,
-) -> anyhow::Result<Option<Found>> {
+) -> anyhow::Result<Found> {
     const SLICE_MS: u64 = 1_200;
     // The JS answers a bit before the slice so the result beats the wait
     const CUSHION_MS: u64 = 300;
@@ -142,7 +129,7 @@ fn act_until(
         if left < CUSHION_MS + 100 {
             return match last_err {
                 Some(e) => Err(e),
-                None => Ok(Some(Found::NotFound)),
+                None => Ok(Found::NotFound),
             };
         }
         let slice = left.min(SLICE_MS);
@@ -150,13 +137,12 @@ fn act_until(
         let res = call(s, to, func, &args, slice + CUSHION_MS);
         args.pop();
         match res {
-            Ok(v) if stop.is_some_and(|word| v.trim_matches('"') == word) => return Ok(None),
             Ok(v) => match Found::parse(&v) {
                 Found::NotFound => {
                     last_err = None;
                     continue;
                 }
-                found => return Ok(Some(found)),
+                found => return Ok(found),
             },
             // Mid-navigation the evaluation context dies — that's the
             // moment auto-wait exists for, not a failure yet. Pace the
@@ -214,44 +200,189 @@ pub fn fill(
     Ok(OpReport::bare(out?))
 }
 
-/// [`fill`], made only while the page is still at `page`: `None` when it
-/// has gone somewhere else, with nothing written.
+/// Put a value that belongs to certain sites only (a stored password) into
+/// a field, and only while the page is one of those sites.
 ///
-/// For a value that belongs to one site (a stored password). The caller has
-/// checked that `page` is such a site; this is what makes that check hold
-/// at the moment of writing, where a wait for the field would otherwise
-/// follow the page across a navigation and write into whatever came next.
-/// A `{ref=N}` names an element of one document and dies with it, so there
-/// the address is asked once more just before the keys go
-pub fn fill_only_at(
+/// Nothing here trusts the page. A page runs whatever script its site
+/// serves, in the same world as the helpers the other operations call, and
+/// can replace any of them: one that answers "where are you?" with an
+/// allowed address, one that takes the value it is handed. So:
+///
+/// - where the page is comes from the browser (`Page.getFrameTree`), not
+///   from the page;
+/// - the field is found and written from a world of its own
+///   (`Page.createIsolatedWorld`), which shares the document with the page
+///   and none of its script: what the page redefined is not there;
+/// - the address is read once more in that world, in the same step that
+///   writes. A page that went somewhere else since it was asked is not
+///   written into, and is asked again where it is;
+/// - the field has to be in the page itself. One inside an embedded page
+///   (a frame) may be another site's, whatever the address bar says;
+/// - the value is set, not typed. Keys go to whatever has the focus when
+///   each arrives, and a page can move on between two of them.
+///
+/// `WrongSite` carries the address that was not one of `sites`
+pub fn fill_only_on(
     s: &dyn Speaks,
     to: Option<&str>,
     sel: &Sel,
     value: &str,
-    page: &str,
+    sites: &[String],
     timeout_ms: u64,
-) -> anyhow::Result<Option<OpReport>> {
-    if let Sel::Ref(r) = sel {
-        s.wake(to, true);
-        let out = match href(s, to, timeout_ms) {
-            Ok(at) if at == page => fill_ref_inner(s, to, *r, value, timeout_ms).map(Some),
-            Ok(_) => Ok(None),
-            Err(e) => Err(e),
-        };
-        s.wake(to, false);
-        return out;
-    }
+) -> anyhow::Result<shikisha_shared::SecretFill> {
     s.wake(to, true);
-    let out = act_until(
-        s,
-        to,
-        "__shikisha_fill_at",
-        vec![sel.json(), serde_json::Value::String(value.to_string()), serde_json::Value::String(page.to_string())],
-        timeout_ms,
-        Some("moved"),
-    );
+    let out = secret_fill(s, to, sel, value, sites, timeout_ms);
     s.wake(to, false);
-    Ok(out?.map(OpReport::bare))
+    out
+}
+
+/// The page's own frame and where it is, as the browser has it
+fn main_frame(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Result<(String, String)> {
+    let tree = s.cdp(to, "Page.getFrameTree", serde_json::json!({}), timeout_ms)?;
+    let text = |k: &str| tree.pointer(&format!("/frameTree/frame/{k}")).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
+    let id = text("id");
+    if id.is_empty() {
+        anyhow::bail!("the browser did not say which page this is");
+    }
+    // The part after `#` is kept apart there, and is part of the address a
+    // page says it is at
+    Ok((id, format!("{}{}", text("url"), text("urlFragment"))))
+}
+
+fn secret_fill(
+    s: &dyn Speaks,
+    to: Option<&str>,
+    sel: &Sel,
+    value: &str,
+    sites: &[String],
+    timeout_ms: u64,
+) -> anyhow::Result<shikisha_shared::SecretFill> {
+    use shikisha_shared::SecretFill;
+    // The whole write, run with the field as `this`. Every name in it is
+    // this world's own
+    const WRITE: &str = r#"function (value, page) {
+        if (location.href !== page) return "moved";
+        if (this.ownerDocument !== document) return "framed";
+        const editable = this.isContentEditable;
+        const field = this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement;
+        if (!editable && !field) return "not_a_field";
+        const box = this.getBoundingClientRect();
+        if (this.disabled || this.readOnly || !(box.width > 0 && box.height > 0)) return "not_ready";
+        this.focus();
+        if (editable) {
+            this.textContent = value;
+        } else {
+            const proto = this instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(proto, "value").set.call(this, value);
+        }
+        this.dispatchEvent(new Event("input", { bubbles: true }));
+        this.dispatchEvent(new Event("change", { bubbles: true }));
+        return "written";
+    }"#;
+    const STEP_MS: u64 = 2_000;
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let mut last_err: Option<anyhow::Error> = None;
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(100));
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
+        if left < 200 {
+            return match last_err {
+                Some(e) => Err(e),
+                None => Ok(SecretFill::Done(OpReport::bare(Found::NotFound))),
+            };
+        }
+        let step = left.min(STEP_MS);
+        // In the middle of going somewhere a page answers nothing for a
+        // moment: asked again, like every auto-wait
+        macro_rules! or_again {
+            ($ask:expr) => {
+                match $ask {
+                    Ok(v) => v,
+                    Err(e) => {
+                        last_err = Some(e);
+                        pause();
+                        continue;
+                    }
+                }
+            };
+        }
+        let (frame, at) = or_again!(main_frame(s, to, step));
+        if !crate::config::site_allows(sites, &at) {
+            return Ok(SecretFill::WrongSite(at));
+        }
+        let world = or_again!(s.cdp(
+            to,
+            "Page.createIsolatedWorld",
+            serde_json::json!({ "frameId": frame, "worldName": "shikisha-secret" }),
+            step,
+        ));
+        let Some(world) = world.get("executionContextId").and_then(serde_json::Value::as_i64) else {
+            last_err = Some(anyhow::anyhow!("the browser made no world to write from"));
+            pause();
+            continue;
+        };
+        let object = match sel {
+            // A ref is a node of one document. Asked for in the page's own
+            // world: one that belongs to an embedded page is not there
+            Sel::Ref(r) => {
+                let node = ref_backend(s, to, *r)?;
+                s.cdp(to, "DOM.resolveNode", serde_json::json!({ "backendNodeId": node, "executionContextId": world }), step)
+                    .map_err(|e| ref_stale(*r, e))?
+                    .pointer("/object/objectId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    // Known to the browser and not handed over in the page's
+                    // own world: it is in some other document, a frame's
+                    .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.browser.secret_in_frame")))
+                    .map(Some)?
+            }
+            Sel::Css(_) | Sel::Xpath(_) => {
+                let find = match sel {
+                    Sel::Xpath(x) => format!("document.evaluate({}, document, null, 9, null).singleNodeValue", serde_json::json!(x)),
+                    Sel::Css(c) => format!("document.querySelector({})", serde_json::json!(c)),
+                    Sel::Ref(_) => unreachable!(),
+                };
+                or_again!(s.cdp(to, "Runtime.evaluate", serde_json::json!({ "expression": find, "contextId": world }), step))
+                    .pointer("/result/objectId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            }
+        };
+        let Some(object) = object else {
+            // Not there yet
+            last_err = None;
+            pause();
+            continue;
+        };
+        let said = or_again!(s.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({
+                "objectId": object, "functionDeclaration": WRITE,
+                "arguments": [{ "value": value }, { "value": at }], "returnByValue": true,
+            }),
+            step,
+        ));
+        if said.get("exceptionDetails").is_some() {
+            last_err = Some(anyhow::anyhow!(crate::i18n::t("err.browser.secret_not_written")));
+            pause();
+            continue;
+        }
+        match said.pointer("/result/value").and_then(serde_json::Value::as_str).unwrap_or_default() {
+            "written" => {
+                let echo = field_desc(s, to, &object, step);
+                return Ok(SecretFill::Done(OpReport { state: Found::Visible, echo, anchor: None }));
+            }
+            "framed" => anyhow::bail!(crate::i18n::t("err.browser.secret_in_frame")),
+            "not_a_field" => anyhow::bail!(crate::i18n::t("err.browser.secret_not_a_field")),
+            // It went somewhere else, or is not ready to be written into:
+            // asked again from the top, where it is included
+            _ => {
+                last_err = None;
+                pause();
+            }
+        }
+    }
 }
 
 /// Wait for the page to stop reacting to whatever was just done to it, and
@@ -1143,6 +1274,23 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
     };
     let desc = field_desc(s, to, &oid, timeout_ms);
     let anchor = element_anchor(s, to, &oid, timeout_ms);
+    // What it holds, asked before and after: a fill that left it as it was
+    // wrote nothing, whatever each step answered
+    const READ: &str = r#"function () {
+        return this.value !== undefined ? String(this.value)
+             : (this.innerText || this.textContent || "");
+    }"#;
+    let read = || {
+        s.cdp(
+            to,
+            "Runtime.callFunctionOn",
+            serde_json::json!({ "objectId": oid, "functionDeclaration": READ, "returnByValue": true }),
+            timeout_ms,
+        )
+        .ok()
+        .and_then(|v| v.pointer("/result/value").and_then(serde_json::Value::as_str).map(str::to_string))
+    };
+    let before = read();
     if value.is_empty() {
         set_native()?;
         return Ok(OpReport { state: Found::Visible, echo: desc, anchor });
@@ -1161,45 +1309,22 @@ pub fn fill_ref_inner(s: &dyn Speaks, to: Option<&str>, r: u32, value: &str, tim
     // inserts nothing, since focus never lands). Verify what's in the
     // field; if the typing didn't take, write through the native setter
     // so the fill never "succeeds" while the field stays empty
-    const READ: &str = r#"function () {
-        return this.value !== undefined ? String(this.value)
-             : (this.innerText || this.textContent || "");
-    }"#;
-    let got = s
-        .cdp(
-            to,
-            "Runtime.callFunctionOn",
-            serde_json::json!({ "objectId": oid, "functionDeclaration": READ,
-                               "returnByValue": true }),
-            timeout_ms,
-        )
-        .ok()
-        .and_then(|v| {
-            v.get("result")
-                .and_then(|x| x.get("value"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        });
+    let got = read();
     if got.as_deref() != Some(value) {
         // Never log the value itself (it may be sensitive) — only the fact
         crate::append_hook_log(&format!(
             "ref fill {r}: keystrokes didn't land (page hidden?) — falling back to native setter"
         ));
-        set_native()?;
-        // An element that holds no value (the wrapper, not the field in it)
-        // took neither: say so, rather than report a fill that wrote nothing
-        let now = s
-            .cdp(
-                to,
-                "Runtime.callFunctionOn",
-                serde_json::json!({ "objectId": oid, "functionDeclaration": READ, "returnByValue": true }),
-                timeout_ms,
-            )
-            .ok()
-            .and_then(|v| v.pointer("/result/value").and_then(serde_json::Value::as_str).map(str::to_string));
-        // (A field that took the focus and reshapes what is typed -- a phone
-        // number, a date -- reads back differently and is still filled)
-        if !focused && now.as_deref() != Some(value) {
+        // A setter that throws (the element has no value to set) wrote
+        // nothing; what it holds afterwards is the judge of that
+        let _ = set_native();
+        // An element that holds no value (the wrapper, not the field in it;
+        // a label that can be tabbed to) took neither: say so, rather than
+        // report a fill that wrote nothing. A field that reshapes what is
+        // typed -- a phone number, a date -- reads back as neither what was
+        // sent nor what it held, and is filled
+        let now = read();
+        if now.as_deref() != Some(value) && (!focused || now == before) {
             anyhow::bail!(crate::i18n::tp("err.browser.ref_not_a_field", &[("ref", &r.to_string())]));
         }
     }

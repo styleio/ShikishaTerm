@@ -1097,6 +1097,41 @@ fn held_card(held: &Held, cols: u16) -> String {
 /// shims) (os error 193), so we search PATH+PATHEXT. A shim npm wrote is
 /// read and the program it names started directly; any other .cmd/.bat goes
 /// through cmd.exe /c
+/// What the program that started this app may have had in its environment
+/// that says "you are inside me", and that a program started from here must
+/// not be told.
+///
+/// The app is sometimes started from inside an AI's session (an AI asked to
+/// build and run it, an update that restarts it) or from inside one of its
+/// own tabs. Left in, Claude Code in every tab takes itself for a session
+/// nested in that one and behaves as a child of it; a background job's
+/// folder makes its hooks report as that job; and another copy's tab key,
+/// pipe and git account would be handed to tabs that are not that tab.
+/// Only what marks a session or a tab: what a person sets to configure
+/// their CLI (`CLAUDE_CONFIG_DIR`, an API key) is theirs and stays
+pub const STARTER_ENV: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_PID",
+    "CLAUDE_JOB_DIR",
+    "SHIKISHA_PIPE",
+    "SHIKISHA_TOKEN",
+    "SHIKISHA_TAB",
+    "SHIKISHA_BRIDGE_SOCK",
+    "SHIKISHA_KEY_FILE",
+    "SHIKISHA_BRIDGE_PROGRAM",
+    "SHIKISHA_GIT_HOST",
+    "SHIKISHA_GIT_LOGIN",
+    "SHIKISHA_GIT_TOKEN",
+];
+
 pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
     let Some(prog) = cmd_args.first() else {
         return CommandBuilder::new(crate::config::machine_shell().1);
@@ -4315,6 +4350,24 @@ impl Tab {
             &idle
         };
         let mut cmd = build_command(spawn_argv);
+        // What this app was itself started with is not the tab's: see
+        // [`STARTER_ENV`]. Taken out before the tab's own are put in
+        for name in STARTER_ENV {
+            cmd.env_remove(name);
+        }
+        // What kind of terminal this is, said the way every terminal says
+        // it. An app started from the Dock or by a service has none of these
+        // (a shell then cannot clear the screen, and a line editor mangles
+        // anything that is not ASCII); one started from another terminal has
+        // that terminal's, which is not this one
+        #[cfg(unix)]
+        {
+            cmd.env("TERM", "xterm-256color");
+            cmd.env("COLORTERM", "truecolor");
+            if ["LC_ALL", "LC_CTYPE", "LANG"].iter().all(|k| cmd.get_env(k).is_none_or(|v| v.is_empty())) {
+                cmd.env("LANG", if cfg!(target_os = "macos") { "en_US.UTF-8" } else { "C.UTF-8" });
+            }
+        }
         // Where the external API is, the key to it, and which tab this is.
         // Done here because this is the one place a tab's process is born —
         // a CLI started anywhere else would silently have no way to call home

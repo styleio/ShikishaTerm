@@ -1378,6 +1378,14 @@ use shikisha_core::agenthook::Report;
 /// conversation it exists to preserve — so problems go to the log instead.
 fn hook_mode(kind: String) -> Result<()> {
     use std::io::Read as _;
+    // Claude Code runs its background jobs under one shared process, which
+    // keeps the environment of whichever tab happened to start it -- that
+    // tab's key included. A job's hooks would report into that tab as if its
+    // AI had said them: working, done, a new conversation. Only a job has
+    // this variable, and a job is no tab's conversation
+    if std::env::var_os("CLAUDE_JOB_DIR").is_some_and(|d| !d.is_empty()) {
+        return Ok(());
+    }
     let mut body = String::new();
     let read = std::io::stdin().read_to_string(&mut body);
     let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();

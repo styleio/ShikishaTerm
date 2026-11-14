@@ -115,6 +115,9 @@ pub struct CodexCarry {
     /// of its own so a carry kept before it was read still reads
     #[serde(default)]
     pub written: u64,
+    /// The turn the counts being read belong to, as Codex names it
+    #[serde(default)]
+    pub turn: String,
 }
 
 /// A line of a Codex record: a call when it is a count of one, and the
@@ -145,6 +148,10 @@ pub fn codex_line(line: &[u8], carry: &mut CodexCarry) -> Option<Call> {
                 let model = s(p, "/model");
                 if !model.is_empty() {
                     carry.model = model;
+                }
+                let turn = s(p, "/turn_id");
+                if !turn.is_empty() {
+                    carry.turn = turn;
                 }
                 let cwd = s(p, "/cwd");
                 if !cwd.is_empty() {
@@ -197,10 +204,16 @@ pub fn codex_line(line: &[u8], carry: &mut CodexCarry) -> Option<Call> {
     let cached = last[1].min(last[0]);
     let written = written.min(last[0] - cached);
     let call = Call {
-        // Codex's own records give a call no id. When it was counted and what
-        // it counted is the same wherever the line is copied to -- a resumed
-        // conversation is written under another id, so that is left out
-        key: format!("x:{stamp}:{}:{}:{}:{}", last[0], last[1], last[2], last[3]),
+        // Codex's own records give a call no id. The turn it was made in and
+        // the conversation's total after it are the same wherever the line
+        // is copied to: a conversation branched from another begins with the
+        // other's counts, written again under new times, and those are not
+        // calls made twice. Where no turn or no total is written (older
+        // records), when it was counted and what it counted stand in
+        key: match (carry.turn.is_empty(), total) {
+            (false, Some((t, _))) => format!("x:t:{}:{}:{}:{}:{}", carry.turn, t[0], t[1], t[2], t[3]),
+            _ => format!("x:{stamp}:{}:{}:{}:{}", last[0], last[1], last[2], last[3]),
+        },
         cli: "codex",
         at,
         model: carry.model.clone(),
@@ -280,5 +293,27 @@ mod tests {
         let again = br#"{"timestamp":"2026-10-09T01:09:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}}}"#;
         let c = codex_line(again, &mut carry).unwrap();
         assert_eq!((c.fresh_in, c.out), (40, 5));
+    }
+
+    /// A conversation branched from another begins with the other's counts,
+    /// written again under new times: the same calls, not calls made twice
+    #[test]
+    fn a_codex_count_copied_into_a_branched_conversation_is_the_same_call() {
+        let turn = br#"{"timestamp":"2026-10-09T01:00:00Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-6"}}"#;
+        let count = |stamp: &str| {
+            format!(
+                r#"{{"timestamp":"{stamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":1000,"cached_input_tokens":300,"output_tokens":50,"reasoning_output_tokens":0}},"last_token_usage":{{"input_tokens":1000,"cached_input_tokens":300,"output_tokens":50,"reasoning_output_tokens":0}}}}}}}}"#
+            )
+        };
+        let key_of = |stamp: &str| {
+            let mut carry = CodexCarry::default();
+            assert!(codex_line(turn, &mut carry).is_none());
+            codex_line(count(stamp).as_bytes(), &mut carry).unwrap().key
+        };
+        assert_eq!(key_of("2026-10-09T01:07:00Z"), key_of("2026-10-12T09:30:00Z"), "the copy was counted as another call");
+        // With no turn written (an older record) the time still tells calls apart
+        let mut old = CodexCarry::default();
+        let a = codex_line(count("2026-10-09T01:07:00Z").as_bytes(), &mut old).unwrap().key;
+        assert!(a.contains("2026-10-09T01:07:00Z"), "{a}");
     }
 }

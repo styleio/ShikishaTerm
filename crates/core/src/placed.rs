@@ -247,8 +247,8 @@ impl BrowserHost for Placed {
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, ms: u64) -> anyhow::Result<OpReport> {
         self.on(to, |b| b.fill(to, sel, value, ms))
     }
-    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, ms: u64) -> anyhow::Result<Option<OpReport>> {
-        self.on(to, |b| b.fill_only_at(to, sel, value, page, ms))
+    fn fill_only_on(&self, to: Option<&str>, sel: &Sel, value: &str, sites: &[String], ms: u64) -> anyhow::Result<shikisha_shared::SecretFill> {
+        self.on(to, |b| b.fill_only_on(to, sel, value, sites, ms))
     }
     fn text(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<Option<String>> {
         self.on(to, |b| b.text(to, sel, ms))

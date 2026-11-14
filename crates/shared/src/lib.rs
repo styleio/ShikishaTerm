@@ -1086,6 +1086,15 @@ impl OpReport {
     }
 }
 
+/// What became of a value that may only go to certain sites
+#[derive(Debug)]
+pub enum SecretFill {
+    Done(OpReport),
+    /// Nothing was written: the page is at this address, which is not one
+    /// of them
+    WrongSite(String),
+}
+
 /// Where an element currently is. Click and fill return the same
 /// vocabulary (if we touched it, it was reachable, hence `Visible`).
 ///
@@ -1240,9 +1249,10 @@ pub trait BrowserHost {
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Found>;
     fn click(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<OpReport>;
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;
-    /// `fill`, made only while the page is still at the address `page`:
-    /// `None`, and nothing written, when it has gone somewhere else
-    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<OpReport>>;
+    /// Put a value that belongs to `sites` only into a field, and only while
+    /// the page is one of them. Decided where the browser is, from what the
+    /// browser itself says, at the moment of writing
+    fn fill_only_on(&self, to: Option<&str>, sel: &Sel, value: &str, sites: &[String], timeout_ms: u64) -> anyhow::Result<SecretFill>;
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>>;
     /// Choose a value in a native dropdown, by the text a person reads
     fn select(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport>;
@@ -2152,7 +2162,7 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
 /// instead — it achieves the same thing
 pub fn is_openable(url: &str) -> bool {
     let u = url.trim();
-    let scheme_ok = u.starts_with("https://") || u.starts_with("http://");
+    let scheme_ok = ["https://", "http://"].iter().any(|s| u.get(..s.len()).is_some_and(|head| head.eq_ignore_ascii_case(s)));
     let has_host = u.split("//").nth(1).is_some_and(|rest| {
         let host = rest.split(['/', '?', '#']).next().unwrap_or("");
         !host.is_empty()

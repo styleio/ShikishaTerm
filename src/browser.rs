@@ -2320,6 +2320,8 @@ mod tests {
     fn only_http_pages_are_opened() {
         assert!(is_openable("https://example.com/a"));
         assert!(is_openable("http://127.0.0.1:8080/"));
+        assert!(is_openable("HTTPS://Example.com/a"), "a scheme in capitals is the same scheme");
+        assert!(!is_openable("file:/C:/tmp/a.html") && !is_openable("FILE:///C:/tmp/a.html") && !is_openable("javascript:alert(1)"));
 
         assert!(!is_openable("file:///C:/tmp/a.html"), "file: is rejected");
         assert!(!is_openable("data:text/html,<b>x"), "data: is rejected");
@@ -3074,8 +3076,8 @@ impl BrowserHost for Browser {
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> Result<OpReport> {
         pageops::fill(self, to, sel, value, timeout_ms)
     }
-    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> Result<Option<OpReport>> {
-        pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
+    fn fill_only_on(&self, to: Option<&str>, sel: &Sel, value: &str, sites: &[String], timeout_ms: u64) -> Result<shikisha_shared::SecretFill> {
+        pageops::fill_only_on(self, to, sel, value, sites, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Option<String>> {
         pageops::text(self, to, sel, timeout_ms)

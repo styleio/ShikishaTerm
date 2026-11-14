@@ -1618,29 +1618,17 @@ impl Capabilities {
         who: crate::grants::Subject,
     ) -> Result<shikisha_shared::OpReport> {
         let (value, terms) = self.script_secret(secret_key, who)?;
-        // The page is asked where it is, and the value is written only while
-        // it is still there: waiting for the field must not follow the page
-        // to another site and type the password into that one. A page that
-        // moved is asked again, and the new address has to be allowed too
-        let until = std::time::Instant::now() + std::time::Duration::from_millis(ACT_MS);
-        loop {
-            let at = self.with(name, |b, to| b.href(to, OP_MS))?;
-            if !terms.may_fill(&at) {
-                bail!(refused(crate::i18n::tp(
-                    "err.caps.secret_wrong_site",
-                    &[("key", secret_key), ("host", &at)]
-                )));
-            }
-            let left = until.saturating_duration_since(std::time::Instant::now()).as_millis() as u64;
-            if let Some(done) = self.with(name, |b, to| b.fill_only_at(to, sel, &value, &at, left.max(1_000)))? {
-                return Ok(done);
-            }
-            if left == 0 {
-                bail!(refused(crate::i18n::tp(
-                    "err.caps.secret_wrong_site",
-                    &[("key", secret_key), ("host", &at)]
-                )));
-            }
+        // Where the page is, and whether that is one of the secret's sites,
+        // is decided by the browser side at the moment of writing
+        // (`pageops::fill_only_on`): asked here first and written a moment
+        // later, a page could have gone somewhere else in between -- or have
+        // lied about where it was
+        match self.with(name, |b, to| b.fill_only_on(to, sel, &value, &terms.urls, ACT_MS))? {
+            shikisha_shared::SecretFill::Done(done) => Ok(done),
+            shikisha_shared::SecretFill::WrongSite(at) => bail!(refused(crate::i18n::tp(
+                "err.caps.secret_wrong_site",
+                &[("key", secret_key), ("host", &at)]
+            ))),
         }
     }
 
@@ -1660,6 +1648,15 @@ impl Capabilities {
                 &[("key", secret_key), ("host", &at)]
             )));
         }
+        // A password prompt is answered for the site, not for a part of it:
+        // once a browser has signed in to one path it sends the same
+        // credentials to the rest of the site unasked. So a secret allowed
+        // only under a path cannot be used this way without going past what
+        // it was allowed, and it is said rather than done
+        let whole = crate::config::whole_sites(&terms.urls);
+        if !crate::config::site_allows(&whole, &at) {
+            bail!(refused(crate::i18n::tp("err.caps.secret_auth_path", &[("key", secret_key)])));
+        }
         let (user, pass) = val.split_once(':').ok_or_else(|| {
             anyhow::anyhow!(crate::i18n::tp(
                 "err.caps.secret_format",
@@ -1669,7 +1666,7 @@ impl Capabilities {
         // The same sites decide each challenge as it comes: the page may show
         // another site's picture, or go somewhere else later, and neither is
         // where this password belongs
-        self.with(name, |b, to| b.basic_auth(to, user, pass, &terms.urls))
+        self.with(name, |b, to| b.basic_auth(to, user, pass, &whole))
     }
 
     /// Line pages up to match config exactly.

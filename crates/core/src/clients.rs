@@ -141,6 +141,17 @@ pub fn load() -> Book {
 /// scanner, a sync client) is an error and nothing is written; only a file
 /// that is not there is an empty book. A file that is not a book at all is
 /// moved aside under another name before a new one takes its place
+/// The book, or why it could not be read just now. For a caller about to
+/// act on who is *not* in it: a book that could not be read names nobody,
+/// and that must not be taken for everybody having been shut out
+pub fn load_surely() -> Option<Book> {
+    match std::fs::read_to_string(path()) {
+        Ok(text) => Book::parse(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Book::default()),
+        Err(_) => None,
+    }
+}
+
 fn load_to_write() -> anyhow::Result<Book> {
     let path = path();
     let text = match std::fs::read_to_string(&path) {
@@ -151,8 +162,13 @@ fn load_to_write() -> anyhow::Result<Book> {
     if let Some(book) = Book::parse(&text) {
         return Ok(book);
     }
+    // Put aside before anything is written in its place. If it cannot be
+    // (the same program that damaged it may still hold it), nothing is
+    // written: what is in it is all there is of it
     let aside = path.with_extension(format!("unreadable-{}.json", now()));
-    let _ = std::fs::rename(&path, &aside);
+    if let Err(e) = std::fs::rename(&path, &aside) {
+        anyhow::bail!(crate::i18n::tp("err.clients.unreadable", &[("why", &e.to_string())]));
+    }
     crate::append_hook_log(&format!("clients: {} is not a device list; kept as {}", path.display(), aside.display()));
     Ok(Book::default())
 }

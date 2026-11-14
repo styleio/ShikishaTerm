@@ -45,7 +45,13 @@ pub enum Ask {
     /// answer -- the same way it does from a window on this machine
     Where { to: Option<String> },
     /// `sites`: where the credentials may go. Absent (an older sender) is
-    /// nowhere, which answers no challenge rather than every one
+    /// nowhere, which answers no challenge rather than every one.
+    ///
+    /// Under a name of its own on the wire: a browser from before `sites`
+    /// knew this ask as `Auth` and would arm the credentials for every
+    /// challenge, dropping the word it does not know. It does not know this
+    /// name either, so it refuses the ask instead
+    #[serde(rename = "AuthOn", alias = "Auth")]
     Auth {
         to: Option<String>,
         user: String,
@@ -352,8 +358,8 @@ impl BrowserHost for Far {
     fn fill(&self, to: Option<&str>, sel: &Sel, value: &str, timeout_ms: u64) -> anyhow::Result<OpReport> {
         crate::pageops::fill(self, to, sel, value, timeout_ms)
     }
-    fn fill_only_at(&self, to: Option<&str>, sel: &Sel, value: &str, page: &str, timeout_ms: u64) -> anyhow::Result<Option<OpReport>> {
-        crate::pageops::fill_only_at(self, to, sel, value, page, timeout_ms)
+    fn fill_only_on(&self, to: Option<&str>, sel: &Sel, value: &str, sites: &[String], timeout_ms: u64) -> anyhow::Result<shikisha_shared::SecretFill> {
+        crate::pageops::fill_only_on(self, to, sel, value, sites, timeout_ms)
     }
     fn text(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> anyhow::Result<Option<String>> {
         crate::pageops::text(self, to, sel, timeout_ms)
@@ -667,6 +673,19 @@ fn handshake(base: &str, path: &str, cookie: &str) -> anyhow::Result<crate::tunn
 
 #[cfg(test)]
 mod tests {
+    /// A browser from before credentials were tied to sites must refuse the
+    /// ask, not arm them for every challenge: it knows neither the new name
+    /// nor the list. One from before that sends the old name is answered
+    /// with nowhere to send them
+    #[test]
+    fn credentials_are_never_armed_without_their_sites() {
+        let ask = Ask::Auth { to: None, user: "u".into(), pass: "p".into(), sites: vec!["https://a.example.com".into()] };
+        let wire = serde_json::to_string(&ask).unwrap();
+        assert!(wire.contains("\"AuthOn\"") && !wire.contains("\"Auth\""), "{wire}");
+        let old: Ask = serde_json::from_str(r#"{"Auth":{"to":null,"user":"u","pass":"p"}}"#).unwrap();
+        assert!(matches!(old, Ask::Auth { ref sites, .. } if sites.is_empty()));
+    }
+
     use super::*;
 
     /// A browser that answers everything with the same thing, and writes down
@@ -920,8 +939,8 @@ mod tests {
         fn click(&self, to: Option<&str>, sel: &Sel, ms: u64) -> anyhow::Result<OpReport> {
             crate::pageops::click(self, to, sel, ms)
         }
-        fn fill_only_at(&self, to: Option<&str>, sel: &Sel, v: &str, page: &str, ms: u64) -> anyhow::Result<Option<OpReport>> {
-            crate::pageops::fill_only_at(self, to, sel, v, page, ms)
+        fn fill_only_on(&self, to: Option<&str>, sel: &Sel, v: &str, sites: &[String], ms: u64) -> anyhow::Result<shikisha_shared::SecretFill> {
+            crate::pageops::fill_only_on(self, to, sel, v, sites, ms)
         }
         fn fill(&self, to: Option<&str>, sel: &Sel, v: &str, ms: u64) -> anyhow::Result<OpReport> {
             crate::pageops::fill(self, to, sel, v, ms)
