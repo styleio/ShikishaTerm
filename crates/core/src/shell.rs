@@ -5161,8 +5161,14 @@ const typingIME = e => e.isComposing || e.keyCode === 229;
 // runtime in another process has no window to minimize, and a runtime on
 // another machine has one belonging to somebody else. Everything else is
 // about the board, and goes wherever the board is
+// Answers whether it was taken: `{ok}`. A request that never reached the PC
+// (it is asleep, the phone just woke, the line dropped) and one the PC
+// refused are both "not taken", and whoever sent words that way gets them
+// back instead of losing them
 const overTheWire = o => fetch("api/intent?t=" + encodeURIComponent(TOKEN),
-  {method:"POST", body:JSON.stringify(o)}).catch(() => {});
+  {method:"POST", body:JSON.stringify(o)})
+  .then(r => r.ok ? r.json().then(j => ({ok: !(j && j.ok === false)}), () => ({ok: true})) : {ok: false})
+  .catch(() => ({ok: false}));
 const toThisWindow = o => window.ipc.postMessage(JSON.stringify(o));
 const send = o => {
   if (o && o.kind === "say" && !o.uid) {
@@ -15827,7 +15833,11 @@ window.__state = function (json) {
   // button is still the old one" report traces back to that. The state
   // carries the app's build stamp; on mismatch, one reload heals it (the
   // token survives in sessionStorage, so the page comes back signed in)
-  if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading) {
+  // Not under somebody's fingers: while the box has the cursor and words in
+  // it the reload waits (the words are kept either way; the keyboard going
+  // down in the middle of a sentence is what it spares)
+  const typing = castInput && document.activeElement === castInput && castInput.value;
+  if (S && S.build && BUILD && S.build !== BUILD && !window.__reloading && !typing) {
     window.__reloading = true;
     location.reload();
     return;
@@ -20911,7 +20921,7 @@ kbd.addEventListener("keydown", e => {
     }
     return;
   }
-  if (e.ctrlKey && e.key.length === 1) {
+  if (e.ctrlKey && e.key.length === 1 && !altGr(e)) {
     e.preventDefault();
     // Ctrl+V in the window, on a tab of another machine: an AI there cannot
     // read this PC's clipboard as one here does, so the window pastes it --
@@ -20923,9 +20933,25 @@ kbd.addEventListener("keydown", e => {
     }
     // Shift and Alt go along: Ctrl+Shift+M is a key a person can bind, and
     // without them it would arrive as Ctrl+M
-    send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
+    send({kind:"key", ctrl:ctrlKeyOf(e), shift:e.shiftKey, alt:e.altKey});
   }
 });
+// Which key a Ctrl chord is for. The letter the key types, when that is a
+// Latin letter. On a keyboard laid out for another script the same key types
+// another letter (the C key gives "с" in Russian, "ㅊ" in Korean), which is
+// no control character at all: there it is the letter of the place the key
+// sits. Anything else is what it types -- Ctrl+[ and Ctrl+Space mean
+// something too
+function ctrlKeyOf(e) {
+  const typed = e.key.toLowerCase();
+  if (/^[a-z]$/.test(typed)) return typed;
+  const sits = /^Key([A-Z])$/.exec(e.code || "");
+  if (sits && typed.charCodeAt(0) > 127) return sits[1].toLowerCase();
+  return e.code === "Space" ? " " : typed;
+}
+// AltGr held: on Windows it arrives as Ctrl+Alt, and what it types (@ { } [ ]
+// \ | ~ € on many European keyboards) is a character to type, not a chord
+const altGr = e => !!(e.getModifierState && e.getModifierState("AltGraph"));
 // Whether the tab in front is a terminal on another machine
 function activeTabFar() {
   const t = ((S && S.tabs) || []).find(x => x.index === (S && S.active));
@@ -20983,7 +21009,7 @@ document.addEventListener("keydown", e => {
   if (document.activeElement !== kbd) return;
   e.preventDefault();
   if (nm) send({kind:"key", named:nm, shift:e.shiftKey, alt:e.altKey});
-  else if (e.ctrlKey) send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});
+  else if (e.ctrlKey && !altGr(e)) send({kind:"key", ctrl:ctrlKeyOf(e), shift:e.shiftKey, alt:e.altKey});
   else send({kind:"key", text:e.key});
 }, true);
 
@@ -21437,13 +21463,27 @@ const rdIsOpen = () => rdPanel().classList.contains("on");
 // Inline spans, built as nodes rather than assembled into innerHTML. What a
 // conversation contains is not ours to trust, and a node can never be read
 // back as markup
+// The two expressions of GitHub's text that look behind themselves (one
+// star or one underscore is emphasis only when no letter comes before it; a
+// `#12` is an issue only when it is not the tail of a word or an address).
+// Written as text and made at run time: a look-behind written as a literal
+// is a syntax error on WebKit before 16.4, and a syntax error anywhere in
+// this script is the whole board not drawing on that phone. Where it cannot
+// be made, those two readings are left out and the rest reads as before
+const RD_GH = (() => {
+  const rest = /`([^`]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|!\[([^\]\n]*)\]\(([^)\s]+)[^)]*\)|\[([^\]\n]+)\]\(([^)\s]+)[^)]*\)|<(https?:\/\/[^>\s]+)>|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|~~([^~\n]+)~~/.source;
+  const lone = "(?<![\\w*])\\*([^*\\n]+)\\*(?![\\w*])|(?<![\\w])_([^_\\n]+)_(?![\\w])";
+  try { new RegExp(lone); return rest + "|" + lone; } catch (e) { return rest; }
+})();
+const RD_REF = (() => {
+  const issue = "(?<![\\w&\\/#])#(\\d+)\\b";
+  try { new RegExp(issue); return issue; } catch (e) { return null; }
+})();
 function rdInline(node, text, gh) {
   // The reader keeps to what a conversation carries. Text from GitHub (`gh`)
   // also has links, pictures, emphasis and strikes, and bare addresses
-  const re = gh
-    ? /`([^`]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|!\[([^\]\n]*)\]\(([^)\s]+)[^)]*\)|\[([^\]\n]+)\]\(([^)\s]+)[^)]*\)|<(https?:\/\/[^>\s]+)>|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|~~([^~\n]+)~~|(?<![\w*])\*([^*\n]+)\*(?![\w*])|(?<![\w])_([^_\n]+)_(?![\w])/g
-    : /`([^`]+)`|\*\*([^*]+)\*\*/g;
-  const ref = gh && gh.repo ? /(?<![\w&\/#])#(\d+)\b/g : null;
+  const re = gh ? new RegExp(RD_GH, "g") : /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  const ref = gh && gh.repo && RD_REF ? new RegExp(RD_REF, "g") : null;
   let at = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > at) node.append(document.createTextNode(text.slice(at, m.index)));
@@ -22216,7 +22256,7 @@ report();
 // line of output). If the socket can't hold — a flaky link, an older server — a
 // slow poll takes over until it reconnects.
 if (REMOTE) {
-  let wsUp = false, sws = null, downSince = 0;
+  let wsUp = false, sws = null, downSince = 0, beenUp = false;
   // Whether the line answers come down is up. What a panel asks is answered
   // on it alone; the slow poll that stands in while it is down carries the
   // screen, not answers (the reader asks before it waits on one)
@@ -22425,14 +22465,36 @@ if (REMOTE) {
       // there are none to send and this costs nothing (PaneRelay skips the
       // pane in front); divided, they are wanted on a phone as well, which
       // draws the division too and can be asked to show all of it at once
+      // `again` from the second time on: this page coming back by itself
+      // is not a person arriving, and does not take the terminals' width
+      // from whoever is at the PC
       sws = new WebSocket(proto + "//" + location.host + "/ws-state?t=" + encodeURIComponent(TOKEN) +
-        "&panes=1");
+        "&panes=1" + (beenUp ? "&again=1" : ""));
     } catch (e) { setTimeout(connectState, 1500); return; }
-    sws.onopen = () => { wsUp = true; connected(); edLineBack(); };
-    sws.onmessage = (e) => { try { applyState(JSON.parse(e.data)); } catch (x) {} };
-    sws.onclose = () => { wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
-    sws.onerror = () => { try { sws.close(); } catch (x) {} };
+    const line = sws;
+    line.onopen = () => { if (sws !== line) return; wsUp = true; beenUp = true; heard = Date.now(); connected(); edLineBack(); };
+    line.onmessage = (e) => { if (sws !== line) return; heard = Date.now(); try { applyState(JSON.parse(e.data)); } catch (x) {} };
+    line.onclose = () => { if (sws !== line) return; wsUp = false; if (!remoteCut && !moving) setTimeout(connectState, 1500); };
+    line.onerror = () => { try { line.close(); } catch (x) {} };
   };
+  // The PC says something on this line every few seconds even when nothing
+  // changes (its heartbeat). A line that has said nothing for several of
+  // them is not a line any more, whatever the socket believes: a PC that
+  // went to sleep or lost its network never says goodbye, and the screen
+  // left behind looks live. It is dropped here, the slow poll takes over and
+  // says "connection lost", and a new line is tried
+  let heard = Date.now();
+  const QUIET_MS = 10000;
+  const stillThere = () => {
+    if (!wsUp || !sws || remoteCut || moving || Date.now() - heard < QUIET_MS) return;
+    const dead = sws;
+    sws = null; wsUp = false;
+    try { dead.close(); } catch (x) {}
+    connectState();
+  };
+  setInterval(stillThere, 2000);
+  // Coming back to the page (the phone was in a pocket) asks at once
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) stillThere(); });
   // Arrived from the old address with a code: this address's own cookies are
   // asked for first, and the page loads again holding them. A code that no
   // longer opens anything (used, or run out) leaves this phone where one with
@@ -22571,9 +22633,12 @@ function castStart() {
   openJpegLine();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const tok = encodeURIComponent(TOKEN);
-  castIn = new WebSocket(proto + "//" + location.host + "/ws-in?t=" + tok);
+  const input = new WebSocket(proto + "//" + location.host + "/ws-in?t=" + tok);
+  castIn = input;
   castIn.onopen = () => { castShaped = sendShape(true); };
-  castIn.onclose = () => { castIn = null; };
+  // Only its own end: a line that finishes closing after another was opened
+  // in its place must not clear the new one
+  castIn.onclose = () => { if (castIn === input) castIn = null; };
   bindCastInput(cv);
   videoTry();
 }
@@ -22610,10 +22675,11 @@ function castWay(how) {
 function openJpegLine() {
   if (castWs) return;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  castWs = new WebSocket(proto + "//" + location.host + "/ws?t=" + encodeURIComponent(TOKEN));
+  const pictures = new WebSocket(proto + "//" + location.host + "/ws?t=" + encodeURIComponent(TOKEN));
+  castWs = pictures;
   castWs.binaryType = "blob";
   castWs.onmessage = castFrame;
-  castWs.onclose = () => { castWs = null; };
+  castWs.onclose = () => { if (castWs === pictures) castWs = null; };
 }
 
 // One JPEG from the relay, onto the canvas
@@ -28558,6 +28624,12 @@ function ensureBar() {
   // still being known, and the repaint that follows forgets a broken one
   castInput.addEventListener("input", mentionInput);
   castInput.addEventListener("input", growCastInput);
+  castInput.addEventListener("input", draftKept);
+  // What was being typed when this page last loaded itself again
+  try {
+    const kept = sessionStorage.getItem("shikisha_draft");
+    if (kept && !castInput.value) castInput.value = kept;
+  } catch (e) {}
   castInput.addEventListener("scroll", () => { if (castMirror) castMirror.scrollTop = castInput.scrollTop; });
   // Paste an image straight into the composer — it's saved and its path inserted.
   // Not while feeding a browser (same reason the 📎 button hides there).
@@ -28649,10 +28721,30 @@ function sendLine(text) {
   // Say who it is for: the pane in front as this page sees it. Left unsaid, a
   // line is handed to whatever pane happens to be in front when it arrives,
   // and a view switch still on its way would take it somewhere else.
-  if (text) { send({kind:"say", tab: S.active, text}); return; }
+  if (text) return send({kind:"say", tab: S.active, text});
   // An empty Send is a bare Enter: meaningful at a prompt (accept a default,
   // insert a newline) and not a line at all, so it stays a keystroke.
   send({kind:"key", named:"enter"});
+}
+// A line that did not reach the PC goes back into the box it was typed in,
+// in front of anything typed since, and is said: sent and gone without a
+// word is how an instruction is lost
+function lineNotSent(text) {
+  if (!text) return;
+  if (castInput) {
+    castInput.value = castInput.value ? text + "\n" + castInput.value : text;
+    growCastInput();
+    draftKept();
+  }
+  toast(T["tui.cast.not_sent"] || "");
+}
+// What is in the box, kept for this page's own reload (a new version of the
+// app, a phone that put the page away): typed words are not lost to either
+function draftKept() {
+  try {
+    if (castInput && castInput.value) sessionStorage.setItem("shikisha_draft", castInput.value);
+    else sessionStorage.removeItem("shikisha_draft");
+  } catch (e) {}
 }
 // Whether a key pressed in the empty composer has a keystroke to become, asked
 // in sendBar's own order. ▶ run mode's sheet is a document, not keystrokes,
@@ -28700,11 +28792,13 @@ function sendBar() {
   } else {
     // Hand the line to the pane in front, whatever kind of pane it is -- with
     // each @ badge written as the tab id it stands for
-    sendLine(mentionize(t));
+    const went = sendLine(mentionize(t));
+    if (went && went.then) went.then(r => { if (!r || !r.ok) lineNotSent(t); });
   }
   castInput.value = "";
   castInput.focus();
   growCastInput();
+  draftKept();
 }
 // The cursor is absolutely positioned within #main. Compute #cast's content
 // position relative to #main via castRect() — getBoundingClientRect() already
@@ -30096,7 +30190,14 @@ mod tests {
         // finish a line go through it
         assert!(p.contains("function sendLine(text) {"), "there is no single place that decides how a line is handed over");
         // (the @ badges written as the ids they stand for on the way)
-        assert!(p.contains("    sendLine(mentionize(t));"), "the input bar's Send sends on its own");
+        assert!(p.contains("    const went = sendLine(mentionize(t));"), "the input bar's Send sends on its own");
+        // A line that did not reach the PC comes back into the box and is said
+        assert!(p.contains("if (!r || !r.ok) lineNotSent(t);"), "a line that was not delivered is lost without a word");
+        // No look-behind written as a literal: on WebKit before 16.4 that is a
+        // syntax error, and the whole board does not draw on that phone
+        for line in p.lines().filter(|l| l.contains("(?<!") || l.contains("(?<=")) {
+            assert!(line.contains("= \"(?<"), "a look-behind outside a string made at run time: {line}");
+        }
         // ...and the line always says who it is for. Delivered to "whoever is
         // in front", the topic box's own view switch could arrive after it
         assert_eq!(
@@ -30105,7 +30206,7 @@ mod tests {
             "there is more than one way to hand over a line"
         );
         assert!(
-            p.contains(r#"send({kind:"say", tab: S.active, text}); return;"#),
+            p.contains(r#"return send({kind:"say", tab: S.active, text});"#),
             "the line handed over has no addressee"
         );
         // Actions only there (plus the key row on a phone) -- no 🤖, no 📼
@@ -30202,7 +30303,7 @@ mod tests {
     #[test]
     fn a_combination_with_no_prefix_is_heard_from_a_text_box() {
         let p = super::page();
-        assert!(p.contains(r#"send({kind:"key", ctrl:e.key.toLowerCase(), shift:e.shiftKey, alt:e.altKey});"#),
+        assert!(p.contains(r#"send({kind:"key", ctrl:ctrlKeyOf(e), shift:e.shiftKey, alt:e.altKey});"#),
             "Shift held with Ctrl is dropped on the way from the terminal");
         assert!(p.contains("function directKeyOf(e) {") && p.contains("S.direct_keys.find("), "the page does not know which combinations to hand on");
         assert!(p.contains("if (e.target === kbd) return;"), "a combination on the terminal would be sent twice");

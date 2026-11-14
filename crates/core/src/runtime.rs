@@ -6192,10 +6192,15 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             for t in tabs.iter() {
                 if let Some(ms) = t.last_manual_ms {
                     let uid = t.uid().to_string();
-                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms)
-                        && orch_manual.insert(uid.clone(), ms).is_some() {
-                            orchestra.person_typed(&uid);
-                        }
+                    // The first time as well as every later one: a tab a job
+                    // opened has never been typed into before, so its first
+                    // line from a person is the very one that makes it theirs.
+                    // Not counted, the job went on to close the tab under
+                    // them while their own request was running in it
+                    if orch_manual.get(&uid).is_none_or(|seen| *seen < ms) {
+                        orch_manual.insert(uid.clone(), ms);
+                        orchestra.person_typed(&uid);
+                    }
                 }
             }
             // Working folders a command asked to remove: answered once the

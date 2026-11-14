@@ -195,17 +195,32 @@ pub mod ws;
 
 pub fn append_hook_log(msg: &str) {
     use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicU32, Ordering};
     static START: OnceLock<std::time::Instant> = OnceLock::new();
+    static SAID: AtomicU32 = AtomicU32::new(0);
     let t = START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(config::logs_dir().join("hooks.log"))
+    let path = config::logs_dir().join("hooks.log");
+    // The log is kept to a size somebody can still open: looked at every so
+    // many lines, and past the limit the file becomes `hooks.log.1` (the one
+    // before it goes) and a new one is begun. Nothing here ever cut it, and
+    // an app left running for months wrote a file read whole each time
+    // diagnostics were gathered
+    if SAID.fetch_add(1, Ordering::Relaxed) % HOOK_LOG_LOOK == 0
+        && std::fs::metadata(&path).is_ok_and(|m| m.len() > HOOK_LOG_MOST)
     {
+        let _ = std::fs::rename(&path, config::logs_dir().join("hooks.log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write as _;
         let _ = writeln!(f, "[{t:>8.3}] {msg}");
     }
 }
+
+/// How large `hooks.log` may grow before it is put aside, and how many lines
+/// go by between looks at its size. Sixteen megabytes is weeks of an
+/// ordinary day's lines, and still opens in an editor
+const HOOK_LOG_MOST: u64 = 16 * 1024 * 1024;
+const HOOK_LOG_LOOK: u32 = 512;
 
 /// Said on the command line for a copy that somebody else is working beside:
 /// the window opens at the bottom of the pile and never puts itself in front.

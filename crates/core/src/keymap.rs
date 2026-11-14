@@ -66,11 +66,21 @@ pub fn key_to_bytes(key: &KeyEvent) -> Option<Vec<u8>> {
         KeyCode::Char(c) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 let lower = c.to_ascii_lowercase();
-                if lower.is_ascii_lowercase() {
-                    buf.push((lower as u8) - b'a' + 1);
-                } else {
-                    return None;
-                }
+                // The control characters, as every terminal types them: a
+                // letter is its place in the alphabet, and the handful of
+                // signs that follow Z in ASCII are the rest (Ctrl+[ is
+                // Escape, Ctrl+Space is NUL)
+                buf.push(match lower {
+                    'a'..='z' => (lower as u8) - b'a' + 1,
+                    ' ' | '@' => 0x00,
+                    '[' => 0x1b,
+                    '\\' => 0x1c,
+                    ']' => 0x1d,
+                    '^' => 0x1e,
+                    '_' | '/' => 0x1f,
+                    '?' => 0x7f,
+                    _ => return None,
+                });
             } else {
                 let mut tmp = [0u8; 4];
                 buf.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
@@ -135,4 +145,24 @@ pub fn named_key(n: &str) -> Option<KeyCode> {
             (1..=12).contains(&f).then_some(KeyCode::F(f))?
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Ctrl chord is a control character: a letter by its place in the
+    /// alphabet, and the signs after Z by theirs. One that is none is nothing
+    #[test]
+    fn a_ctrl_chord_is_the_control_character_every_terminal_types() {
+        let ctrl = |c: char| key_to_bytes(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+        assert_eq!(ctrl('c'), Some(vec![0x03]));
+        assert_eq!(ctrl('C'), Some(vec![0x03]));
+        assert_eq!(ctrl(' '), Some(vec![0x00]), "Ctrl+Space");
+        assert_eq!(ctrl('['), Some(vec![0x1b]), "Ctrl+[ is Escape");
+        assert_eq!(ctrl('\\'), Some(vec![0x1c]));
+        assert_eq!(ctrl(']'), Some(vec![0x1d]));
+        assert_eq!(ctrl('_'), Some(vec![0x1f]));
+        assert_eq!(ctrl('с'), None, "a letter of another script is no control character");
+    }
 }

@@ -731,7 +731,16 @@ async fn connect(spec: &Spec) -> Result<Open> {
     let addr = spec.address();
     let name = spec.machine();
     let config = Arc::new(russh::client::Config {
-        inactivity_timeout: Some(std::time::Duration::from_secs(3600)),
+        // A shell left at its prompt is not a connection that died. With a
+        // limit here this side itself hung up after an hour of nothing said
+        // either way, and the tab came back as a new shell: its variables,
+        // its sudo, its background jobs and an idle AI's session gone. What
+        // finds a dead line is the keepalive below, where it is asked for
+        inactivity_timeout: None,
+        // Each keystroke goes when it is typed, not when the one before it
+        // has been acknowledged: a terminal is small writes, which is what
+        // this delay holds back
+        nodelay: true,
         // A quiet connection is cut by some networks after a few minutes. When
         // the settings ask for it, something is said on the wire often enough
         // that nothing in between decides the connection is over

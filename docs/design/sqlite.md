@@ -48,6 +48,8 @@ It gives every connection, before anything else:
 conn.pragma_update(None, "journal_mode", "WAL")?;     // readers do not block the writer
 conn.pragma_update(None, "synchronous", "NORMAL")?;   // safe with WAL, much faster than FULL
 conn.busy_timeout(Duration::from_secs(5))?;          // wait for a lock instead of failing
+conn.pragma_update(None, "temp_store", "MEMORY")?;    // a full temp folder must not fail a write here
+conn.pragma_update(None, "journal_size_limit", 8 MiB)?; // the log shrinks back after a burst
 migrate(&mut conn, steps, Some(&backup), what)?;      // see 4; backup is <name>.v<version>.bak
 conn.pragma_update(None, "foreign_keys", "ON")?;      // off by default in SQLite, per connection
 ```

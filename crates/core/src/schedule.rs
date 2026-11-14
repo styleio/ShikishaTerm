@@ -135,17 +135,35 @@ pub fn last_time(when: When, now: u64, local: &dyn Fn(u64) -> Local) -> Option<u
     let today = local(now);
     let into_day = u64::from(today.3) * 3600 + u64::from(today.4) * 60 + now % 60;
     let want = u64::from(hour) * 3600 + u64::from(minute) * 60;
+    // A day is not always 86 400 seconds, and the seconds since midnight are
+    // not always what the wall clock shows: on the two days a year the
+    // clocks change, both are an hour out. So each guess is put right by
+    // what the wall clock reads at it. (A time inside the hour that is
+    // skipped has no moment of its own, and settles an hour away)
+    let settled = |at: i64| -> i64 {
+        if at < 0 {
+            return at;
+        }
+        let shown = local(at as u64);
+        let mut off = i64::from(shown.3) * 3600 + i64::from(shown.4) * 60 - want as i64;
+        if off > 43_200 {
+            off -= 86_400;
+        } else if off < -43_200 {
+            off += 86_400;
+        }
+        at - off
+    };
     // Today's, else yesterday's, and back a day at a time to a day it holds
     // on -- at most a week back
-    let mut at = (now - into_day + want) as i64;
+    let mut at = settled((now - into_day + want) as i64);
     if at > now as i64 {
-        at -= 86_400;
+        at = settled(at - 86_400);
     }
     for _ in 0..8 {
         if at >= 0 && holds(days, weekday(local(at as u64))) {
             return Some(at as u64);
         }
-        at -= 86_400;
+        at = settled(at - 86_400);
     }
     None
 }
@@ -167,12 +185,25 @@ pub enum Due {
 pub fn due(when: When, last: Option<u64>, now: u64, grace: u64, local: &dyn Fn(u64) -> Local) -> (Due, u64) {
     // Seen for the first time: it counts from now, never for the past
     let Some(last) = last else { return (Due::Not, now) };
+    // Kept while the clock was ahead of where it is now (set wrong, then put
+    // right): counted from now, or nothing would be due until the clock
+    // caught up with the mistake
+    let last = last.min(now);
     match when {
         When::Every(secs) => match now >= last + secs {
             true => (Due::Run(last + secs), now),
             false => (Due::Not, last),
         },
         When::At { .. } | When::Hourly(_) => match last_time(when, now, local) {
+            // The hour the clocks go back through comes twice, and a time in
+            // it reads the same on the wall both times. It is one time of
+            // day, already run the first time round
+            Some(at)
+                if matches!(when, When::At { .. })
+                    && last_time(when, last, local).is_some_and(|ran| ran != at && at - ran <= 7_200 && local(ran) == local(at)) =>
+            {
+                (Due::Not, last)
+            }
             Some(at) if at > last && now - at <= grace => (Due::Run(at), now),
             Some(at) if at > last => (Due::Missed(at), at),
             _ => (Due::Not, last),
@@ -286,6 +317,47 @@ mod tests {
         // ...and not again until tomorrow
         assert_eq!(due(nine, Some(last), MON_10, GRACE, &utc).0, Due::Not);
         assert_eq!(due(nine, Some(last), MON_10 + 23 * 3600, GRACE, &utc).0, Due::Run(MON_10 + 23 * 3600));
+    }
+
+    /// The day the clocks go back has one hour twice. A time in it is one
+    /// time of day: run the first time round, not again an hour later, and
+    /// at the right moment the day after (which is 25 hours on)
+    #[test]
+    fn a_time_in_the_hour_that_comes_twice_runs_once() {
+        // An hour ahead of UTC until MON_10, on UTC from then: the wall
+        // clock reads 10:00-11:00 twice
+        let back = |t: u64| utc(if t < MON_10 { t + 3600 } else { t });
+        let half_past = parse("at_1030").unwrap();
+        let (first, second) = (MON_10 - 1800, MON_10 + 1800);
+        assert_eq!(back(first), back(second), "the two moments do not read the same on the wall");
+        let (d, last) = due(half_past, Some(MON_10 - 7200), first + 60, GRACE, &back);
+        assert_eq!(d, Due::Run(first));
+        assert_eq!(due(half_past, Some(last), second + 60, GRACE, &back).0, Due::Not, "it ran again when the hour came round");
+        let (d, _) = due(half_past, Some(last), second + 86_400 + 60, GRACE, &back);
+        assert_eq!(d, Due::Run(second + 86_400), "the day after, it did not run at half past ten");
+        // A time before the change, asked about after it, is found where it was
+        let nine = parse("at_0900").unwrap();
+        assert_eq!(last_time(nine, MON_10 + 7200, &back), Some(MON_10 - 7200));
+    }
+
+    /// The other way: a day of 23 hours. The time is still found at what the
+    /// wall clock calls it, not an hour late
+    #[test]
+    fn a_time_after_the_clocks_go_forward_is_found_on_the_wall() {
+        let forward = |t: u64| utc(if t < MON_10 { t } else { t + 3600 });
+        let noon = parse("at_1200").unwrap();
+        // Wall-clock noon is one hour of real time after the change
+        assert_eq!(last_time(noon, MON_10 + 2 * 3600, &forward), Some(MON_10 + 3600));
+    }
+
+    /// A time kept while the clock was set ahead does not stop everything
+    /// until the clock catches up with the mistake
+    #[test]
+    fn a_time_kept_from_the_future_counts_from_now() {
+        let often = parse("every_30m").unwrap();
+        let (d, last) = due(often, Some(MON_10 + 90 * 86_400), MON_10, GRACE, &utc);
+        assert_eq!((d, last), (Due::Not, MON_10));
+        assert_eq!(due(often, Some(last), MON_10 + 1800, GRACE, &utc).0, Due::Run(MON_10 + 1800));
     }
 
     #[test]

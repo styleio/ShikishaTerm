@@ -3311,10 +3311,11 @@ fn handle(
                     .respond(Response::from_string("expected websocket").with_status_code(400))
                     .map_err(Into::into);
             }
-            let wants_panes = req
-                .url()
-                .split_once('?')
-                .is_some_and(|(_, q)| q.split('&').any(|kv| kv == "panes=1"));
+            let asked = |word: &str| req.url().split_once('?').is_some_and(|(_, q)| q.split('&').any(|kv| kv == word));
+            let wants_panes = asked("panes=1");
+            // The page coming back on its own after its line dropped, not a
+            // person opening the board: it says so (see below)
+            let came_back = asked("again=1");
             let stream = crate::ws::upgrade(req, &key);
             let (stx, srx) = channel::<String>();
             let pending = Arc::new(AtomicUsize::new(0));
@@ -3350,7 +3351,13 @@ fn handle(
                 session: session.clone(),
                 panes: wants_panes,
             });
-            if !gate.is_here(&session) {
+            // A person opening the board on a phone is at work there, and the
+            // terminals are cut to the phone. A page that only reconnected
+            // (the Wi-Fi blinked while the phone lay on the desk) is nobody
+            // arriving: taking the width for it would reflow the terminal
+            // under whoever is typing at the PC, every time the line blinks.
+            // Such a phone takes the width back the moment it is used
+            if !gate.is_here(&session) && !came_back {
                 let _ = tx.send(RemoteCmd::Viewing);
             }
             std::thread::spawn(move || {

@@ -222,8 +222,21 @@ fn strings_in(v: &serde_json::Value, out: &mut Vec<String>) {
 
 /// The last `n` lines of a file, when there is one
 fn tail(path: &std::path::Path, n: usize) -> Option<String> {
-    let text = std::fs::read(path).ok()?;
+    use std::io::{Read as _, Seek as _};
+    // Only its end is read: the lines wanted are the last ones, and a log
+    // can be far larger than what is kept of it
+    const MOST: u64 = 2 * 1024 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    file.seek(std::io::SeekFrom::Start(size.saturating_sub(MOST))).ok()?;
+    let mut text = Vec::new();
+    file.take(MOST).read_to_end(&mut text).ok()?;
     let text = String::from_utf8_lossy(&text);
+    // Begun in the middle of a line: that piece of one is left out
+    let text = match size > MOST {
+        true => text.split_once('\n').map_or("", |(_, rest)| rest),
+        false => &text,
+    };
     let lines: Vec<&str> = text.lines().collect();
     Some(lines[lines.len().saturating_sub(n)..].join("\n"))
 }

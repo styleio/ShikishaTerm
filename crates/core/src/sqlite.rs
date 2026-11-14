@@ -163,6 +163,11 @@ pub fn in_memory(steps: &[(i64, &str, Step)], what: &str) -> Result<Connection> 
     ready(Connection::open_in_memory()?, steps, None, what)
 }
 
+/// How much of the write-ahead log is kept on disk between its being folded
+/// into the file: enough that an ordinary burst does not grow it again, and
+/// small beside the record itself
+const WAL_KEPT: i64 = 8 * 1024 * 1024;
+
 /// What every connection is given before anything else is done with it
 /// (`docs/design/sqlite.md` section 2)
 fn ready(mut conn: Connection, steps: &[(i64, &str, Step)], backup: Option<&Path>, what: &str) -> Result<Connection> {
@@ -172,6 +177,14 @@ fn ready(mut conn: Connection, steps: &[(i64, &str, Step)], backup: Option<&Path
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     // Wait for a lock instead of failing
     conn.busy_timeout(Duration::from_secs(5))?;
+    // What a statement needs for a moment (a sort, a statement over many
+    // rows) is kept in memory. On disk it goes to the system's temporary
+    // folder, and a full or unwritable one there fails writes to a record
+    // that is nowhere near it
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    // The log beside the file is cut back to this after it is folded in.
+    // Left alone it stays as large as its busiest moment ever made it
+    conn.pragma_update(None, "journal_size_limit", WAL_KEPT)?;
     migrate(&mut conn, steps, backup, what)?;
     // Off by default in SQLite, and per connection
     conn.pragma_update(None, "foreign_keys", "ON")?;
