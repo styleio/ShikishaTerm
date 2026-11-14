@@ -5124,6 +5124,10 @@ const MOVE_CODE = (function () {
 // and no runtime behind it, so it decided it was local and waited forever for
 // state that nothing was going to push.
 const REMOTE = {{REMOTE}};
+// Whether a file deleted on the machine the app runs on can be taken back
+// (its recycle bin). Where it cannot, deleting is said and asked about as
+// what it is
+const HAS_BIN = {{HAS_BIN}};
 // Whose keys the page is pressed with: a Mac's keyboard, wherever the board is
 // running. There ⌘ is what Ctrl is on the others for what the app does --
 // copy, paste, find -- and Ctrl stays Ctrl, sent to the terminal as a Mac's
@@ -18836,10 +18840,10 @@ function filesRowMenu(anchor, name, path, dir, point) {
     closeFolderMenu();
     askQuestion({
       title: T["files.remove.title"] || "",
-      say: T[far ? (dir ? "files.remove.far_dir" : "files.remove.far") : "files.remove.bin"] || "",
+      say: T[far ? (dir ? "files.remove.far_dir" : "files.remove.far") : HAS_BIN ? "files.remove.bin" : (dir ? "files.remove.gone_dir" : "files.remove.gone")] || "",
       what: path,
       mark: g && g.mark,
-      sure: far,
+      sure: far || !HAS_BIN,
       label: T["files.menu.remove"] || "",
       danger: true,
       go: () => filesAsk("remove", {path}),
@@ -29703,6 +29707,7 @@ fn built(sticky: bool, by: Served) -> String {
         )
         .replace("{{ACTIONS}}", &actions_json())
         .replace("{{STICKY}}", if sticky { "true" } else { "false" })
+        .replace("{{HAS_BIN}}", if crate::files::HAS_BIN { "true" } else { "false" })
         .replace("{{REMOTE}}", match by {
             Served::Remote | Served::Here => "true",
             Served::Window => "false",

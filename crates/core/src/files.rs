@@ -111,6 +111,13 @@ pub fn to_bin(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a file deleted on this machine goes somewhere it can be taken
+/// back from. What the page is told, so that it says what will happen and
+/// asks the way it asks about anything that cannot be undone
+pub const HAS_BIN: bool = cfg!(windows);
+
+/// Where there is no bin to put it in ([`HAS_BIN`]), deleting is for good:
+/// the page has said so, and asked
 #[cfg(not(windows))]
 pub fn to_bin(path: &Path) -> Result<(), String> {
     let meta = std::fs::symlink_metadata(path).map_err(|_| crate::i18n::t("err.files.gone"))?;

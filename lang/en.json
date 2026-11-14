@@ -2009,6 +2009,8 @@
   "files.rename.say": "Type the new name. It stays in the same folder; only its name changes.",
   "files.remove.title": "Delete",
   "files.remove.bin": "It goes to the recycle bin, where it can be restored from.",
+  "files.remove.gone": "Deleting this file cannot be undone.",
+  "files.remove.gone_dir": "Deleting this folder deletes everything in it, and cannot be undone.",
   "files.remove.far": "This file is on another machine, so deleting it cannot be undone.",
   "files.remove.far_dir": "This folder is on another machine, so deleting it cannot be undone. A folder with files in it cannot be deleted: delete what is in it first.",
   "files.copy.suffix": " - Copy",
