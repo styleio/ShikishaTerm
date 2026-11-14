@@ -18170,8 +18170,9 @@ fn files_here(panel: &str, act: &str, args: &serde_json::Value, root: &std::path
                 return fail(i18n::t("err.sftp.outside"));
             }
             // The same entry under another case is a rename Windows allows,
-            // not a name somebody else is using
-            let same = from.to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy());
+            // not a name somebody else is using. On a disk that tells the
+            // cases apart the other name is another file, and stays
+            let same = from.to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy()) && crate::files::same_entry(&from, &to);
             if std::fs::symlink_metadata(&to).is_ok() && !(act == "rename" && same) {
                 return fail(i18n::tp("err.files.exists", &[("name", &str_of("name"))]));
             }

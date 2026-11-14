@@ -15964,7 +15964,7 @@ window.__state = function (json) {
           ED.outside = true;
         } else {
           ED.stamp = stamp;
-          ED.loading = true;
+          ED.loading = true; ED.follow = true;
           edRead();
         }
       }
@@ -17061,6 +17061,13 @@ const ED = {
   asked: null,      // the opts of the save waiting for an answer
   said: "", bad: false,
   loading: false,
+  // A read nobody asked for (the file changed on disk, an encoding picked):
+  // its answer gives way to anything typed while it was on its way
+  follow: false,
+  // The save on its way, as {text}: the text it carried is what the file
+  // holds when it lands, whatever was typed since. And the one save pressed
+  // while it was out (its opts), sent when the first comes back
+  saving: null, saveNext: null,
   goto: null,       // {path, line, col}: where a pressed place asked to be taken
   reading: false,   // a read's text is on its way into the editor
 };
@@ -17076,6 +17083,9 @@ const edDraftKey = path => JSON.stringify([ED.key, path]);
 function edStash() {
   // What the visual editor has, into the text first: the draft is the text
   mdRichFlush();
+  // The editor is leaving this file: the answer of a save still out is not
+  // shown here any more, so nothing waits for it
+  ED.saving = null; ED.saveNext = null; ED.follow = false;
   if (!ED.path || !ED.dirty || !edAce) return;
   edDrafts.set(edDraftKey(ED.path),
     {text: edAce.getValue(), base: ED.text, mark: ED.mark, stamp: ED.stamp,
@@ -17165,7 +17175,17 @@ function editHeard(d) {
   if (d.path != null && d.path !== ED.path) return;
   if (d.act === "read") {
     ED.loading = false;
+    const follow = ED.follow;
+    ED.follow = false;
     if (!d.ok) { ED.said = d.error || ""; ED.bad = true; drawEdit(); return; }
+    // Rule 1 again: something was typed while this read was on its way (a
+    // moment here, seconds on another machine). The typing stays, with the
+    // mark it was typed against, and the person is told the file moved on
+    if (follow && edAce && ED.shown === ED.path && ED.dirty) {
+      ED.outside = true;
+      drawEdit();
+      return;
+    }
     ED.path = d.path; ED.mark = d.mark; ED.stamp = d.stamp || null; ED.text = d.text || "";
     ED.dirty = false; ED.outside = false; ED.said = ""; ED.bad = false;
     ED.encoding = d.encoding || "UTF-8"; ED.exact = d.exact !== false; ED.stop = null;
@@ -17209,6 +17229,8 @@ function editHeard(d) {
     return;
   }
   if (d.act === "write") {
+    const sent = ED.saving, next = ED.saveNext;
+    ED.saving = null; ED.saveNext = null;
     // Characters its encoding cannot hold: nothing was written, and the
     // person picks what to lose or what to change
     if (!d.ok && d.why === "unwritable") {
@@ -17221,15 +17243,25 @@ function editHeard(d) {
     edDrafts.delete(edDraftKey(ED.path));
     ED.mark = d.mark; ED.stamp = d.stamp || null;
     ED.encoding = d.encoding || ED.encoding; ED.exact = true; ED.stop = null;
-    // Saved with question marks: what is in the file is what is shown
+    // What the file holds now is the text this save carried -- not what is
+    // in the editor, which may have been typed in since and is not on disk
+    const now = edAce ? edAce.getValue() : ED.text;
+    const carried = sent ? sent.text : now;
     if (typeof d.text === "string") {
+      // Saved with question marks: what is in the file is what is shown,
+      // unless more was typed meanwhile, which stays as typed
       ED.text = d.text;
-      if (edAce) { edAce.session.doc.setValue(d.text); edAce.clearSelection(); }
+      if (edAce && now === carried) { edAce.session.doc.setValue(d.text); edAce.clearSelection(); }
+    } else {
+      ED.text = carried;
     }
-    ED.text = edAce ? edAce.getValue() : ED.text;
-    ED.dirty = false; ED.outside = false;
+    ED.dirty = (edAce ? edAce.getValue() : ED.text) !== ED.text;
+    ED.outside = false;
     ED.said = T["tui.edit.saved"] || ""; ED.bad = false;
     drawEdit();
+    // Save was pressed again while this one was out: what was typed since
+    // goes now, against the mark this save gave
+    if (next && ED.dirty) editWrite(next);
   }
 }
 // Ctrl+S reaches here too; text only read has nowhere to be saved
@@ -17238,7 +17270,12 @@ function editSave() { if (!(editorTab() && editorTab().read_only)) editWrite({})
 // over a file that moved on, `lossy` over what could not be read, `replace`
 // writes ? for what the encoding cannot hold, and `encoding` changes it
 function editWrite(opts) {
-  if (!ED.path || ED.loading) return;
+  if (!ED.path || ED.loading || !editorTab()) return;
+  // One save at a time: a second sent before the first answers would carry
+  // the old mark and be refused as if somebody else had written the file (or,
+  // on another machine, land in either order). It waits, and takes the text
+  // as it is when its turn comes
+  if (ED.saving) { ED.saveNext = opts; return; }
   // The visual editor's words are what is saved: written into the text now,
   // not a moment later
   mdRichFlush();
@@ -17250,9 +17287,11 @@ function editWrite(opts) {
     return;
   }
   ED.asked = opts;
+  const text = edAce ? edAce.getValue() : ED.text;
+  ED.saving = {text};
   // Rule 2: the mark says what we were given. The app refuses the write if the
   // file has moved on since, and says so -- it does not win the race
-  editAsk("write", {path: ED.path, text: edAce ? edAce.getValue() : ED.text,
+  editAsk("write", {path: ED.path, text,
     mark: opts.overwrite ? "" : ED.mark, encoding: opts.encoding || ED.encoding, replace: !!opts.replace});
 }
 // Keep what is here, over what changed on disk. The one save that does not
@@ -17271,7 +17310,7 @@ function editPickEncoding(v) {
     drawEdit();
     return;
   }
-  ED.said = ""; ED.loading = true;
+  ED.said = ""; ED.loading = true; ED.follow = true;
   edRead();
 }
 function editReload() {
@@ -19394,6 +19433,7 @@ function convoNote(box, r) {
   };
   area.onblur = done;
   area.onkeydown = e => {
+    if (typingIME(e)) return;
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); area.blur(); }
     if (e.key === "Escape") { area.value = r.note || ""; area.blur(); }
   };

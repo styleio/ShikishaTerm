@@ -117,6 +117,17 @@ pub fn to_bin(path: &Path) -> Result<(), String> {
     if meta.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) }.map_err(|e| e.to_string())
 }
 
+/// Whether two paths name one entry of the disk, as `readme.md` and
+/// `README.md` do where case is not told apart. A link is never the thing it
+/// points at: renaming onto it would replace it
+pub fn same_entry(a: &Path, b: &Path) -> bool {
+    let plain = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| !m.file_type().is_symlink());
+    if !plain(a) || !plain(b) {
+        return false;
+    }
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
 /// What the disk says about a file without reading it: when it was last
 /// written, and how long it is.
 ///
@@ -209,8 +220,10 @@ fn named(files: Vec<String>, mut capped: bool, needle: &str, limit: usize) -> Fo
 /// word thirty times is still one file to open. The first line is the one
 /// shown, because a person recognises the place from it.
 pub fn by_text(root: &Path, query: &str, limit: usize) -> Found {
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
+    // The words as typed: a space at either end is part of what is looked
+    // for ("fn " is not "fn")
+    let needle = query.to_lowercase();
+    if needle.trim().is_empty() {
         return Found { hits: Vec::new(), capped: false };
     }
     let (files, mut capped) = candidates(root);
@@ -420,8 +433,10 @@ const SHOWN: usize = 160;
 
 /// The words as the search reads them, or why they cannot be read
 pub fn matcher(ask: &Ask) -> Result<regex::Regex, String> {
-    let q = ask.q.trim();
-    if q.is_empty() {
+    // The words as typed: a space at either end is part of what is looked
+    // for ("fn " is not "fn"), and of a regular expression
+    let q = ask.q.as_str();
+    if q.trim().is_empty() {
         return Err(String::new());
     }
     let body = if ask.regex { q.to_string() } else { regex::escape(q) };
@@ -435,9 +450,10 @@ pub fn matcher(ask: &Ask) -> Result<regex::Regex, String> {
 
 /// File patterns, separated by commas or new lines, each read the way git
 /// and ripgrep read one: `*` is any part of a name, `**` any number of
-/// folders, `?` one character. A pattern with no slash in it names a file
-/// or a folder anywhere (`node_modules`, `*.rs`); one with a slash is a
-/// path from the folder's top (`src/**/*.ts`)
+/// folders, `?` one character, `{a,b}` either of two, `[abc]` one of a set.
+/// A pattern with no slash in it names a file or a folder anywhere
+/// (`node_modules`, `*.rs`, `*.{ts,tsx}`); one with a slash is a path from
+/// the folder's top (`src/**/*.ts`)
 pub fn patterns(list: &str) -> Vec<(bool, regex::Regex)> {
     globs(list)
         .into_iter()
@@ -456,43 +472,150 @@ enum Dialect {
 /// Each pattern of a list: whether it is a path from the top, and its body
 /// as a regular expression of either dialect (without its anchors)
 fn globs(list: &str) -> Vec<(bool, impl Fn(Dialect) -> String)> {
-    list.split([',', '\n'])
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
+    split_patterns(list)
+        .into_iter()
         .map(|p| {
             let p = p.replace('\\', "/");
             let anchored = p.trim_end_matches('/').contains('/');
-            let p = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/').to_string();
-            (anchored, move |dialect: Dialect| {
-                let mut re = String::new();
-                let mut chars = p.chars().peekable();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '*' if chars.peek() == Some(&'*') => {
-                            chars.next();
-                            if chars.peek() == Some(&'/') {
-                                chars.next();
-                                re.push_str(if dialect == Dialect::Rust { "(?:.*/)?" } else { "(.*/)?" });
-                            } else {
-                                re.push_str(".*");
-                            }
-                        }
-                        '*' => re.push_str("[^/]*"),
-                        '?' => re.push_str("[^/]"),
-                        c if dialect == Dialect::Rust => re.push_str(&regex::escape(&c.to_string())),
-                        // Only what POSIX gives a meaning to is escaped: a
-                        // backslash before anything else is undefined there
-                        c if ".[]\\()*+?{}|^$".contains(c) => {
-                            re.push('\\');
-                            re.push(c);
-                        }
-                        c => re.push(c),
-                    }
-                }
-                re
-            })
+            let p: Vec<char> = p.trim_start_matches("./").trim_start_matches('/').trim_end_matches('/').chars().collect();
+            (anchored, move |dialect: Dialect| glob_body(&p, dialect))
         })
         .collect()
+}
+
+/// A list of patterns, cut at its new lines and at the commas that are not
+/// inside `{...}` or `[...]`: `*.{ts,tsx}, docs` is two patterns, not three
+fn split_patterns(list: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in list.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        let (mut one, mut depth, mut i) = (String::new(), 0usize, 0usize);
+        while i < chars.len() {
+            let c = chars[i];
+            if let Some(end) = (c == '[').then(|| class_end(&chars, i)).flatten() {
+                one.extend(&chars[i..=end]);
+                i = end + 1;
+                continue;
+            }
+            match c {
+                '{' if group_closes(&chars, i) => depth += 1,
+                '}' if depth > 0 => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(std::mem::take(&mut one));
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            one.push(c);
+            i += 1;
+        }
+        out.push(one);
+    }
+    out.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+/// Whether the `{` at `at` opens a group that is closed further on. One that
+/// is not is a brace in a file's name
+fn group_closes(p: &[char], at: usize) -> bool {
+    let mut depth = 0usize;
+    for c in &p[at..] {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Where the set opened by the `[` at `at` ends, if it is one: a `]` right
+/// after the opening (or after its `!`) is a member, as the shell reads it,
+/// and a set never reaches over a slash
+fn class_end(p: &[char], at: usize) -> Option<usize> {
+    let mut i = at + 1;
+    if matches!(p.get(i), Some('!' | '^')) {
+        i += 1;
+    }
+    if p.get(i) == Some(&']') {
+        i += 1;
+    }
+    while let Some(c) = p.get(i) {
+        match c {
+            ']' => return Some(i),
+            '/' => return None,
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// One pattern as the body of a regular expression of a dialect
+fn glob_body(p: &[char], dialect: Dialect) -> String {
+    let rust = dialect == Dialect::Rust;
+    let mut re = String::new();
+    // How many `{` are open: a comma means "or" only inside one
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < p.len() {
+        let c = p[i];
+        i += 1;
+        match c {
+            '*' if p.get(i) == Some(&'*') => {
+                i += 1;
+                if p.get(i) == Some(&'/') {
+                    i += 1;
+                    re.push_str(if rust { "(?:.*/)?" } else { "(.*/)?" });
+                } else {
+                    re.push_str(".*");
+                }
+            }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            '{' if group_closes(p, i - 1) => {
+                depth += 1;
+                re.push_str(if rust { "(?:" } else { "(" });
+            }
+            ',' if depth > 0 => re.push('|'),
+            '}' if depth > 0 => {
+                depth -= 1;
+                re.push(')');
+            }
+            '[' if class_end(p, i - 1).is_some() => {
+                let end = class_end(p, i - 1).unwrap_or(i);
+                re.push('[');
+                let mut inner = &p[i..end];
+                if let Some(('!' | '^', rest)) = inner.split_first() {
+                    re.push('^');
+                    inner = rest;
+                }
+                for &m in inner {
+                    // POSIX takes every member as written; this program's
+                    // expressions give these a meaning inside a set
+                    if rust && matches!(m, '\\' | '[' | '^' | '&' | '~') {
+                        re.push('\\');
+                    }
+                    re.push(m);
+                }
+                re.push(']');
+                i = end + 1;
+            }
+            c if rust => re.push_str(&regex::escape(&c.to_string())),
+            // Only what POSIX gives a meaning to is escaped: a
+            // backslash before anything else is undefined there
+            c if ".[]\\()*+?{}|^$".contains(c) => {
+                re.push('\\');
+                re.push(c);
+            }
+            c => re.push(c),
+        }
+    }
+    re
 }
 
 /// The patterns of a list as one extended regular expression for `grep -E`
@@ -702,7 +825,20 @@ fn read_whole(path: &Path) -> Read {
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return Read::Not;
     }
-    Read::Text(String::from_utf8_lossy(&bytes).into_owned())
+    Read::Text(text_of(bytes))
+}
+
+/// A file's bytes as the text the editor would show for them: UTF-8 when
+/// they are that (nearly every file, and the cheap test), else whatever they
+/// most likely are -- a word in a Shift_JIS file is found as it is read
+fn text_of(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        // Cut off in the middle of a character (only a file's head was
+        // read): UTF-8 all the same
+        Err(e) if e.utf8_error().error_len().is_none() => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        Err(e) => crate::charset::read(e.as_bytes()).text,
+    }
 }
 
 /// The files under `root` worth looking in, up to `cap`, and whether the
@@ -926,7 +1062,7 @@ pub mod far {
             listing(),
             filter(&ask.include, false),
             filter(&ask.exclude, true),
-            sh_quote(ask.q.trim()),
+            sh_quote(&ask.q),
             limit + 1
         )
     }
@@ -986,7 +1122,7 @@ pub mod far {
             "cd {} && {} | xargs -0 grep -I -i -F -n -m 1 -H --null -e {} -- 2>/dev/null | head -n {}",
             sh_quote(root),
             listing(),
-            sh_quote(query.trim()),
+            sh_quote(query),
             limit + 1
         )
     }
@@ -994,7 +1130,7 @@ pub mod far {
     /// What it printed -- a path, a zero byte, then the line number and the
     /// line -- as the same hits a folder here gives.
     pub fn text(out: &str, query: &str, limit: usize) -> Found {
-        let needle = query.trim().to_lowercase();
+        let needle = query.to_lowercase();
         let mut hits = Vec::new();
         let mut capped = false;
         for row in out.lines() {
@@ -1049,7 +1185,7 @@ fn read_head(path: &Path) -> Option<String> {
     let mut buf = vec![0u8; READ_CAP];
     let n = f.read(&mut buf).ok()?;
     buf.truncate(n);
-    Some(String::from_utf8_lossy(&buf).into_owned())
+    Some(text_of(buf))
 }
 
 #[cfg(test)]
@@ -1086,6 +1222,57 @@ mod tests {
         assert!(kept("src/target.rs", &[], &exc), "only the name, not part of one");
         let deep = patterns("src/**/*.ts");
         assert!(kept("src/a/b/c.ts", &deep, &[]) && kept("src/c.ts", &deep, &[]) && !kept("lib/c.ts", &deep, &[]));
+    }
+
+    #[test]
+    fn a_comma_inside_braces_or_a_set_does_not_end_the_pattern() {
+        assert_eq!(split_patterns("*.{ts,tsx}, docs\n[a,b].txt"), ["*.{ts,tsx}", "docs", "[a,b].txt"]);
+        let inc = patterns("*.{ts,tsx}, src/**/*.{c,h}");
+        assert!(kept("web/a.ts", &inc, &[]) && kept("web/a.tsx", &inc, &[]) && kept("src/x/y.h", &inc, &[]));
+        assert!(!kept("web/a.js", &inc, &[]) && !kept("web/a.t", &inc, &[]) && !kept("lib/y.h", &inc, &[]));
+        let set = patterns("[a-c]*.rs, [!x]y");
+        assert!(kept("bee.rs", &set, &[]) && !kept("dee.rs", &set, &[]));
+        assert!(kept("zy", &set, &[]) && !kept("xy", &set, &[]));
+        // A brace or a bracket that closes nothing is a character of a name
+        let odd = patterns("a{b, c[d");
+        assert!(kept("a{b", &odd, &[]) && kept("c[d", &odd, &[]));
+        // The other machine is asked for the same files
+        let far = posix_paths("*.{ts,tsx}").unwrap();
+        assert!(far.contains("\\.(ts|tsx)"), "{far}");
+    }
+
+    #[test]
+    fn a_space_at_either_end_is_part_of_what_is_looked_for() {
+        let re = matcher(&ask("fn ")).unwrap();
+        assert!(re.is_match("fn main") && !re.is_match("fnord"));
+        assert!(matcher(&ask("   ")).is_err(), "only spaces is still nothing to look for");
+    }
+
+    #[test]
+    fn a_file_that_is_not_utf8_is_read_as_the_editor_reads_it() {
+        // "日本語" in Shift_JIS
+        let sjis = vec![0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea, b'\n', b'a', b'b', b'c'];
+        assert!(text_of(sjis).contains("\u{65e5}\u{672c}\u{8a9e}"));
+        // A head cut in the middle of a character stays UTF-8
+        let cut = "\u{65e5}\u{672c}".as_bytes()[..5].to_vec();
+        assert!(text_of(cut).starts_with('\u{65e5}'));
+    }
+
+    #[test]
+    fn two_names_are_one_entry_only_when_the_disk_says_so() {
+        let dir = std::env::temp_dir().join(format!("shikisha-same-{}", crate::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("readme.md");
+        std::fs::write(&a, "x").unwrap();
+        let upper = dir.join("README.md");
+        // Where case is not told apart the other spelling is the same file;
+        // where it is, there is no such file. Either way: never another one
+        assert_eq!(same_entry(&a, &upper), upper.exists());
+        let other = dir.join("other.md");
+        std::fs::write(&other, "y").unwrap();
+        assert!(!same_entry(&a, &other));
+        assert!(same_entry(&a, &a));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

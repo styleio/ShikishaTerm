@@ -8045,7 +8045,8 @@ function navFindBox() {
   input.addEventListener("input", () => { navFindText = input.value; drawNavFinds(); });
   input.addEventListener("keydown", e => {
     if (e.key === "Escape" && input.value) { e.stopPropagation(); input.value = ""; navFindText = ""; drawNavFinds(); }
-    if (e.key === "Enter") { const first = document.querySelector("#nav .navresults .navitem"); if (first) first.click(); }
+    // Enter that ends a kana conversion picks the word, not the first result
+    if (e.key === "Enter" && !(e.isComposing || e.keyCode === 229)) { const first = document.querySelector("#nav .navresults .navitem"); if (first) first.click(); }
   });
   return input;
 }
