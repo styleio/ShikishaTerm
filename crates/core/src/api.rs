@@ -161,7 +161,7 @@ fn mint_into(tokens: &Tokens, tab: &str) -> String {
     if let Ok(mut t) = tokens.lock() {
         t.insert(token.clone(), Some(tab.to_string()));
     }
-    let n = NEXT_INCARNATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let n = run_base() + NEXT_INCARNATION.fetch_add(1, Ordering::SeqCst) + 1;
     if let Ok(mut g) = INCARNATIONS.lock() {
         let g = g.get_or_insert_with(HashMap::new);
         g.retain(|_, (owner, _)| owner != tab);
@@ -172,6 +172,30 @@ fn mint_into(tokens: &Tokens, tab: &str) -> String {
 
 /// Counted across the whole run, so no two processes of any tab share one
 static NEXT_INCARNATION: AtomicU64 = AtomicU64::new(0);
+
+/// How many numbers one run of this app has to itself. A number says which
+/// run of a tab's program holds a key, and is written down beside the work
+/// handed to it (`orchestration.db`), which outlives the app. Counted from
+/// one in every run, a number written down in the last run meant nothing in
+/// this one -- or, worse, happened to equal one. So each run counts from a
+/// base of its own, and two numbers can be told to be of one run or not
+pub const RUN_SPAN: u64 = 1_000_000;
+
+fn run_base() -> u64 {
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *BASE.get_or_init(|| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs().max(1));
+        secs * RUN_SPAN
+    })
+}
+
+/// Whether two of those numbers were counted in the same run of this app.
+/// Only then does their being different say the tab's program was started
+/// again: across a restart of the app every tab is numbered anew, the ones
+/// whose program never stopped (kept by the resident process) included
+pub fn same_app_run(a: u64, b: u64) -> bool {
+    a / RUN_SPAN == b / RUN_SPAN
+}
 
 /// key -> (the tab, which run of its program). Kept beside the keys rather
 /// than in them: every other reader of the keys wants only the owner

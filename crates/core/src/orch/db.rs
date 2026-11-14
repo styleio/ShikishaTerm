@@ -629,6 +629,13 @@ impl Store {
         Ok(st.query_map(params![job], Self::assignment_row)?.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The work is still its tab's after the app was restarted: the number
+    /// its tab's program goes by in this run is what it is held under now
+    pub fn carried_over(&mut self, assignment: i64, process: i64) -> Result<()> {
+        self.conn.execute("UPDATE assignments SET process = ?2 WHERE id = ?1", params![assignment, process])?;
+        Ok(())
+    }
+
     /// Every assignment not yet over, in every job
     pub fn active_assignments(&self) -> Result<Vec<Assignment>> {
         let mut st = self.conn.prepare(&format!(

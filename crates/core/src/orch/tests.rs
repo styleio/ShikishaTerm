@@ -165,6 +165,40 @@ fn a_report_from_a_restarted_tab_is_not_the_one_asked_for() {
     assert!(rx.try_recv().unwrap().unwrap_err().contains("earlier run"));
 }
 
+/// The app was restarted while a worker was at work. Every tab is numbered
+/// anew when the app starts -- the ones whose program never stopped too --
+/// so a number from before says nothing about the worker's program: its
+/// work is not taken for lost, and its report is its own
+#[test]
+fn work_handed_out_before_the_app_was_restarted_is_still_the_tabs() {
+    let mut w = World::new();
+    w.ok("lead", "job_open", vec![json!("x")]);
+    w.ok("lead", "task_add", vec![json!("a")]);
+    w.assign("t1", "claude");
+    // The same tabs, numbered by another run of the app
+    let after = 5 * crate::api::RUN_SPAN + 3;
+    for t in w.scene.tabs.iter_mut() {
+        t.incarnation = Some(after);
+        t.state = TabState::Busy;
+    }
+    let fx = w.o.tick(&w.scene);
+    assert!(!fx.iter().any(|e| matches!(e, Effect::Type { text, .. } if text.contains("mail"))), "the worker was taken for restarted: {fx:?}");
+    let (tx, rx) = channel();
+    w.o.call(
+        Call {
+            caller: Some("called-claude".into()),
+            incarnation: Some(after),
+            method: "report".into(),
+            params: vec![json!("done"), json!("Did it.")],
+            reply: tx,
+        },
+        &w.scene,
+        &w.named,
+        w.limits,
+    );
+    assert!(rx.try_recv().unwrap().is_ok(), "its report was refused as an earlier run's");
+}
+
 #[test]
 fn a_report_must_say_how_it_went() {
     let mut w = World::new();

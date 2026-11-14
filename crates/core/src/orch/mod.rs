@@ -576,15 +576,22 @@ impl Orchestra {
     /// The assignment a worker is on, checked against the process given it
     fn my_assignment(&mut self, me: &TabFact, incarnation: Option<u64>) -> Result<Option<Assignment>, String> {
         let store = self.store()?;
-        let a = store.active_for_tab(&me.uid).map_err(|e| e.to_string())?;
-        if let Some(a) = &a
-            && let (Some(given), Some(now)) = (a.process, incarnation)
+        let mut a = store.active_for_tab(&me.uid).map_err(|e| e.to_string())?;
+        if let Some(held) = &mut a
+            && let (Some(given), Some(now)) = (held.process, incarnation)
             && given as u64 != now
         {
-            return Err(format!(
-                "a{} was handed to an earlier run of this tab's program; this one was not given it",
-                a.id
-            ));
+            if crate::api::same_app_run(given as u64, now) {
+                return Err(format!(
+                    "a{} was handed to an earlier run of this tab's program; this one was not given it",
+                    held.id
+                ));
+            }
+            // Numbered in an earlier run of the app: the app was restarted,
+            // which is not the tab's program being restarted. The work is
+            // still this tab's, under the number it has now
+            let _ = store.carried_over(held.id, now as i64);
+            held.process = Some(now as i64);
         }
         Ok(a)
     }
@@ -2078,6 +2085,9 @@ impl Orchestra {
             .collect();
         let mut raised: Vec<(i64, String, String, String)> = Vec::new(); // job, key, subject, body
         let mut lost: Vec<(i64, String)> = Vec::new();
+        // Work handed out before the app was restarted, and the number its
+        // tab has in this run
+        let mut carried: Vec<(i64, i64)> = Vec::new();
         for a in &active {
             if starting.contains(&a.id) {
                 continue;
@@ -2087,8 +2097,19 @@ impl Orchestra {
                 None => lost.push((a.id, format!("the tab <@{}> was closed", a.tab_name))),
                 Some(t) => match t.state {
                     TabState::Exited => lost.push((a.id, format!("<@{}>'s program ended", a.tab_name))),
-                    _ if t.incarnation.is_some() && a.process.is_some() && t.incarnation.map(|n| n as i64) != a.process => {
-                        lost.push((a.id, format!("<@{}> was restarted; the new run of it was never given a{}", a.tab_name, a.id)))
+                    // Its program was started again in this run of the app.
+                    // A number from an earlier run of the app says nothing
+                    // of the kind (every tab is numbered anew when the app
+                    // starts, the ones whose program never stopped too):
+                    // the work stays the tab's, under its number of now
+                    _ if let (Some(now), Some(given)) = (t.incarnation, a.process)
+                        && now as i64 != given =>
+                    {
+                        if crate::api::same_app_run(given as u64, now) {
+                            lost.push((a.id, format!("<@{}> was restarted; the new run of it was never given a{}", a.tab_name, a.id)))
+                        } else {
+                            carried.push((a.id, now as i64));
+                        }
                     }
                     TabState::Question => {
                         raised.push((
@@ -2178,6 +2199,9 @@ impl Orchestra {
                     }
                 },
             }
+        }
+        for (id, process) in carried {
+            let _ = store.carried_over(id, process);
         }
         for (id, why) in lost {
             let Ok(Some(a)) = store.assignment(id) else { continue };

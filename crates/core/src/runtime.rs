@@ -1937,6 +1937,11 @@ pub fn restart_surface(
         .map(|i| only_one_here(tabs, i))
         .unwrap_or(false);
     if let Some(t) = session_mut(tabs, surfaces, at) {
+        // A person asking: its server is tried now, even one that refused
+        // the sign-in a moment ago
+        if let Some(server) = t.server() {
+            crate::ssh::try_again(server);
+        }
         return Some(restart_tab(t, alone, keep, rows, cols));
     }
     let name = restartable_page(surfaces, at, caps)?;

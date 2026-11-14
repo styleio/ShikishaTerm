@@ -726,8 +726,49 @@ fn remembered(spec: &Spec) -> Option<String> {
     all.iter().find(|(k, _)| !k.contains('>') && machine_key(k) == name).map(|(_, fp)| fp.clone())
 }
 
+/// How long a sign-in that was refused is not tried again with the very
+/// same name and password or key. Whatever asks for a server asks again and
+/// again when it does not get it -- a tab waiting for its connection, the
+/// bridge, the look for AIs there, each on a clock of its own -- and a
+/// refusal is not a thing that mends by asking: the same answer comes back
+/// each time, and each one is a failed sign-in in the server's log. A few a
+/// minute is what gets an address banned and an account locked. Longer than
+/// the ten minutes such a count usually runs over
+const REFUSED_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The sign-ins refused lately, by what was signed in with ([`conn_key`]):
+/// when, and what was said. A credential changed in the settings is another
+/// key, so the next try with it goes out at once
+fn refusals() -> &'static Mutex<HashMap<String, (std::time::Instant, String)>> {
+    static REFUSED: OnceLock<Mutex<HashMap<String, (std::time::Instant, String)>>> = OnceLock::new();
+    REFUSED.get_or_init(Default::default)
+}
+
+fn refused_now(key: &str, said: &str) {
+    let mut all = refusals().lock().unwrap_or_else(|e| e.into_inner());
+    all.retain(|_, (at, _)| at.elapsed() < REFUSED_FOR);
+    all.insert(key.to_string(), (std::time::Instant::now(), said.to_string()));
+}
+
+fn refused_lately(key: &str) -> Option<String> {
+    let all = refusals().lock().unwrap_or_else(|e| e.into_inner());
+    all.get(key).filter(|(at, _)| at.elapsed() < REFUSED_FOR).map(|(_, said)| said.clone())
+}
+
+/// A person asked for this server again (restarted its tab, pressed
+/// reconnect): tried now, whatever was refused before. They may have put
+/// the key on the server since, which nothing here can see
+pub fn try_again(spec: &Spec) {
+    refusals().lock().unwrap_or_else(|e| e.into_inner()).remove(&conn_key(spec));
+}
+
 /// Open and sign in to one server
 async fn connect(spec: &Spec) -> Result<Open> {
+    // Said with the way on: the answer is a few minutes old, and the person
+    // may have put it right on the server since
+    if let Some(said) = refused_lately(&conn_key(spec)) {
+        bail!(crate::i18n::tp("err.ssh.refused_held", &[("said", &said)]));
+    }
     let addr = spec.address();
     let name = spec.machine();
     let config = Arc::new(russh::client::Config {
@@ -850,10 +891,9 @@ async fn connect(spec: &Spec) -> Result<Open> {
         }
     };
     if !ok {
-        bail!(crate::i18n::tp(
-            "err.ssh.refused",
-            &[("user", &spec.user), ("host", &addr)]
-        ));
+        let said = crate::i18n::tp("err.ssh.refused", &[("user", &spec.user), ("host", &addr)]);
+        refused_now(&conn_key(spec), &said);
+        bail!(said);
     }
     Ok(Open { handle: Arc::new(handle), _via: via })
 }
@@ -1498,6 +1538,21 @@ pub fn exec(spec: &Spec, command: &str, wait_ms: u64) -> Result<Ran> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sign-in the server refused is not sent again with the same name and
+    /// credential for a while: asked again by everything that wants the
+    /// server, it is what gets an address banned. Another credential is
+    /// another question, and goes out
+    #[test]
+    fn a_refused_sign_in_is_not_asked_again_with_the_same_credential() {
+        let key = format!("ada@test.invalid:22#{}", crate::random_hex(8));
+        assert!(refused_lately(&key).is_none());
+        refused_now(&key, "refused");
+        assert_eq!(refused_lately(&key).as_deref(), Some("refused"));
+        assert!(refused_lately(&format!("{key}-changed")).is_none(), "a changed credential was held back too");
+        refusals().lock().unwrap().remove(&key);
+        assert!(refused_lately(&key).is_none(), "asked for again by a person, it was still held back");
+    }
 
     /// The first thing typed into a shell that opened over there: the folder,
     /// then the program in it, and the program only if the folder was there

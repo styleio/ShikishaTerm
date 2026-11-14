@@ -3246,6 +3246,7 @@
   "err.ssh.timeout": "{host} is not answering. Check the address and port, and that the server is running",
   "err.ssh.too_long": "The work on {host} did not finish within {secs} seconds, so it was stopped",
   "err.ssh.connect": "Could not reach {host}: {e}",
+  "err.ssh.refused_held": "{said} The server refused this sign-in a few minutes ago, so it is not being asked again yet. Restart the tab to try now, or change the password or key in the settings",
   "err.ssh.refused": "{host} would not accept {user}. Check the password or the key",
   "err.ssh.no_credential": "No password is registered for {host}. Add one on this tab's settings page",
   "err.ssh.key": "The key file could not be read: {e}",
