@@ -6957,7 +6957,7 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_view_remove" && was.number === g.view) { g.view = null; ghpKeepView(g.ref, null); }
           // A form is emptied when what it holds is what went in: anything
           // typed into it since it was sent is not in GitHub, and stays
-          if (d.act === "gh_project_field_add" && g.fnew.name.trim() === (was.field || {}).name) g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
+          if (d.act === "gh_project_field_add" && JSON.stringify(g.fnew) === g.fnewSent) g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
           // The field that was being changed is done with -- not another one
           // opened since; and the column that was on its way is there
           // -- nor its choices still being changed when only its name was sent
@@ -8415,6 +8415,8 @@ function ghpFieldsPage(box, d) {
       field.iteration = {days: n.days, iterations: [0, 1, 2].map(i => ({title: title + " " + (i + 1), start: ghpDayAfter(start, i * n.days), days: n.days}))};
     }
     ghpLeavePage();
+    // The form as it is sent, to know it by when GitHub has answered
+    g.fnewSent = JSON.stringify(n);
     ghpSend("gh_project_field_add", {field});
     redraw();
   };
