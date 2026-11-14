@@ -760,13 +760,22 @@ fn refused_lately(key: &str) -> Option<String> {
 /// the key on the server since, which nothing here can see
 pub fn try_again(spec: &Spec) {
     refusals().lock().unwrap_or_else(|e| e.into_inner()).remove(&conn_key(spec));
+    // ...and the server it is reached through: a refusal there holds this
+    // one back just the same
+    if let Some(through) = spec.jump.as_deref() {
+        try_again(through);
+    }
 }
 
 /// Open and sign in to one server
 async fn connect(spec: &Spec) -> Result<Open> {
     // Said with the way on: the answer is a few minutes old, and the person
     // may have put it right on the server since
-    if let Some(said) = refused_lately(&conn_key(spec)) {
+    // Worked out once, before anything is sent: what is held back after a
+    // refusal is the credential that was refused, not one the settings were
+    // given while the server was answering
+    let tried_with = conn_key(spec);
+    if let Some(said) = refused_lately(&tried_with) {
         bail!(crate::i18n::tp("err.ssh.refused_held", &[("said", &said)]));
     }
     let addr = spec.address();
@@ -892,7 +901,7 @@ async fn connect(spec: &Spec) -> Result<Open> {
     };
     if !ok {
         let said = crate::i18n::tp("err.ssh.refused", &[("user", &spec.user), ("host", &addr)]);
-        refused_now(&conn_key(spec), &said);
+        refused_now(&tried_with, &said);
         bail!(said);
     }
     Ok(Open { handle: Arc::new(handle), _via: via })

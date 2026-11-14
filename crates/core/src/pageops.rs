@@ -287,7 +287,10 @@ fn secret_fill(
         if (this.disabled || this.readOnly || !(box.width > 0 && box.height > 0)) return "not_ready";
         this.focus();
         // Asked again now: taking the focus runs the page's own code, which
-        // can have made a field for words into one for a number
+        // can have made a field for words into one for a number, moved the
+        // page to another address, or the field into another document
+        if (location.href !== page) return "moved";
+        if (this.ownerDocument !== document || !this.isConnected) return "framed";
         if (!editable && !(this instanceof HTMLTextAreaElement)
             && !["text", "password", "email", "search", "tel", "url"].includes(this.type)) return "not_a_field";
         if (editable) {

@@ -43,6 +43,8 @@ pub const STEPS: &[(i64, &str, Step)] = &[
 /// or the person has since deleted cannot be read again, and what was
 /// counted from it is all there is of it: it is kept, as it was counted
 fn codex_by_turn(tx: &rusqlite::Transaction) -> Result<()> {
+    let looked_through: std::collections::HashSet<PathBuf> =
+        records().into_iter().filter(|(cli, _)| *cli == "codex").map(|(_, file)| file).collect();
     let records: Vec<(String, String)> = tx
         .prepare("SELECT path, carry FROM read_files WHERE cli = 'codex'")?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -52,7 +54,9 @@ fn codex_by_turn(tx: &rusqlite::Transaction) -> Result<()> {
             .ok()
             .and_then(|c| c.get("session").and_then(|s| s.as_str()).map(str::to_string))
             .unwrap_or_default();
-        if session.is_empty() || !Path::new(&path).is_file() {
+        // Still there, and among the records looked through: one in a folder
+        // Codex is no longer pointed at is there and would not be read again
+        if session.is_empty() || !looked_through.contains(&PathBuf::from(&path)) {
             continue;
         }
         tx.execute("DELETE FROM calls WHERE cli = 'codex' AND session = ?1", rusqlite::params![session])?;
@@ -667,9 +671,12 @@ mod tests {
         }
         let conn = crate::sqlite::open(&db, STEPS, WHAT).unwrap();
         let calls: Vec<String> = conn.prepare("SELECT key FROM calls").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
-        assert_eq!(calls, ["x:gone"], "what was counted from a record no longer there was thrown away, or one still there was kept twice");
+        // Neither is among the records Codex is looked through for on this
+        // machine (one is gone, the other is in a folder of its own), so
+        // what was counted from both is all there is of them, and stays
+        assert_eq!(calls.len(), 2, "what was counted from a record that will not be read again was thrown away: {calls:?}");
         let files: i64 = conn.query_row("SELECT COUNT(*) FROM read_files", [], |r| r.get(0)).unwrap();
-        assert_eq!(files, 1, "the record still there is not read again from its start");
+        assert_eq!(files, 2);
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }

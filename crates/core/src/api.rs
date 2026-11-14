@@ -183,9 +183,11 @@ pub const RUN_SPAN: u64 = 1_000_000;
 
 fn run_base() -> u64 {
     static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    // Drawn, not read off the clock: two runs begun in the same second
+    // would count from the same base
     *BASE.get_or_init(|| {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs().max(1));
-        secs * RUN_SPAN
+        let drawn = u64::from_str_radix(&crate::random_hex(4), 16).unwrap_or(1).max(1);
+        drawn * RUN_SPAN
     })
 }
 

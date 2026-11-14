@@ -100,12 +100,21 @@ printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(printf '%s' \"$c\" | grep -c 
     // kept inside this one's, with whatever was committed there and pushed
     // nowhere. Each one named is asked by where it is kept
     let kept_in = crate::git::run(folder, &["rev-parse", "--path-format=absolute", "--git-dir"])?;
-    for line in listed_names(folder) {
-        let dir = format!("{}/modules/{line}", kept_in.trim().trim_end_matches('/'));
+    let names = names_in(&crate::git::run(folder, &["config", "--file", ".gitmodules", "--name-only", "--get-regexp", NAMED]).unwrap_or_default());
+    // Each with the names under it: a submodule put away takes its own
+    // submodules out of sight with it, and they are kept inside its keeping
+    let mut todo: Vec<(String, String)> =
+        names.into_iter().map(|n| (format!("{}/modules/{n}", kept_in.trim().trim_end_matches('/')), n)).collect();
+    while let Some((dir, name)) = todo.pop() {
         let at = |args: &[&str]| crate::git::run(folder, &[&["--git-dir", dir.as_str()], args].concat());
-        // Never fetched: nothing of its own is kept
-        if at(&["rev-parse", "--git-dir"]).is_err() {
-            continue;
+        if let Err(e) = at(&["rev-parse", "--git-dir"]) {
+            // Never fetched: nothing of its own is kept. Anything else git
+            // says is a repository that could not be asked, which is not
+            // one with nothing in it
+            if e.to_string().to_lowercase().contains("not a git repository") {
+                continue;
+            }
+            return Err(e);
         }
         let commits: u64 = at(&["rev-list", "--count", "--all", "--not", "--remotes"])?.trim().parse()?;
         let stashes = at(&["stash", "list"])?.lines().count() as u64;
@@ -114,21 +123,23 @@ printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(printf '%s' \"$c\" | grep -c 
                 true,
                 crate::i18n::tp(
                     "err.worktree.submodule_work",
-                    &[("path", line.as_str()), ("changes", "0"), ("commits", &commits.to_string()), ("stashes", &stashes.to_string())],
+                    &[("path", name.as_str()), ("changes", "0"), ("commits", &commits.to_string()), ("stashes", &stashes.to_string())],
                 ),
             ));
         }
+        // Its own submodules, by the list it last committed
+        let under = at(&["config", "--blob", "HEAD:.gitmodules", "--name-only", "--get-regexp", NAMED]).unwrap_or_default();
+        todo.extend(names_in(&under).into_iter().map(|n| (format!("{dir}/modules/{n}"), format!("{name}/{n}"))));
     }
     Ok((true, String::new()))
 }
 
-/// The names of a project's submodules, as its list of them has them
-fn listed_names(folder: &Path) -> Vec<String> {
-    crate::git::run(folder, &["config", "--file", ".gitmodules", "--name-only", "--get-regexp", "^submodule\\..*\\.path$"])
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("submodule.")?.strip_suffix(".path").map(str::to_string))
-        .collect()
+/// What names a submodule in a list of them
+const NAMED: &str = "^submodule\\..*\\.path$";
+
+/// The names of submodules, from the lines `git config --name-only` gave
+fn names_in(listed: &str) -> Vec<String> {
+    listed.lines().filter_map(|l| l.trim().strip_prefix("submodule.")?.strip_suffix(".path").map(str::to_string)).collect()
 }
 
 pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<Review> {
