@@ -6089,7 +6089,9 @@ function issuesAsk(act, args) {
 function issueAt(d) {
   const at = {project: d.project, number: d.number};
   if (d.at_repo) at.at_repo = d.at_repo;
-  else if ((issueProject(d.project) || {}).repo) at.in_repo = issueProject(d.project).repo;
+  // The one its page was read from, when it has a page: what is written is
+  // written to the issue that is shown, whatever the desk has become since
+  else if (d.in_repo || (issueProject(d.project) || {}).repo) at.in_repo = d.in_repo || issueProject(d.project).repo;
   return at;
 }
 function issueThread(d) { return (d.at_repo || d.project) + "#" + d.number; }
@@ -6114,7 +6116,7 @@ function issueRepoOf(d) { return d.at_repo || (issueProject(d.project) || {}).re
 function issueOpenAt(via, repo, number, kind) {
   const low = String(repo || "").toLowerCase();
   const p = low && (I.projects || []).find(x => String(x.repo || "").toLowerCase() === low);
-  if (p) issuesAsk("detail", {project: p.name, number, kind});
+  if (p) issuesAsk("detail", {project: p.name, number, kind, in_repo: p.repo});
   else if (via && repo) issuesAsk("detail", {project: via, number, kind, at_repo: repo});
 }
 // The page's issue read again without a busy line over it
@@ -6427,7 +6429,10 @@ window.__issues = function (d) {
     case "detail": {
       // The same issue read again keeps what is being changed on its page open
       const same = I.detail && I.view === "detail" && issueThread(I.detail) === issueThread({project: d.project, at_repo: d.at_repo, number: (d.data || {}).number});
-      I.detail = Object.assign({project: d.project, kind: d.kind, at_repo: d.at_repo || ""}, d.data || {});
+      // With the repository it was read from: the one it was asked of, else
+      // the one the desk's project stands for now
+      I.detail = Object.assign({project: d.project, kind: d.kind, at_repo: d.at_repo || "",
+        in_repo: d.at_repo ? "" : (d.in_repo || (issueProject(d.project) || {}).repo || "")}, d.data || {});
       I.view = "detail";
       I.made = "";
       I.armed = ""; I.dupOf = "";
@@ -6872,8 +6877,8 @@ function ghpAnswer(d) {
       // Not while changes are still on their way: what GitHub says now is
       // from before them, and would put the cards back for a moment
       if (g.sending.length) break;
-      g.fstale = false;
-      if (d.ok) { ghpExpected(d.data, g.data); g.data = d.data || null; g.view = (d.data || {}).view || null; g.err = ""; g.errFix = false; }
+      // Its fields are as GitHub has them only once it has been read
+      if (d.ok) { g.fstale = false; ghpExpected(d.data, g.data); g.data = d.data || null; g.view = (d.data || {}).view || null; g.err = ""; g.errFix = false; }
       else { g.err = d.error || ""; g.errFix = !!d.settings; }
       g.rev++;
       break;
@@ -6953,7 +6958,9 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_field_add") g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
           // The field that was being changed is done with -- not another one
           // opened since; and the column that was on its way is there
-          if ((d.act === "gh_project_field_set" || d.act === "gh_project_field_remove") && g.fedit && g.fedit.field === was.field) g.fedit = null;
+          // -- nor its choices still being changed when only its name was sent
+          const whole = d.act === "gh_project_field_remove" || !!((was.change || {}).options || (was.change || {}).iteration);
+          if ((d.act === "gh_project_field_set" || d.act === "gh_project_field_remove") && whole && g.fedit && g.fedit.field === was.field) g.fedit = null;
           if (d.act === "gh_project_field_set" && g.colNew && g.colNew.sent) g.colNew = null;
           if (d.act === "gh_project_status") g.status = {status: "on_track", body: "", start: "", target: ""};
           if (d.act === "gh_project_link") g.linkText = "";

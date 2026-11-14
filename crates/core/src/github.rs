@@ -1669,6 +1669,7 @@ pub fn answer(
     let base = json!({"act": act, "kind": if pulls { "pr" } else { "issue" }, "project": wanted,
         "at_repo": args.get("at_repo").cloned().unwrap_or(Value::Null),
         "tag": args.get("tag").cloned().unwrap_or(Value::Null),
+        "in_repo": args.get("in_repo").cloned().unwrap_or(Value::Null),
         "seq": args.get("seq").cloned().unwrap_or(Value::Null)});
     let with = |mut v: Value, extra: Value| {
         if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
