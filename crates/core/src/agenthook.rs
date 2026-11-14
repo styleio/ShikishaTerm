@@ -1167,10 +1167,16 @@ pub fn report_of(kind: &str, v: &serde_json::Value) -> Report {
         // A conversation begun afresh has nothing running beside it yet; one
         // taken up again, or packed down to save room, carries on with what
         // it had
-        let fresh = kind == "session"
-            && matches!(v.get("source").and_then(|s| s.as_str()), Some("startup") | Some("clear"));
+        let source = v.get("source").and_then(|s| s.as_str());
+        let fresh = kind == "session" && matches!(source, Some("startup") | Some("clear"));
+        // A conversation branched off beside the tab's own (Codex's side
+        // chat says `fork`) begins under an id of its own while the tab's
+        // conversation goes on. It is not the tab's conversation: taken for
+        // it, the tab would lose the one it has -- its record, its turns,
+        // what it is resumed as
+        let beside = source == Some("fork");
         return Report {
-            id: id.filter(|_| kind == "session"),
+            id: id.filter(|_| kind == "session" && !beside),
             running: fresh.then(Running::default),
             ..Default::default()
         };
@@ -2615,6 +2621,9 @@ mod tests {
         assert_eq!(begun("resume").running, None);
         assert_eq!(begun("compact").running, None);
         assert_eq!(begun("startup").id.as_deref(), Some("s"));
+        assert_eq!(begun("resume").id.as_deref(), Some("s"));
+        // One branched off beside the tab's own is not the tab's conversation
+        assert_eq!(begun("fork").id, None, "a side conversation took the tab's place");
     }
 
     /// Measured against Codex CLI 0.150/0.151 on Windows, which splits the
