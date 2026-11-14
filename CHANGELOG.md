@@ -77,6 +77,42 @@ once it reaches its first tagged release.
   leaves what a person pressed running. The emergency stop (Ctrl+B x) still
   stops it, and the button then says it was stopped. The same goes for the
   ✨ that writes an issue or a pull request.
+- **The editor no longer calls unsaved typing saved.** Text typed while a
+  save was on its way was marked as saved, and text typed while a file was
+  being read again was replaced. Both are kept now, and a second Save
+  pressed while one is running waits its turn.
+- **A stored password is typed only into the page it belongs to.** It is
+  written from where the page's own script cannot reach, the address is
+  checked again at the moment of writing, a field inside another site's
+  frame is refused, and a password prompt (Basic auth) is answered only for
+  the secret's own site. A secret allowed for part of a site cannot answer
+  a password prompt: allow the whole site for that.
+- **Removing a working folder no longer forgets other working folders.**
+  Folders on a drive or share that was away at that moment lost their git
+  record. A making that failed no longer removes a working folder that was
+  already standing under the same name. A working folder with submodules is
+  checked for work that exists nowhere else before anything is closed.
+- **The phone's Send gives the text back when it could not be sent**, and
+  says so. A line to the PC that has gone quiet is dropped and reconnected,
+  instead of showing the last screen as if it were live. A phone that only
+  reconnected no longer takes the terminal's width from the person typing at
+  the PC. The page works again on iPhones older than iOS 16.4.
+- **An SSH tab left idle is no longer disconnected after an hour.** A
+  sign-in the server refused is not repeated in the background, which could
+  get the address banned; restarting the tab tries at once.
+- **Ctrl+C and other Ctrl keys work on keyboards laid out for other
+  scripts** (Russian, Korean, Greek). Ctrl+Space and Ctrl+[ are sent, and
+  the characters typed with AltGr are typed.
+- **A commit with slow hooks is no longer stopped at 20 seconds.** The git
+  panel no longer collides with an AI's git over the index lock, shows a
+  branch's open pull request when a newer one was closed, and does not call
+  checks passed when more of them exist than it read.
+- **A timed prompt runs once on the day the clocks change**, and work handed
+  to another AI survives a restart of the app.
+- **Pasted text cannot run itself.** Text that carried the terminal's "end
+  of paste" mark was typed, and run, past that mark.
+- **On a Mac and on a server, deleting a file says that it cannot be
+  undone**, which is what happens there.
 
 ## [0.30.1] - 2026-11-10
 
