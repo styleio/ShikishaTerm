@@ -7618,7 +7618,7 @@ function ghpEdit(card) {
   const kept = g.unsaved[card.id];
   delete g.unsaved[card.id];
   g.edit = kept ? Object.assign(kept, {copy: card})
-    : {card: card.id, title: card.title || "", body: card.body || "", people: (card.assignees || []).slice(),
+    : {card: card.id, title: card.title || "", body: card.body || "", people: (card.assignees || []).slice(), peopleWas: (card.assignees || []).slice(),
         repo: (home && home.repo) || "", copy: card};
   // The people it can be given to, beside the ones already on the board
   if (home) issueOpts({project: home.name});
@@ -7651,7 +7651,9 @@ function ghpSaveDraft(card) {
   const g = I.gh, e = g.edit;
   if (!e || !e.title.trim()) return;
   const seq = ghpWriting(card, e);
-  const people = ghpPeopleChange(card.assignees || [], e.people || []);
+  // Against who it had when its page was opened: what was ticked and
+  // unticked here, whoever it has been given to elsewhere since
+  const people = ghpPeopleChange(e.peopleWas || card.assignees || [], e.people || []);
   card.title = e.title.trim(); card.body = e.body; card.assignees = (e.people || []).slice();
   g.edit = null;
   g.rev++;
@@ -7668,7 +7670,7 @@ function ghpToIssue(card) {
   // of them is still on its way, or did not go in. Kept until GitHub has made it
   const seq = ghpWriting(card, e);
   ghpSend("gh_project_to_issue", Object.assign({card: card.id, repo: e.repo, draft: card.draft, title: e.title.trim(), body: e.body, wseq: seq},
-    ghpPeopleChange(card.assignees || [], e.people || []) || {}));
+    ghpPeopleChange(e.peopleWas || card.assignees || [], e.people || []) || {}));
   card.kind = "adding";
   g.edit = null;
   g.rev++;

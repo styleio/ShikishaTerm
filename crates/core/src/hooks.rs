@@ -4358,6 +4358,7 @@ impl HookEngine {
                 let draft = arg(&args, 0).as_str().unwrap_or_default().to_string();
                 let given = |k: &str| o.get(k).map(&strings).unwrap_or_default();
                 // Said whole, or as who is put on and taken off those it has now
+                let _turn = crate::ghproject::turn();
                 let people = if o.get("add_assignees").is_some() || o.get("remove_assignees").is_some() {
                     crate::ghproject::draft_people(&hub, &draft, &given("add_assignees"), &given("remove_assignees")).map(Some)
                 } else {

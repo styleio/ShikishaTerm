@@ -577,7 +577,9 @@ pub fn read_card(node: &Value) -> Option<Value> {
 pub fn set_value(hub: &Hub, board: &str, card: &str, field: &str, value: &Value) -> Result<()> {
     let ids = json!({"project": board, "item": card, "field": field});
     let after;
+    let _turn;
     let value = if value.get("add_options").is_some() || value.get("remove_options").is_some() {
+        _turn = turn();
         let found = hub.graphql_whole(
             &format!("query($item:ID!){{node(id:$item){{... on ProjectV2Item{{fieldValues(first:100){{nodes{{... on ProjectV2ItemFieldMultiSelectValue{{options{{id}} field{{{FIELD_ID}}}}}}}}}}}}}}}"),
             json!({"item": card}),
@@ -614,6 +616,15 @@ pub fn set_value(hub: &Hub, board: &str, card: &str, field: &str, value: &Value)
         return Err(refused(&v));
     }
     Ok(())
+}
+
+/// One at a time, for a change that reads what GitHub has, works out what it
+/// becomes and writes that whole: two at once -- two screens, a screen and a
+/// script -- would each start from the same reading, and the later would undo
+/// the earlier. Held from the reading to the writing
+pub fn turn() -> std::sync::MutexGuard<'static, ()> {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The choices a card has after `change` puts some on and takes some off:
@@ -842,7 +853,8 @@ fn user_ids(hub: &Hub, logins: &[String]) -> Result<Vec<String>> {
 }
 
 /// Who a draft is assigned to after `add` are put on it and `remove` taken
-/// off, worked out against who it has on GitHub now
+/// off, worked out against who it has on GitHub now. The caller holds
+/// [`turn`] from here until it has written them
 pub fn draft_people(hub: &Hub, draft: &str, add: &[String], remove: &[String]) -> Result<Vec<String>> {
     let found = hub.graphql_whole(
         "query($draft:ID!){node(id:$draft){... on DraftIssue{assignees(first:100){nodes{login}}}}}",
@@ -1148,6 +1160,7 @@ pub fn options_same(now: &[Value], seen: &[Value]) -> bool {
 /// ids they were worked out from) are refused when the field has others by now
 pub fn field_change(hub: &Hub, field: &str, change: &Value) -> Result<()> {
     let added;
+    let _turn = (change.get("add_option").is_some() || change.get("seen").is_some()).then(turn);
     let change = if change.get("add_option").is_some_and(|o| !o.is_null()) {
         let (mut options, multi) = options_now(hub, field)?;
         options.push(change["add_option"].clone());
