@@ -18,7 +18,7 @@
 /// the tool. Then the tools by name (see `snip::TOOLS`), and last the two
 /// things the board draws over itself, named as the window's own keys name
 /// them (`keys::ACTIONS`), so one name means one thing wherever it is written
-pub const ACTIONS: &[&str] = &["snip", "text", "noun", "color", "edit", "quick_commands", "ideas"];
+pub const ACTIONS: &[&str] = &["snip", "clip", "text", "noun", "color", "edit", "quick_commands", "ideas"];
 
 /// The actions that open something on the board rather than a tool over a
 /// picture of the screen. Pressed from another program, they bring the window
@@ -350,23 +350,30 @@ mod tests {
         let mut written = std::collections::BTreeMap::new();
         let w = wanted(&written);
         let key = |text: &str| Wanted::Key(Combo::parse(text).unwrap());
+        // Looked up by name: where an action stands in the list is the list's
+        // to change
+        let of = |w: &[(&'static str, Wanted)], action: &str| {
+            w.iter().find(|(a, _)| *a == action).unwrap_or_else(|| panic!("{action} has no row")).1.clone()
+        };
         assert_eq!(w[0], ("snip", key(default_of("snip"))));
-        assert!(w[1..5].iter().all(|(_, k)| *k == Wanted::Off), "a tool had a key it was never given");
-        assert_eq!(w[5], ("quick_commands", key(default_of("quick_commands"))));
-        assert_eq!(w[6], ("ideas", key(default_of("ideas"))));
+        for tool in crate::snip::TOOLS {
+            assert_eq!(of(&w, tool), Wanted::Off, "{tool} had a key it was never given");
+        }
+        assert_eq!(of(&w, "quick_commands"), key(default_of("quick_commands")));
+        assert_eq!(of(&w, "ideas"), key(default_of("ideas")));
 
         written.insert("ideas".to_string(), String::new());
-        assert_eq!(wanted(&written)[6].1, Wanted::Off, "the ideas' key came back after it was cleared");
+        assert_eq!(of(&wanted(&written), "ideas"), Wanted::Off, "the ideas' key came back after it was cleared");
 
         written.insert("snip".to_string(), String::new());
         written.insert("text".to_string(), "ctrl+alt+shift+t".to_string());
         written.insert("noun".to_string(), "Ctrl+Alt+Shift+T".to_string());
         written.insert("edit".to_string(), "Win+E".to_string());
         let w = wanted(&written);
-        assert_eq!(w[0].1, Wanted::Off, "a cleared key came back");
-        assert!(matches!(w[1].1, Wanted::Key(_)));
-        assert!(matches!(w[2].1, Wanted::Twice(_)), "one key was given to two tools");
-        assert_eq!(w[4].1, Wanted::Unreadable("Win+E".into()));
+        assert_eq!(of(&w, "snip"), Wanted::Off, "a cleared key came back");
+        assert!(matches!(of(&w, "text"), Wanted::Key(_)));
+        assert!(matches!(of(&w, "noun"), Wanted::Twice(_)), "one key was given to two tools");
+        assert_eq!(of(&w, "edit"), Wanted::Unreadable("Win+E".into()));
     }
 
     /// The keys offered are the scissors, the tools the page runs, and the

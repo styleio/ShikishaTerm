@@ -9,6 +9,16 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **Copy to clipboard, among the scissors' tools.** Frame a part of the
+  screen and choose **Copy to clipboard** (or press `X`): the part goes to
+  the clipboard as an image, at the screen's own pixels, and the tool
+  closes. A click without dragging copies the whole screen. It is the first
+  tool on the list, so Enter chooses it once a frame is drawn. It can be
+  given a key of its own in the key settings.
+- **Move, in the image editor.** The hand at the top of the tool rail (`V`)
+  picks up an arrow, box, text, hidden part or pen line already drawn and
+  puts it somewhere else. The thing under the pointer is outlined before it
+  is picked up, and a move is undone like any other step.
 - **GitHub Projects on the Issue tab.** Beside Issues and Pull requests
   there is now Project. It lists the GitHub Projects that matter to the
   repository: the ones linked to it first, then its owner's, then your own.

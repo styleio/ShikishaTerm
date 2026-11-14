@@ -11,6 +11,9 @@
 //! the page is told rather than guessing: from the left bar it is offered to
 //! the clipboard or to a file.
 //!
+//! The plainest tool does nothing with the framed part but hand it over: the
+//! part goes to the clipboard as a picture, and the page is gone.
+//!
 //! Two of the tools read the framed part with the assistant AI. That is the
 //! one thing here that leaves the machine, so it is the one thing that asks
 //! first: a desk agrees to it once, for that AI, and until it has the picture
@@ -21,8 +24,13 @@
 ///
 /// The board's menu is built from this list, so a tool that is not here is not
 /// offered anywhere -- a button for something this page cannot do would be a
-/// button that does nothing
-pub const TOOLS: &[&str] = &["text", "noun", "color", "edit"];
+/// button that does nothing.
+///
+/// `clip` is first. It is what a part of the screen is most often framed for,
+/// and the first tool is the one Enter chooses once a frame is drawn -- the
+/// one answer among these that sends nothing anywhere and is undone by copying
+/// something else
+pub const TOOLS: &[&str] = &["clip", "text", "noun", "color", "edit"];
 
 mod edit;
 
@@ -383,6 +391,11 @@ const PAGE: &str = r##"<!doctype html>
  #choose button { display:flex; align-items:center; justify-content:space-between; gap:var(--s4);
    background:none; border-color:transparent; text-align:left; }
  #choose button:hover, #choose button:focus-visible { background:var(--panel2); border-color:var(--edge); outline:none; }
+ /* A tool this screen cannot run: grey, and it still answers a press (the
+    reason is the line under the list) */
+ #choose button.off, #choose button.off:hover, #choose button.off:focus-visible { background:none;
+   border-color:transparent; color:var(--faint); cursor:not-allowed; }
+ #choose .why { max-width:260px; padding:var(--s2); font-size:11.5px; color:var(--warn); white-space:normal; }
  kbd { font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:11px; line-height:1.4; padding:0 6px;
    border:1px solid var(--line); border-radius:var(--r-chip); color:var(--dim); background:var(--bg); }
  #hint { position:fixed; left:50%; top:var(--s4); transform:translateX(-50%); padding:var(--s2) var(--s4);
@@ -513,7 +526,7 @@ const Q = new URLSearchParams(location.search);
 const ASKED = TOOLS.includes(Q.get("tool"));
 let TOOL = ASKED ? Q.get("tool") : null;
 // The letter that chooses each tool while framing
-const TOOL_KEYS = {text: "t", noun: "n", color: "k", edit: "e"};
+const TOOL_KEYS = {clip: "x", text: "t", noun: "n", color: "k", edit: "e"};
 // The window hands messages to the program that opened it; a page in a phone's
 // browser has nobody to hand them to and does the same things itself
 const HOST = !!(window.ipc && window.ipc.postMessage);
@@ -549,7 +562,54 @@ function saveOut(text, name) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
+// A picture to the clipboard, and whether it got there. One way, for the framed
+// part and for the edited picture alike. The window is handed the PNG and says
+// what its clipboard did with it; a browser takes one only over a secure
+// connection -- a phone reaching this PC over plain http has none
+const CLIP_PICTURE = HOST || !!(navigator.clipboard && window.ClipboardItem && window.isSecureContext);
+function pngOf(canvas) {
+  return new Promise(done => canvas.toBlob(blob => done(blob), "image/png"));
+}
+function base64Of(blob) {
+  return new Promise(done => {
+    const r = new FileReader();
+    r.onload = () => done(String(r.result).split(",")[1] || "");
+    r.onerror = () => done("");
+    r.readAsDataURL(blob);
+  });
+}
+// The window's answers, each handed to the copy it answers. Told by number:
+// two copies asked close together (Ctrl+C held down) are two answers, and
+// the first must not be taken for the second
+let copies = 0;
+const pictureCopied = new Map();
+window.__snipCopied = function (id, ok) {
+  const done = pictureCopied.get(id);
+  pictureCopied.delete(id);
+  if (done) done(!!ok);
+};
+function copyPicture(canvas) {
+  if (!CLIP_PICTURE) return Promise.resolve(false);
+  const png = pngOf(canvas);
+  if (HOST) {
+    return png.then(blob => blob ? base64Of(blob) : "").then(b64 => b64 ? new Promise(done => {
+      const id = ++copies;
+      pictureCopied.set(id, done);
+      tell({act: "copy_image", png: b64, id});
+    }) : false);
+  }
+  // Handed over still being made. A browser gives its clipboard only to the
+  // press itself, and a press that first waited for the PNG is no longer one
+  try {
+    return navigator.clipboard.write([new ClipboardItem({"image/png": png})]).then(() => true, () => false);
+  } catch (e) {
+    return Promise.resolve(false);
+  }
+}
+let closing = 0;   // the moment the page goes by itself, once the part is copied
 function shut() {
+  // Going now: the moment set for later would be a second way out
+  clearTimeout(closing);
   if (HOST) { tell({act: "close"}); return; }
   // Opened as a layer over the board: the board takes it down
   if (window.parent !== window) { window.parent.postMessage({snip: "close"}, "*"); return; }
@@ -610,7 +670,7 @@ function begin(picture) {
 // What to do now, said above the picture
 function framingHint() {
   if (!TOOL) return T["snip.frame.hint_choose"] || "";
-  const how = T[TOOL === "edit" ? "snip.frame.hint_edit" : "snip.frame.hint"] || "";
+  const how = (TOOL === "edit" ? T["snip.frame.hint_edit"] : TOOL === "clip" ? T["snip.frame.hint_clip"] : T["snip.frame.hint"]) || "";
   // A tool chosen by its letter says which, since nothing else on screen does
   return ASKED ? how : (T["snip.tool." + TOOL] || TOOL) + " ・ " + how;
 }
@@ -657,6 +717,10 @@ const toPicture = (cx, cy) => ({
   };
   stage.addEventListener("pointerdown", e => {
     if (e.button !== 0 || !img) return;
+    // The part is in the clipboard and the page is on its way out: a press
+    // now is somebody who has seen that and is done here
+    if (leaving === "copied") { shut(); return; }
+    if (leaving) return;
     stage.setPointerCapture(e.pointerId);
     from = {x: e.clientX, y: e.clientY};
     $("hint").hidden = true;
@@ -671,6 +735,8 @@ const toPicture = (cx, cy) => ({
     if (!from) return;
     const a = toPicture(from.x, from.y), b = toPicture(e.clientX, e.clientY);
     from = null;
+    // Where the frame was let go, so a list offered for it later opens there
+    lastAt = {x: e.clientX, y: e.clientY};
     if (!TOOL) {
       pending = {a, b, at: {x: e.clientX, y: e.clientY}};
       offerTools();
@@ -682,17 +748,26 @@ const toPicture = (cx, cy) => ({
 
 // A frame waiting for its tool
 let pending = null;
-function offerTools() {
+let lastAt = {x: 0, y: 0};   // where the last frame was let go, on screen
+let leaving = "";            // "copying" while the part is handed over, "copied" once it has been
+// Why a tool cannot run on this screen, or nothing when it can
+const cannotRun = t => t === "clip" && !CLIP_PICTURE ? (T["snip.clip.unavailable"] || "") : "";
+// The tools for the frame that is waiting. `why` is what just went wrong with
+// one of them, said under the list where it stays until another is chosen
+function offerTools(why) {
   const box = $("choose");
   box.textContent = "";
   box.append(Object.assign(document.createElement("div"), {className: "say", textContent: T["snip.choose.say"] || ""}));
+  const said = Object.assign(document.createElement("div"), {className: "why", textContent: why || "", hidden: !why});
   for (const t of TOOLS) {
     const b = document.createElement("button");
+    b.className = cannotRun(t) ? "off" : "";
     b.append(Object.assign(document.createElement("span"), {textContent: T["snip.tool." + t] || t}),
       Object.assign(document.createElement("kbd"), {textContent: TOOL_KEYS[t].toUpperCase()}));
     b.onclick = () => chooseTool(t);
     box.append(b);
   }
+  box.append(said);
   box.hidden = false;
   // Beside the frame, not over what was framed: to its right, else its left,
   // else below, else above, and on the screen whichever it is
@@ -707,11 +782,21 @@ function offerTools() {
   else { x = r.left; y = r.top - gap - h; }
   box.style.left = Math.max(gap, Math.min(innerWidth - w - gap, x)) + "px";
   box.style.top = Math.max(gap, Math.min(innerHeight - h - gap, y)) + "px";
-  const first = box.querySelector("button");
+  // Enter takes the first tool that can run here
+  const first = box.querySelector("button:not(.off)");
   if (first) first.focus();
 }
 function chooseTool(t) {
   if (!pending) return;
+  // A tool this screen cannot run answers the press with why, and what to
+  // choose instead, where it stays
+  const no = cannotRun(t);
+  if (no) {
+    const said = $("choose").querySelector(".why");
+    said.textContent = no;
+    said.hidden = false;
+    return;
+  }
   TOOL = t;
   $("choose").hidden = true;
   const {a, b} = pending;
@@ -721,7 +806,10 @@ function chooseTool(t) {
 // A letter chooses the tool: before framing, for the frame to come; with a
 // frame waiting, for that frame
 document.addEventListener("keydown", e => {
-  if (ASKED || $("stage").hidden || e.ctrlKey || e.altKey || e.metaKey) return;
+  if ($("stage").hidden || leaving || e.ctrlKey || e.altKey || e.metaKey) return;
+  // A tool asked for by name is not changed by a letter -- until it could not
+  // run, and the others are offered for the same frame
+  if (ASKED && !pending) return;
   const t = TOOLS.find(t => TOOL_KEYS[t] === e.key.toLowerCase());
   if (!t) return;
   e.preventDefault();
@@ -737,8 +825,8 @@ function openTool(a, b) {
   let w = Math.ceil(Math.max(a.x, b.x)) - x, h = Math.ceil(Math.max(a.y, b.y)) - y;
   // A press that did not move frames nothing. Somebody who pressed once
   // meant the place they pressed, so a small square around it stands in
-  if ((w < 3 || h < 3) && TOOL === "edit") {
-    // A picture to edit is most often the whole of it
+  if ((w < 3 || h < 3) && (TOOL === "edit" || TOOL === "clip")) {
+    // A picture to edit, or to take away as it is, is most often the whole of it
     x = 0; y = 0; w = img.naturalWidth; h = img.naturalHeight;
   } else if (w < 3 || h < 3) {
     const R = 12;
@@ -746,11 +834,47 @@ function openTool(a, b) {
     w = Math.min(img.naturalWidth - x, R * 2 + 1); h = Math.min(img.naturalHeight - y, R * 2 + 1);
   }
   rect = {x, y, w, h};
+  // Copying opens nothing: the picture stays where it is until the page goes
+  if (TOOL === "clip") { copyFrame(); return; }
   $("stage").hidden = true;
   $("hint").hidden = true;
   if (TOOL === "color") openColor();
   else if (TOOL === "text" || TOOL === "noun") openAi();
   else if (TOOL === "edit") openEdit();
+}
+
+// ── To the clipboard ───────────────────────────────
+// The framed part, as it is, at the picture's own pixels. Said only once the
+// clipboard has it; then the page goes, since there is nothing left to do here.
+// When the clipboard would not take it, the frame stays and the tools are
+// offered again with the reason, so the part can still be saved from the editor
+async function copyFrame() {
+  if (leaving) return;
+  leaving = "copying";
+  $("hint").hidden = true;
+  $("choose").hidden = true;
+  // The frame drawn where the copied part is: a press that did not move took
+  // the whole picture, and the frame says so
+  const f = $("frame");
+  f.hidden = false;
+  $("shade").hidden = true;
+  $("size").hidden = true;
+  f.style.left = fit.x + rect.x * fit.s + "px"; f.style.top = fit.y + rect.y * fit.s + "px";
+  f.style.width = rect.w * fit.s + "px"; f.style.height = rect.h * fit.s + "px";
+  const c = document.createElement("canvas");
+  c.width = rect.w; c.height = rect.h;
+  c.getContext("2d").drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+  const ok = await copyPicture(c);
+  if (ok) {
+    leaving = "copied";
+    toast(T["snip.edit.copied"] || "");
+    // Long enough to be read, and any press or Esc ends it sooner
+    closing = setTimeout(shut, 900);
+    return;
+  }
+  leaving = "";
+  pending = {a: {x: rect.x, y: rect.y}, b: {x: rect.x + rect.w, y: rect.y + rect.h}, at: lastAt};
+  offerTools((CLIP_PICTURE ? T["snip.clip.refused"] : T["snip.clip.unavailable"]) || "");
 }
 
 // ── Reading a colour ───────────────────────────────
@@ -1188,7 +1312,7 @@ mod tests {
             .replace("__DICT__", "{}")
             .replace("__TOOLS__", &serde_json::to_string(TOOLS).unwrap());
         assert!(!built.contains("__DICT__") && !built.contains("__TOOLS__"));
-        assert!(built.contains("const TOOLS = [\"text\",\"noun\",\"color\",\"edit\"];"), "the list of tools is not in it");
+        assert!(built.contains("const TOOLS = [\"clip\",\"text\",\"noun\",\"color\",\"edit\"];"), "the list of tools is not in it");
         assert!(!built.contains("__EDIT_"), "the editor was not laid into the page");
         assert!(built.contains("function openEdit()"), "the editor's script is not in the page");
     }
@@ -1222,6 +1346,40 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), letters.len(), "two tools share a letter");
+    }
+
+    /// The framed part goes to the clipboard as it was framed, and the page
+    /// says so only once the clipboard has it: the window answers with what
+    /// its clipboard did, and a refusal leaves the frame and offers the tools
+    /// again. The editor hands its picture over the same way
+    #[test]
+    fn a_copied_part_is_said_only_once_the_clipboard_has_it() {
+        assert_eq!(TOOLS.first(), Some(&"clip"), "copying is not the first tool");
+        assert!(PAGE.contains("const TOOL_KEYS = {clip: \"x\","), "copying is not chosen with X");
+        let copy = &PAGE[PAGE.find("async function copyFrame()").expect("nothing copies the framed part")..];
+        let copy = &copy[..copy.find("\n}\n").unwrap()];
+        let asked = copy.find("const ok = await copyPicture(c);").expect("the framed part is not handed to the clipboard");
+        let said = copy.find("toast(T[\"snip.edit.copied\"]").expect("nothing says the part was copied");
+        assert!(asked < said, "it says copied before the clipboard answered");
+        assert!(
+            copy.contains("offerTools((CLIP_PICTURE ? T[\"snip.clip.refused\"] : T[\"snip.clip.unavailable\"])"),
+            "a refusal is not said beside the frame"
+        );
+        // The picture's own pixels: nothing between the picture and the copy scales it
+        assert!(copy.contains("drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);"));
+        // One way to the clipboard for every picture on the page
+        let page = assembled();
+        assert_eq!(page.matches("act: \"copy_image\"").count(), 1, "a picture reaches the clipboard a second way");
+        assert_eq!(page.matches("navigator.clipboard.write(").count(), 1, "a picture reaches the clipboard a second way");
+        assert!(edit::JS.contains("await copyPicture(E.committed)"), "the editor copies its picture another way");
+        // An answer is taken by the copy it was asked for, and by no other
+        assert!(PAGE.contains("tell({act: \"copy_image\", png: b64, id});"), "a copy is asked without its number");
+        assert!(PAGE.contains("window.__snipCopied = function (id, ok) {"), "an answer does not say which copy it is for");
+        // Going at once takes back the moment it would have gone by itself
+        assert!(PAGE.contains("clearTimeout(closing);") && copy.contains("closing = setTimeout(shut, 900);"));
+        // A tool the screen cannot run is grey and still answers
+        assert!(PAGE.contains("b.className = cannotRun(t) ? \"off\" : \"\";"));
+        assert!(!PAGE.contains("b.disabled"), "a tool that cannot run swallows the press");
     }
 
     /// A colour is read in whole pixels. A pixel drawn a fraction wide makes
@@ -1395,9 +1553,15 @@ mod tests {
     #[test]
     fn the_editor_has_all_its_words() {
         let mut keys: Vec<String> = Vec::new();
-        for t in ["arrow", "rect", "text", "hide", "pen"] {
+        for t in ["move", "arrow", "rect", "text", "hide", "pen"] {
+            assert!(edit::JS.contains(&format!("{t}: '<svg")), "{t} has no mark on the rail");
             keys.push(format!("snip.edit.tool.{t}"));
             keys.push(format!("snip.edit.hint.{t}"));
+        }
+        // Said by name through `editWhy`, which the scan below cannot follow
+        for k in ["snip.edit.move.none", "snip.edit.no_undo", "snip.edit.no_redo"] {
+            assert!(edit::JS.contains(&format!("\"{k}\"")), "{k} is no longer said");
+            keys.push(k.into());
         }
         for k in ["mosaic", "blur", "fill"] { keys.push(format!("snip.edit.how.{k}")); }
         for k in ["thin", "mid", "thick"] { keys.push(format!("snip.edit.width.{k}")); }
@@ -1417,6 +1581,35 @@ mod tests {
         for key in keys {
             assert_ne!(crate::i18n::t(&key), key, "{key} is not in the word list");
         }
+    }
+
+    /// What was drawn can be picked up and put elsewhere: the hand is first
+    /// on the rail, above the arrow. Moving makes a new thing rather than
+    /// changing the one drawn -- the steps kept for undo hold the old one, and
+    /// a step back has to find it where it was
+    #[test]
+    fn what_was_drawn_can_be_moved_and_moved_back() {
+        assert!(edit::JS.contains("const EDIT_TOOLS = [\"move\", \"arrow\","), "the hand is not above the arrow");
+        let moved = &edit::JS[edit::JS.find("function movedBy(o, dx, dy)").expect("nothing moves what was drawn")..];
+        let moved = &moved[..moved.find("\n}\n").unwrap()];
+        assert_eq!(moved.matches("{...o,").count(), 3, "a moved thing is not a new thing");
+        assert!(!moved.contains("o.x ="), "moving changes the thing the undo steps hold");
+        // Every kind of thing that can be drawn can be picked up: a line by
+        // its stroke, a box by its edge, and the rest (words, a hidden part)
+        // by the space they cover
+        let hits = &edit::JS[edit::JS.find("function editHits(o, p, near)").expect("nothing says what a press is on")..];
+        let hits = &hits[..hits.find("\n}\n").unwrap()];
+        for kind in ["arrow", "pen", "rect"] {
+            assert!(hits.contains(&format!("if (o.type === \"{kind}\")")), "{kind} cannot be picked up");
+        }
+        assert!(hits.trim_end().ends_with("return inside(b, near);"), "words and hidden parts cannot be picked up");
+        // One hand, one thing: a second finger does not take over a move
+        assert!(edit::JS.contains("if (E.moving) return;"), "a second press replaces the thing being held");
+        // Put down through the one place a change is made, so it can be undone
+        let end = &edit::JS[edit::JS.find("function editMoveEnd(keep)").unwrap()..];
+        assert!(end[..end.find("\n}\n").unwrap()].contains("editChange(() => { E.objs = E.objs.map(o => o === m.obj ? m.now : o); });"));
+        // A picture just opened has nothing to move: it starts with a tool that draws
+        assert!(edit::JS.contains("if (EDIT_TOOLS.includes(p.tool) && p.tool !== \"move\") E.tool = p.tool;"));
     }
 
     /// The waits offered are short and include none at all -- no wait is how
