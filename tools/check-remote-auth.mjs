@@ -21,6 +21,8 @@ function viewer(answers = ['correct']) {
   let now = 1000, tick, reloads = 0;
   const context = vm.createContext({
     T, TOKEN: '', MOVE_CODE: '', wsUp: false, remoteCut: false, moving: null, downSince: 0,
+    // Whether the state line has been up before (a poll after that says so)
+    beenUp: false,
     Date: {now: () => now}, encodeURIComponent,
     fetch: (url, options) => new Promise((resolve, reject) => requests.push({url, options, resolve, reject})),
     prompt: message => { prompts.push(message); return answers.shift() ?? null; },
