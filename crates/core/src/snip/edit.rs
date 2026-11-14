@@ -6,7 +6,8 @@
 //! page: the framing before it, and the ways out after it, are shared with the
 //! other tools. What is drawn stays a list of things on top of the picture
 //! until the picture itself changes size, so a word written a moment ago can
-//! still be put right.
+//! still be put right, and anything drawn can be picked up and put somewhere
+//! else.
 
 /// The editor's styles, inside the page's own `<style>`.
 pub const CSS: &str = r##"
@@ -37,6 +38,11 @@ pub const CSS: &str = r##"
  .erail svg { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
  .earea { position:relative; flex:1; min-width:0; overflow:hidden; cursor:crosshair; touch-action:none; }
  .earea.texting { cursor:text; }
+ /* Moving what was drawn: an open hand over something that can be picked up,
+    a closed one while it is held, and a plain pointer over the bare picture */
+ .earea.moving { cursor:default; }
+ .earea.moving.over { cursor:grab; }
+ .earea.moving.held { cursor:grabbing; }
  #e-view { position:absolute; left:0; top:0; display:block; }
  #e-cropbox { position:absolute; border:1px solid var(--brand); pointer-events:none;
    box-shadow:0 0 0 1px #0009, 0 0 0 100000px #0007; }
@@ -141,8 +147,9 @@ pub const JS: &str = r##"<script>
 // What is drawn is a list of things laid over the picture, drawn again in order
 // whenever the list changes. Cutting, resizing and growing the picture are the
 // moments the things become part of it
-const EDIT_TOOLS = ["arrow", "rect", "text", "hide", "pen"];
-const EDIT_KEYS = {arrow: "a", rect: "r", text: "t", hide: "b", pen: "p"};
+// `move` draws nothing: it picks up what the others drew and puts it elsewhere
+const EDIT_TOOLS = ["move", "arrow", "rect", "text", "hide", "pen"];
+const EDIT_KEYS = {move: "v", arrow: "a", rect: "r", text: "t", hide: "b", pen: "p"};
 const EDIT_COLORS = ["#E5484D", "#F76B15", "#FFC53D", "#30A46C", "#0090FF", "#111111", "#FFFFFF"];
 const EDIT_WIDTHS = {thin: 3, mid: 6, thick: 12};
 const EDIT_SIZES = {small: 18, mid: 28, large: 44};
@@ -150,6 +157,7 @@ const EDIT_HOWS = ["mosaic", "blur", "fill"];
 const EDIT_MAX = 16384;
 const EDIT_HISTORY = 60;
 const EDIT_ICONS = {
+  move: '<svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>',
   arrow: '<svg viewBox="0 0 24 24"><path d="M5 19 19 5"/><path d="M10 5h9v9"/></svg>',
   rect: '<svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1"/></svg>',
   text: '<svg viewBox="0 0 24 24"><path d="M5 6V5h14v1"/><path d="M12 5v14"/><path d="M9 19h6"/></svg>',
@@ -167,13 +175,11 @@ const E = {
   draft: null,         // what is being drawn this moment
   crop: null,          // {from, r} while choosing where to cut
   editing: null,       // {x, y, obj} while words are being typed
+  moving: null,        // {obj, from, now} while something drawn is held
+  over: null,          // what a press would pick up, with the hand
   dirty: false,        // drawn on since it was last handed anywhere
   why: "",             // why the last press did nothing, until something changes
 };
-// The clipboard takes a picture from the window, and from a browser only over a
-// secure connection -- a phone reaching this PC over plain http has none
-const EDIT_CLIP = HOST || !!(navigator.clipboard && window.ClipboardItem && window.isSecureContext);
-
 const eW = () => E.base.width, eH = () => E.base.height;
 // Line widths and letter sizes are for a picture the size of a screen. A
 // picture cut from a 4K screen is drawn with the same lines a person sees
@@ -181,12 +187,15 @@ const eUnit = () => Math.max(1, Math.max(eW(), eH()) / 1920);
 
 function editPrefs(save) {
   try {
+    const p = JSON.parse(localStorage.getItem("shikisha.edit") || "{}");
     if (save) {
-      localStorage.setItem("shikisha.edit", JSON.stringify({tool: E.tool, color: E.color, width: E.width, size: E.size, how: E.how}));
+      // The hand is not kept: a picture just opened has nothing on it to move,
+      // so the next one starts with the tool that last drew
+      const tool = E.tool === "move" ? p.tool : E.tool;
+      localStorage.setItem("shikisha.edit", JSON.stringify({tool, color: E.color, width: E.width, size: E.size, how: E.how}));
       return;
     }
-    const p = JSON.parse(localStorage.getItem("shikisha.edit") || "{}");
-    if (EDIT_TOOLS.includes(p.tool)) E.tool = p.tool;
+    if (EDIT_TOOLS.includes(p.tool) && p.tool !== "move") E.tool = p.tool;
     if (EDIT_COLORS.includes(p.color)) E.color = p.color;
     if (p.width in EDIT_WIDTHS) E.width = p.width;
     if (p.size in EDIT_SIZES) E.size = p.size;
@@ -199,6 +208,8 @@ function openEdit() {
   c.width = rect.w; c.height = rect.h;
   c.getContext("2d").drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
   E.base = c; E.objs = []; E.undo = []; E.redo = []; E.dirty = false; E.why = "";
+  E.moving = null; E.over = null;
+  if (E.tool === "move") E.tool = "arrow";
   editPrefs(false);
   const say = (id, key, keyHint) => { const b = $(id); b.textContent = T[key] || ""; if (keyHint) b.title = (T[key] || "") + " (" + keyHint + ")"; };
   say("e-clip", "snip.to.clipboard", "Ctrl+C");
@@ -214,8 +225,10 @@ function openEdit() {
   say("e-crop-ok", "snip.edit.crop.ok");
   document.querySelector("#e-cropbar .say").textContent = T["snip.edit.crop.say"] || "";
   // Without a clipboard to hand it to, saving is the way out
-  $("e-clip").hidden = !EDIT_CLIP;
-  $("e-save").classList.toggle("primary", !EDIT_CLIP);
+  $("e-clip").hidden = !CLIP_PICTURE;
+  $("e-save").classList.toggle("primary", !CLIP_PICTURE);
+  $("e-area").classList.toggle("texting", E.tool === "text");
+  $("e-area").classList.remove("moving", "over", "held");
   editRail();
   editOpts();
   $("edit").hidden = false;
@@ -312,8 +325,12 @@ function editCommit() {
   c.width = eW(); c.height = eH();
   const ctx = c.getContext("2d");
   ctx.drawImage(E.base, 0, 0);
-  for (const o of E.objs) {
-    if (E.editing && E.editing.obj === o) continue;
+  for (const at of E.objs) {
+    if (E.editing && E.editing.obj === at) continue;
+    // What is held is drawn where it is held, in its own place in the order:
+    // a hidden part hides what is under it there, and what was drawn after it
+    // still lies over it
+    const o = E.moving && E.moving.obj === at ? E.moving.now : at;
     drawObj(ctx, o);
     if (o.type === "text") {
       ctx.font = fontOf(o.size);
@@ -373,6 +390,19 @@ function editDraw() {
     }
     ctx.restore();
   }
+  // What the hand holds, or would pick up: its outline, in light and dark so
+  // it shows on any part of a screen
+  const held = E.moving ? E.moving.now : (E.tool === "move" ? E.over : null);
+  if (held) {
+    const b = boundsOf(held), pad = 4;
+    const bx = ox + b.x * s - pad, by = oy + b.y * s - pad, bw = b.w * s + pad * 2, bh = b.h * s + pad * 2;
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#fff"; ctx.strokeRect(bx, by, bw, bh);
+    ctx.lineDashOffset = 5; ctx.strokeStyle = "#000"; ctx.strokeRect(bx, by, bw, bh);
+    ctx.restore();
+  }
   ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue("--line") || "#444";
   ctx.lineWidth = 1;
   ctx.strokeRect(ox - 0.5, oy - 0.5, w + 1, h + 1);
@@ -413,14 +443,21 @@ function editRail() {
 }
 function editTool(t) {
   editEndText();
+  editMoveEnd(false);
   E.tool = t; E.why = "";
+  editOver(null);
   editPrefs(true);
   editRail(); editOpts(); editStatus();
-  $("e-area").classList.toggle("texting", t === "text");
+  const a = $("e-area");
+  a.classList.toggle("texting", t === "text");
+  a.classList.toggle("moving", t === "move");
+  editDraw();
 }
 function editOpts() {
   const box = $("e-opts");
   box.textContent = "";
+  // The hand changes where a thing is, not what it looks like
+  if (E.tool === "move") return;
   const chip = (label, on, pick, line) => {
     const b = Object.assign(document.createElement("button"), {className: "chip" + (on ? " on" : "")});
     if (line) b.append(Object.assign(document.createElement("span"), {className: "ln"}));
@@ -466,14 +503,94 @@ function editChange(apply) {
 }
 function editStep(from, to, emptyKey) {
   editEndText();
+  editMoveEnd(false);
   if (!from.length) return editWhy(emptyKey);
   to.push({base: E.base, objs: E.objs.slice()});
   const s = from.pop();
   E.base = s.base; E.objs = s.objs; E.dirty = true; E.why = "";
+  editOver(null);
   editCommit(); editFit(); editDraw(); editStatus();
 }
 const editUndo = () => editStep(E.undo, E.redo, "snip.edit.no_undo");
 const editRedo = () => editStep(E.redo, E.undo, "snip.edit.no_redo");
+
+// ── Moving what was drawn ──────────────────────────
+// The box a thing takes up on the picture, lines and letters included
+function boundsOf(o) {
+  const half = (o.w || 0) / 2;
+  if (o.type === "arrow") {
+    // The head is wider than the line it ends
+    const pad = Math.max(half, Math.max(o.w * 4, 12) * 0.55);
+    const x = Math.min(o.x1, o.x2) - pad, y = Math.min(o.y1, o.y2) - pad;
+    return {x, y, w: Math.abs(o.x2 - o.x1) + pad * 2, h: Math.abs(o.y2 - o.y1) + pad * 2};
+  }
+  if (o.type === "pen") {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const p of o.pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+    return {x: x0 - half, y: y0 - half, w: x1 - x0 + half * 2, h: y1 - y0 + half * 2};
+  }
+  if (o.type === "text") return {x: o.x, y: o.y, w: o.bw || 0, h: o.bh || 0};
+  if (o.type === "rect") return {x: o.x - half, y: o.y - half, w: o.rw + half * 2, h: o.rh + half * 2};
+  return {x: o.x, y: o.y, w: o.rw, h: o.rh};
+}
+// How far a point is from the line between two others
+function farFromLine(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, len2 = dx * dx + dy * dy;
+  const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2)) : 0;
+  return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+// Whether a press at `p` is on a thing, `near` being how far off a press may
+// land and still count. A line is its stroke; a box is its edge, since what is
+// inside a box is the picture and whatever else was drawn there; words and a
+// hidden part are all of the space they cover
+function editHits(o, p, near) {
+  const reach = (o.w || 0) / 2 + near;
+  if (o.type === "arrow") return farFromLine(p, {x: o.x1, y: o.y1}, {x: o.x2, y: o.y2}) <= Math.max(reach, Math.max(o.w * 4, 12) * 0.55);
+  if (o.type === "pen") {
+    if (o.pts.length === 1) return Math.hypot(p.x - o.pts[0].x, p.y - o.pts[0].y) <= reach;
+    for (let i = 1; i < o.pts.length; i++) if (farFromLine(p, o.pts[i - 1], o.pts[i]) <= reach) return true;
+    return false;
+  }
+  const b = boundsOf(o);
+  const inside = (b, by) => p.x >= b.x - by && p.x <= b.x + b.w + by && p.y >= b.y - by && p.y <= b.y + b.h + by;
+  if (o.type === "rect") {
+    const hollow = {x: o.x + reach, y: o.y + reach, w: o.rw - reach * 2, h: o.rh - reach * 2};
+    return inside(b, near) && !(hollow.w > 0 && hollow.h > 0 && inside(hollow, 0));
+  }
+  return inside(b, near);
+}
+// What a press at `p` picks up: the thing on top there
+function editUnder(p, coarse) {
+  // A finger covers more than a pointer does
+  const near = (coarse ? 14 : 6) / E.view.s;
+  for (let i = E.objs.length - 1; i >= 0; i--) if (editHits(E.objs[i], p, near)) return E.objs[i];
+  return null;
+}
+// The same thing, `dx` and `dy` away. A new one: what is drawn is shared with
+// the steps kept for undo, and those must stay as they were
+function movedBy(o, dx, dy) {
+  if (o.type === "arrow") return {...o, x1: o.x1 + dx, y1: o.y1 + dy, x2: o.x2 + dx, y2: o.y2 + dy};
+  if (o.type === "pen") return {...o, pts: o.pts.map(p => ({x: p.x + dx, y: p.y + dy}))};
+  return {...o, x: o.x + dx, y: o.y + dy};
+}
+// What a press would pick up, and the pointer that says so. One place: the
+// pointer is never left saying "this can be picked up" over nothing
+function editOver(o) {
+  E.over = o || null;
+  $("e-area").classList.toggle("over", !!E.over);
+}
+// Let go of what is held: put where it is now, or back where it was
+function editMoveEnd(keep) {
+  const m = E.moving;
+  if (!m) return;
+  E.moving = null;
+  $("e-area").classList.remove("held");
+  const moved = keep && (m.now.x !== m.obj.x || m.now.y !== m.obj.y || m.now.x1 !== m.obj.x1 || m.now.y1 !== m.obj.y1
+    || (m.obj.pts && (m.now.pts[0].x !== m.obj.pts[0].x || m.now.pts[0].y !== m.obj.pts[0].y)));
+  if (!moved) { editOver(keep ? m.obj : null); editCommit(); editDraw(); return; }
+  editOver(m.now);
+  editChange(() => { E.objs = E.objs.map(o => o === m.obj ? m.now : o); });
+}
 
 // ── Pointer ────────────────────────────────────────
 function editAt(e) {
@@ -485,6 +602,8 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
   const a = $("e-area");
   a.addEventListener("pointerdown", e => {
     if (e.button !== 0 || $("edit").hidden) return;
+    // One hand, one thing: a second finger does not take over a move
+    if (E.moving) return;
     const p = editAt(e);
     if (E.crop) {
       a.setPointerCapture(e.pointerId);
@@ -494,6 +613,27 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
       return;
     }
     if (E.editing) { editEndText(); if (E.tool !== "text") return; }
+    if (E.tool === "move") {
+      e.preventDefault();
+      const hit = editUnder(p, e.pointerType === "touch");
+      if (!hit) {
+        editOver(null);
+        // Nothing here to pick up. With nothing drawn at all, say what the
+        // hand is for; a press beside a thing is only a miss
+        if (!E.objs.length) editWhy("snip.edit.move.none");
+        else editDraw();
+        return;
+      }
+      a.setPointerCapture(e.pointerId);
+      // Held by the point that was pressed. That point stays on the picture,
+      // so a part of the thing always does, and it can be picked up again
+      E.moving = {obj: hit, from: {x: clampX(p.x), y: clampY(p.y)}, now: hit, by: e.pointerId};
+      editOver(null);
+      E.why = "";
+      a.classList.add("held");
+      editStatus(); editDraw();
+      return;
+    }
     if (E.tool === "text") {
       e.preventDefault();
       // Words already written are put right by pressing them
@@ -511,6 +651,20 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
   });
   a.addEventListener("pointermove", e => {
     const p = editAt(e), x = clampX(p.x), y = clampY(p.y);
+    if (E.moving) {
+      const m = E.moving;
+      if (e.pointerId !== m.by) return;
+      m.now = movedBy(m.obj, x - m.from.x, y - m.from.y);
+      // Drawn once a frame however often the pointer reports: every move
+      // draws the whole picture again, hidden parts included
+      if (!m.due) m.due = requestAnimationFrame(() => { m.due = 0; if (E.moving === m) { editCommit(); editDraw(); } });
+      return;
+    }
+    if (E.tool === "move" && !E.crop && e.pointerType !== "touch") {
+      const over = editUnder(p, false);
+      if (over !== E.over) { editOver(over); editDraw(); }
+      return;
+    }
     if (E.crop && E.crop.from) {
       const f = E.crop.from;
       E.crop.r = {x: Math.round(Math.min(f.x, x)), y: Math.round(Math.min(f.y, y)),
@@ -532,7 +686,8 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     }
     editDraw();
   });
-  const done = () => {
+  const done = e => {
+    if (E.moving) { if (e.pointerId === E.moving.by) editMoveEnd(true); return; }
     if (E.crop && E.crop.from) {
       E.crop.from = null;
       editDraw();
@@ -550,7 +705,10 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     editChange(() => { E.objs = E.objs.concat([d]); });
   };
   a.addEventListener("pointerup", done);
-  a.addEventListener("pointercancel", () => { E.draft = null; if (E.crop) E.crop.from = null; editDraw(); });
+  a.addEventListener("pointercancel", e => { if (E.moving && e.pointerId === E.moving.by) editMoveEnd(false); E.draft = null; if (E.crop) E.crop.from = null; editDraw(); });
+  a.addEventListener("pointerleave", () => {
+    if (E.over && !E.moving) { editOver(null); editDraw(); }
+  });
 })();
 
 // ── Words ──────────────────────────────────────────
@@ -617,6 +775,10 @@ function editEndText(cancel) {
 // ── Cutting ────────────────────────────────────────
 function editCropStart() {
   editEndText();
+  editMoveEnd(false);
+  editOver(null);
+  // Choosing where to cut is a cross, whichever tool was in hand
+  $("e-area").classList.remove("moving", "texting");
   E.crop = {from: null, r: null};
   E.why = "";
   $("e-cropbar").hidden = false;
@@ -626,6 +788,8 @@ function editCropStart() {
 }
 function editCropEnd() {
   E.crop = null;
+  $("e-area").classList.toggle("moving", E.tool === "move");
+  $("e-area").classList.toggle("texting", E.tool === "text");
   $("e-cropbar").hidden = true;
   $("e-bar").classList.remove("away");
   $("e-tools").classList.remove("away");
@@ -695,6 +859,7 @@ const whole = v => { const n = Number(v); return Number.isInteger(n) && n >= 1 &
 
 function editResize() {
   editEndText();
+  editMoveEnd(true);
   const W = eW(), H = eH();
   const w = numField("snip.edit.resize.width", W), h = numField("snip.edit.resize.height", H);
   const keep = Object.assign(document.createElement("input"), {type: "checkbox", checked: true});
@@ -737,6 +902,7 @@ function editResize() {
 
 function editCanvas() {
   editEndText();
+  editMoveEnd(true);
   const W = eW(), H = eH();
   const w = numField("snip.edit.resize.width", W), h = numField("snip.edit.resize.height", H);
   const pair = document.createElement("div");
@@ -804,35 +970,22 @@ function editCanvas() {
 }
 
 // ── Handing it over ────────────────────────────────
-function pngOf(canvas) {
-  return new Promise(done => canvas.toBlob(blob => done(blob), "image/png"));
-}
-function base64Of(blob) {
-  return new Promise(done => {
-    const r = new FileReader();
-    r.onload = () => done(String(r.result).split(",")[1] || "");
-    r.readAsDataURL(blob);
-  });
-}
 function editName() {
   const d = new Date(), two = n => String(n).padStart(2, "0");
   return "snip-" + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + "-" + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds()) + ".png";
 }
+// Said only once the clipboard has it (`copyPicture`, the page's one way there)
 async function editCopy() {
   editEndText();
-  if (!EDIT_CLIP) return;
-  const blob = await pngOf(E.committed);
-  if (HOST) {
-    tell({act: "copy_image", png: await base64Of(blob)});
-  } else {
-    try { await navigator.clipboard.write([new ClipboardItem({"image/png": blob})]); }
-    catch (e) { toast(T["snip.edit.copy_failed"] || ""); return; }
-  }
+  editMoveEnd(true);
+  if (!CLIP_PICTURE) return;
+  if (!await copyPicture(E.committed)) { toast(T["snip.edit.copy_failed"] || "", true); return; }
   E.dirty = false;
   toast(T["snip.edit.copied"] || "");
 }
 async function editSave() {
   editEndText();
+  editMoveEnd(true);
   const blob = await pngOf(E.committed);
   const name = editName();
   if (HOST) {
@@ -855,6 +1008,7 @@ window.__snipSaved = function (how) {
 };
 function editPrint() {
   editEndText();
+  editMoveEnd(true);
   const p = $("printimg");
   p.onload = () => { window.print(); };
   p.src = E.committed.toDataURL("image/png");
@@ -864,6 +1018,7 @@ window.addEventListener("afterprint", () => { const p = $("printimg"); p.onload 
 // Closing with drawing nobody has taken anywhere asks first
 function editClose() {
   editEndText();
+  editMoveEnd(true);
   if (!E.dirty) return shut();
   const say = Object.assign(document.createElement("div"), {textContent: T["snip.edit.leave.say"] || ""});
   dialogOk = () => editDialogShut();
@@ -890,15 +1045,17 @@ function editClose() {
     if (e.key === "Escape") {
       e.preventDefault();
       if (E.crop) editCropEnd();
+      else if (E.moving) editMoveEnd(false);
       else if (E.draft) { E.draft = null; editDraw(); }
       else editClose();
     } else if (E.crop && e.key === "Enter") {
       e.preventDefault(); editCropApply();
     } else if (mod && k === "z" && !e.shiftKey) { e.preventDefault(); editUndo(); }
     else if (mod && (k === "y" || (k === "z" && e.shiftKey))) { e.preventDefault(); editRedo(); }
-    else if (mod && k === "c") { e.preventDefault(); editCopy(); }
-    else if (mod && k === "s") { e.preventDefault(); editSave(); }
-    else if (mod && k === "p") { e.preventDefault(); editPrint(); }
+    // Held down, these are still one press: one copy, one dialog
+    else if (mod && k === "c") { e.preventDefault(); if (!e.repeat) editCopy(); }
+    else if (mod && k === "s") { e.preventDefault(); if (!e.repeat) editSave(); }
+    else if (mod && k === "p") { e.preventDefault(); if (!e.repeat) editPrint(); }
     else if (!mod && !e.altKey && !E.crop) {
       const t = EDIT_TOOLS.find(t => EDIT_KEYS[t] === k);
       if (t) { e.preventDefault(); editTool(t); }

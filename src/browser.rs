@@ -363,6 +363,10 @@ pub enum Cmd {
     SnipAside,
     /// The save dialog is done: the tool's window back, told how it ended
     SnipBack { how: &'static str },
+    /// The clipboard was handed the tool page's picture: the page is told
+    /// whether it took it, since that is the page's to say
+    /// `id` is the page's number for that copy, handed back with the answer
+    SnipCopied { id: u64, ok: bool },
 }
 
 
