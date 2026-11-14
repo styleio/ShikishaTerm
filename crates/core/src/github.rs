@@ -1843,7 +1843,16 @@ pub fn answer(
             None => return with(base, json!({"ok": false, "number": number, "error": crate::i18n::t("err.ghproject.bad_repo")})),
         },
     };
-    let done = hub_for(source).map(|(repo, hub)| (elsewhere.unwrap_or(repo), hub)).and_then(|(repo, hub)| match act {
+    // The repository the screen saw the project stand for, when it says so:
+    // a request made before the desk was changed for one whose project of the
+    // same name is another repository is refused, not carried out there
+    let seen = s("in_repo");
+    let done = hub_for(source).and_then(|(repo, hub)| {
+        if elsewhere.is_none() && !seen.is_empty() && !seen.eq_ignore_ascii_case(&repo.slug()) {
+            bail!(crate::i18n::tp("err.github.other_repo", &[("repo", &seen)]));
+        }
+        Ok((elsewhere.unwrap_or(repo), hub))
+    }).and_then(|(repo, hub)| match act {
         "detail" if pulls => hub.pull(&repo, number),
         "detail" => hub.issue(&repo, number),
         // With what CI says of the commit the branch is at on the server: the

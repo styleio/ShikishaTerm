@@ -4647,6 +4647,7 @@
   "err.github.state": "「{state}」は Issue の状態にできません。",
   "err.github.merge_method": "「{method}」はマージの方法ではありません。",
   "err.github.no_project": "そのプロジェクトはこのデスクにありません。",
+  "err.github.other_repo": "この操作は {repo} に向けたものですが、このデスクのプロジェクトは別のリポジトリです。Issue を開き直してください。",
   "err.ghproject.denied": "このアカウントのトークンには GitHub Projects を見る権限がありません。設定でトークンに権限を付けてください。組織の Project は、fine-grained トークンの Resource owner を組織にして「Organization permissions」の Projects を付けます。個人の Project は fine-grained トークンでは見られないので、classic トークンに read:project を付けます。カードを動かすなら、Read and write か project です。GitHub CLI でサインインしているなら、gh auth refresh -s project を実行してください",
   "err.ghproject.bad_content": "Issue・プルリクエストのアドレス（https://github.com/持ち主/リポジトリ/issues/番号）か「持ち主/リポジトリ#番号」で書いてください",
   "err.ghproject.no_content": "{what} は GitHub に見つかりません。このアカウントで見られるか確かめてください",

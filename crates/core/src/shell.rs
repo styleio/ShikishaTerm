@@ -6083,9 +6083,13 @@ function issuesAsk(act, args) {
 // Where an issue or pull request is asked for: the project of the desk it is
 // read through and its number -- and, when it is of a repository the desk has
 // no project for (a GitHub Project's card can be), that repository
+// The repository the desk's project stands for goes with it: a request that
+// waits its turn is refused, rather than made of another repository, when the
+// desk has been changed for one whose project of the same name is elsewhere
 function issueAt(d) {
   const at = {project: d.project, number: d.number};
   if (d.at_repo) at.at_repo = d.at_repo;
+  else if ((issueProject(d.project) || {}).repo) at.in_repo = issueProject(d.project).repo;
   return at;
 }
 function issueThread(d) { return (d.at_repo || d.project) + "#" + d.number; }
@@ -6135,7 +6139,8 @@ const issueEditWords = new WeakMap();
 function issueEdit(d, change, shown, tag, words) {
   if (I.detail && issueThread(I.detail) === issueThread(d)) Object.assign(I.detail, shown || change);
   const edit = Object.assign({kind: d.kind, change, tag: tag || "", seq: "ed-" + ISSUE_SCREEN + "-" + (++issueEditSeq)}, issueAt(d));
-  if (words) issueEditWords.set(edit, words);
+  // Newer words than any that did not go in before
+  if (words) { issueEditWords.set(edit, words); delete I.wordsKept[issueThread(d)]; }
   I.edits.push(edit);
   if (I.edits.length === 1) issuesAsk("edit", I.edits[0]);
   else drawIssues();
@@ -6867,6 +6872,7 @@ function ghpAnswer(d) {
       // Not while changes are still on their way: what GitHub says now is
       // from before them, and would put the cards back for a moment
       if (g.sending.length) break;
+      g.fstale = false;
       if (d.ok) { ghpExpected(d.data, g.data); g.data = d.data || null; g.view = (d.data || {}).view || null; g.err = ""; g.errFix = false; }
       else { g.err = d.error || ""; g.errFix = !!d.settings; }
       g.rev++;
@@ -6945,7 +6951,10 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_view_add" && (d.data || {}).view) { g.view = d.data.view; ghpKeepView(g.ref, g.view); g.vnew = {name: "", layout: "table"}; }
           if (d.act === "gh_project_view_remove" && was.number === g.view) { g.view = null; ghpKeepView(g.ref, null); }
           if (d.act === "gh_project_field_add") g.fnew = {name: "", type: "TEXT", options: "", start: "", days: 14};
-          if (d.act === "gh_project_field_set" || d.act === "gh_project_field_remove") { g.fedit = null; g.colNew = null; }
+          // The field that was being changed is done with -- not another one
+          // opened since; and the column that was on its way is there
+          if ((d.act === "gh_project_field_set" || d.act === "gh_project_field_remove") && g.fedit && g.fedit.field === was.field) g.fedit = null;
+          if (d.act === "gh_project_field_set" && g.colNew && g.colNew.sent) g.colNew = null;
           if (d.act === "gh_project_status") g.status = {status: "on_track", body: "", start: "", target: ""};
           if (d.act === "gh_project_link") g.linkText = "";
           if (d.act === "gh_project_access") g.who = {login: "", role: g.who.role, people: (d.data || {}).people || []};
@@ -6974,7 +6983,7 @@ function ghpAnswer(d) {
       g.making = false;
       if (!d.ok) { I.said = d.error || ""; I.bad = true; break; }
       g.list = null;
-      if ((d.data || {}).url && d.project === g.project) { ghpPick(d.data.url); return; }
+      if ((d.data || {}).url && d.project === g.project && g.ref === g.makingAt) { ghpPick(d.data.url); return; }
       break;
     // The board deleted: no board is chosen any more, where it was the one chosen
     case "gh_project_delete":
@@ -6982,7 +6991,8 @@ function ghpAnswer(d) {
       if (!d.ok) { I.said = d.error || ""; I.bad = true; g.del = false; break; }
       I.said = T["ghp.about.deleted"] || ""; I.bad = false;
       g.list = null;
-      if (d.project !== g.project) break;
+      // Another board chosen since stays chosen
+      if (d.project !== g.project || g.ref !== g.makingAt) break;
       ghpPick("");
       return;
     case "gh_project_pick":
@@ -7016,9 +7026,21 @@ const GHP_ASKED = new Set(["gh_project", "gh_projects", "gh_project_about", "gh_
 // A mark for a request of this screen's: its answer comes back to the
 // Project tab, and is known from another screen's
 function ghpMark() { return "ghp-" + ISSUE_SCREEN + "-" + (++ghpSeq); }
+// A board being made, copied or deleted: the mark its answer is known by,
+// and the board looked at when it was asked for
+function ghpMaking() {
+  const g = I.gh;
+  g.making = ghpMark();
+  g.makingAt = g.ref;
+  return g.making;
+}
 function ghpSend(act, args) {
   const g = I.gh, d = g.data;
   const all = Object.assign({kind:"ghp", project: g.project, id: d.id}, args, {seq: ghpMark()});
+  // A field's choices are sent whole, from the ones the board was last read
+  // with: until it is read again, another change to them would be made from
+  // the old ones and undo this one
+  if (act.startsWith("gh_project_field")) g.fstale = true;
   g.sending.push({kind:"issues", act, args: all});
   if (g.sending.length === 1) send(g.sending[0]);
 }
@@ -8201,11 +8223,15 @@ function ghpOptionsOf(field) {
 function ghpColAdder(field) {
   const g = I.gh, n = g.colNew;
   if (!n) {
-    return el("div", {class:"ghcol new"}, el("button", {class:"quiet", onclick:() => {
+    const add = el("button", {class:"quiet", onclick:() => {
+      if (g.fstale) return;
       g.colNew = {name: "", sent: false}; issuesSig = ""; drawIssues();
       const box = document.querySelector('#issuespanel [data-k="ghpcol"]');
       if (box) box.focus();
-    }}, "+ " + (T["ghp.col.add"] || "")));
+    }}, "+ " + (T["ghp.col.add"] || ""));
+    // Not until the board has been read with the fields as they are now
+    add.disabled = !!g.fstale;
+    return el("div", {class:"ghcol new"}, add);
   }
   if (n.sent) return el("div", {class:"ghcol new"}, el("span", {class:"faint"}, T["ghp.adding"] || ""));
   const box = el("input", {type:"text", "data-k": "ghpcol", placeholder: T["ghp.col.ph"] || ""});
@@ -8214,7 +8240,7 @@ function ghpColAdder(field) {
   box.onkeydown = e => {
     if (typingIME(e)) return;
     if (e.key === "Escape") { g.colNew = null; issuesSig = ""; drawIssues(); }
-    if (e.key !== "Enter" || !box.value.trim()) return;
+    if (e.key !== "Enter" || !box.value.trim() || g.fstale) return;
     n.sent = true;
     ghpSend("gh_project_field_set", {field: field.id, change: {options: ghpOptionsOf(field).concat([{name: box.value.trim(), color: "GRAY", description: ""}])}});
     box.blur();
@@ -8234,6 +8260,8 @@ function ghpDayAfter(day, n) {
 // A field's choices or iterations being changed: a copy to work on, sent whole when saved
 function ghpFieldOpen(f) {
   const g = I.gh;
+  // Not from choices the board has not been read with yet
+  if (g.fstale) return;
   g.fedit = f.type === "ITERATION"
     ? {field: f.id, days: f.days || 14, iterations: (f.iterations || []).map(i => ({id: i.id, title: i.title, start: i.start, days: i.days}))}
     : {field: f.id, options: ghpOptionsOf(f)};
@@ -8283,7 +8311,7 @@ function ghpFieldEditor(f) {
   // Asked again at every key: a name typed into a new row is what makes it savable
   const ok = () => list.length > 0 && list.every(o => (e.options ? o.name : o.title).trim() && (e.options || ghpDay(o.start) !== null));
   const save = el("button", {class:"go", onclick:() => {
-    if (!ok()) return;
+    if (!ok() || g.fstale) return;
     const change = e.options
       ? {options: e.options.map(o => Object.assign({}, o, {name: o.name.trim()})), type: f.type === "MULTI_SELECT" ? "multi_select" : "single_select"}
       : {iteration: {days: e.days, iterations: e.iterations.map(i => ({id: i.id, title: i.title.trim(), start: i.start, days: i.days || e.days}))}};
@@ -8318,7 +8346,8 @@ function ghpFieldsPage(box, d) {
     const inner = f.type === "SINGLE_SELECT" || f.type === "MULTI_SELECT" || f.type === "ITERATION";
     const edit = inner ? el("button", {class:"quiet", onclick:() => { if (open) { g.fedit = null; redraw(); } else ghpFieldOpen(f); }},
       T[f.type === "ITERATION" ? "ghp.fields.iters" : "ghp.fields.options"] || "") : null;
-    if (edit) edit.disabled = !can;
+    // Not opened from choices the board has not been read with yet
+    if (edit) edit.disabled = !can || (!!g.fstale && !open);
     const del = el("button", {class:"quiet", onclick:() => { g.fdel = f.id; redraw(); }}, T["ghp.delete"] || "");
     del.disabled = !can;
     list.append(el("div", {class:"row"}, name, el("span", {class:"faint kind"}, T["ghp.kind." + f.type] || f.type), el("span", {class:"grow"}), edit, del));
@@ -8635,7 +8664,7 @@ function ghpAboutPage(box, d) {
   const co = el("input", {type:"text", "data-k": "ghpco", placeholder: T["ghp.new.owner_ph"] || ""}); co.value = c.owner; co.oninput = () => { c.owner = co.value; };
   const copy = el("button", {onclick:() => {
     if (!c.title.trim() || !c.owner.trim() || g.making) return;
-    g.making = ghpMark();
+    ghpMaking();
     send({kind:"issues", act:"gh_project_copy", args:{kind:"ghp", seq: g.making, project: g.project, id: d.id, title: c.title.trim(), owner: c.owner.trim(), drafts: c.drafts}});
     redraw();
   }}, T["ghp.copy.go"] || "");
@@ -8649,7 +8678,7 @@ function ghpAboutPage(box, d) {
       ? warnBox((T["ghp.about.delete_ask"] || "{title}").replaceAll("{title}", a.title || ""),
           el("button", {class:"bad", onclick:() => {
             if (g.making) return;
-            g.making = ghpMark();
+            ghpMaking();
             send({kind:"issues", act:"gh_project_delete", args:{kind:"ghp", seq: g.making, project: g.project, id: d.id}});
             redraw();
           }}, T["ghp.about.delete_go"] || ""),
@@ -8677,7 +8706,7 @@ function ghpNewForm(home) {
   const make = () => {
     if (!n.title.trim() || !n.owner.trim() || g.making) return;
     ghpLeavePage();
-    g.making = ghpMark();
+    ghpMaking();
     send({kind:"issues", act:"gh_project_create", args:{kind:"ghp", seq: g.making, project: home.name, title: n.title.trim(), owner: n.owner.trim(),
       link: n.link && home.repo ? home.repo : ""}});
     redraw();

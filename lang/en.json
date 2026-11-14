@@ -4684,6 +4684,7 @@
   "err.github.state": "\"{state}\" is not a state an issue can be set to.",
   "err.github.merge_method": "\"{method}\" is not a way to merge.",
   "err.github.no_project": "That project is not in this desk.",
+  "err.github.other_repo": "This was asked for {repo}, and the project of this desk is another repository. Open the issue again.",
   "err.ghproject.denied": "This account's token may not see GitHub Projects. Give the token the permission in the settings. For an organization's project, make the organization the fine-grained token's Resource owner and add Projects under \"Organization permissions\". A person's own project cannot be reached with a fine-grained token: give a classic token read:project. To move cards, use Read and write, or project. Signed in with GitHub CLI, run gh auth refresh -s project",
   "err.ghproject.bad_content": "Write an issue's or pull request's address (https://github.com/owner/repo/issues/number) or owner/repo#number",
   "err.ghproject.no_content": "{what} is not found on GitHub. Check that this account can see it",
