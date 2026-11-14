@@ -827,10 +827,11 @@ pub fn draft(hub: &Hub, draft: &str, title: &str, body: &str, people: Option<&[S
 /// the card stays where it was and is the issue's from then on. Answers with
 /// the issue's number and page. `words`, the draft's id with a title and
 /// words, are written to the draft first -- and nothing is made unless they
-/// are, so the issue never carries words older than those on screen
-pub fn to_issue(hub: &Hub, card: &str, repo: &str, words: Option<(&str, &str, &str)>) -> Result<Value> {
+/// are, so the issue never carries words older than those on screen. `people`
+/// are who it is given to, written with the words: the issue has them
+pub fn to_issue(hub: &Hub, card: &str, repo: &str, words: Option<(&str, &str, &str)>, people: Option<&[String]>) -> Result<Value> {
     if let Some((id, title, body)) = words {
-        draft(hub, id, title, body, None)?;
+        draft(hub, id, title, body, people)?;
     }
     let (owner, name) = repo.split_once('/').filter(|(o, n)| !o.is_empty() && !n.is_empty() && !n.contains('/'))
         .ok_or_else(|| anyhow!(crate::i18n::t("err.ghproject.bad_repo")))?;

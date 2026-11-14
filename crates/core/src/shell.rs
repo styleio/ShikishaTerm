@@ -5992,10 +5992,10 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
           // people, labels, milestone, type or parent), its title and words
           // being rewritten ({title, body}), and what is typed to add a sub-issue
           factEdit:"", rewrite:null, subText:"",
-          // Its title and words on their way to GitHub, by issue; the ones
-          // GitHub did not take, kept for when that issue's page is shown;
-          // and the changes to issues waiting their turn, oldest first
-          wordsSent:{}, wordsKept:{}, edits:[],
+          // An issue's title and words that GitHub did not take, by issue,
+          // kept for when that issue's page is shown; and the changes to
+          // issues waiting their turn, oldest first
+          wordsKept:{}, edits:[],
           // The GitHub Project shown as the third kind: which project of the
           // desk it is read through, its address and view, the filter written
           // here (null: the view's own), what GitHub answered, and the list
@@ -6056,7 +6056,11 @@ let I = { kind:"issue", projects:null, project:"", preset:"open", text:"", page:
               // projects and boards are looked at
               unsaved:{}} };
 let issuesSig = "";
-let issuesSeq = 0;
+// Answers go to every screen of the app -- this window, a phone -- so each
+// screen marks its questions as its own: its numbers start where no other
+// screen's do, and the changes it sends in line carry its name
+let issuesSeq = Math.floor(Math.random() * 1e6) * 1000;
+const ISSUE_SCREEN = Math.random().toString(36).slice(2, 10);
 
 const ISSUE_PRESETS = {
   issue: [["open", {}], ["mine", {mine:true}], ["closed", {state:"closed"}], ["all", {state:"all"}]],
@@ -6124,9 +6128,15 @@ const ISSUE_EDITS = new Set(["edit", "sub_add", "sub_remove", "sub_move"]);
 // Sent one at a time, in the order they were pressed: the people and labels
 // are worked out against what the issue has when each arrives, and two at
 // once would each start from the same list and the later would undo the earlier
-function issueEdit(d, change, shown, tag) {
+// `words` are the title and words as they were written, kept with the change
+// until GitHub has them
+let issueEditSeq = 0;
+const issueEditWords = new WeakMap();
+function issueEdit(d, change, shown, tag, words) {
   if (I.detail && issueThread(I.detail) === issueThread(d)) Object.assign(I.detail, shown || change);
-  I.edits.push(Object.assign({kind: d.kind, change, tag: tag || ""}, issueAt(d)));
+  const edit = Object.assign({kind: d.kind, change, tag: tag || "", seq: "ed-" + ISSUE_SCREEN + "-" + (++issueEditSeq)}, issueAt(d));
+  if (words) issueEditWords.set(edit, words);
+  I.edits.push(edit);
   if (I.edits.length === 1) issuesAsk("edit", I.edits[0]);
   else drawIssues();
 }
@@ -6139,11 +6149,12 @@ function issueEdited() {
 }
 // An issue's title and words that GitHub did not take, by issue: its page
 // shows the form again with them -- now, when it is the one on the tab, or
-// when it is next opened
-function issueWordsBack(thread) {
-  const words = I.wordsSent[thread];
-  delete I.wordsSent[thread];
-  if (words) I.wordsKept[thread] = words;
+// when it is next opened. Not when newer ones for the same issue are still
+// waiting their turn: those are the ones that count
+function issueWordsBack(edit) {
+  const words = issueEditWords.get(edit), thread = issueThread(edit);
+  if (!words || I.edits.some(e => e !== edit && issueEditWords.has(e) && issueThread(e) === thread)) return;
+  I.wordsKept[thread] = words;
   issueWordsShow();
 }
 function issueWordsShow() {
@@ -6372,6 +6383,9 @@ window.__issues = function (d) {
   // cards' issues goes in the same line as the changes to the cards
   if (String(d.act || "").startsWith("gh_project") || (typeof d.seq === "string" && d.seq.startsWith("ghp-"))) { ghpAnswer(d); return; }
   if ((d.act === "list" || d.act === "detail") && d.seq !== I.want[d.act]) return;
+  // A change to an issue that another screen sent: its answer is that
+  // screen's, and this one's line of changes is not moved on by it
+  if (d.act === "edit" && (!I.edits.length || I.edits[0].seq !== d.seq)) return;
   // A list asked for before the tab was switched to something else
   if (d.act === "list" && (d.kind || "issue") !== I.kind) return;
   if (!ISSUE_QUIET.has(d.act)) I.busy = "";
@@ -6389,8 +6403,7 @@ window.__issues = function (d) {
     // A change to the issue itself that did not go in: read again, so the
     // page shows what GitHub has rather than what was pressed
     // Its title and words did not go in: the form again, with them
-    if (d.act === "edit" && d.tag === "words") issueWordsBack(issueThread(d));
-    if (d.act === "edit") issueEdited();
+    if (d.act === "edit") { issueWordsBack(I.edits[0]); issueEdited(); }
     else if (ISSUE_EDITS.has(d.act) && I.detail) issueReread();
     if (d.act === "pr_draft" && I.pr.from === "git") { G.busy = ""; G.said = I.said; G.bad = true; G.need = false; drawGit(); }
     // Not made for what its template still requires: those fields say so
@@ -6421,7 +6434,6 @@ window.__issues = function (d) {
     // The issue itself changed, or its sub-issues: read again as GitHub has it
     case "edit": case "sub_add": case "sub_remove": case "sub_move":
       if (d.act === "sub_add") I.subText = "";
-      if (d.act === "edit" && d.tag === "words") delete I.wordsSent[issueThread(d)];
       if (d.act === "edit") issueEdited();
       else if (I.detail) issueReread();
       drawIssues();
@@ -6838,6 +6850,11 @@ function ghpAnswer(d) {
   // Issues and pull requests found for what is typed where a card is added
   if (d.act === "list") { ghpFound(d); return; }
   if ((d.act === "gh_project" || d.act === "gh_projects") && d.seq !== I.want[d.act]) return;
+  // A change another screen sent -- this window's, a phone's: its answer is
+  // that screen's. Here it would move this screen's line of changes on
+  // before the one at its head is in
+  if (!GHP_ASKED.has(d.act) && (!g.sending.length || g.sending[0].args.seq !== d.seq)) return;
+  if ((d.act === "gh_project_create" || d.act === "gh_project_copy" || d.act === "gh_project_delete") && d.seq !== g.making) return;
   if (!ISSUE_QUIET.has(d.act)) I.busy = "";
   switch (d.act) {
     case "gh_projects":
@@ -6863,7 +6880,7 @@ function ghpAnswer(d) {
         const was = (g.sending[0] || {}).args || {};
         // A draft's words, kept until GitHub has them: written, or the issue made
         const words = (d.act === "gh_project_draft" || d.act === "gh_project_to_issue") ? g.writing[was.card] : null;
-        if (words && words.seq === was.seq) delete g.writing[was.card];
+        if (words && words.seq === was.wseq) delete g.writing[was.card];
         if (!d.ok) {
           I.said = d.error || ""; I.bad = true;
           // Not done: nothing to wait for GitHub to show
@@ -6871,7 +6888,7 @@ function ghpAnswer(d) {
           // Words not written, or an issue not made: the draft's page again,
           // with the words as they were written -- unless something newer
           // is already being written to it
-          if (words && words.seq === was.seq) {
+          if (words && words.seq === was.wseq) {
             // Shown as it was before, so the words can be saved again
             for (const card of [g.data && g.data.cards.find(c => c.id === was.card), words.edit.copy]) {
               if (!card) continue;
@@ -6934,8 +6951,9 @@ function ghpAnswer(d) {
           if (d.act === "gh_project_access") g.who = {login: "", role: g.who.role, people: (d.data || {}).people || []};
           // Its words saved: the page shows them as GitHub has them. Any
           // other change to it leaves what is being written there alone
-          const c = was.change || {};
-          if (d.act === "gh_project_update" && ("title" in c || "description" in c || "readme" in c)) g.aboutEdit = null;
+          // -- and so does anything written on since they were sent
+          const c = was.change || {}, e = g.aboutEdit;
+          if (d.act === "gh_project_update" && e && ["title", "description", "readme"].every(k => k in c && c[k] === e[k])) g.aboutEdit = null;
         }
         // A column that was not added is typed again
         if (!d.ok && d.act === "gh_project_field_set" && g.colNew) g.colNew.sent = false;
@@ -6950,17 +6968,21 @@ function ghpAnswer(d) {
       else g.aboutErr = d.error || "";
       break;
     // A board made, or copied: it is the one looked at from now on
+    // -- on the project of the desk it was made from. Another one looked at
+    // since keeps the board it has
     case "gh_project_create": case "gh_project_copy":
       g.making = false;
       if (!d.ok) { I.said = d.error || ""; I.bad = true; break; }
-      if ((d.data || {}).url) { ghpPick(d.data.url); return; }
+      g.list = null;
+      if ((d.data || {}).url && d.project === g.project) { ghpPick(d.data.url); return; }
       break;
-    // The board deleted: no board is chosen any more
+    // The board deleted: no board is chosen any more, where it was the one chosen
     case "gh_project_delete":
       g.making = false;
       if (!d.ok) { I.said = d.error || ""; I.bad = true; g.del = false; break; }
       I.said = T["ghp.about.deleted"] || ""; I.bad = false;
       g.list = null;
+      if (d.project !== g.project) break;
       ghpPick("");
       return;
     case "gh_project_pick":
@@ -6989,12 +7011,14 @@ function ghpShown(field, value) {
 // A change to the board, sent once those before it are in, so GitHub has them
 // in the order they were made; the board is read back after the last
 let ghpSeq = 0;
+// The answers that are not to a change sent in line
+const GHP_ASKED = new Set(["gh_project", "gh_projects", "gh_project_about", "gh_project_create", "gh_project_copy", "gh_project_delete", "gh_project_pick"]);
+// A mark for a request of this screen's: its answer comes back to the
+// Project tab, and is known from another screen's
+function ghpMark() { return "ghp-" + ISSUE_SCREEN + "-" + (++ghpSeq); }
 function ghpSend(act, args) {
   const g = I.gh, d = g.data;
-  const all = Object.assign({kind:"ghp", project: g.project, id: d.id}, args);
-  // A request that is not the board's own by name is marked as this
-  // screen's, so its answer comes back here
-  if (!act.startsWith("gh_project")) all.seq = "ghp-" + (++ghpSeq);
+  const all = Object.assign({kind:"ghp", project: g.project, id: d.id}, args, {seq: ghpMark()});
   g.sending.push({kind:"issues", act, args: all});
   if (g.sending.length === 1) send(g.sending[0]);
 }
@@ -7160,7 +7184,7 @@ function ghpFind(text) {
     return;
   }
   ghpFindTimer = setTimeout(() => {
-    const want = "ghp-f" + (++ghpFindSeq);
+    const want = "ghp-f" + ISSUE_SCREEN + "-" + (++ghpFindSeq) + "-";
     g.findWant = want;
     g.found = {text: t, items: [], waiting: 2};
     for (const kind of ["issue", "pr"]) {
@@ -7585,7 +7609,7 @@ function ghpSaveDraft(card) {
   card.title = e.title.trim(); card.body = e.body; card.assignees = (e.people || []).slice();
   g.edit = null;
   g.rev++;
-  ghpSend("gh_project_draft", {card: card.id, draft: card.draft, title: card.title, body: card.body, assignees: card.assignees, seq});
+  ghpSend("gh_project_draft", {card: card.id, draft: card.draft, title: card.title, body: card.body, assignees: card.assignees, wseq: seq});
   ghpLeavePage();
   drawIssues();
 }
@@ -7597,7 +7621,8 @@ function ghpToIssue(card) {
   // in -- so the issue never carries older words, even while an earlier save
   // of them is still on its way, or did not go in. Kept until GitHub has made it
   const seq = ghpWriting(card, e);
-  ghpSend("gh_project_to_issue", {card: card.id, repo: e.repo, draft: card.draft, title: e.title.trim(), body: e.body, seq});
+  ghpSend("gh_project_to_issue", {card: card.id, repo: e.repo, draft: card.draft, title: e.title.trim(), body: e.body,
+    assignees: (e.people || []).slice(), wseq: seq});
   card.kind = "adding";
   g.edit = null;
   g.rev++;
@@ -8610,8 +8635,8 @@ function ghpAboutPage(box, d) {
   const co = el("input", {type:"text", "data-k": "ghpco", placeholder: T["ghp.new.owner_ph"] || ""}); co.value = c.owner; co.oninput = () => { c.owner = co.value; };
   const copy = el("button", {onclick:() => {
     if (!c.title.trim() || !c.owner.trim() || g.making) return;
-    g.making = true;
-    send({kind:"issues", act:"gh_project_copy", args:{kind:"ghp", project: g.project, id: d.id, title: c.title.trim(), owner: c.owner.trim(), drafts: c.drafts}});
+    g.making = ghpMark();
+    send({kind:"issues", act:"gh_project_copy", args:{kind:"ghp", seq: g.making, project: g.project, id: d.id, title: c.title.trim(), owner: c.owner.trim(), drafts: c.drafts}});
     redraw();
   }}, T["ghp.copy.go"] || "");
   copy.disabled = !!g.making;
@@ -8624,8 +8649,8 @@ function ghpAboutPage(box, d) {
       ? warnBox((T["ghp.about.delete_ask"] || "{title}").replaceAll("{title}", a.title || ""),
           el("button", {class:"bad", onclick:() => {
             if (g.making) return;
-            g.making = true;
-            send({kind:"issues", act:"gh_project_delete", args:{kind:"ghp", project: g.project, id: d.id}});
+            g.making = ghpMark();
+            send({kind:"issues", act:"gh_project_delete", args:{kind:"ghp", seq: g.making, project: g.project, id: d.id}});
             redraw();
           }}, T["ghp.about.delete_go"] || ""),
           el("button", {onclick:() => { g.del = false; redraw(); }}, T["ghp.cancel"] || ""))
@@ -8652,8 +8677,8 @@ function ghpNewForm(home) {
   const make = () => {
     if (!n.title.trim() || !n.owner.trim() || g.making) return;
     ghpLeavePage();
-    g.making = true;
-    send({kind:"issues", act:"gh_project_create", args:{kind:"ghp", project: home.name, title: n.title.trim(), owner: n.owner.trim(),
+    g.making = ghpMark();
+    send({kind:"issues", act:"gh_project_create", args:{kind:"ghp", seq: g.making, project: home.name, title: n.title.trim(), owner: n.owner.trim(),
       link: n.link && home.repo ? home.repo : ""}});
     redraw();
   };
@@ -9192,9 +9217,8 @@ function drawIssueDetail(box) {
         el("button", {class:"go", onclick:() => {
           if (!rw.title.trim()) return;
           // Kept until GitHub has them, to be written again if it does not
-          I.wordsSent[issueThread(d)] = rw;
           I.rewrite = null;
-          issueEdit(d, {title: rw.title.trim(), body: rw.body}, null, "words");
+          issueEdit(d, {title: rw.title.trim(), body: rw.body}, null, "words", rw);
         }}, T["ghp.save"] || ""))));
   }
   box.append(el("div", {class:"head"},

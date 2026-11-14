@@ -216,6 +216,11 @@ export default {
       // adds, and the second held until the first is answered
       issueListEdit(I.detail, "labels", ["docs", "bug"]); issueListEdit(I.detail, "labels", ["docs", "bug", "ui"]);
       if (I.edits.length !== 2 || JSON.stringify(I.edits.map(e => e.change)) !== '[{"add_labels":["bug"]},{"add_labels":["ui"]}]') throw new Error("not sent one name at a time, in order: " + JSON.stringify(I.edits));
+      // The answer to a change another screen sent leaves this screen's line where it is; its own moves it on
+      window.__issues({act: "edit", ok: true, project: "shop", at_repo: "acme/mailer", kind: "issue", seq: "ed-elsewhere-1"});
+      if (I.edits.length !== 2) throw new Error("another screen's answer moved this screen's changes on");
+      window.__issues({act: "edit", ok: true, project: "shop", at_repo: "acme/mailer", kind: "issue", seq: I.edits[0].seq});
+      if (I.edits.length !== 1 || I.edits[0].change.add_labels[0] !== "ui") throw new Error("its own answer did not send the next change");
       I.factEdit = "labels"; issuesSig = ""; drawIssues(); "ok"`,
     'denied': {
       run: `ghpRead(); window.__issues(Object.assign({act: "gh_project", ok: false, project: "shop", settings: true,

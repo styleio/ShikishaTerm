@@ -845,6 +845,12 @@ impl Hub {
                 .filter(|s| !s.is_empty()).collect()
         };
         let path = format!("repos/{}/issues/{number}", repo.slug());
+        // One at a time: a name put on or taken off is worked out against the
+        // list the issue has, and two changes at once -- two screens, a screen
+        // and a script -- would each start from the same list, the later
+        // undoing the earlier
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let mut now: Option<Value> = None;
         for (key, person) in [("assignees", true), ("labels", false)] {
             let (add, remove) = (change.get(format!("add_{key}")), change.get(format!("remove_{key}")));
@@ -2013,7 +2019,8 @@ pub fn answer(
         "gh_project_to_issue" => {
             let (draft, title, body) = (s("draft"), s("title"), s("body"));
             let words = (!draft.is_empty() && args.get("title").is_some()).then_some((draft.as_str(), title.as_str(), body.as_str()));
-            crate::ghproject::to_issue(&hub, &s("card"), &s("repo"), words)
+            let people = args.get("assignees").filter(|a| a.is_array()).map(|_| list("assignees"));
+            crate::ghproject::to_issue(&hub, &s("card"), &s("repo"), words, people.as_deref())
         }
         other => Err(anyhow!("unknown request {other}")),
     });

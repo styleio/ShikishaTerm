@@ -4362,7 +4362,7 @@ impl HookEngine {
             github!("github_project_to_issue", |lua, repo, hub, args| {
                 // Into the tab's own repository unless another is named
                 let into = arg(&args, 1).as_str().map(str::to_string).unwrap_or_else(|| format!("{}/{}", repo.owner, repo.name));
-                crate::ghproject::to_issue(&hub, arg(&args, 0).as_str().unwrap_or_default(), &into, None)
+                crate::ghproject::to_issue(&hub, arg(&args, 0).as_str().unwrap_or_default(), &into, None, None)
             });
             // The board itself: its views, its fields and their choices, its
             // own words, the reports of how it stands, what it is linked to,
