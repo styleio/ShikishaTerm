@@ -577,9 +577,10 @@ pub fn read_card(node: &Value) -> Option<Value> {
 pub fn set_value(hub: &Hub, board: &str, card: &str, field: &str, value: &Value) -> Result<()> {
     let ids = json!({"project": board, "item": card, "field": field});
     let after;
-    let _turn;
+    // Every change to a value takes its turn, the whole ones too: one of
+    // those between a reading and its writing would be undone by the writing
+    let _turn = turn();
     let value = if value.get("add_options").is_some() || value.get("remove_options").is_some() {
-        _turn = turn();
         let found = hub.graphql_whole(
             &format!("query($item:ID!){{node(id:$item){{... on ProjectV2Item{{fieldValues(first:100){{nodes{{... on ProjectV2ItemFieldMultiSelectValue{{options{{id}} field{{{FIELD_ID}}}}}}}}}}}}}}}"),
             json!({"item": card}),
@@ -1160,7 +1161,7 @@ pub fn options_same(now: &[Value], seen: &[Value]) -> bool {
 /// ids they were worked out from) are refused when the field has others by now
 pub fn field_change(hub: &Hub, field: &str, change: &Value) -> Result<()> {
     let added;
-    let _turn = (change.get("add_option").is_some() || change.get("seen").is_some()).then(turn);
+    let _turn = turn();
     let change = if change.get("add_option").is_some_and(|o| !o.is_null()) {
         let (mut options, multi) = options_now(hub, field)?;
         options.push(change["add_option"].clone());
