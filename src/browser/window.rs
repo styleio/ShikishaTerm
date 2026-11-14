@@ -1186,6 +1186,13 @@ pub(super) fn run_window(
                         w.view.run_js(&format!("window.__snipSaved && window.__snipSaved({how:?});"));
                     }
                 }
+                Cmd::SnipCopied { ok } => {
+                    // The page waits on this for one picture at a time, and
+                    // one closed since has nothing waiting
+                    if let Some(w) = snip.as_ref() {
+                        w.view.run_js(&format!("window.__snipCopied && window.__snipCopied({ok});"));
+                    }
+                }
                 Cmd::Summon { what } => {
                     let _ = ev_tx.send(Ev::Summon { what });
                 }
@@ -1369,10 +1376,13 @@ impl SnipWindow {
                             }
                             // The edited picture. The clipboard takes it as pixels, so
                             // it pastes into anything that takes a picture
+                            // The page says "copied" only on this answer
                             Some("copy_image") => {
-                                if !picture().is_some_and(|png| crate::snip::copy_image(&png)) {
+                                let ok = picture().is_some_and(|png| crate::snip::copy_image(&png));
+                                if !ok {
                                     shikisha_core::append_hook_log("snip: the clipboard would not take the picture");
                                 }
+                                let _ = wake.send_event(Cmd::SnipCopied { ok });
                             }
                             // Saved without closing: the window steps aside for the
                             // dialog, which would otherwise open behind it, and comes

@@ -650,6 +650,11 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   .fmenu div.sniphead:hover { background:transparent; }
   .fmenu div.sniphead .lbl { color:var(--dim); font-size:11.5px; }
   .fmenu div.sniptool { display:flex; align-items:center; justify-content:space-between; gap:var(--s3); }
+  /* A tool this screen cannot run: grey, and a press is answered with why,
+     on a line of its own under it */
+  .fmenu div.sniptool.off, .fmenu div.sniptool.off:hover { color:var(--faint); background:transparent; cursor:not-allowed; }
+  .fmenu div.snipwhy { max-width:260px; color:var(--warn); font-size:11.5px; white-space:normal; cursor:default; }
+  .fmenu div.snipwhy:hover { background:transparent; }
   .fmenu kbd.snipkey { font-family:var(--mono); font-size:10.5px; line-height:1.5; padding:0 5px; color:var(--dim);
     border:1px solid var(--line); border-radius:var(--r-chip); white-space:nowrap; }
   /* A tool opened on a phone: over the whole board, which stays connected underneath */
@@ -9440,7 +9445,24 @@ function openSnipMenu(e) {
       }
       rows.push(wait);
     }
+    // A phone's browser hands a picture to its clipboard only over a secure
+    // connection. Without one that tool is grey and still answers the press:
+    // why, and what to choose instead, under it until the list is put away
+    // (the tool page says the same of it -- `cannotRun` in snip.rs)
+    const noClip = REMOTE && !(navigator.clipboard && window.ClipboardItem && window.isSecureContext);
     for (const t of SNIP_TOOLS) {
+      if (t === "clip" && noClip) {
+        const why = el("div", {class:"snipwhy"}, T["snip.clip.unavailable"] || "");
+        const row = el("div", {class:"sniptool off", onclick:() => {
+          if (why.isConnected) return;
+          row.after(why);
+          // The list grew by a line: it stays on the window
+          const m = row.closest(".fmenu"), box = m.getBoundingClientRect();
+          if (box.bottom > window.innerHeight - 8) m.style.top = Math.max(8, window.innerHeight - 8 - box.height) + "px";
+        }}, el("span", {}, T["snip.tool." + t] || t));
+        rows.push(row);
+        continue;
+      }
       rows.push(el("div", {class:"sniptool", onclick:() => { closeFolderMenu(); runSnip(t); }},
         el("span", {}, T["snip.tool." + t] || t), badge(t)));
     }
