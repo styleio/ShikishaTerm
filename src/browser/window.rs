@@ -1186,11 +1186,11 @@ pub(super) fn run_window(
                         w.view.run_js(&format!("window.__snipSaved && window.__snipSaved({how:?});"));
                     }
                 }
-                Cmd::SnipCopied { ok } => {
-                    // The page waits on this for one picture at a time, and
-                    // one closed since has nothing waiting
+                Cmd::SnipCopied { id, ok } => {
+                    // The page takes it for the copy of that number; a page
+                    // closed since has nothing waiting
                     if let Some(w) = snip.as_ref() {
-                        w.view.run_js(&format!("window.__snipCopied && window.__snipCopied({ok});"));
+                        w.view.run_js(&format!("window.__snipCopied && window.__snipCopied({id}, {ok});"));
                     }
                 }
                 Cmd::Summon { what } => {
@@ -1382,7 +1382,8 @@ impl SnipWindow {
                                 if !ok {
                                     shikisha_core::append_hook_log("snip: the clipboard would not take the picture");
                                 }
-                                let _ = wake.send_event(Cmd::SnipCopied { ok });
+                                let id = v.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+                                let _ = wake.send_event(Cmd::SnipCopied { id, ok });
                             }
                             // Saved without closing: the window steps aside for the
                             // dialog, which would otherwise open behind it, and comes

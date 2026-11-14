@@ -444,13 +444,13 @@ function editRail() {
 function editTool(t) {
   editEndText();
   editMoveEnd(false);
-  E.tool = t; E.why = ""; E.over = null;
+  E.tool = t; E.why = "";
+  editOver(null);
   editPrefs(true);
   editRail(); editOpts(); editStatus();
   const a = $("e-area");
   a.classList.toggle("texting", t === "text");
   a.classList.toggle("moving", t === "move");
-  a.classList.remove("over", "held");
   editDraw();
 }
 function editOpts() {
@@ -507,7 +507,8 @@ function editStep(from, to, emptyKey) {
   if (!from.length) return editWhy(emptyKey);
   to.push({base: E.base, objs: E.objs.slice()});
   const s = from.pop();
-  E.base = s.base; E.objs = s.objs; E.dirty = true; E.why = ""; E.over = null;
+  E.base = s.base; E.objs = s.objs; E.dirty = true; E.why = "";
+  editOver(null);
   editCommit(); editFit(); editDraw(); editStatus();
 }
 const editUndo = () => editStep(E.undo, E.redo, "snip.edit.no_undo");
@@ -572,6 +573,12 @@ function movedBy(o, dx, dy) {
   if (o.type === "pen") return {...o, pts: o.pts.map(p => ({x: p.x + dx, y: p.y + dy}))};
   return {...o, x: o.x + dx, y: o.y + dy};
 }
+// What a press would pick up, and the pointer that says so. One place: the
+// pointer is never left saying "this can be picked up" over nothing
+function editOver(o) {
+  E.over = o || null;
+  $("e-area").classList.toggle("over", !!E.over);
+}
 // Let go of what is held: put where it is now, or back where it was
 function editMoveEnd(keep) {
   const m = E.moving;
@@ -580,8 +587,8 @@ function editMoveEnd(keep) {
   $("e-area").classList.remove("held");
   const moved = keep && (m.now.x !== m.obj.x || m.now.y !== m.obj.y || m.now.x1 !== m.obj.x1 || m.now.y1 !== m.obj.y1
     || (m.obj.pts && (m.now.pts[0].x !== m.obj.pts[0].x || m.now.pts[0].y !== m.obj.pts[0].y)));
-  if (!moved) { E.over = keep ? m.obj : null; editCommit(); editDraw(); return; }
-  E.over = m.now;
+  if (!moved) { editOver(keep ? m.obj : null); editCommit(); editDraw(); return; }
+  editOver(m.now);
   editChange(() => { E.objs = E.objs.map(o => o === m.obj ? m.now : o); });
 }
 
@@ -595,6 +602,8 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
   const a = $("e-area");
   a.addEventListener("pointerdown", e => {
     if (e.button !== 0 || $("edit").hidden) return;
+    // One hand, one thing: a second finger does not take over a move
+    if (E.moving) return;
     const p = editAt(e);
     if (E.crop) {
       a.setPointerCapture(e.pointerId);
@@ -608,7 +617,7 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
       e.preventDefault();
       const hit = editUnder(p, e.pointerType === "touch");
       if (!hit) {
-        E.over = null;
+        editOver(null);
         // Nothing here to pick up. With nothing drawn at all, say what the
         // hand is for; a press beside a thing is only a miss
         if (!E.objs.length) editWhy("snip.edit.move.none");
@@ -618,8 +627,9 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
       a.setPointerCapture(e.pointerId);
       // Held by the point that was pressed. That point stays on the picture,
       // so a part of the thing always does, and it can be picked up again
-      E.moving = {obj: hit, from: {x: clampX(p.x), y: clampY(p.y)}, now: hit};
-      E.over = null; E.why = "";
+      E.moving = {obj: hit, from: {x: clampX(p.x), y: clampY(p.y)}, now: hit, by: e.pointerId};
+      editOver(null);
+      E.why = "";
       a.classList.add("held");
       editStatus(); editDraw();
       return;
@@ -643,6 +653,7 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     const p = editAt(e), x = clampX(p.x), y = clampY(p.y);
     if (E.moving) {
       const m = E.moving;
+      if (e.pointerId !== m.by) return;
       m.now = movedBy(m.obj, x - m.from.x, y - m.from.y);
       // Drawn once a frame however often the pointer reports: every move
       // draws the whole picture again, hidden parts included
@@ -651,7 +662,7 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     }
     if (E.tool === "move" && !E.crop && e.pointerType !== "touch") {
       const over = editUnder(p, false);
-      if (over !== E.over) { E.over = over; a.classList.toggle("over", !!over); editDraw(); }
+      if (over !== E.over) { editOver(over); editDraw(); }
       return;
     }
     if (E.crop && E.crop.from) {
@@ -675,8 +686,8 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     }
     editDraw();
   });
-  const done = () => {
-    if (E.moving) { editMoveEnd(true); a.classList.toggle("over", !!E.over); return; }
+  const done = e => {
+    if (E.moving) { if (e.pointerId === E.moving.by) editMoveEnd(true); return; }
     if (E.crop && E.crop.from) {
       E.crop.from = null;
       editDraw();
@@ -694,9 +705,9 @@ const clampX = x => Math.max(0, Math.min(eW(), x)), clampY = y => Math.max(0, Ma
     editChange(() => { E.objs = E.objs.concat([d]); });
   };
   a.addEventListener("pointerup", done);
-  a.addEventListener("pointercancel", () => { editMoveEnd(false); E.draft = null; if (E.crop) E.crop.from = null; editDraw(); });
+  a.addEventListener("pointercancel", e => { if (E.moving && e.pointerId === E.moving.by) editMoveEnd(false); E.draft = null; if (E.crop) E.crop.from = null; editDraw(); });
   a.addEventListener("pointerleave", () => {
-    if (E.over && !E.moving) { E.over = null; a.classList.remove("over"); editDraw(); }
+    if (E.over && !E.moving) { editOver(null); editDraw(); }
   });
 })();
 
@@ -765,7 +776,9 @@ function editEndText(cancel) {
 function editCropStart() {
   editEndText();
   editMoveEnd(false);
-  E.over = null;
+  editOver(null);
+  // Choosing where to cut is a cross, whichever tool was in hand
+  $("e-area").classList.remove("moving", "texting");
   E.crop = {from: null, r: null};
   E.why = "";
   $("e-cropbar").hidden = false;
@@ -775,6 +788,8 @@ function editCropStart() {
 }
 function editCropEnd() {
   E.crop = null;
+  $("e-area").classList.toggle("moving", E.tool === "move");
+  $("e-area").classList.toggle("texting", E.tool === "text");
   $("e-cropbar").hidden = true;
   $("e-bar").classList.remove("away");
   $("e-tools").classList.remove("away");
@@ -1037,9 +1052,10 @@ function editClose() {
       e.preventDefault(); editCropApply();
     } else if (mod && k === "z" && !e.shiftKey) { e.preventDefault(); editUndo(); }
     else if (mod && (k === "y" || (k === "z" && e.shiftKey))) { e.preventDefault(); editRedo(); }
-    else if (mod && k === "c") { e.preventDefault(); editCopy(); }
-    else if (mod && k === "s") { e.preventDefault(); editSave(); }
-    else if (mod && k === "p") { e.preventDefault(); editPrint(); }
+    // Held down, these are still one press: one copy, one dialog
+    else if (mod && k === "c") { e.preventDefault(); if (!e.repeat) editCopy(); }
+    else if (mod && k === "s") { e.preventDefault(); if (!e.repeat) editSave(); }
+    else if (mod && k === "p") { e.preventDefault(); if (!e.repeat) editPrint(); }
     else if (!mod && !e.altKey && !E.crop) {
       const t = EDIT_TOOLS.find(t => EDIT_KEYS[t] === k);
       if (t) { e.preventDefault(); editTool(t); }

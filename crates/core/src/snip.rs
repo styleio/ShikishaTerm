@@ -578,10 +578,14 @@ function base64Of(blob) {
     r.readAsDataURL(blob);
   });
 }
-let pictureCopied = null;   // what the window's answer is handed to
-window.__snipCopied = function (ok) {
-  const done = pictureCopied;
-  pictureCopied = null;
+// The window's answers, each handed to the copy it answers. Told by number:
+// two copies asked close together (Ctrl+C held down) are two answers, and
+// the first must not be taken for the second
+let copies = 0;
+const pictureCopied = new Map();
+window.__snipCopied = function (id, ok) {
+  const done = pictureCopied.get(id);
+  pictureCopied.delete(id);
   if (done) done(!!ok);
 };
 function copyPicture(canvas) {
@@ -589,10 +593,9 @@ function copyPicture(canvas) {
   const png = pngOf(canvas);
   if (HOST) {
     return png.then(blob => blob ? base64Of(blob) : "").then(b64 => b64 ? new Promise(done => {
-      // One picture at a time: an answer still owed is to the picture before
-      if (pictureCopied) pictureCopied(false);
-      pictureCopied = done;
-      tell({act: "copy_image", png: b64});
+      const id = ++copies;
+      pictureCopied.set(id, done);
+      tell({act: "copy_image", png: b64, id});
     }) : false);
   }
   // Handed over still being made. A browser gives its clipboard only to the
@@ -603,7 +606,10 @@ function copyPicture(canvas) {
     return Promise.resolve(false);
   }
 }
+let closing = 0;   // the moment the page goes by itself, once the part is copied
 function shut() {
+  // Going now: the moment set for later would be a second way out
+  clearTimeout(closing);
   if (HOST) { tell({act: "close"}); return; }
   // Opened as a layer over the board: the board takes it down
   if (window.parent !== window) { window.parent.postMessage({snip: "close"}, "*"); return; }
@@ -863,7 +869,7 @@ async function copyFrame() {
     leaving = "copied";
     toast(T["snip.edit.copied"] || "");
     // Long enough to be read, and any press or Esc ends it sooner
-    setTimeout(shut, 900);
+    closing = setTimeout(shut, 900);
     return;
   }
   leaving = "";
@@ -1366,6 +1372,11 @@ mod tests {
         assert_eq!(page.matches("act: \"copy_image\"").count(), 1, "a picture reaches the clipboard a second way");
         assert_eq!(page.matches("navigator.clipboard.write(").count(), 1, "a picture reaches the clipboard a second way");
         assert!(edit::JS.contains("await copyPicture(E.committed)"), "the editor copies its picture another way");
+        // An answer is taken by the copy it was asked for, and by no other
+        assert!(PAGE.contains("tell({act: \"copy_image\", png: b64, id});"), "a copy is asked without its number");
+        assert!(PAGE.contains("window.__snipCopied = function (id, ok) {"), "an answer does not say which copy it is for");
+        // Going at once takes back the moment it would have gone by itself
+        assert!(PAGE.contains("clearTimeout(closing);") && copy.contains("closing = setTimeout(shut, 900);"));
         // A tool the screen cannot run is grey and still answers
         assert!(PAGE.contains("b.className = cannotRun(t) ? \"off\" : \"\";"));
         assert!(!PAGE.contains("b.disabled"), "a tool that cannot run swallows the press");
@@ -1583,10 +1594,17 @@ mod tests {
         let moved = &moved[..moved.find("\n}\n").unwrap()];
         assert_eq!(moved.matches("{...o,").count(), 3, "a moved thing is not a new thing");
         assert!(!moved.contains("o.x ="), "moving changes the thing the undo steps hold");
-        // Every kind of thing that can be drawn can be picked up
-        for kind in ["arrow", "pen", "text", "rect"] {
-            assert!(edit::JS.contains(&format!("if (o.type === \"{kind}\") return")), "{kind} cannot be picked up");
+        // Every kind of thing that can be drawn can be picked up: a line by
+        // its stroke, a box by its edge, and the rest (words, a hidden part)
+        // by the space they cover
+        let hits = &edit::JS[edit::JS.find("function editHits(o, p, near)").expect("nothing says what a press is on")..];
+        let hits = &hits[..hits.find("\n}\n").unwrap()];
+        for kind in ["arrow", "pen", "rect"] {
+            assert!(hits.contains(&format!("if (o.type === \"{kind}\")")), "{kind} cannot be picked up");
         }
+        assert!(hits.trim_end().ends_with("return inside(b, near);"), "words and hidden parts cannot be picked up");
+        // One hand, one thing: a second finger does not take over a move
+        assert!(edit::JS.contains("if (E.moving) return;"), "a second press replaces the thing being held");
         // Put down through the one place a change is made, so it can be undone
         let end = &edit::JS[edit::JS.find("function editMoveEnd(keep)").unwrap()..];
         assert!(end[..end.find("\n}\n").unwrap()].contains("editChange(() => { E.objs = E.objs.map(o => o === m.obj ? m.now : o); });"));

@@ -62,8 +62,12 @@ export default {
       await frame(); await frame();
       check(leaving === "copying" && $("choose").hidden, "X did not start the copy");
       check(!$("toast").classList.contains("show"), "it said copied before the clipboard answered");
-      check(typeof pictureCopied === "function", "the window was not handed the picture");
-      window.__snipCopied(true);
+      check(pictureCopied.size === 1, "the window was not handed the picture");
+      // An answer to some other copy is not this one's
+      window.__snipCopied(copies + 7, true);
+      await frame();
+      check(leaving === "copying", "an answer to another copy was taken for this one");
+      window.__snipCopied(copies, true);
       await frame();
       check(leaving === "copied", "the page did not hear the clipboard's answer");
       check($("toast").classList.contains("show") && !$("toast").classList.contains("warn")
@@ -77,7 +81,7 @@ export default {
       await framed(innerWidth * 0.15, 150, innerWidth * 0.55, 380);
       key("x");
       await frame(); await frame();
-      window.__snipCopied(false);
+      window.__snipCopied(copies, false);
       await frame();
       const why = $("choose").querySelector(".why");
       check(leaving === "" && !$("choose").hidden, "the tools were not offered again");
@@ -97,7 +101,7 @@ export default {
       press(stage, "pointerup", innerWidth / 2, innerHeight / 2);
       await frame(); await frame();
       check(rect.x === 0 && rect.y === 0 && rect.w === 1280 && rect.h === 800, "a press that did not move did not take the whole picture");
-      window.__snipCopied(true);
+      window.__snipCopied(copies, true);
       await frame();
       check(leaving === "copied", "the whole picture was not copied");
     })()`,
@@ -190,8 +194,17 @@ export default {
       const before = E.undo.length;
       press(area, "pointerdown", ...on(540, 150));
       press(area, "pointermove", ...on(700, 400));
+      // A second finger meanwhile takes nothing over
+      area.dispatchEvent(new PointerEvent("pointerdown", {clientX: on(320, 640)[0], clientY: on(320, 640)[1], button: 0, pointerId: 2, bubbles: true, pointerType: "touch"}));
+      check(E.moving && E.moving.obj === box, "a second press took over the thing being held");
       key("Escape");
       check(!E.moving && E.objs[1] === box && E.undo.length === before && !$("edit").hidden, "Esc while holding did not put the box back");
+      check(!area.classList.contains("over") && !area.classList.contains("held"), "the pointer still says something is held");
+      // Cutting is a cross, and the hand is back after it
+      editCropStart();
+      check(!area.classList.contains("moving"), "the hand's pointer stays while choosing where to cut");
+      editCropEnd();
+      check(area.classList.contains("moving"), "the hand's pointer did not come back after cutting");
       press(area, "pointerup", ...on(700, 400));
 
       // A press that does not move is not a step either

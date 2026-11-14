@@ -365,7 +365,8 @@ pub enum Cmd {
     SnipBack { how: &'static str },
     /// The clipboard was handed the tool page's picture: the page is told
     /// whether it took it, since that is the page's to say
-    SnipCopied { ok: bool },
+    /// `id` is the page's number for that copy, handed back with the answer
+    SnipCopied { id: u64, ok: bool },
 }
 
 
