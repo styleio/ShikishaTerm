@@ -641,6 +641,11 @@ pub fn send(title: &str, body: &str, url: Option<&str>) -> Result<usize, String>
             // How long the push service may hold this if the phone is off.
             // Four hours: an answer from this morning is not news tonight.
             .header("TTL", "14400")
+            // Somebody is waiting on this: an AI finished, or stopped to ask.
+            // Left unsaid, a push service takes it for something that can
+            // wait for the phone to wake by itself, and a phone saving its
+            // battery is told minutes or an hour late (RFC 8030, section 5.3)
+            .header("Urgency", "high")
             .send(&sealed[..]);
         match result {
             Ok(_) => sent += 1,
