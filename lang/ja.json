@@ -3312,6 +3312,7 @@
   "msg.folder.left": "{path} を一覧から削除しました。フォルダはディスクに残っています",
   "err.worktree.dirty": "まだコミットしていないものが {count} 件あります",
   "err.worktree.dirty_server": "まだコミットしていないものが {count} 件あります。先にコミットしてから、削除してください。ブランチはサーバーに残るので、プッシュしていないコミットは消えません",
+  "err.worktree.submodule_work": "サブモジュール {path} に、ほかのどこにも無い作業があります（未コミット {changes} 件、どのリモートにも無いコミット {commits} 件、スタッシュ {stashes} 件）。このフォルダを削除すると、サブモジュールのリポジトリも一緒に消えます。先にその作業をコミットしてプッシュしてください",
   "err.worktree.unpushed": "まだプッシュしていないコミットが {count} 件あります。MicroVM のフォルダはマシンそのものなので、削除するとこのコミットも消えます",
   "msg.folder.discarded": "{path} を削除しました",
   "msg.branch.renamed": "{from} は {to} になりました",

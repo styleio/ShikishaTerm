@@ -2102,13 +2102,23 @@ fn without_colour(line: &str) -> String {
 pub(crate) fn check_verdict(done: bool, conclusion: &str) -> &'static str {
     match (done, conclusion.to_ascii_lowercase().as_str()) {
         (false, _) => "pending",
-        (
-            true,
-            "failure" | "timed_out" | "cancelled" | "action_required" | "startup_failure" | "stale",
-        ) => "failed",
+        // Waiting for somebody to let it run (a fork's first workflow): not
+        // run yet, so not failed
+        (true, "action_required") => "pending",
+        (true, "failure" | "timed_out" | "startup_failure") => "failed",
         (true, "success" | "skipped") => "passed",
+        // Stopped before it could say (`cancelled`, `stale`): a run a newer
+        // push replaced is not a failure of the code, and telling an AI to
+        // "fix" it has it look for a fault that is not there
         _ => "neutral",
     }
+}
+
+/// Whether a check run ended without a verdict of its own: stopped by a
+/// person or by a newer run, or left to go stale. Not a failure, and not
+/// something a pull request can be said to have passed with either
+pub(crate) fn check_gave_no_verdict(done: bool, conclusion: &str) -> bool {
+    done && matches!(conclusion.to_ascii_lowercase().as_str(), "cancelled" | "stale")
 }
 
 /// What one commit status (the older kind of check, set by a service rather
@@ -2562,6 +2572,9 @@ mod tests {
         assert_eq!(check_verdict(true, "failure"), "failed");
         assert_eq!(check_verdict(true, "skipped"), "passed");
         assert_eq!(check_verdict(true, "neutral"), "neutral");
+        assert_eq!(check_verdict(true, "CANCELLED"), "neutral");
+        assert_eq!(check_verdict(true, "action_required"), "pending");
+        assert!(check_gave_no_verdict(true, "cancelled") && !check_gave_no_verdict(true, "failure"));
     }
 
     #[test]

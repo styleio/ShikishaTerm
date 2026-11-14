@@ -187,13 +187,17 @@ impl Plan {
     /// Exactly what will run, in the words git will get. Shown to the person
     /// first, then handed to the process: one line, one source
     pub fn argv(&self) -> Vec<String> {
-        let mut v = vec![
-            "git".into(),
-            "-C".into(),
-            self.main.display().to_string(),
-            "worktree".into(),
-            "add".into(),
-        ];
+        let mut v = vec!["git".into(), "-C".into(), self.main.display().to_string()];
+        // The same word as on removal ([`LONG_PATHS`]), for the same reason:
+        // a worktree sits deeper than the checkout it is cut from, so files
+        // that fit in 260 characters there may not fit here, and git on
+        // Windows stops at the first one that does not
+        if self.host.is_none() && cfg!(windows) {
+            v.push("-c".into());
+            v.push(LONG_PATHS.into());
+        }
+        v.push("worktree".into());
+        v.push("add".into());
         if self.fresh {
             // Following nothing. Grown from a remote branch, git would have it
             // follow that one (`origin/main`), and a branch that follows a
@@ -648,15 +652,19 @@ fn make_noting(plan: &Plan, at_stage: &dyn Fn(Stage), stop: &dyn Fn() -> bool, m
     at_stage(Stage::Creating);
     let steps = plan.cutting().into_iter().map(|a| (Stage::Creating, a))
         .chain(plan.getting_ready().into_iter().map(|a| (Stage::SettingUp, a)));
+    // Whether git made the worktree: only then is there anything of this
+    // making's to take back
+    let mut added = false;
     for (stage, argv) in steps {
         at_stage(stage);
         let ran = run_for(plan, &argv);
+        added |= ran.is_ok() && adds_worktree(&argv);
         let stopped = stop();
         if ran.is_err() || stopped {
             if stopped {
                 at_stage(Stage::Stopping);
             }
-            take_back(plan);
+            take_back(plan, added);
             return match ran {
                 Err(e) if !stopped => Err(e),
                 _ => Err(Stopped.into()),
@@ -918,7 +926,14 @@ pub fn forget_checkout(id: &str) {
 /// folder was not there before it began (`free_to_make`), and a new branch is
 /// deleted only while it still points where it grew from, so nothing anybody
 /// committed is ever lost to it
-fn take_back(plan: &Plan) {
+///
+/// `added` says whether this making's `git worktree add` went through. When
+/// it did not, the folder and the branch it names are not this making's: git
+/// refuses to add over a worktree or a branch that is already there, and the
+/// one already there is somebody's work. Taking that back would force-remove
+/// a worktree full of uncommitted changes because a second one was asked for
+/// under the same name
+fn take_back(plan: &Plan, added: bool) {
     // A worktree on a MicroVM is its own machine, and goes with it (see
     // `Making::start`); nothing of it is anywhere else
     if plan.on_microvm() {
@@ -926,6 +941,18 @@ fn take_back(plan: &Plan) {
     }
     let folder = plan.folder.display().to_string();
     let main = plan.main.display().to_string();
+    if !added {
+        // On this machine the folder was seen not to exist before git was
+        // asked (`free_to_make`), so whatever git left of it on its way to
+        // failing is this making's, and goes. On another machine nothing was
+        // looked at, and nothing is touched
+        if plan.host.is_none() && plan.folder.exists() {
+            unhook_links(&plan.folder);
+            let _ = std::fs::remove_dir_all(&plan.folder);
+            forget_entry(&plan.main, &plan.folder);
+        }
+        return;
+    }
     // Whatever was already linked in when the making stopped is unhooked
     // before git or the filesystem is asked to take the folder away
     if plan.host.is_none() {
@@ -936,13 +963,27 @@ fn take_back(plan: &Plan) {
         &["git".into(), "-C".into(), main.clone(), "-c".into(), LONG_PATHS.into(), "worktree".into(), "remove".into(), "--force".into(), folder],
     );
     if plan.host.is_some() {
+        // The branch made for it goes too, while it is still where it was
+        // cut: left behind, the same name could never be asked for again
+        // ("a branch named ... already exists")
+        if plan.fresh {
+            let q = |s: &str| crate::ssh::sh_quote(s);
+            let line = format!(
+                "b=$(git -C {m} rev-parse --verify --quiet {branch}) && [ \"$b\" = \"$(git -C {m} rev-parse --verify --quiet {base})\" ] && git -C {m} branch -D -- {name}",
+                m = q(&main),
+                branch = q(&format!("refs/heads/{}^{{commit}}", plan.branch)),
+                base = q(&format!("{}^{{commit}}", plan.base)),
+                name = q(&plan.branch),
+            );
+            let _ = run_for(plan, &["sh".into(), "-c".into(), line]);
+        }
         return;
     }
     // Git may have stopped before it wrote the folder down anywhere
     if plan.folder.exists() {
         let _ = std::fs::remove_dir_all(&plan.folder);
     }
-    let _ = run(&["git".into(), "-C".into(), main.clone(), "worktree".into(), "prune".into()]);
+    forget_entry(&plan.main, &plan.folder);
     if plan.fresh {
         let tip = |name: &str| {
             let mut asking = std::process::Command::new("git");
@@ -957,6 +998,40 @@ fn take_back(plan: &Plan) {
             && branch == base
         {
             let _ = run(&["git".into(), "-C".into(), main, "branch".into(), "-D".into(), plan.branch.clone()]);
+        }
+    }
+}
+
+/// Whether a step is the one that makes the worktree
+fn adds_worktree(argv: &[String]) -> bool {
+    argv.windows(2).any(|w| w[0] == "worktree" && w[1] == "add")
+}
+
+/// Have a repository stop listing the worktree that was at `folder`, once
+/// nothing of it is left there.
+///
+/// Not `git worktree prune`: that forgets every worktree whose folder cannot
+/// be reached right now -- one on a drive that is unplugged, on a share that
+/// is off, made by another git (WSL) under a path this one cannot read --
+/// and with the entry goes its index, its HEAD and whatever was staged. Only
+/// the entry that names this folder is taken, and only when the folder's
+/// `.git` is gone
+pub fn forget_entry(main: &Path, folder: &Path) {
+    if folder.join(".git").exists() {
+        return;
+    }
+    let Some(common) = crate::repo::family_of(main) else { return };
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else { return };
+    let spelled = |p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        let s = s.trim_start_matches("//?/").trim_end_matches('/').to_string();
+        if cfg!(windows) { s.to_lowercase() } else { s }
+    };
+    let want = spelled(&folder.join(".git"));
+    for entry in entries.flatten() {
+        let Ok(named) = std::fs::read_to_string(entry.path().join("gitdir")) else { continue };
+        if spelled(Path::new(named.trim())) == want {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
 }
@@ -1027,7 +1102,7 @@ impl Making {
             // nobody is waiting for the folder any more
             let made = match made {
                 Ok(_) if stop() => {
-                    take_back(&plan);
+                    take_back(&plan, true);
                     // ...and on a MicroVM the worktree is its machine
                     let copy = machines.lock().unwrap_or_else(|e| e.into_inner()).worktree.take();
                     if let (Some(id), Some(key)) = (copy, crate::e2b::key()) {
@@ -1899,13 +1974,8 @@ fn discard_step(folder: &Path, released: &mut bool, approved: Option<&str>) -> R
                 return Err(e);
             }
         *released = true;
-        let _ = run(&[
-            "git".into(),
-            "-C".into(),
-            main.display().to_string(),
-            "worktree".into(),
-            "prune".into(),
-        ]);
+        // Only this folder's entry, if git left it behind ([`forget_entry`])
+        forget_entry(&main, folder);
     }
     if !folder.exists() {
         return Ok(());
@@ -2491,7 +2561,13 @@ pub fn ready_to_discard_reviewed(folder: &Path, approved: Option<&str>) -> Resul
     if count > 0 {
         bail!(crate::i18n::tp("err.worktree.dirty", &[("count", &count.to_string())]));
     }
-    Ok(false)
+    // Said here, before any tab of the folder is closed: git would refuse a
+    // worktree with submodules only once the removal was under way
+    let (forced, blocked) = review::submodules(folder, None)?;
+    if !blocked.is_empty() {
+        return Err(Refused(blocked).into());
+    }
+    Ok(forced)
 }
 
 /// What is left in a worktree on this machine, for a card with no tab on it
@@ -2573,7 +2649,19 @@ pub fn far_ready_to_discard_reviewed(host: &crate::config::HostSpec, folder: &st
     }
     match host.is_made() {
         true => far_unsaved(&ran.out, SPLIT),
-        false => server_unsaved(&ran.out, SPLIT),
+        false => {
+            server_unsaved(&ran.out, SPLIT)?;
+            // A folder already gone has nothing more to ask about. One that
+            // is there is asked about its submodules, as one here is
+            if ran.out.trim() == GONE {
+                return Ok(());
+            }
+            let (_, blocked) = review::submodules(Path::new(folder), Some(host))?;
+            match blocked.is_empty() {
+                true => Ok(()),
+                false => Err(Refused(blocked).into()),
+            }
+        }
     }
 }
 
@@ -2625,7 +2713,12 @@ fn server_unsaved(out: &str, split: &str) -> Result<()> {
 /// refuses a worktree with changes in it, so something written after the
 /// check is not lost either; what git says is the answer
 fn discard_on_server(host: &crate::config::HostSpec, folder: &str, approved: Option<&str>) -> Result<()> {
-    let force = if approved.is_some() { review::check(Path::new(folder), Some(host), approved)? } else { false };
+    let force = match approved {
+        Some(_) => review::check(Path::new(folder), Some(host), approved)?,
+        // Checked before this was asked for (`far_ready_to_discard_reviewed`):
+        // only whether git must be forced is wanted here
+        None => review::submodules(Path::new(folder), Some(host)).is_ok_and(|(forced, blocked)| forced && blocked.is_empty()),
+    };
     let flag = if force { "--force " } else { "" };
     let at = crate::elsewhere::Elsewhere::of(host)?;
     let f = for_a_shell(&[folder.to_string()]);
@@ -2635,7 +2728,7 @@ own=$(cd \"$(git rev-parse --git-dir 2>/dev/null || echo .)\" && pwd -P); \
 common=$(cd \"$(git rev-parse --git-common-dir 2>/dev/null || echo .)\" && pwd -P); \
 cd /; \
 if [ \"$own\" != \"$common\" ]; then git --git-dir=\"$common\" worktree remove {flag}-- \"$f\" || exit 1; \
-git --git-dir=\"$common\" worktree prune; if [ -e \"$f\" ]; then rm -rf -- \"$f\"; fi; exit 0; fi; \
+if [ -e \"$f\" ]; then rm -rf -- \"$f\"; fi; exit 0; fi; \
 rmdir -- \"$f\" 2>/dev/null && exit 0; exit {NOT_A_WORKTREE}"
     );
     let ran = crate::elsewhere::exec(&at, &line, 120_000)?;
@@ -4715,10 +4808,13 @@ tools/conpty.ps1"));
             preparing: Default::default(),
             private: false,
         };
+        // On Windows git is also told to take long paths, on the way in as
+        // on the way out; the line shown says so, since it is the line run
+        let long: &[&'static str] = if cfg!(windows) { &["-c", LONG_PATHS] } else { &[] };
+        let with_long = |rest: &[&'static str]| -> Vec<&'static str> { [&["git", "-C", "D:/work/myproject"], long, rest].concat() };
         assert_eq!(
             plan.argv(),
-            ["git", "-C", "D:/work/myproject", "worktree", "add", "--no-track", "-b", "feature/login",
-             "D:/work/myproject.worktrees/feature/login", "origin/main"]
+            with_long(&["worktree", "add", "--no-track", "-b", "feature/login", "D:/work/myproject.worktrees/feature/login", "origin/main"])
         );
         assert_eq!(plan.line(), plan.argv().join(" "), "the line shown and the line run are the same");
         // A branch that already exists is checked out rather than made, and
@@ -4726,8 +4822,7 @@ tools/conpty.ps1"));
         let old = Plan { fresh: false, ..plan };
         assert_eq!(
             old.argv(),
-            ["git", "-C", "D:/work/myproject", "worktree", "add",
-             "D:/work/myproject.worktrees/feature/login", "feature/login"]
+            with_long(&["worktree", "add", "D:/work/myproject.worktrees/feature/login", "feature/login"])
         );
     }
 
@@ -5151,8 +5246,31 @@ tools/conpty.ps1"));
         std::fs::write(main.join("more.md"), "x\n").unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "second"]);
-        take_back(&kept);
+        take_back(&kept, true);
         assert!(git(&["branch", "--list", "kept"]).contains("kept"), "a branch not at its base was deleted");
+
+        // A making that git refused took nothing of its own to take back: the
+        // worktree and the branch already standing under that name are
+        // somebody's, and stay -- uncommitted work and all
+        let theirs = plan_into(&main, "theirs", None, Some(&root.join("theirs")), None).unwrap();
+        wait(&Making::start(theirs.clone(), Vec::new())).unwrap();
+        std::fs::write(theirs.folder.join("unsaved.md"), "not committed\n").unwrap();
+        let again = Plan { folder: root.join("theirs-2"), ..theirs.clone() };
+        assert!(wait(&Making::start(again.clone(), Vec::new())).is_err(), "a second branch of the same name was made");
+        take_back(&again, false);
+        assert!(theirs.folder.join("unsaved.md").exists(), "a refused making removed the worktree that was already there");
+        assert!(git(&["branch", "--list", "theirs"]).contains("theirs"), "a refused making deleted the branch that was already there");
+
+        // Forgetting one folder's entry leaves the others, reachable or not
+        let away = plan_into(&main, "away", None, Some(&root.join("away")), None).unwrap();
+        wait(&Making::start(away.clone(), Vec::new())).unwrap();
+        let hidden = root.join("away-unplugged");
+        std::fs::rename(&away.folder, &hidden).unwrap();
+        forget_entry(&main, &root.join("some-other-folder"));
+        std::fs::rename(&hidden, &away.folder).unwrap();
+        assert!(git(&["worktree", "list"]).contains("away"), "a worktree that could not be reached for a moment was forgotten");
+        let _ = crate::worktree::discard(&theirs.folder);
+        let _ = crate::worktree::discard(&away.folder);
 
         let _ = crate::worktree::discard(&good.folder);
         let _ = std::fs::remove_dir_all(&root);
@@ -5917,6 +6035,51 @@ tools/conpty.ps1"));
         std::fs::write(git_dir.join("index"), b"not a git index").unwrap();
         assert!(ready_to_discard(&cut.folder).is_err(), "a failed status check was treated as clean");
         assert!(cut.folder.join("readme.md").exists());
+    }
+
+    /// A worktree with submodules is one git removes only when forced, and
+    /// forcing deletes each submodule's repository with it. So what a
+    /// submodule holds that is nowhere else stops the removal before
+    /// anything is closed, and one holding nothing goes without a word
+    #[test]
+    fn a_worktree_with_submodules_goes_only_when_they_hold_nothing() {
+        let (main, cut) = cut_for_removal(&format!("submods-{}", crate::random_hex(4)));
+        let root = main.parent().unwrap().to_path_buf();
+        let git = |at: &Path, args: &[&str]| {
+            let mut run = std::process::Command::new("git");
+            run.arg("-C").arg(at).args(["-c", "protocol.file.allow=always", "-c", "user.email=t@example.com", "-c", "user.name=t"]).args(args);
+            let out = crate::detach_console(&mut run).output().expect("git is needed");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // Somewhere the submodule comes from, and a worktree that uses it
+        let lib = root.join("lib-origin");
+        std::fs::create_dir_all(&lib).unwrap();
+        git(&lib, &["init", "-q", "-b", "main"]);
+        std::fs::write(lib.join("lib.md"), "lib\n").unwrap();
+        git(&lib, &["add", "-A"]);
+        git(&lib, &["commit", "-qm", "lib"]);
+        git(&cut.folder, &["submodule", "add", "-q", &lib.display().to_string(), "vendor/lib"]);
+        git(&cut.folder, &["commit", "-qm", "use lib"]);
+
+        // Work in the submodule that is on no remote: refused, by name,
+        // though the worktree's own status is clean
+        let sub = cut.folder.join("vendor").join("lib");
+        std::fs::write(sub.join("only-here.md"), "x\n").unwrap();
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-qm", "only here"]);
+        git(&cut.folder, &["commit", "-qam", "move lib on"]);
+        let why = ready_to_discard(&cut.folder).expect_err("a submodule's unpushed commit was not seen").to_string();
+        assert!(why.contains("vendor/lib"), "{why}");
+        assert!(cut.folder.exists());
+
+        // Nothing of the submodule's own left to lose: it goes, forced
+        git(&sub, &["reset", "-q", "--hard", "origin/main"]);
+        git(&cut.folder, &["commit", "-qam", "back"]);
+        ready_to_discard(&cut.folder).unwrap();
+        discard_waiting(&cut.folder).unwrap();
+        assert!(!cut.folder.exists(), "the folder is still there");
+        assert!(!git_lists(&main, &cut.folder), "git still holds it");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// A build leaves paths longer than Windows' 260 characters under an

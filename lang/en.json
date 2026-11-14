@@ -3315,6 +3315,7 @@
   "msg.folder.left": "{path} is off the list. The folder is still on disk.",
   "err.worktree.dirty": "There are {count} things here that are not committed yet.",
   "err.worktree.dirty_server": "There are {count} things here that are not committed yet. Commit them first, then delete it. The branch stays on the server, so commits not pushed are not lost.",
+  "err.worktree.submodule_work": "The submodule {path} holds work that is nowhere else: {changes} not committed, {commits} commit(s) on no remote, {stashes} stash(es). Removing this folder deletes the submodule's repository with it. Commit and push that work first.",
   "err.worktree.unpushed": "{count} commit(s) here have not been pushed. A folder on a MicroVM is its machine, and they would be deleted with it.",
   "msg.folder.discarded": "{path} is gone.",
   "msg.branch.renamed": "{from} is now {to}.",

@@ -35,6 +35,15 @@ pub const LIMIT: Duration = Duration::from_secs(20);
 /// loop -- the panel hands them to a thread -- so waiting costs nobody a redraw
 const NETWORK_LIMIT: Duration = Duration::from_secs(180);
 
+/// The ceiling for the ones that run a project's own programs while they
+/// work: a commit runs its hooks (a type check, the tests, a signing prompt),
+/// a merge or a checkout may fetch large files or install what changed.
+/// Twenty seconds is not theirs to be judged by -- and a commit killed while
+/// its hook runs leaves the index locked and half of it written, where the
+/// next try either fails on the lock or commits twice. Like the network
+/// ones, these run on the panel's own thread
+const WORK_LIMIT: Duration = Duration::from_secs(900);
+
 /// The branches that refuse a direct commit until somebody says otherwise.
 ///
 /// Not a security boundary -- it is the difference between "committed to main
@@ -496,6 +505,10 @@ pub fn far_line(dir: &Path, args: &[&str], input: &[u8], who: &As) -> String {
     // Never sit waiting for a person who cannot see the prompt
     words.push("GIT_TERMINAL_PROMPT=0".into());
     words.push("GIT_ASKPASS=".into());
+    // The same two as on this machine (`run_bytes_as`): looking takes no
+    // lock, and git speaks the language its words are read in
+    words.push("GIT_OPTIONAL_LOCKS=0".into());
+    words.push("LANGUAGE=en".into());
     if who.auth == Auth::Sealed {
         words.push("GIT_SSH_COMMAND=false".into());
     }
@@ -568,6 +581,15 @@ fn run_bytes_as(dir: &Path, args: &[&str], input: &[u8], limit: Duration, who: &
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("GCM_INTERACTIVE", "never")
+        // Looking is not writing. Left to itself, `git status` takes the
+        // index lock to save what it worked out, and the panel looks at the
+        // very moment an AI in the same folder is committing: its git then
+        // stops with "Unable to create index.lock: File exists"
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // What git says is read here (a refused sign-in is known by its
+        // words), so it is asked to say it in the language those words are
+        // written in, whatever this machine speaks
+        .env("LANGUAGE", "en")
         .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1469,7 +1491,12 @@ pub fn checkout(dir: &Path, name: &str) -> Result<()> {
     if name.is_empty() {
         bail!(crate::i18n::t("err.git.empty_branch"));
     }
-    run(dir, &["checkout", "-q", name]).map(|_| ())
+    // `--` after the name: it is a branch, never a path. Without it, a name
+    // that is also a folder of the project (`docs`, `dev`) is either refused
+    // as "could be both", or -- with no such branch anywhere -- read as that
+    // folder and quietly put back from the index, losing what was changed
+    // under it
+    run_within(dir, &["checkout", "-q", name, "--"], WORK_LIMIT).map(|_| ())
 }
 
 /// Bring the merge in. A conflict is not an error to hide: git stops, the files
@@ -1480,7 +1507,7 @@ pub fn merge(dir: &Path, name: &str, who: &As) -> Result<String> {
         bail!(crate::i18n::t("err.git.empty_branch"));
     }
     // A merge can make a commit, and that commit carries a name
-    run_as(dir, &["merge", "--no-edit", name], "", LIMIT, who)
+    run_as(dir, &["merge", "--no-edit", name], "", WORK_LIMIT, who)
 }
 
 /// Whether this account can reach this repository's remotes at all.
@@ -1723,7 +1750,7 @@ pub fn catch_up_for(dir: &Path, head: Option<&str>, base: &str, who: &As) -> Res
     if taken == 0 {
         return Ok(0);
     }
-    if let Err(e) = run_as(dir, &args(merge), "", LIMIT, who) {
+    if let Err(e) = run_as(dir, &args(merge), "", WORK_LIMIT, who) {
         let files = conflicts(dir).unwrap_or_default();
         if files.is_empty() {
             return Err(e);
@@ -2001,7 +2028,7 @@ pub fn commit(
     if amend {
         args.push("--amend");
     }
-    run_as(dir, &args, "", LIMIT, who)?;
+    run_as(dir, &args, "", WORK_LIMIT, who)?;
     Ok(run(dir, &["rev-parse", "--short", "HEAD"])?.trim().to_string())
 }
 
@@ -2106,7 +2133,7 @@ mod tests {
     fn a_git_on_another_machine_is_one_line_for_the_shell_there() {
         let dir = Path::new("/home/user/My Project");
         let plain = far_line(dir, &["status", "--porcelain=v1", "-z"], b"", &As::default());
-        assert_eq!(plain, "cd '/home/user/My Project' && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git status --porcelain=v1 -z");
+        assert_eq!(plain, "cd '/home/user/My Project' && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en git status --porcelain=v1 -z");
         let who = As {
             auth: Auth::Token { host: "github.com".into(), login: "me".into(), token: "ghp_SECRET".into() },
             account: Some("work".into()),
@@ -2116,13 +2143,13 @@ mod tests {
         let signed = far_line(Path::new("/srv/p"), &["commit", "-m", "fix: it's done"], b"", &who);
         assert_eq!(
             signed,
-            "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git -c 'user.name=Ada O'\\''Neil' -c user.email=ada@example.test commit -m 'fix: it'\\''s done'"
+            "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en git -c 'user.name=Ada O'\\''Neil' -c user.email=ada@example.test commit -m 'fix: it'\\''s done'"
         );
         assert!(!signed.contains("SECRET"), "the token went to the machine: {signed}");
         let sealed = far_line(Path::new("/srv/p"), &["fetch"], b"", &As::sealed());
-        assert_eq!(sealed, "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_SSH_COMMAND=false git -c credential.helper= fetch");
+        assert_eq!(sealed, "cd /srv/p && GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en GIT_SSH_COMMAND=false git -c credential.helper= fetch");
         let fed = far_line(Path::new("/srv/p"), &["apply", "-"], b"@@ -1 +1 @@\n", &As::default());
-        assert_eq!(fed, "cd /srv/p && printf '%s' QEAgLTEgKzEgQEAK | base64 -d | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= git apply -");
+        assert_eq!(fed, "cd /srv/p && printf '%s' QEAgLTEgKzEgQEAK | base64 -d | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= GIT_OPTIONAL_LOCKS=0 LANGUAGE=en git apply -");
     }
 
     /// The machine noted answers for the folder noted, one inside it and the

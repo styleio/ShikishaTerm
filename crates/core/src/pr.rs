@@ -397,15 +397,7 @@ fn look(
         // A repository this account cannot see answers with nothing at all,
         // which is the same "no pull request" a row shows for one not made
         let nodes = answer.pointer(&format!("/data/repository/b{i}/nodes")).and_then(|n| n.as_array());
-        let read = nodes
-            .into_iter()
-            .flatten()
-            .find(|n| {
-                n.pointer("/headRepositoryOwner/login")
-                    .and_then(|o| o.as_str())
-                    .is_some_and(|o| o.eq_ignore_ascii_case(&r.owner))
-            })
-            .and_then(read_node);
+        let read = the_one_of(nodes.map(Vec::as_slice).unwrap_or_default(), &r.owner).and_then(read_node);
         let mut news = News::default();
         let pr = read.as_ref().map(|(pr, _)| *pr);
         if let Some((pr, snap)) = &read {
@@ -497,18 +489,19 @@ fn question(branches: &[&str]) -> (String, Value) {
     let mut vars = json!({});
     for (i, b) in branches.iter().enumerate() {
         params.push_str(&format!(",$b{i}:String!"));
-        // Newest first, and two of them: a branch can have had several pull
-        // requests over its life and the newest is the one that matters, but
-        // a fork's branch of the same name is one of them too
+        // Newest first, and several of them: a branch can have had more
+        // than one pull request over its life, the open one is not always
+        // the newest (one opened later and closed sits above it), and forks'
+        // branches of the same name (`patch-1`, `main`) are among them too
         asks.push_str(&format!(
-            "b{i}:pullRequests(headRefName:$b{i},first:2,orderBy:{{field:CREATED_AT,direction:DESC}}){{nodes{{...P}}}} "
+            "b{i}:pullRequests(headRefName:$b{i},first:{OF_ONE_NAME},orderBy:{{field:CREATED_AT,direction:DESC}}){{nodes{{...P}}}} "
         ));
         vars[format!("b{i}")] = json!(b);
     }
     let query = format!(
         "query({params}){{repository(owner:$o,name:$n){{{asks}}}}}\
          fragment P on PullRequest{{number title url state isDraft headRefOid headRepositoryOwner{{login}} author{{login}} \
-         commits(last:1){{nodes{{commit{{committedDate statusCheckRollup{{contexts(first:50){{nodes{{__typename \
+         commits(last:1){{nodes{{commit{{committedDate statusCheckRollup{{state contexts(first:100){{totalCount nodes{{__typename \
          ...on CheckRun{{name status conclusion checkSuite{{workflowRun{{workflow{{name}}}}}}}} ...on StatusContext{{context state}}}}}}}}}}}}}} \
          reviews(last:20){{nodes{{id state body author{{login __typename}} submittedAt commit{{oid}} comments(first:1){{nodes{{replyTo{{id}}}}}}}}}} \
          reviewRequests(first:10){{nodes{{requestedReviewer{{__typename ...on User{{login}} ...on Bot{{login}} ...on Mannequin{{login}} ...on Team{{slug}}}}}}}} \
@@ -521,6 +514,22 @@ fn question(branches: &[&str]) -> (String, Value) {
 
 /// One pull request, as the question above has GitHub describe it: what a row
 /// shows of it, and what [`prnews::judge`] reads
+/// How many pull requests of one branch name are asked for. Enough that the
+/// open one is among them when later ones were closed and forks used the
+/// name; each costs a little of the hour's allowance, so not a hundred
+const OF_ONE_NAME: usize = 10;
+
+/// The pull request a branch's row is about, of the ones GitHub lists under
+/// its name (newest first): this repository's own, and the one still open
+/// if there is one -- else the newest, which says how the last one ended
+fn the_one_of<'a>(nodes: &'a [Value], owner: &str) -> Option<&'a Value> {
+    let ours = |n: &&Value| {
+        n.pointer("/headRepositoryOwner/login").and_then(|o| o.as_str()).is_some_and(|o| o.eq_ignore_ascii_case(owner))
+    };
+    let open = |n: &&Value| n.get("state").and_then(|s| s.as_str()) == Some("OPEN");
+    nodes.iter().filter(ours).find(open).or_else(|| nodes.iter().find(ours))
+}
+
 fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
     let number = v.get("number")?.as_u64()?;
     let text = |p: &str| v.pointer(p).and_then(|s| s.as_str()).unwrap_or_default().to_string();
@@ -538,7 +547,26 @@ fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
     let commit = list("/commits/nodes").into_iter().next().unwrap_or(Value::Null);
     let mut failed = Vec::new();
     let (mut running, mut passed) = (false, false);
-    for c in commit.pointer("/commit/statusCheckRollup/contexts/nodes").and_then(|n| n.as_array()).into_iter().flatten() {
+    // A check that ended with no verdict of its own (cancelled, stale)
+    let mut unsaid = false;
+    let listed = commit.pointer("/commit/statusCheckRollup/contexts/nodes").and_then(|n| n.as_array());
+    // More checks than one answer holds: the ones not read may be the ones
+    // that failed, so GitHub's own summing-up of all of them decides
+    let more = commit
+        .pointer("/commit/statusCheckRollup/contexts/totalCount")
+        .and_then(Value::as_u64)
+        .is_some_and(|all| all as usize > listed.map_or(0, Vec::len));
+    if more {
+        match commit.pointer("/commit/statusCheckRollup/state").and_then(|s| s.as_str()).unwrap_or_default() {
+            "SUCCESS" => {}
+            "PENDING" | "EXPECTED" => running = true,
+            // Failed among the ones not read: named as that, since no name
+            // of theirs was given
+            _ if failed.is_empty() => unsaid = true,
+            _ => {}
+        }
+    }
+    for c in listed.into_iter().flatten() {
         let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or_default();
         let (name, verdict) = match s("__typename") {
             "StatusContext" => (s("context").to_string(), crate::github::status_verdict(s("state"))),
@@ -551,6 +579,7 @@ fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
                     f if f == s("name") => f.to_string(),
                     f => format!("{f} / {}", s("name")),
                 };
+                unsaid |= crate::github::check_gave_no_verdict(s("status") == "COMPLETED", s("conclusion"));
                 (name, crate::github::check_verdict(s("status") == "COMPLETED", s("conclusion")))
             }
         };
@@ -565,6 +594,9 @@ fn read_node(v: &Value) -> Option<(Pr, prnews::Snapshot)> {
     let ci = match () {
         _ if running => Ci::Running,
         _ if !failed.is_empty() => Ci::Failed,
+        // Neither: a check was stopped before it could say, or failed out
+        // of sight. Nothing is announced, and the row claims no pass
+        _ if unsaid => Ci::None,
         _ if passed => Ci::Passed,
         _ => Ci::None,
     };
@@ -1209,6 +1241,37 @@ mod tests {
         let passed = node(json!([{"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "SKIPPED"}]));
         assert_eq!(read_node(&passed).unwrap().1.ci, Ci::Passed);
         assert_eq!(read_node(&node(json!([]))).unwrap().1.ci, Ci::None);
+        // A run somebody stopped, or a newer push replaced, is no failure of
+        // the code -- and no pass either
+        let stopped = node(json!([
+            {"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "b", "status": "COMPLETED", "conclusion": "CANCELLED"}
+        ]));
+        assert_eq!(read_node(&stopped).unwrap().1.ci, Ci::None);
+    }
+
+    /// More checks than one answer holds: the ones not read are not assumed
+    /// to have passed
+    #[test]
+    fn checks_out_of_sight_are_judged_by_the_sum_of_all() {
+        let node = |state: &str| json!({"number": 1, "state": "OPEN",
+            "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": state, "contexts": {"totalCount": 130, "nodes": [
+                {"__typename": "CheckRun", "name": "a", "status": "COMPLETED", "conclusion": "SUCCESS"}
+            ]}}}}]}});
+        assert_eq!(read_node(&node("FAILURE")).unwrap().1.ci, Ci::None, "a failure out of sight was called a pass");
+        assert_eq!(read_node(&node("PENDING")).unwrap().1.ci, Ci::Running);
+        assert_eq!(read_node(&node("SUCCESS")).unwrap().1.ci, Ci::Passed);
+    }
+
+    /// The row is about the pull request still open, not the newest one
+    #[test]
+    fn an_open_pull_request_is_not_hidden_by_a_newer_closed_one() {
+        let pr = |n: u64, state: &str, owner: &str| json!({"number": n, "state": state, "headRepositoryOwner": {"login": owner}});
+        let newest_first = [pr(14, "OPEN", "a-fork"), pr(12, "CLOSED", "Acme"), pr(10, "OPEN", "acme"), pr(7, "MERGED", "acme")];
+        assert_eq!(the_one_of(&newest_first, "acme").unwrap()["number"], 10);
+        // None open: the newest of this repository's own says how it ended
+        assert_eq!(the_one_of(&newest_first[..2], "acme").unwrap()["number"], 12);
+        assert!(the_one_of(&newest_first[..1], "acme").is_none(), "a fork's pull request was taken for this one's");
     }
 
     /// Each branch goes in as a variable of its own, never into the question's

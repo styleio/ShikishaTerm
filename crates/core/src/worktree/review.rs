@@ -21,6 +21,10 @@ pub struct Review {
     pub review: String,
     pub keeps_branch: bool,
     pub blocked: String,
+    /// Git has to be forced to remove it though nothing is lost (it has
+    /// submodules, none of them holding work)
+    #[serde(skip)]
+    pub forced: bool,
 }
 
 pub(super) fn changes(folder: &Path, local: bool) -> Result<Vec<crate::git::Change>> {
@@ -32,6 +36,52 @@ pub(super) fn changes(folder: &Path, local: bool) -> Result<Vec<crate::git::Chan
         !(local && c.index == '?' && std::fs::symlink_metadata(folder.join(&c.path))
             .is_ok_and(|m| m.file_type().is_symlink()))
     }).collect())
+}
+
+/// Whether a worktree has submodules, and what of theirs removing it would
+/// lose (empty when nothing).
+///
+/// Git removes a worktree with submodules only when forced, and forcing
+/// deletes each submodule's own repository along with the folder: what was
+/// committed there and pushed nowhere, its stashes, what is not committed.
+/// None of that shows in the worktree's own status, which reads a submodule
+/// as one line or as nothing at all. So each is asked on its own, before
+/// anything is closed or removed; with nothing to lose they can be fetched
+/// again, and forcing costs nothing
+pub(super) fn submodules(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<(bool, String)> {
+    let remote = host.map(crate::elsewhere::Elsewhere::of).transpose()?;
+    crate::git::there(folder, remote.as_ref());
+    // No list of submodules, no submodules: git says so by failing
+    let listed = crate::git::run(folder, &["config", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"]);
+    if !listed.is_ok_and(|l| !l.trim().is_empty()) {
+        return Ok((false, String::new()));
+    }
+    // One line a submodule that is checked out: its path, what is not
+    // committed, what is committed on no remote, and its stashes
+    const EACH: &str = "printf '%s\\t%s\\t%s\\t%s\\n' \"$displaypath\" \"$(git status --porcelain | wc -l)\" \
+\"$(git rev-list --count --branches HEAD --not --remotes 2>/dev/null || echo 0)\" \"$(git stash list | wc -l)\"";
+    let each = crate::git::run(folder, &["submodule", "foreach", "--quiet", "--recursive", EACH])?;
+    for line in each.lines() {
+        let mut cols = line.split('\t');
+        let path = cols.next().unwrap_or_default();
+        let count = |c: Option<&str>| c.and_then(|n| n.trim().parse::<u64>().ok()).unwrap_or(0);
+        let (changes, commits, stashes) = (count(cols.next()), count(cols.next()), count(cols.next()));
+        if changes + commits + stashes > 0 {
+            return Ok((
+                true,
+                crate::i18n::tp(
+                    "err.worktree.submodule_work",
+                    &[
+                        ("path", path),
+                        ("changes", &changes.to_string()),
+                        ("commits", &commits.to_string()),
+                        ("stashes", &stashes.to_string()),
+                    ],
+                ),
+            ));
+        }
+    }
+    Ok((true, String::new()))
 }
 
 pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<Review> {
@@ -78,10 +128,16 @@ pub fn inspect(folder: &Path, host: Option<&crate::config::HostSpec>) -> Result<
         let count: usize = count.trim().parse()?;
         if count > 0 { crate::i18n::tp("err.worktree.unpushed", &[("count", &count.to_string())]) } else { String::new() }
     } else { String::new() };
+    // A worktree's submodules go with it (a machine's go with the machine,
+    // and what is not pushed there is already asked about above)
+    let (forced, blocked) = match machine || !blocked.is_empty() {
+        true => (false, blocked),
+        false => submodules(folder, host)?,
+    };
     Ok(Review {
         files: changes.into_iter().map(|c| File { untracked: c.index == '?', staged: !matches!(c.index, ' ' | '?'), work: c.work != ' ', path: c.path }).collect(),
         keeps_branch: !machine && !branch.is_empty(), branch,
-        review: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(), blocked,
+        review: hash.finalize().iter().map(|b| format!("{b:02x}")).collect(), blocked, forced,
     })
 }
 
@@ -91,12 +147,12 @@ pub fn check(folder: &Path, host: Option<&crate::config::HostSpec>, approved: Op
     if !current.blocked.is_empty() { return Err(super::Refused(current.blocked).into()); }
     if let Some(approved) = approved {
         if approved != current.review { return Err(super::Refused(crate::i18n::t("err.worktree.review_changed")).into()); }
-        return Ok(!current.files.is_empty());
+        return Ok(!current.files.is_empty() || current.forced);
     }
     if !current.files.is_empty() {
         return Err(super::Refused(crate::i18n::tp("err.worktree.dirty", &[("count", &current.files.len().to_string())])).into());
     }
-    Ok(false)
+    Ok(current.forced)
 }
 
 #[cfg(test)]

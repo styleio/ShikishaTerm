@@ -12881,11 +12881,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     },
                     "forget" => {
                         // Git may still list a worktree it refused to remove.
-                        // Forgetting one whose folder is gone is all prune does
+                        // That one entry is forgotten, once its folder is gone
                         if let Some(main) = &l.main {
-                            let mut prune = std::process::Command::new("git");
-                            prune.arg("-C").arg(main).args(["worktree", "prune"]);
-                            let _ = crate::detach_console(&mut prune).output();
+                            crate::worktree::forget_entry(main, &l.removal.folder);
                         }
                         // A machine that would not be deleted is still paid
                         // for, and the list in the settings is where it goes

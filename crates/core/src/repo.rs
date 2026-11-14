@@ -124,11 +124,43 @@ pub fn remote_url_of(cwd: &Path) -> Option<String> {
 }
 
 /// `owner/name` out of any of the ways a GitHub remote is written.
+///
+/// Read as an address, not matched against a list of beginnings: who signs
+/// in (`https://name@github.com/…`, which is what this program's own clone on
+/// a server writes; `org-123@github.com:…`), the port, the case of the host
+/// and GitHub's second SSH door (`ssh.github.com`, port 443) are all ways of
+/// writing the same repository. The host itself has to be GitHub's: a name
+/// that merely starts or ends like it is somebody else
 pub fn github_path(url: &str) -> Option<String> {
-    let rest = ["https://github.com/", "http://github.com/", "ssh://git@github.com/",
-                "git@github.com:", "github.com/", "git://github.com/"]
-        .into_iter()
-        .find_map(|p| url.strip_prefix(p))?;
+    let url = url.trim();
+    let is_github = |host: &str| {
+        let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+        let host = host.split_once(':').map_or(host, |(h, _)| h);
+        host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com")
+    };
+    let rest = match url.split_once("://") {
+        // scheme://[who@]host[:port]/owner/name
+        Some((scheme, after)) => {
+            if !["https", "http", "ssh", "git"].iter().any(|s| scheme.eq_ignore_ascii_case(s)) {
+                return None;
+            }
+            let (host, path) = after.split_once('/')?;
+            is_github(host).then_some(path)?
+        }
+        None => match (url.find(':'), url.find('/')) {
+            // [who@]host:owner/name, the way ssh writes it
+            (Some(colon), slash) if slash.is_none_or(|s| colon < s) => {
+                let (host, path) = url.split_at(colon);
+                (!host.contains(':') && is_github(host)).then(|| path[1..].trim_start_matches('/'))?
+            }
+            // host/owner/name, with nothing in front
+            (_, Some(slash)) => {
+                let (host, path) = url.split_at(slash);
+                (!host.contains('@') && is_github(host)).then(|| &path[1..])?
+            }
+            _ => return None,
+        },
+    };
     let rest = rest.trim_end_matches('/').trim_end_matches(".git");
     let (owner, name) = rest.split_once('/')?;
     // A path with more in it is not a repository url; guessing would send a
@@ -1117,6 +1149,30 @@ mod tests {
         // Somewhere else is not a failure, it is simply not GitHub
         assert_eq!(github_path("https://gitlab.com/group/thing.git"), None);
         assert_eq!(github_path("https://github.com/onlyowner"), None);
+        // The same repository, however the address is written
+        for same in [
+            "https://someone@github.com/owner/thing.git",
+            "https://x-access-token:secret@github.com/owner/thing",
+            "HTTPS://GitHub.com/owner/thing.git",
+            "ssh://git@ssh.github.com:443/owner/thing.git",
+            "ssh://git@github.com:22/owner/thing",
+            "org-123456@github.com:owner/thing.git",
+            "git@github.com:/owner/thing.git",
+            "github.com/owner/thing",
+        ] {
+            assert_eq!(github_path(same).as_deref(), Some("owner/thing"), "{same}");
+        }
+        // A host that only looks like it is somebody else
+        for other in [
+            "https://github.com.example.net/owner/thing",
+            "https://notgithub.com/owner/thing",
+            "git@github.com.example.net:owner/thing",
+            "https://example.net/github.com/owner/thing",
+            "ftp://github.com/owner/thing",
+            "https://github.com@example.net/owner/thing",
+        ] {
+            assert_eq!(github_path(other), None, "{other}");
+        }
         assert_eq!(github_path(""), None);
     }
 
