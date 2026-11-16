@@ -3213,6 +3213,7 @@
   "err.browser.js_eval_failed": "JSの評価に失敗: {value}",
   "err.browser.cdp_failed": "ブラウザ内部呼び出し({method})に失敗: {e}",
   "err.browser.ref_no_digest": "このページの digest がまだ無いか、ページが変わって無効になりました。browser_digest を実行してから {ref=N} を使ってください",
+  "err.browser.ref_other_page": "ref {ref} は、今表示しているページとは別のページのものです（ページが移動したか、ページが開いた窓が現れた・閉じた）。browser_digest を取り直してください",
   "err.browser.ref_unknown": "ref {ref} は digest にありません (1〜{max})。browser_digest を取り直してください",
   "err.browser.ref_stale": "ref {ref} の要素はもう存在しません(ページが変わった可能性)。browser_digest を取り直してください: {e}",
   "err.clients.unreadable": "ペアリング済みデバイスの一覧を今は読めなかったため、何も変更していません: {why}。もう一度お試しください",

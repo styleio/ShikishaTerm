@@ -2466,6 +2466,16 @@ mod tests {
         assert!(matches!(went, SecretFill::WrongSite(ref at) if at.starts_with(&other)), "{went:?}");
         assert_eq!(holds("#late").as_deref(), Some(""), "the password followed the page to another site");
 
+        // A number taken on one page means nothing on the next: refused, not
+        // tried against whatever the new page has under that number
+        pages.digest(Some("p"), t).expect("the digest cannot be taken");
+        pages.go(Some("p"), Go::To(format!("{other}?as={mine}&again=1"))).unwrap();
+        let stale = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            pages.click(Some("p"), &Sel::Ref(1), 2_000).err().map(|e| e.to_string())
+        });
+        assert!(stale.is_some(), "a number from the page before was pressed on this one");
+
         // ...and on the other site, saying it is the first one changes nothing
         assert!(said("return String(window.__shikisha_href())").starts_with(&format!("\"{}", mine.trim_end_matches('/'))), "the page's lie is not in place");
         let lied = pages.fill_only_on(Some("p"), &Sel::Css("#late".into()), secret, &sites, 3_000).unwrap();

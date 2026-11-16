@@ -872,11 +872,52 @@ fn read_page(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> anyhow::Resul
         .lock()
         .unwrap()
         .insert(to.map(str::to_string), d.refs.clone());
+    // ...and which document they are the numbers of (see `ref_backend`)
+    match document_now(s, to, timeout_ms) {
+        Some(doc) => ref_docs().lock().unwrap_or_else(|e| e.into_inner()).insert(ref_doc_key(s, to), doc),
+        None => ref_docs().lock().unwrap_or_else(|e| e.into_inner()).remove(&ref_doc_key(s, to)),
+    };
     Ok(d)
 }
 
-/// Resolve `{ref=N}` against the latest digest of that page
+/// The document a page is showing, as the browser names it: its frame, and
+/// the load that filled it. Another page in the same pane (a window the
+/// page opened, standing in front of it) is another frame; the same page
+/// gone somewhere else is another load
+fn document_now(s: &dyn Speaks, to: Option<&str>, timeout_ms: u64) -> Option<String> {
+    let tree = s.cdp(to, "Page.getFrameTree", serde_json::json!({}), timeout_ms.min(3_000)).ok()?;
+    let part = |k: &str| tree.pointer(&format!("/frameTree/frame/{k}")).and_then(serde_json::Value::as_str).map(str::to_string);
+    Some(format!("{}/{}", part("id")?, part("loaderId")?))
+}
+
+/// The document each page's numbers were taken from, beside the numbers
+/// themselves (`Speaks::refs`): by whose numbers they are, and which page
+fn ref_docs() -> &'static std::sync::Mutex<std::collections::HashMap<(usize, Option<String>), String>> {
+    static DOCS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(usize, Option<String>), String>>> =
+        std::sync::OnceLock::new();
+    DOCS.get_or_init(Default::default)
+}
+
+fn ref_doc_key(s: &dyn Speaks, to: Option<&str>) -> (usize, Option<String>) {
+    (std::ptr::from_ref(s.refs()) as usize, to.map(str::to_string))
+}
+
+/// Resolve `{ref=N}` against the latest digest of that page.
+///
+/// The numbers are of one document. A pane can come to show another without
+/// the page having gone anywhere: a window the page opened (a sign-in)
+/// stands in front of it and is what the pane's name means until it
+/// closes, and then the page behind is. A number means nothing in the
+/// other document -- or, worse, means some other element there, which
+/// would be pressed or typed into without a word. So the document is asked
+/// for, and a number from another one is refused
 pub fn ref_backend(s: &dyn Speaks, to: Option<&str>, r: u32) -> anyhow::Result<i64> {
+    let taken_from = ref_docs().lock().unwrap_or_else(|e| e.into_inner()).get(&ref_doc_key(s, to)).cloned();
+    if let (Some(taken_from), Some(now)) = (taken_from, document_now(s, to, 3_000))
+        && taken_from != now
+    {
+        anyhow::bail!(crate::i18n::tp("err.browser.ref_other_page", &[("ref", &r.to_string())]));
+    }
     let map = s.refs().lock().unwrap();
     let refs = map
         .get(&to.map(str::to_string))

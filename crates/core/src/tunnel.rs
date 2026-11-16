@@ -297,6 +297,25 @@ impl Drop for Pipe {
     }
 }
 
+/// An address nothing a browser shows has business with, on this machine's
+/// side of the line: the link-local range (`169.254.0.0/16`, `fe80::/10`).
+///
+/// It is where a hosted machine is told its own secrets -- the keys of the
+/// account it runs under, handed to whoever on the machine asks, with no
+/// password, because only the machine itself can reach it. Through this
+/// line a page drawn somewhere else can: a site only has to give one of its
+/// names that address, and the browser reads the answer as that site's own.
+/// What somebody runs to look at is on `localhost` or the private network,
+/// and stays reachable
+fn never_reached(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_link_local())
+        }
+    }
+}
+
 /// Reach an address, by name, from here.
 ///
 /// Every address it is given is looked up here, which is the point: a name
@@ -310,6 +329,11 @@ fn reach(addr: &str) -> Option<TcpStream> {
         return None;
     }
     for one in addr.to_socket_addrs().ok()? {
+        // Judged by the address it resolved to, which is the one connected
+        // to: a name can be made to mean anything
+        if never_reached(&one.ip()) {
+            continue;
+        }
         if let Ok(sock) = TcpStream::connect_timeout(&one, REACH) {
             let _ = sock.set_nodelay(true);
             return Some(sock);
@@ -804,6 +828,20 @@ mod tests {
             }
         });
         addr
+    }
+
+    /// Where a hosted machine keeps its own keys is not reached for a page,
+    /// whatever name the page gave it; this machine and its network are
+    #[test]
+    fn the_line_does_not_reach_where_a_machine_keeps_its_keys() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        for held in ["169.254.169.254", "169.254.0.1", "fe80::1", "::ffff:169.254.169.254"] {
+            assert!(never_reached(&ip(held)), "{held}");
+        }
+        for open in ["127.0.0.1", "::1", "10.0.0.5", "192.168.1.20", "100.64.0.3", "93.184.216.34", "2001:db8::1"] {
+            assert!(!never_reached(&ip(open)), "{open}");
+        }
+        assert!(reach("169.254.169.254:80").is_none());
     }
 
     /// An address says which kind of line to open, and a bad one says so.

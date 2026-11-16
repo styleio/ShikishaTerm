@@ -308,23 +308,41 @@ impl As {
     /// What to put in a terminal's environment so that a git typed there signs
     /// in as this account.
     ///
-    /// Settings travel as `GIT_CONFIG_*`, which every git started in that
-    /// terminal reads -- the person's own, and the ones an AI working in that
-    /// tab runs. Nothing is taken away: a repository on another server goes on
-    /// signing in the way this machine already signs in to it
+    /// Settings travel in one variable, `GIT_CONFIG_PARAMETERS` (the one git
+    /// itself hands its children what `-c` said), which every git started in
+    /// that terminal reads -- the person's own, and the ones an AI working in
+    /// that tab runs. Nothing is taken away: a repository on another server
+    /// goes on signing in the way this machine already signs in to it.
+    ///
+    /// One variable, and not the numbered set git also reads (a count, then a
+    /// key and a value for each number): an AI's CLI that keeps secrets out
+    /// of the commands it runs drops variables by their names, the ones with
+    /// KEY in them among the first. With the keys gone and the count left,
+    /// git stops at "missing config key" -- every git in the tab, whatever
+    /// it was asked. One variable is there whole, or not at all
     pub fn terminal_env(&self) -> Vec<(String, String)> {
         let (cfg, env) = self.settings(Whose::Terminal);
         let mut out: Vec<(String, String)> =
             env.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         if !cfg.is_empty() {
-            out.push(("GIT_CONFIG_COUNT".into(), cfg.len().to_string()));
-            for (i, (k, v)) in cfg.into_iter().enumerate() {
-                out.push((format!("GIT_CONFIG_KEY_{i}"), k));
-                out.push((format!("GIT_CONFIG_VALUE_{i}"), v));
-            }
+            // After whatever the person's own environment already says there
+            // -- unless this app was itself started from one of its tabs,
+            // where what is there is that tab's account, not the person's
+            let theirs = match std::env::var_os("SHIKISHA_GIT_HOST") {
+                None => std::env::var("GIT_CONFIG_PARAMETERS").unwrap_or_default(),
+                Some(_) => String::new(),
+            };
+            out.push(("GIT_CONFIG_PARAMETERS".into(), format!("{theirs} {}", config_parameters(&cfg)).trim().to_string()));
         }
         out
     }
+}
+
+/// Settings as git writes them into `GIT_CONFIG_PARAMETERS`: each
+/// `key=value` in single quotes, a quote inside one closed and opened again
+/// around itself, a space between them
+fn config_parameters(cfg: &[(String, String)]) -> String {
+    cfg.iter().map(|(k, v)| format!("'{}'", format!("{k}={v}").replace('\'', "'\\''"))).collect::<Vec<_>>().join(" ")
 }
 
 /// git itself is not on this PC: the one failure no folder or setting can fix.
@@ -2182,15 +2200,54 @@ mod tests {
 
     /// The config pairs in a terminal's environment, as key and value together
     fn written(env: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
-        let n: usize = env.get("GIT_CONFIG_COUNT").map(|v| v.parse().unwrap()).unwrap_or(0);
-        (0..n)
-            .map(|i| {
-                (
-                    env[&format!("GIT_CONFIG_KEY_{i}")].clone(),
-                    env[&format!("GIT_CONFIG_VALUE_{i}")].clone(),
-                )
-            })
-            .collect()
+        // Read back the way git reads it: entries in single quotes, a quote
+        // inside one written as '\''
+        let all = env.get("GIT_CONFIG_PARAMETERS").cloned().unwrap_or_default();
+        let mut pairs = Vec::new();
+        let (mut one, mut inside, mut chars) = (String::new(), false, all.chars().peekable());
+        while let Some(c) = chars.next() {
+            match (c, inside) {
+                ('\'', false) => inside = true,
+                ('\'', true) => {
+                    inside = false;
+                    // '\'' : closed, a quote, opened again
+                    if chars.peek() == Some(&'\\') {
+                        chars.next();
+                        chars.next();
+                        chars.next();
+                        one.push('\'');
+                        inside = true;
+                    } else {
+                        let (k, v) = one.split_once('=').unwrap();
+                        pairs.push((k.to_string(), v.to_string()));
+                        one.clear();
+                    }
+                }
+                (c, true) => one.push(c),
+                _ => {}
+            }
+        }
+        pairs
+    }
+
+    /// The settings reach a real git whole, quotes and all, and none of them
+    /// travels under a name with KEY in it for a careful CLI to drop
+    #[test]
+    fn a_terminals_git_settings_are_one_variable_git_reads() {
+        let said = config_parameters(&[
+            ("user.name".into(), "Ada O'Neil".into()),
+            ("credential.https://github.com.helper".into(), "!f() { echo 'x y'; }; f".into()),
+        ]);
+        let mut ask = std::process::Command::new("git");
+        ask.args(["config", "--get", "user.name"]).env("GIT_CONFIG_PARAMETERS", &said);
+        let Ok(out) = crate::detach_console(&mut ask).output() else { return };
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "Ada O'Neil");
+        let mut ask = std::process::Command::new("git");
+        ask.args(["config", "--get", "credential.https://github.com.helper"]).env("GIT_CONFIG_PARAMETERS", &said);
+        let out = crate::detach_console(&mut ask).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "!f() { echo 'x y'; }; f");
+        let who = As { name: Some("Ada".into()), email: Some("ada@example.test".into()), ..Default::default() };
+        assert!(who.terminal_env().iter().all(|(k, _)| !k.contains("KEY")), "a setting travels under a name with KEY in it");
     }
 
     /// A git the person types signs in as the account -- for that server only.

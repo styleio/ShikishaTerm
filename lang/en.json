@@ -3216,6 +3216,7 @@
   "err.browser.js_eval_failed": "JS evaluation failed: {value}",
   "err.browser.cdp_failed": "Browser-internal call ({method}) failed: {e}",
   "err.browser.ref_no_digest": "No digest for this page yet, or the page changed and voided it. Run browser_digest before using {ref=N}",
+  "err.browser.ref_other_page": "ref {ref} is from another page than the one showing now (the page moved on, or a window it opened came or went). Take a new browser_digest",
   "err.browser.ref_unknown": "ref {ref} is not in the digest (1–{max}). Take a new browser_digest",
   "err.browser.ref_stale": "The element behind ref {ref} no longer exists (the page likely changed). Take a new browser_digest: {e}",
   "err.clients.unreadable": "The list of paired devices could not be read just now, so nothing was changed: {why}. Try again",
