@@ -22,12 +22,15 @@
  *   leaving  "leave this page?" is not asked: the page is left
  *   window   the app's window, photographed while a box is held, for a look
  *            at whether the engine drew a box of its own as well
+ *   phone    a phone-sized Chrome on the remote door is asked the same
+ *            question, and its answer is the page's answer
  *
- * Needs Windows and Node. Photographs land in target/shots.
+ * Needs Windows, Node and Chrome (the phone). Photographs land in target/shots.
  */
-import {connectCdp} from './chrome.mjs';
+import {findChrome, connectCdp} from './chrome.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
+import net from 'node:net';
 import http from 'node:http';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -84,9 +87,15 @@ fs.rmSync(RUN, { recursive: true, force: true });
 for (const d of [APP, WORK, LOCAL, SHOTS]) fs.mkdirSync(d, { recursive: true });
 const staged = ps('-File', path.join(ROOT, 'tools', 'stage.ps1'), '-Dest', APP, '-Package', '-Exe', exe);
 if (!fs.existsSync(path.join(APP, 'SHIKISHA-TERM.exe'))) die('staging failed:\n' + staged.stdout + staged.stderr);
+const freePort = () => new Promise((res) => {
+  const srv = net.createServer().listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => res(p)); });
+});
+const PHONE_PORT = await freePort();
+const PHONE_KEY = 'pagedialogphone0123456789';
 fs.mkdirSync(path.dirname(CONFIG), { recursive: true });
 fs.writeFileSync(CONFIG, JSON.stringify({
   language: JA ? 'ja' : 'en',
+  remote: { enabled: true, bind: '127.0.0.1', port: PHONE_PORT, sticky_token: true, fixed_token: PHONE_KEY },
   agent_hooks: { 'Claude Code': 'off', 'Codex CLI': 'off', 'Gemini CLI': 'off' },
   desks: [{ name: 'Dialogs', id: 'dialogs', folders: [{ cwd: WORK, tabs: [
     { name: 'shop', id: 'shop', command: `browser ${site}`,
@@ -116,6 +125,7 @@ async function connect(target, name) {
 }
 const logged = () => (fs.existsSync(HOOKS_LOG) ? fs.readFileSync(HOOKS_LOG, 'utf8') : '');
 
+let chrome = null;
 try {
   let boardTarget;
   await until(async () => {
@@ -134,6 +144,9 @@ try {
   }, 'the page\'s own debugging port', 30000);
   const page = await connect(pageTarget, 'page');
   await until(() => page.run('document.readyState === "complete"'), 'the page loaded');
+  // ...and given its place in the window: a page with no room is pressed nowhere
+  await until(() => page.run('innerWidth > 100 && innerHeight > 100 && document.visibilityState === "visible"'), 'the page shown');
+  await sleep(500);
   // A press a person makes. Not waited for: the browser does not say the
   // press is done until the box it opened is answered
   const press = async (sel) => {
@@ -238,7 +251,44 @@ try {
   await lua(`local ok, e = pcall(shikisha.browser_dialog, "shop", "accept") shikisha.log("DLG7 " .. tostring(ok) .. " " .. tostring(e))`);
   check((await said('DLG7')).includes('DLG7 false'), 'answering when nothing is open is an error, not a silent yes');
 
-  console.log('3. leaving a page that asks to be stayed on');
+  console.log('3. the phone');
+  const phoneDir = path.join(RUN, 'phone');
+  fs.mkdirSync(phoneDir, { recursive: true });
+  chrome = spawn(findChrome(), ['--headless=new', '--remote-debugging-port=0', '--user-data-dir=' + phoneDir,
+    '--no-first-run', '--no-default-browser-check', 'about:blank'], { stdio: 'ignore' });
+  const portFile = path.join(phoneDir, 'DevToolsActivePort');
+  await until(() => fs.existsSync(portFile) && Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]) > 0, 'the phone\'s Chrome');
+  const pport = Number(fs.readFileSync(portFile, 'utf8').split(/\r?\n/)[0]);
+  let pt;
+  await until(async () => (pt = (await targetsOf(pport)).find((t) => t.type === 'page')), 'the phone\'s page');
+  const phone = await connect(pt, 'phone');
+  await phone.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await phone.send('Page.navigate', { url: `http://127.0.0.1:${PHONE_PORT}/?t=${PHONE_KEY}` });
+  await until(() => phone.run('!!S && S.tabs.some(t => t.kind === "browser")'), 'the board on the phone', 30000);
+  await press('#c');
+  const phoneBox = () => phone.run('!document.getElementById("sask").hidden && document.getElementById("sask").classList.contains("pagesays")');
+  await until(phoneBox, 'the confirm on the phone', 10000);
+  check(await boxUp(), 'the window and the phone are asked the same question');
+  check(await phone.run('document.querySelector("#sask .vsay").textContent === "Delete the order?"'), 'the phone shows the page\'s words');
+  await phone.shot('1-confirm');
+  await phone.run('document.querySelector("#sask .brow > .go").click()');
+  await until(async () => (await titleNow()) === 'yes', 'the phone\'s OK reaching the page', 8000).catch(() => {});
+  check((await titleNow()) === 'yes', 'the phone\'s OK is the page\'s OK: ' + await titleNow());
+  await noBox();
+  await until(async () => !(await phoneBox()), 'the question gone from the phone', 8000).catch(() => {});
+  check(!(await phoneBox()), 'answered on the phone, it goes from both');
+  // An answer for a box that is gone answers nothing: not the next one either
+  await press('#c');
+  await until(boxUp, 'another confirm', 10000);
+  const live = await asked();
+  await phone.run(`send({kind:"dialog-answer", page:${JSON.stringify(live.page)}, id:${live.id - 1}, accept:true, text:""})`);
+  await sleep(1200);
+  check((await asked()) && (await asked()).id === live.id && (await titleNow()) === 'yes', 'an answer naming a box that is gone leaves the one that is open');
+  await board.run('document.querySelector("#sask .brow > .quiet").click()');
+  await until(async () => (await titleNow()) === 'no', 'Cancel reaching the page', 8000).catch(() => {});
+  await noBox();
+
+  console.log('4. leaving a page that asks to be stayed on');
   await press('#stay');
   await until(async () => (await titleNow()) === 'guarded', 'the guard set', 8000);
   await press('#next');
@@ -249,6 +299,7 @@ try {
   failures += 1;
   console.error('  FAIL ' + e.message);
 } finally {
+  if (chrome && chrome.exitCode === null) spawnSync('taskkill.exe', ['/PID', String(chrome.pid), '/T', '/F']);
   stopApp();
   server.close();
 }
