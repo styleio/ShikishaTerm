@@ -141,6 +141,12 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **A WSL distribution installed while the app runs is recognised.** The
+  list of distributions was read once at start, so a tab in a new one did
+  not follow its folder until the app was restarted; and on machines
+  where `wsl.exe` answers a program with an empty list, none was known at
+  all. The list is read again when a new name appears, and from the
+  registry when `wsl.exe` says nothing.
 - **Stopping the server lets it finish properly.** `systemctl stop`,
   Ctrl+C and a closed terminal used to end `shikisha-server` where it
   stood: AIs set to go on while it is away were ended with it, a MicroVM
