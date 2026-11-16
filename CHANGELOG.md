@@ -141,6 +141,10 @@ once it reaches its first tagged release.
   another device goes on pressing OK until both ends are this version.
 
 ### Fixed
+- **A `.cmd` or `.bat` in a folder with a space in its name starts with
+  its arguments.** Given an argument that also had a space, the tab said
+  the first word of the path "is not recognized as a command" (for
+  example a tool installed under `Program Files (x86)`).
 - **Tapping a notification on a phone opens the tab it is about.** Unless
   the tab was set to send a reply link, the tap opened the board wherever
   it was last left, and the finished tab had to be found by hand.

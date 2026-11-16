@@ -1156,8 +1156,19 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
                     }
                     return c;
                 }
+                // The line cmd.exe is given must not begin with a quote. When
+                // it does -- a script in a folder with a space in its name --
+                // and there is a second pair of quotes on it (an argument
+                // with a space), cmd takes off the first quote and the last
+                // and runs what is left: the path cut at its first space,
+                // which is "not recognized as a command". The `@` in front
+                // (run this, without echoing it) is what the line begins with
+                // instead. `/d`: none of the commands the registry can have
+                // cmd run at every start
                 let mut c = CommandBuilder::new("cmd.exe");
+                c.arg("/d");
                 c.arg("/c");
+                c.arg("@");
                 c.arg(path);
                 for a in rest {
                     c.arg(a);
@@ -1180,6 +1191,27 @@ pub fn build_command(cmd_args: &[String]) -> CommandBuilder {
             c
         }
     }
+}
+
+/// A batch script in a folder with a space in its name, given an argument
+/// with a space in it, is run -- by the real cmd.exe, which is what decides
+/// (it takes the first and the last quote off a line that begins with one)
+#[cfg(all(test, windows))]
+#[test]
+fn a_batch_script_under_a_spaced_folder_gets_its_quoted_arguments() {
+    let dir = std::env::temp_dir().join(format!("shikisha cmd {}", crate::random_hex(6))).join("Program Files (x86)");
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("say it.cmd");
+    std::fs::write(&script, "@echo off
+echo [%~1] [%~2] [%~3]
+").unwrap();
+    let words = launch_argv(&[script.to_string_lossy().into_owned(), "one two".into(), "plain".into(), "a (b) c".into()]);
+    assert_eq!(&words[..3], ["cmd.exe", "/d", "/c"].map(String::from));
+    let out = std::process::Command::new(&words[0]).args(&words[1..]).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{said}{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(said.trim(), "[one two] [plain] [a (b) c]");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
 }
 
 /// The words `build_command` starts, for a process started another way than a
