@@ -393,6 +393,12 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         // the site the question named); a yes to a site nobody asked about
         // is kept, as in Settings, and shows nothing until a page of it asks
         Ev::NoticeAnswer { .. } => true,
+        // The answer to a page's alert, confirm or prompt: the same box on
+        // the phone as on the window, and a page watched from the phone is
+        // stopped until it is answered. It answers only the opening it names
+        // (`pagedialog::taken`), with what a person pressing the page's own
+        // box could have said
+        Ev::DialogAnswer { .. } => true,
         // The answer about writing an AI CLI's yes for new worktrees: the
         // same question on a phone as on the window
         Ev::TrustAnswer { .. } => true,
@@ -491,6 +497,8 @@ fn allowed_from_afar(ev: &shikisha_shared::Ev) -> bool {
         | Ev::Picked { .. }
         | Ev::PageNotice { .. }
         | Ev::NoticeAsk { .. }
+        | Ev::PageDialog { .. }
+        | Ev::PageDialogGone { .. }
         | Ev::ConsoleLine { .. }
         | Ev::Seek { .. }
         | Ev::Download { .. }
@@ -4635,7 +4643,7 @@ mod tests {
             // Kept on this machine on purpose
             "Paste", "Password",
             // What this PC's own pages report
-            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "PageNotice", "NoticeAsk", "ConsoleLine", "Touched", "Compose", "Pen",
+            "Ready", "Result", "Where", "Frame", "Loading", "JsError", "Recorded", "Picked", "PageNotice", "NoticeAsk", "PageDialog", "PageDialogGone", "ConsoleLine", "Touched", "Compose", "Pen",
             // ...and what this PC's browser says about a search and a download
             "Seek", "Download",
             // This PC's window, tray and keys

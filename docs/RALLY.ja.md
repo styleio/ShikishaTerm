@@ -258,6 +258,7 @@ AIはCLI（claude/codex等）なので、決まった書式で読み書きする
 | `browser_fetch(name, url, opts?)` | `{status,ok,url,headers,body}` | ページ内fetch（ログイン済みクッキー使用・秘密値はマスク） |
 | `browser_auth(name, 秘密名)` | – | ベーシック認証を仕込む（秘密は `user:pass` 形式・以後の401に自動応答） |
 | `browser_ask(name, 文言, ボタン?)` / `browser_unask(name)` / `browser_pressed(name)` | – / – / bool | 人への帯 |
+| `browser_dialog(name)` / `browser_dialog(name, "accept", 文字列?)` / `browser_dialog(name, "dismiss")` | `{type,message,default}`/nil | ページが開いた alert・confirm・prompt を読む・答える（開いている間、このページへの他の操作はエラーになる） |
 
 観戦・記録・終了・待機：
 

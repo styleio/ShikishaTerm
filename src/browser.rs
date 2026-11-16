@@ -1288,6 +1288,12 @@ impl Browser {
             let left = until
                 .checked_duration_since(std::time::Instant::now())
                 .ok_or_else(|| anyhow!(shikisha_core::i18n::t("err.browser.no_result")))?;
+            // The page opened an alert, confirm or prompt: the answer is not
+            // coming until that is answered, so the wait ends here (whoever
+            // asked says why -- `shikisha_core::pagedialog`)
+            if shikisha_core::pagedialog::in_the_way() {
+                return Err(anyhow!(shikisha_core::i18n::t("err.browser.no_result")));
+            }
             // A short look at a time: the answer can be set aside by another
             // thread between the look above and this one, and nothing would
             // then wake a wait as long as all the time that is left
@@ -3069,6 +3075,9 @@ impl BrowserHost for Browser {
     }
     fn record(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::record(self, to, on) }
     fn console(&self, to: Option<&str>, on: bool) -> Result<()> { Browser::console(self, to, on) }
+    fn answer_dialog(&self, to: Option<&str>, accept: bool, text: &str) -> Result<()> {
+        pageops::answer_dialog(self, to, accept, text)
+    }
     fn devtools_url(&self, to: Option<&str>) -> Result<String> { Browser::devtools_url(self, to) }
 
     fn find(&self, to: Option<&str>, sel: &Sel, timeout_ms: u64) -> Result<Found> {

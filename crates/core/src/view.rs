@@ -644,6 +644,7 @@ pub fn ui_state_of(tabs: &[Tab], ui: &Ui, flash: Option<&str>) -> crate::uistate
         folder_manage: ui.folder_manage.clone(),
         key_changes: ui.key_changes.clone(),
         notice_asks: ui.notice_asks.clone(),
+        page_dialogs: ui.page_dialogs.clone(),
         trust_asks: ui.trust_asks.clone(),
         board_finds: ui.board_finds,
         sound_trouble: ui.sound_trouble.clone(),
@@ -1930,6 +1931,8 @@ pub struct Ui {
     pub key_changes: Vec<crate::ssh::KeyChange>,
     /// Sites asking whether they may show notifications, waiting to be answered
     pub notice_asks: Vec<crate::pagenotice::Asking>,
+    /// Boxes this desk's pages opened, waiting to be answered
+    pub page_dialogs: Vec<crate::pagedialog::Dialog>,
     /// AI CLIs waiting on the person about worktrees they would ask about
     pub trust_asks: Vec<crate::aitrust::Asking>,
     /// The browser drawing the pages has no search box of its own: every

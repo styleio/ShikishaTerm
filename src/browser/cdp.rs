@@ -137,25 +137,39 @@ pub fn arm_basic_auth(port: &Port, user: &str, pass: &str, sites: Vec<String>) -
 /// Automatic handling of JS dialogs (alert / confirm / prompt / beforeunload).
 ///
 /// Without this, things like a page's "leave this page?" confirmation
-/// open as a native dialog, the CDP response channel stalls, and
-/// `browser_*` hangs with "no result returned" (automation freezes
-/// entirely). Since this is for automation, the default is
-/// accept=true = proceed: beforeunload means "navigate away", confirm
-/// means OK, alert/prompt means dismiss. Once `Page` is enabled and
-/// this is subscribed, no more native dialogs appear — we close them
-/// immediately instead. Only active while this is held (unsubscribes on drop).
+/// open, everything asked of the page waits behind it. So each one is
+/// reported the moment it opens (`Ev::PageDialog`) and held for whoever is
+/// driving the page to answer -- a person on the board, a script with
+/// `browser_dialog` (see `shikisha_core::pagedialog`). The one answered
+/// here is "leave this page?" (beforeunload), always with yes: a page does
+/// not get to keep anybody on it. Only active while this is held
+/// (unsubscribes on drop).
 pub struct DialogArm {
-    _heard: Heard,
+    _heard: Vec<Heard>,
 }
 
-pub fn arm_dialogs(port: &Port) -> Option<DialogArm> {
+pub fn arm_dialogs(port: &Port, page: &str, report: impl Fn(shikisha_shared::Ev) + Clone + 'static) -> Option<DialogArm> {
     let answer = port.clone();
-    let opening = port.listen("Page.javascriptDialogOpening", move |_v| {
-        answer.call("Page.handleJavaScriptDialog", r#"{"accept":true}"#);
+    let (name, tell) = (page.to_string(), report.clone());
+    let opening = port.listen("Page.javascriptDialogOpening", move |v| {
+        match shikisha_core::pagedialog::report_of(&name, v) {
+            Some(said) => {
+                // Kept here, as it is heard, so a wait on this page ends now
+                shikisha_core::pagedialog::heard(&said);
+                tell(said);
+            }
+            None => answer.call("Page.handleJavaScriptDialog", r#"{"accept":true}"#),
+        }
+    })?;
+    let name = page.to_string();
+    let closed = port.listen("Page.javascriptDialogClosed", move |_v| {
+        let said = shikisha_shared::Ev::PageDialogGone { from: Some(name.clone()) };
+        shikisha_core::pagedialog::heard(&said);
+        report(said);
     })?;
     // Enable Page so the subscription actually fires (idempotent even if screencast already enabled it)
     port.call("Page.enable", "{}");
-    Some(DialogArm { _heard: opening })
+    Some(DialogArm { _heard: vec![opening, closed] })
 }
 
 /// Hearing a page's console. Only while this is held: dropping it lets go

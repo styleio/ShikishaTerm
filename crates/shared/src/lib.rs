@@ -731,6 +731,18 @@ pub enum Ev {
     /// The person's answer about a site's notifications, from the board or a
     /// phone: yes, no, or (`None`) the question put away without one
     NoticeAnswer { site: String, allow: Option<bool> },
+    /// A page opened an `alert`, `confirm` or `prompt` and waits for it to
+    /// be answered. Made by the host that draws the page, from what the
+    /// browser says -- never read off a message, so a page cannot say that
+    /// another page asked something. `url` is the frame that opened it
+    PageDialog { from: Option<String>, kind: String, message: String, preset: String, url: String },
+    /// The box a page had open is gone: answered, or left behind when the
+    /// page went somewhere else. Made by the host, as `PageDialog` is
+    PageDialogGone { from: Option<String> },
+    /// The person's answer to a page's box, from the board or a phone.
+    /// `page` is the page's in-window name and `id` the opening the answer
+    /// is for; `text` is what was typed into a prompt
+    DialogAnswer { page: String, id: u64, accept: bool, text: String },
     /// The person's answer about writing an AI CLI's yes for new worktrees
     /// into that CLI's own file, from the board or a phone: yes, no, or
     /// (`None`) the question put away without one
@@ -1213,6 +1225,12 @@ pub trait BrowserHost {
     /// that cannot listen says so, and the panel says that to the person
     fn console(&self, _to: Option<&str>, _on: bool) -> anyhow::Result<()> {
         anyhow::bail!("this browser does not report what a page says on its console")
+    }
+    /// Answer the `alert`, `confirm` or `prompt` a page has open: OK (with
+    /// `text` for a prompt's field) or Cancel. A browser that says when a
+    /// page opens one (`Ev::PageDialog`) answers this
+    fn answer_dialog(&self, _to: Option<&str>, _accept: bool, _text: &str) -> anyhow::Result<()> {
+        anyhow::bail!("this browser does not hold a page's dialogs to be answered")
     }
     /// Where the DevTools of a page can be opened from: an address of the
     /// browser's own DevTools screen, connected to that page through this
@@ -1748,6 +1766,12 @@ pub fn parse_intent(v: &serde_json::Value) -> Option<Ev> {
         Some("notice-answer") => Ev::NoticeAnswer {
             site: v.get("site").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
             allow: v.get("allow").and_then(|x| x.as_bool()),
+        },
+        Some("dialog-answer") => Ev::DialogAnswer {
+            page: v.get("page").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
+            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
+            accept: v.get("accept").and_then(|x| x.as_bool()).unwrap_or(false),
+            text: v.get("text").and_then(|x| x.as_str()).unwrap_or_default().to_string(),
         },
         Some("trust-answer") => Ev::TrustAnswer {
             ai: v.get("ai").and_then(|x| x.as_str()).unwrap_or_default().to_string(),

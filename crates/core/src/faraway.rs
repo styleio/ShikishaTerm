@@ -92,6 +92,9 @@ fn worth_hearing(ev: &Ev) -> bool {
         // pages: that browser keeps the key from opening a search of its own,
         // so the bar that answers it is the board's
         || matches!(ev, Ev::Download { .. } | Ev::SeekAsk { .. })
+        // A box one of its pages opened, and that it is gone: what the
+        // browser there said, which is all a script here has to go by
+        || matches!(ev, Ev::PageDialog { from: Some(_), .. } | Ev::PageDialogGone { from: Some(_) })
 }
 
 /// How long to wait for an answer past the deadline the ask itself carried.
@@ -212,6 +215,9 @@ impl Line {
                     item.far = true;
                 }
                 if worth_hearing(&ev) {
+                    // Kept as it is heard, on this thread: whatever waits on
+                    // that page stops waiting now, not when the loop comes round
+                    crate::pagedialog::heard(&ev);
                     self.inner.heard.lock().unwrap_or_else(|e| e.into_inner()).push(*ev);
                 }
             }
@@ -251,7 +257,7 @@ impl Inner {
             self.waiting.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
             anyhow::bail!(crate::i18n::t("err.far.gone"));
         }
-        match rx.recv_timeout(std::time::Duration::from_millis(ms + SLACK_MS)) {
+        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(ms + SLACK_MS)) {
             Ok((true, value)) => Ok(value),
             Ok((false, why)) => Err(anyhow::anyhow!(
                 why.as_str().unwrap_or("?").to_string()
@@ -315,6 +321,10 @@ impl BrowserHost for Far {
 
     fn ask_where(&self, to: Option<&str>) -> anyhow::Result<()> {
         self.inner.tell(&Ask::Where { to: to.map(str::to_string) })
+    }
+
+    fn answer_dialog(&self, to: Option<&str>, accept: bool, text: &str) -> anyhow::Result<()> {
+        crate::pageops::answer_dialog(self, to, accept, text)
     }
 
     fn basic_auth(&self, to: Option<&str>, user: &str, pass: &str, sites: &[String]) -> anyhow::Result<()> {
@@ -880,6 +890,40 @@ mod tests {
         assert!(matches!(heard[0], Ev::Ready { .. }));
         assert!(matches!(heard[1], Ev::Where { .. }));
         assert!(far.drain().is_empty(), "it can be read twice");
+    }
+
+    /// A box a page over there opened is kept the moment it is heard, so a
+    /// wait on that page ends, and the same line carries its answer back
+    #[test]
+    fn a_far_pages_dialog_is_heard_and_answered_down_the_same_line() {
+        let far = Far::new();
+        let line = far.line();
+        let page = "far-dialog/page";
+        line.heard(
+            &serde_json::to_string(&Said::Report {
+                ev: Box::new(Ev::PageDialog {
+                    from: Some(page.into()),
+                    kind: "confirm".into(),
+                    message: "Delete it?".into(),
+                    preset: String::new(),
+                    url: "https://shop.example.com/".into(),
+                }),
+            })
+            .unwrap(),
+        );
+        let open = crate::pagedialog::open_on(page).expect("the box was not kept as it was heard");
+        assert_eq!((open.kind.as_str(), open.host.as_str()), ("confirm", "shop.example.com"));
+        assert!(matches!(far.drain().first(), Some(Ev::PageDialog { .. })), "the loop is not told");
+        // A page's own message cannot say a box opened: only the host's report is that
+        assert!(!shikisha_shared::allowed_from_page(&Ev::PageDialog {
+            from: None,
+            kind: "alert".into(),
+            message: String::new(),
+            preset: String::new(),
+            url: String::new(),
+        }));
+        line.heard(&serde_json::to_string(&Said::Report { ev: Box::new(Ev::PageDialogGone { from: Some(page.into()) }) }).unwrap());
+        assert_eq!(crate::pagedialog::open_on(page), None);
     }
 
     /// A browser that answers, and can be told what to have reported.

@@ -6804,6 +6804,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::NoticeAnswer { site, allow }) => {
                         shell.mail().notice_answers.push((site, allow));
                     }
+                    remote::RemoteCmd::Ui(shikisha_shared::Ev::DialogAnswer { page, id, accept, text }) => {
+                        shell.mail().dialog_answers.push((page, id, accept, text));
+                    }
                     remote::RemoteCmd::Ui(shikisha_shared::Ev::TrustAnswer { ai, id, yes }) => {
                         shell.mail().trust_answers.push((ai, id, yes));
                     }
@@ -7326,6 +7329,7 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
             far_ports: far_ports_view.clone(),
             key_changes: crate::ssh::key_changes(),
             notice_asks: crate::pagenotice::asking(),
+            page_dialogs: caps.dialogs_here(),
             trust_asks: crate::aitrust::asking(),
             board_finds: !shell.pages_find_themselves(),
             sound_trouble: crate::vaudio::trouble(),
@@ -8247,7 +8251,9 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 || qr_open
                 || page_covered
                 || close_ask.is_some()
-                || !crate::pagenotice::asking().is_empty();
+                || !crate::pagenotice::asking().is_empty()
+                // ...and the box a page here opened, asked on the board
+                || !caps.dialogs_here().is_empty();
             // The settings form is a screen, not a pane: it covers the content
             // area and the layout waits underneath. It asks about the whole
             // app, so seating it in one corner of the app made as little sense
@@ -9129,6 +9135,14 @@ pub fn run(shell: &mut dyn crate::host::Shell) -> Result<()> {
                 Some(allow) => caps.tell_page(&child, &crate::pagenotice::tell_js(Some(allow))),
                 None if ask => crate::pagenotice::ask(&site, &child),
                 None => {}
+            }
+        }
+        // The person's answer to a box a page opened, from the window or a
+        // phone. One already answered (by a script, or on the other of the
+        // two) is not answered again
+        for (page, id, accept, text) in shell.mail().take_dialog_answers() {
+            if let Err(e) = caps.dialog_answered(&page, id, accept, &text) {
+                flash = Some(format!("{e:#}"));
             }
         }
         // The person's answer about an AI CLI's yes for new worktrees, from

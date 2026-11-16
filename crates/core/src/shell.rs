@@ -3735,6 +3735,7 @@ pub const PAGE: &str = r####"<!doctype html><html lang="{{__lang__}}" translate=
   #sask .smore > summary { cursor:pointer; color:var(--accent); font-size:12px; margin-top:var(--s2); }
   #sask .smorebody { margin-top:var(--s2); display:flex; flex-direction:column; gap:var(--s2); }
   #sask .smorebody > .vsay { margin:0; }
+  #sask.pagesays > .vsay, #sask.pagesays .vsay { white-space:pre-wrap; overflow-wrap:anywhere; max-height:40vh; overflow-y:auto; }
   /* The thing the question is about -- a path -- quoted as it is: the mono
      well (5), quiet, broken anywhere so a long path never widens the dialog */
   #sask .bwhere, #branch .bcmd { font-family:var(--mono); font-size:11.5px; color:var(--dim); background:var(--sunk);
@@ -16429,6 +16430,45 @@ function drawNoticeAsks() {
   });
 }
 
+// The alert, confirm or prompt a page in a browser tab opened. The page is
+// stopped until it is answered, so it is asked here, in this program's own
+// frame, with the site that asks named in the title and the tab under it: a
+// page decides the words, never whose they look like. OK and Cancel are the
+// page's own two answers; an alert has the one, and putting it away is the
+// same as pressing it. A script or an AI may answer first
+// (`shikisha.browser_dialog`), and then the question goes. The same question
+// on the window and on a phone; answered on either, it goes from both.
+// Another question up first is left alone and this one waits for it
+let pageDialogAsking = 0;
+function drawPageDialogs() {
+  const waiting = (S && S.page_dialogs) || [];
+  if (pageDialogAsking && !waiting.some(d => d.id === pageDialogAsking)) { pageDialogAsking = 0; closeAsk(true); }
+  if (pageDialogAsking) return;
+  const d = waiting[0];
+  if (!d || !document.getElementById("sask").hidden) return;
+  pageDialogAsking = d.id;
+  const tab = d.page.slice(d.page.indexOf("/") + 1);
+  const shown = ((S && S.tabs) || []).find(t => t.kind === "browser" && t.id === tab);
+  const answer = (accept, text) => {
+    pageDialogAsking = 0;
+    send({kind:"dialog-answer", page:d.page, id:d.id, accept, text: text || ""});
+  };
+  const alone = d.kind === "alert";
+  askQuestion({
+    title: d.host ? (T["tui.pagedialog.title"] || "").replaceAll("{site}", d.host) : (T["tui.pagedialog.title.page"] || ""),
+    say: d.message,
+    // Which tab, when it is not the one being looked at
+    what: shown && shown.index !== S.active ? shown.name : "",
+    field: d.kind === "prompt" ? d.preset : null,
+    label: T["tui.pagedialog.ok"] || "",
+    pageSays: true,
+    alone,
+    // As typed, spaces and all: the words are the page's to judge
+    go: () => answer(true, d.kind === "prompt" ? document.getElementById("sq").value : ""),
+    back: () => answer(alone, ""),
+  });
+}
+
 // An AI CLI that trusts a project but asks again in every new worktree of it:
 // may the same yes be written into the CLI's own list for each new worktree?
 // Asked once for each CLI, the first time it would matter, and kept (Settings
@@ -17693,6 +17733,7 @@ window.__state = function (json) {
   drawCloseAsk();
   drawKeyChanges();
   drawNoticeAsks();
+  drawPageDialogs();
   drawTrustAsks();
   drawHookAsk();
   drawStatus();
@@ -29371,11 +29412,14 @@ let sAskGo = null, sAskBack = null;
 // `check` is asked before either answer is acted on, for a question with
 // something to fill in: the reason nothing can be done yet, or "". A reason
 // keeps the question up and is written above the buttons (style guide 5.4)
-function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, also, go, back, check}) {
+function askQuestion({title, say, what, mark, sure, rows, field, label, danger, never, more, no, also, go, back, check, pageSays, alone}) {
   const box = document.getElementById("sask");
   box.hidden = false;
   // Whatever a form put on the frame last time is its own, not this question's
   box.classList.remove("adrform", "sform");
+  // A web page's own words: kept in the lines the page wrote them in, and
+  // scrolled when there are more than fit, so the buttons stay on the screen
+  box.classList.toggle("pagesays", !!pageSays);
   const refused = () => {
     const why = check ? check() : "";
     if (!why) return false;
@@ -29416,6 +29460,8 @@ function askQuestion({title, say, what, mark, sure, rows, field, label, danger, 
   const cancel = box.querySelector(".brow > .quiet");
   cancel.textContent = no ? no.label : (T["common.cancel"] || "");
   cancel.onclick = no ? () => { sAskBack = null; closeAsk(true); no.act(); } : () => closeAsk();
+  // A question with one answer has one button
+  cancel.hidden = !!alone;
   const other = box.querySelector(".brow > .also");
   other.hidden = !also;
   other.textContent = also ? also.label : "";

@@ -125,6 +125,18 @@ once it reaches its first tagged release.
   its own row in the permission table. `github_issue`, `github_pr`,
   `github_comment` and the state commands also take `"owner/repo#12"`.
 
+### Changed
+- **A page's alert, confirm and prompt are no longer answered for you.**
+  The app used to press OK on every box a page in a browser tab opened,
+  so "Delete this?" was answered yes before anybody read it. Now the page
+  waits. A person is asked on the board (and on a phone) with the site's
+  name in the title, and OK and Cancel are the page's own. A script or an
+  AI is told that a box is open, with its words, by whatever it asked of
+  the page, and answers with the new `shikisha.browser_dialog(id,
+  "accept")` or `"dismiss"`. **A script that relied on the automatic OK
+  now stops at the box** and needs that one line. "Leave this page?" is
+  still never asked.
+
 ### Fixed
 - **The git panel's ✨ no longer stays on "The AI is writing the message"
   for good.** The message the AI wrote was lost when the settings were

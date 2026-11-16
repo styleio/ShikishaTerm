@@ -1183,6 +1183,20 @@ fn room_verbs(
         c.browser_pressed(&name)
             .map_err(|e| mlua::Error::runtime(e.to_string()))
     });
+    // The alert, confirm or prompt the page has open: read with the page
+    // alone, answered with "accept" (and a prompt's words) or "dismiss".
+    // Whatever else is asked of the page while one is open fails saying so
+    bind!("browser_dialog", (String, Option<String>, Option<String>), |lua_, c, al, (name, act, text)| {
+        guard(&name, &al)?;
+                let Some(d) = c.browser_dialog(&name, act.as_deref(), text.as_deref()).map_err(|e| mlua::Error::runtime(e.to_string()))? else {
+                return Ok(mlua::Value::Nil);
+            };
+            let t = lua_.create_table()?;
+            t.set("type", d.kind)?;
+            t.set("message", d.message)?;
+            t.set("default", d.preset)?;
+            Ok(mlua::Value::Table(t))
+    });
     // Only logging is allowed (so the AI can explain its own moves). No
     // other side effects. Even if the AI tries to log a secret value, it
     // gets redacted here
@@ -3119,6 +3133,26 @@ impl HookEngine {
                     lua.create_function(move |lua_, ()| {
                         let rows = serde_json::to_value(c.downloads()).unwrap_or_default();
                         json_to_lua(lua_, &rows)
+                    })
+                    .map_err(lerr)?,
+                )
+                .map_err(lerr)?;
+        }
+        {
+            // The alert, confirm or prompt a page has open: read, or answered
+            let c = Caps::clone(&caps);
+            shikisha
+                .set(
+                    "browser_dialog",
+                    lua.create_function(move |lua, (name, act, text): (String, Option<String>, Option<String>)| {
+                        let Some(d) = c.browser_dialog(&name, act.as_deref(), text.as_deref()).map_err(|e| mlua::Error::runtime(e.to_string()))? else {
+                            return Ok(mlua::Value::Nil);
+                        };
+                        let t = lua.create_table()?;
+                        t.set("type", d.kind)?;
+                        t.set("message", d.message)?;
+                        t.set("default", d.preset)?;
+                        Ok(mlua::Value::Table(t))
                     })
                     .map_err(lerr)?,
                 )

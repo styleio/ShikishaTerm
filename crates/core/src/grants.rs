@@ -215,6 +215,10 @@ pub const CATALOG: &[Entry] = &[
     e("browser_ask", Group::Browser, true, true, true),
     e("browser_pressed", Group::Browser, true, true, true),
     e("browser_unask", Group::Browser, true, true, true),
+    // Reading and answering the alert, confirm or prompt a page opened: what
+    // a person at the page does with one press, and without it a script is
+    // stopped by the first "are you sure?"
+    e("browser_dialog", Group::Browser, true, true, true),
     e("browser_wait", Group::Browser, true, true, false),
     // Picking elements on a page for an AI: arming changes what a person's
     // press on that page does until it is put away, and reading hands out

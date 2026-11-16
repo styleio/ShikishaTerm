@@ -952,6 +952,7 @@ impl WinSurface {
                 Ev::PageNotice { from: Some(child), site, title, body } => self.mail.page_notices.push((child, site, title, body)),
                 Ev::NoticeAsk { from: Some(child), site, ask } => self.mail.notice_asks.push((child, site, ask)),
                 Ev::NoticeAnswer { site, allow } => self.mail.notice_answers.push((site, allow)),
+                Ev::DialogAnswer { page, id, accept, text } => self.mail.dialog_answers.push((page, id, accept, text)),
                 Ev::TrustAnswer { ai, id, yes } => self.mail.trust_answers.push((ai, id, yes)),
                 Ev::Design { page, act, args } => self.mail.designs.push((page, act, args)),
                 Ev::Console { page, act, args } => self.mail.console_asks.push((page, act, args)),

@@ -417,7 +417,7 @@ pub(super) fn run_window(
     let mut last_size: Option<(u32, u32)> = None;
     // Basic-auth arming. One per target. Only answers 401s while this is held
     let mut auths: std::collections::HashMap<Option<String>, cdp::AuthArm> = std::collections::HashMap::new();
-    // Automatic handling of JS dialogs. One per child. Without this, automation freezes on things like "leave this page?" confirmations
+    // Hearing each page's JS dialogs. One per child. Without this, nobody is told a page is waiting on one
     let mut dialogs: std::collections::HashMap<Option<String>, cdp::DialogArm> = std::collections::HashMap::new();
     // Pages whose console is being heard. One per page, held until it is let
     // go of or the page closes; the lines leave as reports
@@ -743,8 +743,11 @@ pub(super) fn run_window(
                     };
                     match pages.child(spec) {
                         Ok(v) => {
-                            // Arm automatic dialog handling right after placing it (don't let "leave page?" freeze it)
-                            if let Some(arm) = cdp::arm_dialogs(&v.port()) {
+                            // Hear its alert, confirm and prompt from the start, and let "leave this page?" through
+                            let tx = ev_tx.clone();
+                            if let Some(arm) = cdp::arm_dialogs(&v.port(), &name, move |said| {
+                                let _ = tx.send(said);
+                            }) {
                                 dialogs.insert(Some(name.clone()), arm);
                             }
                             shikisha_core::append_hook_log(&format!(

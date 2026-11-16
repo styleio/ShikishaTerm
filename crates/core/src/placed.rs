@@ -235,6 +235,9 @@ impl BrowserHost for Placed {
     fn console(&self, to: Option<&str>, on: bool) -> anyhow::Result<()> {
         self.on(to, |b| b.console(to, on))
     }
+    fn answer_dialog(&self, to: Option<&str>, accept: bool, text: &str) -> anyhow::Result<()> {
+        self.on(to, |b| b.answer_dialog(to, accept, text))
+    }
     fn devtools_url(&self, to: Option<&str>) -> anyhow::Result<String> {
         self.on(to, |b| b.devtools_url(to))
     }

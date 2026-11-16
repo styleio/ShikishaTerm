@@ -226,6 +226,9 @@ pub struct Mailbox {
     /// The person's answers about sites' notifications: (site, yes / no /
     /// put away)
     pub notice_answers: Vec<(String, Option<bool>)>,
+    /// The person's answers to boxes pages opened: (page, which opening,
+    /// OK or Cancel, what was typed into a prompt). See `crate::pagedialog`
+    pub dialog_answers: Vec<(String, u64, bool, String)>,
     /// The person's answers about writing an AI CLI's yes for new worktrees:
     /// (the CLI, the question's id, yes / no / put away)
     pub trust_answers: Vec<(String, u64, Option<bool>)>,
@@ -444,6 +447,7 @@ impl Mailbox {
             Ev::Picked { from: Some(child), item } => self.picked.push((child, item)),
             Ev::PageNotice { from: Some(child), site, title, body } => self.page_notices.push((child, site, title, body)),
             Ev::NoticeAsk { from: Some(child), site, ask } => self.notice_asks.push((child, site, ask)),
+            Ev::DialogAnswer { page, id, accept, text } => self.dialog_answers.push((page, id, accept, text)),
             Ev::ConsoleLine { from: Some(child), entry } => self.console_lines.push((child, entry)),
             // A frame of a page being watched from somewhere else. Decoded
             // here because what goes out to a phone is bytes
@@ -647,6 +651,9 @@ impl Mailbox {
     }
     pub fn take_notice_answers(&mut self) -> Vec<(String, Option<bool>)> {
         std::mem::take(&mut self.notice_answers)
+    }
+    pub fn take_dialog_answers(&mut self) -> Vec<(String, u64, bool, String)> {
+        std::mem::take(&mut self.dialog_answers)
     }
     pub fn take_trust_answers(&mut self) -> Vec<(String, u64, Option<bool>)> {
         std::mem::take(&mut self.trust_answers)

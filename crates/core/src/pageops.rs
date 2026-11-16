@@ -17,6 +17,12 @@ use shikisha_shared::{Found, OpReport, Sel};
 /// reached.
 ///
 /// `to` names the page throughout: `None` is the one in front.
+/// Answer the box a page has open: OK (with a prompt's words) or Cancel
+pub fn answer_dialog(page: &impl Speaks, to: Option<&str>, accept: bool, text: &str) -> anyhow::Result<()> {
+    page.cdp(to, "Page.handleJavaScriptDialog", serde_json::json!({ "accept": accept, "promptText": text }), 10_000)
+        .map(|_| ())
+}
+
 pub trait Speaks {
     /// Call one method on a page and wait for its result, parsed
     fn cdp(
@@ -148,6 +154,12 @@ pub fn act_with_wait(
             // moment auto-wait exists for, not a failure yet. Pace the
             // re-entry so a page stuck erroring doesn't get hammered
             Err(e) => {
+                // ...unless what stopped the page is an alert, confirm or
+                // prompt it opened: asking again gets nothing until that is
+                // answered, and whoever asked is told now
+                if crate::pagedialog::in_the_way() {
+                    return Err(e);
+                }
                 last_err = Some(e);
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
@@ -325,6 +337,10 @@ fn secret_fill(
                 match $ask {
                     Ok(v) => v,
                     Err(e) => {
+                        // (not behind a box the page opened: see `act_with_wait`)
+                        if crate::pagedialog::in_the_way() {
+                            return Err(e);
+                        }
                         last_err = Some(e);
                         pause();
                         continue;

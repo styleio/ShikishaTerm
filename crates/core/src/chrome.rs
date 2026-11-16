@@ -751,7 +751,7 @@ impl Cdp {
             return Err(e.into());
         }
 
-        match rx.recv_timeout(std::time::Duration::from_millis(timeout_ms)) {
+        match crate::pagedialog::wait(&rx, std::time::Duration::from_millis(timeout_ms)) {
             Ok(v) => match v.get("error") {
                 Some(e) => Err(anyhow::anyhow!(crate::i18n::tp(
                     "err.chrome.said",
@@ -1086,6 +1086,21 @@ impl Pages {
             let mut book = seen.lock().unwrap_or_else(|e| e.into_inner());
             let Some(page) = book.named.get(&session).cloned() else { return };
             match ev.method.as_str() {
+                // A page's alert, confirm or prompt: held for whoever is
+                // driving the page (`crate::pagedialog`), which is why
+                // nothing is answered here but "leave this page?"
+                "Page.javascriptDialogOpening" => match crate::pagedialog::report_of(&page, &ev.params) {
+                    Some(said) => {
+                        crate::pagedialog::heard(&said);
+                        book.mail.push(said);
+                    }
+                    None => speaker.tell(Some(&session), "Page.handleJavaScriptDialog", serde_json::json!({ "accept": true })),
+                },
+                "Page.javascriptDialogClosed" => {
+                    let said = shikisha_shared::Ev::PageDialogGone { from: Some(page) };
+                    crate::pagedialog::heard(&said);
+                    book.mail.push(said);
+                }
                 "Page.screencastFrame" => {
                     // Acknowledged first: the next frame does not come until
                     // this one is, and everything below is bookkeeping
@@ -1918,6 +1933,10 @@ impl shikisha_shared::BrowserHost for Pages {
             CALL_MS,
         )
         .map(|_| ())
+    }
+
+    fn answer_dialog(&self, to: Option<&str>, accept: bool, text: &str) -> anyhow::Result<()> {
+        crate::pageops::answer_dialog(self, to, accept, text)
     }
 
     /// A page here already has `Runtime` on (its bindings need it); hearing

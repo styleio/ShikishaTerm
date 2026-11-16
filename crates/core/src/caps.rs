@@ -893,6 +893,87 @@ impl Capabilities {
         f(host.as_ref(), Some(&Self::key(desk, name)))
     }
 
+    /// The same, for what is waited for on the page: not while an alert,
+    /// confirm or prompt is open on it -- nothing asked of the page comes
+    /// back until that is answered, so it is said at once, with the box's
+    /// words and how to answer it, instead of after the time has run out.
+    /// And when the box opens while this waits (a click whose handler asks
+    /// "are you sure?"), the wait ends there and says the same
+    fn with_page<T>(
+        &self,
+        name: &str,
+        f: impl FnOnce(&dyn shikisha_shared::BrowserHost, Option<&str>) -> Result<T>,
+    ) -> Result<T> {
+        self.no_dialog(name)?;
+        let key = Self::key(self.desk.get(), name);
+        let _acting = crate::pagedialog::acting(&key);
+        match self.with(name, f) {
+            Err(e) => match crate::pagedialog::open_on(&key) {
+                Some(open) => Err(anyhow::anyhow!(open.cut_in(name))),
+                None => Err(e),
+            },
+            done => done,
+        }
+    }
+
+    /// Refuse while the page has a box open
+    fn no_dialog(&self, name: &str) -> Result<()> {
+        match crate::pagedialog::open_on(&Self::key(self.desk.get(), name)) {
+            Some(open) => Err(anyhow::anyhow!(open.refusal(name))),
+            None => Ok(()),
+        }
+    }
+
+    /// The alert, confirm or prompt a page has open, and its answer.
+    ///
+    /// With no `act`: the box that is open (or `None`), read without
+    /// answering it. With `"accept"`: OK -- for a prompt, with `text` in its
+    /// field, or what the page put there when no text is given. With
+    /// `"dismiss"`: Cancel. What is handed back when answering is the box
+    /// that was answered
+    pub fn browser_dialog(&self, name: &str, act: Option<&str>, text: Option<&str>) -> Result<Option<crate::pagedialog::Dialog>> {
+        self.with(name, |_, _| Ok(()))?;
+        let key = Self::key(self.desk.get(), name);
+        let open = crate::pagedialog::open_on(&key);
+        let Some(act) = act else { return Ok(open) };
+        let accept = match act.trim().to_lowercase().as_str() {
+            "accept" => true,
+            "dismiss" => false,
+            _ => anyhow::bail!(crate::i18n::tp("err.caps.dialog_act", &[("act", act)])),
+        };
+        let Some(open) = open else {
+            anyhow::bail!(crate::i18n::tp("err.browser.no_dialog", &[("name", name)]));
+        };
+        let words = if accept { text.unwrap_or(&open.preset) } else { "" };
+        self.with(name, |b, to| b.answer_dialog(to, accept, words))?;
+        crate::pagedialog::taken(&key, Some(open.id));
+        Ok(Some(open))
+    }
+
+    /// The boxes open on the pages of the desk in view, oldest first
+    pub fn dialogs_here(&self) -> Vec<crate::pagedialog::Dialog> {
+        crate::pagedialog::all().into_iter().filter(|d| self.name_of_child(&d.page).is_some()).collect()
+    }
+
+    /// A person answered a page's box, on the board or a phone. `page` is
+    /// the page's in-window name and `id` the opening that was shown: one
+    /// that is gone since (a script answered it, the page left) is not
+    /// answered, and the box open now is not answered in its place
+    pub fn dialog_answered(&self, page: &str, id: u64, accept: bool, text: &str) -> Result<()> {
+        if !crate::pagedialog::open_on(page).is_some_and(|d| d.id == id) {
+            return Ok(());
+        }
+        let host = self
+            .host
+            .borrow()
+            .as_ref()
+            .map(std::rc::Rc::clone)
+            .ok_or_else(|| anyhow::anyhow!(crate::i18n::t("err.caps.no_host_window")))?;
+        host.answer_dialog(Some(page), accept, if accept { text } else { "" })?;
+        crate::pagedialog::taken(page, Some(id));
+        Ok(())
+    }
+
     /// Record that the bar's button was pressed for a page. The board (or the
     /// phone) reports it to the main loop, which hands it here by the page's
     /// display name; the bar is only ever drawn for the desk in view
@@ -912,7 +993,7 @@ impl Capabilities {
     }
 
     pub fn browser_find(&self, name: &str, sel: &shikisha_shared::Sel) -> Result<&'static str> {
-        self.with(name, |b, to| Ok(b.find(to, sel, OP_MS)?.as_str()))
+        self.with_page(name, |b, to| Ok(b.find(to, sel, OP_MS)?.as_str()))
     }
 
     /// Click. The report carries the ref-path echo (what was really clicked)
@@ -922,7 +1003,7 @@ impl Capabilities {
         name: &str,
         sel: &shikisha_shared::Sel,
     ) -> Result<shikisha_shared::OpReport> {
-        self.with(name, |b, to| b.click(to, sel, ACT_MS))
+        self.with_page(name, |b, to| b.click(to, sel, ACT_MS))
     }
 
     /// Fill. The report echoes which field was written (never the value)
@@ -932,7 +1013,7 @@ impl Capabilities {
         sel: &shikisha_shared::Sel,
         value: &str,
     ) -> Result<shikisha_shared::OpReport> {
-        self.with(name, |b, to| b.fill(to, sel, value, ACT_MS))
+        self.with_page(name, |b, to| b.fill(to, sel, value, ACT_MS))
     }
 
     /// Ask a model to decide: a state, a set of questions each listing the
@@ -1005,7 +1086,7 @@ impl Capabilities {
         sel: &shikisha_shared::Sel,
         value: &str,
     ) -> Result<shikisha_shared::OpReport> {
-        self.with(name, |b, to| b.select(to, sel, value, ACT_MS))
+        self.with_page(name, |b, to| b.select(to, sel, value, ACT_MS))
     }
 
     /// Scroll by screenfuls: `"top"`, `"bottom"`, or a number (negative is
@@ -1017,7 +1098,7 @@ impl Capabilities {
         sel: Option<&shikisha_shared::Sel>,
         amount: &serde_json::Value,
     ) -> Result<(shikisha_shared::Found, String)> {
-        self.with(name, |b, to| b.scroll(to, sel, amount, ACT_MS))
+        self.with_page(name, |b, to| b.scroll(to, sel, amount, ACT_MS))
     }
 
     /// Wait for the page to stop reacting to the last move.
@@ -1028,40 +1109,40 @@ impl Capabilities {
     pub fn browser_settle(&self, name: &str, expect: &str, cap_ms: u64, first_ms: u64) -> Result<(u64, String)> {
         let cap = cap_ms.clamp(0, 30_000);
         let first = first_ms.min(cap);
-        self.with(name, |b, to| b.settle(to, expect, cap, first, cap + OP_MS))
+        self.with_page(name, |b, to| b.settle(to, expect, cap, first, cap + OP_MS))
     }
 
     pub fn browser_text(&self, name: &str, sel: &shikisha_shared::Sel) -> Result<Option<String>> {
-        self.with(name, |b, to| b.text(to, sel, OP_MS))
+        self.with_page(name, |b, to| b.text(to, sel, OP_MS))
     }
 
     pub fn browser_html(&self, name: &str) -> Result<String> {
-        self.with(name, |b, to| b.html(to, 30_000))
+        self.with_page(name, |b, to| b.html(to, 30_000))
     }
 
     /// What the server sent for the page's document, as the browser holds it
     /// (see `pageops::source`). Two quick protocol calls; the ceiling is for a
     /// page still arriving
     pub fn browser_source(&self, name: &str) -> Result<String> {
-        self.with(name, |b, to| b.source(to, 10_000))
+        self.with_page(name, |b, to| b.source(to, 10_000))
     }
 
     /// The page distilled to its operable elements, numbered for `{ref=N}`
     /// operations (see `crate::digest`). Generous timeout: three CDP round
     /// trips, and the accessibility tree of a heavy page takes a moment
     pub fn browser_digest(&self, name: &str) -> Result<String> {
-        self.with(name, |b, to| b.digest(to, 20_000))
+        self.with_page(name, |b, to| b.digest(to, 20_000))
     }
 
     /// The same reading as `browser_digest`, as a list rather than as lines —
     /// for automation that has to build a question out of the elements
     pub fn browser_elements(&self, name: &str) -> Result<serde_json::Value> {
-        self.with(name, |b, to| b.elements(to, 20_000))
+        self.with_page(name, |b, to| b.elements(to, 20_000))
     }
 
     /// Make a request from inside the page, returning a `{status,ok,url,headers,body}` JSON string
     pub fn browser_fetch(&self, name: &str, url: &str, opts: &serde_json::Value) -> Result<String> {
-        self.with(name, |b, to| b.fetch(to, url, opts, 30_000))
+        self.with_page(name, |b, to| b.fetch(to, url, opts, 30_000))
     }
 
     /// Take a picture of this page and save it, returning where it went.
@@ -1071,7 +1152,7 @@ impl Capabilities {
     /// caller gets back the file, not the image, so nothing enormous crosses
     /// into the automation
     pub fn browser_snapshot(&self, name: &str, label: &str) -> Result<String> {
-        let png = self.with(name, |b, to| b.snapshot(to, 30_000))?;
+        let png = self.with_page(name, |b, to| b.snapshot(to, 30_000))?;
         crate::browserstate::save_snapshot(label, &png)
     }
 
@@ -1081,8 +1162,8 @@ impl Capabilities {
     /// and load it whenever. Our own profile, so the read is complete --
     /// httpOnly cookies and all, which is where a login actually lives
     pub fn browser_state_save(&self, name: &str, label: &str) -> Result<usize> {
-        let cookies = self.with(name, |b, to| b.cookies_out(to, 30_000))?;
-        let storage = self.with(name, |b, to| b.storage_out(to, 30_000))?;
+        let cookies = self.with_page(name, |b, to| b.cookies_out(to, 30_000))?;
+        let storage = self.with_page(name, |b, to| b.storage_out(to, 30_000))?;
         crate::browserstate::save(label, cookies, storage)
     }
 
@@ -1090,8 +1171,8 @@ impl Capabilities {
     /// localStorage its origin was carrying.
     pub fn browser_state_load(&self, name: &str, label: &str) -> Result<()> {
         let (cookies, storage) = crate::browserstate::load(label)?;
-        self.with(name, |b, to| b.cookies_in(to, &cookies, 30_000))?;
-        self.with(name, |b, to| b.storage_in(to, &storage, 30_000))
+        self.with_page(name, |b, to| b.cookies_in(to, &cookies, 30_000))?;
+        self.with_page(name, |b, to| b.storage_in(to, &storage, 30_000))
     }
 
     /// Show or hide the pen a placed page draws for itself.
@@ -1483,7 +1564,7 @@ impl Capabilities {
     /// Search a page for words, or move through what was found. Where it
     /// stands, when the browser already knows; otherwise it is reported
     pub fn browser_seek(&self, name: &str, text: &str, step: shikisha_shared::Seek) -> Result<Option<(u32, u32)>> {
-        self.with(name, |b, to| b.seek(to, text, step))
+        self.with_page(name, |b, to| b.seek(to, text, step))
     }
 
     /// Take in what a browser said about a file it saves. `child` is the
@@ -1495,7 +1576,7 @@ impl Capabilities {
 
     /// The page `name` as a PDF, and its title
     pub fn browser_pdf(&self, name: &str) -> Result<(Vec<u8>, String)> {
-        self.with(name, |b, to| b.pdf(to, crate::pageops::PRINT_WAIT_MS))
+        self.with_page(name, |b, to| b.pdf(to, crate::pageops::PRINT_WAIT_MS))
     }
 
     /// A file the app made of the page `name` (its PDF), on the list beside
@@ -1591,6 +1672,8 @@ impl Capabilities {
         if !shikisha_shared::key_known(&named) {
             anyhow::bail!(crate::i18n::tp("err.caps.unknown_key", &[("key", key)]));
         }
+        // A key pressed while the page's box is up goes nowhere
+        self.no_dialog(name)?;
         self.browser_inject(
             name,
             shikisha_shared::Input::Key {
@@ -1623,7 +1706,7 @@ impl Capabilities {
         // (`pageops::fill_only_on`): asked here first and written a moment
         // later, a page could have gone somewhere else in between -- or have
         // lied about where it was
-        match self.with(name, |b, to| b.fill_only_on(to, sel, &value, &terms.urls, ACT_MS))? {
+        match self.with_page(name, |b, to| b.fill_only_on(to, sel, &value, &terms.urls, ACT_MS))? {
             shikisha_shared::SecretFill::Done(done) => Ok(done),
             shikisha_shared::SecretFill::WrongSite(at) => bail!(refused(crate::i18n::tp(
                 "err.caps.secret_wrong_site",
@@ -1641,7 +1724,7 @@ impl Capabilities {
         let (val, terms) = self.script_secret(secret_key, who)?;
         // Basic auth travels in a header, not in a field, but it goes to the
         // same place a filled password would: the page's own site
-        let at = self.with(name, |b, to| b.href(to, OP_MS))?;
+        let at = self.with_page(name, |b, to| b.href(to, OP_MS))?;
         if !terms.may_fill(&at) {
             bail!(refused(crate::i18n::tp(
                 "err.caps.secret_wrong_site",
@@ -1731,6 +1814,8 @@ impl Capabilities {
         self.picks.borrow_mut().remove(&key);
         // A question about its site's notifications waits for it no more
         crate::pagenotice::page_gone(&key);
+        // ...and a box it had open went with it
+        crate::pagedialog::gone(&key);
         self.consoles.borrow_mut().remove(&key);
         self.nav.borrow_mut().remove(&key);
         self.declared.borrow_mut().remove(&key);

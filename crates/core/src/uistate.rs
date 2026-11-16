@@ -2564,6 +2564,10 @@ pub struct UiState {
     /// for the person: the same question on the window and on a phone
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notice_asks: Vec<crate::pagenotice::Asking>,
+    /// The alert, confirm or prompt each page of this desk has open, waiting
+    /// to be answered: the same box on the window and on a phone
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub page_dialogs: Vec<crate::pagedialog::Dialog>,
     /// AI CLIs that would ask again in a new worktree of a project they
     /// trust, waiting for the person to say whether the same yes may be
     /// written into the CLI's own file: the same question on the window and
