@@ -1001,7 +1001,8 @@ mod hooks {
 
     wrap_jsdialog_handler! {
         pub struct Dialogs {
-            /// The box that is open, kept so that it stays open
+            // The box that is open, kept so that it stays open (a plain
+            // comment: the macro takes no attribute on a field)
             held: Rc<std::cell::RefCell<Option<JsdialogCallback>>>,
         }
 
