@@ -77,6 +77,10 @@ const GRACE: Duration = Duration::from_secs(10);
 /// MicroVM the door's input stays open after the app is gone, so silence is
 /// the sign
 const SILENCE: Duration = Duration::from_secs(60);
+/// How often the lines are looked at, and how late a look has to be before
+/// the time since the last one is taken as this process not having run
+const TICK: Duration = Duration::from_secs(1);
+const STALLED: Duration = Duration::from_secs(5);
 
 /// How much may wait unread for one app before its line is cut. Far more than
 /// a terminal's whole state (a screen and its 2000 rows of scrollback) and a
@@ -275,6 +279,28 @@ impl Core {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// This process did not run for `stalled` (the machine slept or was
+    /// paused, the process was stopped): that is not time anybody was silent
+    /// for, nor time it was alone. What the apps sent meanwhile is still
+    /// waiting to be read, and an app that was about to come back still is --
+    /// judged as it wakes, every line would be dropped and the process, if it
+    /// was alone, would leave under the app arriving. So the clocks that
+    /// count silence and being alone are put forward by the time lost
+    fn forgive(&self, stalled: Duration) {
+        let now = Instant::now();
+        let later = |t: Instant| t.checked_add(stalled).map_or(now, |t| t.min(now));
+        if let Ok(lines) = self.lines.lock() {
+            for l in lines.values() {
+                if let Ok(mut heard) = l.heard.lock() {
+                    *heard = later(*heard);
+                }
+            }
+        }
+        if let Ok(mut alone) = self.alone_since.lock() {
+            *alone = alone.map(later);
+        }
     }
 
     /// Whether the resident process has nothing left to do: no app, and no job
@@ -549,8 +575,17 @@ pub fn daemon(home: PathBuf) -> Result<()> {
         });
     }
 
+    let mut looked = Instant::now();
     loop {
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(TICK);
+        // A look that comes much later than it was due is this process not
+        // having run, not everybody having gone quiet at once
+        let since = looked.elapsed();
+        looked = Instant::now();
+        if since > STALLED {
+            log(&format!("did not run for {} s; nobody is counted silent for that", since.as_secs()));
+            core.forgive(since.saturating_sub(TICK));
+        }
         for job in core.jobs() {
             job.tick(&core);
         }
@@ -1300,6 +1335,37 @@ fn start_daemon(run: &Path) -> Result<()> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// Time this process did not run is nobody's silence: a line that would
+    /// be dropped, and a process that would leave for being alone, are both
+    /// given the time back -- and no more than the time lost
+    #[test]
+    fn a_stall_is_not_counted_as_silence_or_as_being_alone() {
+        let core = Core::new();
+        let (ours, _theirs) = UnixStream::pair().unwrap();
+        let line = core.add(ours).unwrap();
+        let ago = |s: u64| Instant::now().checked_sub(Duration::from_secs(s)).unwrap();
+        let set = |at: Instant| *core.lines.lock().unwrap()[&line].heard.lock().unwrap() = at;
+        // Last heard just before a pause of ten minutes: silent by the clock
+        set(ago(601));
+        assert_eq!(core.silent(), vec![line]);
+        core.forgive(Duration::from_secs(600));
+        assert!(core.silent().is_empty(), "the line is dropped for the time the process did not run");
+        // ...but one that was silent before the pause as well still is
+        set(ago(700));
+        core.forgive(Duration::from_secs(600));
+        assert_eq!(core.silent(), vec![line], "a pause forgave more than itself");
+        // Never put past now: a clock in the future would never run out
+        set(ago(1));
+        core.forgive(Duration::from_secs(600));
+        assert!(*core.lines.lock().unwrap()[&line].heard.lock().unwrap() <= Instant::now());
+
+        // Alone since before the pause: not long enough alone to leave
+        *core.alone_since.lock().unwrap() = Some(ago(603));
+        assert!(core.done());
+        core.forgive(Duration::from_secs(600));
+        assert!(!core.done(), "it leaves for having been alone while it did not run");
+    }
 
     /// An app's door, as the resident process sees one: the key shown, and
     /// frames both ways

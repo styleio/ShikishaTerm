@@ -138,6 +138,11 @@ once it reaches its first tagged release.
   still never asked.
 
 ### Fixed
+- **A server that was paused no longer drops every connected app as it
+  wakes.** The SHIKISHA bridge on a server counted the time the machine
+  slept or was paused as time the apps had said nothing, cut every line
+  on waking, and could leave before the app came back. That time is no
+  longer counted.
 - **The editor no longer rewrites a file's line endings.** A file that
   ended some lines with CRLF and others with LF was shown as changed the
   moment it was opened, and saving it gave every line the ending of the
