@@ -2669,7 +2669,7 @@
   "settings.close": "Close settings",
   "settings.report_bug": "Report a bug",
   "settings.diagnostics": "Save diagnostics",
-  "settings.diagnostics.hint": "Saves the app's logs and how its last run ended as one zip, for attaching to a bug report. Keys, addresses, links, your name and what the AIs said are hidden in it; nothing is sent anywhere.",
+  "settings.diagnostics.hint": "Saves one zip for attaching to a bug report: the app's logs, how its last run ended, a week of how busy the machine was (processors, memory, disk, and the programs using the most when something was off), how full each disk is and how much each folder of the desks holds. Keys, addresses, links, your name and what the AIs said are hidden in it, folders are numbered instead of named, and programs are named by file name only; nothing is sent anywhere.",
   "settings.diagnostics.saved": "Saved {name}. {n} thing(s) were hidden in it: what looked like keys, addresses and links, and the words of the AIs' conversations. Folder and branch names are still in it. Look inside before you attach it to a bug report.",
   "settings.diagnostics.failed": "The diagnostics could not be made: {e}",
   "settings.discussions": "Discussions",

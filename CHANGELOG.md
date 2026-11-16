@@ -9,6 +9,15 @@ once it reaches its first tagged release.
 ## [Unreleased]
 
 ### Added
+- **A week of how the machine was doing, in the saved diagnostics.** While
+  it runs, the app now notes once a minute how busy the processors are, how
+  much memory is left, how late its own parts answer and how much room the
+  disk has. When something is off it also names the programs using the most
+  of the processors and of the memory, by file name only. The notes are
+  kept for a week in `logs/health.log`. **Save diagnostics** in the settings
+  puts that week in the zip, with the week's memory notes and a
+  `storage.txt` that says how full each disk is and how much each folder
+  of the desks holds. Folders are numbered there, not named.
 - **Copy to clipboard, among the scissors' tools.** Frame a part of the
   screen and choose **Copy to clipboard** (or press `X`): the part goes to
   the clipboard as an image, at the screen's own pixels, and the tool
